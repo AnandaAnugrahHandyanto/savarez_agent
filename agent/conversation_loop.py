@@ -301,48 +301,18 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     except Exception as exc:
         logger.warning("on_session_start hook failed: %s", exc)
 
-    # Cold-start credits seed (L3) — a genuinely-new Nous session has no inference
-    # header yet, so prime credits state from the authoritative /api/oauth/account
-    # snapshot. This lets a session that opens already depleted warn IMMEDIATELY (it
-    # runs the shared notice policy below), rather than only after the first turn.
-    # Magnitudes only at seed time: the cold-start seed does not map monthly_credits
-    # into subscription_limit_*, so used_fraction stays None until a real inference
-    # header lands (→ no warn90 from the seed alone). The /usage view DOES surface a
-    # subscription % from monthly_credits independently (see build_nous_credits_snapshot).
-    # Fail-open: any error leaves _credits_state untouched (None) — never blocks startup.
-    if getattr(agent, "provider", "") == "nous":
-        try:
-            import concurrent.futures as _cf
-            from hermes_cli.nous_account import get_nous_portal_account_info
-            from agent.credits_tracker import CreditsState
+    # Cold-start credits seed (L3) — fallback for the first-turn path. The TUI/
+    # desktop build seeds at session OPEN (see seed_credits_at_session_start in
+    # tui_gateway), so this call is usually a no-op there (idempotent: skips when
+    # _credits_state already exists). For the plain CLI / any path that didn't seed
+    # at build, it primes credits state from /api/oauth/account (or a fixture) on the
+    # first turn so depletion / usage-band warnings fire. Fail-open inside the helper.
+    try:
+        from agent.credits_tracker import seed_credits_at_session_start
 
-            # Bounded by a wall-clock timeout so a stalled /api/oauth/account can't
-            # hang session startup (urllib's per-socket timeout isn't wall-clock).
-            with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
-                _info = _pool.submit(get_nous_portal_account_info, force_fresh=True).result(timeout=10.0)
-            _acc = _info.paid_service_access_info   # magnitudes (may be None)
-            _sub = _info.subscription               # renewal/rollover (may be None)
-
-            def _to_micros(dollars):
-                # float dollars → integer micros; absent → 0. *_usd left "" (render
-                # formats from micros) — never synthesize a verbatim usd from a float.
-                return int(round(dollars * 1_000_000)) if isinstance(dollars, (int, float)) else 0
-
-            _paid = _info.paid_service_access
-            agent._credits_state = CreditsState(
-                remaining_micros=_to_micros(getattr(_acc, "total_usable_credits", None)),
-                subscription_micros=_to_micros(getattr(_acc, "subscription_credits_remaining", None)),
-                purchased_micros=_to_micros(getattr(_acc, "purchased_credits_remaining", None)),
-                rollover_micros=_to_micros(getattr(_sub, "rollover_credits", None)),
-                paid_access=_paid if isinstance(_paid, bool) else True,  # fail-open: unknown ⇒ not depleted
-                from_header=False,
-                captured_at=time.time(),
-            )
-            if getattr(agent, "_credits_session_start_micros", None) is None:
-                agent._credits_session_start_micros = agent._credits_state.remaining_micros
-            agent._emit_credits_notices()  # depletion warns at session open
-        except Exception:
-            logger.debug("cold-start credits seed failed (fail-open)", exc_info=True)
+        seed_credits_at_session_start(agent)
+    except Exception:
+        logger.debug("cold-start credits seed failed (fail-open)", exc_info=True)
 
     # Persist the system prompt snapshot in SQLite.  Failure here used
     # to log at DEBUG, which silently broke prefix-cache reuse on the

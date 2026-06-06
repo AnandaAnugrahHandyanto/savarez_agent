@@ -680,6 +680,15 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 pass
 
             _wire_callbacks(sid)
+            # Hydrate credits notices at session OPEN (not just on the first
+            # message), so depletion / usage-band warnings show at "ready". Runs
+            # off the build thread, after the notice_callback is wired. Fail-open.
+            try:
+                from agent.credits_tracker import seed_credits_at_session_start
+
+                seed_credits_at_session_start(agent)
+            except Exception:
+                pass
             with _sessions_lock:
                 if sid in _sessions:
                     _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
@@ -3511,14 +3520,24 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     agent = session.get("agent")
-    return _ok(
-        rid,
-        (
-            _get_usage(agent)
-            if agent is not None
-            else {"calls": 0, "input": 0, "output": 0, "total": 0}
-        ),
+    usage: dict = (
+        _get_usage(agent)
+        if agent is not None
+        else {"calls": 0, "input": 0, "output": 0, "total": 0}
     )
+    # Nous credits block — agent-independent (a portal fetch), so it shows even
+    # with zero API calls or on a resumed session. The TUI /usage panel renders
+    # these lines regardless of `calls`. Fail-open: [] when not logged into Nous
+    # or on any portal hiccup.
+    try:
+        from agent.account_usage import nous_credits_lines
+
+        credits = nous_credits_lines()
+        if credits:
+            usage["credits_lines"] = credits
+    except Exception:
+        pass
+    return _ok(rid, usage)
 
 
 @method("session.status")
