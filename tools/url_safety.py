@@ -81,15 +81,6 @@ _TRUSTED_PRIVATE_IP_SUFFIXES = (
     ".myqcloud.com",      # Tencent COS (WeCom/QQ file & image CDN)
 )
 
-# Networks that trusted CDN hostnames may legitimately resolve to.
-# Trusted-suffix hosts are NOT allowed to bypass loopback, RFC1918, or
-# link-local blocking — only CGNAT (100.64.0.0/10) and benchmark
-# (198.18.0.0/15) ranges that enterprise CDNs use internally.
-_TRUSTED_CDN_NETWORKS = (
-    ipaddress.ip_network("100.64.0.0/10"),   # CGNAT / Shared Address Space (RFC 6598)
-    ipaddress.ip_network("198.18.0.0/15"),    # Benchmark (RFC 2544)
-)
-
 # 100.64.0.0/10 (CGNAT / Shared Address Space, RFC 6598) is NOT covered by
 # ipaddress.is_private — it returns False for both is_private and is_global.
 # Must be blocked explicitly. Used by carrier-grade NAT, Tailscale/WireGuard
@@ -280,13 +271,26 @@ def is_always_blocked_url(url: str) -> bool:
         return False
 
 
+def _is_trusted_cdn_hostname(hostname: str, scheme: str) -> bool:
+    """Return True for HTTPS CDN hostnames with constrained IP exceptions."""
+    return scheme == "https" and hostname.endswith(_TRUSTED_PRIVATE_IP_SUFFIXES)
+
+
 def _allows_private_ip_resolution(hostname: str, scheme: str) -> bool:
     """Return True when a trusted HTTPS hostname may bypass IP-class blocking."""
-    if scheme != "https":
-        return False
-    if hostname in _TRUSTED_PRIVATE_IP_HOSTS:
-        return True
-    return hostname.endswith(_TRUSTED_PRIVATE_IP_SUFFIXES)
+    return (
+        scheme == "https"
+        and hostname in _TRUSTED_PRIVATE_IP_HOSTS
+    ) or _is_trusted_cdn_hostname(hostname, scheme)
+
+
+def _is_invalid_trusted_cdn_ip(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> bool:
+    """Return True for addresses that can never identify an external CDN."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback or ip.is_multicast or ip.is_unspecified
 
 
 def is_safe_url(url: str) -> bool:
@@ -319,6 +323,7 @@ def is_safe_url(url: str) -> bool:
         allow_all_private = _global_allow_private_urls()
 
         allow_private_ip = _allows_private_ip_resolution(hostname, scheme)
+        trusted_cdn_hostname = _is_trusted_cdn_hostname(hostname, scheme)
 
         # Try to resolve and check IP
         try:
@@ -345,20 +350,14 @@ def is_safe_url(url: str) -> bool:
                 return False
 
             if not allow_all_private:
-                if allow_private_ip:
-                    # Trusted hostname: still block dangerous ranges
-                    # (loopback, RFC1918, link-local), but allow
-                    # CGNAT/benchmark ranges that CDNs legitimately use.
-                    if _is_blocked_ip(ip) and not any(
-                        ip in net for net in _TRUSTED_CDN_NETWORKS
-                    ):
-                        logger.warning(
-                            "Blocked request — trusted host %s resolved to "
-                            "dangerous address: %s",
-                            hostname, ip_str,
-                        )
-                        return False
-                elif _is_blocked_ip(ip):
+                if trusted_cdn_hostname and _is_invalid_trusted_cdn_ip(ip):
+                    logger.warning(
+                        "Blocked request — trusted CDN host %s resolved to "
+                        "invalid address: %s",
+                        hostname, ip_str,
+                    )
+                    return False
+                elif not allow_private_ip and _is_blocked_ip(ip):
                     logger.warning(
                         "Blocked request to private/internal address: %s -> %s",
                         hostname, ip_str,
