@@ -583,10 +583,15 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, m
 
 
 @pytest.mark.asyncio
-async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_path, monkeypatch):
-    """Missing artifact paths are silently skipped — they may have been
-    referenced by name only. The notifier must not crash and must still
-    deliver any artifacts that do exist."""
+async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_path, monkeypatch, caplog):
+    """Missing artifact paths are skipped (they may have been referenced by
+    name only) but the drop is logged. The notifier must not crash and must
+    still deliver any artifacts that do exist.
+
+    Explicit ``artifacts`` entries bypass ``extract_local_files`` (which got
+    its own missing-file log in commit 947e21b3d), so ``_deliver_kanban_artifacts``
+    is the only place this particular drop becomes visible in gateway.log."""
+    import logging
     import hermes_cli.kanban_db as kb
     from gateway.run import GatewayRunner
     from gateway.config import Platform
@@ -645,11 +650,27 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
         await _orig_sleep(0)
 
     with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
-        await asyncio.wait_for(
-            runner._kanban_notifier_watcher(interval=1),
-            timeout=10.0,
-        )
+        with caplog.at_level(logging.INFO, logger="gateway.run"):
+            await asyncio.wait_for(
+                runner._kanban_notifier_watcher(interval=1),
+                timeout=10.0,
+            )
 
     # Only the real file was uploaded.
     assert len(documents_uploaded) == 1
     assert "real.pdf" in documents_uploaded[0]
+
+    # The dropped (missing) artifact is logged so the gap is visible in
+    # gateway.log rather than the promised file silently never arriving.
+    skip_logs = [
+        r for r in caplog.records
+        if "skipping missing artifact" in r.message
+        and "definitely-does-not-exist.pdf" in r.message
+    ]
+    assert len(skip_logs) == 1, (
+        "missing kanban artifact must be logged once at INFO; "
+        f"got {[r.message for r in caplog.records]}"
+    )
+    # The real file must NOT be logged as missing.
+    assert not any("real.pdf" in r.message and "skipping missing artifact" in r.message
+                   for r in caplog.records)
