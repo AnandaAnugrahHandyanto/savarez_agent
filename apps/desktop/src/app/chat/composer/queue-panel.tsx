@@ -23,14 +23,14 @@ const entryPreview = (entry: QueuedPromptEntry, c: Translations['composer']) =>
 export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendNow }: QueuePanelProps) {
   const { t } = useI18n()
   const c = t.composer
-  const [collapsed, setCollapsed] = useState(false)
+  const [collapsed, setCollapsed] = useState(true)
 
   if (entries.length === 0) {
     return null
   }
 
   return (
-    <div className="rounded-2xl border border-border/65 bg-[color-mix(in_srgb,var(--dt-card)_70%,transparent)] py-0.5 shadow-[0_0_0_1px_color-mix(in_srgb,var(--dt-card)_30%,transparent)_inset]">
+    <div className="rounded-t-2xl border border-b-0 border-border/65 bg-[color-mix(in_srgb,var(--dt-card)_70%,transparent)] pt-0.5 pb-1.5">
       <button
         className="flex w-full items-center gap-1.5 px-2.5 py-1 text-left text-[0.72rem] font-medium text-muted-foreground/92 transition-colors hover:text-foreground/90"
         onClick={() => setCollapsed(open => !open)}

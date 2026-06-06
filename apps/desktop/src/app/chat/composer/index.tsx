@@ -1295,8 +1295,11 @@ export function ChatBar({
             // inflates the composer's measured height — otherwise the thread
             // reserves extra bottom padding and the chat visibly resizes as you
             // queue. Cursor-style: the list overlays the (faded) chat instead.
-            // Capped height with internal scroll keeps a long queue on-screen.
-            <div className="absolute inset-x-0 bottom-full z-6 mb-1 max-h-[40vh] overflow-y-auto px-0.5">
+            // Sits flush on the composer's top edge (shared border). The Root
+            // has pt-2 (0.5rem) above the visible surface, so we overlap down by
+            // that much (-mb-2) to land the panel's borderless bottom right on
+            // the surface's top border. Capped height + internal scroll.
+            <div className="absolute inset-x-0 bottom-full z-6 -mb-2 max-h-[40vh] overflow-y-auto">
               <QueuePanel
                 busy={busy}
                 editingId={queueEdit?.entryId ?? null}
