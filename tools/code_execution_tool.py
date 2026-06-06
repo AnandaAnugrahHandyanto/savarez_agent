@@ -1678,7 +1678,14 @@ def _resolve_child_cwd(mode: str, staging_dir: str) -> str:
     """
     if mode != "project":
         return staging_dir
-    raw = os.environ.get("TERMINAL_CWD", "").strip()
+    # Try job-specific TERMINAL_CWD first (for parallel cron execution)
+    job_id = os.environ.get("HERMES_CRON_JOB_ID")
+    if job_id:
+        raw = os.environ.get(f"CRONID_{job_id}_TERMINAL_CWD", "").strip()
+        if not raw:
+            raw = os.environ.get("TERMINAL_CWD", "").strip()
+    else:
+        raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
         expanded = os.path.expanduser(raw)
         if os.path.isdir(expanded):

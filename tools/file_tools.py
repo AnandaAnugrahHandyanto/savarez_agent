@@ -138,6 +138,16 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     if live:
         base = Path(live).expanduser()
     else:
+        # Try job-specific TERMINAL_CWD first (for parallel cron execution)
+        job_id = os.environ.get("HERMES_CRON_JOB_ID")
+        if job_id:
+            raw = os.environ.get(f"CRONID_{job_id}_TERMINAL_CWD")
+            if raw:
+                base = Path(raw).expanduser()
+                if not base.is_absolute():
+                    base = Path(os.getcwd()) / base
+                return base.resolve()
+        # Fallback to global TERMINAL_CWD
         raw = os.environ.get("TERMINAL_CWD")
         base = Path(raw).expanduser() if raw else Path(os.getcwd())
     if not base.is_absolute():

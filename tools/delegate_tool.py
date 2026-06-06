@@ -683,8 +683,14 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     teaching subagents a fake container path while still helping them avoid
     guessing `/workspace/...` for local repo tasks.
     """
+    # Try job-specific TERMINAL_CWD first (for parallel cron execution)
+    job_id = os.environ.get("HERMES_CRON_JOB_ID")
+    if job_id:
+        _job_cwd = os.getenv(f"CRONID_{job_id}_TERMINAL_CWD")
+    else:
+        _job_cwd = None
     candidates = [
-        os.getenv("TERMINAL_CWD"),
+        _job_cwd or os.getenv("TERMINAL_CWD"),
         getattr(
             getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None
         ),
