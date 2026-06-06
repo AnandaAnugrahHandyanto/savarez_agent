@@ -518,7 +518,19 @@ _DEV_FIXTURES: dict[str, dict] = {
         purchased_micros=12_340_000, purchased_usd="12.34",
         denominator_kind="subscription_cap", paid_access=True,
     ),
-    "sub_90pct": dict(  # used_fraction == 0.9 → credits.warn90
+    "sub_50pct": dict(  # used_fraction == 0.5 → credits.usage band 50 (info)
+        remaining_micros=10_000_000, remaining_usd="10.00",
+        subscription_micros=10_000_000, subscription_usd="10.00",
+        subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",
+        denominator_kind="subscription_cap", paid_access=True,
+    ),
+    "sub_75pct": dict(  # used_fraction == 0.75 → credits.usage band 75 (warn)
+        remaining_micros=5_000_000, remaining_usd="5.00",
+        subscription_micros=5_000_000, subscription_usd="5.00",
+        subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",
+        denominator_kind="subscription_cap", paid_access=True,
+    ),
+    "sub_90pct": dict(  # used_fraction == 0.9 → credits.usage band 90 (warn)
         remaining_micros=2_000_000, remaining_usd="2.00",
         subscription_micros=2_000_000, subscription_usd="2.00",
         subscription_limit_micros=20_000_000, subscription_limit_usd="20.00",
