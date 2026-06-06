@@ -411,7 +411,31 @@ def test_untracked_allowlist_violation_blocks_without_reverting(tmp_path):
     assert (repo / "outside.py").exists()
 
 
-def test_nonzero_with_safe_diff_returns_takeover_candidate(tmp_path):
+def test_nonzero_with_safe_diff_returns_takeover_candidate_when_verification_passes(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    fake = _write_fake_codex(
+        tmp_path / "fake_codex.py",
+        f"""
+open(os.path.join({str(repo)!r}, 'demo.py'), 'w', encoding='utf-8').write("VALUE = 'candidate'\\n")
+sys.exit(7)
+""",
+    )
+
+    proc = _run_guard(repo, fake, "--allowed-file", "demo.py", "--verify-cmd-id", "diff-check")
+
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["status"] == "takeover_candidate"
+    assert result["reason"] == "codex_nonzero_with_safe_diff"
+    assert result["trusted_completion"] is False
+    assert result["changed_files"] == ["demo.py"]
+    assert result["verification"][0]["id"] == "diff-check"
+    assert result["verification"][0]["status"] == "passed"
+
+
+def test_nonzero_with_safe_diff_without_verification_fails_closed(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
@@ -425,12 +449,199 @@ sys.exit(7)
 
     proc = _run_guard(repo, fake, "--allowed-file", "demo.py")
 
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["status"] == "failed"
+    assert result["reason"] == "takeover_missing_verification"
+    assert result["trusted_completion"] is False
+    assert result["changed_files"] == ["demo.py"]
+
+
+def test_nonzero_with_safe_diff_with_only_none_verification_fails_closed(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    fake = _write_fake_codex(
+        tmp_path / "fake_codex.py",
+        f"""
+open(os.path.join({str(repo)!r}, 'demo.py'), 'w', encoding='utf-8').write("VALUE = 'candidate'\\n")
+sys.exit(7)
+""",
+    )
+
+    proc = _run_guard(repo, fake, "--allowed-file", "demo.py", "--verify-cmd-id", "none")
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["status"] == "failed"
+    assert result["reason"] == "takeover_missing_verification"
+    assert result["verification"] == []
+
+
+def test_nonzero_with_safe_diff_mixed_none_and_real_verification_reports_only_real_verification(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    fake = _write_fake_codex(
+        tmp_path / "fake_codex.py",
+        f"""
+open(os.path.join({str(repo)!r}, 'demo.py'), 'w', encoding='utf-8').write("VALUE = 'candidate'\\n")
+sys.exit(7)
+""",
+    )
+
+    proc = _run_guard(repo, fake, "--allowed-file", "demo.py", "--verify-cmd-id", "none", "--verify-cmd-id", "diff-check")
+
     assert proc.returncode == 2, proc.stdout + proc.stderr
     result = json.loads(proc.stdout)
     assert result["status"] == "takeover_candidate"
-    assert result["reason"] == "codex_nonzero_with_safe_diff"
-    assert result["trusted_completion"] is False
+    assert [item["id"] for item in result["verification"]] == ["diff-check"]
+    assert result["verification"][0]["status"] == "passed"
+
+
+def test_nonzero_with_safe_diff_fails_when_takeover_verification_fails(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    fake = _write_fake_codex(
+        tmp_path / "fake_codex.py",
+        f"""
+open(os.path.join({str(repo)!r}, 'demo.py'), 'w', encoding='utf-8').write("VALUE = 'candidate' \\n")
+sys.exit(7)
+""",
+    )
+
+    proc = _run_guard(repo, fake, "--allowed-file", "demo.py", "--verify-cmd-id", "diff-check")
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["status"] == "failed"
+    assert result["reason"] == "verification_failed"
+    assert result["verification"][0]["id"] == "diff-check"
+    assert result["verification"][0]["status"] == "failed"
+
+
+def test_diff_flood_with_safe_diff_without_verification_fails_closed(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    fake = _write_fake_codex(
+        tmp_path / "fake_codex.py",
+        f"""
+open(os.path.join({str(repo)!r}, 'demo.py'), 'w', encoding='utf-8').write("VALUE = 'flood'\\n")
+for i in range(100):
+    print('+diff flood line', i)
+    sys.stdout.flush()
+    time.sleep(0.001)
+""",
+    )
+
+    proc = _run_guard(repo, fake, "--allowed-file", "demo.py", "--diff-line-threshold", "10", "--kill-grace-seconds", "0.1")
+
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["status"] == "failed"
+    assert result["reason"] == "takeover_missing_verification"
+    assert result["diff_flood_detected"] is True
     assert result["changed_files"] == ["demo.py"]
+
+
+def test_takeover_fails_if_verification_removes_final_candidate_diff(tmp_path, monkeypatch, capsys):
+    guard = _load_guard_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    def fake_run_codex(**kwargs):
+        (repo / "demo.py").write_text("VALUE = 'candidate'\n", encoding="utf-8")
+        return {
+            "codex_exit_code": 7,
+            "terminated_by_guard": False,
+            "process_exited_before_guard": False,
+            "reason": "ok",
+            "stdout_chars": 0,
+            "stdout_lines": 0,
+            "source_like_lines": 0,
+            "diff_like_lines": 0,
+            "source_flood_detected": False,
+            "diff_flood_detected": False,
+            "json_field_flood_detected": False,
+        }
+
+    def fake_verification(workdir, verify_id, excluded):
+        (Path(workdir) / "demo.py").write_text("VALUE = 'old'\n", encoding="utf-8")
+        return {"id": verify_id, "status": "passed", "exit_code": 0, "new_artifacts": [], "artifact_violations": []}
+
+    monkeypatch.setattr(guard, "_run_codex", fake_run_codex)
+    monkeypatch.setattr(guard, "_codex_bin_allowed", lambda codex_bin: True)
+    monkeypatch.setattr(guard, "_sandbox_verified", lambda: True)
+    monkeypatch.setattr(guard, "_verification_result", fake_verification)
+
+    exit_code = guard.run([
+        "--codex-bin", "codex-yuna",
+        "--workdir", str(repo),
+        "--prompt", "Change demo.py",
+        "--allowed-file", "demo.py",
+        "--verify-cmd-id", "diff-check",
+        "--raw-log", str(tmp_path / "impl.raw.log"),
+        "--final-file", str(tmp_path / "impl.final.json"),
+    ])
+
+    assert exit_code == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "failed"
+    assert result["reason"] == "takeover_missing_final_diff"
+    assert result["verification"][0]["status"] == "passed"
+    assert result["changed_files"] == []
+
+
+def test_takeover_blocks_if_verification_adds_allowlist_violation(tmp_path, monkeypatch, capsys):
+    guard = _load_guard_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    def fake_run_codex(**kwargs):
+        (repo / "demo.py").write_text("VALUE = 'candidate'\n", encoding="utf-8")
+        return {
+            "codex_exit_code": 7,
+            "terminated_by_guard": False,
+            "process_exited_before_guard": False,
+            "reason": "ok",
+            "stdout_chars": 0,
+            "stdout_lines": 0,
+            "source_like_lines": 0,
+            "diff_like_lines": 0,
+            "source_flood_detected": False,
+            "diff_flood_detected": False,
+            "json_field_flood_detected": False,
+        }
+
+    def fake_verification(workdir, verify_id, excluded):
+        (Path(workdir) / "outside.py").write_text("BAD = True\n", encoding="utf-8")
+        return {"id": verify_id, "status": "passed", "exit_code": 0, "new_artifacts": [], "artifact_violations": []}
+
+    monkeypatch.setattr(guard, "_run_codex", fake_run_codex)
+    monkeypatch.setattr(guard, "_codex_bin_allowed", lambda codex_bin: True)
+    monkeypatch.setattr(guard, "_sandbox_verified", lambda: True)
+    monkeypatch.setattr(guard, "_verification_result", fake_verification)
+
+    exit_code = guard.run([
+        "--codex-bin", "codex-yuna",
+        "--workdir", str(repo),
+        "--prompt", "Change demo.py",
+        "--allowed-file", "demo.py",
+        "--verify-cmd-id", "diff-check",
+        "--raw-log", str(tmp_path / "impl.raw.log"),
+        "--final-file", str(tmp_path / "impl.final.json"),
+    ])
+
+    assert exit_code == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "blocked_by_allowlist"
+    assert result["reason"] == "allowlist_violation"
+    assert "outside.py" in result["allowlist_violations"]
+    assert result["verification"][0]["status"] == "passed"
 
 
 def test_absolute_allowed_glob_is_rejected_before_codex_runs(tmp_path):
@@ -837,7 +1048,7 @@ for i in range(100):
 """,
     )
 
-    proc = _run_guard(repo, fake, "--allowed-file", "demo.py", "--diff-line-threshold", "10", "--kill-grace-seconds", "0.1")
+    proc = _run_guard(repo, fake, "--allowed-file", "demo.py", "--diff-line-threshold", "10", "--kill-grace-seconds", "0.1", "--verify-cmd-id", "diff-check")
 
     assert proc.returncode == 2, proc.stdout + proc.stderr
     result = json.loads(proc.stdout)
@@ -862,7 +1073,7 @@ for i in range(100):
 """,
     )
 
-    proc = _run_guard(repo, fake, "--allowed-file", "demo.py", "--source-line-threshold", "10", "--kill-grace-seconds", "0.1")
+    proc = _run_guard(repo, fake, "--allowed-file", "demo.py", "--source-line-threshold", "10", "--kill-grace-seconds", "0.1", "--verify-cmd-id", "diff-check")
 
     assert proc.returncode == 2, proc.stdout + proc.stderr
     result = json.loads(proc.stdout)
@@ -887,7 +1098,7 @@ time.sleep(5)
 """,
     )
 
-    proc = _run_guard(repo, fake, "--allowed-file", "demo.py", "--source-line-threshold", "10", "--kill-grace-seconds", "0.1")
+    proc = _run_guard(repo, fake, "--allowed-file", "demo.py", "--source-line-threshold", "10", "--kill-grace-seconds", "0.1", "--verify-cmd-id", "diff-check")
 
     assert proc.returncode == 2, proc.stdout + proc.stderr
     result = json.loads(proc.stdout)
@@ -923,6 +1134,8 @@ time.sleep(5)
         "100",
         "--kill-grace-seconds",
         "0.1",
+        "--verify-cmd-id",
+        "diff-check",
     )
 
     assert proc.returncode == 2, proc.stdout + proc.stderr
@@ -973,7 +1186,7 @@ time.sleep(5)
 """,
     )
 
-    proc = _run_guard(repo, fake, "--allowed-file", "demo.py", "--timeout-seconds", "0.2", "--kill-grace-seconds", "0.1")
+    proc = _run_guard(repo, fake, "--allowed-file", "demo.py", "--timeout-seconds", "0.2", "--kill-grace-seconds", "0.1", "--verify-cmd-id", "diff-check")
 
     assert proc.returncode == 2, proc.stdout + proc.stderr
     result = json.loads(proc.stdout)

@@ -908,6 +908,7 @@ def run(argv: list[str] | None = None) -> int:
             "reason": "unsupported_verify_cmd_id",
             "unsupported_verify_cmd_ids": unsupported_verify_ids,
         })
+    real_verify_ids = [verify_id for verify_id in args.verify_cmd_id if verify_id != "none"]
 
     if not _codex_bin_allowed(args.codex_bin):
         return _emit({
@@ -1027,8 +1028,12 @@ def run(argv: list[str] | None = None) -> int:
             status = "unusable"
             reason = "codex_bin_not_found"
         elif (terminated or exit_code not in (0, None)) and has_candidate:
-            status = "takeover_candidate"
-            reason = "codex_terminated_with_safe_diff" if terminated else "codex_nonzero_with_safe_diff"
+            if real_verify_ids:
+                status = "takeover_candidate"
+                reason = "codex_terminated_with_safe_diff" if terminated else "codex_nonzero_with_safe_diff"
+            else:
+                status = "failed"
+                reason = "takeover_missing_verification"
         elif terminated:
             status = "failed"
             reason = str(codex_result.get("reason") or "codex_terminated_without_diff")
@@ -1040,8 +1045,9 @@ def run(argv: list[str] | None = None) -> int:
             reason = "codex_nonzero_without_diff"
 
     verification = []
-    if status in {"review_needed", "passed"}:
-        for verify_id in args.verify_cmd_id:
+    if status in {"review_needed", "passed", "takeover_candidate"}:
+        verify_ids_to_run = real_verify_ids if status == "takeover_candidate" else args.verify_cmd_id
+        for verify_id in verify_ids_to_run:
             verification.append(_verification_result(workdir, verify_id, excluded))
 
         # Verification commands are part of the safety boundary: even low-risk
@@ -1078,9 +1084,14 @@ def run(argv: list[str] | None = None) -> int:
         if violations:
             status = "blocked_by_allowlist"
             reason = "allowlist_violation"
+        elif status == "takeover_candidate" and not candidate_paths:
+            status = "failed"
+            reason = "takeover_missing_final_diff"
         elif any(item.get("status") in {"failed", "blocked_by_artifact_violation", "timed_out"} for item in verification):
             status = "failed"
             reason = "verification_failed"
+        elif status == "takeover_candidate":
+            pass
         elif verification and all(item.get("status") == "passed" for item in verification):
             status = "passed"
             reason = "verification_passed"
