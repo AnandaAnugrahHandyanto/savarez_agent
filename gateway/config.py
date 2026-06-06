@@ -491,6 +491,7 @@ class GatewayConfig:
 
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
+    stt_reply_transcript: bool = False  # Reply to voice messages with their transcription text
 
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
@@ -598,6 +599,7 @@ class GatewayConfig:
             "always_log_local": self.always_log_local,
             "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
+            "stt_reply_transcript": self.stt_reply_transcript,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
@@ -669,6 +671,12 @@ class GatewayConfig:
                 data.get("filter_silence_narration"), True
             ),
             stt_enabled=_coerce_bool(stt_enabled, True),
+            stt_reply_transcript=_coerce_bool(
+                data.get("stt_reply_transcript")
+                if data.get("stt_reply_transcript") is not None
+                else (data.get("stt", {}).get("reply_transcript") if isinstance(data.get("stt"), dict) else None),
+                False,
+            ),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
