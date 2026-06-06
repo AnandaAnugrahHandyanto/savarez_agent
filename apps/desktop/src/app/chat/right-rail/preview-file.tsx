@@ -6,7 +6,7 @@ import type {
   MouseEvent as ReactMouseEvent,
   ReactNode
 } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import ShikiHighlighter from 'react-shiki'
 import { Streamdown } from 'streamdown'
 
@@ -14,6 +14,10 @@ import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { PageLoader } from '@/components/page-loader'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
+
+const MermaidDiagram = lazy(() =>
+  import('@/components/chat/mermaid-block').then(m => ({ default: m.MermaidBlock }))
+)
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -253,6 +257,16 @@ function MarkdownCode({ className, children, ...props }: ComponentProps<'code'>)
       >
         {children}
       </code>
+    )
+  }
+
+  if (language === 'mermaid') {
+    return (
+      <Suspense
+        fallback={<div className="my-3 text-xs text-muted-foreground">Loading diagram…</div>}
+      >
+        <MermaidDiagram chart={String(children).replace(/\n$/, '')} />
+      </Suspense>
     )
   }
 
