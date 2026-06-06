@@ -777,7 +777,12 @@ class TestInlineShellExpansion:
             msg = build_skill_invocation_message("/dyn-cwd")
 
         assert msg is not None
-        assert f"Here: {skill_dir}" in msg
+        expected_pwd_outputs = {str(skill_dir)}
+        if os.name == "nt" and skill_dir.drive:
+            drive = skill_dir.drive.rstrip(":").lower()
+            tail = skill_dir.as_posix().split(":", 1)[1]
+            expected_pwd_outputs.update({f"/mnt/{drive}{tail}", f"/{drive}{tail}"})
+        assert any(f"Here: {pwd}" in msg for pwd in expected_pwd_outputs)
 
     def test_inline_shell_timeout_does_not_break_message(self, tmp_path):
         with (
