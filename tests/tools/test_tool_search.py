@@ -364,6 +364,36 @@ class TestBridgeDispatch:
         result = dispatch_tool_search({}, current_tool_defs=[])
         assert "error" in json.loads(result)
 
+    def test_tool_search_query_star_enumerates_catalog_with_pagination(self):
+        from tools.tool_search import dispatch_tool_search, ToolSearchConfig
+
+        defs = [
+            _td("tool_a", "desc a"),
+            _td("tool_b", "desc b"),
+            _td("tool_c", "desc c"),
+        ]
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("tools.tool_search.classify_tools", lambda current_tool_defs: ([], current_tool_defs))
+            first = json.loads(dispatch_tool_search(
+                {"query": "*", "limit": 2},
+                current_tool_defs=defs,
+                config=ToolSearchConfig.from_raw({"search_default_limit": 5, "max_search_limit": 20}),
+            ))
+            assert first["total_available"] == 3
+            assert first["offset"] == 0
+            assert first["next_offset"] == 2
+            assert [m["name"] for m in first["matches"]] == ["tool_a", "tool_b"]
+
+            second = json.loads(dispatch_tool_search(
+                {"query": "*", "limit": 2, "offset": 2},
+                current_tool_defs=defs,
+                config=ToolSearchConfig.from_raw({"search_default_limit": 5, "max_search_limit": 20}),
+            ))
+            assert second["offset"] == 2
+            assert second["next_offset"] is None
+            assert [m["name"] for m in second["matches"]] == ["tool_c"]
+
     def test_tool_describe_requires_name(self):
         from tools.tool_search import dispatch_tool_describe
         result = dispatch_tool_describe({}, current_tool_defs=[])
