@@ -3320,6 +3320,22 @@ def launchd_restart():
         pid = get_running_pid()
         if pid is not None and _request_gateway_self_restart(pid):
             print("✓ Service restart requested")
+            # A self-restart request only asks the running gateway to drain and
+            # exit.  Do not assume launchd will definitely bring it back: after
+            # some update paths the job can be absent/unloaded, leaving Telegram
+            # polling dead even though the restart request succeeded.  Wait for
+            # the old process to leave, then explicitly kickstart/verify the
+            # launchd job.  If launchd reports the job missing, the outer
+            # CalledProcessError handler bootstraps the plist and starts fresh.
+            exited = _wait_for_gateway_exit(timeout=drain_timeout + 10.0, force_after=None)
+            if not exited:
+                print(
+                    f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
+                )
+                subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
+            else:
+                subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+            print("✓ Service restarted")
             return
         if pid is not None:
             try:
