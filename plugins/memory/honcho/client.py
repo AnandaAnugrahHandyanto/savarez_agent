@@ -76,22 +76,110 @@ def resolve_global_config_path() -> Path:
     return Path.home() / ".honcho" / "config.json"
 
 
+def _resolve_sticky_profile_name() -> str | None:
+    """Named profile when HERMES_HOME is the default root (gateway without env)."""
+    home = get_hermes_home().resolve()
+    default = _get_default_hermes_home().resolve()
+    if home != default:
+        return None
+    try:
+        from hermes_cli.profiles import get_active_profile
+        name = get_active_profile()
+        if name and name != "default":
+            return name
+    except Exception:
+        pass
+    return None
+
+
+def _profile_honcho_config_path() -> Path | None:
+    """Per-profile honcho.json when sticky profile is active but HERMES_HOME is default."""
+    profile = _resolve_sticky_profile_name()
+    if not profile:
+        return None
+    path = _get_default_hermes_home() / "profiles" / profile / "honcho.json"
+    return path if path.exists() else None
+
+
+def _read_honcho_json(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _merge_honcho_config(base: dict, overlay: dict) -> dict:
+    """Deep-merge overlay onto base (profile overrides default host blocks)."""
+    merged = dict(base)
+    for key, val in overlay.items():
+        if key == "hosts" and isinstance(val, dict):
+            hosts = dict(merged.get("hosts") or {})
+            for hname, hblock in val.items():
+                if isinstance(hblock, dict) and isinstance(hosts.get(hname), dict):
+                    hosts[hname] = {**hosts[hname], **hblock}
+                else:
+                    hosts[hname] = hblock
+            merged["hosts"] = hosts
+        else:
+            merged[key] = val
+    return merged
+
+
+def load_honcho_config_raw(config_path: Path | None = None) -> tuple[dict | None, Path]:
+    """Load honcho config, merging profile overrides with the default profile file."""
+    path = config_path or resolve_config_path()
+    raw = _read_honcho_json(path)
+    profile_path = _profile_honcho_config_path()
+    default_path = _get_default_hermes_home() / "honcho.json"
+    if profile_path and path.resolve() == profile_path.resolve():
+        base = _read_honcho_json(default_path)
+        if base:
+            raw = _merge_honcho_config(base, raw or {})
+    return raw, path
+
+
+def resolve_api_key_from_raw(raw: dict, host: str) -> str | None:
+    """Resolve apiKey: host block → default hermes host → root → env."""
+    hosts = raw.get("hosts") or {}
+    key = _host_block(raw, host).get("apiKey")
+    if key:
+        return key
+    if host != HOST:
+        key = hosts.get(HOST, {}).get("apiKey")
+        if key:
+            return key
+    return raw.get("apiKey") or os.environ.get("HONCHO_API_KEY")
+
+
 def resolve_config_path() -> Path:
     """Return the active Honcho config path.
 
     Resolution order:
       1. $HERMES_HOME/honcho.json      (profile-local, if it exists)
-      2. ~/.hermes/honcho.json          (default profile — shared host blocks live here)
-      3. ~/.honcho/config.json          (global, cross-app interop)
+      2. ~/.hermes/profiles/<name>/honcho.json (sticky active profile)
+      3. ~/.hermes/honcho.json          (default profile — shared host blocks live here)
+      4. ~/.honcho/config.json          (global, cross-app interop)
 
     Returns the global path if none exist (for first-time setup writes).
     """
     local_path = get_hermes_home() / "honcho.json"
+    default_path = _get_default_hermes_home() / "honcho.json"
+    profile_path = _profile_honcho_config_path()
+    # Sticky profile honcho.json overrides the default-root file when both exist
+    # but HERMES_HOME was not propagated to the subprocess (issue #36098).
+    if profile_path is not None and local_path.resolve() == default_path.resolve():
+        return profile_path
+
     if local_path.exists():
         return local_path
 
+    if profile_path is not None:
+        return profile_path
+
     # Default profile's config — host blocks accumulate here via setup/clone
-    default_path = _get_default_hermes_home() / "honcho.json"
     if default_path != local_path and default_path.exists():
         return default_path
 
@@ -207,11 +295,9 @@ def _parse_dialectic_depth_levels(host_val, root_val, depth: int) -> list[str] |
 
 # Default HTTP timeout (seconds) applied when no explicit timeout is
 # configured via HonchoClientConfig.timeout, honcho.timeout / requestTimeout,
-# or HONCHO_TIMEOUT. Honcho calls happen on the post-response path of
-# run_conversation; without a cap the agent can block indefinitely when
-# the Honcho backend is unreachable, preventing the gateway from
-# delivering the already-generated response.
-_DEFAULT_HTTP_TIMEOUT = 30.0
+# or HONCHO_TIMEOUT. Dialectic queries at reasoning_level≥medium often
+# exceed 30s on self-hosted backends; 60s is a safer default cap.
+_DEFAULT_HTTP_TIMEOUT = 60.0
 
 
 def _resolve_optional_float(*values: Any) -> float | None:
@@ -413,14 +499,9 @@ class HonchoClientConfig:
         """
         resolved_host = host or resolve_active_host()
         path = config_path or resolve_config_path()
-        if not path.exists():
+        raw, _ = load_honcho_config_raw(path)
+        if raw is None:
             logger.debug("No global Honcho config at %s, falling back to env", path)
-            return cls.from_env(host=resolved_host)
-
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning("Failed to read %s: %s, falling back to env", path, e)
             return cls.from_env(host=resolved_host)
 
         host_block = _host_block(raw, resolved_host)
@@ -439,11 +520,7 @@ class HonchoClientConfig:
             or raw.get("aiPeer")
             or resolved_host
         )
-        api_key = (
-            host_block.get("apiKey")
-            or raw.get("apiKey")
-            or os.environ.get("HONCHO_API_KEY")
-        )
+        api_key = resolve_api_key_from_raw(raw, resolved_host)
 
         environment = (
             host_block.get("environment")
@@ -818,24 +895,15 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         logger.info("Initializing Honcho client (host: %s, workspace: %s)", config.host, config.workspace_id)
 
     # Local Honcho instances don't require an API key, but the SDK
-    # expects a non-empty string.  Use a placeholder for local URLs.
-    # For local: only use config.api_key if the host block explicitly
-    # sets apiKey (meaning the user wants local auth). Otherwise skip
-    # the stored key -- it's likely a cloud key that would break local.
+    # expects a non-empty string. Use the resolved key when present;
+    # otherwise fall back to the "local" placeholder for open local stacks.
     _is_local = resolved_base_url and (
         "localhost" in resolved_base_url
         or "127.0.0.1" in resolved_base_url
         or "::1" in resolved_base_url
     )
     if _is_local:
-        # Check if the host block has its own apiKey (explicit local auth).
-        # Auth-skipping is loopback-only: a stored key is likely a cloud key
-        # that would break a no-auth local server, so we substitute the SDK's
-        # required-non-empty placeholder unless the host block opts in.
-        _raw = config.raw or {}
-        _host_block = (_raw.get("hosts") or {}).get(config.host, {})
-        _host_has_key = bool(_host_block.get("apiKey"))
-        effective_api_key = config.api_key if _host_has_key else "local"
+        effective_api_key = (config.api_key or "").strip() or "local"
     else:
         effective_api_key = config.api_key
 

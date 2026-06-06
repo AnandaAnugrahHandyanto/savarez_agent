@@ -658,7 +658,7 @@ class HonchoSessionManager:
             return result
         except Exception as e:
             logger.warning("Honcho dialectic query failed: %s", e)
-            return ""
+            return f"[honcho_error: {type(e).__name__}]"
 
     def prefetch_context(self, session_key: str, user_message: str | None = None) -> None:
         """

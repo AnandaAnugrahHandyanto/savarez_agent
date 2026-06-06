@@ -16,8 +16,10 @@ from plugins.memory.honcho.client import (
     profile_host_key,
     reset_honcho_client,
     resolve_active_host,
+    resolve_api_key_from_raw,
     resolve_config_path,
     resolve_global_config_path,
+    _DEFAULT_HTTP_TIMEOUT,
 )
 
 
@@ -655,9 +657,7 @@ class TestGetHonchoClient:
         not importlib.util.find_spec("honcho"),
         reason="honcho SDK not installed"
     )
-    def test_defaults_to_30s_when_no_timeout_configured(self):
-        from plugins.memory.honcho.client import _DEFAULT_HTTP_TIMEOUT
-
+    def test_defaults_to_60s_when_no_timeout_configured(self):
         fake_honcho = MagicMock(name="Honcho")
         cfg = HonchoClientConfig(
             api_key="test-key",
@@ -911,6 +911,96 @@ class TestDialecticDepthParsing:
         }))
         config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.dialectic_depth_levels == ["low", "high"]
+
+
+class TestResolveApiKeyFromRaw:
+    def test_profile_host_inherits_default_hermes_api_key(self):
+        raw = {
+            "apiKey": "root-key",
+            "hosts": {
+                "hermes": {"apiKey": "default-host-key"},
+                "hermes.coder": {"aiPeer": "hermes.coder"},
+            },
+        }
+        assert resolve_api_key_from_raw(raw, "hermes.coder") == "default-host-key"
+
+    def test_profile_host_block_wins_over_default(self):
+        raw = {
+            "hosts": {
+                "hermes": {"apiKey": "default-host-key"},
+                "hermes.coder": {"apiKey": "profile-key"},
+            },
+        }
+        assert resolve_api_key_from_raw(raw, "hermes.coder") == "profile-key"
+
+    def test_falls_back_to_root_then_env(self, monkeypatch):
+        monkeypatch.delenv("HONCHO_API_KEY", raising=False)
+        raw = {"apiKey": "root-key", "hosts": {"hermes.coder": {}}}
+        assert resolve_api_key_from_raw(raw, "hermes.coder") == "root-key"
+        monkeypatch.setenv("HONCHO_API_KEY", "env-key")
+        assert resolve_api_key_from_raw({"hosts": {"hermes.coder": {}}}, "hermes.coder") == "env-key"
+
+
+class TestResolveConfigPathStickyProfile:
+    def test_prefers_profile_honcho_when_active_profile_set(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        default_home = fake_home / ".hermes"
+        profile_home = default_home / "profiles" / "work"
+        profile_home.mkdir(parents=True)
+        (default_home / "honcho.json").write_text('{"apiKey": "default"}')
+        profile_cfg = profile_home / "honcho.json"
+        profile_cfg.write_text('{"baseUrl": "http://localhost:8000"}')
+
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile",
+            lambda: "work",
+        )
+
+        assert resolve_config_path() == profile_cfg
+
+
+class TestGetHonchoClientLocalApiKey:
+    def teardown_method(self):
+        reset_honcho_client()
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed",
+    )
+    def test_localhost_uses_top_level_api_key(self):
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="jwt-from-setup",
+            base_url="http://localhost:8000",
+            workspace_id="hermes",
+            environment="production",
+            raw={"apiKey": "jwt-from-setup", "hosts": {"hermes": {}}},
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
+             patch("hermes_cli.config.load_config", return_value={}):
+            get_honcho_client(cfg)
+
+        assert mock_honcho.call_args.kwargs["api_key"] == "jwt-from-setup"
+
+
+class TestFromGlobalConfigApiKeyInheritance:
+    def test_profile_host_inherits_api_key_from_hermes_block(self, tmp_path):
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps({
+            "baseUrl": "http://localhost:8000",
+            "hosts": {
+                "hermes": {"apiKey": "shared-jwt"},
+                "hermes.work": {"aiPeer": "hermes.work"},
+            },
+        }))
+        config = HonchoClientConfig.from_global_config(
+            host="hermes.work", config_path=config_file,
+        )
+        assert config.api_key == "shared-jwt"
 
 
 class TestGetHonchoClientBaseUrlDoublePrefixFix:
