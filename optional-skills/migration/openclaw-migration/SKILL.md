@@ -43,7 +43,8 @@ It uses `scripts/openclaw_to_hermes.py` to:
 - optionally copy the OpenClaw workspace instructions file into a chosen Hermes workspace
 - mirror compatible workspace assets such as `workspace/tts/` into `~/.hermes/tts/`
 - archive non-secret docs that do not have a direct Hermes destination
-- produce a structured report listing migrated items, conflicts, skipped items, and reasons
+- preflight archived cron prompts for Hermes runtime scanner tripwires (for example, prompt-injection-defense boilerplate that would make a recreated job get BLOCKED every tick)
+- produce a structured report listing migrated items, conflicts, skipped items, warnings, and reasons
 
 ## Path resolution
 
