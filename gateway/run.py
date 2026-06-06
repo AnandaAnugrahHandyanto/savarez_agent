@@ -8690,32 +8690,18 @@ class GatewayRunner:
                     )
 
             if audio_paths:
-                message_text = await self._enrich_message_with_transcription(
+                _stt_result = await self._enrich_message_with_transcription_result(
                     message_text,
                     audio_paths,
                 )
-                _stt_fail_markers = (
-                    "No STT provider",
-                    "STT is disabled",
-                    "can't listen",
-                    "VOICE_TOOLS_OPENAI_KEY",
-                )
-                if any(marker in message_text for marker in _stt_fail_markers):
+                message_text = str(_stt_result.get("text") or "")
+                _stt_failures = list(_stt_result.get("failures") or [])
+                if _stt_failures and not int(_stt_result.get("transcript_count") or 0):
                     _stt_adapter = self.adapters.get(source.platform)
                     _stt_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                     if _stt_adapter:
                         try:
-                            _stt_msg = (
-                                "🎤 I received your voice message but can't transcribe it — "
-                                "no speech-to-text provider is configured.\n\n"
-                                "To enable voice: install faster-whisper "
-                                "(`uv pip install faster-whisper` in the Hermes venv; "
-                                "`pip install faster-whisper` also works if pip is on PATH) "
-                                "and set `stt.enabled: true` in config.yaml, "
-                                "then /restart the gateway."
-                            )
-                            if self._has_setup_skill():
-                                _stt_msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
+                            _stt_msg = self._stt_user_failure_message(_stt_failures)
                             await _stt_adapter.send(
                                 source.chat_id,
                                 _stt_msg,
@@ -8723,6 +8709,9 @@ class GatewayRunner:
                             )
                         except Exception:
                             pass
+                    _placeholder = "(The user sent a message with no text content)"
+                    if not message_text.strip() or message_text.strip() == _placeholder:
+                        return None
 
         if audio_file_paths:
             from tools.credential_files import to_agent_visible_cache_path as _to_agent_path
@@ -15837,46 +15826,67 @@ class GatewayRunner:
             return prefix
         return user_text
 
-    async def _enrich_message_with_transcription(
+    @staticmethod
+    def _is_no_stt_provider_error(error: str) -> bool:
+        return (
+            "No STT provider" in error
+            or "STT is disabled" in error
+            or error.startswith("Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set")
+        )
+
+    def _stt_user_failure_message(self, failures: List[Dict[str, Any]]) -> str:
+        no_provider = any(
+            self._is_no_stt_provider_error(str(item.get("error") or ""))
+            for item in failures
+        )
+        if no_provider:
+            msg = (
+                "🎤 I received your voice message but can't transcribe it — "
+                "no speech-to-text provider is configured.\n\n"
+                "To enable voice: install faster-whisper "
+                "(`uv pip install faster-whisper` in the Hermes venv; "
+                "`pip install faster-whisper` also works if pip is on PATH) "
+                "and set `stt.enabled: true` in config.yaml, "
+                "then /restart the gateway."
+            )
+            if self._has_setup_skill():
+                msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
+            return msg
+        return (
+            "🎤 I received your voice message but couldn't transcribe it. "
+            "Please try a shorter voice note or send the text directly."
+        )
+
+    async def _enrich_message_with_transcription_result(
         self,
         user_text: str,
         audio_paths: List[str],
-    ) -> str:
+    ) -> Dict[str, Any]:
         """
         Auto-transcribe user voice/audio messages using the configured STT provider
-        and prepend the transcript to the message text.
+        and prepend successful transcripts to the message text.
 
         Args:
             user_text:   The user's original caption / message text.
             audio_paths: List of local file paths to cached audio files.
 
         Returns:
-            The enriched message string with transcriptions prepended.
+            A structured result with enriched text, transcript count, and failures.
         """
         if not getattr(self.config, "stt_enabled", True):
-            notes = []
-            for path in audio_paths:
-                abs_path = os.path.abspath(path)
-                duration_str = await _probe_audio_duration(abs_path)
-                if duration_str:
-                    notes.append(
-                        f"[The user sent a voice message: {abs_path} (duration: {duration_str})]"
-                    )
-                else:
-                    notes.append(f"[The user sent a voice message: {abs_path}]")
-            if not notes:
-                return user_text
-            prefix = "\n\n".join(notes)
-            _placeholder = "(The user sent a message with no text content)"
-            if user_text and user_text.strip() == _placeholder:
-                return prefix
-            if user_text:
-                return f"{prefix}\n\n{user_text}"
-            return prefix
+            failures = [
+                {
+                    "path": os.path.abspath(path),
+                    "error": "STT is disabled in config.yaml (stt.enabled: false).",
+                }
+                for path in audio_paths
+            ]
+            return {"text": user_text, "transcript_count": 0, "failures": failures}
 
         from tools.transcription_tools import transcribe_audio
 
         enriched_parts = []
+        failures: List[Dict[str, Any]] = []
         for path in audio_paths:
             try:
                 logger.debug("Transcribing user voice: %s", path)
@@ -15889,35 +15899,10 @@ class GatewayRunner:
                     )
                 else:
                     error = result.get("error", "unknown error")
-                    if (
-                        "No STT provider" in error
-                        or error.startswith("Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set")
-                    ):
-                        _no_stt_note = (
-                            "[The user sent a voice message but I can't listen "
-                            "to it right now — no STT provider is configured. "
-                            "A direct message has already been sent to the user "
-                            "with setup instructions."
-                        )
-                        if self._has_setup_skill():
-                            _no_stt_note += (
-                                " You have a skill called hermes-agent-setup "
-                                "that can help users configure Hermes features "
-                                "including voice, tools, and more."
-                            )
-                        _no_stt_note += "]"
-                        enriched_parts.append(_no_stt_note)
-                    else:
-                        enriched_parts.append(
-                            "[The user sent a voice message but I had trouble "
-                            f"transcribing it~ ({error})]"
-                        )
+                    failures.append({"path": path, "error": error})
             except Exception as e:
                 logger.error("Transcription error: %s", e)
-                enriched_parts.append(
-                    "[The user sent a voice message but something went wrong "
-                    "when I tried to listen to it~ Let them know!]"
-                )
+                failures.append({"path": path, "error": f"{type(e).__name__}: {e}"})
 
         if enriched_parts:
             prefix = "\n\n".join(enriched_parts)
@@ -15925,11 +15910,32 @@ class GatewayRunner:
             # when we successfully transcribed the audio — it's redundant.
             _placeholder = "(The user sent a message with no text content)"
             if user_text and user_text.strip() == _placeholder:
-                return prefix
+                return {
+                    "text": prefix,
+                    "transcript_count": len(enriched_parts),
+                    "failures": failures,
+                }
             if user_text:
-                return f"{prefix}\n\n{user_text}"
-            return prefix
-        return user_text
+                return {
+                    "text": f"{prefix}\n\n{user_text}",
+                    "transcript_count": len(enriched_parts),
+                    "failures": failures,
+                }
+            return {
+                "text": prefix,
+                "transcript_count": len(enriched_parts),
+                "failures": failures,
+            }
+        return {"text": user_text, "transcript_count": 0, "failures": failures}
+
+    async def _enrich_message_with_transcription(
+        self,
+        user_text: str,
+        audio_paths: List[str],
+    ) -> str:
+        """Backward-compatible wrapper for callers that only need text."""
+        result = await self._enrich_message_with_transcription_result(user_text, audio_paths)
+        return str(result.get("text") or "")
 
     def _build_process_event_source(self, evt: dict):
         """Resolve the canonical source for a synthetic background-process event.
