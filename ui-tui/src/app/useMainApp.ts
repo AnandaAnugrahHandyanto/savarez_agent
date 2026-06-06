@@ -522,7 +522,11 @@ export function useMainApp(gw: GatewayClient) {
           const result = asRpcResult<SessionActiveListResponse>(raw)
 
           if (!stopped && result?.sessions) {
-            patchUiState({ liveSessionCount: result.sessions.length })
+            const current = getUiState().liveSessionCount
+
+            if (result.sessions.length !== current) {
+              patchUiState({ liveSessionCount: result.sessions.length })
+            }
           }
         })
         .catch(() => {})
