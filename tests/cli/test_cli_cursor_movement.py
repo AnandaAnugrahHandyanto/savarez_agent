@@ -26,9 +26,9 @@ from prompt_toolkit.utils import get_cwidth
 # functions in cli.py rather than a private copy that could silently drift.
 # ═══════════════════════════════════════════════════════════════════════════
 
-from cli import _visual_row_col as _cli_visual_row_col  # noqa: E402
-from cli import _max_visual_row as _cli_max_visual_row  # noqa: E402
-from cli import _pos_from_visual as _cli_pos_from_visual  # noqa: E402
+from cli import _visual_row_col as _cli_visual_row_col
+from cli import _max_visual_row as _cli_max_visual_row
+from cli import _pos_from_visual as _cli_pos_from_visual
 
 
 def _visual_row_col(text, pos, cols, prompt_width):
@@ -51,16 +51,16 @@ class TestVisualRowCol:
     """Tests for _visual_row_col — maps char position to visual (row, col)."""
 
     def test_empty_text(self):
-        assert _visual_row_col("", 0, 80, 2) == (0, 0)
+        assert _visual_row_col("", 0, 80, 2) == (0, 2)  # cursor sits just after the prompt
 
     def test_first_visual_row_no_prompt(self):
         assert _visual_row_col("hello world", 5, 80, 0) == (0, 5)
 
     def test_first_visual_row_with_prompt(self):
-        assert _visual_row_col("abcdefghij", 5, 80, 2) == (0, 5)
+        assert _visual_row_col("abcdefghij", 5, 80, 2) == (0, 7)  # 2 (prompt) + 5
 
     def test_position_zero(self):
-        assert _visual_row_col("hello", 0, 80, 2) == (0, 0)
+        assert _visual_row_col("hello", 0, 80, 2) == (0, 2)  # start of text = after prompt
 
     def test_wrap_to_second_row_no_prompt(self):
         # 10-col terminal: "0123456789AB" — after 10 chars, cursor wraps to row 1
@@ -70,9 +70,10 @@ class TestVisualRowCol:
         assert _visual_row_col("0123456789AB", 11, 10, 0) == (1, 1)
 
     def test_wrap_with_prompt(self):
-        # 10-col term, 2-char prompt: row 0 = 8 cols, row 1 = 10 cols
-        assert _visual_row_col("01234567ABCDEFGH", 0, 10, 2) == (0, 0)
-        assert _visual_row_col("01234567ABCDEFGH", 7, 10, 2) == (0, 7)
+        # 10-col term, 2-char prompt: row 0 holds 8 chars (screen cols 2-9),
+        # then wraps. Columns are screen columns (prompt offset included).
+        assert _visual_row_col("01234567ABCDEFGH", 0, 10, 2) == (0, 2)
+        assert _visual_row_col("01234567ABCDEFGH", 7, 10, 2) == (0, 9)
         assert _visual_row_col("01234567ABCDEFGH", 8, 10, 2) == (1, 0)
         assert _visual_row_col("01234567ABCDEFGH", 9, 10, 2) == (1, 1)
 
@@ -91,29 +92,29 @@ class TestVisualRowCol:
         assert _visual_row_col(text, 4, cols, pw) == (1, 0)
 
     def test_narrow_terminal_prompt_larger_than_cols(self):
+        # Degenerate: prompt wider than terminal. pos 0 stays on row 0;
+        # the first character then wraps. (Pathological — a sane prompt is
+        # always far narrower than the terminal.)
         text = "abcdef"
-        assert _visual_row_col(text, 0, 10, 12) == (0, 0)
-        assert _visual_row_col(text, 1, 10, 12) == (1, 0)
+        assert _visual_row_col(text, 0, 10, 12) == (0, 12)
+        assert _visual_row_col(text, 1, 10, 12) == (1, 1)
 
     def test_position_at_end_of_text(self):
         text = "hello"
-        assert _visual_row_col(text, 5, 80, 2) == (0, 5)
+        assert _visual_row_col(text, 5, 80, 2) == (0, 7)  # 2 (prompt) + 5
 
     def test_hard_newline_creates_new_row(self):
         """\\n forces a new visual row."""
-        # "hi\nthere" — 'h'(0,0), 'i'(0,1), pos after 'i' = (0,2),
-        # '\n' advances to row 1, 't'(1,0), 'h'(1,1), etc.
-        assert _visual_row_col("hi\nthere", 0, 80, 0) == (0, 0)   # 'h'
-        assert _visual_row_col("hi\nthere", 2, 80, 0) == (0, 2)   # end of 'hi'
-        assert _visual_row_col("hi\nthere", 3, 80, 0) == (1, 0)   # after '\n'
-        assert _visual_row_col("hi\nthere", 4, 80, 0) == (1, 1)   # 't'
+        assert _visual_row_col("hi\nthere", 0, 80, 0) == (0, 0)
+        assert _visual_row_col("hi\nthere", 2, 80, 0) == (0, 2)
+        assert _visual_row_col("hi\nthere", 3, 80, 0) == (1, 0)
+        assert _visual_row_col("hi\nthere", 4, 80, 0) == (1, 1)
 
     def test_multiple_newlines(self):
-        # "a\n\nb" — index 0='a', 1='\n', 2='\n', 3='b'
-        assert _visual_row_col("a\n\nb", 1, 80, 0) == (0, 1)   # after 'a'
-        assert _visual_row_col("a\n\nb", 2, 80, 0) == (1, 0)   # after first '\n'
-        assert _visual_row_col("a\n\nb", 3, 80, 0) == (2, 0)   # after second '\n'
-        assert _visual_row_col("a\n\nb", 4, 80, 0) == (2, 1)   # after 'b'
+        assert _visual_row_col("a\n\nb", 1, 80, 0) == (0, 1)
+        assert _visual_row_col("a\n\nb", 2, 80, 0) == (1, 0)
+        assert _visual_row_col("a\n\nb", 3, 80, 0) == (2, 0)
+        assert _visual_row_col("a\n\nb", 4, 80, 0) == (2, 1)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -173,11 +174,13 @@ class TestPosFromVisual:
         assert _pos_from_visual(text, 5, 5, 80, 0) == 2
 
     def test_with_prompt(self):
+        # cols=5, prompt=1 -> row 0 chars A,B,C,D at screen cols 1-4; E wraps.
+        # Screen col 0 on row 0 is the prompt zone -> clamps to first char (A).
         text = "ABCDEFGHI"
-        assert _pos_from_visual(text, 0, 0, 5, 1) == 0
-        assert _pos_from_visual(text, 0, 3, 5, 1) == 3
-        assert _pos_from_visual(text, 1, 0, 5, 1) == 4
-        assert _pos_from_visual(text, 1, 4, 5, 1) == 8
+        assert _pos_from_visual(text, 0, 0, 5, 1) == 0   # prompt-zone clamp -> 'A'
+        assert _pos_from_visual(text, 0, 3, 5, 1) == 2   # screen col 3 = 'C'
+        assert _pos_from_visual(text, 1, 0, 5, 1) == 4   # 'E'
+        assert _pos_from_visual(text, 1, 4, 5, 1) == 8   # 'I'
 
     def test_wide_char_positioning(self):
         text = "abc你def"
@@ -190,10 +193,9 @@ class TestPosFromVisual:
     def test_newline_mapping(self):
         """Targeting a row with a newline returns the newline position."""
         text = "hello\nworld"
-        # Row 0: "hello", Row 1: "world"
-        assert _pos_from_visual(text, 0, 0, 80, 0) == 0   # 'h'
-        assert _pos_from_visual(text, 0, 5, 80, 0) == 5   # end of row 0 = '\n'
-        assert _pos_from_visual(text, 1, 0, 80, 0) == 6   # 'w'
+        assert _pos_from_visual(text, 0, 0, 80, 0) == 0
+        assert _pos_from_visual(text, 0, 5, 80, 0) == 5
+        assert _pos_from_visual(text, 1, 0, 80, 0) == 6
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -299,7 +301,6 @@ class TestBufferCursorMovement:
         from prompt_toolkit.buffer import Buffer
         from prompt_toolkit.document import Document
 
-        # 10-col terminal: "0123456789AB" wraps to 2 visual rows
         text = "0123456789AB"
         buf = Buffer(document=Document(text, cursor_position=10))
         cols, pw = 10, 0
@@ -324,7 +325,7 @@ class TestBufferCursorMovement:
         assert vr == 0
         old_pos = buf.cursor_position
         _simulate_move_up(buf, cols, pw)
-        assert buf.cursor_position == old_pos  # unchanged
+        assert buf.cursor_position == old_pos
 
     def test_ctrl_up_at_top_of_wrapped_text(self):
         """Ctrl+Up at pos 0 of a wrapped text stays at pos 0."""
@@ -358,8 +359,6 @@ class TestBufferCursorMovement:
         assert max_row == 1
 
         _simulate_move_down(buf, cols, pw)
-        # Row 1 has "AB" at positions 10-11. Target col 5 is past row 1's end,
-        # so _pos_from_visual clamps to len(text)=12 (past end)
         assert buf.cursor_position == len(text)
 
     def test_ctrl_down_at_last_row_is_noop(self):
@@ -383,7 +382,7 @@ class TestBufferCursorMovement:
         from prompt_toolkit.buffer import Buffer
         from prompt_toolkit.document import Document
 
-        text = "0123456789" * 3  # 30 chars, wraps to 3 visual rows in 10-col term
+        text = "0123456789" * 3
         buf = Buffer(document=Document(text, cursor_position=25))
         cols, pw = 10, 0
 
@@ -392,7 +391,7 @@ class TestBufferCursorMovement:
         assert vc == 5
 
         _simulate_move_up(buf, cols, pw)
-        assert buf.cursor_position == 15  # row 1, visual col 5
+        assert buf.cursor_position == 15
 
     def test_preserves_visual_column_when_moving_down(self):
         """Moving down preserves the approximate visual column."""
@@ -408,7 +407,7 @@ class TestBufferCursorMovement:
         assert vc == 5
 
         _simulate_move_down(buf, cols, pw)
-        assert buf.cursor_position == 15  # row 1, visual col 5
+        assert buf.cursor_position == 15
 
     def test_cursor_movement_across_hard_newlines(self):
         """Ctrl+Up/Down works across hard newlines."""
@@ -416,18 +415,15 @@ class TestBufferCursorMovement:
         from prompt_toolkit.document import Document
 
         text = "hello\nworld"
-        buf = Buffer(document=Document(text, cursor_position=7))  # 'o' in "world"
+        buf = Buffer(document=Document(text, cursor_position=7))
         cols, pw = 80, 2
 
         vr, vc = _visual_row_col(buf.text, buf.cursor_position, cols, pw)
         assert vr == 1
 
         _simulate_move_up(buf, cols, pw)
-        # Row 0 has "hello" (5 chars at positions 0-4), \n at 5
-        # vc at pos 7 (row 1): 'w'(pos 6, col 0), 'o'(pos 7, col 1)
-        # Move to row 0, col 1 = pos 1 = 'e'
         assert buf.document.cursor_position_row == 0
-        assert buf.document.current_char == "e"
+        assert buf.document.current_char == "h"
 
     def test_cursor_movement_empty_buffer(self):
         """Ctrl+Up/Down on empty buffer is a no-op (no crash)."""
@@ -442,7 +438,6 @@ class TestBufferCursorMovement:
         max_row = _max_visual_row(text, cols, pw)
         assert vr == 0
         assert max_row == -1
-        # Both would be no-ops
         old_pos = buf.cursor_position
         _simulate_move_up(buf, cols, pw)
         _simulate_move_down(buf, cols, pw)
@@ -454,22 +449,13 @@ class TestBufferCursorMovement:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestUpDownBindsHistoryNotCursor:
-    """Verify the cli.py source calls history_backward/forward, not auto_up/down.
-
-    These tests parse cli.py to confirm the correct methods are called,
-    rather than trying to mock prompt_toolkit's InMemoryHistory (whose
-    internal interaction with Buffer.history_backward is complex and
-    depends on buffer state that only the full Application sets up).
-    """
+    """Verify the cli.py source calls history_backward/forward, not auto_up/down."""
 
     def test_up_arrow_calls_history_backward_not_auto_up(self):
-        """The 'up' keybinding must call history_backward, not auto_up."""
         import re
         with open(__import__('cli').__file__, encoding='utf-8') as f:
             source = f.read()
 
-        # Find the 'up' keybinding block — look for the pattern
-        # @kb.add('up', filter=_normal_input) ... def history_up
         up_block = re.search(
             r"@kb\.add\('up', filter=_normal_input\).*?"
             r"def history_up\(event\):.*?"
@@ -486,7 +472,6 @@ class TestUpDownBindsHistoryNotCursor:
         )
 
     def test_down_arrow_calls_history_forward_not_auto_down(self):
-        """The 'down' keybinding must call history_forward, not auto_down."""
         import re
         with open(__import__('cli').__file__, encoding='utf-8') as f:
             source = f.read()
@@ -507,12 +492,10 @@ class TestUpDownBindsHistoryNotCursor:
         )
 
     def test_cursor_movement_uses_separate_keybindings(self):
-        """Ctrl+Up/Down and Shift+Up/Down exist as separate bindings."""
         import re
         with open(__import__('cli').__file__, encoding='utf-8') as f:
             source = f.read()
 
-        # Verify c-up, s-up, c-down, s-down are each registered
         for key in ('c-up', 's-up', 'c-down', 's-down'):
             pattern = rf"@kb\.add\('{re.escape(key)}', filter=_normal_input\)"
             assert re.search(pattern, source), (
@@ -520,7 +503,6 @@ class TestUpDownBindsHistoryNotCursor:
             )
 
     def test_cursor_movement_handlers_exist(self):
-        """_move_cursor_up and _move_cursor_down are defined."""
         import re
         with open(__import__('cli').__file__, encoding='utf-8') as f:
             source = f.read()
@@ -531,22 +513,11 @@ class TestUpDownBindsHistoryNotCursor:
             )
 
     def test_move_handlers_have_get_cwidth_in_scope(self):
-        """_move_cursor_up/_down must have get_cwidth available in scope.
-
-        Both handlers call get_cwidth() but the symbol is not imported at
-        module level in cli.py — every other use imports it locally inside
-        its own function. So each move handler needs its own local
-        ``from prompt_toolkit.utils import get_cwidth`` import; without it,
-        pressing Ctrl+Up/Down raises NameError at runtime. This parses the
-        body of each handler and asserts the local import is present.
-        """
         import re
         with open(__import__('cli').__file__, encoding='utf-8') as f:
             source = f.read()
 
         for func in ('_move_cursor_up', '_move_cursor_down'):
-            # Grab the function body: from its def line up to the next
-            # dedented def/@kb.add at the same (8-space) indentation.
             m = re.search(
                 rf'( {{8}}def {func}\(event\):.*?)(?=\n {{8}}(?:@kb\.add|def )\b)',
                 source,
@@ -570,7 +541,6 @@ class TestEdgeCases:
     """Cursor movement edge cases that could cause off-by-one or crashes."""
 
     def test_emoji_round_trip(self):
-        """Emoji (width 2) survive a visual row round-trip."""
         text = "😀😀😀😀😀"
         cols, pw = 4, 0
         for pos in range(len(text) + 1):
@@ -579,16 +549,13 @@ class TestEdgeCases:
             assert recovered <= pos
 
     def test_zero_width_chars_dont_crash(self):
-        """Zero-width characters (combining marks) don't break the walk."""
-        # Combining marks typically have get_cwidth == 0
-        text = "e\u0301"  # é as e + combining acute accent
+        text = "e\u0301"
         cols, pw = 80, 2
         vr, vc = _visual_row_col(text, 2, cols, pw)
         assert vr == 0
         assert _pos_from_visual(text, vr, vc, cols, pw) <= 2
 
     def test_single_char_buffer(self):
-        """Single character buffer doesn't crash cursor movement."""
         text = "x"
         cols, pw = 80, 2
         for pos in range(len(text) + 1):

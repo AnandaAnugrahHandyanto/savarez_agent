@@ -3098,14 +3098,23 @@ def _visual_row_col(text, pos, cols, prompt_width, get_cwidth):
 
     Returns (vr, vc) where vr is 0-based visual row and vc is the visual
     column (display columns, not character count) of the cursor.
+
+    vc is a *screen* column: on the first row the prompt occupies the
+    leading ``prompt_width`` columns, so the first character of the buffer
+    sits at vc == prompt_width, not vc == 0. This lets up/down movement
+    track the cursor's visible position across the prompt offset.
     """
-    first_row_cols = cols - prompt_width
-    if first_row_cols < 1:
-        first_row_cols = 1
+    if prompt_width < 0:
+        prompt_width = 0
 
     vr = 0
-    dc = 0
-    available = first_row_cols
+    # Row 0 begins after the prompt; ``available`` is the full terminal
+    # width because dc already starts at prompt_width (so the usable text
+    # span on row 0 is cols - prompt_width). Wrapped rows reset dc to 0.
+    dc = prompt_width
+    available = cols
+    if available < 1:
+        available = 1
 
     for ch in text[:pos]:
         if ch == '\n':
@@ -3123,7 +3132,10 @@ def _visual_row_col(text, pos, cols, prompt_width, get_cwidth):
     # Cursor at position *pos* is past the last character processed.
     # If we filled the row exactly, the cursor sits at the start of
     # the next visual row.  (After a \n, dc is 0 so this is a no-op.)
-    if dc >= available:
+    # Guard pos == 0: when no character has been consumed, dc is still the
+    # initial prompt offset and must not trigger a phantom wrap (matters only
+    # in the degenerate case where prompt_width >= cols).
+    if pos > 0 and dc >= available:
         vr += 1
         dc = 0
 
@@ -3135,13 +3147,14 @@ def _max_visual_row(text, cols, prompt_width, get_cwidth):
     if not text:
         return -1
 
-    first_row_cols = cols - prompt_width
-    if first_row_cols < 1:
-        first_row_cols = 1
+    if prompt_width < 0:
+        prompt_width = 0
 
     vr = 0
-    dc = 0
-    available = first_row_cols
+    dc = prompt_width
+    available = cols
+    if available < 1:
+        available = 1
 
     for ch in text:
         if ch == '\n':
@@ -3164,14 +3177,23 @@ def _pos_from_visual(text, target_row, target_col, cols, prompt_width, get_cwidt
 
     Clamps to row ends when target_col is past the row contents.
     Returns len(text) if target_row is beyond the last row.
+
+    Columns are screen columns (see _visual_row_col). On row 0 the prompt
+    occupies the first ``prompt_width`` columns, so a target column landing
+    inside that prompt zone has no character beneath it; clamp it forward to
+    the first real character of the row.
     """
-    first_row_cols = cols - prompt_width
-    if first_row_cols < 1:
-        first_row_cols = 1
+    if prompt_width < 0:
+        prompt_width = 0
+
+    if target_row == 0 and target_col < prompt_width:
+        target_col = prompt_width
 
     vr = 0
-    dc = 0
-    available = first_row_cols
+    dc = prompt_width
+    available = cols
+    if available < 1:
+        available = 1
 
     for i, ch in enumerate(text):
         if ch == '\n':
