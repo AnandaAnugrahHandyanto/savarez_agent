@@ -10623,10 +10623,26 @@ class HermesCLI:
         # ── Nous credits magnitudes (L6) ────────────────────────────
         # Nous-native data, rendered through the same machinery but sourced
         # from the portal account (NOT fetch_account_usage — that path is
-        # per-provider and Nous credits live elsewhere). Magnitudes-only:
-        # dollar buckets + renewal + a portal CTA, no percentages. A
-        # point-in-time snapshot, shown only when /usage runs (not real-time).
-        if (provider or "").lower() == "nous":
+        # per-provider and Nous credits live elsewhere). Magnitudes + a
+        # monthly-grant % gauge when available; a portal CTA. A point-in-time
+        # snapshot, shown only when /usage runs (not real-time).
+        #
+        # Gate on "a Nous account is logged in", NOT on the inference provider
+        # string: /usage runs in a slash-worker subprocess whose resolved
+        # provider is often not "nous" even when the user has a Nous account,
+        # so a provider=="nous" gate would hide the block. The presence check
+        # is a cheap local auth-state lookup (no network); the actual fetch
+        # only fires when a Nous credential exists.
+        _nous_present = False
+        try:
+            from hermes_cli.auth import get_provider_auth_state
+
+            _nous_state = get_provider_auth_state("nous") or {}
+            _nous_tok = _nous_state.get("access_token")
+            _nous_present = isinstance(_nous_tok, str) and bool(_nous_tok.strip())
+        except Exception:
+            _nous_present = False
+        if _nous_present:
             try:
                 from hermes_cli.nous_account import get_nous_portal_account_info
                 from agent.account_usage import build_nous_credits_snapshot
