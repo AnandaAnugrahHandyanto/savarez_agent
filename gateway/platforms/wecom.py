@@ -65,8 +65,10 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    _ssrf_redirect_guard,
     cache_document_from_bytes,
     cache_image_from_bytes,
+    safe_url_for_log,
 )
 
 logger = logging.getLogger(__name__)
@@ -220,6 +222,7 @@ class WeComAdapter(BasePlatformAdapter):
             from gateway.platforms._http_client_limits import platform_httpx_limits
             self._http_client = httpx.AsyncClient(
                 timeout=30.0, follow_redirects=True, limits=platform_httpx_limits(),
+                event_hooks={"response": [_ssrf_redirect_guard]},
             )
             await self._open_connection()
             self._mark_connected()
@@ -538,7 +541,7 @@ class WeComAdapter(BasePlatformAdapter):
             text = reply_text
 
         if not text and not media_urls:
-            logger.warning("[%s] Empty WeCom message skipped (msgtype=%s, body_keys=%s)", self.name, msgtype, list(body.keys())[:10])
+            logger.info("[%s] Empty WeCom message skipped (msgtype=%s, body_keys=%s)", self.name, msgtype, list(body.keys())[:10])
             return
 
         source = self.build_source(
@@ -745,8 +748,6 @@ class WeComAdapter(BasePlatformAdapter):
                 path, content_type = cached
                 media_paths.append(path)
                 media_types.append(content_type)
-            else:
-                logger.warning("[%s] _cache_media failed for kind=%s", self.name, kind)
 
         return media_paths, media_types
 
@@ -777,7 +778,7 @@ class WeComAdapter(BasePlatformAdapter):
         try:
             raw, headers = await self._download_remote_bytes(url, max_bytes=ABSOLUTE_MAX_BYTES)
         except Exception as exc:
-            logger.warning("[%s] Failed to download %s from %s: %s", self.name, kind, url, exc)
+            logger.warning("[%s] Failed to download %s from %s: %s", self.name, kind, safe_url_for_log(url), exc)
             return None
 
         aes_key = str(media.get("aeskey") or "").strip()
@@ -785,7 +786,7 @@ class WeComAdapter(BasePlatformAdapter):
             try:
                 raw = self._decrypt_file_bytes(raw, aes_key)
             except Exception as exc:
-                logger.warning("[%s] Failed to decrypt %s from %s: %s", self.name, kind, url, exc)
+                logger.warning("[%s] Failed to decrypt %s from %s: %s", self.name, kind, safe_url_for_log(url), exc)
                 return None
 
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
@@ -1081,7 +1082,10 @@ class WeComAdapter(BasePlatformAdapter):
         if not HTTPX_AVAILABLE:
             raise RuntimeError("httpx is required for WeCom media download")
 
-        client = self._http_client or httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+        client = self._http_client or httpx.AsyncClient(
+            timeout=30.0, follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        )
         created_client = client is not self._http_client
         try:
             async with client.stream(

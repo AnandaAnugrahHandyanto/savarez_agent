@@ -81,6 +81,15 @@ _TRUSTED_PRIVATE_IP_SUFFIXES = (
     ".myqcloud.com",      # Tencent COS (WeCom/QQ file & image CDN)
 )
 
+# Networks that trusted CDN hostnames may legitimately resolve to.
+# Trusted-suffix hosts are NOT allowed to bypass loopback, RFC1918, or
+# link-local blocking — only CGNAT (100.64.0.0/10) and benchmark
+# (198.18.0.0/15) ranges that enterprise CDNs use internally.
+_TRUSTED_CDN_NETWORKS = (
+    ipaddress.ip_network("100.64.0.0/10"),   # CGNAT / Shared Address Space (RFC 6598)
+    ipaddress.ip_network("198.18.0.0/15"),    # Benchmark (RFC 2544)
+)
+
 # 100.64.0.0/10 (CGNAT / Shared Address Space, RFC 6598) is NOT covered by
 # ipaddress.is_private — it returns False for both is_private and is_global.
 # Must be blocked explicitly. Used by carrier-grade NAT, Tailscale/WireGuard
@@ -335,12 +344,26 @@ def is_safe_url(url: str) -> bool:
                 )
                 return False
 
-            if not allow_all_private and not allow_private_ip and _is_blocked_ip(ip):
-                logger.warning(
-                    "Blocked request to private/internal address: %s -> %s",
-                    hostname, ip_str,
-                )
-                return False
+            if not allow_all_private:
+                if allow_private_ip:
+                    # Trusted hostname: still block dangerous ranges
+                    # (loopback, RFC1918, link-local), but allow
+                    # CGNAT/benchmark ranges that CDNs legitimately use.
+                    if _is_blocked_ip(ip) and not any(
+                        ip in net for net in _TRUSTED_CDN_NETWORKS
+                    ):
+                        logger.warning(
+                            "Blocked request — trusted host %s resolved to "
+                            "dangerous address: %s",
+                            hostname, ip_str,
+                        )
+                        return False
+                elif _is_blocked_ip(ip):
+                    logger.warning(
+                        "Blocked request to private/internal address: %s -> %s",
+                        hostname, ip_str,
+                    )
+                    return False
 
         if allow_all_private:
             logger.debug(
