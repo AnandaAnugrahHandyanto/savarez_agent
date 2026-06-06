@@ -6745,6 +6745,11 @@ class ProfileRename(BaseModel):
 class ProfileSoulUpdate(BaseModel):
     content: str
 
+
+class ProfileActiveUpdate(BaseModel):
+    name: str
+
+
 class MCPServerCreate(BaseModel):
     name: str
     url: Optional[str] = None
@@ -6868,6 +6873,19 @@ def _profile_setup_command(name: str) -> str:
     """Return the shell command used to configure a profile in the CLI."""
     _resolve_profile_dir(name)
     return "hermes setup" if name == "default" else f"{name} setup"
+
+
+def _apply_main_model_assignment(model_cfg: Any, provider: str, model: str) -> Dict[str, Any]:
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+    else:
+        model_cfg = dict(model_cfg)
+    model_cfg["provider"] = provider
+    model_cfg["default"] = model
+    if model_cfg.get("base_url"):
+        model_cfg["base_url"] = ""
+    model_cfg.pop("context_length", None)
+    return model_cfg
 
 
 def _write_profile_model(profile_dir: Path, provider: str, model: str) -> None:
@@ -7341,6 +7359,40 @@ async def get_skills():
     for s in skills:
         s["enabled"] = s["name"] not in disabled
     return skills
+
+
+@app.get("/api/skills/hub/search")
+async def search_skills_hub(q: str = "", source: str = "all", limit: int = 20):
+    query = (q or "").strip()
+    if not query:
+        return {"results": []}
+    try:
+        from tools.skills_hub import create_source_router, unified_search
+
+        capped_limit = max(1, min(int(limit or 20), 50))
+        results = unified_search(
+            query,
+            create_source_router(),
+            source_filter=(source or "all"),
+            limit=capped_limit,
+        )
+        return {
+            "results": [
+                {
+                    "name": r.name,
+                    "description": r.description,
+                    "source": r.source,
+                    "identifier": r.identifier,
+                    "trust_level": r.trust_level,
+                    "repo": r.repo,
+                    "tags": r.tags,
+                }
+                for r in results
+            ]
+        }
+    except Exception as exc:
+        _log.exception("GET /api/skills/hub/search failed")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.put("/api/skills/toggle")

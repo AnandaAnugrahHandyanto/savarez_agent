@@ -1922,6 +1922,63 @@ class TestNewEndpoints:
         finally:
             reset_hermes_home_override(token)
 
+    def test_skills_hub_search_endpoint(self, monkeypatch):
+        from types import SimpleNamespace
+        import tools.skills_hub as skills_hub
+
+        router = object()
+        monkeypatch.setattr(skills_hub, "create_source_router", lambda: router)
+
+        calls = []
+
+        def fake_unified_search(query, source_router, source_filter="all", limit=20):
+            calls.append((query, source_router, source_filter, limit))
+            return [
+                SimpleNamespace(
+                    name="context-loader",
+                    description="Load project context.",
+                    source="github",
+                    identifier="example/context-loader",
+                    trust_level="community",
+                    repo="https://github.com/example/context-loader",
+                    tags=["context", "repo"],
+                )
+            ]
+
+        monkeypatch.setattr(skills_hub, "unified_search", fake_unified_search)
+
+        resp = self.client.get("/api/skills/hub/search?q=context&source=github&limit=999")
+
+        assert resp.status_code == 200
+        assert calls == [("context", router, "github", 50)]
+        assert resp.json() == {
+            "results": [
+                {
+                    "name": "context-loader",
+                    "description": "Load project context.",
+                    "source": "github",
+                    "identifier": "example/context-loader",
+                    "trust_level": "community",
+                    "repo": "https://github.com/example/context-loader",
+                    "tags": ["context", "repo"],
+                }
+            ]
+        }
+
+    def test_skills_hub_search_endpoint_empty_query_skips_search(self, monkeypatch):
+        import tools.skills_hub as skills_hub
+
+        monkeypatch.setattr(
+            skills_hub,
+            "unified_search",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("search should not run")),
+        )
+
+        resp = self.client.get("/api/skills/hub/search?q=%20%20")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"results": []}
+
     def test_profile_open_terminal_uses_macos_terminal(self, monkeypatch):
         from hermes_constants import get_hermes_home
         import hermes_cli.web_server as web_server

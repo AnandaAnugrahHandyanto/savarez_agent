@@ -974,16 +974,6 @@ export interface SessionStoreStats {
   by_source: Record<string, number>;
 }
 
-export interface SkillHubResult {
-  name: string;
-  description: string;
-  source: string;
-  identifier: string;
-  trust_level: string;
-  repo: string | null;
-  tags: string[];
-}
-
 // ── Admin types ───────────────────────────────────────────────────────
 
 export interface McpServer {
@@ -1529,6 +1519,25 @@ export interface SkillInfo {
   description: string;
   category: string;
   enabled: boolean;
+}
+
+export interface SkillHubResult {
+  name: string;
+  description: string;
+  source: string;
+  identifier: string;
+  trust_level: string;
+  repo: string | null;
+  tags: string[];
+}
+
+export interface McpServerCreate {
+  name: string;
+  url?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  auth?: string;
 }
 
 export interface ToolsetInfo {
