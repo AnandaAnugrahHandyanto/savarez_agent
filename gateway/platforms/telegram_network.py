@@ -5,8 +5,43 @@ api.telegram.org resolves to an endpoint that is unreachable from the current
 host. The transport keeps the logical request host and TLS SNI as
 api.telegram.org while retrying the TCP connection against one or more fallback
 IPv4 addresses.
-"""
 
+Configuration (environment variables)
+--------------------------------------
+HERMES_TELEGRAM_FALLBACK_TTL
+    Minimum seconds between fallback-IP re-discoveries.  Refresh is only
+    attempted if both (a) the threshold of consecutive connect failures has
+    been reached AND (b) at least TTL seconds have passed since the last
+    discovery.  Default: 3600 (1h).  Minimum: 60.
+
+HERMES_TELEGRAM_FALLBACK_FAILURES
+    Number of consecutive connect-level failures (httpx.ConnectError /
+    httpx.ConnectTimeout) that must occur before a refresh is triggered.
+    HTTP-level 4xx/5xx do NOT count — only transport-level connection
+    failures do, because they indicate the destination IP itself is bad.
+    Default: 3.  Minimum: 1.
+
+Concurrency model
+-----------------
+All shared mutable state in ``TelegramFallbackTransport`` (the failure
+counter, the last-discovery timestamp, the per-IP transport map, and the
+sticky IP) is guarded by ``_discovery_lock`` and/or ``_sticky_lock`` to
+prevent races between concurrent in-flight requests.  The failure counter
+is incremented atomically; the "is a refresh needed?" check and the
+refresh itself run inside the discovery lock to ensure at most one
+in-flight refresh at a time.  See ``_maybe_refresh_fallbacks`` and
+``handle_async_request`` for the exact contract.
+
+Partial-update behavior
+-----------------------
+If the re-discovery query returns a partial result (e.g. one DoH
+provider succeeds, the other times out), the resulting IP list is
+*merged* with the existing fallback list rather than wholesale-replaced.
+IPs in the existing list that are not in the new list are dropped ONLY
+if the new list is non-empty (i.e. the discovery query actually returned
+data).  This prevents losing all working fallbacks when the network is
+flaky enough that one DoH endpoint is unreachable.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -62,6 +97,14 @@ _DOH_PROVIDERS: list[dict] = [
 # endpoints in the 149.154.160.0/20 block (same seed used by OpenClaw).
 _SEED_FALLBACK_IPS: list[str] = ["149.154.167.220"]
 
+# Upper bound on the number of fallback IPs kept in the merged list.
+# Prevents unbounded growth across many refresh cycles when new IPs
+# keep arriving and old ones are kept as survivors.  16 is well above
+# the practical DoH answer count (typically 2-4 IPs per provider) so
+# the cap is effectively never hit in practice; it exists purely as
+# a safety valve.
+_MAX_FALLBACK_IPS: int = 16
+
 
 def _resolve_proxy_url(target_hosts=None) -> str | None:
     # Delegate to shared implementation (env vars + macOS system proxy detection)
@@ -96,7 +139,92 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         # longer work but we never noticed.
         self._last_discovery_at: float = time.monotonic()
         self._consecutive_connect_failures: int = 0
+        # _discovery_lock guards BOTH the failure counter and the
+        # last-discovery timestamp, so the "is refresh needed?" check
+        # and the refresh itself run atomically.  This is what makes
+        # the threshold + TTL check race-safe under concurrent requests
+        # (the previous version read the counter outside the lock,
+        # which had a TOCTOU window between the check and the actual
+        # discovery that could either skip a needed refresh or
+        # double-trigger one).
         self._discovery_lock = asyncio.Lock()
+
+    def _should_refresh(self) -> bool:
+        """Atomic predicate: are both the threshold and TTL met right now?
+
+        Caller MUST hold ``_discovery_lock`` or otherwise serialize access
+        to ``_consecutive_connect_failures`` and ``_last_discovery_at``.
+        Reading these fields outside the lock is racy.
+        """
+        threshold = _get_failure_threshold()
+        ttl = _get_refresh_ttl()
+        if self._consecutive_connect_failures < threshold:
+            return False
+        if time.monotonic() - self._last_discovery_at < ttl:
+            return False
+        return True
+
+    async def _record_connect_failure(self) -> None:
+        """Atomically increment the consecutive-failure counter.
+
+        This is a single-statement read-modify-write in CPython (the GIL
+        makes int ``+=`` atomic for the duration of the bytecode
+        sequence), so it is safe to call from concurrent request
+        coroutines without holding the discovery lock.  We still hold
+        the discovery lock when reading the counter inside
+        ``_should_refresh`` to keep the threshold check consistent.
+        """
+        self._consecutive_connect_failures += 1
+
+    async def _merge_fallback_ips(self, new_ips: list[str]) -> None:
+        """Merge ``new_ips`` into the existing fallback list in place.
+
+        Policy: new IPs go FIRST (preferred routing), then any existing
+        IPs that did NOT appear in the new list are appended (so we
+        don't lose IPs that are still working but weren't re-discovered
+        by DoH).  The merged list is deduplicated preserving order.
+
+        Old per-IP transports for dropped IPs are closed so their
+        sockets are released.  New per-IP transports are constructed
+        for genuinely new IPs.
+
+        A cap of ``_MAX_FALLBACK_IPS`` is enforced to prevent the list
+        from growing unbounded across many refresh cycles.
+        """
+        # Preserve ordering: new IPs first, then surviving old IPs.
+        seen: set[str] = set()
+        merged: list[str] = []
+        for ip in new_ips:
+            if ip not in seen:
+                seen.add(ip)
+                merged.append(ip)
+        for ip in self._fallback_ips:
+            if ip not in seen:
+                seen.add(ip)
+                merged.append(ip)
+        # Cap the list to prevent unbounded growth.  The IPs at the end
+        # of the list are the oldest survivors, so they are the most
+        # likely to be stale.
+        if len(merged) > _MAX_FALLBACK_IPS:
+            dropped_ips = set(merged[_MAX_FALLBACK_IPS:])
+            merged = merged[:_MAX_FALLBACK_IPS]
+        else:
+            dropped_ips = set()
+        # Close transports for IPs that are no longer in the merged list
+        # (either dropped by the cap, or dropped by the merge).
+        for ip, transport in list(self._fallbacks.items()):
+            if ip in dropped_ips or ip not in seen:
+                try:
+                    await transport.aclose()
+                except Exception:
+                    pass
+        # Open transports for genuinely new IPs.
+        for ip in new_ips:
+            if ip not in self._fallbacks and ip not in dropped_ips:
+                self._fallbacks[ip] = httpx.AsyncHTTPTransport(
+                    **self._transport_kwargs_for(ip)
+                )
+        self._fallback_ips = merged
 
     async def _maybe_refresh_fallbacks(self) -> None:
         """Re-discover fallback IPs when the cached list looks stale.
@@ -107,22 +235,14 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
           - At least TTL seconds have passed since the last discovery
             (default 3600s = 1h, env HERMES_TELEGRAM_FALLBACK_TTL).
 
-        On refresh: rebuilds the per-IP httpx transports and keeps the
-        current sticky IP if it's still in the new list; otherwise clears
-        it so the next request re-evaluates the routing.
+        The check and the refresh run entirely inside ``_discovery_lock``
+        so concurrent in-flight requests cannot double-trigger a refresh
+        or skip a needed one.  On refresh: merges new IPs with the
+        existing list (partial-update tolerant) and clears the sticky
+        IP if it is no longer present anywhere in the merged list.
         """
-        ttl = _get_refresh_ttl()
-        threshold = _get_failure_threshold()
-        if self._consecutive_connect_failures < threshold:
-            return
-        if time.monotonic() - self._last_discovery_at < ttl:
-            return
         async with self._discovery_lock:
-            # Double-check inside the lock: another coroutine may have
-            # already refreshed while we were waiting.
-            if self._consecutive_connect_failures < threshold:
-                return
-            if time.monotonic() - self._last_discovery_at < ttl:
+            if not self._should_refresh():
                 return
             old_ips = list(self._fallback_ips)
             try:
@@ -136,21 +256,11 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 self._consecutive_connect_failures = 0
                 return
             if not new_ips:
+                # Empty discovery result — treat as a failed refresh
+                # but keep the existing list (better than nothing).
                 self._consecutive_connect_failures = 0
                 return
-            # Close old per-IP transports to release sockets.
-            for ip, transport in list(self._fallbacks.items()):
-                try:
-                    await transport.aclose()
-                except Exception:
-                    pass
-            self._fallback_ips = list(new_ips)
-            self._fallbacks = {
-                ip: httpx.AsyncHTTPTransport(
-                    **self._transport_kwargs_for(ip)
-                )
-                for ip in self._fallback_ips
-            }
+            await self._merge_fallback_ips(new_ips)
             self._last_discovery_at = time.monotonic()
             self._consecutive_connect_failures = 0
             # If the sticky IP is no longer reachable, clear it so the
@@ -241,7 +351,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 continue
 
         if any_connect_failure:
-            self._consecutive_connect_failures += 1
+            await self._record_connect_failure()
         if last_error is None:
             raise RuntimeError("All Telegram fallback IPs exhausted but no error was recorded")
         raise last_error
