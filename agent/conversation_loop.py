@@ -51,6 +51,19 @@ from agent.model_metadata import (
     parse_available_output_tokens_from_error,
     save_context_length,
 )
+from agent.nous_rate_guard import (
+    clear_nous_rate_limit,
+    format_remaining,
+    is_genuine_nous_rate_limit,
+    nous_rate_limit_remaining,
+    record_nous_rate_limit,
+)
+from agent.provider_rate_guard import (
+    clear_provider_cooldown,
+    is_usage_limit_context,
+    provider_cooldown_remaining,
+    record_provider_cooldown,
+)
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.retry_utils import jittered_backoff
@@ -213,6 +226,27 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
         )
     except Exception:
         return False
+
+
+def _pool_may_recover_from_rate_limit_local(
+    pool, *, provider: str | None = None, base_url: str | None = None
+) -> bool:
+    """Decide whether credential-pool rotation can recover a provider limit.
+
+    run_agent exports the same helper in the monolithic runtime, but some
+    packaged/extracted conversation-loop paths can reach this module without
+    that symbol available on run_agent. Keep the fallback decision local so
+    provider failures classify cleanly instead of cascading into an internal
+    NameError/AttributeError.
+    """
+    if pool is None:
+        return False
+    if not pool.has_available():
+        return False
+    if provider == "google-gemini-cli" or str(base_url or "").startswith("cloudcode-pa://"):
+        return False
+    return len(pool.entries()) > 1
+
 
 
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
@@ -1176,6 +1210,47 @@ def run_conversation(
         agent._current_api_request_id = api_request_id
 
         while retry_count < max_retries:
+            # ── Generic provider usage-cap guard ──────────────────
+            # Subscription-backed providers such as openai-codex can return
+            # account-level usage caps with a reset window. Once one session
+            # observes that, skip direct calls until reset and fail over
+            # immediately. This avoids retry amplification across gateway,
+            # CLI, cron, and auxiliary sessions.
+            if agent.provider == "openai-codex":
+                try:
+                    _provider_remaining = provider_cooldown_remaining(agent.provider)
+                    if _provider_remaining is not None and _provider_remaining > 0:
+                        _provider_msg = (
+                            f"{agent.provider} usage limit active — "
+                            f"resets in {format_remaining(_provider_remaining)}."
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}⏳ {_provider_msg} Trying fallback...",
+                            force=True,
+                        )
+                        agent._emit_status(f"⏳ {_provider_msg}")
+                        if agent._try_activate_fallback():
+                            retry_count = 0
+                            compression_attempts = 0
+                            primary_recovery_attempted = False
+                            continue
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": (
+                                f"⏳ {_provider_msg}\n\n"
+                                "No fallback provider available. "
+                                "Try again after the reset, or add a "
+                                "fallback provider in config.yaml."
+                            ),
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "failed": True,
+                            "error": _provider_msg,
+                        }
+                except Exception:
+                    pass
+
             # ── Nous Portal rate limit guard ──────────────────────
             # If another session already recorded that Nous is rate-
             # limited, skip the API call entirely.  Each attempt
@@ -2070,6 +2145,8 @@ def run_conversation(
                         )
                 
                 has_retried_429 = False  # Reset on success
+                if agent.provider == "openai-codex":
+                    clear_provider_cooldown(agent.provider)
                 # Note: don't clear the retry buffer here — an "API call
                 # success" only means we got bytes back, not that we got
                 # usable content. Empty responses still loop through the
@@ -2409,6 +2486,16 @@ def run_conversation(
                             force=True,
                         )
                         continue
+
+                if (
+                    agent.provider == "openai-codex"
+                    and classified.reason == FailoverReason.rate_limit
+                    and is_usage_limit_context(error_context)
+                ):
+                    record_provider_cooldown(
+                        agent.provider,
+                        error_context=error_context,
+                    )
 
                 recovered_with_pool, has_retried_429 = agent._recover_with_credential_pool(
                     status_code=status_code,
@@ -2900,7 +2987,12 @@ def run_conversation(
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
                     # exceptions.  Fixes #11314 and #13636.
-                    pool_may_recover = _ra()._pool_may_recover_from_rate_limit(
+                    _pool_recovery_check = getattr(
+                        _ra(),
+                        "_pool_may_recover_from_rate_limit",
+                        _pool_may_recover_from_rate_limit_local,
+                    )
+                    pool_may_recover = _pool_recovery_check(
                         agent._credential_pool,
                         provider=agent.provider,
                         base_url=getattr(agent, "base_url", None),
