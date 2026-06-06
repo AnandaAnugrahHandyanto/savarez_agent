@@ -370,7 +370,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Some hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call, [`resolve_model_route`](#resolve_model_route) can choose a per-turn model/runtime, and [`pre_gateway_dispatch`](#pre_gateway_dispatch) can influence gateway dispatch. Other hooks are fire-and-forget observers.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
@@ -380,6 +380,7 @@ def register(ctx):
 | [`pre_tool_call`](#pre_tool_call) | Before any tool executes | `{"action": "block", "message": str}` to veto the call |
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
+| [`resolve_model_route`](#resolve_model_route) | Before a CLI/gateway/TUI turn creates or reuses its agent | `{"model": str, "provider": str, ...}` to select a per-turn model/runtime |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
@@ -505,9 +506,49 @@ def register(ctx):
 
 ---
 
+### `resolve_model_route`
+
+Fires **once per user turn**, before Hermes creates or reuses the agent runtime for that turn. This lets a plugin route simple prompts to a cheaper/faster model and harder prompts to a stronger model without modifying Hermes core.
+
+**Callback signature:**
+
+```python
+def my_router(user_message, config: dict, primary_model: str,
+              primary_runtime: dict, platform: str, session_id: str = "",
+              task_id: str = "", reasoning_config: dict | None = None,
+              **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `user_message` | `str` or `list` | The current turn's message. Multimodal turns may be represented as OpenAI-style content parts. |
+| `config` | `dict` | Loaded Hermes config for the current surface. |
+| `primary_model` | `str` | The model Hermes would use without routing. |
+| `primary_runtime` | `dict` | Runtime fields for the primary model (`provider`, `base_url`, `api_key`, `api_mode`, `command`, `args`, `credential_pool`, `max_tokens`). |
+| `platform` | `str` | Where the turn is running: `"cli"`, `"gateway"`, or `"tui"`. |
+| `session_id` | `str` | Current session identifier when available. |
+| `task_id` | `str` | Current task identifier when available. |
+| `reasoning_config` | `dict \| None` | The primary model's reasoning settings for this turn. |
+
+**Return value:** Return `None` to keep the primary model, or return a dict describing the selected route. The first valid route returned by any plugin wins.
+
+```python
+return {
+    "model": "anthropic/claude-sonnet-4.6",
+    "provider": "openrouter",
+    "api_key_env": "OPENROUTER_API_KEY",
+    "reasoning_config": {"enabled": True, "effort": "high"},
+    "metadata": {"reason": "large coding task"},
+}
+```
+
+You can also return a fully resolved `runtime` dict. If you provide top-level `provider`, `base_url`, `api_key`, `api_key_env`, `api_mode`, `command`, `args`, `credential_pool`, or `max_tokens`, Hermes resolves them through the same runtime-provider path used for normal model configuration. API keys are not logged.
+
+---
+
 ### `pre_llm_call`
 
-Fires **once per turn**, before the tool-calling loop begins. This is the **only hook whose return value is used** — it can inject context into the current turn's user message.
+Fires **once per turn**, before the tool-calling loop begins. It can inject context into the current turn's user message.
 
 **Callback signature:**
 
