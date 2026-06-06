@@ -482,6 +482,17 @@ def _is_termux_startup_environment(env: dict[str, str] | None = None) -> bool:
     )
 
 
+def _is_linux_i686_startup_environment() -> bool:
+    """Import-safe Linux 32-bit x86 check for low-resource startup paths."""
+    if sys.platform != "linux":
+        return False
+    try:
+        machine = os.uname().machine.lower()
+    except (AttributeError, OSError):
+        return False
+    return machine in {"i386", "i486", "i586", "i686"}
+
+
 def _read_packed_ref(common_dir: Path, ref: str) -> str | None:
     """Look up a ref in .git/packed-refs without spawning git.
 
@@ -1493,6 +1504,72 @@ def _ensure_tui_node() -> None:
     os.environ["PATH"] = os.pathsep.join(parts)
 
 
+def _node_version_satisfies_tui(version: str) -> bool:
+    """Return True when a ``node --version`` string can run the Ink TUI."""
+    version = version.strip()
+    if version.startswith("v"):
+        version = version[1:]
+    major_s = version.split(".", 1)[0]
+    try:
+        major = int(major_s)
+    except ValueError:
+        return True
+    return major >= 20
+
+
+def _read_node_version(node: str) -> str:
+    try:
+        result = subprocess.run(
+            [node, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return (result.stdout or "").strip()
+
+
+def _require_tui_node_version(node: str) -> None:
+    """Fail early with a clear message when Node is too old for the TUI."""
+    version = _read_node_version(node)
+    if not version:
+        return
+    if _node_version_satisfies_tui(version):
+        return
+
+    print(
+        f"Node.js {version} is too old for the Hermes TUI. "
+        "Install Node.js 20 or newer, then rerun `hermes --tui`."
+    )
+    if _is_linux_i686_startup_environment():
+        print(
+            "Linux i686 note: official Node.js 20/22 binaries do not ship "
+            "linux-x86 builds; distro packages may still be too old."
+        )
+    sys.exit(1)
+
+
+def _node_version_satisfies_web_build(version: str) -> bool:
+    """Return True for Node versions accepted by the dashboard Vite build."""
+    version = version.strip()
+    if version.startswith("v"):
+        version = version[1:]
+    parts = version.split(".")
+    try:
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) > 1 else 0
+    except ValueError:
+        return True
+    if major == 20:
+        return minor >= 19
+    if major == 21:
+        return False
+    if major == 22:
+        return minor >= 12
+    return major > 22
+
+
 def _find_bundled_tui(hermes_cli_dir: Path | None = None) -> Path | None:
     """Find a pre-built TUI entry.js bundled in the wheel."""
     if hermes_cli_dir is None:
@@ -1521,6 +1598,8 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if not path:
             print(f"{bin} not found — install Node.js to use the TUI.")
             sys.exit(1)
+        if bin == "node":
+            _require_tui_node_version(path)
         return path
 
     # Footgun: --dev against a prebuilt bundle that has no source/node_modules.
@@ -1550,20 +1629,22 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
 
     # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx.
-    #    Existing desktop behaviour runs npm from the workspace root.  Termux
-    #    scopes the install to ui-tui so launch does not pull desktop/web
-    #    dependencies into the hot path.
+    #    Existing desktop behaviour runs npm from the workspace root.  Low-
+    #    resource paths (Termux and Linux i686) scope the install to ui-tui so
+    #    launch does not pull desktop/web dependencies into the hot path.
+    normal_flow_node = _node_bin("node")
     did_install = False
     termux_startup = _is_termux_startup_environment()
-    termux_need_rebuild = False
-    if termux_startup and not tui_dev:
-        termux_need_rebuild = _tui_need_rebuild(tui_dir)
+    scoped_tui_startup = termux_startup or _is_linux_i686_startup_environment()
+    scoped_need_rebuild = False
+    if scoped_tui_startup and not tui_dev:
+        scoped_need_rebuild = _tui_need_rebuild(tui_dir)
 
-    skip_install_for_fresh_termux_bundle = (
-        termux_startup and not tui_dev and not termux_need_rebuild
+    skip_install_for_fresh_scoped_bundle = (
+        scoped_tui_startup and not tui_dev and not scoped_need_rebuild
     )
     if (
-        not skip_install_for_fresh_termux_bundle
+        not skip_install_for_fresh_scoped_bundle
         and _tui_need_npm_install(tui_dir)
     ):
         npm = _node_bin("npm")
@@ -1571,11 +1652,12 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             print("Installing TUI dependencies…")
         npm_cwd = _workspace_root(tui_dir)
         npm_workspace_args: tuple[str, ...] = ()
-        if termux_startup:
+        if scoped_tui_startup:
             npm_cwd, npm_workspace_args = _termux_workspace_install_context(
                 tui_dir,
                 include_child_workspaces=True,
             )
+            npm_workspace_args = (*npm_workspace_args, "--omit=dev")
         result = subprocess.run(
             [
                 npm,
@@ -1629,11 +1711,11 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         return [npm, "start"], tui_dir
 
     # Desktop/dev launches retain the historical "always rebuild" behaviour.
-    # Termux cold starts use the freshness check because esbuild startup is
-    # expensive on old mobile CPUs.
+    # Low-resource cold starts use the freshness check because esbuild startup
+    # is expensive on old mobile CPUs and 32-bit x86 TinyCore systems.
     should_build = True
-    if termux_startup:
-        should_build = did_install or termux_need_rebuild
+    if scoped_tui_startup:
+        should_build = did_install or scoped_need_rebuild
 
     if should_build:
         npm = _node_bin("npm")
@@ -1651,8 +1733,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 print(preview)
             sys.exit(1)
 
-    node = _node_bin("node")
-    return [node, "--expose-gc", str(tui_dir / "dist" / "entry.js")], tui_dir
+    return [normal_flow_node, "--expose-gc", str(tui_dir / "dist" / "entry.js")], tui_dir
 
 
 def _normalize_tui_toolsets(toolsets: object) -> list[str]:
@@ -7072,6 +7153,26 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             _say("Web UI frontend not built and npm is not available.")
             _say("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
+
+    node = shutil.which("node")
+    # Tests commonly patch shutil.which to return the npm path for every
+    # executable. Skip that artificial case; real installations have a distinct
+    # node binary, and Vite needs a concrete Node version check.
+    if node and Path(node).name != "npm":
+        node_version = _read_node_version(node)
+        if node_version and not _node_version_satisfies_web_build(node_version):
+            if fatal:
+                _say(
+                    f"Web UI build requires Node.js ^20.19 or >=22.12; found {node_version}."
+                )
+                _say("Install a newer Node.js, then rerun `hermes dashboard`.")
+                if _is_linux_i686_startup_environment():
+                    _say(
+                        "Linux i686 note: official Node.js 20/22 binaries do not ship "
+                        "linux-x86 builds; distro packages may still be too old."
+                    )
+            return not fatal
+
     _say("→ Building web UI...")
 
     def _relay(result: "subprocess.CompletedProcess") -> None:

@@ -71,8 +71,13 @@ dependencies = [
   # matrix extra's `mautrix`/`python-olm` it's safe to ship everywhere — keeps
   # it out of the lazy-install path that exists only for the heavy matrix deps.
   "Markdown==3.10.2",
-  # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
-  "PyJWT[crypto]==2.12.1",  # CVE-2026-32597
+  # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity).
+  # The PyJWT crypto extra pulls cryptography, which has no Linux i686 wheel
+  # and cannot bootstrap Rust via rustup on i386. Keep base installs runnable
+  # on Linux i686; crypto-backed JWT algorithms require a manual cryptography
+  # install there.
+  "PyJWT[crypto]==2.12.1; sys_platform != 'linux' or (platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686')",  # CVE-2026-32597
+  "PyJWT==2.12.1; sys_platform == 'linux' and (platform_machine == 'i386' or platform_machine == 'i486' or platform_machine == 'i586' or platform_machine == 'i686')",  # CVE-2026-32597
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package
@@ -88,7 +93,12 @@ dependencies = [
   # .gitignore-aware file matching for desktop build stamp.
   "pathspec==1.1.1",
   "fastapi>=0.104.0,<1",
-  "uvicorn[standard]>=0.24.0,<1",
+  # `uvicorn[standard]` pulls uvloop on Linux. uvloop does not publish Linux
+  # i686 wheels, so tiny 32-bit systems must compile a large generated C file
+  # during a fresh install. Use plain uvicorn on Linux i686 and keep the
+  # standard extras for all other platforms.
+  "uvicorn[standard]>=0.24.0,<1; sys_platform != 'linux' or (platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686')",
+  "uvicorn>=0.24.0,<1; sys_platform == 'linux' and (platform_machine == 'i386' or platform_machine == 'i486' or platform_machine == 'i586' or platform_machine == 'i686')",
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
   "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
 ]
@@ -215,7 +225,13 @@ youtube = [
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
 # starlette==1.0.1 pinned for CVE-2026-48710 (BadHost) — fastapi pulls Starlette
 # transitively and pre-1.0.1 is the vulnerable range. See the mcp extra above.
-web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.0.1"]
+web = [
+  "fastapi==0.133.1",
+  "python-multipart==0.0.27",
+  "uvicorn[standard]==0.41.0; sys_platform != 'linux' or (platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686')",
+  "uvicorn==0.41.0; sys_platform == 'linux' and (platform_machine == 'i386' or platform_machine == 'i486' or platform_machine == 'i586' or platform_machine == 'i686')",
+  "starlette==1.0.1",
+]
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every
@@ -241,11 +257,16 @@ all = [
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[pty]",
-  "hermes-agent[mcp]",
+  # mcp depends on PyJWT[crypto], which pulls cryptography. Keep the default
+  # [all] profile installable on Linux i686 where cryptography has no wheel.
+  "hermes-agent[mcp]; sys_platform != 'linux' or (platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686')",
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[acp]",
-  "hermes-agent[google]",
+  # google-auth currently depends on cryptography. cryptography has no Linux
+  # i686 wheel and cannot bootstrap Rust through rustup there, so keep the
+  # default installer's [all] profile from pulling Google deps on 32-bit x86.
+  "hermes-agent[google]; sys_platform != 'linux' or (platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686')",
   "hermes-agent[web]",
   "hermes-agent[youtube]",
 ]

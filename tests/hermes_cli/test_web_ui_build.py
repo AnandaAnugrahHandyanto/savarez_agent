@@ -126,6 +126,26 @@ class TestBuildWebUISkipsWhenFresh:
         assert mock_run.call_count == 1   # install only
         assert mock_idle.call_count == 1  # build only
 
+    def test_rejects_old_node_before_dashboard_build_on_linux_i686(
+        self, tmp_path, capsys
+    ):
+        web_dir, _ = _make_web_dir(tmp_path)
+
+        with patch("hermes_cli.main.shutil.which") as mock_which, \
+             patch("hermes_cli.main._read_node_version", return_value="v18.19.1"), \
+             patch("hermes_cli.main._is_linux_i686_startup_environment", return_value=True), \
+             patch("hermes_cli.main.subprocess.run") as mock_run, \
+             patch("hermes_cli.main._run_with_idle_timeout") as mock_idle:
+            mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+            result = _build_web_ui(web_dir, fatal=True)
+
+        assert result is False
+        out = capsys.readouterr().out
+        assert "Web UI build requires Node.js ^20.19 or >=22.12; found v18.19.1" in out
+        assert "official Node.js 20/22 binaries do not ship linux-x86 builds" in out
+        mock_run.assert_not_called()
+        mock_idle.assert_not_called()
+
     def test_npm_install_uses_utf8_replace_output_decoding(self, tmp_path):
         web_dir, _ = _make_web_dir(tmp_path)
         (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")

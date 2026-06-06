@@ -152,6 +152,22 @@ def test_rebuild_when_tui_source_newer_than_bundle(tmp_path: Path, main_mod) -> 
     assert main_mod._tui_need_rebuild(tmp_path) is True
 
 
+def test_tui_rejects_node_18_with_clear_message(main_mod, monkeypatch, capsys) -> None:
+    def fake_run(*_args, **_kwargs):
+        return types.SimpleNamespace(returncode=0, stdout="v18.19.1\n", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(main_mod, "_is_linux_i686_startup_environment", lambda: True)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._require_tui_node_version("/bin/node")
+
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "Node.js v18.19.1 is too old for the Hermes TUI" in out
+    assert "official Node.js 20/22 binaries do not ship linux-x86 builds" in out
+
+
 def test_make_tui_argv_skips_build_only_on_termux_when_fresh(
     tmp_path: Path, main_mod, monkeypatch
 ) -> None:
@@ -160,6 +176,7 @@ def test_make_tui_argv_skips_build_only_on_termux_when_fresh(
     monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
     monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(main_mod, "_require_tui_node_version", lambda _node: None)
 
     def fail_run(*_args, **_kwargs):
         raise AssertionError("fresh Termux TUI launch must not rebuild")
@@ -177,9 +194,11 @@ def test_make_tui_argv_skips_install_on_termux_when_bundle_fresh(
 ) -> None:
     _touch_tui_entry(tmp_path)
     monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.setattr(main_mod, "_require_tui_node_version", lambda _node: None)
     monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
     monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(main_mod, "_require_tui_node_version", lambda _node: None)
 
     def fail_run(*_args, **_kwargs):
         raise AssertionError("fresh Termux TUI launch must not run npm")
@@ -204,6 +223,7 @@ def test_make_tui_argv_scopes_npm_install_on_termux_workspace(
     (tmp_path / "package-lock.json").write_text("{}")
 
     monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.setattr(main_mod, "_require_tui_node_version", lambda _node: None)
     monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
     monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: True)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
@@ -227,7 +247,73 @@ def test_make_tui_argv_scopes_npm_install_on_termux_workspace(
         "ui-tui/packages/hermes-ink",
         "--include-workspace-root=false",
     ]
+    assert "--omit=dev" in install_cmd
     assert calls[0][1]["cwd"] == str(tmp_path)
+
+
+def test_make_tui_argv_scopes_npm_install_on_linux_i686_workspace(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    ink_dir = tui_dir / "packages" / "hermes-ink"
+    ink_dir.mkdir(parents=True)
+    (ink_dir / "package.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_is_linux_i686_startup_environment", lambda: True)
+    monkeypatch.setattr(main_mod, "_require_tui_node_version", lambda _node: None)
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    install_cmd = calls[0][0][0]
+    assert install_cmd[:7] == [
+        "/bin/npm",
+        "install",
+        "--workspace",
+        "ui-tui",
+        "--workspace",
+        "ui-tui/packages/hermes-ink",
+        "--include-workspace-root=false",
+    ]
+    assert "--omit=dev" in install_cmd
+    assert calls[0][1]["cwd"] == str(tmp_path)
+
+
+def test_make_tui_argv_skips_install_on_linux_i686_when_bundle_fresh(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    _touch_tui_entry(tmp_path)
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_is_linux_i686_startup_environment", lambda: True)
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(main_mod, "_require_tui_node_version", lambda _node: None)
+
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("fresh Linux i686 TUI launch must not run npm")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fail_run)
+
+    argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=False)
+
+    assert argv == ["/bin/node", "--expose-gc", str(tmp_path / "dist" / "entry.js")]
+    assert cwd == tmp_path
 
 
 def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
@@ -240,6 +326,8 @@ def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
 
     monkeypatch.delenv("TERMUX_VERSION", raising=False)
     monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_is_linux_i686_startup_environment", lambda: False)
+    monkeypatch.setattr(main_mod, "_require_tui_node_version", lambda _node: None)
     monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
     calls = []
@@ -269,6 +357,8 @@ def test_make_tui_argv_keeps_desktop_always_build_behaviour(
     _touch_tui_entry(tmp_path)
     monkeypatch.delenv("TERMUX_VERSION", raising=False)
     monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_is_linux_i686_startup_environment", lambda: False)
+    monkeypatch.setattr(main_mod, "_require_tui_node_version", lambda _node: None)
     monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
     monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # ============================================================================
 # Hermes Agent Installer
 # ============================================================================
@@ -80,6 +80,7 @@ STAGE_NAME=""
 JSON_OUTPUT=false
 NON_INTERACTIVE=false
 INCLUDE_DESKTOP=false
+LINUX_I686_SYSTEM_PYTHON=false
 
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
@@ -336,6 +337,63 @@ is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
 }
 
+is_linux_i686() {
+    [ "${OS:-}" = "linux" ] || return 1
+    case "$(uname -m 2>/dev/null || true)" in
+        i386|i486|i586|i686) ;;
+        *) return 1 ;;
+    esac
+
+    local bits
+    bits="$(getconf LONG_BIT 2>/dev/null || true)"
+    [ -z "$bits" ] || [ "$bits" = "32" ]
+}
+
+configure_linux_i686_tempdir() {
+    if ! is_linux_i686 || [ -n "${TMPDIR:-}" ]; then
+        return 0
+    fi
+
+    # Many i686 Linux installs are low-memory systems where /tmp may be tmpfs.
+    # Keep installer downloads/extraction/logs under HERMES_HOME unless the
+    # caller already supplied a TMPDIR.
+    export TMPDIR="$HERMES_HOME/tmp"
+    mkdir -p "$TMPDIR"
+    log_info "Linux i686 detected — using $TMPDIR for installer temp files"
+}
+
+configure_linux_i686_uv_python_dirs() {
+    if ! is_linux_i686 || [ "$ROOT_FHS_LAYOUT" = true ]; then
+        return 0
+    fi
+
+    # uv has Linux i686 builds and can provision compatible CPython releases,
+    # but keep those interpreter downloads under Hermes' data dir on small
+    # 32-bit systems instead of defaulting to a possibly tmpfs-backed home.
+    export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-$HERMES_HOME/uv/python}"
+    export UV_PYTHON_BIN_DIR="${UV_PYTHON_BIN_DIR:-$HERMES_HOME/uv/bin}"
+    mkdir -p "$UV_PYTHON_INSTALL_DIR" "$UV_PYTHON_BIN_DIR"
+    log_info "Linux i686 detected — using $UV_PYTHON_INSTALL_DIR for uv-managed Python"
+}
+
+find_compatible_python() {
+    local candidate path
+    for candidate in "${HERMES_PYTHON:-}" python3.13 python3.12 python3.11 python3; do
+        [ -n "$candidate" ] || continue
+        if [ -x "$candidate" ]; then
+            path="$candidate"
+        else
+            path="$(command -v "$candidate" 2>/dev/null || true)"
+        fi
+        [ -n "$path" ] || continue
+        if "$path" -c 'import sys; raise SystemExit(0 if (3, 11) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then
+            printf '%s\n' "$path"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Decide where the repo checkout + venv live, and where the `hermes` command
 # symlink goes.  Called after detect_os so $OS/$DISTRO are known.
 #
@@ -353,12 +411,14 @@ is_termux() {
 resolve_install_layout() {
     if [ "$INSTALL_DIR_EXPLICIT" = true ]; then
         log_info "Install directory: $INSTALL_DIR (explicit)"
+        configure_linux_i686_uv_python_dirs
         return 0
     fi
 
     # Termux: package manager manages /data/data/..., keep code in HERMES_HOME.
     if is_termux; then
         INSTALL_DIR="$HERMES_HOME/hermes-agent"
+        configure_linux_i686_uv_python_dirs
         return 0
     fi
 
@@ -391,6 +451,7 @@ resolve_install_layout() {
 
     # Default: non-root, non-Termux → legacy user-scoped layout.
     INSTALL_DIR="$HERMES_HOME/hermes-agent"
+    configure_linux_i686_uv_python_dirs
 }
 
 get_command_link_dir() {
@@ -462,6 +523,7 @@ detect_os() {
     esac
 
     log_success "Detected: $OS ($DISTRO)"
+    configure_linux_i686_tempdir
 }
 
 # ============================================================================
@@ -551,6 +613,20 @@ check_python() {
         return 0
     fi
 
+    if [ -n "${HERMES_PYTHON:-}" ]; then
+        if PYTHON_PATH="$(find_compatible_python)"; then
+            PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+            log_success "Python found: $PYTHON_FOUND_VERSION ($PYTHON_PATH)"
+            if is_linux_i686; then
+                LINUX_I686_SYSTEM_PYTHON=true
+            fi
+            return 0
+        fi
+
+        log_error "HERMES_PYTHON does not point to Python >=3.11,<3.14: $HERMES_PYTHON"
+        exit 1
+    fi
+
     log_info "Checking Python $PYTHON_VERSION..."
 
     # Let uv handle Python — it can download and manage Python versions
@@ -567,9 +643,17 @@ check_python() {
         PYTHON_PATH="$("$UV_CMD" python find "$PYTHON_VERSION")"
         PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
         log_success "Python installed: $PYTHON_FOUND_VERSION"
+    elif is_linux_i686 && PYTHON_PATH="$(find_compatible_python)"; then
+        LINUX_I686_SYSTEM_PYTHON=true
+        PYTHON_FOUND_VERSION="$("$PYTHON_PATH" --version 2>/dev/null)"
+        log_warn "uv Python install failed on Linux i686; using system Python: $PYTHON_FOUND_VERSION ($PYTHON_PATH)"
     else
         log_error "Failed to install Python $PYTHON_VERSION"
-        log_info "Install Python $PYTHON_VERSION manually, then re-run this script"
+        if is_linux_i686; then
+            log_info "Install Python 3.11, 3.12, or 3.13, or set HERMES_PYTHON=/path/to/python."
+        else
+            log_info "Install Python $PYTHON_VERSION manually, then re-run this script"
+        fi
         exit 1
     fi
 }
@@ -1195,6 +1279,26 @@ setup_venv() {
 
         "$PYTHON_PATH" -m venv venv
         log_success "Virtual environment ready ($(./venv/bin/python --version 2>/dev/null))"
+        return 0
+    fi
+
+    if [ "$LINUX_I686_SYSTEM_PYTHON" = true ]; then
+        log_info "Creating virtual environment with Linux i686 system Python..."
+
+        if [ -d "venv" ]; then
+            log_info "Virtual environment already exists, recreating..."
+            rm -rf venv
+        fi
+
+        if ! "$PYTHON_PATH" -m venv venv; then
+            log_error "Failed to create venv with $PYTHON_PATH"
+            log_info "Install the venv/ensurepip package for your Python 3.11-3.13 build, then rerun."
+            exit 1
+        fi
+        if [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+            export UV_PYTHON="$INSTALL_DIR/venv/bin/python"
+        fi
+        log_success "Virtual environment ready ($("$INSTALL_DIR/venv/bin/python" --version 2>/dev/null))"
         return 0
     fi
 
