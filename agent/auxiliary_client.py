@@ -613,6 +613,10 @@ def _convert_content_for_responses(content: Any) -> Any:
     return converted or ""
 
 
+class _CodexAuxiliaryTimeoutError(TimeoutError):
+    """Raised when a Codex auxiliary stream exceeds the requested timeout."""
+
+
 class _CodexCompletionsAdapter:
     """Drop-in shim that accepts chat.completions.create() kwargs and
     routes them through the Codex Responses streaming API."""
@@ -624,6 +628,7 @@ class _CodexCompletionsAdapter:
     def create(self, **kwargs) -> Any:
         messages = kwargs.get("messages", [])
         model = kwargs.get("model", self._model)
+        auxiliary_task = str(kwargs.pop("_hermes_auxiliary_task", "") or "").strip().lower()
 
         # Separate system/instructions from conversation messages.
         # Convert chat.completions multimodal content blocks to Responses
@@ -690,6 +695,12 @@ class _CodexCompletionsAdapter:
                         "summary": "auto",
                     }
                     resp_kwargs["include"] = ["reasoning.encrypted_content"]
+            elif auxiliary_task == "compression":
+                # Compression is a one-shot summarization call; it never replays
+                # encrypted reasoning. Keep Codex in a low-effort profile so
+                # long compactions spend less time in hidden reasoning before
+                # emitting useful summary text.
+                resp_kwargs["reasoning"] = {"effort": "low", "summary": "auto"}
 
         # Tools support for auxiliary callers (e.g. skills_hub) that pass function schemas
         tools = kwargs.get("tools")
@@ -767,7 +778,7 @@ class _CodexCompletionsAdapter:
             if deadline is not None and time.monotonic() >= deadline:
                 if not timed_out.is_set():
                     _close_client_on_timeout()
-                raise TimeoutError(_timeout_message())
+                raise _CodexAuxiliaryTimeoutError(_timeout_message())
             try:
                 from tools.interrupt import is_interrupted
                 if is_interrupted():
@@ -862,7 +873,9 @@ class _CodexCompletionsAdapter:
                 )
         except Exception as exc:
             if timed_out.is_set():
-                raise TimeoutError(_timeout_message()) from exc
+                if not isinstance(exc, _CodexAuxiliaryTimeoutError):
+                    raise _CodexAuxiliaryTimeoutError(_timeout_message()) from exc
+                raise
             logger.debug("Codex auxiliary Responses API call failed: %s", exc)
             raise
         finally:
@@ -951,6 +964,12 @@ class AsyncCodexAuxiliaryClient:
         # subsequent async aux call with 'Connection error' until the
         # gateway restarts.
         self._real_client = sync_wrapper._real_client
+
+
+def _attach_codex_auxiliary_task(kwargs: Dict[str, Any], client: Any, task: Optional[str]) -> None:
+    """Pass Hermes task metadata only to Codex auxiliary shims."""
+    if isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)):
+        kwargs["_hermes_auxiliary_task"] = task or ""
 
 
 class _AnthropicCompletionsAdapter:
@@ -2398,6 +2417,9 @@ def _is_connection_error(exc: Exception) -> bool:
     distinct from API errors (4xx/5xx) which indicate the provider IS
     reachable but returned an error.
     """
+    if isinstance(exc, _CodexAuxiliaryTimeoutError):
+        return False
+
     try:
         from openai import APIConnectionError, APITimeoutError
         if isinstance(exc, (APIConnectionError, APITimeoutError)):
@@ -2759,6 +2781,7 @@ def _retry_same_provider_sync(
     )
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
+    _attach_codex_auxiliary_task(retry_kwargs, retry_client, task)
     return _validate_llm_response(
         retry_client.chat.completions.create(**retry_kwargs), task,
     )
@@ -2816,6 +2839,7 @@ async def _retry_same_provider_async(
     )
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
+    _attach_codex_auxiliary_task(retry_kwargs, retry_client, task)
     return _validate_llm_response(
         await retry_client.chat.completions.create(**retry_kwargs), task,
     )
@@ -2977,6 +3001,16 @@ def _try_main_agent_model_fallback(
         task or "call", reason, failed_provider, label, resolved_model or main_model,
     )
     return client, resolved_model or main_model, label
+
+
+def _should_try_main_agent_model_fallback(task: Optional[str]) -> bool:
+    """Return whether task-level fallback to the main agent model is enabled."""
+    task_name = (task or "").strip().lower()
+    # Compression already has its own recovery policy in context_compressor and
+    # does not need extra main-agent failover here. Skipping it avoids
+    # additional 100s+ Codex retry delays when an auxiliary compression
+    # backend stalls.
+    return task_name != "compression"
 
 
 def _try_configured_fallback_chain(
@@ -5075,6 +5109,7 @@ def call_llm(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         base_url=_base_info or resolved_base_url)
+    _attach_codex_auxiliary_task(kwargs, client, task)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     _client_base = str(getattr(client, "base_url", "") or "")
@@ -5369,7 +5404,7 @@ def call_llm(
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason)
-                if fb_client is None:
+                if fb_client is None and _should_try_main_agent_model_fallback(task):
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
 
@@ -5380,15 +5415,21 @@ def call_llm(
                     tools=tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
                     base_url=str(getattr(fb_client, "base_url", "") or ""))
+                _attach_codex_auxiliary_task(fb_kwargs, fb_client, task)
                 return _validate_llm_response(
                     fb_client.chat.completions.create(**fb_kwargs), task)
             # All fallback layers exhausted — emit a single user-visible
             # warning so the operator knows aux task is about to fail.
             # (#26882) The error itself is re-raised below.
+            fallback_exhausted_hint = (
+                "(fallback_chain + main agent model)"
+                if _should_try_main_agent_model_fallback(task)
+                else "(fallback_chain)"
+            )
             logger.warning(
-                "Auxiliary %s: %s on %s and all fallbacks exhausted "
-                "(fallback_chain + main agent model). Raising original error.",
-                task or "call", reason, resolved_provider,
+                "Auxiliary %s: %s on %s and all fallbacks exhausted %s. "
+                "Raising original error.",
+                task or "call", reason, resolved_provider, fallback_exhausted_hint,
             )
         # Connection/timeout errors leave the cached client poisoned (closed
         # httpx transport, half-read stream, dead async loop).  Drop it from
@@ -5545,6 +5586,7 @@ async def async_call_llm(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         base_url=_client_base or resolved_base_url)
+    _attach_codex_auxiliary_task(kwargs, client, task)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
@@ -5792,7 +5834,7 @@ async def async_call_llm(
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason)
-                if fb_client is None:
+                if fb_client is None and _should_try_main_agent_model_fallback(task):
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
 
@@ -5803,6 +5845,7 @@ async def async_call_llm(
                     tools=tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
                     base_url=str(getattr(fb_client, "base_url", "") or ""))
+                _attach_codex_auxiliary_task(fb_kwargs, fb_client, task)
                 # Convert sync fallback client to async
                 async_fb, async_fb_model = _to_async_client(
                     fb_client, fb_model or "", is_vision=(task == "vision")
@@ -5812,10 +5855,15 @@ async def async_call_llm(
                 return _validate_llm_response(
                     await async_fb.chat.completions.create(**fb_kwargs), task)
             # All fallback layers exhausted — warn before re-raising. (#26882)
+            fallback_exhausted_hint = (
+                "(fallback_chain + main agent model)"
+                if _should_try_main_agent_model_fallback(task)
+                else "(fallback_chain)"
+            )
             logger.warning(
-                "Auxiliary %s (async): %s on %s and all fallbacks exhausted "
-                "(fallback_chain + main agent model). Raising original error.",
-                task or "call", reason, resolved_provider,
+                "Auxiliary %s (async): %s on %s and all fallbacks exhausted %s. "
+                "Raising original error.",
+                task or "call", reason, resolved_provider, fallback_exhausted_hint,
             )
         # Mirror the sync path: drop poisoned clients on connection/timeout
         # so the next aux call rebuilds.  See issue #23432.
