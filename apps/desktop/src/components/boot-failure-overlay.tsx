@@ -227,13 +227,15 @@ export function BootFailureOverlay() {
 
           {logs.length > 0 ? (
             <div className="grid gap-2">
-              <button
-                className="self-start text-xs font-medium text-muted-foreground transition hover:text-foreground"
+              <Button
+                className="-ml-2 self-start font-medium"
                 onClick={() => setShowLogs(v => !v)}
+                size="xs"
                 type="button"
+                variant="text"
               >
                 {showLogs ? copy.hideRecentLogs : copy.showRecentLogs}
-              </button>
+              </Button>
               {showLogs ? (
                 <pre className="max-h-48 overflow-auto rounded-2xl border border-border bg-secondary/30 p-3 font-mono text-[0.7rem] leading-4 text-muted-foreground">
                   {logs.slice(-40).join('')}

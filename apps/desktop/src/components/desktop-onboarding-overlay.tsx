@@ -416,27 +416,31 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
         ) : null}
       </div>
       {collapsible ? (
-        <button
-          className="flex items-center justify-center gap-1.5 pt-1 text-xs font-medium text-muted-foreground transition hover:text-foreground"
+        <Button
+          className="mt-1 font-medium text-muted-foreground"
           onClick={() => setShowAll(persistShowAll(!showAll))}
+          size="xs"
           type="button"
+          variant="ghost"
         >
           {showAll ? t.onboarding.collapse : t.onboarding.otherProviders}
           <ChevronDown className={cn('size-3.5 transition', showAll && 'rotate-180')} />
-        </button>
+        </Button>
       ) : null}
       <div className="flex items-center justify-between gap-3 pt-1">
         {/* First run only: let the user defer the choice and land in the app.
             In manual mode the overlay already has a close affordance, so the
             "choose later" escape would be redundant — hide it. */}
         {manual ? <span /> : <ChooseLaterLink />}
-        <button
-          className="text-xs font-medium text-muted-foreground hover:text-foreground"
+        <Button
+          className="-mr-2 font-medium"
           onClick={() => setOnboardingMode('apikey')}
+          size="xs"
           type="button"
+          variant="text"
         >
           {t.onboarding.haveApiKey}
-        </button>
+        </Button>
       </div>
     </div>
   )
@@ -449,13 +453,15 @@ function ChooseLaterLink() {
   const { t } = useI18n()
 
   return (
-    <button
-      className="text-xs font-medium text-muted-foreground hover:text-foreground"
+    <Button
+      className="font-medium"
       onClick={() => dismissFirstRunOnboarding()}
+      size="xs"
       type="button"
+      variant="text"
     >
       {t.onboarding.chooseLater}
-    </button>
+    </Button>
   )
 }
 
@@ -642,14 +648,16 @@ export function ApiKeyForm({
   return (
     <div className="grid gap-4">
       {canGoBack ? (
-        <button
-          className="-mt-1 flex items-center gap-1 self-start text-xs font-medium text-muted-foreground hover:text-foreground"
+        <Button
+          className="-ml-2 -mt-1 self-start font-medium text-muted-foreground"
           onClick={onBack}
+          size="xs"
           type="button"
+          variant="ghost"
         >
           <ChevronLeft className="size-3" />
           {t.onboarding.backToSignIn}
-        </button>
+        </Button>
       ) : null}
 
       <div className="grid max-h-[60dvh] gap-2 overflow-y-auto p-1 sm:grid-cols-2">

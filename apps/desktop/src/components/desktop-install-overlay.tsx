@@ -475,17 +475,19 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
           )}
 
           <div className="border-t pt-3">
-            <button
-              className="flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+            <Button
+              className="-ml-2 text-muted-foreground hover:text-foreground"
               onClick={() => setLogOpen(v => !v)}
+              size="xs"
               type="button"
+              variant="ghost"
             >
               {logOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
               <span>{logOpen ? copy.hideOutput : copy.showOutput}</span>
               <span className="ml-1 tabular-nums">
                 ({copy.lines(state.log.length)})
               </span>
-            </button>
+            </Button>
 
             {logOpen && (
               <div

@@ -209,13 +209,9 @@ function IdleView({
         <Button className="font-semibold" onClick={onInstall} size="lg">
           {u.updateNow}
         </Button>
-        <button
-          className="text-center text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
-          onClick={onLater}
-          type="button"
-        >
+        <Button className="font-medium" onClick={onLater} type="button" variant="text">
           {u.maybeLater}
-        </button>
+        </Button>
       </div>
 
       {remaining > 0 && (
