@@ -1327,7 +1327,12 @@ function Install-Venv {
     
     if (Test-Path "venv") {
         Write-Info "Virtual environment already exists, recreating..."
-        Remove-Item -Recurse -Force "venv"
+        $fullPath = (Resolve-Path "venv").Path
+        $extendedPath = "\\?\" + $fullPath
+        Remove-Item -LiteralPath $extendedPath -Recurse -Force
+        if (Test-Path "venv") {
+            throw "Failed to remove existing venv directory. Please remove it manually and try again."
+        }
     }
     
     # uv creates the venv and pins the Python version in one step
