@@ -6007,6 +6007,24 @@ class TelegramAdapter(BasePlatformAdapter):
         """Check if message reactions are enabled via config/env."""
         return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in {"false", "0", "no"}
 
+    def _busy_reactions_enabled(self) -> bool:
+        """Check if busy input reactions are enabled.
+
+        If unset, fall back to TELEGRAM_REACTIONS so existing installs keep
+        their lifecycle-reaction behavior. The gateway maps
+        display.busy_reactions_enabled into this env var at startup.
+        """
+        raw = os.getenv("HERMES_GATEWAY_BUSY_REACTIONS_ENABLED", "").strip().lower()
+        if not raw:
+            return self._reactions_enabled()
+        return raw not in {"false", "0", "no", "off"}
+
+    @staticmethod
+    def _busy_reaction_emoji(kind: str) -> str:
+        if kind == "queue":
+            return os.getenv("HERMES_GATEWAY_BUSY_REACTION_QUEUE", "\u23f3") or "\u23f3"
+        return os.getenv("HERMES_GATEWAY_BUSY_REACTION_STEER", "\U0001f440") or "\U0001f440"
+
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Set a single emoji reaction on a Telegram message."""
         if not self._bot:
@@ -6042,6 +6060,17 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("[%s] clear reactions failed: %s", self.name, e)
             return False
+
+    async def react_to_busy_message(self, event: MessageEvent, kind: str) -> bool:
+        """React to busy follow-ups without sending a chat message."""
+        if not self._busy_reactions_enabled():
+            return False
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if not (chat_id and message_id):
+            return False
+        emoji = self._busy_reaction_emoji(kind)
+        return await self._set_reaction(chat_id, message_id, emoji)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""

@@ -1019,6 +1019,12 @@ if _config_path.exists():
                 os.environ["HERMES_GATEWAY_BUSY_TEXT_MODE"] = str(_display_cfg["busy_text_mode"])
             if "busy_ack_enabled" in _display_cfg:
                 os.environ["HERMES_GATEWAY_BUSY_ACK_ENABLED"] = str(_display_cfg["busy_ack_enabled"])
+            if "busy_reactions_enabled" in _display_cfg:
+                os.environ["HERMES_GATEWAY_BUSY_REACTIONS_ENABLED"] = str(_display_cfg["busy_reactions_enabled"])
+            if "busy_reaction_steer" in _display_cfg:
+                os.environ["HERMES_GATEWAY_BUSY_REACTION_STEER"] = str(_display_cfg["busy_reaction_steer"])
+            if "busy_reaction_queue" in _display_cfg:
+                os.environ["HERMES_GATEWAY_BUSY_REACTION_QUEUE"] = str(_display_cfg["busy_reaction_queue"])
         # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
         _tz_cfg = _cfg.get("timezone", "")
         if _tz_cfg and isinstance(_tz_cfg, str):
@@ -3361,6 +3367,30 @@ class GatewayRunner:
             return
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
+    async def _react_to_busy_message(self, adapter: Any, event: MessageEvent, kind: str) -> None:
+        """Best-effort Telegram reaction for busy follow-ups.
+
+        This intentionally runs independently from busy_ack_enabled: users can
+        suppress chat acks while still getting a lightweight visual receipt on
+        the original Telegram message. Non-Telegram adapters simply ignore it.
+        """
+        source = getattr(event, "source", None)
+        platform = getattr(source, "platform", None)
+        platform_value = getattr(platform, "value", platform)
+        if platform_value != "telegram":
+            return
+        if not adapter:
+            return
+        method = getattr(adapter, "react_to_busy_message", None)
+        if not callable(method):
+            return
+        try:
+            result = method(event, kind)
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:
+            logger.debug("Busy reaction failed for Telegram message: %s", exc)
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -3388,6 +3418,7 @@ class GatewayRunner:
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
             if self._queue_during_drain_enabled():
                 self._queue_or_replace_pending_event(session_key, event)
+                await self._react_to_busy_message(adapter, event, "queue")
                 message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
             else:
                 message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
@@ -3475,6 +3506,10 @@ class GatewayRunner:
                 event,
                 merge_text=event.message_type == MessageType.TEXT,
             )
+            if effective_mode == "queue":
+                await self._react_to_busy_message(adapter, event, "queue")
+        else:
+            await self._react_to_busy_message(adapter, event, "steer")
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
@@ -7799,6 +7834,7 @@ class GatewayRunner:
                         channel_prompt=event.channel_prompt,
                     )
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
+                    await self._react_to_busy_message(adapter, event, "queue")
                 depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
                 if depth <= 1:
                     return "Queued for the next turn."
@@ -7826,6 +7862,7 @@ class GatewayRunner:
                             channel_prompt=event.channel_prompt,
                         )
                         adapter._pending_messages[_quick_key] = queued_event
+                        await self._react_to_busy_message(adapter, event, "queue")
                     return "Agent still starting — /steer queued for the next turn."
                 if running_agent and hasattr(running_agent, "steer"):
                     try:
@@ -7835,6 +7872,7 @@ class GatewayRunner:
                         return f"⚠️ Steer failed: {exc}"
                     if accepted:
                         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
+                        await self._react_to_busy_message(self.adapters.get(source.platform), event, "steer")
                         return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
                     return "Steer rejected (empty payload)."
                 # Running agent is missing or lacks steer() — fall back to queue.
@@ -7848,6 +7886,7 @@ class GatewayRunner:
                         channel_prompt=event.channel_prompt,
                     )
                     adapter._pending_messages[_quick_key] = queued_event
+                    await self._react_to_busy_message(adapter, event, "queue")
                 return "No active agent — /steer queued for the next turn."
 
             # /model must not be used while the agent is running.
@@ -7953,6 +7992,7 @@ class GatewayRunner:
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
+                    await self._react_to_busy_message(adapter, event, "queue")
                 return None
 
             _telegram_followup_grace = float(
@@ -7979,6 +8019,7 @@ class GatewayRunner:
                         event,
                         merge_text=True,
                     )
+                    await self._react_to_busy_message(adapter, event, "queue")
                 return None
 
             running_agent = self._running_agents.get(_quick_key)
@@ -7999,10 +8040,12 @@ class GatewayRunner:
                         event,
                         merge_text=True,
                     )
+                    await self._react_to_busy_message(adapter, event, "queue")
                 return None
             if self._draining:
                 if self._queue_during_drain_enabled():
                     self._queue_or_replace_pending_event(_quick_key, event)
+                    await self._react_to_busy_message(self.adapters.get(source.platform), event, "queue")
                 return (
                     f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
                     if self._queue_during_drain_enabled()
@@ -8011,6 +8054,7 @@ class GatewayRunner:
             if self._busy_input_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
                 self._queue_or_replace_pending_event(_quick_key, event)
+                await self._react_to_busy_message(self.adapters.get(source.platform), event, "queue")
                 return None
             if self._busy_input_mode == "steer":
                 # Steer mode: inject text into the running agent mid-run via
@@ -8026,9 +8070,11 @@ class GatewayRunner:
                         steered = False
                 if steered:
                     logger.debug("PRIORITY steer for session %s", _quick_key)
+                    await self._react_to_busy_message(self.adapters.get(source.platform), event, "steer")
                     return None
                 logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
                 self._queue_or_replace_pending_event(_quick_key, event)
+                await self._react_to_busy_message(self.adapters.get(source.platform), event, "queue")
                 return None
             # #30170 — Subagent protection (PRIORITY path). Same rationale
             # as ``_handle_active_session_busy_message``: an interrupt
@@ -8045,6 +8091,7 @@ class GatewayRunner:
                     _quick_key,
                 )
                 self._queue_or_replace_pending_event(_quick_key, event)
+                await self._react_to_busy_message(self.adapters.get(source.platform), event, "queue")
                 return None
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
             running_agent.interrupt(event.text)
