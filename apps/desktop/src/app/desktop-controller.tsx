@@ -93,7 +93,7 @@ import { useGroupRegistry } from './shell/use-group-registry'
 import { UpdatesOverlay } from './updates-overlay'
 
 // DEV-only dialog/overlay audit harness. Code-split + DEV-gated so it never
-// lands in a production bundle. Toggle in-app with ⌘/Ctrl + Alt + Shift + D.
+// lands in a production bundle. Toggle in-app with Ctrl + Shift + D.
 const DialogGallery = import.meta.env.DEV
   ? lazy(async () => ({ default: (await import('@/components/dev/dialog-gallery')).DialogGallery }))
   : null

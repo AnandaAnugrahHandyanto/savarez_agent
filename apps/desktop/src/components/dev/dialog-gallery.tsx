@@ -35,7 +35,8 @@ import {
  * DialogGallery — DEV-ONLY visual harness for auditing every dialog/overlay.
  *
  * Mounted only when `import.meta.env.DEV` (see desktop-controller). Toggle with
- * the secret hotkey ⌘/Ctrl + Alt + Shift + D. Two kinds of entries:
+ * the secret hotkey Ctrl + Shift + D (same chord on macOS — no Cmd/Option, so
+ * it dodges macOS dead-key behavior). Two kinds of entries:
  *   - "overlay" scenarios flip a store atom so the REAL, app-mounted overlay
  *     renders (boot failure, updates, notifications, sudo/secret prompts). The
  *     gallery closes itself so the overlay is visible; reopen with the hotkey.
@@ -109,7 +110,7 @@ export function DialogGallery() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      const toggle = (event.metaKey || event.ctrlKey) && event.altKey && event.shiftKey && event.code === 'KeyD'
+      const toggle = event.ctrlKey && event.shiftKey && !event.metaKey && !event.altKey && event.code === 'KeyD'
 
       if (toggle) {
         event.preventDefault()
@@ -345,7 +346,7 @@ export function DialogGallery() {
           <div>
             <h2 className="text-sm font-semibold tracking-tight">Dialog gallery</h2>
             <p className="text-[0.6875rem] text-muted-foreground">
-              dev only · ⌘/Ctrl + Alt + Shift + D · Esc closes
+              dev only · Ctrl + Shift + D · Esc closes
             </p>
           </div>
           <div className="flex items-center gap-1.5">
