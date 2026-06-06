@@ -7875,12 +7875,25 @@ class GatewayRunner:
         def _is_ai_beast_forbidden_boundary_command(name: str | None) -> bool:
             if not name or not _ai_beast_orientation_enabled():
                 return False
+            normalized = name.strip().lstrip("/").replace("_", "-").lower()
             try:
                 from gateway.ai_beast_orientation_hook import FORBIDDEN_COMMANDS
             except Exception:
-                return False
-            normalized = name.strip().lstrip("/").replace("_", "-").lower()
-            return normalized in FORBIDDEN_COMMANDS
+                forbidden_commands = frozenset(
+                    {
+                        "task",
+                        "steer",
+                        "pause",
+                        "resume",
+                        "bindtopic",
+                        "switch",
+                        "open",
+                        "newsession",
+                    }
+                )
+            else:
+                forbidden_commands = FORBIDDEN_COMMANDS
+            return normalized in forbidden_commands
 
         def _is_configured_hook_command(name: str | None) -> bool:
             if not name:

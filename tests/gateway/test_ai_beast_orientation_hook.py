@@ -6,6 +6,7 @@ delegate read-only orientation commands through an explicit local AI Beast root.
 
 from __future__ import annotations
 
+import builtins
 import importlib
 import sys
 from datetime import datetime
@@ -464,6 +465,8 @@ async def test_ai_beast_orientation_gateway_fixture_preserves_hermes_owned_comma
         "/task create something",
         "/bindtopic interaction-routing-layer",
         "/switch ai-beast",
+        "/Steer hi",
+        "/TASK create something",
     ],
 )
 async def test_ai_beast_orientation_gateway_fixture_keeps_forbidden_commands_unavailable(
@@ -476,6 +479,35 @@ async def test_ai_beast_orientation_gateway_fixture_keeps_forbidden_commands_una
     runner = _make_gateway_runner_with_real_orientation_hook(tmp_path)
 
     result = await runner._handle_message(_make_gateway_event(command))
+
+    assert result is not None
+    assert "Workspace: AI Beast" not in result
+    assert "Projects (read-only registry):" not in result
+    assert "AI Beast" not in result
+    assert _fake_ai_beast_adapter_calls() == []
+    runner._run_agent.assert_not_called()
+    runner.adapters[Platform.TELEGRAM].send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ai_beast_orientation_forbidden_boundary_fails_closed_when_command_list_import_fails(
+    tmp_path, monkeypatch
+):
+    _write_fake_ai_beast_adapter(tmp_path)
+    _write_fake_registry(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _clear_fake_ai_beast_modules()
+    runner = _make_gateway_runner_with_real_orientation_hook(tmp_path)
+    real_import = builtins.__import__
+
+    def fail_forbidden_command_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "gateway.ai_beast_orientation_hook" and "FORBIDDEN_COMMANDS" in fromlist:
+            raise ImportError("simulated forbidden command list import failure")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fail_forbidden_command_import)
+
+    result = await runner._handle_message(_make_gateway_event("/steer hi"))
 
     assert result is not None
     assert "Workspace: AI Beast" not in result
