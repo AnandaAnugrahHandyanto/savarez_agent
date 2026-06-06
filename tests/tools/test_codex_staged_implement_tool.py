@@ -199,9 +199,10 @@ def test_dirty_worktree_rejects_without_runner_call(tmp_path, monkeypatch):
 def test_dirty_worktree_returns_actionable_fail_closed_resolver(tmp_path, monkeypatch):
     repo = _clean_repo(tmp_path)
     (repo / "README.md").write_text("changed\n", encoding="utf-8")
-    (repo / "staged.txt").write_text("staged\n", encoding="utf-8")
-    _git(repo, "add", "staged.txt")
-    (repo / "untracked.txt").write_text("untracked\n", encoding="utf-8")
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_dirty.py").write_text("dirty\n", encoding="utf-8")
+    _git(repo, "add", "tests/test_dirty.py")
+    (repo / "scratch.tmp").write_text("untracked\n", encoding="utf-8")
     calls = []
 
     def fake_runner(argv):
@@ -224,41 +225,38 @@ def test_dirty_worktree_returns_actionable_fail_closed_resolver(tmp_path, monkey
         "manually_clean_worktree",
     }
     assert all(option["authorization_required"] is True for option in result["dirty_resolution_options"])
+    assert all("command" not in option and "argv" not in option for option in result["dirty_resolution_options"])
     assert result["dirty_path_classes"] == {
-        "tracked_modified": ["README.md"],
-        "staged": ["staged.txt"],
-        "untracked": ["untracked.txt"],
-        "deleted": [],
-        "renamed": [],
-        "conflicted": [],
-        "other": [],
+        "source": [],
+        "test": ["tests/test_dirty.py"],
+        "docs": ["README.md"],
+        "cache": [],
+        "unknown": ["scratch.tmp"],
     }
     assert result["diff_stat"]["truncated"] is False
     assert "README.md" in "\n".join(result["diff_stat"]["unstaged"])
-    assert "staged.txt" in "\n".join(result["diff_stat"]["staged"])
+    assert "tests/test_dirty.py" in "\n".join(result["diff_stat"]["staged"])
     assert "diff --git" not in json.dumps(result["diff_stat"])
+    assert "@@" not in json.dumps(result["diff_stat"])
     assert calls == []
 
 
-def test_dirty_path_classes_cover_porcelain_boundaries():
+def test_dirty_path_classes_are_coarse_path_classes_not_ownership_guesses():
     assert tool._dirty_path_classes(
         [
-            " M modified.txt",
-            "A  staged.txt",
-            "?? untracked.txt",
-            " D deleted.txt",
-            "R  old.txt -> renamed.txt",
-            "UU conflicted.txt",
-            "!! ignored.txt",
+            " M tools/codex_staged_implement_tool.py",
+            "A  tests/tools/test_codex_staged_implement_tool.py",
+            "?? docs/plans/codex-impl-guard-safe-plan.zh-CN.md",
+            " D .pytest_cache/v/cache/nodeids",
+            "R  old.txt -> renamed.unknown",
+            "UU conflicted.tmp",
         ]
     ) == {
-        "tracked_modified": ["modified.txt"],
-        "staged": ["staged.txt"],
-        "untracked": ["untracked.txt"],
-        "deleted": ["deleted.txt"],
-        "renamed": ["renamed.txt"],
-        "conflicted": ["conflicted.txt"],
-        "other": ["ignored.txt"],
+        "source": ["tools/codex_staged_implement_tool.py"],
+        "test": ["tests/tools/test_codex_staged_implement_tool.py"],
+        "docs": ["docs/plans/codex-impl-guard-safe-plan.zh-CN.md"],
+        "cache": [".pytest_cache/v/cache/nodeids"],
+        "unknown": ["renamed.unknown", "conflicted.tmp"],
     }
 
 
@@ -266,7 +264,8 @@ def test_dirty_diff_stat_is_bounded(monkeypatch, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     calls = []
-    many_lines = "\n".join(f" file-{index:03d}.txt | 1 +" for index in range(45))
+    long_path = "very-long-path-" + "x" * 260 + ".txt"
+    many_lines = "\n".join(f" {long_path}-{index:03d} | 1 +" for index in range(45))
 
     def fake_git(repo_arg, *args):
         calls.append(args)
@@ -277,11 +276,37 @@ def test_dirty_diff_stat_is_bounded(monkeypatch, tmp_path):
     result = tool._dirty_diff_stat(repo)
 
     assert calls == [("diff", "--stat", "--no-ext-diff"), ("diff", "--stat", "--no-ext-diff", "--cached")]
-    assert len(result["unstaged"]) == 40
-    assert len(result["staged"]) == 40
+    assert 0 < len(result["unstaged"]) <= 40
+    assert 0 < len(result["staged"]) <= 40
+    assert all(len(line) <= 180 for line in result["unstaged"] + result["staged"])
+    assert sum(len(line) + 1 for line in result["unstaged"]) <= 4000
+    assert sum(len(line) + 1 for line in result["staged"]) <= 4000
     assert result["max_lines_per_section"] == 40
+    assert result["max_line_chars"] == 180
+    assert result["max_total_chars"] == 4000
     assert result["truncated"] is True
     assert "diff --git" not in json.dumps(result)
+    assert "@@" not in json.dumps(result)
+
+
+def test_dirty_diff_stat_failure_is_non_blocking(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    calls = []
+
+    def fake_git(repo_arg, *args):
+        calls.append(args)
+        return SimpleNamespace(returncode=2, stdout="", stderr="fatal: bad revision")
+
+    monkeypatch.setattr(tool, "_git", fake_git)
+
+    result = tool._dirty_diff_stat(repo)
+
+    assert result["unstaged"] == []
+    assert result["staged"] == []
+    assert result["truncated"] is False
+    assert result["error"] == "diff_stat_unavailable"
+    assert calls == [("diff", "--stat", "--no-ext-diff"), ("diff", "--stat", "--no-ext-diff", "--cached")]
 
 
 def test_dirty_worktree_paths_are_bounded_without_losing_total_count(tmp_path, monkeypatch):

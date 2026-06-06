@@ -756,6 +756,159 @@ class TestAuxModelFallbackSurfacedToCallers:
         assert c._last_summary_recovery_stage is None
 
 
+class TestCompressionStageStatusCallback:
+    def _make_msgs(self, n=8):
+        return [
+            {"role": "system", "content": "sys"},
+            *[
+                {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+                for i in range(n)
+            ],
+        ]
+
+    def _mock_summary_response(self, text="summary text"):
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = text
+        return response
+
+    def test_normal_compression_emits_stage_and_done_events(self):
+        """Compressor should surface normal summary start and final delta."""
+        events = []
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value=self._mock_summary_response("normal summary"),
+        ):
+            result = c.compress(self._make_msgs(), current_tokens=90_000)
+
+        stages = [stage for stage, _payload in events]
+        assert "normal_summary_started" in stages
+        assert events[-1][0] == "compression_done"
+        assert events[-1][1]["messages_before"] == 9
+        assert events[-1][1]["messages_after"] == len(result)
+        assert events[-1][1]["tokens_before"] == 90_000
+        assert events[-1][1]["recovery_stage"] == "normal"
+
+    def test_safe_retry_chunked_progress_and_merge_events_are_sparse(self):
+        """Chunked recovery should expose progress without one status per chunk."""
+        events = []
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                chunk_summary_messages=1,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        # 2 failures: normal summary then safe retry. Seven chunk summaries + merge succeed.
+        responses = [
+            Exception("timeout while summarizing"),
+            Exception("timeout while summarizing"),
+            *[self._mock_summary_response(f"partial {i}") for i in range(7)],
+            self._mock_summary_response("merged summary"),
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=responses):
+            summary = c._generate_summary(self._make_msgs(n=6))
+
+        assert summary is not None
+        stages = [stage for stage, _payload in events]
+        assert "normal_summary_started" in stages
+        assert "safe_retry_started" in stages
+        assert ("chunked_summary_started", {"chunk_total": 7}) in events
+        assert "chunk_merge_started" in stages
+
+        progress = [
+            payload["chunk_index"]
+            for stage, payload in events
+            if stage == "chunk_progress"
+        ]
+        assert 1 in progress
+        assert 7 in progress
+        assert len(progress) < 7
+
+    def test_chunk_progress_milestones_are_sparse_for_five_chunks(self):
+        progress = [
+            index
+            for index in range(1, 6)
+            if ContextCompressor._should_emit_chunk_progress(index, 5)
+        ]
+
+        assert progress == [1, 3, 5]
+
+    def test_abort_emits_stage_event_without_misreporting_preserved_messages(self):
+        events = []
+        msgs = self._make_msgs(n=12)
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=True,
+                safe_retry_enabled=False,
+                chunked_summary_enabled=False,
+                extractive_fallback_enabled=False,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=Exception("timeout while summarizing"),
+        ):
+            result = c.compress(msgs, current_tokens=90_000)
+
+        assert result == msgs
+        assert c._last_compress_aborted is True
+        abort_events = [payload for stage, payload in events if stage == "compression_aborted"]
+        assert abort_events == [{"messages_before": len(msgs), "messages_preserved": len(msgs)}]
+
+    def test_emit_stage_status_ignores_status_callback_getter_failure(self):
+        class BrokenCallbackCompressor(ContextCompressor):
+            @property
+            def status_callback(self):
+                raise RuntimeError("status callback getter failed")
+
+        c = object.__new__(BrokenCallbackCompressor)
+
+        c._emit_stage_status("normal_summary_started")
+
+    def test_extractive_fallback_emits_stage_event(self):
+        events = []
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                safe_retry_enabled=False,
+                chunked_summary_enabled=False,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=Exception("timeout while summarizing"),
+        ):
+            summary = c._generate_summary(self._make_msgs())
+
+        assert summary is not None
+        stages = [stage for stage, _payload in events]
+        assert "normal_summary_started" in stages
+        assert "extractive_fallback_started" in stages
+
+
 class TestSummaryFailureTrackingForGatewayWarning:
     """Default behavior: failed LLM summary uses a structured local fallback
     and records fallback state so gateway hygiene & /compress can warn."""

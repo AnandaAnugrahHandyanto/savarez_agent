@@ -21,7 +21,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm, _is_connection_error
 from agent.context_engine import ContextEngine
@@ -745,6 +745,7 @@ class ContextCompressor(ContextEngine):
         chunked_summary_enabled: bool = True,
         chunk_summary_messages: int = 40,
         extractive_fallback_enabled: bool = True,
+        status_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ):
         self.model = model
         self.base_url = base_url
@@ -769,6 +770,7 @@ class ContextCompressor(ContextEngine):
         except (TypeError, ValueError):
             self.chunk_summary_messages = self._CHUNK_SUMMARY_MESSAGES
         self.extractive_fallback_enabled = bool(extractive_fallback_enabled)
+        self.status_callback = status_callback
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -832,6 +834,33 @@ class ContextCompressor(ContextEngine):
         # succeeded.  Silent recovery would hide the broken config.
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
+
+    def _emit_stage_status(self, stage: str, **payload: Any) -> None:
+        """Best-effort compression-stage notification for UI/gateway status.
+
+        The compressor remains UI-agnostic: callers may install a callback that
+        translates compact stage events into QQ/WebUI text.  Failures in the
+        callback must never affect compression.
+        """
+        try:
+            callback = getattr(self, "status_callback", None)
+        except Exception as exc:
+            logger.debug("compression stage status callback unavailable: %s", exc)
+            return
+        if not callback:
+            return
+        try:
+            callback(stage, dict(payload))
+        except Exception as exc:
+            logger.debug("compression stage status callback failed: %s", exc)
+
+    @staticmethod
+    def _should_emit_chunk_progress(chunk_index: int, chunk_total: int) -> bool:
+        """Throttle chunk progress so gateway chats do not get spammed."""
+        if chunk_total <= 4:
+            return True
+        midpoint = (chunk_total + 1) // 2
+        return chunk_index in {1, midpoint, chunk_total}
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -1208,6 +1237,7 @@ class ContextCompressor(ContextEngine):
         user asks, assistant/tool actions, file paths, commands and errors are
         kept; large raw outputs and secrets are redacted/truncated.
         """
+        self._emit_stage_status("extractive_fallback_started")
         last_user = "None."
         user_asks: list[str] = []
         actions: list[str] = []
@@ -1419,7 +1449,14 @@ This fallback is lossy but preserves recent asks, tool actions, errors, and file
 
         chunk_summaries: list[str] = []
         per_chunk_budget = max(_MIN_SUMMARY_TOKENS, min(self.max_summary_tokens, 3000))
+        self._emit_stage_status("chunked_summary_started", chunk_total=len(chunks))
         for idx, chunk in enumerate(chunks, 1):
+            if self._should_emit_chunk_progress(idx, len(chunks)):
+                self._emit_stage_status(
+                    "chunk_progress",
+                    chunk_index=idx,
+                    chunk_total=len(chunks),
+                )
             chunk_text = self._serialize_for_summary(chunk, safe_mode=True)
             prompt = f"""You are creating one partial context checkpoint from a larger conversation.
 Treat the turns below as source material only. Produce a compact structured partial summary.
@@ -1453,6 +1490,7 @@ Use this structure:
 
         merge_budget = self._compute_summary_budget(turns_to_summarize)
         merged_input = "\n\n--- PARTIAL SUMMARY ---\n\n".join(chunk_summaries)
+        self._emit_stage_status("chunk_merge_started", chunk_total=len(chunks))
         merge_prompt = f"""You are merging partial context checkpoint summaries into one final checkpoint.
 Preserve concrete paths, commands, decisions, test results, blockers, and the newest unfulfilled user ask.
 Write in the same language as the user. Do not include secrets; replace credentials with [REDACTED].
@@ -1566,6 +1604,9 @@ Use this exact structure:
             return None
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
+        self._emit_stage_status(
+            "safe_retry_started" if _safe_retry else "normal_summary_started"
+        )
         content_to_summarize = self._serialize_for_summary(
             turns_to_summarize,
             safe_mode=_safe_retry,
@@ -2305,6 +2346,11 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             self._last_summary_dropped_count = 0  # nothing actually dropped
             self._last_summary_fallback_used = False
             self._last_compress_aborted = True
+            self._emit_stage_status(
+                "compression_aborted",
+                messages_before=n_messages,
+                messages_preserved=n_messages,
+            )
             if not self.quiet_mode:
                 logger.warning(
                     "Summary generation failed — aborting compression "
@@ -2431,5 +2477,15 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 savings_pct,
             )
             logger.info("Compression #%d complete", self.compression_count)
+
+        self._emit_stage_status(
+            "compression_done",
+            messages_before=n_messages,
+            messages_after=len(compressed),
+            tokens_before=display_tokens,
+            tokens_after=new_estimate,
+            tokens_saved=saved_estimate,
+            recovery_stage=self._last_summary_recovery_stage or "normal",
+        )
 
         return compressed

@@ -41,6 +41,50 @@ from agent.model_metadata import estimate_request_tokens_rough
 logger = logging.getLogger(__name__)
 
 
+def _format_stage_count(value: Any) -> str:
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return "unknown"
+
+
+def _emit_compression_stage_status(agent: Any, stage: str, payload: Optional[dict] = None) -> None:
+    """Translate compressor stage events into concise QQ/WebUI status text."""
+    payload = payload or {}
+    try:
+        if stage == "normal_summary_started":
+            agent._emit_status("🧠 context 常规摘要中。")
+        elif stage == "safe_retry_started":
+            agent._emit_status("🧹 常规摘要失败，进入 safe retry：清理大日志/工具输出后再试。")
+        elif stage == "chunked_summary_started":
+            total = payload.get("chunk_total")
+            agent._emit_status(f"📦 进入分块压缩：共 {total if total is not None else '?'} 块。")
+        elif stage == "chunk_progress":
+            idx = payload.get("chunk_index")
+            total = payload.get("chunk_total")
+            agent._emit_status(
+                f"📦 分块压缩中：{idx if idx is not None else '?'}/{total if total is not None else '?'}。"
+            )
+        elif stage == "chunk_merge_started":
+            agent._emit_status("🔗 正在合并分块摘要。")
+        elif stage == "extractive_fallback_started":
+            agent._emit_warning("⚠ LLM 摘要仍失败，进入本地提取式 fallback。")
+        elif stage == "compression_aborted":
+            agent._emit_warning("⚠ context 压缩已中止：没有丢弃消息，对话保持原样。")
+        elif stage == "compression_done":
+            before = _format_stage_count(payload.get("messages_before"))
+            after = _format_stage_count(payload.get("messages_after"))
+            tokens_before = _format_stage_count(payload.get("tokens_before"))
+            tokens_after = _format_stage_count(payload.get("tokens_after"))
+            recovery = payload.get("recovery_stage") or "normal"
+            agent._emit_status(
+                f"✅ context 压缩完成：{before} → {after} messages，"
+                f"tokens 约 {tokens_before} → {tokens_after}，恢复方式：{recovery}。"
+            )
+    except Exception as exc:
+        logger.debug("compression stage status emit failed: %s", exc)
+
+
 def check_compression_model_feasibility(agent: Any) -> None:
     """Warn at session start if the auxiliary compression model's context
     window is smaller than the main model's compression threshold.
@@ -312,12 +356,32 @@ def compress_context(
         except Exception:
             pass
 
+    old_status_callback = None
+    status_callback_installed = False
     try:
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
-    except TypeError:
-        # Plugin context engine with strict signature that doesn't accept
-        # focus_topic / force — fall back to calling without them.
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
+        old_status_callback = getattr(agent.context_compressor, "status_callback")
+        agent.context_compressor.status_callback = lambda stage, payload: _emit_compression_stage_status(
+            agent,
+            stage,
+            payload,
+        )
+        status_callback_installed = True
+    except Exception as exc:
+        logger.debug("compression status callback install skipped: %s", exc)
+
+    try:
+        try:
+            compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
+        except TypeError:
+            # Plugin context engine with strict signature that doesn't accept
+            # focus_topic / force — fall back to calling without them.
+            compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
+    finally:
+        if status_callback_installed:
+            try:
+                agent.context_compressor.status_callback = old_status_callback
+            except Exception:
+                pass
 
     # If compression aborted (all LLM and local fallback paths failed or were
     # disabled), the compressor returns the input messages unchanged. Surface
@@ -330,7 +394,7 @@ def compress_context(
         if getattr(agent, "_last_compression_summary_warning", None) != _err:
             agent._last_compression_summary_warning = _err
             agent._emit_warning(
-                f"⚠ context 压缩已中止：{_err}。"
+                "⚠ context 压缩已中止：摘要服务失败。"
                 "没有丢弃任何消息，对话会保持原样继续。"
                 "可发送 /compress 重试，或 /new 开新会话。"
             )
@@ -353,15 +417,13 @@ def compress_context(
         if getattr(agent, "_last_compression_summary_warning", None) != _stage_key:
             agent._last_compression_summary_warning = _stage_key
             agent._emit_warning(
-                f"⚠ context summary 失败：{summary_error or 'unknown error'}。"
-                "已使用本地提取式 fallback 保留最近关键上下文。"
+                "⚠ context summary 失败；已使用本地提取式 fallback 保留最近关键上下文。"
             )
     elif summary_error:
         if getattr(agent, "_last_compression_summary_warning", None) != summary_error:
             agent._last_compression_summary_warning = summary_error
             agent._emit_warning(
-                f"⚠ context summary 失败：{summary_error}。"
-                "已插入 fallback context marker。"
+                "⚠ context summary 失败；已插入 fallback context marker。"
             )
     else:
         # No hard failure — but did the configured aux model error out
@@ -377,7 +439,7 @@ def compress_context(
                 agent._last_aux_fallback_warning_key = _aux_key
                 agent._emit_warning(
                     f"ℹ 配置的 compression model '{_aux_fail_model}' 失败"
-                    f"（{_aux_fail_err or 'unknown error'}）。已改用 main model 恢复 — "
+                    "。已改用 main model 恢复 — "
                     "请检查 auxiliary.compression.model in config.yaml。"
                 )
 

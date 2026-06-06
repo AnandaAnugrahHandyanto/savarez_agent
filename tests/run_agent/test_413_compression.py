@@ -105,6 +105,283 @@ def agent():
 # Tests
 # ---------------------------------------------------------------------------
 
+
+def test_compression_stage_status_helper_emits_concise_chinese_messages():
+    from agent.conversation_compression import _emit_compression_stage_status
+
+    statuses = []
+    warnings = []
+
+    class FakeAgent:
+        def _emit_status(self, message):
+            statuses.append(message)
+
+        def _emit_warning(self, message):
+            warnings.append(message)
+
+    agent = FakeAgent()
+    _emit_compression_stage_status(agent, "normal_summary_started", {})
+    _emit_compression_stage_status(agent, "chunked_summary_started", {"chunk_total": 7})
+    _emit_compression_stage_status(agent, "chunk_progress", {"chunk_index": 3, "chunk_total": 7})
+    _emit_compression_stage_status(
+        agent,
+        "compression_done",
+        {
+            "messages_before": 120,
+            "messages_after": 24,
+            "tokens_before": 277_561,
+            "tokens_after": 88_000,
+            "recovery_stage": "chunked",
+        },
+    )
+
+    joined = "\n".join(statuses)
+    assert "常规摘要" in joined
+    assert "分块压缩" in joined
+    assert "3/7" in joined
+    assert "120 → 24" in joined
+    assert "277,561" in joined
+    assert "88,000" in joined
+    assert "chunked" in joined
+    assert warnings == []
+
+
+def test_compress_context_restores_status_callback_after_strict_signature_fallback():
+    from agent.conversation_compression import compress_context
+
+    statuses = []
+    warnings = []
+    original_callback = object()
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "world"},
+    ]
+
+    class FakeCompressor:
+        status_callback = original_callback
+        compression_count = 1
+        _last_compress_aborted = False
+        _last_summary_error = None
+        _last_summary_recovery_stage = None
+        _last_aux_model_failure_model = None
+        _last_aux_model_failure_error = None
+
+        def compress(self, messages, **kwargs):
+            if "focus_topic" in kwargs or "force" in kwargs:
+                raise TypeError("strict plugin signature")
+            assert callable(self.status_callback)
+            self.status_callback("normal_summary_started", {})
+            return [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "compressed"},
+            ]
+
+    compressor = FakeCompressor()
+
+    class FakeAgent:
+        compression_enabled = True
+        _compression_feasibility_checked = True
+        session_id = None
+        model = "test-model"
+        platform = "qqbot"
+        _memory_manager = None
+        _session_db = None
+        _todo_store = SimpleNamespace(format_for_injection=lambda: "")
+        _cached_system_prompt = "system"
+        tools = None
+        context_compressor = compressor
+
+        def _emit_status(self, message):
+            statuses.append(message)
+
+        def _emit_warning(self, message):
+            warnings.append(message)
+
+        def _invalidate_system_prompt(self):
+            pass
+
+        def _build_system_prompt(self, _system_message):
+            return "system"
+
+    compressed, system_prompt = compress_context(FakeAgent(), messages, "system", approx_tokens=230_000)
+
+    assert len(compressed) == 2
+    assert system_prompt == "system"
+    assert compressor.status_callback is original_callback
+    assert any("常规摘要" in message for message in statuses)
+    assert warnings == []
+
+
+def test_compress_context_restores_status_callback_after_compressor_exception():
+    from agent.conversation_compression import compress_context
+
+    statuses = []
+    original_callback = object()
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hello"},
+    ]
+
+    class FakeCompressor:
+        status_callback = original_callback
+
+        def compress(self, messages, **kwargs):
+            assert callable(self.status_callback)
+            self.status_callback("normal_summary_started", {})
+            raise RuntimeError("compressor failed")
+
+    compressor = FakeCompressor()
+
+    class FakeAgent:
+        compression_enabled = True
+        _compression_feasibility_checked = True
+        session_id = None
+        model = "test-model"
+        _memory_manager = None
+        context_compressor = compressor
+
+        def _emit_status(self, message):
+            statuses.append(message)
+
+    with pytest.raises(RuntimeError, match="compressor failed"):
+        compress_context(FakeAgent(), messages, "system", approx_tokens=230_000)
+
+    assert compressor.status_callback is original_callback
+    assert any("常规摘要" in message for message in statuses)
+
+
+def test_compress_context_ignores_status_callback_getter_failure():
+    from agent.conversation_compression import compress_context
+
+    statuses = []
+    warnings = []
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "world"},
+    ]
+
+    class FakeCompressor:
+        compression_count = 1
+        _last_compress_aborted = False
+        _last_summary_error = None
+        _last_summary_recovery_stage = None
+        _last_aux_model_failure_model = None
+        _last_aux_model_failure_error = None
+
+        @property
+        def status_callback(self):
+            raise RuntimeError("status callback getter failed")
+
+        def compress(self, messages, **kwargs):
+            return [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "compressed"},
+            ]
+
+    class FakeAgent:
+        compression_enabled = True
+        _compression_feasibility_checked = True
+        session_id = None
+        model = "test-model"
+        platform = "qqbot"
+        _memory_manager = None
+        _session_db = None
+        _todo_store = SimpleNamespace(format_for_injection=lambda: "")
+        _cached_system_prompt = "system"
+        tools = None
+        context_compressor = FakeCompressor()
+
+        def _emit_status(self, message):
+            statuses.append(message)
+
+        def _emit_warning(self, message):
+            warnings.append(message)
+
+        def _invalidate_system_prompt(self):
+            pass
+
+        def _build_system_prompt(self, _system_message):
+            return "system"
+
+    compressed, system_prompt = compress_context(FakeAgent(), messages, "system", approx_tokens=230_000)
+
+    assert len(compressed) == 2
+    assert system_prompt == "system"
+    assert any("正在压缩 context" in message for message in statuses)
+    assert warnings == []
+
+
+def test_compress_context_recovery_warning_does_not_surface_raw_provider_error():
+    from agent.conversation_compression import compress_context
+
+    statuses = []
+    warnings = []
+    raw_error = "https://proxy.example/v1 returned api_key=SECRET with huge provider envelope"
+
+    class FakeCompressor:
+        status_callback = None
+        compression_count = 1
+        _last_compress_aborted = False
+        _last_summary_error = raw_error
+        _last_summary_recovery_stage = "extractive_fallback"
+        _last_aux_model_failure_model = None
+        _last_aux_model_failure_error = None
+
+        def compress(self, messages, **_kwargs):
+            return [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "compressed"},
+            ]
+
+    class FakeAgent:
+        compression_enabled = True
+        _compression_feasibility_checked = True
+        session_id = None
+        model = "test-model"
+        platform = "qqbot"
+        _memory_manager = None
+        _session_db = None
+        _todo_store = SimpleNamespace(format_for_injection=lambda: "")
+        _cached_system_prompt = "system"
+        tools = None
+        context_compressor = FakeCompressor()
+
+        def _emit_status(self, message):
+            statuses.append(message)
+
+        def _emit_warning(self, message):
+            warnings.append(message)
+
+        def _invalidate_system_prompt(self):
+            pass
+
+        def _build_system_prompt(self, _system_message):
+            return "system"
+
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "world"},
+    ]
+
+    compressed, system_prompt = compress_context(
+        FakeAgent(),
+        messages,
+        "system",
+        approx_tokens=230_000,
+    )
+
+    assert len(compressed) == 2
+    assert system_prompt == "system"
+    joined = "\n".join(statuses + warnings)
+    assert "本地提取式 fallback" in joined
+    assert "https://proxy.example" not in joined
+    assert "api_key" not in joined
+    assert "SECRET" not in joined
+
+
 class TestHTTP413Compression:
     """413 errors should trigger compression, not abort as generic 4xx."""
 

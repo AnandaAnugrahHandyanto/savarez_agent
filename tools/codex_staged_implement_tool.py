@@ -47,6 +47,8 @@ _DICT_LIMIT = 80
 _STRING_LIMIT = 4000
 _DIRTY_PATHS_LIMIT = 100
 _DIFF_STAT_LINES_LIMIT = 40
+_DIFF_STAT_LINE_CHARS_LIMIT = 180
+_DIFF_STAT_TOTAL_CHARS_LIMIT = 4000
 _INFERRED_SCOPE_NEXT_ACTION = "confirm_inferred_scope_or_execute_with_explicit_scope"
 _INFERRED_SCOPE_TEMPLATES = (
     (
@@ -359,56 +361,82 @@ def _dirty_path_from_porcelain(line: str) -> str:
     return raw_path.strip()
 
 
+def _dirty_path_class(path: str) -> str:
+    parts = Path(path).parts
+    lowered_parts = tuple(part.lower() for part in parts)
+    lowered_path = path.lower()
+    name = Path(path).name.lower()
+    if any(part in {".pytest_cache", "__pycache__", ".mypy_cache", ".ruff_cache", "node_modules", "dist", "build"} for part in lowered_parts):
+        return "cache"
+    if lowered_parts and lowered_parts[0] in {"tests", "test"}:
+        return "test"
+    if name.startswith("test_") or name.endswith("_test.py") or ".test." in name or ".spec." in name:
+        return "test"
+    if lowered_parts and lowered_parts[0] in {"docs", "doc"}:
+        return "docs"
+    if name in {"readme", "readme.md", "readme.rst", "readme.txt", "changelog.md", "contributing.md"}:
+        return "docs"
+    if lowered_parts and lowered_parts[0] in {"src", "lib", "app", "apps", "packages", "tools", "scripts", "gateway", "agent", "hermes_cli"}:
+        return "source"
+    if any(lowered_path.endswith(ext) for ext in (".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".c", ".cc", ".cpp", ".h", ".hpp", ".sh")):
+        return "source"
+    return "unknown"
+
+
 def _dirty_path_classes(lines: list[str]) -> dict[str, list[str]]:
     classes = {
-        "tracked_modified": [],
-        "staged": [],
-        "untracked": [],
-        "deleted": [],
-        "renamed": [],
-        "conflicted": [],
-        "other": [],
+        "source": [],
+        "test": [],
+        "docs": [],
+        "cache": [],
+        "unknown": [],
     }
     for line in lines:
-        status = (line[:2] + "  ")[:2]
-        index_status, worktree_status = status[0], status[1]
         path = _dirty_path_from_porcelain(line)
-        if index_status == "?" and worktree_status == "?":
-            bucket = "untracked"
-        elif index_status == "!" and worktree_status == "!":
-            bucket = "other"
-        elif index_status == "U" or worktree_status == "U" or status in {"AA", "DD", "AU", "UA", "DU", "UD"}:
-            bucket = "conflicted"
-        elif index_status == "R" or worktree_status == "R":
-            bucket = "renamed"
-        elif index_status == "D" or worktree_status == "D":
-            bucket = "deleted"
-        elif index_status != " ":
-            bucket = "staged"
-        elif worktree_status == "M":
-            bucket = "tracked_modified"
-        else:
-            bucket = "other"
+        bucket = _dirty_path_class(path)
         if len(classes[bucket]) < _DIRTY_PATHS_LIMIT:
             classes[bucket].append(path)
     return classes
 
 
-def _bounded_diff_stat_lines(repo: Path, *args: str) -> tuple[list[str], bool]:
+def _bounded_diff_stat_lines(repo: Path, *args: str) -> tuple[list[str], bool, bool]:
     proc = _git(repo, "diff", "--stat", "--no-ext-diff", *args)
-    lines = [line for line in proc.stdout.splitlines() if line]
-    return lines[:_DIFF_STAT_LINES_LIMIT], len(lines) > _DIFF_STAT_LINES_LIMIT
+    if proc.returncode != 0:
+        return [], False, False
+    lines: list[str] = []
+    total_chars = 0
+    truncated = False
+    for raw_line in proc.stdout.splitlines():
+        if not raw_line:
+            continue
+        line = raw_line
+        if len(line) > _DIFF_STAT_LINE_CHARS_LIMIT:
+            marker = "...[truncated]"
+            line = line[: _DIFF_STAT_LINE_CHARS_LIMIT - len(marker)] + marker
+            truncated = True
+        next_total = total_chars + len(line) + 1
+        if len(lines) >= _DIFF_STAT_LINES_LIMIT or next_total > _DIFF_STAT_TOTAL_CHARS_LIMIT:
+            truncated = True
+            break
+        lines.append(line)
+        total_chars = next_total
+    return lines, truncated, True
 
 
 def _dirty_diff_stat(repo: Path) -> dict[str, Any]:
-    unstaged, unstaged_truncated = _bounded_diff_stat_lines(repo)
-    staged, staged_truncated = _bounded_diff_stat_lines(repo, "--cached")
-    return {
+    unstaged, unstaged_truncated, unstaged_ok = _bounded_diff_stat_lines(repo)
+    staged, staged_truncated, staged_ok = _bounded_diff_stat_lines(repo, "--cached")
+    result = {
         "unstaged": unstaged,
         "staged": staged,
         "max_lines_per_section": _DIFF_STAT_LINES_LIMIT,
+        "max_line_chars": _DIFF_STAT_LINE_CHARS_LIMIT,
+        "max_total_chars": _DIFF_STAT_TOTAL_CHARS_LIMIT,
         "truncated": unstaged_truncated or staged_truncated,
     }
+    if not unstaged_ok or not staged_ok:
+        result["error"] = "diff_stat_unavailable"
+    return result
 
 
 def _dirty_resolution_metadata(dirty: dict[str, Any]) -> dict[str, Any]:

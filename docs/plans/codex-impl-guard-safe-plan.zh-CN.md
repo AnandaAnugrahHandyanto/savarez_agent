@@ -892,7 +892,10 @@ Phase 13 必须简单、硬：
 - 任何 pre-existing tracked dirty、untracked、staged、conflicted、deleted、renamed、submodule/gitlink evidence 都返回 `dirty_worktree`。
 - 不自动 `stash`、`reset`、`clean`、`checkout`、`restore`。
 - 不因为 dirty 文件与 allowlist 不重叠就继续写；最多在 `recommended_next_action` 建议 clean worktree / isolated worktree。
-- 返回 JSON 记录 `dirty_paths`、`dirty_count`、`dirty_baseline_policy`。
+- Dirty resolver 只是薄 UX/metadata 层：复用现有 `codex_impl_guard.py`、`codex_stage_runner.py`、`codex_review_packet.py`、takeover candidate 状态机和 `using-git-worktrees` 隔离流程，不重造 guard、runner、review packet 或 worktree 机制。
+- 返回 JSON 记录 `dirty_paths`、`dirty_count`、`dirty_baseline_policy`、声明式 `dirty_resolution_options`、`authorization_required`、bounded `diff_stat`。
+- `dirty_path_classes` 只按路径/状态做确定性粗分类：`source` / `test` / `docs` / `cache` / `unknown`；不猜阶段归属或变更 owner。
+- `diff_stat` 必须限制文件数、单行长度和总字符数；失败时返回非阻塞 metadata error，不输出完整 patch/diff。
 
 ### 13.4 runner invocation boundary
 
