@@ -29,6 +29,7 @@ const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
+const { killHermesRuntimeProcessesForUpdate } = require('./update-processes.cjs')
 const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -1530,6 +1531,17 @@ async function releaseBackendLock(updateRoot, tag) {
   }
   stopAllPoolBackends()
   for (const pid of pids) forceKillProcessTree(pid)
+
+  const runtimePids = killHermesRuntimeProcessesForUpdate(updateRoot, {
+    currentPid: process.pid,
+    killTree: forceKillProcessTree,
+    onListError: err =>
+      rememberLog(`[updates] could not enumerate Hermes runtime processes before update: ${err?.message || err}`),
+    onError: (pid, err) => rememberLog(`[updates] failed to stop Hermes runtime process ${pid}: ${err?.message || err}`)
+  })
+  if (runtimePids.length) {
+    rememberLog(`[updates] stopped ${runtimePids.length} Hermes runtime process(es) before update`)
+  }
 
   const shim = venvHermesShimPath(updateRoot)
   const deadlineMs = Date.now() + 15000
