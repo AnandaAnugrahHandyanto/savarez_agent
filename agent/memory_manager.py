@@ -373,60 +373,57 @@ _SAFE_CONTEXT_SECTION_NAMES = {
     "recalled user context (recent/relevant)",
 }
 _USER_PEER_CARD_SECTION_NAMES = {"user peer card", "user profile", "peer card"}
-_IDENTITY_FIELD_PATTERN = (
-    r"(?:"
-    r"identity|"
-    r"alias(?:es)?|"
-    r"name|"
-    r"role|"
-    r"e-?mail|"
-    r"phone|"
-    r"address|"
-    r"website|"
-    r"location|"
-    r"org(?:anization)?|"
-    r"father|"
-    r"contractor"
-    r")"
-)
 _HONCHO_LABEL_RE = re.compile(r"^(attribute|instruction)\s*:\s*(.+)$", re.IGNORECASE)
-_RAW_IDENTITY_LINE_RE = re.compile(
-    r"^(?:"
-    # Bare peer-card fields: "Name: ...", "Location: ...".
-    rf"{_IDENTITY_FIELD_PATTERN}\s*:|"
-    # Honcho cards commonly prefix facts as ATTRIBUTE:/INSTRUCTION:.  Strip
-    # identity fields after those labels while preserving safe preferences.
-    rf"(?:attribute|instruction)\s*:\s*{_IDENTITY_FIELD_PATTERN}\s*:|"
-    # Relationship-prefixed facts are names by construction (Father, spouse,
-    # employer/contact, etc.); omit them conservatively instead of trying to
-    # maintain an exhaustive relationship-name allow/deny list.
-    r"relationship\s*:"
-    r")",
-    re.IGNORECASE,
-)
+_SAFE_PEER_PREFERENCE_LABELS = {
+    "active project",
+    "design preference",
+    "knowledge store",
+    "model routing",
+    "tech stack",
+}
+
+
+def _normalize_peer_preference_label(label: str) -> str:
+    """Normalize compact peer-card labels before fail-closed allowlisting."""
+    label = label.strip().lower().replace("_", " ").replace("-", " ")
+    return re.sub(r"\s+", " ", label)
+
+
+def _safe_peer_preference_line(line: str) -> str | None:
+    """Return a safe compact preference line, or None for unapproved labels.
+
+    Peer cards can contain arbitrary identity fields (names, handles,
+    employers, relationships, locations, dates, etc.).  This parser is
+    fail-closed: only explicitly approved preference labels survive, including
+    when Honcho prefixes the line with ATTRIBUTE:/INSTRUCTION:.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return None
+
+    label_match = _HONCHO_LABEL_RE.match(stripped)
+    if label_match:
+        stripped = label_match.group(2).strip()
+
+    label, separator, value = stripped.partition(":")
+    if separator != ":":
+        return None
+    label = re.sub(r"\s+", " ", label.strip())
+    value = value.strip()
+    if not label or not value:
+        return None
+    if _normalize_peer_preference_label(label) not in _SAFE_PEER_PREFERENCE_LABELS:
+        return None
+    return f"{label}: {value}"
 
 
 def compact_user_peer_card(body: str) -> str:
-    """Keep non-identity peer-card facts while dropping raw Honcho labels/control payload."""
+    """Keep only allowlisted compact peer preference labels from peer-card text."""
     lines: list[str] = []
     for line in sanitize_context(body).splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if _RAW_IDENTITY_LINE_RE.match(stripped):
-            continue
-        label_match = _HONCHO_LABEL_RE.match(stripped)
-        if label_match:
-            label = label_match.group(1).lower()
-            # INSTRUCTION-prefixed Honcho cards are user-control shaped when
-            # pasted into prompts. They remain available through Honcho tools
-            # but are not auto-injected as active instructions.
-            if label == "instruction":
-                continue
-            stripped = label_match.group(2).strip()
-            if not stripped or _RAW_IDENTITY_LINE_RE.match(stripped):
-                continue
-        lines.append(stripped)
+        safe_line = _safe_peer_preference_line(line)
+        if safe_line:
+            lines.append(safe_line)
     return _truncate_memory_context("\n".join(lines), 1200)
 
 

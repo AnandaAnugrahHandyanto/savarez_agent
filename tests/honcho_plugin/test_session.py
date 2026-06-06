@@ -964,7 +964,7 @@ class TestBaseContextSummary:
         ctx = {
             "summary": "Testing Honcho tools and dialectic depth.",
             "representation": "Eri is a developer.",
-            "card": "Name: Eri Barrett\nPrefers terse verified status",
+            "card": "Name: Eri Barrett\nDesign Preference: terse verified status",
         }
         formatted = provider._format_first_turn_context(ctx)
         assert "## Session Summary" in formatted
@@ -974,19 +974,19 @@ class TestBaseContextSummary:
         assert "## User Representation" not in formatted
         assert "## User Peer Card" not in formatted
         assert "Name: Eri" not in formatted
-        assert "Prefers terse verified status" in formatted
+        assert "Design Preference: terse verified status" in formatted
 
     def test_format_without_summary(self):
         """No summary key means no summary section."""
         provider = HonchoMemoryProvider()
-        ctx = {"representation": "Eri is a developer.", "card": "Name: Eri\nPrefers terse status"}
+        ctx = {"representation": "Eri is a developer.", "card": "Name: Eri\nDesign Preference: terse status"}
         formatted = provider._format_first_turn_context(ctx)
         assert "Session Summary" not in formatted
         assert "User Representation" not in formatted
         assert "## User Peer Card" not in formatted
         assert "Name: Eri" not in formatted
         assert "## Compact peer preferences" in formatted
-        assert "Prefers terse status" in formatted
+        assert "Design Preference: terse status" in formatted
 
     def test_format_empty_summary_skipped(self):
         """Empty summary string should not produce a section."""
@@ -998,7 +998,7 @@ class TestBaseContextSummary:
     def test_format_does_not_inject_assistant_peer_context_or_raw_identity_by_default(self):
         provider = HonchoMemoryProvider()
         ctx = {
-            "card": "Name: Nic\nAliases: nic@example.com\nNic prefers terse verified status",
+            "card": "Name: Nic\nAliases: nic@example.com\nDesign Preference: terse verified status",
             "representation": "Current user context",
             "ai_card": "AI Identity Card: private assistant model",
             "ai_representation": "AI Self-Representation: private assistant dump",
@@ -1006,7 +1006,7 @@ class TestBaseContextSummary:
 
         formatted = provider._format_first_turn_context(ctx)
 
-        assert "Nic prefers terse verified status" in formatted
+        assert "Design Preference: terse verified status" in formatted
         assert "Current user context" not in formatted
         assert "## User Peer Card" not in formatted
         assert "Name: Nic" not in formatted

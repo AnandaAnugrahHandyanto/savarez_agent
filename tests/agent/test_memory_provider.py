@@ -914,6 +914,75 @@ class TestMemoryContextFencing:
         assert "Named Client" not in block
         assert "Private Alias" not in block
 
+    @pytest.mark.parametrize(
+        "label",
+        [
+            "Full Name",
+            "First Name",
+            "Username",
+            "Handle",
+            "Employer",
+            "Company",
+            "Spouse",
+            "Wife",
+            "Child",
+            "Birthday",
+            "DOB",
+            "SSN",
+            "Coordinates",
+            "City",
+            "Country",
+        ],
+    )
+    def test_compact_peer_preferences_fail_closed_for_identity_labels(self, label):
+        from agent.memory_manager import compact_user_peer_card
+
+        payload = "\n".join(
+            [
+                f"{label}: synthetic forbidden value",
+                f"ATTRIBUTE: {label}: synthetic forbidden value",
+                f"INSTRUCTION: {label}: synthetic forbidden value",
+            ]
+        )
+
+        result = compact_user_peer_card(payload)
+
+        assert result == ""
+        assert "synthetic forbidden value" not in result
+        assert "ATTRIBUTE:" not in result
+        assert "INSTRUCTION:" not in result
+
+    def test_compact_peer_preferences_preserve_only_safe_labels(self):
+        from agent.memory_manager import compact_user_peer_card
+
+        result = compact_user_peer_card(
+            "\n".join(
+                [
+                    "Design Preference: Tight functional UI",
+                    "ATTRIBUTE: Tech Stack: Python, TypeScript",
+                    "INSTRUCTION: Model Routing: GPT-5.5 High",
+                    "Active Project: AIVS",
+                    "Knowledge Store: wiki project notes",
+                    "Company: Synthetic Studio",
+                    "Username: synthetic_user",
+                    "unlabelled preference prose",
+                ]
+            )
+        )
+
+        assert "Design Preference: Tight functional UI" in result
+        assert "Tech Stack: Python, TypeScript" in result
+        assert "Model Routing: GPT-5.5 High" in result
+        assert "Active Project: AIVS" in result
+        assert "Knowledge Store: wiki project notes" in result
+        assert "Company:" not in result
+        assert "Synthetic Studio" not in result
+        assert "Username:" not in result
+        assert "synthetic_user" not in result
+        assert "unlabelled preference prose" not in result
+        assert "ATTRIBUTE:" not in result
+        assert "INSTRUCTION:" not in result
+
 
 # ---------------------------------------------------------------------------
 # AIAgent.commit_memory_session — routes to MemoryManager.on_session_end
