@@ -323,6 +323,27 @@ word word
             result = _patch_skill("my-skill", "old text", "new text", file_path="references/api.md")
         assert result["success"] is True
 
+    def test_patch_skill_md_via_explicit_file_path(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _patch_skill("my-skill", "Do the thing.", "Do the new thing.", file_path="SKILL.md")
+        assert result["success"] is True
+        assert "Do the new thing." in (tmp_path / "my-skill" / "SKILL.md").read_text()
+
+    def test_patch_skill_md_via_name_prefixed_path(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _patch_skill("my-skill", "Do the thing.", "Do the new thing.", file_path="my-skill/SKILL.md")
+        assert result["success"] is True
+        assert "Do the new thing." in (tmp_path / "my-skill" / "SKILL.md").read_text()
+
+    def test_patch_skill_md_explicit_path_keeps_frontmatter_guard(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _patch_skill("my-skill", "description:", "desc_removed:", file_path="SKILL.md")
+        assert result["success"] is False
+        assert "structure" in result["error"].lower()
+
     def test_patch_skill_not_found(self, tmp_path):
         with _skill_dir(tmp_path):
             result = _patch_skill("nonexistent", "old", "new")
@@ -443,6 +464,22 @@ class TestWriteFile:
             result = _write_file("my-skill", "secret/evil.py", "malicious")
         assert result["success"] is False
 
+    def test_write_skill_md_delegates_to_edit(self, tmp_path):
+        new_content = VALID_SKILL_CONTENT.replace("Do the thing.", "Do the rewritten thing.")
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "SKILL.md", new_content)
+        assert result["success"] is True
+        assert "Do the rewritten thing." in (tmp_path / "my-skill" / "SKILL.md").read_text()
+
+    def test_write_skill_md_name_prefixed_invalid_frontmatter_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _write_file("my-skill", "my-skill/SKILL.md", "no frontmatter at all")
+        assert result["success"] is False
+        # original untouched
+        assert "Do the thing." in (tmp_path / "my-skill" / "SKILL.md").read_text()
+
     def test_write_symlink_escape_blocked(self, tmp_path):
         outside_dir = tmp_path / "outside"
         outside_dir.mkdir()
@@ -477,6 +514,14 @@ class TestRemoveFile:
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _remove_file("my-skill", "references/nope.md")
         assert result["success"] is False
+
+    def test_remove_skill_md_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _remove_file("my-skill", "SKILL.md")
+        assert result["success"] is False
+        assert "action='delete'" in result["error"]
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
 
     def test_remove_symlink_escape_blocked(self, tmp_path):
         outside_dir = tmp_path / "outside"

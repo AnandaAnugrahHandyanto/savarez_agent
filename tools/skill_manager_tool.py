@@ -398,6 +398,23 @@ def _skill_not_found_error(name: str, suffix: str = "") -> str:
     return base
 
 
+def _is_skill_md_path(name: str, file_path: str) -> bool:
+    """True when ``file_path`` is a common spelling of the skill's SKILL.md.
+
+    Agents naturally pass ``file_path='SKILL.md'`` or
+    ``file_path='<skill-name>/SKILL.md'`` when trying to change a skill's
+    main file. SKILL.md lives at the skill root (not under an allowed
+    subdirectory), so without this check those calls bounce off
+    _validate_file_path with a misleading "must be under assets/references/
+    scripts/templates" error instead of being routed to the SKILL.md
+    handlers that already exist (edit/patch).
+    """
+    if not file_path:
+        return False
+    parts = Path(file_path).parts
+    return parts == ("SKILL.md",) or parts == (name, "SKILL.md")
+
+
 def _validate_file_path(file_path: str) -> Optional[str]:
     """
     Validate a file path for write_file/remove_file.
@@ -586,6 +603,12 @@ def _patch_skill(
 
     skill_dir = existing["path"]
 
+    # 'SKILL.md' / '<name>/SKILL.md' are just explicit spellings of the
+    # default target — route them to the SKILL.md path (which also keeps
+    # the frontmatter validation below in play).
+    if file_path and _is_skill_md_path(name, file_path):
+        file_path = None
+
     if file_path:
         # Patching a supporting file
         err = _validate_file_path(file_path)
@@ -716,12 +739,17 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
 
 def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     """Add or overwrite a supporting file within any skill directory."""
+    if not file_content and file_content != "":
+        return {"success": False, "error": "file_content is required."}
+
+    # Writing SKILL.md is the 'edit' action — delegate so frontmatter and
+    # size validation (and rollback-on-scan-block) still apply.
+    if _is_skill_md_path(name, file_path):
+        return _edit_skill(name, file_content)
+
     err = _validate_file_path(file_path)
     if err:
         return {"success": False, "error": err}
-
-    if not file_content and file_content != "":
-        return {"success": False, "error": "file_content is required."}
 
     # Check size limits
     content_bytes = len(file_content.encode("utf-8"))
@@ -768,6 +796,16 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
 
 def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     """Remove a supporting file from any skill directory."""
+    if _is_skill_md_path(name, file_path):
+        return {
+            "success": False,
+            "error": (
+                "SKILL.md is the skill itself and cannot be removed on its own. "
+                "Use action='edit' or action='patch' to change it, or "
+                "action='delete' to remove the whole skill."
+            ),
+        }
+
     err = _validate_file_path(file_path)
     if err:
         return {"success": False, "error": err}
@@ -985,7 +1023,9 @@ SKILL_MANAGE_SCHEMA = {
                     "Path to a supporting file within the skill directory. "
                     "For 'write_file'/'remove_file': required, must be under references/, "
                     "templates/, scripts/, or assets/. "
-                    "For 'patch': optional, defaults to SKILL.md if omitted."
+                    "For 'patch': optional, defaults to SKILL.md if omitted. "
+                    "'SKILL.md' is also accepted: patch targets the main file, "
+                    "write_file behaves like action='edit' (full SKILL.md rewrite)."
                 )
             },
             "file_content": {
