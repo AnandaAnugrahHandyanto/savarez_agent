@@ -45,6 +45,7 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
           {entries.map(entry => {
             const isEditing = editingId === entry.id
             const attachmentsCount = entry.attachments.length
+            const sendLabel = busy ? c.sendQueuedNext : c.sendQueuedNow
 
             return (
               <div
@@ -97,11 +98,11 @@ export function QueuePanel({ busy, editingId, entries, onDelete, onEdit, onSendN
                       <Pencil size={11} />
                     </Button>
                   </Tip>
-                  <Tip label={c.sendQueuedNow}>
+                  <Tip label={sendLabel}>
                     <Button
-                      aria-label={c.sendQueuedNow}
+                      aria-label={sendLabel}
                       className="h-5 w-5 rounded-md"
-                      disabled={busy || isEditing}
+                      disabled={isEditing}
                       onClick={() => onSendNow(entry.id)}
                       size="icon-xs"
                       type="button"
