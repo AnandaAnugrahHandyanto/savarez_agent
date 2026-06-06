@@ -80,6 +80,7 @@ class TestBundledPluginsRegister:
         names = sorted(p.name for p in list_providers())
         assert names == [
             "brave-free",
+            "crawl4ai",
             "ddgs",
             "exa",
             "firecrawl",
@@ -104,6 +105,9 @@ class TestBundledPluginsRegister:
             ("firecrawl", True, True, True),
             # xai: search-only via Grok's agentic web_search tool.
             ("xai", True, False, False),
+            # crawl4ai: extract-only local read service (+Firecrawl fallback,
+            # gated by CRAWL4AI_DISABLE_FALLBACK). No search, no crawl.
+            ("crawl4ai", False, True, False),
         ],
     )
     def test_capability_flags_match_spec(
@@ -124,7 +128,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai", "crawl4ai"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -137,7 +141,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai", "crawl4ai"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""

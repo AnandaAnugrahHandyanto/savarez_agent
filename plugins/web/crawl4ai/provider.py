@@ -31,6 +31,39 @@ _READ_TIMEOUT_S = float(os.environ.get("CRAWL4AI_READ_TIMEOUT", "35"))
 _ACCESS_LOG = os.path.expanduser("~/.hermes/crawl4ai-service/access.log")
 
 
+def _config_fallback_disabled() -> bool:
+    """프로파일 config ``web.extract_fallback: none``이면 폴백 차단.
+
+    워커 서브프로세스는 자기 프로파일의 config를 ``load_config()``로 로드하므로,
+    이 키가 프로파일별 차등을 만든다(env 전역과 달리). 값이 ``none``/``off``/
+    ``disabled``이면 차단, 그 외(미설정·``firecrawl``)는 기본=폴백 유지(하위호환)."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        web = cfg.get("web") if isinstance(cfg, dict) else None
+        val = web.get("extract_fallback") if isinstance(web, dict) else None
+        if isinstance(val, str):
+            return val.strip().lower() in ("none", "off", "disabled", "no")
+    except Exception:
+        pass
+    return False
+
+
+def _fallback_disabled() -> bool:
+    """Firecrawl 폴백 차단 여부(프로파일별). invest 도메인처럼 Firecrawl이 금지된
+    역할은 폴백을 끈다. 끄면 실패 URL은 Firecrawl로 넘기지 않고 backend="none"
+    에러로 남긴다(도메인 차단 룰 준수).
+
+    우선순위: ① env ``CRAWL4AI_DISABLE_FALLBACK``(테스트·전역 킬스위치) →
+    ② 프로파일 config ``web.extract_fallback: none``."""
+    if os.environ.get("CRAWL4AI_DISABLE_FALLBACK", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        return True
+    return _config_fallback_disabled()
+
+
 def _log(line: str) -> None:
     try:
         with open(_ACCESS_LOG, "a", encoding="utf-8") as f:
@@ -98,6 +131,17 @@ class Crawl4aiWebSearchProvider(WebSearchProvider):
                 fallback.append(url)
                 fail_reason[url] = code
                 _log(f"{int(time.time())}\tcrawl4ai\tFAIL:{code}\t0\t{url}")
+
+        if fallback and _fallback_disabled():
+            # 도메인 차단(예: invest) — Firecrawl로 넘기지 않고 실패로 남긴다.
+            for u in fallback:
+                results.append({
+                    "url": u, "title": "", "content": "", "raw_content": "",
+                    "error": f"crawl4ai_failed:{fail_reason.get(u)};firecrawl_fallback_disabled",
+                    "backend": "none",
+                })
+                _log(f"{int(time.time())}\tfirecrawl-fb\tDISABLED\t0\t{u}")
+            return results
 
         if fallback:
             try:
