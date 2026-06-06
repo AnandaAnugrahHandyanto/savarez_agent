@@ -1,0 +1,1 @@
+"""Hermex static MCP tools."""
