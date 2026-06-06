@@ -15781,7 +15781,20 @@ class GatewayRunner:
             # Uses path-based deduplication against _history_media_paths (collected
             # before run_conversation) instead of index slicing. This is safe even
             # when context compression shrinks the message list. (Fixes #160)
-            if "MEDIA:" not in final_response:
+            # Dedup: if agent already called send_message tool to deliver media,
+            # skip this replay path — otherwise the same audio gets sent twice
+            # (once by send_message tool, once by this re-emit). (Fix Hermes TTS dup)
+            _agent_already_sent_media = any(
+                msg.get("role") == "assistant"
+                and any(
+                    tc.get("function", {}).get("name") == "send_message"
+                    and "MEDIA:" in json.dumps(tc.get("function", {}).get("arguments", ""))
+                    for tc in (msg.get("tool_calls") or [])
+                )
+                for msg in result.get("messages", [])
+            )
+
+            if "MEDIA:" not in final_response and not _agent_already_sent_media:
                 media_tags = []
                 has_voice_directive = False
                 for msg in result.get("messages", []):
