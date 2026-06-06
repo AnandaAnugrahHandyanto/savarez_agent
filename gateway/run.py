@@ -9496,6 +9496,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                voice_reply_turn=bool(voice_reply_note),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -12320,15 +12321,7 @@ class GatewayRunner:
 
     def _voice_reply_context_prompt(self, event: MessageEvent) -> str:
         """Guide enabled voice-note turns away from manual TTS/tool work."""
-        if event.message_type != MessageType.VOICE:
-            return ""
-
-        chat_id = event.source.chat_id
-        voice_mode = self._voice_mode.get(
-            self._voice_key(event.source.platform, chat_id),
-            "off",
-        )
-        if voice_mode not in {"voice_only", "all"}:
+        if not self._is_voice_reply_turn(event):
             return ""
 
         return (
@@ -12340,6 +12333,85 @@ class GatewayRunner:
             "asset. Answer with concise, natural text only; prefer one or two "
             "short spoken sentences.]"
         )
+
+    def _is_voice_reply_turn(self, event: MessageEvent) -> bool:
+        """Return True when this inbound turn should optimize for voice reply latency."""
+        if event.message_type != MessageType.VOICE:
+            return False
+
+        chat_id = event.source.chat_id
+        voice_mode = self._voice_mode.get(
+            self._voice_key(event.source.platform, chat_id),
+            "off",
+        )
+        return voice_mode in {"voice_only", "all"}
+
+    def _voice_fast_reply_route(self, user_config: dict | None) -> dict | None:
+        """Resolve optional low-latency model/tool overrides for voice replies.
+
+        Disabled by default unless ``voice.fast_reply.enabled`` is true. The
+        route is per-turn: normal text and slash-command traffic keep the
+        configured Hermes model, context, and tools.
+        """
+        cfg = user_config if isinstance(user_config, dict) else {}
+        voice_cfg = cfg.get("voice") if isinstance(cfg.get("voice"), dict) else {}
+        fast_cfg = voice_cfg.get("fast_reply")
+        if not isinstance(fast_cfg, dict) or not bool(fast_cfg.get("enabled", False)):
+            return None
+
+        provider = str(fast_cfg.get("provider") or "google-gemini-cli").strip()
+        model = str(fast_cfg.get("model") or "gemini-3-flash-preview").strip()
+        if not provider or not model:
+            logger.warning("voice.fast_reply enabled but provider/model is empty")
+            return None
+
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            runtime = resolve_runtime_provider(
+                requested=provider,
+                explicit_base_url=str(fast_cfg.get("base_url") or "").strip() or None,
+                explicit_api_key=str(fast_cfg.get("api_key") or "").strip() or None,
+            )
+        except Exception as exc:
+            logger.warning("voice.fast_reply provider resolution failed for %s: %s", provider, exc)
+            return None
+
+        runtime_kwargs = {
+            "api_key": runtime.get("api_key"),
+            "base_url": runtime.get("base_url"),
+            "provider": runtime.get("provider"),
+            "api_mode": runtime.get("api_mode"),
+            "command": runtime.get("command"),
+            "args": list(runtime.get("args") or []),
+            "credential_pool": runtime.get("credential_pool"),
+        }
+        try:
+            max_tokens = int(fast_cfg.get("max_tokens", 700) or 700)
+        except (TypeError, ValueError):
+            max_tokens = 700
+        if max_tokens > 0:
+            runtime_kwargs["max_tokens"] = max_tokens
+
+        enabled_toolsets = fast_cfg.get("enabled_toolsets", [])
+        if enabled_toolsets is None or not isinstance(enabled_toolsets, list):
+            enabled_toolsets = []
+
+        disabled_toolsets = fast_cfg.get("disabled_toolsets", [])
+        if disabled_toolsets is not None and not isinstance(disabled_toolsets, list):
+            disabled_toolsets = []
+
+        try:
+            max_iterations = int(fast_cfg.get("max_turns", 4) or 4)
+        except (TypeError, ValueError):
+            max_iterations = 4
+
+        return {
+            "model": model,
+            "runtime": runtime_kwargs,
+            "enabled_toolsets": [str(x) for x in enabled_toolsets],
+            "disabled_toolsets": ([str(x) for x in disabled_toolsets] if disabled_toolsets is not None else None),
+            "max_iterations": max(1, max_iterations),
+        }
 
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""
@@ -17050,6 +17122,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        voice_reply_turn: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -17934,6 +18007,26 @@ class GatewayRunner:
                 )
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            if voice_reply_turn:
+                voice_route = self._voice_fast_reply_route(user_config)
+                if voice_route:
+                    turn_route = self._resolve_turn_agent_config(
+                        message, voice_route["model"], voice_route["runtime"]
+                    )
+                    max_iterations = voice_route["max_iterations"]
+                    enabled_toolsets = voice_route["enabled_toolsets"]
+                    disabled_toolsets = voice_route["disabled_toolsets"]
+                    reasoning_config = {}
+                    self._reasoning_config = reasoning_config
+                    self._service_tier = "fast"
+                    logger.info(
+                        "voice.fast_reply route: session=%s model=%s provider=%s max_iterations=%s tools=%s",
+                        session_key or "",
+                        turn_route["model"],
+                        turn_route["runtime"].get("provider"),
+                        max_iterations,
+                        len(enabled_toolsets),
+                    )
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
