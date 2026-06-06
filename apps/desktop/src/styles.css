@@ -90,7 +90,7 @@
 
     --theme-foreground: #17171a;
     --theme-primary: #0053fd;
-    --theme-secondary: color-mix(in srgb, #0053fd 14%, #ffffff);
+    --theme-secondary: color-mix(in srgb, #0053fd 7%, #ffffff);
     --theme-accent-soft: color-mix(in srgb, #0053fd 10%, #ffffff);
     --theme-midground: #0053fd;
     --theme-warm: #cf806d;
