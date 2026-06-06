@@ -67,8 +67,16 @@ def _fallback_disabled() -> bool:
     opt-in일 때만 켜지고, 그 외(미설정·차단값·config 읽기 실패)는 모두 차단된다.
     차단 시 실패 URL은 Firecrawl로 넘기지 않고 backend="none" 에러로 남는다.
 
-    우선순위: ① env ``CRAWL4AI_DISABLE_FALLBACK``(강제 차단 킬스위치) →
+    우선순위: ⓪ 프로파일 firecrawl hard-deny(invest 등, config로도 못 푸는 최종
+    가드) → ① env ``CRAWL4AI_DISABLE_FALLBACK``(강제 차단 킬스위치) →
     ② 프로파일 config ``web.extract_fallback`` opt-in 여부(없으면 차단)."""
+    try:
+        from plugins.web import firecrawl_denied_for_active_profile
+
+        if firecrawl_denied_for_active_profile():
+            return True
+    except Exception:
+        pass
     if os.environ.get("CRAWL4AI_DISABLE_FALLBACK", "").strip().lower() in (
         "1", "true", "yes", "on",
     ):

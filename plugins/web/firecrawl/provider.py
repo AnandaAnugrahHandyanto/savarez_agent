@@ -372,7 +372,17 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
         return "Firecrawl"
 
     def is_available(self) -> bool:
-        """Return True when direct Firecrawl OR managed-gateway path is configured."""
+        """Return True when direct Firecrawl OR managed-gateway path is configured.
+
+        프로파일 hard-deny(invest 등)면 키 유무와 무관하게 False — 직접선택 차단.
+        """
+        try:
+            from plugins.web import firecrawl_denied_for_active_profile
+
+            if firecrawl_denied_for_active_profile():
+                return False
+        except Exception:
+            pass
         return check_firecrawl_api_key()
 
     def supports_search(self) -> bool:
@@ -402,6 +412,13 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
 
         if is_interrupted():
             return {"success": False, "error": "Interrupted"}
+
+        # 프로파일 hard-deny(invest 등): is_available 우회 직접호출도 차단.
+        from plugins.web import firecrawl_denied_for_active_profile
+
+        if firecrawl_denied_for_active_profile():
+            return {"success": False,
+                    "error": "Firecrawl denied for this profile (hard-deny policy)"}
 
         logger.info("Firecrawl search: '%s' (limit=%d)", query, limit)
         # _get_firecrawl_client() raises ValueError on unconfigured systems —
@@ -435,6 +452,14 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
 
         if _is_interrupted():
             return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
+
+        # 프로파일 hard-deny(invest 등): is_available 우회 직접호출도 차단.
+        from plugins.web import firecrawl_denied_for_active_profile
+
+        if firecrawl_denied_for_active_profile():
+            return [{"url": u, "title": "",
+                     "error": "Firecrawl denied for this profile (hard-deny policy)"}
+                    for u in urls]
 
         format = kwargs.get("format")
         formats: List[str] = []
