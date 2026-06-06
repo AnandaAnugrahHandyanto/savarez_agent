@@ -4445,6 +4445,16 @@ class AIAgent:
             force=force,
         )
 
+    def _maybe_compress_post_response(self, messages: list, system_message: str, *, task_id: str = "default") -> tuple:
+        """Forwarder — see ``agent.conversation_compression.maybe_compress_post_response``."""
+        from agent.conversation_compression import maybe_compress_post_response
+        return maybe_compress_post_response(
+            self,
+            messages,
+            system_message,
+            task_id=task_id,
+        )
+
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
         """Record the first guardrail decision that should stop this turn."""
         if decision.should_halt and self._tool_guardrail_halt_decision is None:
