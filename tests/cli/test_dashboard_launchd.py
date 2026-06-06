@@ -160,7 +160,12 @@ class TestFullPlistRoundTrip:
 
         assert parsed["Label"] == "ai.hermes.dashboard"
         assert parsed["RunAtLoad"] is True
-        assert parsed["KeepAlive"]["SuccessfulExit"] is False
+        # KeepAlive must be a literal True (not a dict with SuccessfulExit).
+        # The launchd-spawned launcher exits 0 after execvp'ing the
+        # grandchild, so SuccessfulExit=false would let launchd consider
+        # the job done and stop respawning — defeating crash recovery.
+        assert parsed["KeepAlive"] is True
+        assert parsed["ThrottleInterval"] == 10
         # ProgramArguments has to be: hermes -m hermes_cli.main dashboard
         # --detach --no-open --host <host> --port <port>
         argv = parsed["ProgramArguments"]

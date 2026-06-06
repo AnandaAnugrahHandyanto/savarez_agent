@@ -33,12 +33,9 @@
     <string>Background</string>
 
     <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-        <key>ThrottleInterval</key>
-        <integer>10</integer>
-    </dict>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
 
     <key>RunAtLoad</key>
     <true/>
