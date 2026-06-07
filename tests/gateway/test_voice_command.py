@@ -617,6 +617,41 @@ class TestSendVoiceReply:
         assert call_args.kwargs.get("chat_id") == "123"
 
     @pytest.mark.asyncio
+    async def test_english_voice_reply_uses_english_edge_voice_override(self, runner):
+        from gateway.session_context import get_session_env
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        event = _make_event()
+        runner.adapters[event.source.platform] = mock_adapter
+        seen_voice_overrides = []
+
+        def fake_tts(*, text, output_path):
+            seen_voice_overrides.append(
+                get_session_env("HERMES_VOICE_TTS_VOICE_OVERRIDE")
+            )
+            return json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+
+        with patch("tools.tts_tool.text_to_speech_tool", side_effect=fake_tts), \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(
+                event,
+                "Best option: use LiveKit for browser calls and Twilio for regular phone calls.",
+            )
+
+        assert seen_voice_overrides == ["en-US-AriaNeural"]
+        assert get_session_env("HERMES_VOICE_TTS_VOICE_OVERRIDE") == ""
+        mock_adapter.send_voice.assert_called_once()
+
+    def test_romanian_voice_reply_keeps_configured_voice(self, runner):
+        assert runner._voice_reply_edge_voice_for_text(
+            "Cel mai bun raspuns este sa folosim Telegram pentru mesaje vocale."
+        ) == ""
+
+    @pytest.mark.asyncio
     async def test_auto_voice_reply_uses_thread_metadata_helper(self, runner):
         from gateway.config import Platform
 

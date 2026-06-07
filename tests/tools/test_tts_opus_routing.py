@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from gateway.session_context import _UNSET, _VAR_MAP
+from gateway.session_context import _UNSET, _VAR_MAP, reset_session_env, set_session_env
 from tools import tts_tool
 
 
@@ -68,3 +68,35 @@ def test_edge_telegram_converts_to_opus_voice(tmp_path, monkeypatch):
     assert result["voice_compatible"] is True
     assert result["media_tag"] == f"[[audio_as_voice]]\nMEDIA:{opus}"
     convert.assert_called_once_with(str(out))
+
+
+@pytest.mark.asyncio
+async def test_edge_tts_honors_session_voice_override(tmp_path, monkeypatch):
+    seen = {}
+
+    class FakeCommunicate:
+        def __init__(self, text, **kwargs):
+            seen["text"] = text
+            seen["kwargs"] = kwargs
+
+        async def save(self, output_path):
+            Path(output_path).write_bytes(b"mp3")
+
+    monkeypatch.setattr(
+        tts_tool,
+        "_import_edge_tts",
+        lambda: type("FakeEdge", (), {"Communicate": FakeCommunicate}),
+    )
+    token = set_session_env("HERMES_VOICE_TTS_VOICE_OVERRIDE", "en-US-AriaNeural")
+    try:
+        out = tmp_path / "speech.mp3"
+        result = await tts_tool._generate_edge_tts(
+            "Hello world",
+            str(out),
+            {"edge": {"voice": "ro-RO-EmilNeural"}},
+        )
+    finally:
+        reset_session_env("HERMES_VOICE_TTS_VOICE_OVERRIDE", token)
+
+    assert result == str(out)
+    assert seen["kwargs"]["voice"] == "en-US-AriaNeural"

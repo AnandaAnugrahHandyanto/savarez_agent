@@ -924,6 +924,13 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
     _edge_tts = _import_edge_tts()
     edge_config = tts_config.get("edge", {})
     voice = edge_config.get("voice", DEFAULT_EDGE_VOICE)
+    try:
+        from gateway.session_context import get_session_env
+        voice_override = get_session_env("HERMES_VOICE_TTS_VOICE_OVERRIDE", "").strip()
+        if voice_override:
+            voice = voice_override
+    except Exception:
+        pass
     speed = float(edge_config.get("speed", tts_config.get("speed", 1.0)))
 
     kwargs = {"voice": voice}

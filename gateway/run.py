@@ -13600,6 +13600,39 @@ class GatewayRunner:
         )
         return any(marker in normalized for marker in long_task_markers)
 
+    @staticmethod
+    def _voice_reply_edge_voice_for_text(text: str | None) -> str:
+        """Return a per-reply Edge voice override when language is clear."""
+        if not text:
+            return ""
+        stripped = re.sub(r"https?://\S+", " ", str(text))
+        stripped = re.sub(r"`[^`]*`", " ", stripped)
+        words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ']+", stripped)
+        if len(words) < 4:
+            return ""
+
+        lowered_words = [word.lower().strip("'") for word in words]
+        romanian_markers = {
+            "si", "și", "sau", "este", "sunt", "pentru", "cu", "din", "daca",
+            "dacă", "mai", "foarte", "raspuns", "răspuns", "mesaj", "voce",
+            "cercetare", "surse", "trebuie", "poate", "acest", "aceasta",
+        }
+        english_markers = {
+            "the", "and", "or", "is", "are", "for", "with", "from", "this",
+            "that", "best", "option", "recommendation", "possible", "use",
+            "regular", "phone", "call", "calls", "platform", "telegram",
+            "whatsapp", "live", "voice", "browser", "app",
+        }
+        romanian_hits = sum(1 for word in lowered_words if word in romanian_markers)
+        english_hits = sum(1 for word in lowered_words if word in english_markers)
+        ascii_letters = sum(1 for char in stripped if ("a" <= char.lower() <= "z"))
+        latin_letters = sum(1 for char in stripped if char.isalpha())
+        ascii_ratio = ascii_letters / latin_letters if latin_letters else 0.0
+
+        if english_hits >= 2 and english_hits > romanian_hits and ascii_ratio > 0.9:
+            return "en-US-AriaNeural"
+        return ""
+
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
         """Generate TTS audio and send as a voice message before the text reply."""
         import uuid as _uuid
@@ -13621,9 +13654,26 @@ class GatewayRunner:
             os.makedirs(os.path.dirname(audio_path), exist_ok=True)
 
             _tts_start = time.perf_counter()
-            result_json = await asyncio.to_thread(
-                text_to_speech_tool, text=tts_text, output_path=audio_path
-            )
+            voice_override = self._voice_reply_edge_voice_for_text(tts_text)
+            voice_token = None
+            try:
+                if voice_override:
+                    from gateway.session_context import set_session_env
+                    voice_token = set_session_env(
+                        "HERMES_VOICE_TTS_VOICE_OVERRIDE",
+                        voice_override,
+                    )
+                    logger.info("Auto voice reply TTS voice override: %s", voice_override)
+                result_json = await asyncio.to_thread(
+                    text_to_speech_tool, text=tts_text, output_path=audio_path
+                )
+            finally:
+                if voice_token is not None:
+                    try:
+                        from gateway.session_context import reset_session_env
+                        reset_session_env("HERMES_VOICE_TTS_VOICE_OVERRIDE", voice_token)
+                    except Exception:
+                        logger.debug("Failed to reset TTS voice override", exc_info=True)
             _tts_elapsed_ms = round((time.perf_counter() - _tts_start) * 1000, 1)
             try:
                 result = json.loads(result_json)
