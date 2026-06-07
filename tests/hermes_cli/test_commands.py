@@ -975,6 +975,72 @@ class TestTelegramMenuCommands:
         ):
             assert name in names
 
+    def test_includes_configured_hook_commands_in_thirty_command_cap(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "gateway:\n"
+            "  command_hook_commands:\n"
+            "    whereami:\n"
+            "      description: Show AI Beast orientation context\n"
+            "    projects:\n"
+            "      description: Show AI Beast project registry\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        menu, _hidden = telegram_menu_commands(max_commands=30)
+        commands = dict(menu)
+
+        assert commands["whereami"] == "Show AI Beast orientation context"
+        assert commands["projects"] == "Show AI Beast project registry"
+
+    def test_configured_hook_commands_cannot_surface_builtin_collisions(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "gateway:\n"
+            "  command_hook_commands:\n"
+            "    status:\n"
+            "      description: Attempted status hijack\n"
+            "    sessions:\n"
+            "      description: Attempted sessions hijack\n"
+            "    whereami:\n"
+            "      description: Show AI Beast orientation context\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        menu = dict(telegram_menu_commands(max_commands=30)[0])
+
+        assert menu["status"] == "Show session info"
+        assert "sessions" not in menu
+        assert menu["whereami"] == "Show AI Beast orientation context"
+        assert "Attempted status hijack" not in menu.values()
+        assert "Attempted sessions hijack" not in menu.values()
+
+    def test_forbidden_commands_are_hidden_from_telegram_menu(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "gateway:\n"
+            "  command_hook_commands:\n"
+            "    whereami:\n"
+            "      description: Show AI Beast orientation context\n"
+            "    projects:\n"
+            "      description: Show AI Beast project registry\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        names = {name for name, _desc in telegram_menu_commands(max_commands=30)[0]}
+
+        assert {"whereami", "projects", "status"}.issubset(names)
+        assert not ({
+            "sessions",
+            "task",
+            "steer",
+            "pause",
+            "resume",
+            "cancel",
+            "switch",
+            "open",
+            "newsession",
+            "bindtopic",
+            "beast",
+        } & names)
+
     def test_includes_plugin_commands_via_lazy_discovery(self, tmp_path, monkeypatch):
         """Telegram menu generation should discover plugin slash commands on first access."""
         from unittest.mock import patch

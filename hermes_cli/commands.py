@@ -511,14 +511,63 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     return result
 
 
+def _configured_command_hook_telegram_commands() -> list[tuple[str, str]]:
+    """Return config-declared hook-only commands for Telegram's menu.
+
+    ``command_hook_commands`` is intentionally outside ``COMMAND_REGISTRY`` so
+    local gateway hooks can expose read-only slash commands without creating
+    generic Hermes handlers. Telegram's command catalogue still needs to show
+    those explicitly configured hook commands. Built-in/plugin collisions are
+    skipped so config cannot hijack Hermes-owned commands in the menu either.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+    except Exception:
+        return []
+
+    commands_cfg: Any = None
+    if isinstance(cfg, dict):
+        commands_cfg = cfg.get("command_hook_commands")
+        gateway_cfg = cfg.get("gateway")
+        if commands_cfg is None and isinstance(gateway_cfg, dict):
+            commands_cfg = gateway_cfg.get("command_hook_commands")
+    if not isinstance(commands_cfg, Mapping):
+        return []
+
+    result: list[tuple[str, str]] = []
+    reserved_names = {name for name, _ in telegram_bot_commands()}
+    for raw_name, meta in sorted(commands_cfg.items()):
+        if not isinstance(raw_name, str):
+            continue
+        normalized = raw_name.strip().lower().lstrip("/").replace("_", "-")
+        if not normalized:
+            continue
+        # Keep command-hook commands hook-only: do not let config surface a
+        # command that Hermes already owns or a plugin already registered.
+        if is_gateway_known_command(normalized):
+            continue
+        tg_name = _sanitize_telegram_name(normalized)
+        if not tg_name or tg_name in reserved_names:
+            continue
+        description = f"Run /{normalized}"
+        if isinstance(meta, Mapping):
+            configured_description = meta.get("description")
+            if isinstance(configured_description, str) and configured_description.strip():
+                description = configured_description.strip()
+        result.append((tg_name, description))
+        reserved_names.add(tg_name)
+    return result
+
+
 _TELEGRAM_MENU_PRIORITY = (
     # Most-typed everyday commands first.
     "help",
     "new",
     "stop",
     "status",
-    "resume",
-    "sessions",
+    "whereami",
+    "projects",
     "model",
     # Maintenance / diagnostics — the ones that prompted this priority list.
     "debug",
@@ -530,7 +579,6 @@ _TELEGRAM_MENU_PRIORITY = (
     "approve",
     "deny",
     "queue",
-    "steer",
     "background",
     # Lower-priority but still useful operational built-ins.
     "reasoning",
@@ -545,6 +593,28 @@ _TELEGRAM_MENU_PRIORITY = (
 Telegram only displays a small BotCommand menu in practice.  The full Hermes
 registry is still dispatchable when typed manually, but operational commands
 need to survive the visible menu cap ahead of lower-priority built-ins.
+"""
+
+
+_TELEGRAM_MENU_BLOCKLIST = frozenset(
+    {
+        "sessions",
+        "task",
+        "steer",
+        "pause",
+        "resume",
+        "cancel",
+        "switch",
+        "open",
+        "newsession",
+        "bindtopic",
+        "beast",
+    }
+)
+"""Commands intentionally hidden from Telegram's bot-command catalogue.
+
+They remain dispatchable if typed manually. This only affects Telegram's
+selectable menu so sensitive or state-changing UX surfaces are not promoted.
 """
 
 
@@ -788,7 +858,13 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
         (menu_commands, hidden_count) where hidden_count is the number of
         commands omitted due to the cap.
     """
-    core_commands = _prioritize_telegram_menu_commands(list(telegram_bot_commands()))
+    core_commands = _prioritize_telegram_menu_commands(
+        [
+            command
+            for command in list(telegram_bot_commands()) + _configured_command_hook_telegram_commands()
+            if command[0] not in _TELEGRAM_MENU_BLOCKLIST
+        ]
+    )
     reserved_names = {n for n, _ in core_commands}
     all_commands = list(core_commands)
     hidden_core_count = max(0, len(all_commands) - max_commands)
