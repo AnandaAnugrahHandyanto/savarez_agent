@@ -509,6 +509,12 @@ class GatewayConfig:
     # fresh session exactly as if the reset policy had fired.  0 = disabled.
     session_store_max_age_days: int = 90
 
+    # Cross-profile Kanban notification delivery.
+    # - ['*']            → accept subscriptions from ANY profile.
+    # - ['coder', 'dev'] → restrict to those two profiles only.
+    # - [] or unset      → gateway-profile-only (current default behaviour).
+    notification_sources: List[str] = field(default_factory=list)
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -603,6 +609,7 @@ class GatewayConfig:
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
+            "notification_sources": self.notification_sources,
         }
     
     @classmethod
@@ -656,6 +663,15 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
+        raw_ns = data.get("notification_sources", [])
+        if isinstance(raw_ns, str):
+            # Accept comma-separated string: "coder,dev" → ["coder", "dev"]
+            notification_sources = [s.strip() for s in raw_ns.split(",") if s.strip()]
+        elif isinstance(raw_ns, list):
+            notification_sources = [str(s).strip() for s in raw_ns if str(s).strip()]
+        else:
+            notification_sources = []
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -674,6 +690,7 @@ class GatewayConfig:
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
+            notification_sources=notification_sources,
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -785,6 +802,10 @@ def load_gateway_config() -> GatewayConfig:
                     yaml_cfg.get("unauthorized_dm_behavior"),
                     "pair",
                 )
+
+            ns = yaml_cfg.get("notification_sources")
+            if ns is not None:
+                gw_data["notification_sources"] = ns
 
             # Merge platform config into gw_data so runtime-only settings under
             # ``gateway.platforms`` are loaded the same way as top-level

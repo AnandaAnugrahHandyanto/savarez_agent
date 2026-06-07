@@ -882,3 +882,43 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+
+class TestNotificationSourcesConfig:
+    """Tests for notification_sources config field (#39838)."""
+
+    def test_default_is_empty_list(self):
+        cfg = GatewayConfig()
+        assert cfg.notification_sources == []
+
+    def test_from_dict_list(self):
+        cfg = GatewayConfig.from_dict({"notification_sources": ["coder", "dev"]})
+        assert cfg.notification_sources == ["coder", "dev"]
+
+    def test_from_dict_star(self):
+        cfg = GatewayConfig.from_dict({"notification_sources": ["*"]})
+        assert cfg.notification_sources == ["*"]
+
+    def test_from_dict_comma_separated_string(self):
+        cfg = GatewayConfig.from_dict({"notification_sources": "coder,dev"})
+        assert cfg.notification_sources == ["coder", "dev"]
+
+    def test_from_dict_invalid_type_ignored(self):
+        cfg = GatewayConfig.from_dict({"notification_sources": 42})
+        assert cfg.notification_sources == []
+
+    def test_to_dict_roundtrip(self):
+        original = GatewayConfig(notification_sources=["coder", "dev"])
+        d = original.to_dict()
+        restored = GatewayConfig.from_dict(d)
+        assert restored.notification_sources == ["coder", "dev"]
+
+    def test_load_from_config_yaml(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "notification_sources:\n  - '*'\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        cfg = load_gateway_config()
+        assert cfg.notification_sources == ["*"]
