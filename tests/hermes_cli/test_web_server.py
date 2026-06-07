@@ -823,6 +823,72 @@ class TestWebServerEndpoints:
         defaults = resp.json()
         assert "model" in defaults
 
+    def test_set_auxiliary_model_clears_stale_endpoint_overrides(self):
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "auxiliary": {
+                "compression": {
+                    "provider": "custom",
+                    "model": "@preset/gemma4-26-b-compress-cached",
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "api_key": "sk-old-compression",
+                    "api_mode": "chat_completions",
+                }
+            }
+        })
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "auxiliary",
+                "task": "compression",
+                "provider": "ollama-cloud",
+                "model": "gemma4:31b",
+            },
+        )
+
+        assert resp.status_code == 200
+        slot_cfg = load_config()["auxiliary"]["compression"]
+        assert slot_cfg["provider"] == "ollama-cloud"
+        assert slot_cfg["model"] == "gemma4:31b"
+        assert slot_cfg["base_url"] == ""
+        assert slot_cfg["api_key"] == ""
+        assert slot_cfg["api_mode"] == ""
+
+    def test_set_auxiliary_custom_model_preserves_endpoint_overrides(self):
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "auxiliary": {
+                "compression": {
+                    "provider": "custom",
+                    "model": "@preset/old",
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "api_key": "sk-keep-compression",
+                    "api_mode": "chat_completions",
+                }
+            }
+        })
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "auxiliary",
+                "task": "compression",
+                "provider": "custom",
+                "model": "@preset/new",
+            },
+        )
+
+        assert resp.status_code == 200
+        slot_cfg = load_config()["auxiliary"]["compression"]
+        assert slot_cfg["provider"] == "custom"
+        assert slot_cfg["model"] == "@preset/new"
+        assert slot_cfg["base_url"] == "https://openrouter.ai/api/v1"
+        assert slot_cfg["api_key"] == "sk-keep-compression"
+        assert slot_cfg["api_mode"] == "chat_completions"
+
     def test_get_env_vars(self):
         resp = self.client.get("/api/env")
         assert resp.status_code == 200
