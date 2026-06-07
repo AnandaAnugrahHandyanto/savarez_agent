@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import {
   Dialog,
   DialogContent,
@@ -170,15 +169,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
       ) : (
         <OverlaySplitLayout>
           <OverlaySidebar>
-            <Button
-              className="mb-1 w-full justify-start gap-2"
-              onClick={() => setCreateOpen(true)}
-              size="sm"
-              variant="text"
-            >
-              <Codicon name="add" />
-              {p.newProfile}
-            </Button>
+            <OverlayNewButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
             {profiles.map(profile => (
               <ProfileRow
                 active={selected?.name === profile.name}

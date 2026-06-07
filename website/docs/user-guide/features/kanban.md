@@ -517,7 +517,7 @@ Visually the target is the familiar Linear / Fusion layout: dark theme, column h
 
 The kanban board has two ways to handle a task you drop into the Triage column:
 
-**Auto (default)** — `kanban.auto_decompose: true`. The gateway-embedded dispatcher runs the **decomposer** on each tick, capped by `kanban.auto_decompose_per_tick` (default 3 tasks per tick) so a bulk-load of triage tasks doesn't burst-spend the auxiliary LLM. The decomposer reads the rough idea, looks at your installed profiles + their descriptions, and asks the LLM to produce a JSON task graph: which tasks to spawn, who they go to, and which depend on which. The original triage task becomes the parent of every leaf in the graph, so it stays alive until the whole graph completes — and then promotes back to `ready` so its assignee (the orchestrator profile) can judge completion and add more tasks if the work isn't done. This is the "drop a one-liner, walk away" flow.
+**Auto (default)** — `kanban.auto_decompose: true`. The gateway-embedded dispatcher runs the **decomposer** on each tick, capped by `kanban.auto_decompose_per_tick` (default 3 tasks per tick) so a bulk-load of triage tasks doesn't burst-spend the auxiliary LLM. The decomposer uses the built-in decomposition prompt plus the `auxiliary.kanban_decomposer` model path, reads your installed profiles + their descriptions, and asks the LLM to produce a JSON task graph: which tasks to spawn, who they go to, and which depend on which. The original triage task becomes the parent of every leaf in the graph, so it stays alive until the whole graph completes - and then promotes back to `ready` so its assignee (`kanban.orchestrator_profile`, or the active default profile when unset) can judge completion and add more tasks if the work isn't done. This is the "drop a one-liner, walk away" flow.
 
 **Manual** — `kanban.auto_decompose: false`. Triage tasks stay in triage until you act. Click the **⚗ Decompose** button on a card, run `savarez kanban decompose <id>` (or `--all`), or use `/kanban decompose <id>` from a chat. This matches the pre-decomposer behavior of the board, useful when you want full control over what runs when.
 
@@ -531,7 +531,7 @@ Config knobs (all under `kanban:` in `~/.savarez/config.yaml`):
 |---|---|---|
 | `auto_decompose` | `true` | Dispatcher auto-runs the decomposer every tick. |
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
-| `orchestrator_profile` | `""` | Profile that owns decomposition. Empty = fall back to active default profile. |
+| `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
 
 And the two auxiliary LLM slots:
@@ -699,6 +699,7 @@ All commands are also available as a slash command in the interactive CLI and in
 | Config key | Default | What it does |
 |------------|---------|--------------|
 | `kanban.max_in_progress` | unset (unlimited) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
+| `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
 
@@ -728,15 +729,16 @@ The dashboard exposes a **trash drop zone** on the kanban page — drag any card
 
 ### Worker visibility endpoints
 
-The dashboard plugin API now exposes three read-only endpoints for external monitors:
+The dashboard plugin API now exposes these read-only endpoints (plus a run-control verb) for external monitors:
 
 | Endpoint | Returns |
 |----------|---------|
 | `GET /api/plugins/kanban/workers/active` | Currently spawned workers with PID, profile, task id, started-at, last heartbeat |
 | `GET /api/plugins/kanban/runs/{id}` | Single-run detail — task id, status, started/ended, exit code, log path |
+| `POST /api/plugins/kanban/runs/{run_id}/terminate` | Terminate a reclaimable run — stops the worker and frees the task for re-dispatch |
 | `GET /api/plugins/kanban/inspect` | Combined dispatcher snapshot — backlog, in-progress count vs. `max_in_progress`, recent events |
 
-All three are gated by the same dashboard plugin auth as the rest of the kanban plugin API.
+All of these are gated by the same dashboard plugin auth as the rest of the kanban plugin API.
 
 ### Kanban Swarm topology helper
 

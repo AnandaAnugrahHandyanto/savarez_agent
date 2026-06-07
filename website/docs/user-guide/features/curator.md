@@ -47,6 +47,7 @@ curator:
   min_idle_hours: 2
   stale_after_days: 30
   archive_after_days: 90
+  prune_builtins: true         # archive unused bundled built-in skills too (hub skills always exempt)
 ```
 
 To disable entirely, set `curator.enabled: false`.

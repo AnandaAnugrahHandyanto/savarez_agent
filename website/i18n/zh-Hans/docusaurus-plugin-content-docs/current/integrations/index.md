@@ -35,7 +35,7 @@ Savarez 开箱即支持多个 AI 推理提供商。使用 `savarez model` 进行
 
 ```yaml
 web:
-  backend: firecrawl    # firecrawl | parallel | tavily | exa
+  backend: firecrawl    # firecrawl | searxng | brave-free | ddgs | tavily | exa | parallel | xai
 ```
 
 若未设置 `web.backend`，后端将根据可用的 API key 自动检测。也支持通过 `FIRECRAWL_API_URL` 使用自托管的 Firecrawl。

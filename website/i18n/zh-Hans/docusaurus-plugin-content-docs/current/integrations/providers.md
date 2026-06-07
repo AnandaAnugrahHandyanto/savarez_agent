@@ -481,7 +481,7 @@ savarez chat --provider stepfun --model step-3-mini
 ```yaml
 model:
   provider: "stepfun"
-  default: "step-3-mini"
+  default: "step-3.5-flash"
 ```
 
 基础 URL 可通过 `STEPFUN_BASE_URL` 覆盖（默认：`https://api.stepfun.com/v1`）。

@@ -85,6 +85,21 @@ You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming st
 
 Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=300`s, native Anthropic 900s). Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/AnandaAnugrahHandyanto/savarez_agent/blob/main/cli-config.yaml.example).
 
+## Update Behavior
+
+`hermes update` settings live under `updates` in `config.yaml`:
+
+```yaml
+updates:
+  pre_update_backup: false       # Create a full HERMES_HOME zip before every update
+  backup_keep: 5                 # Keep this many pre-update backup zips
+  non_interactive_local_changes: stash  # stash | discard
+```
+
+For git installs, Hermes auto-stashes dirty tracked files and untracked files before checking out the update branch or pulling. Interactive terminal updates prompt before restoring that stash. Non-interactive updates (desktop/chat app, gateway, or `--yes`) use `updates.non_interactive_local_changes`: `stash` restores local source edits after a successful pull, while `discard` drops the update-created stash after a successful pull. Use `discard` only on managed installs where local source edits are never meant to persist.
+
+Before that stash step, Hermes also restores tracked `package-lock.json` diffs left by npm install/build churn. Commit or manually stash intentional lockfile edits before updating.
+
 ## Terminal Backend Configuration
 
 Savarez supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Singularity/Apptainer container.
@@ -1235,7 +1250,7 @@ Set `file_mutation_verifier: false` (or `HERMES_FILE_MUTATION_VERIFIER=0`) to su
 
 The `display.language` setting translates a small set of static user-facing messages — the CLI approval prompt, a handful of gateway slash-command replies (e.g. restart-drain notices, "approval expired", "goal cleared"). It does **not** translate agent responses, log lines, tool output, error tracebacks, or slash-command descriptions — those stay in English. If you want the agent itself to reply in another language, just tell it in your prompt or system message.
 
-Supported values: `en` (default), `zh` (Simplified Chinese), `ja` (Japanese), `de` (German), `es` (Spanish), `fr` (French), `tr` (Turkish), `uk` (Ukrainian). Unknown values fall back to English.
+Supported values: `en` (default), `zh` (Simplified Chinese), `zh-hant` (Traditional Chinese), `ja` (Japanese), `de` (German), `es` (Spanish), `fr` (French), `tr` (Turkish), `uk` (Ukrainian), `af` (Afrikaans), `ko` (Korean), `it` (Italian), `ga` (Irish), `pt` (Portuguese), `ru` (Russian), `hu` (Hungarian). Unknown values fall back to English.
 
 You can also set this per-session with the `HERMES_LANGUAGE` env var, which overrides the config value.
 
@@ -1252,6 +1267,8 @@ display:
 | `verbose` | Full args, results, and debug logs |
 
 In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in messaging platforms (Telegram, Discord, Slack, etc.), set `tool_progress_command: true` in the `display` section above. The command will then cycle the mode and save to config.
+
+Tool progress requires a gateway adapter that can display progress updates safely. Platforms without message editing support, including Signal, suppress tool-progress bubbles even if `/verbose` saves a non-`off` mode.
 
 ### Runtime-metadata footer (gateway only)
 
@@ -1276,14 +1293,14 @@ Only the **final** message of a turn gets the footer; interim updates stay clean
 
 ### Per-platform progress overrides
 
-Different platforms have different verbosity needs. For example, Signal can't edit messages, so each progress update becomes a separate message — noisy. Use `display.platforms` to set per-platform modes:
+Different platforms have different verbosity needs. Use `display.platforms` to set per-platform modes:
 
 ```yaml
 display:
   tool_progress: all          # global default
   platforms:
     signal:
-      tool_progress: 'off'    # silence progress on Signal
+      tool_progress: 'off'    # Signal cannot currently display tool-progress bubbles
     telegram:
       tool_progress: verbose  # detailed progress on Telegram
     slack:

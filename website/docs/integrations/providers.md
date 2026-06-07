@@ -502,7 +502,7 @@ Or set it permanently in `config.yaml`:
 ```yaml
 model:
   provider: "stepfun"
-  default: "step-3-mini"
+  default: "step-3.5-flash"
 ```
 
 The base URL can be overridden with `STEPFUN_BASE_URL` (default: `https://api.stepfun.com/v1`).
