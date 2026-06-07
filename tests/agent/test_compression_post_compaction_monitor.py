@@ -11,7 +11,13 @@ class _TodoStore:
         return ""
 
 
-def _make_agent(compressed_messages, *, threshold_tokens=50_000):
+def _make_agent(
+    compressed_messages,
+    *,
+    threshold_tokens=50_000,
+    compression_status="compacted",
+    compression_noop_reason="",
+):
     compressor = MagicMock()
     compressor.compress.return_value = compressed_messages
     compressor.compression_count = 1
@@ -20,6 +26,8 @@ def _make_agent(compressed_messages, *, threshold_tokens=50_000):
     compressor._last_summary_error = None
     compressor._last_aux_model_failure_model = None
     compressor._last_aux_model_failure_error = None
+    compressor._last_compression_status = compression_status
+    compressor._last_compression_noop_reason = compression_noop_reason
 
     agent = SimpleNamespace(
         session_id="session-1",
@@ -94,3 +102,52 @@ def test_post_compaction_monitor_is_not_a_periodic_scheduler(monkeypatch):
         force=False,
     )
     agent._emit_warning.assert_called_once()
+
+
+def test_post_compaction_monitor_explains_lcm_noop_without_unchanged_delta(monkeypatch):
+    messages = [{"role": "user", "content": f"tail {i}"} for i in range(81)]
+    agent = _make_agent(
+        messages,
+        threshold_tokens=136_000,
+        compression_status="noop",
+        compression_noop_reason=(
+            "raw backlog outside fresh tail is below leaf chunk threshold"
+        ),
+    )
+    monkeypatch.setattr(
+        "agent.conversation_compression.estimate_request_tokens_rough",
+        lambda *_args, **_kwargs: 136_083,
+    )
+
+    returned, prompt = compress_context(agent, messages, "sys", approx_tokens=136_083)
+
+    assert returned == messages
+    assert prompt == "rebuilt system prompt"
+    agent._emit_warning.assert_called_once()
+    warning = agent._emit_warning.call_args.args[0]
+    assert "found no compressible backlog" in warning
+    assert "raw backlog outside fresh tail is below leaf chunk threshold" in warning
+    assert "~136,083 rough tokens" in warning
+    assert "81 messages" in warning
+    assert "136,083→136,083" not in warning
+    assert "Compression pressure remains high" not in warning
+
+
+def test_successful_compaction_still_high_keeps_observed_reduction_message(monkeypatch):
+    messages = [{"role": "user", "content": f"before {i}"} for i in range(81)]
+    compressed = [
+        {"role": "user", "content": "summary"},
+        {"role": "user", "content": "tail"},
+    ]
+    agent = _make_agent(compressed, threshold_tokens=136_000)
+    monkeypatch.setattr(
+        "agent.conversation_compression.estimate_request_tokens_rough",
+        lambda *_args, **_kwargs: 140_000,
+    )
+
+    compress_context(agent, messages, "sys", approx_tokens=180_000)
+
+    warning = agent._emit_warning.call_args.args[0]
+    assert "Compression pressure remains high" in warning
+    assert "180,000→140,000" in warning
+    assert "81→2 messages" in warning

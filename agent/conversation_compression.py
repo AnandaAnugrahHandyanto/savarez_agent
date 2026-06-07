@@ -320,6 +320,69 @@ def _emit_post_compression_pressure_advisory(
         logger.debug("post-compression pressure advisory failed", exc_info=True)
 
 
+def _compression_noop_reason(agent: Any) -> str:
+    """Return a context-engine no-op reason from the most recent compress call.
+
+    Plugin context engines such as LCM can legitimately run their deterministic
+    compression entry point and decide that no raw backlog is eligible yet (for
+    example, because everything outside the fresh tail is below the configured
+    leaf-chunk threshold). That is not a failed compaction and should not be
+    reported as an unchanged before/after compression result.
+    """
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None:
+        return ""
+    status = (
+        str(getattr(compressor, "_last_compression_status", "") or "")
+        .strip()
+        .lower()
+    )
+    if status != "noop":
+        return ""
+    return str(getattr(compressor, "_last_compression_noop_reason", "") or "").strip()
+
+
+def _emit_compression_noop_advisory(
+    agent: Any,
+    *,
+    reason: str,
+    approx_tokens: Optional[int],
+    message_count: int,
+) -> None:
+    """Explain a deterministic no-op compaction without implying failure.
+
+    This is intentionally side-effect free beyond the existing warning/status
+    plumbing: it does not call an LLM, schedule work, or create Kanban tasks.
+    """
+    compressor = getattr(agent, "context_compressor", None)
+    threshold = int(getattr(compressor, "threshold_tokens", 0) or 0)
+    token_text = (
+        f"~{approx_tokens:,} rough tokens"
+        if approx_tokens and approx_tokens > 0
+        else "an unknown rough-token count"
+    )
+    threshold_text = f"; threshold {threshold:,}" if threshold > 0 else ""
+    reason_text = reason or "no compressible backlog was found"
+    msg = (
+        "ℹ Context compaction checked the current conversation but found no "
+        f"compressible backlog ({reason_text}). The live context is still "
+        f"large ({token_text}{threshold_text}; {message_count:,} messages) "
+        "because the remaining recent/system/tool context must stay available. "
+        "No LLM call, scheduler run, or Kanban task was started by this check. "
+        "If this repeats, continue after more history accumulates, use "
+        "/compress <focus> to prioritize what matters, or /new for a fresh session."
+    )
+
+    key = (reason_text, approx_tokens, message_count, threshold)
+    if getattr(agent, "_last_compression_noop_warning_key", None) == key:
+        return
+    agent._last_compression_noop_warning_key = key
+    try:
+        agent._emit_warning(msg)
+    except Exception:
+        logger.debug("compression no-op advisory failed", exc_info=True)
+
+
 def maybe_compress_post_response(
     agent: Any,
     messages: list,
@@ -582,6 +645,20 @@ def compress_context(
         if not _existing_sp:
             _existing_sp = agent._build_system_prompt(system_message)
         _release_lock()  # compression aborted — no rotation will happen
+        return messages, _existing_sp
+
+    _noop_reason = _compression_noop_reason(agent)
+    if _noop_reason and compressed == messages:
+        _emit_compression_noop_advisory(
+            agent,
+            reason=_noop_reason,
+            approx_tokens=approx_tokens,
+            message_count=_pre_msg_count,
+        )
+        _existing_sp = getattr(agent, "_cached_system_prompt", None)
+        if not _existing_sp:
+            _existing_sp = agent._build_system_prompt(system_message)
+        _release_lock()  # deterministic no-op — no session rotation happened
         return messages, _existing_sp
 
     summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
