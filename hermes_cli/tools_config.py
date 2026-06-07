@@ -72,6 +72,7 @@ CONFIGURABLE_TOOLSETS = [
     ("session_search",  "🔎 Session Search",            "search past conversations"),
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
+    ("database",        "🗄️  Database Retrieval",       "database_retrieve (read-only SQL)"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
@@ -106,14 +107,21 @@ def gui_toolset_label(label: str) -> str:
 # who want it opt in via `hermes tools` → Video Generation, which walks
 # them through provider + model selection.
 #
-# X search is off by default for users without xAI credentials, but
-# auto-enables when SuperGrok OAuth tokens are stored OR XAI_API_KEY is
-# set — mirroring the HASS_TOKEN → homeassistant auto-enable below. The
-# `hermes tools` → X (Twitter) Search setup walks users through credential
-# setup. The tool's check_fn means the schema still won't appear to the
-# model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
-
+# X search is off by default — gated on xAI credentials (SuperGrok OAuth
+# or XAI_API_KEY). Users opt in via `hermes tools` → X (Twitter) Search,
+# which walks them through credential setup. The tool's check_fn means
+# the schema won't appear to the model even if enabled without credentials.
+_DEFAULT_OFF_TOOLSETS = {
+    "moa",
+    "homeassistant",
+    "spotify",
+    "discord",
+    "discord_admin",
+    "video",
+    "video_gen",
+    "x_search",
+    "database",
+}
 
 def _xai_credentials_present() -> bool:
     """Cheap, side-effect-free check for usable xAI credentials.

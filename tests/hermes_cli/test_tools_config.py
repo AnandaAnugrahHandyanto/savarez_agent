@@ -91,43 +91,24 @@ def test_configurable_toolsets_include_messaging():
     assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
 
-def test_configurable_toolsets_include_context_engine():
-    assert any(ts_key == "context_engine" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+def test_configurable_toolsets_include_database_retrieval():
+    assert any(ts_key == "database" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+    assert "database" in _DEFAULT_OFF_TOOLSETS
 
 
-def test_get_platform_tools_active_context_engine_is_enabled_for_explicit_config():
-    config = {
-        "context": {"engine": "lcm"},
-        "platform_toolsets": {"cli": ["web", "terminal"]},
-    }
+def test_get_platform_tools_database_retrieval_is_default_off():
+    enabled = _get_platform_tools({}, "cli")
 
-    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
-
-    assert "context_engine" in enabled
-    assert "web" in enabled
-    assert "terminal" in enabled
+    assert "database" not in enabled
 
 
-def test_get_platform_tools_context_engine_not_added_for_default_compressor():
-    config = {
-        "context": {"engine": "compressor"},
-        "platform_toolsets": {"cli": ["web", "terminal"]},
-    }
+def test_get_platform_tools_can_enable_database_retrieval():
+    config = {"platform_toolsets": {"cli": ["database"]}}
 
     enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
 
-    assert "context_engine" not in enabled
-
-
-def test_get_platform_tools_context_engine_respects_explicit_empty_selection():
-    config = {
-        "context": {"engine": "lcm"},
-        "platform_toolsets": {"cli": []},
-    }
-
-    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
-
-    assert "context_engine" not in enabled
+    assert "database" in enabled
+    assert "web" not in enabled
 
 
 def test_get_platform_tools_default_telegram_includes_messaging():
