@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -60,6 +61,11 @@ DEFAULT_X_SEARCH_MODEL = "grok-4.20-reasoning"
 DEFAULT_X_SEARCH_TIMEOUT_SECONDS = 180
 DEFAULT_X_SEARCH_RETRIES = 2
 MAX_HANDLES = 10
+JINA_READER_BASE_URL = "https://r.jina.ai/http://r.jina.ai/http://"
+X_STATUS_URL_RE = re.compile(
+    r"https?://(?:www\.)?(?:x|twitter)\.com/([A-Za-z0-9_]{1,15})/status/(\d{1,30})(?=$|[\s?#/])",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -134,9 +140,14 @@ def check_x_search_requirements() -> bool:
     """
     try:
         creds = resolve_xai_http_credentials()
-        return bool(str(creds.get("api_key") or "").strip())
+        if bool(str(creds.get("api_key") or "").strip()):
+            return True
     except Exception:
-        return False
+        pass
+    # r.jina.ai is public and requires no local credential. Keeping the tool
+    # registered lets agents read direct X status URLs even when xAI x_search
+    # credentials are absent.
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +278,42 @@ def _http_error_message(exc: requests.HTTPError) -> str:
     return str(exc)
 
 
+def _extract_x_status_url(query: str) -> Optional[str]:
+    match = X_STATUS_URL_RE.search(query or "")
+    if not match:
+        return None
+    handle, status_id = match.groups()
+    return f"https://x.com/{handle}/status/{status_id}"
+
+
+def _read_x_status_via_jina(status_url: str) -> str:
+    timeout_seconds = _get_x_search_timeout_seconds()
+    reader_url = f"{JINA_READER_BASE_URL}{status_url}"
+    response = requests.get(
+        reader_url,
+        headers={"User-Agent": hermes_xai_user_agent()},
+        timeout=timeout_seconds,
+    )
+    response.raise_for_status()
+    answer = str(getattr(response, "text", "") or "").strip()
+    return json.dumps(
+        {
+            "success": True,
+            "provider": "jina",
+            "tool": "x_jina_reader",
+            "query": status_url,
+            "answer": answer,
+            "citations": [
+                {"url": status_url, "title": "X status via r.jina.ai"}
+            ],
+            "inline_citations": [],
+            "degraded": False,
+            "degraded_reason": None,
+        },
+        ensure_ascii=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tool implementation
 # ---------------------------------------------------------------------------
@@ -282,6 +329,37 @@ def x_search_tool(
 ) -> str:
     if not query or not query.strip():
         return tool_error("query is required for x_search")
+
+    status_url = _extract_x_status_url(query.strip())
+    if status_url:
+        try:
+            return _read_x_status_via_jina(status_url)
+        except requests.HTTPError as e:
+            logger.error("x_jina_reader failed: %s", e, exc_info=True)
+            return json.dumps(
+                {
+                    "success": False,
+                    "provider": "jina",
+                    "tool": "x_jina_reader",
+                    "query": status_url,
+                    "error": _http_error_message(e),
+                    "error_type": type(e).__name__,
+                },
+                ensure_ascii=False,
+            )
+        except Exception as e:
+            logger.error("x_jina_reader failed: %s", e, exc_info=True)
+            return json.dumps(
+                {
+                    "success": False,
+                    "provider": "jina",
+                    "tool": "x_jina_reader",
+                    "query": status_url,
+                    "error": str(e),
+                    "error_type": type(e).__name__,
+                },
+                ensure_ascii=False,
+            )
 
     try:
         api_key, base_url, source = _resolve_xai_bearer()
@@ -455,10 +533,10 @@ def x_search_tool(
 X_SEARCH_SCHEMA = {
     "name": "x_search",
     "description": (
-        "Search X (Twitter) posts, profiles, and threads using xAI's built-in "
-        "X Search tool. Use this for current discussion, reactions, or claims "
-        "on X rather than general web pages. Available when xAI credentials "
-        "are configured (SuperGrok OAuth or XAI_API_KEY)."
+        "Search X (Twitter) posts, profiles, and threads. Direct X/Twitter "
+        "status URLs are read through r.jina.ai without credentials; broader "
+        "searches use xAI's built-in X Search tool when SuperGrok OAuth or "
+        "XAI_API_KEY credentials are configured."
     ),
     "parameters": {
         "type": "object",
@@ -519,7 +597,7 @@ registry.register(
     schema=X_SEARCH_SCHEMA,
     handler=_handle_x_search,
     check_fn=check_x_search_requirements,
-    requires_env=["XAI_API_KEY"],
+    requires_env=[],
     emoji="🐦",
     max_result_size_chars=100_000,
 )
