@@ -213,6 +213,19 @@ def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
 def main():
     _install_sidecar_publisher()
 
+    # Register declarative shell hooks from config.yaml so pre_tool_call
+    # block hooks fire in the desktop app, matching CLI and gateway behavior.
+    # Failures are logged but must never block TUI startup.
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+        register_from_config(load_config(), accept_hooks=False)
+    except Exception:
+        logger.debug(
+            "shell-hook registration failed at TUI startup",
+            exc_info=True,
+        )
+
     # MCP tool discovery — runs in a background daemon thread so a slow or
     # unreachable MCP server can't freeze TUI startup.  Previously this ran
     # inline before ``gateway.ready``, which meant any configured-but-down

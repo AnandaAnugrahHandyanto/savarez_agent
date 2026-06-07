@@ -233,6 +233,19 @@ def main(argv: list[str] | None = None) -> None:
     logger = logging.getLogger(__name__)
     logger.info("Starting hermes-agent ACP adapter")
 
+    # Register declarative shell hooks from config.yaml so pre_tool_call
+    # block hooks fire in the ACP/IDE surface, matching CLI and gateway.
+    # Failures are logged but must never block ACP startup.
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+        register_from_config(load_config(), accept_hooks=False)
+    except Exception:
+        logger.debug(
+            "shell-hook registration failed at ACP startup",
+            exc_info=True,
+        )
+
     # Ensure the project root is on sys.path so ``from run_agent import AIAgent`` works
     project_root = str(Path(__file__).resolve().parent.parent)
     if project_root not in sys.path:
