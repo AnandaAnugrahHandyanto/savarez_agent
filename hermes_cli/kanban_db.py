@@ -6573,7 +6573,7 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
         return True
     try:
         for skill_md in skills_root.rglob("kanban-worker/SKILL.md"):
-            if skill_md.is_file():
+            if skill_md.is_file() and ".archive" not in skill_md.parts:
                 return True
     except OSError:
         pass

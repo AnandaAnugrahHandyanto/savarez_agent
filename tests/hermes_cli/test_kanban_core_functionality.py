@@ -4531,3 +4531,35 @@ def test_dispatch_once_stale_disabled_when_timeout_zero(kanban_home, monkeypatch
         )
         assert res.stale == [], "stale_timeout_seconds=0 should disable detection"
         assert kb.get_task(conn, t).status == "running"
+
+
+class TestKanbanWorkerSkillAvailable:
+    """Tests for _kanban_worker_skill_available()."""
+
+    def test_returns_false_when_only_archived_copy_exists(self, tmp_path):
+        """An archived skill under .archive/ must not be reported as available."""
+        skills_dir = tmp_path / "skills"
+        (skills_dir / ".archive" / "kanban-worker").mkdir(parents=True)
+        (skills_dir / ".archive" / "kanban-worker" / "SKILL.md").write_text("# archived")
+
+        assert kb._kanban_worker_skill_available(str(tmp_path)) is False
+
+    def test_returns_true_when_canonical_location_exists(self, tmp_path):
+        """The canonical devops/kanban-worker/ location should be found."""
+        skills_dir = tmp_path / "skills" / "devops" / "kanban-worker"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text("# skill")
+
+        assert kb._kanban_worker_skill_available(str(tmp_path)) is True
+
+    def test_returns_true_when_nested_non_archived_copy_exists(self, tmp_path):
+        """A nested copy outside .archive/ should be found."""
+        skills_dir = tmp_path / "skills" / "custom" / "kanban-worker"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text("# skill")
+
+        assert kb._kanban_worker_skill_available(str(tmp_path)) is True
+
+    def test_returns_false_when_skills_dir_missing(self, tmp_path):
+        """No skills directory at all → False."""
+        assert kb._kanban_worker_skill_available(str(tmp_path)) is False
