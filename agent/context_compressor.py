@@ -547,6 +547,7 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._last_compression_failure_code = None
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
@@ -661,6 +662,7 @@ class ContextCompressor(ContextEngine):
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
+        self._last_compression_failure_code: Optional[str] = None
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
@@ -737,14 +739,22 @@ class ContextCompressor(ContextEngine):
             return False
         # Anti-thrashing: back off if recent compressions were ineffective
         if self._ineffective_compression_count >= 2:
+            self._last_compress_aborted = True
+            self._last_compression_failure_code = "compression_exhausted"
+            self._last_summary_error = (
+                "compression exhausted: repeated compression attempts did not "
+                "materially reduce the context"
+            )
             if not self.quiet_mode:
                 logger.warning(
-                    "Compression skipped — last %d compressions saved <10%% each. "
+                    "Compression exhausted — last %d compressions saved <10%% each. "
+                    "Blocking this turn instead of retrying until context overflow. "
                     "Consider /new to start a fresh session, or /compress <topic> "
                     "for focused compression.",
                     self._ineffective_compression_count,
                 )
             return False
+        self._last_compression_failure_code = None
         return True
 
     # ------------------------------------------------------------------
@@ -855,11 +865,10 @@ class ContextCompressor(ContextEngine):
             else:
                 content_hashes[h] = (i, msg.get("tool_call_id", "?"))
 
-        # Pass 2: Replace old tool results with informative summaries
-        for i in range(prune_boundary):
+        def _summarize_tool_message(i: int) -> bool:
             msg = result[i]
             if msg.get("role") != "tool":
-                continue
+                return False
             content = msg.get("content", "")
             # Multimodal content (base64 screenshots etc.): strip the image
             # payload — keep a lightweight text placeholder in its place.
@@ -869,26 +878,43 @@ class ContextCompressor(ContextEngine):
                 stripped = _strip_image_parts_from_parts(content)
                 if stripped is not None:
                     result[i] = {**msg, "content": stripped}
-                    pruned += 1
-                continue
+                    return True
+                return False
             if isinstance(content, dict) and content.get("_multimodal"):
                 summary = content.get("text_summary") or "[screenshot removed to save context]"
                 result[i] = {**msg, "content": f"[screenshot removed] {summary[:200]}"}
-                pruned += 1
-                continue
+                return True
             if not isinstance(content, str):
-                continue
+                return False
             if not content or content == _PRUNED_TOOL_PLACEHOLDER:
-                continue
+                return False
             # Skip already-deduplicated or previously-summarized results
             if content.startswith("[Duplicate tool output"):
-                continue
+                return False
             # Only prune if the content is substantial (>200 chars)
             if len(content) > 200:
                 call_id = msg.get("tool_call_id", "")
                 tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
                 summary = _summarize_tool_result(tool_name, tool_args, content)
                 result[i] = {**msg, "content": summary}
+                return True
+            return False
+
+        # Pass 2: Replace old tool results with informative summaries
+        for i in range(prune_boundary):
+            if _summarize_tool_message(i):
+                pruned += 1
+
+        # Pass 2b: long single-turn tool chains can put completed tool
+        # results inside the protected tail, including the current final
+        # message before the next LLM call. A role="tool" message is already
+        # completed; still-running tools have no result row to summarize.
+        # Keep provider-legal tool pairing and demote only the raw body.
+        for i in range(prune_boundary, len(result)):
+            msg = result[i]
+            if msg.get("role") != "tool":
+                continue
+            if _summarize_tool_message(i):
                 pruned += 1
 
         # Pass 3: Truncate large tool_call arguments in assistant messages
@@ -1691,7 +1717,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     ) -> int:
         """Return the index of the last user-role message at or after *head_end*, or -1."""
         for i in range(len(messages) - 1, head_end - 1, -1):
-            if messages[i].get("role") == "user":
+            if messages[i].get("role") == "user" and not self._is_context_summary_content(
+                messages[i].get("content")
+            ):
                 return i
         return -1
 
@@ -1854,6 +1882,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
+        self._last_compression_failure_code = None
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
@@ -2062,8 +2091,16 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_compression_savings_pct = savings_pct
         if savings_pct < 10:
             self._ineffective_compression_count += 1
+            if self._ineffective_compression_count >= 2:
+                self._last_compress_aborted = True
+                self._last_compression_failure_code = "compression_exhausted"
+                self._last_summary_error = (
+                    "compression exhausted: repeated compression attempts did not "
+                    "materially reduce the context"
+                )
         else:
             self._ineffective_compression_count = 0
+            self._last_compression_failure_code = None
 
         if not self.quiet_mode:
             logger.info(
