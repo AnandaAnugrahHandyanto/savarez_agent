@@ -2751,7 +2751,7 @@ class TestMatrixDmAutoThread:
         )
 
         assert ctx is not None
-        _body, _is_dm, _chat_type, thread_id, _display, _source = ctx
+        _body, _is_dm, _chat_type, thread_id, _display, _source, _channel_prompt = ctx
         assert thread_id == "$ev1"
 
     @pytest.mark.asyncio
@@ -2769,7 +2769,7 @@ class TestMatrixDmAutoThread:
         )
 
         assert ctx is not None
-        _body, _is_dm, _chat_type, thread_id, _display, _source = ctx
+        _body, _is_dm, _chat_type, thread_id, _display, _source, _channel_prompt = ctx
         assert thread_id is None
 
 
