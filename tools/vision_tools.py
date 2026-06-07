@@ -541,8 +541,9 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         results. Older Gemini does NOT.
 
     For unknown / legacy providers we conservatively return False — the
-    caller falls back to the legacy aux-LLM text path.  The check is relaxed
-    when the provider's ``ProviderProfile`` declares ``supports_vision=True``.
+    caller falls back to the legacy aux-LLM text path.  ``ProviderProfile.supports_vision``
+    is NOT used here because it indicates model capability, not API transport
+    compatibility.
     """
     if not isinstance(provider, str):
         return False
@@ -579,16 +580,13 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
             return True
         return False
 
-    # Check the provider's registered profile for the supports_vision flag.
-    # This covers vision-capable providers like xiaomi, minimax, etc. that
-    # aren't in the hardcoded list above.
-    try:
-        from providers import get_provider_profile
-        profile = get_provider_profile(p)
-        if profile is not None and profile.supports_vision:
-            return True
-    except Exception:
-        pass
+    # NOTE: We intentionally do NOT fall back to ProviderProfile.supports_vision
+    # here.  That flag indicates *model* capability (from models.dev catalog),
+    # not *API transport* compatibility.  Providers like xiaomi have
+    # supports_vision=True because mimo-v2 supports vision inputs, but the
+    # xiaomi API does not accept images inside tool-role messages.  Only add
+    # providers to the explicit allowlist above after empirically verifying
+    # their API handles multimodal tool results.
 
     # Other vision-capable provider stacks. Conservative default: False.
     # Add explicit entries here as we verify each provider's tool-result
