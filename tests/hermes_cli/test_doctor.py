@@ -1358,3 +1358,234 @@ class TestDoctorStaleMaxIterationsDrift:
             monkeypatch, tmp_path, fix=False, ghost=None, cfg_turns=400,
         )
         assert "shadows" not in out
+
+
+# ── Doctor --json and --verbose flags ──
+
+
+class TestDoctorJsonFlag:
+    """Tests for `hermes doctor --json` output."""
+
+    def _run_json_doctor(self, monkeypatch, tmp_path) -> str:
+        """Run `hermes doctor --json` in a minimal hermetic environment."""
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        # load_config() resolves HERMES_HOME from env, not the module constant
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        # Return empty results so doctor runs to completion (JSON output is at end)
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        # Stub auth helpers for hermetic behavior
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False, json=True, verbose=False))
+        return buf.getvalue()
+
+    def test_json_output_is_valid_json(self, monkeypatch, tmp_path):
+        import json as _json
+        out = self._run_json_doctor(monkeypatch, tmp_path)
+        parsed = _json.loads(out)
+        assert isinstance(parsed, dict)
+
+    def test_json_contains_expected_keys(self, monkeypatch, tmp_path):
+        import json as _json
+        out = self._run_json_doctor(monkeypatch, tmp_path)
+        parsed = _json.loads(out)
+        for key in ("hermes_home", "python_version", "checks", "issues",
+                     "manual_issues", "fixable_count", "total_issues", "fixed_count"):
+            assert key in parsed, f"Missing key: {key}"
+
+    def test_json_checks_are_structured(self, monkeypatch, tmp_path):
+        import json as _json
+        out = self._run_json_doctor(monkeypatch, tmp_path)
+        parsed = _json.loads(out)
+        checks = parsed["checks"]
+        assert isinstance(checks, list)
+        assert len(checks) > 0
+        # Each check must have section, status, message keys
+        for check in checks:
+            assert "section" in check
+            assert "status" in check
+            assert "message" in check
+            assert check["status"] in ("ok", "warn", "fail", "info")
+
+    def test_json_mode_suppresses_ansi_escape_codes(self, monkeypatch, tmp_path):
+        out = self._run_json_doctor(monkeypatch, tmp_path)
+        # ANSI escape sequences start with \033 or \x1b
+        assert "\033" not in out
+        assert "\x1b" not in out
+
+    def test_json_mode_produces_no_colored_unicode_glyphs(self, monkeypatch, tmp_path):
+        out = self._run_json_doctor(monkeypatch, tmp_path)
+        # Should not contain the unicode check/cross marks used in terminal output
+        for glyph in ("✓", "✗", "⚠", "🩺", "◆", "┌", "🎉"):
+            assert glyph not in out, f"Found terminal glyph in JSON output: {glyph}"
+
+
+class TestDoctorVerboseFlag:
+    """Tests for `hermes doctor --verbose` output."""
+
+    def _run_verbose_doctor(self, monkeypatch, tmp_path, *, provider="auto",
+                             fallback_chain=None, aux_config=None) -> str:
+        """Run `hermes doctor --verbose` with controlled config."""
+        import yaml
+
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+
+        config = {
+            "model": {
+                "provider": provider,
+                "default": "anthropic/claude-sonnet-4-20250514",
+            },
+            "memory": {},
+        }
+        if fallback_chain:
+            config["fallback_providers"] = fallback_chain
+        if aux_config:
+            config["auxiliary"] = aux_config
+
+        (home / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        # load_config() resolves HERMES_HOME from env, not the module constant
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        # Return empty results so doctor runs to completion
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        # Stub auth helpers for hermetic behavior
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False, json=False, verbose=True))
+        return buf.getvalue()
+
+    def test_verbose_shows_route_configuration_section(self, monkeypatch, tmp_path):
+        out = self._run_verbose_doctor(monkeypatch, tmp_path, provider="openrouter")
+        assert "Route Configuration" in out
+        assert "provider: openrouter" in out
+
+    def test_verbose_shows_fallback_chain_section(self, monkeypatch, tmp_path):
+        out = self._run_verbose_doctor(
+            monkeypatch, tmp_path,
+            provider="openrouter",
+            fallback_chain=[
+                {"provider": "nous", "model": "google/gemini-3-flash"},
+                {"provider": "custom", "model": "local-model"},
+            ],
+        )
+        assert "Fallback Chain" in out
+        assert "nous (google/gemini-3-flash)" in out
+        assert "custom (local-model)" in out
+
+    def test_verbose_shows_empty_fallback_when_none_configured(self, monkeypatch, tmp_path):
+        out = self._run_verbose_doctor(monkeypatch, tmp_path)
+        assert "Fallback Chain" in out
+        assert "No fallback providers configured" in out
+
+    def test_verbose_shows_auxiliary_tasks_section(self, monkeypatch, tmp_path):
+        out = self._run_verbose_doctor(
+            monkeypatch, tmp_path,
+            aux_config={
+                "vision": {"provider": "custom", "model": "qwen-vl", "timeout": 60},
+                "compression": {"provider": "auto", "model": "", "timeout": 120},
+            },
+        )
+        assert "Auxiliary Tasks" in out
+        assert "vision:" in out
+        assert "compression:" in out
+
+    def test_verbose_does_not_suppress_standard_sections(self, monkeypatch, tmp_path):
+        out = self._run_verbose_doctor(monkeypatch, tmp_path)
+        # Standard sections must still appear
+        for section in ("Python Environment", "Configuration Files",
+                         "Auth Providers", "Security Advisories"):
+            assert section in out, f"Missing standard section: {section}"
+
+
+class TestDoctorJsonAndVerboseInteraction:
+    """JSON mode takes precedence — verbose sections are suppressed in JSON output."""
+
+    def test_json_with_verbose_still_produces_valid_json(self, monkeypatch, tmp_path):
+        import json as _json
+
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        # Stub auth helpers for hermetic behavior
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_gemini_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            # Both flags: JSON wins, verbose sections suppressed
+            doctor_mod.run_doctor(Namespace(fix=False, json=True, verbose=True))
+
+        out = buf.getvalue()
+        parsed = _json.loads(out)
+        assert isinstance(parsed, dict)
+        # Verbose section headers must not appear in JSON output
+        assert "Route Configuration" not in out
+        assert "Fallback Chain" not in out
+        assert "Auxiliary Tasks" not in out
