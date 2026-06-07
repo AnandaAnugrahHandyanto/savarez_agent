@@ -644,6 +644,10 @@ export function usePromptActions({
           const body = result?.output || `/${name}: no output`
           renderSlashOutput(result?.warning ? `warning: ${result.warning}\n${body}` : body)
 
+          if (name === 'title') {
+            void refreshSessions().catch(() => undefined)
+          }
+
           return
         } catch {
           // Fall back to command.dispatch for skill/send/alias directives.
