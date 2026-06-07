@@ -132,14 +132,15 @@ class TestDeregister:
         # Toolset check should be gone since no tools remain
         assert "ts1" not in reg._toolset_checks
 
-    def test_preserves_toolset_check_if_other_tools_remain(self):
+    def test_removes_toolset_check_when_remaining_tools_have_no_check(self):
         reg = ToolRegistry()
         check = lambda: True  # noqa: E731
         reg.register(name="foo", toolset="ts1", schema={}, handler=lambda x: x, check_fn=check)
         reg.register(name="bar", toolset="ts1", schema={}, handler=lambda x: x)
         reg.deregister("foo")
-        # bar still in ts1, so check should remain
-        assert "ts1" in reg._toolset_checks
+        # bar still in ts1 but has no check_fn, so ts1 is available without a stored check.
+        assert "ts1" not in reg._toolset_checks
+        assert reg.is_toolset_available("ts1") is True
 
     def test_removes_toolset_alias_when_last_tool_is_removed(self):
         reg = ToolRegistry()
