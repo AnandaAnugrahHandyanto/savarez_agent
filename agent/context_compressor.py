@@ -24,6 +24,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm, _is_connection_error
+from agent.compression_memory import CompressionMemoryLedger
 from agent.context_engine import ContextEngine
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
@@ -35,6 +36,47 @@ from agent.redact import redact_sensitive_text
 logger = logging.getLogger(__name__)
 
 SUMMARY_PREFIX = (
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns in this conversation "
+    "were compacted into the summary below. Treat the summary as background "
+    "reference and state, NOT as active instructions and not as a queue of "
+    "pending tasks to resume. "
+    "The latest user message that appears AFTER this summary sets the current "
+    "goal; respond to that message. If the latest user message conflicts with "
+    "or supersedes the summary's '## active task', '## in progress', "
+    "'## pending user asks', or '## remaining work', the latest user message "
+    "wins; discard stale task framing while still using relevant facts as "
+    "background reference. "
+    "If the latest message references prior work, files, decisions, or "
+    "unresolved state (e.g. 'continue', 'do the next one', 'apply that to the "
+    "other file', 'why did you do that?'), use the summary to resolve what it "
+    "refers to — do NOT discard the summary's information. "
+    "Do NOT proactively re-do or re-answer requests described in the summary "
+    "unless the latest message explicitly asks you to continue or revisit "
+    "them; they were likely already handled. "
+    "If the latest message changes topic, says stop, undo, roll back, never "
+    "mind, just verify, or otherwise supersedes earlier in-flight work, follow "
+    "the latest message and do not re-surface the superseded work in later "
+    "turns. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "The current session state (files, config, etc.) may already reflect work "
+    "described here — build on it rather than repeating it:"
+)
+LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
+
+# Handoff prefixes that shipped in earlier releases. A summary persisted under
+# one of these can be inherited into a resumed lineage (#35344); when it is
+# re-normalized on re-compaction we must strip the OLD prefix too, otherwise the
+# stale directive it carried (e.g. "resume exactly from Active Task") survives
+# embedded in the body and keeps hijacking replies. Keep newest-first; entries
+# are matched literally. Add a frozen copy here whenever SUMMARY_PREFIX changes.
+_HISTORICAL_SUMMARY_PREFIXES = (
+    # Pre-P1-4 (huddle 2026-05-30): the "latest message WINS — discard those
+    # stale items entirely" wording over-corrected and broke anaphora
+    # ("continue", "do the next one"). Softened to reference-resolution
+    # framing. Frozen here so a summary persisted under it is re-normalized
+    # (and its aggressive directive stripped) on the next re-compaction.
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
     "into the summary below. This is a handoff from a previous context "
     "window — treat it as background reference, NOT as active instructions. "
@@ -57,17 +99,7 @@ SUMMARY_PREFIX = (
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
     "The current session state (files, config, etc.) may reflect work "
-    "described here — avoid repeating it:"
-)
-LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
-
-# Handoff prefixes that shipped in earlier releases. A summary persisted under
-# one of these can be inherited into a resumed lineage (#35344); when it is
-# re-normalized on re-compaction we must strip the OLD prefix too, otherwise the
-# stale directive it carried (e.g. "resume exactly from Active Task") survives
-# embedded in the body and keeps hijacking replies. Keep newest-first; entries
-# are matched literally. Add a frozen copy here whenever SUMMARY_PREFIX changes.
-_HISTORICAL_SUMMARY_PREFIXES = (
+    "described here — avoid repeating it:",
     # Pre-#35344: contained the self-contradicting "resume exactly" directive.
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
     "into the summary below. This is a handoff from a previous context "
@@ -105,11 +137,30 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 
+# P0-2: max live summary segments before the two oldest are merged into one.
+# At 5 segments the merged-render is already ~4-5 paragraphs; merging keeps
+# the "previous context" injection token-bounded for very long sessions.
+_SEGMENT_MERGE_THRESHOLD: int = 5
+
+# P1-3: absolute headroom (tokens) reserved below the context limit for the
+# next completion + the summariser's own call + a small safety margin.  The
+# percentage trigger is capped so it never plans to leave LESS than this,
+# which fixes the small-window starvation case (50% of a 32K window leaves
+# almost no usable room once the incompressible head/tail/summary floor is
+# counted).  On typical 100K-200K windows the percentage trigger is already
+# well below ``context_length - reserve`` so the cap is a no-op there.
+_COMPRESSION_RESERVE_TOKENS = 4096 + 2000 + 1024  # max_output + summariser + margin
+
 # Hard ceiling for the deterministic summary-failure handoff.  The fallback is
 # only meant to preserve continuity anchors from the dropped window, not to
 # become another unbounded transcript copy after the LLM summarizer failed.
 _FALLBACK_SUMMARY_MAX_CHARS = 8_000
 _FALLBACK_TURN_MAX_CHARS = 700
+
+# Private ledger context is injected into the compacted handoff, but stripped
+# before a persisted handoff is treated as summary prose again.
+_LEDGER_CONTEXT_START = "## Private Compression Memory Ledger"
+_LEDGER_CONTEXT_END = "## End Private Compression Memory Ledger"
 
 
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
@@ -540,6 +591,8 @@ class ContextCompressor(ContextEngine):
         self._context_probed = False
         self._context_probe_persistable = False
         self._previous_summary = None
+        self._summary_segments = []
+        self._turns_seen = 0
         self._last_summary_error = None
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
@@ -552,6 +605,19 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
+        self._session_id = ""
+        self._parent_session_id = ""
+        self._last_memory_ledger_error = None
+
+    def on_session_start(self, session_id: str, **kwargs) -> None:
+        """Record session lineage for the private compression ledger."""
+        self._session_id = session_id or ""
+        parent_session_id = (
+            kwargs.get("old_session_id")
+            or kwargs.get("parent_session_id")
+        )
+        if parent_session_id is not None:
+            self._parent_session_id = parent_session_id or ""
 
     def update_model(
         self,
@@ -596,6 +662,8 @@ class ContextCompressor(ContextEngine):
         provider: str = "",
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
+        memory_ledger_enabled: bool = False,
+        memory_ledger_retention_days: int = 90,
     ):
         self.model = model
         self.base_url = base_url
@@ -612,6 +680,8 @@ class ContextCompressor(ContextEngine):
         # When False (default = historical behavior), insert a
         # deterministic "summary unavailable" handoff and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
+        self.memory_ledger_enabled = memory_ledger_enabled
+        self.memory_ledger_retention_days = max(1, int(memory_ledger_retention_days or 90))
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -654,10 +724,42 @@ class ContextCompressor(ContextEngine):
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = False
 
+        # P1-5: calibrated token accountant.  estimate_request_tokens_rough()
+        # deliberately overestimates schema-heavy requests (len(str(tools))//4),
+        # which can trigger premature compression.  We learn the real
+        # rough->provider ratio per (provider, model) from observed usage and
+        # scale future rough estimates by the median ratio.  Empty until the
+        # first post-call sample, so behaviour is unchanged on a cold start.
+        self._token_calibration: Dict[tuple, dict] = {}
+        # Rough preflight estimate for the request currently in flight; used to
+        # compute a calibration ratio when its real provider usage arrives.
+        self._last_preflight_rough: int = 0
+        # P1-3: set when even a full compaction left the request above the
+        # absolute reserve, so callers/UI can surface that the window is
+        # genuinely over-full rather than silently shipping an oversized payload.
+        self._last_compress_over_reserve: bool = False
+
         self.summary_model = summary_model_override or ""
 
-        # Stores the previous compaction summary for iterative updates
+        # Stores the previous compaction summary for iterative updates.
+        # Legacy field — kept for backward compat (resumed sessions that
+        # have an older persisted summary message but no _summary_segments yet).
+        # New code writes to _summary_segments instead.
         self._previous_summary: Optional[str] = None
+
+        # P0-2: append-only segment list.  Each entry is a dict:
+        #   {"start": int, "end": int, "text": str}
+        # where start/end are global turn-sequence numbers (monotone, never
+        # reset within a session) bounding the turns whose information lives
+        # in this segment.  Each turn is summarized EXACTLY ONCE — segments
+        # are never re-fed into the LLM.  The rendered view (injected into
+        # the assistant context at compress time) is assembled from ALL
+        # segments, with older ones condensed more aggressively.
+        self._summary_segments: List[Dict[str, Any]] = []
+        # Global turn counter — number of message-list positions that have
+        # passed through the compressor since session start.  Advanced once
+        # per compress() call by (compress_end - compress_start) new turns.
+        self._turns_seen: int = 0
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
@@ -680,6 +782,10 @@ class ContextCompressor(ContextEngine):
         # succeeded.  Silent recovery would hide the broken config.
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
+        self._session_id = ""
+        self._parent_session_id = ""
+        self._memory_ledger: Optional[CompressionMemoryLedger] = None
+        self._last_memory_ledger_error: Optional[str] = None
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -688,6 +794,18 @@ class ContextCompressor(ContextEngine):
         self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
         if self.last_prompt_tokens > 0:
             self.last_real_prompt_tokens = self.last_prompt_tokens
+            # P1-5: learn the rough->real ratio, but only when the in-flight
+            # request matched the rough estimate (no compression happened
+            # between the preflight estimate and this response — that would
+            # change the payload and pollute the ratio).
+            if (
+                not self.awaiting_real_usage_after_compression
+                and self._last_preflight_rough > 0
+            ):
+                self._record_token_calibration(
+                    self._last_preflight_rough, self.last_prompt_tokens
+                )
+            self._last_preflight_rough = 0
             if self.last_prompt_tokens < self.threshold_tokens:
                 if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
                     self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
@@ -731,9 +849,18 @@ class ContextCompressor(ContextEngine):
         Includes anti-thrashing protection: if the last two compressions
         each saved less than 10%, skip compression to avoid infinite loops
         where each pass removes only 1-2 messages.
+
+        An explicit ``prompt_tokens`` always comes from the rough preflight
+        estimator (``estimate_request_tokens_rough``), so it is calibrated
+        (P1-5) and remembered for ratio learning.  The ``None`` path uses the
+        real provider ``last_prompt_tokens`` and is left uncalibrated.
         """
-        tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
-        if tokens < self.threshold_tokens:
+        if prompt_tokens is not None:
+            self._last_preflight_rough = prompt_tokens
+            tokens = self.calibrated_estimate(prompt_tokens)
+        else:
+            tokens = self.last_prompt_tokens
+        if tokens < self._effective_trigger_tokens():
             return False
         # Anti-thrashing: back off if recent compressions were ineffective
         if self._ineffective_compression_count >= 2:
@@ -746,6 +873,78 @@ class ContextCompressor(ContextEngine):
                 )
             return False
         return True
+
+    # ------------------------------------------------------------------
+    # P1-3: absolute-reserve trigger + floor awareness
+    # ------------------------------------------------------------------
+
+    def _effective_trigger_tokens(self) -> int:
+        """Token count at or above which compression should fire.
+
+        Starts from the configured percentage trigger (``threshold_tokens``)
+        but caps it at ``context_length - _COMPRESSION_RESERVE_TOKENS`` so the
+        trigger never plans to leave less than the absolute reserve free.  On
+        typical 100K-200K windows the percentage trigger is already lower than
+        the reserve cap, so this is a no-op; it only bites on small or
+        misconfigured windows where the percentage would otherwise starve the
+        next completion.
+        """
+        reserve_trigger = self.context_length - _COMPRESSION_RESERVE_TOKENS
+        if reserve_trigger <= 0:
+            return self.threshold_tokens
+        return min(self.threshold_tokens, reserve_trigger)
+
+    def _estimate_incompressible_floor(self) -> int:
+        """Rough lower bound on tokens that survive any single compaction pass.
+
+        The compressor cannot see the system prompt or tool schemas (those live
+        on the agent), so this bounds only the portion it controls: the
+        protected tail it always keeps plus the summary it emits in place of the
+        middle window.  Used to detect the pathological case where even a
+        maximal compaction cannot get under the reserve, so callers can warn
+        instead of looping.
+        """
+        return self.tail_token_budget + self.max_summary_tokens
+
+    # P1-5: calibrated token accountant
+    # ------------------------------------------------------------------
+
+    def calibrated_estimate(self, rough_tokens: int) -> int:
+        """Scale a rough request estimate by the learned provider ratio.
+
+        Returns ``rough_tokens`` unchanged until at least one (rough, real)
+        sample has been recorded for the active (provider, model), so a cold
+        start never changes compression timing.  Once samples exist, the median
+        of the most recent ratios is applied — median (not mean) so a single
+        outlier request cannot skew the budget.
+        """
+        if rough_tokens <= 0:
+            return rough_tokens
+        cal = self._token_calibration.get((self.provider, self.model))
+        if not cal or not cal.get("ratios"):
+            return rough_tokens
+        ratios = sorted(cal["ratios"])
+        median_ratio = ratios[len(ratios) // 2]
+        return int(rough_tokens * median_ratio)
+
+    def _record_token_calibration(self, rough_tokens: int, real_tokens: int) -> None:
+        """Record one (rough estimate, real provider prompt_tokens) sample.
+
+        Keeps a rolling window of the last 20 ratios per (provider, model) and
+        ignores nonsensical samples — non-positive values, or ratios outside a
+        sane 0.1x-10x band that usually mean the rough estimate referred to a
+        different payload (e.g. compression happened between estimate and call).
+        """
+        if rough_tokens <= 0 or real_tokens <= 0:
+            return
+        ratio = real_tokens / rough_tokens
+        if ratio < 0.1 or ratio > 10.0:
+            return
+        key = (self.provider, self.model)
+        cal = self._token_calibration.setdefault(key, {"ratios": []})
+        cal["ratios"].append(ratio)
+        if len(cal["ratios"]) > 20:
+            cal["ratios"] = cal["ratios"][-20:]
 
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)
@@ -1187,6 +1386,196 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             summary = summary[: _FALLBACK_SUMMARY_MAX_CHARS - 42].rstrip() + "\n...[fallback summary truncated]"
         return summary
 
+    # ------------------------------------------------------------------
+    # P0-2: append-only segment helpers
+    # ------------------------------------------------------------------
+
+    def _render_summary_from_segments(self) -> str:
+        """Assemble a human-readable summary body from all live segments.
+
+        Older segments are rendered condensed (just their stored text, which
+        was already compact at the time it was written); newer segments are
+        rendered verbatim.  The assembler never re-summarizes — it only
+        concatenates.
+
+        Returns an empty string when there are no segments.
+        """
+        if not self._summary_segments:
+            return ""
+        parts = []
+        n = len(self._summary_segments)
+        for i, seg in enumerate(self._summary_segments):
+            text = (seg.get("text") or "").strip()
+            if not text:
+                continue
+            if i < n - 1:
+                # Older segment: label it so the model knows it's historical.
+                label = f"--- Earlier context (turns {seg['start']+1}-{seg['end']}) ---"
+                parts.append(f"{label}\n{text}")
+            else:
+                # Newest segment: no label, render verbatim.
+                parts.append(text)
+        return "\n\n".join(parts)
+
+    def _compact_old_segments(self) -> None:
+        """Merge the two oldest segments into one when the list is too long.
+
+        Merging is purely text concatenation — NO LLM call.  The merged
+        segment covers the union of the two input turn ranges and contains
+        both bodies separated by a blank line.  This keeps token growth
+        bounded without any re-summarization degradation.
+        """
+        if not hasattr(self, "_summary_segments") or len(self._summary_segments) <= _SEGMENT_MERGE_THRESHOLD:
+            return
+        a = self._summary_segments[0]
+        b = self._summary_segments[1]
+        merged_text = (a.get("text") or "").strip() + "\n\n" + (b.get("text") or "").strip()
+        merged = {"start": a["start"], "end": b["end"], "text": merged_text}
+        self._summary_segments = [merged] + self._summary_segments[2:]
+        if not self.quiet_mode:
+            logger.debug(
+                "Compacted oldest two summary segments into one "
+                "(turns %d-%d + %d-%d → %d-%d)",
+                a["start"], a["end"], b["start"], b["end"],
+                merged["start"], merged["end"],
+            )
+
+    def _context_for_new_turns(self) -> str:
+        """Build the 'previous context' injection for a delta-summarization call.
+
+        Returns a compact rendition of all prior segments: enough for the LLM
+        to understand what has already been recorded (so it can avoid
+        duplication and can handle forward-references), but NOT the full text
+        (that would recreate the summary-of-summary problem).
+
+        When there are no segments yet (first compaction) or the legacy
+        _previous_summary path is active, returns that prose summary.
+        """
+        parts: list[str] = []
+        ledger_context = self._private_memory_context()
+        if ledger_context:
+            parts.append(ledger_context)
+        segments = getattr(self, "_summary_segments", None)
+        if segments:
+            parts.append(self._render_summary_from_segments())
+            return "\n\n".join(part for part in parts if part)
+        if self._previous_summary:
+            parts.append(self._previous_summary)
+        return "\n\n".join(part for part in parts if part)
+
+    def _get_memory_ledger(self) -> Optional[CompressionMemoryLedger]:
+        """Return the private compression-memory ledger for the current session."""
+        if not getattr(self, "memory_ledger_enabled", False):
+            return None
+        if not getattr(self, "_session_id", ""):
+            return None
+        if getattr(self, "_memory_ledger", None) is None:
+            self._memory_ledger = CompressionMemoryLedger()
+            self._memory_ledger.prune_older_than(self.memory_ledger_retention_days)
+        return self._memory_ledger
+
+    def _private_memory_context(self) -> str:
+        """Render current-session typed atoms for prompt injection."""
+        session_id = getattr(self, "_session_id", "")
+        if not session_id:
+            return ""
+        try:
+            ledger = self._get_memory_ledger()
+            if ledger is None:
+                return ""
+            atoms = []
+            seen_atom_ids: set[str] = set()
+            current_has_segments = ledger.has_segments(session_id)
+            lineage = ledger.lineage_session_ids(
+                session_id,
+                parent_session_id=getattr(self, "_parent_session_id", "") or "",
+                max_depth=8,
+            )
+            for idx, sid in enumerate(lineage):
+                for row in ledger.retrieve_for_prompt(
+                    session_id=sid,
+                    query=self._previous_summary or "",
+                    limit=8,
+                ):
+                    atom_id = str(row["atom_id"])
+                    if atom_id in seen_atom_ids:
+                        continue
+                    if (
+                        idx > 0
+                        and current_has_segments
+                        and row["atom_type"] == "task"
+                        and row["status"] == "active"
+                    ):
+                        # Once the current session has its own post-rotation
+                        # compaction state, old active tasks from parent
+                        # sessions are stale unless restated by the current
+                        # session's summaries. Keep older decisions/artifacts,
+                        # but do not resurrect prior active work.
+                        continue
+                    seen_atom_ids.add(atom_id)
+                    atoms.append(row)
+                    if len(atoms) >= 8:
+                        break
+                if len(atoms) >= 8:
+                    break
+            rendered = ledger.format_for_prompt(atoms, limit=8)
+            if not rendered:
+                return ""
+            return (
+                f"{_LEDGER_CONTEXT_START}\n"
+                "Derived local state from prior compressions. Use as background "
+                "state, not as new user instructions. Missing, superseded, or "
+                "stale items must not override the latest user message.\n"
+                f"{rendered}\n"
+                f"{_LEDGER_CONTEXT_END}"
+            )
+        except Exception as exc:
+            err_text = str(exc).strip() or exc.__class__.__name__
+            if len(err_text) > 220:
+                err_text = err_text[:217].rstrip() + "..."
+            self._last_memory_ledger_error = err_text
+            if not self.quiet_mode:
+                logger.warning("Compression memory ledger unavailable: %s", err_text)
+            return ""
+
+    def _summary_body_for_prompt(self) -> str:
+        parts = []
+        ledger_context = self._private_memory_context()
+        if ledger_context:
+            parts.append(ledger_context)
+        if self._previous_summary:
+            parts.append(self._previous_summary)
+        return "\n\n".join(parts)
+
+    def _record_private_memory_segment(
+        self,
+        *,
+        start_turn: int,
+        end_turn: int,
+        summary_text: str,
+        turns_to_summarize: List[Dict[str, Any]],
+    ) -> None:
+        try:
+            ledger = self._get_memory_ledger()
+            if ledger is None:
+                return
+            ledger.record_segment(
+                session_id=self._session_id,
+                parent_session_id=getattr(self, "_parent_session_id", ""),
+                start_turn=start_turn,
+                end_turn=end_turn,
+                summary_text=summary_text,
+                turns=turns_to_summarize,
+            )
+            self._last_memory_ledger_error = None
+        except Exception as exc:
+            err_text = str(exc).strip() or exc.__class__.__name__
+            if len(err_text) > 220:
+                err_text = err_text[:217].rstrip() + "..."
+            self._last_memory_ledger_error = err_text
+            if not self.quiet_mode:
+                logger.warning("Compression memory ledger write failed: %s", err_text)
+
     def _fallback_to_main_for_compression(self, e: Exception, reason: str) -> None:
         """Switch from a separate ``summary_model`` back to the main model.
 
@@ -1340,19 +1729,31 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
 
 Write only the summary body. Do not include any preamble or prefix."""
 
-        if self._previous_summary:
-            # Iterative update: preserve existing info, add new progress
+        prior_context = self._context_for_new_turns()
+        if prior_context:
+            # P0-2 delta path: summarize ONLY the new turns.  The prior
+            # context is shown read-only so the LLM can avoid duplication
+            # and handle forward-references; it is NOT rewritten.  The new
+            # segment text will be appended to _summary_segments, never
+            # merged back through the LLM.
             prompt = f"""{_summarizer_preamble}
 
-You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
+You are writing a NEW summary segment covering only the turns listed below.
+Earlier turns were already summarized and are shown as PRIOR CONTEXT — do NOT
+re-summarize, rewrite, or copy from them. Your output covers ONLY the NEW TURNS.
 
-PREVIOUS SUMMARY:
-{self._previous_summary}
+PRIOR CONTEXT (already recorded, do not repeat):
+{prior_context}
 
-NEW TURNS TO INCORPORATE:
+NEW TURNS TO SUMMARIZE (these are the only turns your output should cover):
 {content_to_summarize}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
+Write a structured summary of the NEW TURNS ONLY, using this exact structure.
+Do not copy or paraphrase information from the prior context unless it is
+directly modified or superseded by the new turns.
+CRITICAL: "## Active Task" must reflect the user's most recent unfulfilled input
+from the NEW TURNS — only fall back to the prior context's task if the new turns
+contain no user messages.
 
 {_template_sections}"""
         else:
@@ -1400,12 +1801,33 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())
-            # Store for iterative updates on next compaction
+            # P0-2: record as a new append-only segment keyed to the turn
+            # range that was just summarized.  The segment text is the raw
+            # LLM output (no prefix); the injected form is rendered by
+            # _render_summary_from_segments() + _with_summary_prefix().
+            if hasattr(self, "_summary_segments"):
+                seg_start = getattr(self, "_turns_seen", 0)
+                seg_end = seg_start + len(turns_to_summarize)
+                self._summary_segments.append(
+                    {"start": seg_start, "end": seg_end, "text": summary}
+                )
+                self._record_private_memory_segment(
+                    start_turn=seg_start,
+                    end_turn=seg_end,
+                    summary_text=summary,
+                    turns_to_summarize=turns_to_summarize,
+                )
+                self._turns_seen = seg_end
+                self._compact_old_segments()
+                # Keep _previous_summary in sync so fallback code paths that
+                # read it (e.g. _build_static_fallback_summary, on_session_reset)
+                # still work without branching.
+                summary = self._render_summary_from_segments()
             self._previous_summary = summary
             self._summary_failure_cooldown_until = 0.0
             self._summary_model_fallen_back = False
             self._last_summary_error = None
-            return self._with_summary_prefix(summary)
+            return self._with_summary_prefix(self._summary_body_for_prompt())
         except RuntimeError:
             # No provider configured — long cooldown, unlikely to self-resolve
             self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
@@ -1515,7 +1937,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             return None
 
     @staticmethod
-    def _strip_summary_prefix(summary: str) -> str:
+    def _strip_summary_prefix(summary: str, *, strip_private_ledger: bool = True) -> str:
         """Return summary body without the current, legacy, or any historical
         handoff prefix.
 
@@ -1527,13 +1949,21 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         text = (summary or "").strip()
         for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES):
             if text.startswith(prefix):
-                return text[len(prefix):].lstrip()
+                text = text[len(prefix):].lstrip()
+                break
+        if strip_private_ledger:
+            text = re.sub(
+                rf"\n?{re.escape(_LEDGER_CONTEXT_START)}.*?{re.escape(_LEDGER_CONTEXT_END)}\n?",
+                "\n",
+                text,
+                flags=re.S,
+            ).strip()
         return text
 
     @classmethod
     def _with_summary_prefix(cls, summary: str) -> str:
         """Normalize summary text to the current compaction handoff format."""
-        text = cls._strip_summary_prefix(summary)
+        text = cls._strip_summary_prefix(summary, strip_private_ledger=False)
         return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
 
     @staticmethod
@@ -1854,6 +2284,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
+        self._last_compress_over_reserve = False
+        self._last_memory_ledger_error = None
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
@@ -1908,6 +2340,17 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         if summary_idx is not None:
             if summary_body and not self._previous_summary:
                 self._previous_summary = summary_body
+                # P0-2: bootstrap segments from a legacy persisted summary so
+                # the delta path works on the very first re-compaction of a
+                # resumed session.  Assign turn range [0, 0) as a sentinel —
+                # the real range is unknown from a persisted message, but the
+                # key invariant (never re-feed this text as LLM input) is still
+                # honoured: _context_for_new_turns() includes it, and the next
+                # LLM call will only be asked to summarize the NEW turns.
+                if not self._summary_segments:
+                    self._summary_segments.append(
+                        {"start": 0, "end": 0, "text": summary_body}
+                    )
             turns_to_summarize = messages[max(compress_start, summary_idx + 1):compress_end]
 
         if not self.quiet_mode:
@@ -2064,6 +2507,27 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             self._ineffective_compression_count += 1
         else:
             self._ineffective_compression_count = 0
+
+        # P1-3: floor-aware detection. If even this full compaction left the
+        # request above the absolute reserve, the window is genuinely over-full
+        # (incompressible head/tail/summary floor exceeds the available room).
+        # Flag it so callers/UI can surface "context still tight after compaction"
+        # rather than silently shipping a payload the provider may reject. The
+        # caller's multi-pass loop will already have tried to re-compress; this
+        # records the terminal condition without destructively dropping
+        # protected tail turns (the active task lives there).
+        reserve_ceiling = self.context_length - _COMPRESSION_RESERVE_TOKENS
+        if reserve_ceiling > 0 and new_estimate > reserve_ceiling:
+            self._last_compress_over_reserve = True
+            if not self.quiet_mode:
+                logger.warning(
+                    "Post-compaction estimate ~%d tokens still exceeds the "
+                    "reserve ceiling %d (context %d - reserve %d). Window is "
+                    "over-full; incompressible floor ~%d. Consider /new for a "
+                    "fresh session.",
+                    new_estimate, reserve_ceiling, self.context_length,
+                    _COMPRESSION_RESERVE_TOKENS, self._estimate_incompressible_floor(),
+                )
 
         if not self.quiet_mode:
             logger.info(

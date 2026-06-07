@@ -151,6 +151,11 @@ def test_resolve_runtime_provider_codex(monkeypatch):
 
 
 def test_resolve_runtime_provider_qwen_oauth(monkeypatch):
+    class _EmptyPool:
+        def has_credentials(self):
+            return False
+
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _EmptyPool())
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
     monkeypatch.setattr(
         rp,
@@ -217,6 +222,7 @@ def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
         "resolve_qwen_runtime_credentials",
         lambda **kw: (_ for _ in ()).throw(AuthError("stale", provider="qwen-oauth", code="qwen_auth_missing")),
     )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
 
