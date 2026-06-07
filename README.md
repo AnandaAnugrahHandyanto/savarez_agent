@@ -33,7 +33,7 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 ### Linux, macOS, WSL2, Termux
 
 ```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+curl -fsSL https://savarez-agent.nousresearch.com/install.sh | bash
 ```
 
 ### Windows (native, PowerShell)
@@ -43,7 +43,7 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 Run this in PowerShell:
 
 ```powershell
-iex (irm https://hermes-agent.nousresearch.com/install.ps1)
+iex (irm https://savarez-agent.nousresearch.com/install.ps1)
 ```
 
 The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\savarez\git` — no admin required, completely isolated from any system Git install). Savarez uses this bundled Git Bash to run shell commands.
