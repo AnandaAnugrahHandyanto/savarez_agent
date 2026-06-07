@@ -232,7 +232,19 @@ def _verified_evidence(repo: Path, *, touched_files: list[str] | None = None, di
         "dirty_state_id": dirty_state_id if dirty_state_id is not None else dirty["dirty_state_id"],
         "codex_implementation_status": "completed",
         "codex_review_status": "packet_only_passed",
-        "hermes_verification_commands": [{"id": "diff-check", "status": "passed"}],
+        "risk_classes": ["docs_only"],
+        "hermes_verification_commands": [
+            {
+                "cmd_id": "diff-check",
+                "argv": ["git", "diff", "--check", "--", "README.md"],
+                "exit_code": 0,
+                "stdout": "",
+                "stderr": "",
+                "start_time": "2026-06-06T00:00:00Z",
+                "end_time": "2026-06-06T00:00:01Z",
+                "status": "passed",
+            }
+        ],
         "verified_at": "2026-06-06T00:00:00Z",
     }
 

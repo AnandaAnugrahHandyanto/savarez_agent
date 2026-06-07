@@ -11,6 +11,7 @@ from typing import Any
 
 from agent import codex_workflow_ledger as ledger
 from agent import codex_workflow_provenance as provenance
+from agent import codex_workflow_verification as verification
 from tools import codex_staged_implement_tool as staged
 from tools.registry import registry
 
@@ -399,13 +400,16 @@ def _checkpoint_blocked(
     *,
     authorization_required: bool = False,
     dirty_state_id: str | None = None,
+    **extra: Any,
 ) -> dict[str, Any]:
-    return {
+    result = {
         "status": "blocked",
         "reason": reason,
         "authorization_required": authorization_required,
         "dirty_state_id": dirty_state_id,
     }
+    result.update(extra)
+    return result
 
 
 def _validate_checkpoint_evidence(
@@ -448,6 +452,16 @@ def _validate_checkpoint_evidence(
     commands = evidence.get("hermes_verification_commands")
     if not isinstance(commands, list) or not commands:
         return None, _checkpoint_blocked("missing_hermes_verification_commands", dirty_state_id=dirty_state_id)
+    verification_gate = verification.validate_verification_results(
+        evidence.get("risk_classes") or evidence.get("risk_class") or [],
+        commands,
+    )
+    if verification_gate.get("blocks_next_stage"):
+        return None, _checkpoint_blocked(
+            "verification_blocks_next_stage",
+            dirty_state_id=dirty_state_id,
+            verification=verification_gate,
+        )
     if not evidence.get("verified_at"):
         return None, _checkpoint_blocked("missing_verified_at", dirty_state_id=dirty_state_id)
 
