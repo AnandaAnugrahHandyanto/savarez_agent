@@ -1,0 +1,10 @@
+name: cortexgraph
+version: "0.1.0"
+description: "Keeps Hermes and CortexGraph aligned: injects the runtime heartbeat/thread/checkpoint contract into relevant turns, warns that webhook delivery is not autonomous completion, and exposes config/status tools for the CortexGraph MCP bridge."
+author: "Hermes Agent"
+provides_tools:
+  - cortexgraph_config_status
+  - cortexgraph_runtime_contract
+provides_hooks:
+  - pre_llm_call
+  - transform_tool_result
