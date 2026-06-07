@@ -59,9 +59,9 @@ from gateway.platforms.base import (
     is_network_accessible,
 )
 from gateway.platforms.alphahunt_stage import (
-    is_qwen_analysis_payload,
+    is_alphahunt_stage_payload,
     post_callback as _post_alphahunt_stage_callback,
-    run_qwen_stage,
+    run_alphahunt_stage,
 )
 
 logger = logging.getLogger(__name__)
@@ -1811,7 +1811,7 @@ class APIServerAdapter(BasePlatformAdapter):
         except (json.JSONDecodeError, Exception):
             return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
 
-        if isinstance(body, dict) and is_qwen_analysis_payload(body):
+        if isinstance(body, dict) and is_alphahunt_stage_payload(body):
             return await self._handle_alphahunt_qwen_analysis(request, body)
 
         messages = body.get("messages")
@@ -2883,12 +2883,12 @@ class APIServerAdapter(BasePlatformAdapter):
             body = await request.json()
         except (json.JSONDecodeError, Exception):
             return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
-        if not isinstance(body, dict) or not is_qwen_analysis_payload(body):
+        if not isinstance(body, dict) or not is_alphahunt_stage_payload(body):
             return web.json_response(_openai_error("Unsupported analysis payload"), status=400)
         return await self._handle_alphahunt_qwen_analysis(request, body)
 
     async def _handle_alphahunt_qwen_analysis(self, request: "web.Request", body: Dict[str, Any]) -> "web.Response":
-        """Run AlphaHunt stage/fast_triage requests through local Qwen and callback Central."""
+        """Run AlphaHunt stage/fast_triage requests and callback Central."""
         loop = asyncio.get_running_loop()
         callback_url = (
             str(body.get("callback_url") or "").strip()
@@ -2899,7 +2899,7 @@ class APIServerAdapter(BasePlatformAdapter):
             or request.headers.get("X-AlphaHunt-Callback-Auth", "").strip()
         )
         try:
-            callback = await loop.run_in_executor(None, run_qwen_stage, body)
+            callback = await loop.run_in_executor(None, run_alphahunt_stage, body)
             await loop.run_in_executor(
                 None,
                 lambda: _post_alphahunt_stage_callback(
@@ -2910,7 +2910,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ),
             )
         except Exception as exc:
-            logger.error("AlphaHunt Qwen analysis failed: %s", exc, exc_info=True)
+            logger.error("AlphaHunt analysis failed: %s", exc, exc_info=True)
             return web.json_response(
                 {
                     "accepted": False,

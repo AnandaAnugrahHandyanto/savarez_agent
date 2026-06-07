@@ -8,7 +8,10 @@ import json
 import logging
 import os
 import re
+import subprocess
+import tempfile
 import time
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import requests
@@ -19,6 +22,10 @@ STAGE_MODES = frozenset({"cleaner", "screener", "sentinel", "packager"})
 QWEN_MODES = STAGE_MODES | frozenset({"fast_triage"})
 QWEN_ANALYZER = "qwen_7b_local"
 QWEN_MODEL = "qwen2.5:7b"
+CODEX_ANALYZER = "codex_spark"
+CODEX_MODEL = os.environ.get("HERMES_CODEX_SPARK_MODEL", "gpt-5.3-codex-spark").strip() or "gpt-5.3-codex-spark"
+DEFAULT_CODEX_BIN = "/home/leo/.hermes/node/bin/codex"
+DEFAULT_CODEX_TIMEOUT_SEC = 180
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 DEFAULT_QWEN_TIMEOUT_SEC = 90
 DEFAULT_QWEN_NUM_PREDICT = 1024
@@ -217,7 +224,7 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def is_qwen_analysis_payload(payload: Dict[str, Any]) -> bool:
+def is_alphahunt_stage_payload(payload: Dict[str, Any]) -> bool:
     mode = str(payload.get("analysis_mode") or "").strip().lower()
     if mode == "fast_triage":
         return True
@@ -226,12 +233,32 @@ def is_qwen_analysis_payload(payload: Dict[str, Any]) -> bool:
     ctx = payload.get("context") if isinstance(payload.get("context"), dict) else {}
     routing = ctx.get("routing_policy") if isinstance(ctx.get("routing_policy"), dict) else {}
     engine = str(routing.get("preferred_engine") or "").strip().lower()
-    return not engine or engine in {"qwen_local", "qwen_7b_local"} or engine.startswith("qwen")
+    return (
+        not engine
+        or engine in {"qwen_local", "qwen_7b_local", CODEX_ANALYZER, "codex", "codex_local"}
+        or engine.startswith("qwen")
+        or engine.startswith("codex")
+    )
+
+
+def is_qwen_analysis_payload(payload: Dict[str, Any]) -> bool:
+    """Backward-compatible alias for the AlphaHunt analysis dispatcher."""
+    return is_alphahunt_stage_payload(payload)
+
+
+def _analyzer_for_mode(mode: str) -> str:
+    return CODEX_ANALYZER if mode in STAGE_MODES else QWEN_ANALYZER
+
+
+def _model_for_mode(mode: str) -> str:
+    return CODEX_MODEL if mode in STAGE_MODES else QWEN_MODEL
 
 
 def build_prompt(payload: Dict[str, Any], *, validation_error: str = "") -> str:
     mode = str(payload.get("analysis_mode") or "").strip().lower()
     example = expected_output_shape(mode)
+    analyzer = _analyzer_for_mode(mode)
+    model = _model_for_mode(mode)
     repair = ""
     if validation_error:
         repair = f"\n上一次输出未通过 schema 校验：{validation_error}\n只返回修复后的严格 JSON。"
@@ -239,7 +266,7 @@ def build_prompt(payload: Dict[str, Any], *, validation_error: str = "") -> str:
         f"{PROMPTS[mode]}\n"
         "硬性要求：只输出一个 JSON object，不要 Markdown，不要解释文字，不要代码块。\n"
         "顶层必须包含 output；output 必须包含 stage、stage_schema_version、analyzer、model、stage_output。\n"
-        f"stage 必须是 {mode}；analyzer 必须是 {QWEN_ANALYZER}；model 必须是 {QWEN_MODEL}。\n"
+        f"stage 必须是 {mode}；analyzer 必须是 {analyzer}；model 必须是 {model}。\n"
         f"stage_schema_version 必须是 {SCHEMA_VERSION_BY_MODE[mode]}。\n"
         f"期望形状示例：{json.dumps(example, ensure_ascii=False, separators=(',', ':'))}\n"
         f"{repair}\n"
@@ -312,8 +339,8 @@ def expected_output_shape(mode: str) -> Dict[str, Any]:
         "output": {
             "stage": mode,
             "stage_schema_version": SCHEMA_VERSION_BY_MODE[mode],
-            "analyzer": QWEN_ANALYZER,
-            "model": QWEN_MODEL,
+            "analyzer": _analyzer_for_mode(mode),
+            "model": _model_for_mode(mode),
             "stage_output": examples[mode],
         }
     }
@@ -340,6 +367,57 @@ def call_ollama(prompt: str, *, timeout: int = DEFAULT_QWEN_TIMEOUT_SEC) -> str:
     return str(data.get("response") or "")
 
 
+def call_codex_spark(prompt: str, *, timeout: int = DEFAULT_CODEX_TIMEOUT_SEC) -> str:
+    codex_bin = os.environ.get("HERMES_CODEX_BIN", DEFAULT_CODEX_BIN).strip() or DEFAULT_CODEX_BIN
+    workdir = os.environ.get("HERMES_CODEX_WORKDIR", os.getcwd()).strip() or os.getcwd()
+    request_timeout = max(10, min(timeout, _env_int("HERMES_CODEX_TIMEOUT_SEC", DEFAULT_CODEX_TIMEOUT_SEC)))
+    with tempfile.NamedTemporaryFile("w+", encoding="utf-8", suffix=".txt", delete=False) as out_file:
+        output_path = out_file.name
+    cmd = [
+        codex_bin,
+        "exec",
+        "-m",
+        CODEX_MODEL,
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "-C",
+        workdir,
+        "--output-last-message",
+        output_path,
+        "-",
+    ]
+    try:
+        completed = subprocess.run(
+            cmd,
+            input=prompt,
+            cwd=workdir,
+            text=True,
+            capture_output=True,
+            timeout=request_timeout,
+            check=False,
+        )
+        try:
+            output_text = Path(output_path).read_text(encoding="utf-8").strip()
+        except Exception:
+            output_text = ""
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"codex_spark_timeout:{request_timeout}s") from exc
+    finally:
+        try:
+            Path(output_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "Codex Spark analysis failed").strip()
+        raise RuntimeError(detail[-2000:])
+    text = output_text or (completed.stdout or "").strip()
+    if not text:
+        raise RuntimeError("codex_spark_empty_output")
+    return text
+
+
 def parse_json_object(text: str) -> Dict[str, Any]:
     text = (text or "").strip()
     if text.startswith("```"):
@@ -364,8 +442,8 @@ def validate_output(mode: str, callback: Dict[str, Any]) -> Tuple[bool, str]:
     expected = {
         "stage": mode,
         "stage_schema_version": SCHEMA_VERSION_BY_MODE[mode],
-        "analyzer": QWEN_ANALYZER,
-        "model": QWEN_MODEL,
+        "analyzer": _analyzer_for_mode(mode),
+        "model": _model_for_mode(mode),
     }
     for key, value in expected.items():
         if output.get(key) != value:
@@ -414,9 +492,19 @@ def _validate_stage_output_minimal(mode: str, stage_output: Dict[str, Any]) -> T
 def normalize_callback(payload: Dict[str, Any], model_obj: Dict[str, Any]) -> Dict[str, Any]:
     mode = str(payload.get("analysis_mode") or "").strip().lower()
     analysis_id = str(payload.get("analysis_id") or payload.get("request_id") or "").strip()
+    output = model_obj.get("output") if isinstance(model_obj.get("output"), dict) else None
+    if output is None:
+        output = {"stage_output": model_obj}
+    output = dict(output)
+    output["stage"] = mode
+    output["stage_schema_version"] = SCHEMA_VERSION_BY_MODE[mode]
+    output["analyzer"] = _analyzer_for_mode(mode)
+    output["model"] = _model_for_mode(mode)
+    if not isinstance(output.get("stage_output"), dict):
+        output["stage_output"] = {"status": "error", "reason": "missing_stage_output"}
     result = {
         "analysis_id": analysis_id,
-        "output": model_obj["output"],
+        "output": output,
     }
     event_id = str(payload.get("event_id") or "").strip()
     if event_id:
@@ -431,8 +519,8 @@ def error_callback(payload: Dict[str, Any], mode: str, reason: str) -> Dict[str,
         "output": {
             "stage": mode,
             "stage_schema_version": SCHEMA_VERSION_BY_MODE[mode],
-            "analyzer": QWEN_ANALYZER,
-            "model": QWEN_MODEL,
+            "analyzer": _analyzer_for_mode(mode),
+            "model": _model_for_mode(mode),
             "stage_output": {"status": "error", "reason": reason},
         },
     }
@@ -442,15 +530,20 @@ def error_callback(payload: Dict[str, Any], mode: str, reason: str) -> Dict[str,
     return result
 
 
-def run_qwen_stage(payload: Dict[str, Any]) -> Dict[str, Any]:
+def run_alphahunt_stage(payload: Dict[str, Any]) -> Dict[str, Any]:
     mode = str(payload.get("analysis_mode") or "").strip().lower()
     if mode not in QWEN_MODES:
-        raise ValueError(f"unsupported qwen analysis_mode: {mode}")
-    timeout = _env_int("HERMES_QWEN_TIMEOUT_SEC", DEFAULT_QWEN_TIMEOUT_SEC)
+        raise ValueError(f"unsupported alphahunt analysis_mode: {mode}")
+    timeout = (
+        _env_int("HERMES_CODEX_TIMEOUT_SEC", DEFAULT_CODEX_TIMEOUT_SEC)
+        if mode in STAGE_MODES
+        else _env_int("HERMES_QWEN_TIMEOUT_SEC", DEFAULT_QWEN_TIMEOUT_SEC)
+    )
     validation_error = ""
     for attempt in range(2):
         try:
-            raw = call_ollama(build_prompt(payload, validation_error=validation_error), timeout=timeout)
+            prompt = build_prompt(payload, validation_error=validation_error)
+            raw = call_codex_spark(prompt, timeout=timeout) if mode in STAGE_MODES else call_ollama(prompt, timeout=timeout)
             model_obj = parse_json_object(raw)
             callback = normalize_callback(payload, model_obj)
         except requests.Timeout:
@@ -465,6 +558,11 @@ def run_qwen_stage(payload: Dict[str, Any]) -> Dict[str, Any]:
             return callback
         validation_error = err
     return error_callback(payload, mode, f"schema_invalid:{validation_error}")
+
+
+def run_qwen_stage(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Backward-compatible entrypoint; stage modes now route to Codex Spark."""
+    return run_alphahunt_stage(payload)
 
 
 def callback_headers(body: bytes, callback_auth: str = "") -> Dict[str, str]:

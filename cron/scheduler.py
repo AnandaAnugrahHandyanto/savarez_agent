@@ -651,11 +651,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         task_name = job.get("name", job["id"])
         job_id = job.get("id", "")
         delivery_content = (
-            f"Cronjob Response: {task_name}\n"
+            f"Cron job run completed: {task_name}\n"
             f"(job_id: {job_id})\n"
             f"-------------\n\n"
             f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+            f"Manage this scheduled job by sending a new message, for example: "
+            f"\"stop reminder {task_name}\"."
         )
     else:
         delivery_content = content
@@ -1395,6 +1396,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     logger.info("Prompt: %s", prompt[:100])
 
     agent = None
+    _cron_worker_still_running = False
 
     # Mark this as a cron session so the approval system can apply cron_mode.
     # This env var is process-wide and persists for the lifetime of the
@@ -1682,6 +1684,8 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # env passthrough registrations) when the cron run hops into the worker
         # thread used for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
+        if hasattr(agent, "_touch_activity"):
+            agent._touch_activity("submitting cron conversation")
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
         try:
@@ -1707,6 +1711,22 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                             pass
                     if _idle_secs >= _cron_inactivity_limit:
                         _inactivity_timeout = True
+                        if hasattr(agent, "interrupt"):
+                            agent.interrupt("Cron job timed out (inactivity)")
+                        try:
+                            _cron_future.result(timeout=15)
+                        except concurrent.futures.TimeoutError:
+                            # ``concurrent.futures.TimeoutError`` is an alias
+                            # of the built-in TimeoutError, so a worker that
+                            # exits by raising TimeoutError can land here too.
+                            # Only treat it as still running when the future
+                            # itself has not completed.
+                            if not _cron_future.done():
+                                _cron_worker_still_running = True
+                        except Exception:
+                            # Preserve the timeout diagnostic below; the worker
+                            # did exit, so normal resource cleanup is safe.
+                            pass
                         break
         except Exception:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
@@ -1735,8 +1755,6 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _last_desc, _iter_n, _iter_max,
                 _cur_tool or "none",
             )
-            if hasattr(agent, "interrupt"):
-                agent.interrupt("Cron job timed out (inactivity)")
             raise TimeoutError(
                 f"Cron job '{job_name}' idle for "
                 f"{int(_secs_ago)}s (limit {int(_cron_inactivity_limit)}s) "
@@ -1825,7 +1843,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
-        if _session_db:
+        if _session_db and not _cron_worker_still_running:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
             except (Exception, KeyboardInterrupt) as e:
@@ -1834,24 +1852,39 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _session_db.close()
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
+        elif _session_db and _cron_worker_still_running:
+            logger.warning(
+                "Job '%s': cron worker still running after inactivity timeout; "
+                "deferring SQLite session cleanup to avoid closing resources "
+                "under the worker thread",
+                job_id,
+            )
         # Release subprocesses, terminal sandboxes, browser daemons, and the
         # main OpenAI/httpx client held by this ephemeral cron agent. Without
         # this, a gateway that ticks cron every N minutes leaks fds per job
         # until it hits EMFILE (#10200 / "too many open files").
         try:
-            if agent is not None:
+            if agent is not None and not _cron_worker_still_running:
                 agent.close()
+            elif agent is not None and _cron_worker_still_running:
+                logger.warning(
+                    "Job '%s': cron worker still running after inactivity timeout; "
+                    "deferring agent.close() to avoid closing resources under "
+                    "the worker thread",
+                    job_id,
+                )
         except (Exception, KeyboardInterrupt) as e:
             logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
         # Each cron run spins up a short-lived worker thread whose event loop
         # dies as soon as the ``ThreadPoolExecutor`` shuts down. Any async
         # httpx clients cached under that loop are now unusable — reap them
         # so their transports don't accumulate in the process-global cache.
-        try:
-            from agent.auxiliary_client import cleanup_stale_async_clients
-            cleanup_stale_async_clients()
-        except Exception as e:
-            logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
+        if not _cron_worker_still_running:
+            try:
+                from agent.auxiliary_client import cleanup_stale_async_clients
+                cleanup_stale_async_clients()
+            except Exception as e:
+                logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
 def tick(verbose: bool = True, adapters=None, loop=None) -> int:

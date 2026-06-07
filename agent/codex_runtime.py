@@ -57,9 +57,18 @@ def run_codex_app_server_turn(
             approval_callback = _get_approval_callback()
         except Exception:
             approval_callback = None
+
+        def _on_codex_app_server_event(event: dict) -> None:
+            method = event.get("method") if isinstance(event, dict) else None
+            if method:
+                agent._touch_activity(f"codex app-server event: {method}")
+            else:
+                agent._touch_activity("codex app-server event")
+
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             approval_callback=approval_callback,
+            on_event=_on_codex_app_server_event,
         )
 
     # NOTE: the user message is ALREADY appended to messages by the
@@ -75,6 +84,7 @@ def run_codex_app_server_turn(
             # Codex app-server needs a finite deadline for interrupt/retire
             # hygiene even when the outer gateway timeout is unlimited.
             turn_timeout = 86400.0
+        agent._touch_activity("running codex app-server turn")
         turn = agent._codex_session.run_turn(
             user_input=user_message,
             turn_timeout=turn_timeout,

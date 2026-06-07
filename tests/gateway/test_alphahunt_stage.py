@@ -92,8 +92,12 @@ def _model_json(mode: str) -> str:
             "output": {
                 "stage": mode,
                 "stage_schema_version": alphahunt_stage.SCHEMA_VERSION_BY_MODE[mode],
-                "analyzer": alphahunt_stage.QWEN_ANALYZER,
-                "model": alphahunt_stage.QWEN_MODEL,
+                "analyzer": (
+                    alphahunt_stage.CODEX_ANALYZER
+                    if mode in alphahunt_stage.STAGE_MODES
+                    else alphahunt_stage.QWEN_ANALYZER
+                ),
+                "model": alphahunt_stage.CODEX_MODEL if mode in alphahunt_stage.STAGE_MODES else alphahunt_stage.QWEN_MODEL,
                 "stage_output": _stage_output(mode),
             }
         }
@@ -101,16 +105,25 @@ def _model_json(mode: str) -> str:
 
 
 @pytest.mark.parametrize("mode", ["cleaner", "screener", "sentinel", "packager", "fast_triage"])
-def test_qwen_stage_returns_strict_json_callback(monkeypatch, mode):
-    monkeypatch.setattr(alphahunt_stage, "call_ollama", lambda *args, **kwargs: _model_json(mode))
+def test_alphahunt_stage_returns_strict_json_callback(monkeypatch, mode):
+    if mode in alphahunt_stage.STAGE_MODES:
+        monkeypatch.setattr(alphahunt_stage, "call_codex_spark", lambda *args, **kwargs: _model_json(mode))
+    else:
+        monkeypatch.setattr(alphahunt_stage, "call_ollama", lambda *args, **kwargs: _model_json(mode))
 
-    result = alphahunt_stage.run_qwen_stage(_payload(mode))
+    result = alphahunt_stage.run_alphahunt_stage(_payload(mode))
 
     encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
     decoded = json.loads(encoded)
     assert decoded == result
     assert result["analysis_id"] == f"req-{mode}"
     assert result["output"]["stage"] == mode
+    assert result["output"]["analyzer"] == (
+        alphahunt_stage.CODEX_ANALYZER if mode in alphahunt_stage.STAGE_MODES else alphahunt_stage.QWEN_ANALYZER
+    )
+    assert result["output"]["model"] == (
+        alphahunt_stage.CODEX_MODEL if mode in alphahunt_stage.STAGE_MODES else alphahunt_stage.QWEN_MODEL
+    )
     assert result["output"]["stage_output"]["status"] == "ok"
     ok, err = alphahunt_stage.validate_output(mode, result)
     assert ok, err
@@ -213,11 +226,17 @@ def test_fast_triage_decisions_validate(monkeypatch, decision):
     assert ok, err
 
 
-def test_is_qwen_analysis_payload_matches_stage_and_fast_triage():
-    assert alphahunt_stage.is_qwen_analysis_payload(_payload("cleaner")) is True
-    assert alphahunt_stage.is_qwen_analysis_payload(_payload("fast_triage")) is True
-    assert alphahunt_stage.is_qwen_analysis_payload({"analysis_mode": "rejudge"}) is False
-    assert alphahunt_stage.is_qwen_analysis_payload(
+def test_is_alphahunt_stage_payload_matches_stage_and_fast_triage():
+    assert alphahunt_stage.is_alphahunt_stage_payload(_payload("cleaner")) is True
+    assert alphahunt_stage.is_alphahunt_stage_payload(_payload("fast_triage")) is True
+    assert alphahunt_stage.is_alphahunt_stage_payload({"analysis_mode": "rejudge"}) is False
+    assert alphahunt_stage.is_alphahunt_stage_payload(
+        {
+            "analysis_mode": "cleaner",
+            "context": {"routing_policy": {"preferred_engine": "codex_spark"}},
+        }
+    ) is True
+    assert alphahunt_stage.is_alphahunt_stage_payload(
         {
             "analysis_mode": "cleaner",
             "context": {"routing_policy": {"preferred_engine": "central"}},
@@ -226,7 +245,7 @@ def test_is_qwen_analysis_payload_matches_stage_and_fast_triage():
 
 
 @pytest.mark.asyncio
-async def test_analysis_endpoint_dispatches_qwen_and_callback(monkeypatch):
+async def test_analysis_endpoint_dispatches_alphahunt_stage_and_callback(monkeypatch):
     captured = {}
 
     def fake_run(payload):
@@ -249,7 +268,7 @@ async def test_analysis_endpoint_dispatches_qwen_and_callback(monkeypatch):
 
     from gateway.platforms import api_server as api_server_mod
 
-    monkeypatch.setattr(api_server_mod, "run_qwen_stage", fake_run)
+    monkeypatch.setattr(api_server_mod, "run_alphahunt_stage", fake_run)
     monkeypatch.setattr(api_server_mod, "_post_alphahunt_stage_callback", fake_post)
 
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "sk-test"}))
@@ -271,3 +290,51 @@ async def test_analysis_endpoint_dispatches_qwen_and_callback(monkeypatch):
     assert body["output"]["stage"] == "fast_triage"
     assert captured["callback"]["output"]["stage_output"]["triage_decision"] == "advance"
     assert captured["callback_url"] == "http://central/callback"
+
+
+@pytest.mark.asyncio
+async def test_analysis_endpoint_accepts_codex_spark_stage_payload(monkeypatch):
+    captured = {}
+
+    def fake_run(payload):
+        return {
+            "analysis_id": payload["request_id"],
+            "output": {
+                "stage": "cleaner",
+                "stage_schema_version": "cleaner_output_v1",
+                "analyzer": alphahunt_stage.CODEX_ANALYZER,
+                "model": alphahunt_stage.CODEX_MODEL,
+                "stage_output": _stage_output("cleaner"),
+            },
+        }
+
+    def fake_post(payload, callback, *, callback_url="", callback_auth=""):
+        captured["payload"] = payload
+        captured["callback"] = callback
+
+    from gateway.platforms import api_server as api_server_mod
+
+    monkeypatch.setattr(api_server_mod, "run_alphahunt_stage", fake_run)
+    monkeypatch.setattr(api_server_mod, "_post_alphahunt_stage_callback", fake_post)
+
+    adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "sk-test"}))
+    adapter._run_agent = AsyncMock()
+    app = _create_app(adapter)
+    app.router.add_post("/v1/analysis", adapter._handle_alphahunt_analysis)
+
+    payload = _payload("cleaner")
+    payload["context"]["routing_policy"]["preferred_engine"] = "codex_spark"
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(
+            "/v1/analysis",
+            headers={"Authorization": "Bearer sk-test"},
+            json=payload,
+        )
+        body = await resp.json()
+
+    assert resp.status == 200
+    assert body["accepted"] is True
+    assert body["output"]["stage"] == "cleaner"
+    assert body["output"]["analyzer"] == alphahunt_stage.CODEX_ANALYZER
+    assert captured["payload"]["context"]["routing_policy"]["preferred_engine"] == "codex_spark"
+    assert captured["callback"]["output"]["stage_output"]["status"] == "ok"

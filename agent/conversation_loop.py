@@ -382,6 +382,8 @@ def run_conversation(
     # Installed once, transparent when streams are healthy, prevents crash on write.
     _install_safe_stdio()
 
+    agent._touch_activity("starting conversation turn")
+
     agent._ensure_db_session()
 
     # Tell auxiliary_client what the live main provider/model are for
@@ -579,6 +581,7 @@ def run_conversation(
     # producing a different system prompt and breaking the Anthropic
     # prefix cache.
     if agent._cached_system_prompt is None:
+        agent._touch_activity("building system prompt")
         _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
     active_system_prompt = agent._cached_system_prompt

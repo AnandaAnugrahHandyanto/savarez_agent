@@ -40,6 +40,7 @@ from gateway.platforms.yuanbao import (
     GroupAtGuardMiddleware,
     DispatchMiddleware,
     InboundPipelineBuilder,
+    MessageSender,
     YuanbaoAdapter,
 )
 from gateway.config import PlatformConfig
@@ -104,6 +105,29 @@ def make_json_push(
         push["CallbackCommand"] = "Group.CallbackAfterSendMsg"
         push["GroupId"] = group_code
     return json.dumps(push).encode("utf-8")
+
+
+def test_message_sender_strips_new_and_legacy_cron_wrappers():
+    body = "已执行今日审计；本轮未触发主清单安全回填。"
+    new_wrapped = (
+        "Cron job run completed: Leo公众号来源晋级审计与主清单回填\n"
+        "(job_id: 8ae9f132e293)\n"
+        "-------------\n\n"
+        f"{body}\n\n"
+        'Manage this scheduled job by sending a new message, for example: '
+        '"stop reminder Leo公众号来源晋级审计与主清单回填".'
+    )
+    legacy_wrapped = (
+        "Cronjob Response: Leo公众号来源晋级审计与主清单回填\n"
+        "(job_id: 8ae9f132e293)\n"
+        "-------------\n\n"
+        f"{body}\n\n"
+        'To stop or manage this job, send me a new message (e.g. '
+        '"stop reminder Leo公众号来源晋级审计与主清单回填").'
+    )
+
+    assert MessageSender.strip_cron_wrapper(new_wrapped) == body
+    assert MessageSender.strip_cron_wrapper(legacy_wrapped) == body
 
 
 # ============================================================
