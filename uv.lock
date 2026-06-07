@@ -1389,8 +1389,8 @@ wheels = [
 ]
 
 [[package]]
-name = "savarez-agent"
-version = "0.15.1"
+name = "hermes-agent"
+version = "0.16.0"
 source = { editable = "." }
 dependencies = [
     { name = "croniter" },

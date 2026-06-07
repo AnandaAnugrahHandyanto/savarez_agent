@@ -43,6 +43,19 @@ instead of pasting, and double-check every `:`, `@`, `=`, and `/` in the
 result before hitting Enter.
 :::
 
+:::caution Avoid browser-based VPS consoles for the install commands
+Some VPS providers (Hetzner Cloud, and several others) offer a browser-based
+console for managing hosts. These consoles transmit special characters
+incorrectly — `:` may arrive as `;`, `@` may be mis-rendered, and non-English
+keyboard layouts fare worse — which silently corrupts `docker run` arguments
+like `-v ~/.hermes:/opt/data`, `-e KEY=value`, and pasted API keys / tokens.
+
+**Connect over SSH instead** (`ssh root@<host>`) for copy-paste-safe command
+entry. If you must use the browser console, type the commands manually
+instead of pasting, and double-check every `:`, `@`, `=`, and `/` in the
+result before hitting Enter.
+:::
+
 ```sh
 mkdir -p ~/.savarez
 docker run -it --rm \

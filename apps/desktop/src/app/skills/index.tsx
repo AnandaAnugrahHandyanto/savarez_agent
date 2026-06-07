@@ -191,10 +191,10 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     <PageSearchShell
       {...props}
       filters={
-        <>
-          <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
-            <TextTab active={mode === 'skills'} onClick={() => setMode('skills')}>
-              {t.skills.tabSkills}
+        mode === 'skills' && categories.length > 0 ? (
+          <>
+            <TextTab active={activeCategory === null} onClick={() => setActiveCategory(null)}>
+              {t.skills.all} <TextTabMeta>{totalSkills}</TextTabMeta>
             </TextTab>
             <TextTab active={mode === 'toolsets'} onClick={() => setMode('toolsets')}>
               {t.skills.tabToolsets}
@@ -234,6 +234,17 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
         >
           <Codicon name="refresh" size="0.875rem" spinning={refreshing} />
         </Button>
+      }
+      searchValue={query}
+      tabs={
+        <>
+          <TextTab active={mode === 'skills'} onClick={() => setMode('skills')}>
+            {t.skills.tabSkills}
+          </TextTab>
+          <TextTab active={mode === 'toolsets'} onClick={() => setMode('toolsets')}>
+            {t.skills.tabToolsets}
+          </TextTab>
+        </>
       }
       searchValue={query}
     >

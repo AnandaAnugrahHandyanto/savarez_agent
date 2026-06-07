@@ -1174,12 +1174,17 @@ _PROVIDER_SILENT_DEFAULT_OVERRIDES: dict[str, str] = {
 def get_default_model_for_provider(provider: str) -> str:
     """Return a cost-safe default model for a provider, or "" if unknown.
 
-    Uses the first entry in _PROVIDER_MODELS as the default.  This is the
-    model a user would be offered first in the ``savarez model`` picker.
+    Used as a NON-INTERACTIVE fallback when a provider is configured but no
+    model was ever selected (e.g. ``hermes auth add openai-codex`` without
+    ``hermes model``, or a profile that sets ``provider`` with no ``model``).
 
-    Used as a fallback when the user has configured a provider but never
-    selected a model (e.g. ``savarez auth add openai-codex`` without
-    ``savarez model``).
+    For most providers this is the first entry in ``_PROVIDER_MODELS`` — the
+    same model the ``hermes model`` picker offers first. For metered aggregators
+    whose curated list is ordered most-capable-first, that entry is also the
+    most EXPENSIVE one, so silently defaulting to it is a billing footgun. Such
+    providers carry an explicit low-cost override in
+    ``_PROVIDER_SILENT_DEFAULT_OVERRIDES``; a missing model must never
+    auto-escalate to the flagship.
     """
     models = _PROVIDER_MODELS.get(provider, [])
     override = _PROVIDER_SILENT_DEFAULT_OVERRIDES.get(provider)

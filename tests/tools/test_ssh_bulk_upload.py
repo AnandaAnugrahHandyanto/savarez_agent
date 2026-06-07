@@ -90,7 +90,12 @@ class TestSSHBulkUpload:
         assert "/home/testuser/.savarez/credentials" in mkdir_str
 
     def test_staging_symlinks_mirror_remote_layout(self, mock_env, tmp_path):
-        """Symlinks in staging dir should mirror the .savarez-relative layout."""
+        """Staged file in staging dir should mirror the remote path structure.
+
+        On platforms where symlinks are available (Linux/macOS) the staged
+        entry is a symlink; on Windows it may be a regular copy.  Either way
+        the file must exist at the expected path and contain the right data.
+        """
         f1 = tmp_path / "local_a.txt"
         f1.write_text("content a")
 

@@ -29,19 +29,14 @@ def _patch_managed_uv(request):
         return shutil.which("uv")
 
     def _fake_ensure_uv():
-        path = shutil.which("uv")
-        return (path, False)  # never freshly bootstrapped in tests
+        return shutil.which("uv")
 
     def _fake_update_managed_uv():
         return None  # never actually self-update in tests
 
-    def _fake_rebuild_venv(*args, **kwargs):
-        return True  # no-op in tests
-
     with patch("hermes_cli.managed_uv.resolve_uv", side_effect=_fake_resolve_uv), \
          patch("hermes_cli.managed_uv.ensure_uv", side_effect=_fake_ensure_uv), \
-         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv), \
-         patch("hermes_cli.managed_uv.rebuild_venv", side_effect=_fake_rebuild_venv):
+         patch("hermes_cli.managed_uv.update_managed_uv", side_effect=_fake_update_managed_uv):
         yield
 
 def test_stash_local_changes_if_needed_returns_none_when_tree_clean(monkeypatch, tmp_path):
@@ -423,41 +418,6 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     assert ".[all]" in install_cmds[0]
 
 
-def test_cmd_update_aborts_when_fresh_managed_uv_rebuild_fails(monkeypatch, tmp_path):
-    """A failed fresh managed-uv venv rebuild must not continue into pip install
-    (guard adapted from #38511)."""
-    _setup_update_mocks(monkeypatch, tmp_path)
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-    monkeypatch.setattr(hermes_main, "_is_termux_env", lambda env=None: False)
-
-    recorded = []
-
-    def fake_run(cmd, **kwargs):
-        recorded.append(cmd)
-        # Tolerant matching: the update flow's exact git invocations vary by
-        # checkout, so key off the verb. Branch detection must return a real name
-        # and rev-list a parseable count, or the flow aborts early before it ever
-        # reaches the venv rebuild this test exercises.
-        if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "git":
-            if "rev-parse" in cmd:
-                return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
-            if "rev-list" in cmd:
-                return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-            if "pull" in cmd:
-                return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
-
-    with patch("hermes_cli.managed_uv.ensure_uv", return_value=("/usr/bin/uv", True)), \
-         patch("hermes_cli.managed_uv.rebuild_venv", return_value=False), \
-         pytest.raises(RuntimeError, match="venv rebuild failed"):
-        hermes_main.cmd_update(SimpleNamespace())
-
-    install_cmds = [c for c in recorded if "pip" in c and "install" in c]
-    assert install_cmds == []
-
-
 def test_install_with_optional_fallback_honors_custom_group(monkeypatch):
     """Termux update path should target .[termux-all] when requested."""
     calls = []
@@ -668,121 +628,6 @@ def test_cmd_update_no_checkout_when_already_on_main(monkeypatch, tmp_path):
 
     checkout_calls = [c for c in recorded if "checkout" in c]
     assert len(checkout_calls) == 0
-
-
-def test_cmd_update_managed_clone_cleans_instead_of_stashing(monkeypatch, tmp_path):
-    """On an explicitly managed clone, working-tree dirt is discarded via
-    _clean_managed_worktree, NOT preserved via stash/restore.
-
-    The stash/restore cycle has clobbered freshly-pulled source files
-    (apps/desktop/ deletion → [UNRESOLVED_ENTRY] index.html). A checkout with
-    the Desktop/bootstrap marker has nothing the user authored, so the correct
-    move is to throw the git-artifact dirt away and pull cleanly.
-    """
-    _setup_update_mocks(monkeypatch, tmp_path)
-    (tmp_path / ".hermes-bootstrap-complete").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-    # Official origin → not a fork.
-    monkeypatch.setattr(
-        hermes_main, "_get_origin_url",
-        lambda *a, **kw: "https://github.com/AnandaAnugrahHandyanto/savarez_agent.git",
-    )
-    clean_calls = []
-    monkeypatch.setattr(
-        hermes_main, "_clean_managed_worktree",
-        lambda *a, **kw: clean_calls.append(1) or True,
-    )
-    stash_calls = []
-    monkeypatch.setattr(
-        hermes_main, "_stash_local_changes_if_needed",
-        lambda *a, **kw: stash_calls.append(1) or "shouldnotbeused",
-    )
-    restore_calls = []
-    monkeypatch.setattr(
-        hermes_main, "_restore_stashed_changes",
-        lambda *a, **kw: restore_calls.append(1) or True,
-    )
-
-    side_effect, _ = _make_update_side_effect(commit_count="0")
-    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
-
-    hermes_main.cmd_update(SimpleNamespace())
-
-    # Managed clean path used; stash path never touched.
-    assert len(clean_calls) == 1
-    assert len(stash_calls) == 0
-    assert len(restore_calls) == 0
-
-
-def test_cmd_update_official_checkout_without_managed_marker_stashes(monkeypatch, tmp_path):
-    """An upstream-origin source checkout is not safe to clean destructively
-    unless Hermes wrote an explicit managed-checkout marker."""
-    _setup_update_mocks(monkeypatch, tmp_path)
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-    monkeypatch.setattr(
-        hermes_main,
-        "_get_origin_url",
-        lambda *a, **kw: "https://github.com/NousResearch/hermes-agent.git",
-    )
-    clean_calls = []
-    monkeypatch.setattr(
-        hermes_main,
-        "_clean_managed_worktree",
-        lambda *a, **kw: clean_calls.append(1) or True,
-    )
-    stash_calls = []
-    monkeypatch.setattr(
-        hermes_main,
-        "_stash_local_changes_if_needed",
-        lambda *a, **kw: stash_calls.append(1) or "abc123",
-    )
-    restore_calls = []
-    monkeypatch.setattr(
-        hermes_main,
-        "_restore_stashed_changes",
-        lambda *a, **kw: restore_calls.append(1) or True,
-    )
-
-    side_effect, _ = _make_update_side_effect(commit_count="0")
-    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
-
-    hermes_main.cmd_update(SimpleNamespace())
-
-    assert len(clean_calls) == 0
-    assert len(stash_calls) == 1
-    assert len(restore_calls) == 1
-
-
-def test_cmd_update_fork_still_uses_stash(monkeypatch, tmp_path):
-    """A fork (non-official origin) keeps the stash machinery so the user's
-    intentional local edits survive the update."""
-    _setup_update_mocks(monkeypatch, tmp_path)
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-    monkeypatch.setattr(
-        hermes_main, "_get_origin_url",
-        lambda *a, **kw: "https://github.com/someuser/savarez-agent.git",
-    )
-    clean_calls = []
-    monkeypatch.setattr(
-        hermes_main, "_clean_managed_worktree",
-        lambda *a, **kw: clean_calls.append(1) or True,
-    )
-    stash_calls = []
-    monkeypatch.setattr(
-        hermes_main, "_stash_local_changes_if_needed",
-        lambda *a, **kw: stash_calls.append(1) or "abc123",
-    )
-    monkeypatch.setattr(hermes_main, "_restore_stashed_changes", lambda *a, **kw: True)
-    monkeypatch.setattr(hermes_main, "_sync_with_upstream_if_needed", lambda *a, **kw: None)
-
-    side_effect, _ = _make_update_side_effect(commit_count="0")
-    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
-
-    hermes_main.cmd_update(SimpleNamespace())
-
-    # Fork: stash path used, managed clean NOT used.
-    assert len(stash_calls) == 1
-    assert len(clean_calls) == 0
 
 
 # ---------------------------------------------------------------------------

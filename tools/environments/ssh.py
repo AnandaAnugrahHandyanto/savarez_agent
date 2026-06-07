@@ -179,7 +179,11 @@ class SSHEnvironment(BaseEnvironment):
                 raise RuntimeError(f"remote mkdir failed: {result.stderr.strip()}")
 
         # Symlink staging avoids fragile GNU tar --transform rules.
-        with tempfile.TemporaryDirectory(prefix="savarez-ssh-bulk-") as staging:
+        # On Windows without Developer Mode, symlink creation raises
+        # OSError with winerror 1314 (privilege not held).  Catch only
+        # that specific error and fall back to a plain copy; all other
+        # OSErrors (e.g. disk full, bad path) are re-raised as normal.
+        with tempfile.TemporaryDirectory(prefix="hermes-ssh-bulk-") as staging:
             for host_path, remote_path in files:
                 try:
                     rel_remote = os.path.relpath(remote_path, base)

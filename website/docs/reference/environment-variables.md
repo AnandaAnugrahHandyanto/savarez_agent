@@ -418,9 +418,9 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 
 ### Web Dashboard & Savarez Desktop
 
-Auth for the [web dashboard](/user-guide/features/web-dashboard) and for connecting [Savarez Desktop to a remote backend](/user-guide/features/web-dashboard#connecting-savarez-desktop-to-a-remote-backend). Per the secrets-only convention, credentials belong in `~/.savarez/.env`; the OAuth `client_id`/`portal_url` are better set under `dashboard.oauth` in `config.yaml` (env wins when set).
+Auth for the [web dashboard](/user-guide/features/web-dashboard) and for connecting [Hermes Desktop to a remote backend](/user-guide/features/web-dashboard#connecting-hermes-desktop-to-a-remote-backend). Per the secrets-only convention, credentials belong in `~/.hermes/.env`; the OAuth `client_id` is better set under `dashboard.oauth` in `config.yaml` (env wins when set).
 
-The recommended way to expose a dashboard for a remote Savarez Desktop connection is the bundled **username/password** provider: set the `HERMES_DASHBOARD_BASIC_AUTH_*` vars below and run `savarez dashboard --host 0.0.0.0`. The non-loopback bind engages the auth gate, and Desktop signs in with the username and password.
+Three dashboard-auth providers ship in the box. For a remote Hermes Desktop connection or any internet-facing dashboard, the recommended provider is **OAuth (Nous Portal)** — set `HERMES_DASHBOARD_OAUTH_CLIENT_ID` (provision it with `hermes dashboard register`). The bundled **username/password** provider (`HERMES_DASHBOARD_BASIC_AUTH_*`) is the quickest option for a backend on a trusted LAN or behind a VPN, but is not suitable for direct public-internet exposure. To authenticate against your own identity provider, use the **self-hosted OIDC** provider (`HERMES_DASHBOARD_OIDC_*`). Either way, a non-loopback bind (`hermes dashboard --host 0.0.0.0`) engages the auth gate. See [Web Dashboard → Authentication](/user-guide/features/web-dashboard#authentication-gated-mode) for the full picture.
 
 | Variable | Description |
 |----------|-------------|

@@ -6,7 +6,7 @@
 # Uses uv for desktop/server installs and Python's stdlib venv + pip on Termux.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.sh | bash
+#   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 #
 # Or with options:
 #   curl -fsSL ... | bash -s -- --no-venv --skip-setup
@@ -451,7 +451,7 @@ detect_os() {
             OS="windows"
             DISTRO="windows"
             log_error "Windows detected. Please use the PowerShell installer:"
-            log_info "  iex (irm https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.ps1)"
+            log_info "  iex (irm https://hermes-agent.nousresearch.com/install.ps1)"
             exit 1
             ;;
         *)
@@ -1156,17 +1156,7 @@ clone_repo() {
             log_info "Existing installation found, updating..."
             cd "$INSTALL_DIR"
 
-            # This is a managed clone the user never edits, so any working-tree
-            # dirt is git artifact (CRLF renormalization, npm lockfile churn,
-            # files left behind when a directory was deleted upstream such as
-            # apps/bootstrap-installer/). The old path stashed that dirt and
-            # re-applied it after the pull, but the stash/restore cycle has
-            # clobbered freshly-pulled source files (apps/desktop/ →
-            # "[UNRESOLVED_ENTRY] Cannot resolve entry module index.html").
-            # Discard the dirt with a hard reset instead — mirrors install.ps1's
-            # update path. Fork users customize via `savarez update`, which keeps
-            # the stash machinery; the installer is a managed-only entry point.
-            git fetch origin
+            local autostash_ref=""
             if [ -n "$(git status --porcelain)" ]; then
                 local stash_name
                 stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"

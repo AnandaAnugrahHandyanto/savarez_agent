@@ -235,8 +235,8 @@ specifically, as the user who asked for the file.
 
 1. Go to **APIs & Services → Credentials** in the same GCP project.
 2. **Create credentials → OAuth client ID → Desktop app**.
-3. Download the JSON. Move it onto the host that runs Savarez.
-4. On the host, register the client with Savarez:
+3. Download the JSON. Move it onto the host that runs Hermes.
+4. Register the client with Hermes (run under the profile you want it scoped to):
 
 ```bash
 # Default profile:
@@ -248,16 +248,12 @@ hermes -p <profile> python -m plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 ```
 
-That writes `~/.savarez/google_chat_user_client_secret.json`. This is shared
-infrastructure — it identifies the OAuth *app*, not any individual user. One
-file per host is enough no matter how many users authorize later.
-
-This file lives at the default Hermes root, so a gateway running under a named
-profile (`hermes -p <name> gateway …`) finds the same host-wide secret — you do
-**not** re-run this step per profile. To deliberately use a separate OAuth app
-for one profile, drop a `google_chat_user_client_secret.json` inside that
-profile's `HERMES_HOME` and it takes precedence. Per-user tokens always stay
-scoped to the active profile.
+That writes the client secret into the active profile's Hermes home (e.g.
+`~/.hermes/google_chat_user_client_secret.json` for the default profile). The
+client secret is **profile-scoped, not shared across profiles** — each profile
+registers its own. This is deliberate: profiles are isolated auth boundaries, so
+two profiles can point at different Google OAuth apps / accounts. Register it
+once per profile that needs Google Chat attachment delivery.
 
 ### Per-user authorization (in chat)
 
@@ -340,8 +336,9 @@ the next file request uploads natively without a gateway restart.
 
 **`/setup-files start` says "No client credentials stored."**
 
-The one-time host setup wasn't done. From a terminal on the host that runs
-Savarez:
+The one-time setup wasn't done *for this profile* (the client secret is
+profile-scoped, so a registration under one profile won't be seen by another).
+From a terminal, run it under the profile the gateway uses:
 
 ```bash
 # Default profile:

@@ -8,22 +8,19 @@ import {
 } from '@tabler/icons-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { PageLoader } from '@/components/page-loader'
+import { Button } from '@/components/ui/button'
+import { SearchField } from '@/components/ui/search-field'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import {
   getActionStatus,
   getLogs,
   getStatus,
   getUsageAnalytics,
   restartGateway,
-  searchSessions,
   updateHermes
 } from '@/hermes'
-import type {
-  ActionStatusResponse,
-  AnalyticsResponse,
-  SessionInfo,
-  SessionSearchResult as SessionSearchApiResult,
-  StatusResponse
-} from '@/hermes'
+import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { Activity, AlertCircle, BarChart3, Pin } from '@/lib/icons'
@@ -52,54 +49,9 @@ interface CommandCenterViewProps {
   initialSection?: CommandCenterSection
   onClose: () => void
   onDeleteSession: (sessionId: string) => Promise<void>
-  onNavigateRoute: (path: string) => void
+  // Accepted for call-site parity; navigation lives in the global Cmd+K palette.
+  onNavigateRoute?: (path: string) => void
   onOpenSession: (sessionId: string) => void
-}
-
-type NavKey = 'newChat' | 'settings' | 'skills' | 'messaging' | 'artifacts'
-
-const NAV_ROUTES: readonly { key: NavKey; route: string }[] = [
-  { key: 'newChat', route: NEW_CHAT_ROUTE },
-  { key: 'settings', route: SETTINGS_ROUTE },
-  { key: 'skills', route: SKILLS_ROUTE },
-  { key: 'messaging', route: MESSAGING_ROUTE },
-  { key: 'artifacts', route: ARTIFACTS_ROUTE }
-]
-
-interface SessionSearchHit {
-  detail?: string
-  kind: 'session'
-  sessionId: string
-  snippet: string
-  title: string
-}
-
-interface RouteSearchHit {
-  detail?: string
-  kind: 'route'
-  route: string
-  title: string
-}
-
-interface SectionSearchHit {
-  detail?: string
-  kind: 'section'
-  section: CommandCenterSection
-  title: string
-}
-
-type CommandCenterSearchResult = RouteSearchHit | SectionSearchHit | SessionSearchHit
-
-interface CommandCenterSearchProvider {
-  id: string
-  label: string
-  search: (query: string) => Promise<CommandCenterSearchResult[]>
-}
-
-interface CommandCenterSearchGroup {
-  id: string
-  label: string
-  results: CommandCenterSearchResult[]
 }
 
 function formatTimestamp(value?: number | null): string {
@@ -146,13 +98,49 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
   return debounced
 }
 
-export function CommandCenterView({
-  initialSection,
-  onClose,
-  onDeleteSession,
-  onNavigateRoute,
-  onOpenSession
-}: CommandCenterViewProps) {
+function RowIconButton({
+  children,
+  className,
+  onClick,
+  title
+}: {
+  children: ReactNode
+  className?: string
+  onClick: (event: MouseEvent<HTMLButtonElement>) => void
+  title: string
+}) {
+  return (
+    <Button
+      aria-label={title}
+      className={cn('text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground', className)}
+      onClick={onClick}
+      size="icon-xs"
+      title={title}
+      type="button"
+      variant="ghost"
+    >
+      {children}
+    </Button>
+  )
+}
+
+function EmptyPanel({ action, description, title }: { action?: ReactNode; description: string; title?: string }) {
+  return (
+    <div className="grid min-h-48 place-items-center px-6 text-center">
+      <div>
+        {title && (
+          <div className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">{title}</div>
+        )}
+        <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+          {description}
+        </div>
+        {action && <div className="mt-3 flex justify-center">{action}</div>}
+      </div>
+    </div>
+  )
+}
+
+export function CommandCenterView({ initialSection, onClose, onDeleteSession, onOpenSession }: CommandCenterViewProps) {
   const { t } = useI18n()
   const cc = t.commandCenter
   const sessions = useStore($sessions)
@@ -205,19 +193,8 @@ export function CommandCenterView({
             title: cc.nav[entry.key].title
           }))
 
-          const sectionHits: SectionSearchHit[] = SECTIONS.filter(section =>
-            matchesSearchQuery(
-              searchQuery,
-              cc.sectionEntries[section].title,
-              cc.sectionEntries[section].detail,
-              cc.sections[section]
-            )
-          ).map(section => ({
-            detail: cc.sectionEntries[section].detail,
-            kind: 'section',
-            section,
-            title: cc.sectionEntries[section].title
-          }))
+    return sorted.filter(session => {
+      const haystack = `${sessionTitle(session)} ${session.id}`.toLowerCase()
 
           return [...routeHits, ...sectionHits]
         }
@@ -391,40 +368,8 @@ export function CommandCenterView({
     [cc, refreshSystem]
   )
 
-  const handleSearchSelect = useCallback(
-    (result: CommandCenterSearchResult) => {
-      if (result.kind === 'route') {
-        onNavigateRoute(result.route)
-
-        return
-      }
-
-      if (result.kind === 'section') {
-        setSection(result.section)
-        setQuery('')
-
-        return
-      }
-
-      onOpenSession(result.sessionId)
-    },
-    [onNavigateRoute, onOpenSession, setSection]
-  )
-
   return (
-    <OverlayView
-      closeLabel={cc.close}
-      headerContent={
-        <OverlaySearchInput
-          containerClassName="w-[min(36rem,calc(100vw-32rem))] min-w-80"
-          loading={searchLoading}
-          onChange={next => setQuery(next)}
-          placeholder={cc.searchPlaceholder}
-          value={query}
-        />
-      }
-      onClose={onClose}
-    >
+    <OverlayView closeLabel={cc.close} onClose={onClose}>
       <OverlaySplitLayout>
         <OverlaySidebar>
           {SECTIONS.map(value => (
@@ -439,10 +384,31 @@ export function CommandCenterView({
         </OverlaySidebar>
 
         <OverlayMain>
-          <header className="mb-4 flex items-center justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-semibold text-foreground">{cc.sections[section]}</h2>
-              <p className="text-xs text-muted-foreground">{cc.sectionDescriptions[section]}</p>
+          <header className="mb-4 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-[length:var(--conversation-text-font-size)] font-semibold text-foreground">
+                {cc.sections[section]}
+              </h2>
+              <p className="mt-0.5 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                {cc.sectionDescriptions[section]}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {section === 'sessions' && (
+                <SearchField
+                  containerClassName="max-w-[40vw]"
+                  onChange={next => setQuery(next)}
+                  placeholder={cc.searchPlaceholder}
+                  value={query}
+                />
+              )}
+              {section === 'usage' && (
+                <SegmentedControl
+                  onChange={id => setUsagePeriod(Number(id) as UsagePeriod)}
+                  options={USAGE_PERIODS.map(value => ({ id: String(value), label: cc.days(value) }))}
+                  value={String(usagePeriod)}
+                />
+              )}
             </div>
             {section === 'system' && (
               <OverlayActionButton disabled={systemLoading} onClick={() => void refreshSystem()}>
@@ -556,7 +522,7 @@ export function CommandCenterView({
           ) : section === 'sessions' ? (
             <div className="min-h-0 flex-1 overflow-y-auto">
               {!sessionListHasResults ? (
-                <OverlayCard className="px-3 py-4 text-sm text-muted-foreground">{cc.noSessions}</OverlayCard>
+                <EmptyPanel description={debouncedQuery ? cc.noResults : cc.noSessions} />
               ) : (
                 <div className="grid gap-1.5">
                   {filteredSessions.map(session => {
@@ -574,26 +540,32 @@ export function CommandCenterView({
                             {formatTimestamp(session.last_active || session.started_at)}
                           </div>
                         </button>
-                        <OverlayIconButton
-                          onClick={() => (pinned ? unpinSession(session.id) : pinSession(session.id))}
-                          title={pinned ? cc.unpinSession : cc.pinSession}
-                        >
-                          {pinned ? <IconBookmarkFilled className="size-3.5" /> : <IconBookmark className="size-3.5" />}
-                        </OverlayIconButton>
-                        <OverlayIconButton
-                          onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
-                          title={cc.exportSession}
-                        >
-                          <IconDownload className="size-3.5" />
-                        </OverlayIconButton>
-                        <OverlayIconButton
-                          className="hover:text-destructive"
-                          onClick={() => void onDeleteSession(session.id)}
-                          title={cc.deleteSession}
-                        >
-                          <IconTrash className="size-3.5" />
-                        </OverlayIconButton>
-                      </OverlayCard>
+                        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                          <RowIconButton
+                            onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
+                            title={pinned ? cc.unpinSession : cc.pinSession}
+                          >
+                            {pinned ? (
+                              <IconBookmarkFilled className="size-3.5" />
+                            ) : (
+                              <IconBookmark className="size-3.5" />
+                            )}
+                          </RowIconButton>
+                          <RowIconButton
+                            onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
+                            title={cc.exportSession}
+                          >
+                            <IconDownload className="size-3.5" />
+                          </RowIconButton>
+                          <RowIconButton
+                            className="hover:text-destructive"
+                            onClick={() => void onDeleteSession(session.id)}
+                            title={cc.deleteSession}
+                          >
+                            <IconTrash className="size-3.5" />
+                          </RowIconButton>
+                        </div>
+                      </li>
                     )
                   })}
                 </div>
@@ -622,21 +594,21 @@ export function CommandCenterView({
                               status.gateway_running ? 'bg-emerald-500' : 'bg-amber-500'
                             )}
                           />
-                          <span className="font-medium text-foreground">
+                          <span className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
                             {status.gateway_running ? cc.gatewayRunning : cc.gatewayStopped}
                           </span>
                         </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
+                        <div className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                           {cc.hermesActiveSessions(status.version, status.active_sessions)}
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
-                        <OverlayActionButton className="h-7 px-2.5" onClick={() => void runSystemAction('restart')}>
+                        <Button onClick={() => void runSystemAction('restart')} size="xs" variant="text">
                           {cc.restartMessaging}
-                        </OverlayActionButton>
-                        <OverlayActionButton className="h-7 px-2.5" onClick={() => void runSystemAction('update')}>
+                        </Button>
+                        <Button onClick={() => void runSystemAction('update')} size="xs" variant="textStrong">
                           {cc.updateHermes}
-                        </OverlayActionButton>
+                        </Button>
                       </div>
                     </div>
                     {systemAction && (
@@ -647,13 +619,15 @@ export function CommandCenterView({
                     )}
                   </div>
                 ) : (
-                  <div className="text-xs text-muted-foreground">{cc.loadingStatus}</div>
+                  <PageLoader className="min-h-32" label={cc.loadingStatus} />
                 )}
               </OverlayCard>
 
               <OverlayCard className="min-h-0 overflow-hidden p-2">
                 <div className="mb-2 flex items-center justify-between">
-                  <span className="text-xs font-medium text-muted-foreground">{cc.recentLogs}</span>
+                  <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
+                    {cc.recentLogs}
+                  </span>
                   {systemError && (
                     <span className="inline-flex items-center gap-1 text-xs text-destructive">
                       <AlertCircle className="size-3.5" />
@@ -661,7 +635,7 @@ export function CommandCenterView({
                     </span>
                   )}
                 </div>
-                <pre className="h-full min-h-0 overflow-auto whitespace-pre-wrap wrap-break-word font-mono text-[0.65rem] leading-relaxed text-muted-foreground">
+                <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.65rem] leading-relaxed text-(--ui-text-tertiary)">
                   {logs.length ? logs.join('\n') : cc.noLogs}
                 </pre>
               </OverlayCard>
@@ -714,7 +688,7 @@ interface UsagePanelProps {
   usage: AnalyticsResponse | null
 }
 
-function UsagePanel({ error, loading, onPeriodChange, onRefresh, period, usage }: UsagePanelProps) {
+function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProps) {
   const { t } = useI18n()
   const cc = t.commandCenter
   const daily = useMemo(() => usage?.daily ?? [], [usage])
@@ -730,160 +704,118 @@ function UsagePanel({ error, loading, onPeriodChange, onRefresh, period, usage }
     return daily.reduce((acc, entry) => Math.max(acc, (entry.input_tokens || 0) + (entry.output_tokens || 0)), 1)
   }, [daily])
 
-  return (
-    <div className="grid min-h-0 flex-1 grid-rows-[auto_auto_minmax(0,1fr)] gap-3">
-      <OverlayCard className="flex flex-wrap items-center justify-between gap-2 p-3">
-        <div className="flex items-center gap-1">
-          {USAGE_PERIODS.map(value => (
-            <button
-              className={cn(
-                'h-7 rounded-md px-2.5 text-xs transition-colors',
-                value === period
-                  ? 'bg-foreground text-background'
-                  : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'
-              )}
-              key={value}
-              onClick={() => onPeriodChange(value)}
-              type="button"
-            >
-              {cc.days(value)}
-            </button>
-          ))}
-        </div>
-        {error && (
-          <span className="inline-flex items-center gap-1 text-xs text-destructive">
-            <AlertCircle className="size-3.5" />
-            {error}
-          </span>
-        )}
-      </OverlayCard>
-
-      <OverlayCard className="p-3">
-        {totals ? (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <UsageStat label={cc.statSessions} value={formatInteger(totals.total_sessions)} />
-            <UsageStat label={cc.statApiCalls} value={formatInteger(totals.total_api_calls)} />
-            <UsageStat
-              label={cc.statTokens}
-              value={`${formatTokens(totals.total_input)} / ${formatTokens(totals.total_output)}`}
-            />
-            <UsageStat
-              hint={totals.total_actual_cost > 0 ? cc.actualCost(formatCost(totals.total_actual_cost)) : undefined}
-              label={cc.statCost}
-              value={formatCost(totals.total_estimated_cost)}
-            />
-          </div>
-        ) : loading ? (
-          <div className="text-xs text-muted-foreground">{cc.loadingUsage}</div>
+  if (!totals) {
+    return (
+      <div className="min-h-0 flex-1">
+        {loading ? (
+          <PageLoader className="min-h-48" label={cc.loadingUsage} />
         ) : (
-          <div className="text-xs text-muted-foreground">
-            {cc.noUsage(period)}{' '}
-            <button className="underline underline-offset-4 decoration-current/20" onClick={onRefresh} type="button">
-              {cc.retry}
-            </button>
+          <EmptyPanel
+            action={
+              <Button onClick={onRefresh} size="xs" variant="text">
+                {cc.retry}
+              </Button>
+            }
+            description={cc.noUsage(period)}
+          />
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto pb-2">
+      {error && (
+        <span className="inline-flex items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-destructive">
+          <AlertCircle className="size-3.5" />
+          {error}
+        </span>
+      )}
+
+      <div className="grid grid-cols-2 gap-x-4 gap-y-4 border-b border-(--ui-stroke-tertiary) pb-5 sm:grid-cols-4">
+        <UsageStat label={cc.statSessions} value={formatInteger(totals.total_sessions)} />
+        <UsageStat label={cc.statApiCalls} value={formatInteger(totals.total_api_calls)} />
+        <UsageStat
+          label={cc.statTokens}
+          value={`${formatTokens(totals.total_input)} / ${formatTokens(totals.total_output)}`}
+        />
+        <UsageStat
+          hint={totals.total_actual_cost > 0 ? cc.actualCost(formatCost(totals.total_actual_cost)) : undefined}
+          label={cc.statCost}
+          value={formatCost(totals.total_estimated_cost)}
+        />
+      </div>
+
+      <section>
+        <div className="mb-2 flex items-baseline justify-between">
+          <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
+            {cc.dailyTokens}
+          </span>
+          <span className="flex items-center gap-3 text-[0.65rem] text-(--ui-text-tertiary)">
+            <span className="inline-flex items-center gap-1">
+              <span className="size-2 rounded-[1px] bg-[color:var(--dt-primary)]/60" /> {cc.input}
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="size-2 rounded-[1px] bg-emerald-500/70" /> {cc.output}
+            </span>
+          </span>
+        </div>
+        {daily.length === 0 ? (
+          <div className="grid h-24 place-items-center text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+            {cc.noDailyActivity}
           </div>
+        ) : (
+          <>
+            <div className="flex h-24 items-end gap-px">
+              {daily.map(entry => {
+                const inputH = Math.round(((entry.input_tokens || 0) / maxTokens) * 96)
+                const outputH = Math.round(((entry.output_tokens || 0) / maxTokens) * 96)
+
+                return (
+                  <div
+                    className="group relative flex h-24 min-w-0 flex-1 flex-col justify-end"
+                    key={entry.day}
+                    title={`${entry.day} · in ${formatTokens(entry.input_tokens)} · out ${formatTokens(entry.output_tokens)}`}
+                  >
+                    <div
+                      className="w-full rounded-t-[1px] bg-[color:var(--dt-primary)]/50"
+                      style={{ height: Math.max(inputH, entry.input_tokens > 0 ? 1 : 0) }}
+                    />
+                    <div
+                      className="w-full bg-emerald-500/60"
+                      style={{ height: Math.max(outputH, entry.output_tokens > 0 ? 1 : 0) }}
+                    />
+                  </div>
+                )
+              })}
+            </div>
+            <div className="mt-1 flex justify-between text-[0.6rem] text-(--ui-text-tertiary)">
+              <span>{daily[0]?.day}</span>
+              <span>{daily[daily.length - 1]?.day}</span>
+            </div>
+          </>
         )}
       </OverlayCard>
 
-      <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3">
-        <OverlayCard className="p-3">
-          <div className="mb-2 flex items-baseline justify-between">
-            <span className="text-xs font-medium text-muted-foreground">{cc.dailyTokens}</span>
-            <span className="flex items-center gap-3 text-[0.65rem] text-muted-foreground">
-              <span className="inline-flex items-center gap-1">
-                <span className="size-2 bg-[color:var(--dt-primary)]/60" /> {cc.input}
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <span className="size-2 bg-emerald-500/70" /> {cc.output}
-              </span>
-            </span>
-          </div>
-          {daily.length === 0 ? (
-            <div className="grid h-24 place-items-center text-xs text-muted-foreground">{cc.noDailyActivity}</div>
-          ) : (
-            <>
-              <div className="flex h-24 items-end gap-px">
-                {daily.map(entry => {
-                  const total = (entry.input_tokens || 0) + (entry.output_tokens || 0)
-                  const inputH = Math.round(((entry.input_tokens || 0) / maxTokens) * 96)
-                  const outputH = Math.round(((entry.output_tokens || 0) / maxTokens) * 96)
-
-                  return (
-                    <div
-                      className="group relative flex h-24 min-w-0 flex-1 flex-col justify-end"
-                      key={entry.day}
-                      title={`${entry.day} · in ${formatTokens(entry.input_tokens)} · out ${formatTokens(entry.output_tokens)}`}
-                    >
-                      <div
-                        className="w-full bg-[color:var(--dt-primary)]/50"
-                        style={{ height: Math.max(inputH, entry.input_tokens > 0 ? 1 : 0) }}
-                      />
-                      <div
-                        className="w-full bg-emerald-500/60"
-                        style={{ height: Math.max(outputH, entry.output_tokens > 0 ? 1 : 0) }}
-                      />
-                    </div>
-                  )
-                })}
-              </div>
-              <div className="mt-1 flex justify-between text-[0.6rem] text-muted-foreground/70">
-                <span>{daily[0]?.day}</span>
-                <span>{daily[daily.length - 1]?.day}</span>
-              </div>
-            </>
-          )}
-        </OverlayCard>
-
-        <OverlayCard className="min-h-0 overflow-auto p-2">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <section className="min-w-0">
-              <div className="mb-1.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground">
-                {cc.topModels}
-              </div>
-              {byModel.length === 0 ? (
-                <div className="text-xs text-muted-foreground">{cc.noModelUsage}</div>
-              ) : (
-                <ul className="space-y-1">
-                  {byModel.slice(0, 6).map(entry => (
-                    <li
-                      className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted/40"
-                      key={entry.model}
-                    >
-                      <span className="min-w-0 truncate font-mono text-[0.7rem] text-foreground">{entry.model}</span>
-                      <span className="shrink-0 text-[0.65rem] text-muted-foreground">
-                        {formatTokens((entry.input_tokens || 0) + (entry.output_tokens || 0))} ·{' '}
-                        {formatCost(entry.estimated_cost)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <section className="min-w-0">
-              <div className="mb-1.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground">
-                {cc.topSkills}
-              </div>
-              {topSkills.length === 0 ? (
-                <div className="text-xs text-muted-foreground">{cc.noSkillActivity}</div>
-              ) : (
-                <ul className="space-y-1">
-                  {topSkills.slice(0, 6).map(entry => (
-                    <li
-                      className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted/40"
-                      key={entry.skill}
-                    >
-                      <span className="min-w-0 truncate font-mono text-[0.7rem] text-foreground">{entry.skill}</span>
-                      <span className="shrink-0 text-[0.65rem] text-muted-foreground">
-                        {cc.actions(entry.total_count.toLocaleString())}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          </div>
-        </OverlayCard>
+      <div className="grid min-h-0 gap-x-8 gap-y-5 border-t border-(--ui-stroke-tertiary) pt-5 sm:grid-cols-2">
+        <UsageList
+          emptyLabel={cc.noModelUsage}
+          rows={byModel.slice(0, 6).map(entry => ({
+            key: entry.model,
+            label: entry.model,
+            value: `${formatTokens((entry.input_tokens || 0) + (entry.output_tokens || 0))} · ${formatCost(entry.estimated_cost)}`
+          }))}
+          title={cc.topModels}
+        />
+        <UsageList
+          emptyLabel={cc.noSkillActivity}
+          rows={topSkills.slice(0, 6).map(entry => ({
+            key: entry.skill,
+            label: entry.skill,
+            value: cc.actions(entry.total_count.toLocaleString())
+          }))}
+          title={cc.topSkills}
+        />
       </div>
     </div>
   )

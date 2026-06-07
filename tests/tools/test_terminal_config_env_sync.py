@@ -155,11 +155,11 @@ def test_cli_and_gateway_env_maps_agree():
 
 
 def test_save_config_set_supports_critical_bridged_keys():
-    """``savarez config set terminal.X true`` must propagate to .env for
-    known-critical keys.  This used to be an all-keys invariant but several
-    pre-existing terminal keys (ssh_*, docker_forward_env, docker_volumes)
-    aren't in _config_to_env_sync and are instead handled via the separate
-    api_keys TERMINAL_SSH_* fallback path or user-edits-yaml-directly.
+    """``hermes config set terminal.X true`` must propagate to .env for
+    known-critical keys.  This used to be an all-keys invariant but the SSH
+    terminal keys (ssh_*) aren't in _config_to_env_sync and are instead
+    handled via the separate api_keys TERMINAL_SSH_* fallback path or
+    user-edits-yaml-directly.
 
     Until those gaps are audited and fixed, pin the specific keys that are
     load-bearing for the docker backend so the bugs we fixed cannot silently

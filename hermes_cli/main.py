@@ -2610,6 +2610,8 @@ def select_provider_and_model(args=None):
                 "api_key": entry.get("api_key", ""),
                 "key_env": entry.get("key_env", ""),
                 "model": entry.get("model", ""),
+                "models": entry.get("models", {}),
+                "discover_models": entry.get("discover_models", True),
                 "api_mode": entry.get("api_mode", ""),
                 "provider_key": provider_key,
                 "api_key_ref": _lookup_ref(
@@ -4792,17 +4794,45 @@ def _model_flow_named_custom(config, provider_info):
         api_key = os.environ.get(key_env, "")
     config_api_key = _custom_provider_api_key_config_value(provider_info, api_key)
 
+    # Honor ``discover_models: false`` (default True) — when discovery is
+    # disabled, use the configured ``models:`` list verbatim and skip the
+    # live /models probe. This lets operators restrict the picker to the
+    # subset their plan actually serves instead of the endpoint's full
+    # catalog (#18726: Baidu Qianfan returns 100+ models for a 2-3 model
+    # plan). Same semantics as the slash-command picker (model_switch.py
+    # sections 3 & 4): default discovers, false keeps the explicit list.
+    discover = provider_info.get("discover_models", True)
+    if isinstance(discover, str):
+        discover = discover.lower() not in {"false", "no", "0"}
+    configured_models: list[str] = []
+    cfg_models = provider_info.get("models", {})
+    if isinstance(cfg_models, dict):
+        configured_models = [str(m) for m in cfg_models if str(m).strip()]
+    elif isinstance(cfg_models, list):
+        configured_models = [
+            str(m) for m in cfg_models if isinstance(m, str) and m.strip()
+        ]
+
     print(f"  Provider: {name}")
     print(f"  URL:      {base_url}")
     if saved_model:
         print(f"  Current:  {saved_model}")
     print()
 
-    print("Fetching available models...")
-    fetch_kwargs = {"timeout": 8.0}
-    if api_mode:
-        fetch_kwargs["api_mode"] = api_mode
-    models = fetch_api_models(api_key, base_url, **fetch_kwargs)
+    if not discover and configured_models:
+        # Discovery disabled with an explicit list — use it verbatim, no probe.
+        print(f"Using configured models (discover_models: false): {len(configured_models)}")
+        models = configured_models
+    else:
+        print("Fetching available models...")
+        fetch_kwargs = {"timeout": 8.0}
+        if api_mode:
+            fetch_kwargs["api_mode"] = api_mode
+        models = fetch_api_models(api_key, base_url, **fetch_kwargs)
+        # If the probe came back empty but the operator configured an explicit
+        # list, fall back to it rather than forcing manual entry.
+        if not models and configured_models:
+            models = configured_models
 
     if models:
         default_idx = 0
@@ -6617,7 +6647,9 @@ def cmd_import(args):
 
 
 def _print_version_info(*, check_updates: bool = True) -> None:
-    print(f"Savarez AI Agent v{__version__} ({__release_date__})")
+    from hermes_cli.banner import format_banner_version_label
+
+    print(format_banner_version_label())
     print(f"Project: {PROJECT_ROOT}")
 
     # Show Python version
@@ -8084,20 +8116,12 @@ def _update_via_zip(args):
     # individually so update does not silently strip working capabilities.
     print("→ Updating Python dependencies...")
 
-    from hermes_cli.managed_uv import ensure_uv, rebuild_venv, update_managed_uv
+    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
     # Keep managed uv current - runs `uv self update` if we already have one.
     update_managed_uv()
 
-    uv_bin, fresh_bootstrap = ensure_uv()
-    # First-time managed uv install on an existing checkout: the old venv
-    # may point to a Python without FTS5.  Rebuild it so the new managed
-    # uv provides a fresh interpreter with FTS5 guaranteed.
-    if fresh_bootstrap and uv_bin:
-        if not rebuild_venv(uv_bin, PROJECT_ROOT / "venv"):
-            raise RuntimeError(
-                "venv rebuild failed; aborting update before dependency install"
-            )
+    uv_bin = ensure_uv()
 
     pip_cmd = [sys.executable, "-m", "pip"]
     if not uv_bin:
@@ -8209,60 +8233,6 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
         check=True,
     ).stdout.strip()
     return stash_ref
-
-
-def _clean_managed_worktree(git_cmd: list[str], cwd: Path) -> bool:
-    """Discard working-tree dirt on an explicitly managed checkout.
-
-    On a managed install (%LOCALAPPDATA%\\savarez\\savarez-agent or
-    ~/.savarez/savarez-agent) the user never edits the source tree, so any
-    "dirty" state is pure git artifact: CRLF renormalization, npm lockfile
-    churn, or files left behind when a directory was deleted upstream (e.g.
-    apps/bootstrap-installer/). Stashing that dirt and re-applying it after a
-    pull is actively dangerous - the stash/restore cycle has been observed to
-    clobber freshly-pulled source files (apps/desktop/ deletion →
-    "[UNRESOLVED_ENTRY] Cannot resolve entry module index.html").
-
-    For an explicitly managed checkout the correct move is to throw the dirt
-    away with ``git reset --hard HEAD`` + ``git clean -fd`` (mirroring
-    install.ps1's update path), NOT preserve it. Ordinary source checkouts,
-    including upstream-origin checkouts, keep the stash machinery because
-    their local edits may be intentional.
-
-    Returns True if the tree was cleaned (or was already clean), False on
-    a git failure (caller should fall back to the stash path).
-    """
-    status = subprocess.run(
-        git_cmd + ["status", "--porcelain"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
-    if status.returncode != 0:
-        return False
-    if not status.stdout.strip():
-        return True
-
-    print("→ Discarding working-tree changes on managed clone before update...")
-    reset = subprocess.run(
-        git_cmd + ["reset", "--hard", "HEAD"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
-    if reset.returncode != 0:
-        return False
-    # Drop untracked files too (e.g. orphaned build artifacts), but never
-    # touch ignored paths - node_modules, venv, build outputs, and the like
-    # are expensive to rebuild and not git-artifact dirt.
-    subprocess.run(
-        git_cmd + ["clean", "-fd"],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
-    return True
-
 
 
 def _resolve_stash_selector(
@@ -8402,6 +8372,54 @@ def _restore_stashed_changes(
 
     print("⚠ Local changes were restored on top of the updated codebase.")
     print("  Review `git diff` / `git status` if Savarez behaves unexpectedly.")
+    return True
+
+
+def _discard_stashed_changes(
+    git_cmd: list[str],
+    cwd: Path,
+    stash_ref: str,
+) -> bool:
+    """Throw away a stash created before an update, without applying it.
+
+    Used only on a NON-interactive update when the user has set
+    ``updates.non_interactive_local_changes: discard`` — i.e. they've opted out
+    of keeping local source edits on this machine. Drops the stash entry
+    instead of re-applying it, so the working tree stays clean at the freshly
+    pulled HEAD. Unlike ``git reset --hard`` + ``git clean -fd``, this only
+    affects what was stashed (tracked changes + the untracked files we
+    explicitly captured) — ignored paths like node_modules/venv/build outputs
+    are never touched, since they were never stashed.
+
+    Returns True if the stash was dropped, False on a git failure (in which
+    case the stash is left in place for safety).
+    """
+    stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
+    if stash_selector is None:
+        print(
+            "⚠ Configured to discard local changes on non-interactive update, "
+            "but Hermes couldn't find the stash entry to drop."
+        )
+        _print_stash_cleanup_guidance(stash_ref)
+        return False
+
+    drop = subprocess.run(
+        git_cmd + ["stash", "drop", stash_selector],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if drop.returncode != 0:
+        print(
+            "⚠ Configured to discard local changes, but Hermes couldn't drop "
+            "the saved stash entry."
+        )
+        if drop.stderr.strip():
+            print(f"  {drop.stderr.strip().splitlines()[0]}")
+        _print_stash_cleanup_guidance(stash_ref, stash_selector)
+        return False
+
+    print("→ Discarded local source changes (updates.non_interactive_local_changes=discard).")
     return True
 
 
@@ -8801,48 +8819,6 @@ def _venv_scripts_dir() -> Path | None:
     return scripts if scripts.is_dir() else None
 
 
-def _wait_for_interpreter_venv_ready(*, timeout: float = 15.0) -> bool:
-    """Ensure the venv hosting ``sys.executable`` has an intact ``pyvenv.cfg``.
-
-    During ``savarez update`` the managed-uv path can rebuild the project venv
-    (``rebuild_venv`` → ``shutil.rmtree`` + ``uv venv``) before the
-    desktop-rebuild and profile-skills-sync steps run. Both of those steps
-    spawn a child process with ``sys.executable``. If they fire while the venv
-    is mid-rewrite, the interpreter launcher finds the venv directory but no
-    ``pyvenv.cfg`` yet and aborts with the bare stderr line
-    ``No pyvenv.cfg file`` - surfacing as a spurious "Desktop build failed" /
-    "sync failed" on an update that otherwise succeeded.
-
-    A venv's ``pyvenv.cfg`` sits one level up from the interpreter's ``bin`` /
-    ``Scripts`` dir. If ``sys.executable`` is NOT a venv interpreter (no
-    sibling marker dir, e.g. a system Python on PATH), there is nothing to
-    wait for and we return True immediately. Otherwise we poll briefly for the
-    marker to (re)appear - the rewrite window is short - and return whether
-    it's present. Best-effort: never raises, callers proceed regardless.
-    """
-    try:
-        exe = Path(sys.executable).resolve()
-    except Exception:
-        return True
-
-    venv_dir = exe.parent.parent  # .../venv/{bin,Scripts}/python -> .../venv
-    bin_dir = venv_dir / ("Scripts" if _is_windows() else "bin")
-    if not bin_dir.is_dir():
-        # Not a venv-hosted interpreter - pyvenv.cfg is irrelevant.
-        return True
-
-    cfg = venv_dir / "pyvenv.cfg"
-    if cfg.is_file():
-        return True
-
-    deadline = _time.monotonic() + max(0.0, timeout)
-    while _time.monotonic() < deadline:
-        if cfg.is_file():
-            return True
-        _time.sleep(0.25)
-    return cfg.is_file()
-
-
 def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
     """Entry-point shims that uv may try to rewrite during ``pip install -e .``.
 
@@ -9149,6 +9125,40 @@ def _restore_quarantined_exes(moved: list[tuple[Path, Path]]) -> None:
             pass
 
 
+def _run_quarantined_install(
+    cmd: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    scripts_dir: Path | None = None,
+) -> None:
+    """Run an editable install, quarantining the running ``hermes.exe`` first.
+
+    Any ``pip install -e .`` (or ``--reinstall``) rewrites the entry-point
+    shims, and on Windows the live ``hermes.exe`` is the running process —
+    pip can neither delete nor overwrite it, so without quarantine the shim
+    is left missing and ``hermes`` drops off PATH. This wraps
+    :func:`_run_install_with_heartbeat` with the same rename-out-of-the-way /
+    restore-on-failure dance that the primary install path uses, so EVERY
+    install that touches the shims is protected — including the
+    verification-repair reinstalls in
+    :func:`_verify_core_dependencies_installed`, which previously called
+    ``_run_install_with_heartbeat`` directly and bypassed quarantine.
+
+    Off-Windows (``scripts_dir is None``) this is a thin pass-through.
+    """
+    moved: list[tuple[Path, Path]] = []
+    if scripts_dir is not None:
+        moved = _quarantine_running_hermes_exe(scripts_dir)
+    try:
+        _run_install_with_heartbeat(cmd, env=env)
+    except BaseException:
+        # Restore shims if pip/uv didn't write replacements (e.g. install
+        # failed before the entry-points step). Don't swallow the error.
+        if scripts_dir is not None:
+            _restore_quarantined_exes(moved)
+        raise
+
+
 def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
     """Sweep ``savarez.exe.old.*`` left by prior updates.
 
@@ -9259,17 +9269,9 @@ def _install_python_dependencies_with_optional_fallback(
     scripts_dir = _venv_scripts_dir() if _is_windows() else None
 
     def _install(args: list[str]) -> None:
-        moved: list[tuple[Path, Path]] = []
-        if scripts_dir is not None:
-            moved = _quarantine_running_hermes_exe(scripts_dir)
-        try:
-            _run_install_with_heartbeat(install_cmd_prefix + args, env=env)
-        except BaseException:
-            # Restore shims if uv didn't write replacements (e.g. install
-            # failed before the entry-points step). Don't swallow the error.
-            if scripts_dir is not None:
-                _restore_quarantined_exes(moved)
-            raise
+        _run_quarantined_install(
+            install_cmd_prefix + args, env=env, scripts_dir=scripts_dir
+        )
 
     try:
         _install(["install", "-e", f".[{group}]"])
@@ -9436,9 +9438,16 @@ def _verify_core_dependencies_installed(
     # purpose - the missing dep is in *base* deps; rerunning the full all-
     # extras install can cost minutes and trips on whatever optional extra
     # was already broken upstream. Base is fast and is what's actually wrong.
+    #
+    # Quarantine the running ``hermes.exe`` first: ``--reinstall -e .``
+    # rewrites the entry-point shims, and on Windows pip can't overwrite the
+    # live launcher, which would leave ``hermes`` off PATH.
+    scripts_dir = _venv_scripts_dir() if _is_windows() else None
     repair_args = ["install", "--reinstall", "-e", "."]
     try:
-        _run_install_with_heartbeat(install_cmd_prefix + repair_args, env=env)
+        _run_quarantined_install(
+            install_cmd_prefix + repair_args, env=env, scripts_dir=scripts_dir
+        )
     except subprocess.CalledProcessError as e:
         logger.warning("dep verification: repair install failed: %s", e)
         print("  ⚠ Repair install failed; check `savarez update` output above.")
@@ -10237,7 +10246,7 @@ def _cmd_update_pip(args):
     # Keep managed uv current before using it.
     update_managed_uv()
 
-    uv, _fresh_bootstrap = ensure_uv()
+    uv = ensure_uv()
     in_venv = sys.prefix != sys.base_prefix
     # pipx-managed installs live under .../pipx/venvs/<name>/...
     pipx_managed = "pipx" in sys.prefix.split(os.sep)
@@ -10296,7 +10305,31 @@ def _cmd_update_impl(args, gateway_mode: bool):
     )
     assume_yes = bool(getattr(args, "yes", False))
 
-    print("⚕ Updating Savarez AI Agent...")
+    # Whether this update is running without a human at the keyboard.
+    # Interactive terminal updates always stash-and-ask (unchanged behavior);
+    # only non-interactive updates (desktop/chat app, gateway, `--yes`) consult
+    # the `updates.non_interactive_local_changes` config setting to decide
+    # whether to auto-restore stashed local source changes or throw them away.
+    _non_interactive_update = (
+        gateway_mode
+        or assume_yes
+        or not (sys.stdin.isatty() and sys.stdout.isatty())
+    )
+    discard_local_changes = False
+    if _non_interactive_update:
+        try:
+            from hermes_cli.config import load_config
+
+            _update_cfg = (load_config() or {}).get("updates", {})
+            if isinstance(_update_cfg, dict):
+                _mode = str(_update_cfg.get("non_interactive_local_changes", "stash")).lower()
+                discard_local_changes = _mode == "discard"
+        except Exception as exc:
+            # Never let a config read failure change the safe default.
+            logger.debug("Could not read updates.non_interactive_local_changes: %s", exc)
+            discard_local_changes = False
+
+    print("⚕ Updating Hermes Agent...")
     print()
 
     # On Windows, abort early if another savarez.exe is holding the venv shim
@@ -10331,7 +10364,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 return
             print("✗ Not a git repository. Please reinstall:")
             print(
-                "  curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.sh | bash"
+                "  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
             )
             sys.exit(1)
 
@@ -10356,21 +10389,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
     git_cmd = ["git"]
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
-
-    # On Windows, Git-for-Windows defaults to core.autocrlf=true, which
-    # renormalizes the repo's LF-only text files to CRLF in the working tree.
-    # On a managed, never-user-edited clone that makes tracked files read as
-    # "locally modified", which forces an autostash on every update (and the
-    # stash/restore cycle can clobber source files - see _stash_local_changes_
-    # if_needed below). Pin autocrlf=false so the dirt is never created. This
-    # mirrors what install.ps1's update path already does (PR #38239).
-    if sys.platform == "win32" and git_dir.exists():
-        subprocess.run(
-            git_cmd + ["config", "core.autocrlf", "false"],
-            cwd=PROJECT_ROOT,
-            check=False,
-            capture_output=True,
-        )
 
     # Discard npm lockfile churn before any stash/branch logic. npm rewrites
     # tracked package-lock.json files non-deterministically at install/build
@@ -10448,15 +10466,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if current_branch == "HEAD"
                 else f"branch '{current_branch}'"
             )
-            print(f"  ⚠ Currently on {label} - switching to {branch} for update...")
-            # Stash before checkout so uncommitted work isn't lost - but on a
-            # managed (non-fork) clone there's nothing to preserve, so discard
-            # git-artifact dirt instead (a dirty tree would otherwise block the
-            # checkout). Forks keep the stash so their edits survive.
-            if not is_fork and _clean_managed_worktree(git_cmd, PROJECT_ROOT):
-                auto_stash_ref = None
-            else:
-                auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+            print(f"  ⚠ Currently on {label} — switching to {branch} for update...")
+            # Stash before checkout so uncommitted work isn't lost
+            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
             checkout_result = subprocess.run(
                 git_cmd + ["checkout", branch],
                 cwd=PROJECT_ROOT,
@@ -10490,16 +10502,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         print(f"  {track_result.stderr.strip().splitlines()[0]}")
                     sys.exit(1)
         else:
-            # On an explicitly managed checkout the user never edits the
-            # source tree, so any dirt is git artifact (CRLF, lockfile churn,
-            # upstream-deleted dirs). Throw it away rather than stash/restore
-            # it - the stash/restore cycle has clobbered freshly-pulled source
-            # (apps/desktop/ → "[UNRESOLVED_ENTRY] index.html"). Forks fall
-            # through to the stash path so their intentional edits survive.
-            if not is_fork and _clean_managed_worktree(git_cmd, PROJECT_ROOT):
-                auto_stash_ref = None
-            else:
-                auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
         prompt_for_restore = (
             auto_stash_ref is not None
@@ -10688,20 +10691,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
         print("→ Updating Python dependencies...")
-        from hermes_cli.managed_uv import ensure_uv, rebuild_venv, update_managed_uv
+        from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
         # Keep managed uv current - runs `uv self update` if we already have one.
         update_managed_uv()
 
-        uv_bin, fresh_bootstrap = ensure_uv()
-        # First-time managed uv install on an existing checkout: the old venv
-        # may point to a Python without FTS5.  Rebuild it so the new managed
-        # uv provides a fresh interpreter with FTS5 guaranteed.
-        if fresh_bootstrap and uv_bin:
-            if not rebuild_venv(uv_bin, PROJECT_ROOT / "venv"):
-                raise RuntimeError(
-                    "venv rebuild failed; aborting update before dependency install"
-                )
+        uv_bin = ensure_uv()
 
         pip_cmd = [sys.executable, "-m", "pip"]
         if not uv_bin:
@@ -10764,18 +10759,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
         if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
-            # The Python-dependency step above may have rebuilt the venv that
-            # hosts sys.executable. Wait for its pyvenv.cfg to settle before
-            # spawning, or the child interpreter aborts with "No pyvenv.cfg
-            # file" and the rebuild spuriously "fails" on a successful update.
-            _wait_for_interpreter_venv_ready()
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
             # Stream the build output live (long Electron builds otherwise
             # look hung). On the rare nonzero exit, retry once after waiting
             # again for the venv - this covers a still-settling rebuild window
             # the first wait didn't fully catch.
             build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
-            if build_result.returncode != 0 and _wait_for_interpreter_venv_ready():
+            if build_result.returncode != 0:
                 build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
             if build_result.returncode != 0:
                 print("  ⚠ Desktop build failed (non-fatal; run `savarez desktop` to retry)")
@@ -10832,10 +10822,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if all_profiles:
                 print()
                 print("→ Syncing bundled skills to all profiles...")
-                # seed_profile_skills spawns sys.executable; if the venv was
-                # just rebuilt above, wait for pyvenv.cfg before the loop so
-                # the children don't abort with "No pyvenv.cfg file".
-                _wait_for_interpreter_venv_ready()
                 for p in all_profiles:
                     try:
                         r = seed_profile_skills(p.path, quiet=True)
@@ -11769,7 +11755,8 @@ def cmd_profile(args):
                 )
                 print(f"Skills:         {p.skill_count} installed")
                 if p.alias_path:
-                    print(f"Alias:          {p.name} → savarez -p {p.name}")
+                    alias_display = p.alias_name or p.name
+                    print(f"Alias:          {alias_display} → hermes -p {p.name}")
                 break
         print()
         return
@@ -11801,7 +11788,7 @@ def cmd_profile(args):
             name = p.name
             model = (p.model or "-")[:26]
             gw = "running" if p.gateway_running else "stopped"
-            alias = p.name if p.alias_path else "-"
+            alias = (p.alias_name or p.name) if p.alias_path else "—"
             if p.is_default:
                 alias = "-"
             if p.distribution_name:
@@ -12051,6 +12038,8 @@ def cmd_profile(args):
             _check_gateway_running,
             _count_skills,
             _read_distribution_meta,
+            _get_wrapper_dir,
+            find_alias_for_profile,
         )
 
         if not profile_exists(name):
@@ -12061,7 +12050,7 @@ def cmd_profile(args):
         gw = _check_gateway_running(profile_dir)
         skills = _count_skills(profile_dir)
         dist_name, dist_version, dist_source = _read_distribution_meta(profile_dir)
-        wrapper = _get_wrapper_dir() / name
+        alias_name = find_alias_for_profile(name)
 
         print(f"\nProfile: {name}")
         print(f"Path:    {profile_dir}")
@@ -12079,9 +12068,11 @@ def cmd_profile(args):
             print(f"Distribution: {dist_name}@{dist_version or '?'}")
             if dist_source:
                 print(f"Installed from: {dist_source}")
-            print(f"  (run `savarez profile info {name}` for full manifest)")
-        if wrapper.exists():
-            print(f"Alias:   {wrapper}")
+            print(f"  (run `hermes profile info {name}` for full manifest)")
+        if alias_name:
+            is_windows = sys.platform == "win32"
+            wrapper = _get_wrapper_dir() / (f"{alias_name}.bat" if is_windows else alias_name)
+            print(f"Alias:   {alias_name} → hermes -p {name}  ({wrapper})")
         print()
 
     elif action == "alias":
@@ -14828,12 +14819,36 @@ Examples:
         help="Platform to apply to (default: cli)",
     )
 
+    # hermes tools post-setup <key>
+    tools_postsetup_p = tools_sub.add_parser(
+        "post-setup",
+        help="Run a provider's post-setup install hook (npm/pip/binary)",
+        description=(
+            "Run the install/bootstrap hook a tool backend declares — the\n"
+            "same step `hermes tools` runs after you pick a provider that\n"
+            "needs extra dependencies (browser Chromium, Camofox, cua-driver,\n"
+            "KittenTTS/Piper, ddgs, Spotify, Langfuse, xAI). Stable,\n"
+            "non-interactive target the dashboard spawns to drive backend\n"
+            "setup. Keys: agent_browser, camofox, cua_driver, kittentts,\n"
+            "piper, ddgs, spotify, langfuse, xai_grok."
+        ),
+    )
+    tools_postsetup_p.add_argument(
+        "post_setup_key",
+        metavar="KEY",
+        help="Post-setup hook key (e.g. agent_browser, camofox, kittentts)",
+    )
+
     def cmd_tools(args):
         action = getattr(args, "tools_action", None)
         if action in {"list", "disable", "enable"}:
             from hermes_cli.tools_config import tools_disable_enable_command
 
             tools_disable_enable_command(args)
+        elif action == "post-setup":
+            from hermes_cli.tools_config import run_post_setup_command
+
+            sys.exit(run_post_setup_command(args))
         else:
             _require_tty("tools")
             from hermes_cli.tools_config import tools_command
@@ -15801,6 +15816,21 @@ Examples:
         "--status",
         action="store_true",
         help="List running savarez dashboard processes and exit",
+    )
+    # Backward-compat shim: older Hermes desktop app shells (<= 0.15.x) spawn the
+    # backend as `hermes dashboard --no-open --tui --host ... --port ...`. The
+    # `--tui` flag was removed from this subcommand in cae6b5486 (embedded chat is
+    # always on now). When a user's CLI updates past that commit but their desktop
+    # app binary has not, argparse used to hard-error with "unrecognized arguments:
+    # --tui" and exit(2) — the backend died before becoming ready and the GUI just
+    # showed "Hermes couldn't start" with no actionable cause. Accept and silently
+    # ignore the flag so an old app + new CLI degrades gracefully instead of
+    # bricking. Hidden from --help; safe to delete once the floor app version is
+    # well past 0.16.0.
+    dashboard_parser.add_argument(
+        "--tui",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     dashboard_parser.set_defaults(func=cmd_dashboard)
 

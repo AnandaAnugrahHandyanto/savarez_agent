@@ -24,13 +24,7 @@
 
 ### Install with Savarez (recommended)
 
-Add `--include-desktop` to the [one-line installer](../../README.md#quick-install) and it sets up the agent and builds the desktop app in one go:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.sh | bash -s -- --include-desktop
-```
-
-Already have the Savarez CLI? Just run:
+Already have the Hermes CLI? Just run:
 
 ```bash
 savarez desktop
@@ -40,7 +34,7 @@ It builds and launches the GUI against your existing install — same config, ke
 
 ### Prebuilt installers
 
-When a release ships desktop installers they're attached to its [releases page](https://github.com/AnandaAnugrahHandyanto/savarez_agent/releases) — `.dmg` (macOS), `.exe` / `.msi` (Windows), `.AppImage` / `.deb` / `.rpm` (Linux). These are published manually, so the install-with-Savarez path above is the most reliable way to get the latest.
+Prebuilt installers are built and distributed via [the Hermes Desktop website.](https://hermes-agent.nousresearch.com/desktop).
 
 ---
 

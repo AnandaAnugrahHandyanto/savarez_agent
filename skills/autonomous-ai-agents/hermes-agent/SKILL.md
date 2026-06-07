@@ -35,7 +35,7 @@ People use Savarez for software development, research, system administration, da
 
 ```bash
 # Install
-curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 # Interactive chat (default)
 savarez

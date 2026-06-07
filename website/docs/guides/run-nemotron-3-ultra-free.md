@@ -50,11 +50,19 @@ On macOS/Linux/WSL2/Android, run
 
 On macOS/Linux/WSL2/Android, run
 
+On macOS/Linux/WSL2/Android, run
+
 ```bash
 curl -fsSL https://savarez-agent.nousresearch.com/install.sh | bash
 ```
 
-Prefer to review first? Download [`install.sh`](https://savarez-agent.nousresearch.com/install.sh), inspect it, then run it.
+On Windows, run
+
+```powershell
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
+```
+
+Prefer to review first? Download [`install.sh`](https://hermes-agent.nousresearch.com/install.sh), inspect it, then run it.
 
 After it finishes, reload your shell:
 

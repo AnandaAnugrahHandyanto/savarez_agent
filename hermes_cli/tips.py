@@ -345,8 +345,8 @@ TIPS = [
     '/copy [N] copies the last assistant response to your clipboard, or the Nth-from-last with a number.',
     '/redraw forces a full UI repaint, fixing terminal drift after tmux resize or mouse selection artifacts.',
     '/agents (alias /tasks) shows active agents and running background tasks across the current session.',
-    '/footer toggles the gateway footer on final replies showing model, tool counts, and turn timing.',
-    '/busy queue|steer|interrupt controls what pressing Enter does while Savarez is working.',
+    '/footer toggles the gateway footer on final replies showing model, context %, and cwd.',
+    '/busy queue|steer|interrupt controls what pressing Enter does while Hermes is working.',
     '/topic in Telegram DMs enables user-managed multi-session topic mode — /topic <id> restores past sessions inline.',
     '/approve session|always runs a pending dangerous command with your chosen trust scope; /deny rejects it.',
     '/restart gracefully restarts the gateway after draining active runs, then pings the requester when back up.',
@@ -484,4 +484,3 @@ def get_random_tip(exclude_recent: int = 0) -> str:
             deduplication across sessions.
     """
     return random.choice(TIPS)
-

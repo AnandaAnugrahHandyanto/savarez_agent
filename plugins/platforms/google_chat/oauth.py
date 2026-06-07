@@ -49,12 +49,9 @@ Token storage layout
 - Per-user pending OAuth state during /setup-files start → exchange:
     ``${SAVAREZ_HOME}/google_chat_user_oauth_pending/<sanitized_email>.json``
 - Legacy pending state:
-    ``${SAVAREZ_HOME}/google_chat_user_oauth_pending.json``
-- Shared OAuth client (one per host, anchored at the default Savarez root so
-  every profile sees it; a profile-local copy under ``${SAVAREZ_HOME}`` wins
-  when present):
-    ``<default-root>/google_chat_user_client_secret.json`` (default ``~/.savarez``)
-
+    ``${HERMES_HOME}/google_chat_user_oauth_pending.json``
+- OAuth client secret (profile-scoped — each profile registers its own):
+    ``${HERMES_HOME}/google_chat_user_client_secret.json``
 """
 
 from __future__ import annotations
@@ -85,8 +82,8 @@ except (ModuleNotFoundError, ImportError):
     # (mirrors the same fallback used by the google-workspace skill's
     # _hermes_home.py shim).
     def get_hermes_home() -> Path:
-        val = os.environ.get("SAVAREZ_HOME", "").strip()
-        return Path(val) if val else Path.home() / ".savarez"
+        val = os.environ.get("HERMES_HOME", "").strip()
+        return Path(val) if val else Path.home() / ".hermes"
 
     def display_hermes_home() -> str:
         home = get_hermes_home()
@@ -143,24 +140,7 @@ def _token_path(email: Optional[str] = None) -> Path:
 
 
 def _client_secret_path() -> Path:
-    """Path to the shared OAuth client secret (one per host).
-
-    The client secret identifies the OAuth *app*, not a user or a profile,
-    so it is anchored at the default Savarez root (``~/.savarez`` — or the
-    Docker root) rather than the active profile's ``SAVAREZ_HOME``. That way
-    the one-time ``--client-secret`` host setup is visible to gateways
-    running under any named profile, exactly as the docs describe ("one
-    file per host is enough no matter how many users authorize later\").
-
-    A profile-local secret (``$SAVAREZ_HOME/google_chat_user_client_secret.json``)
-    still takes precedence when present, for installs that seeded one under
-    the previous profile-scoped behavior or that deliberately run a separate
-    OAuth app per profile.
-    """
-    profile_local = _hermes_home() / "google_chat_user_client_secret.json"
-    if profile_local.exists():
-        return profile_local
-    return get_default_hermes_root() / "google_chat_user_client_secret.json"
+    return _hermes_home() / "google_chat_user_client_secret.json"
 
 
 def _pending_auth_path(email: Optional[str] = None) -> Path:
