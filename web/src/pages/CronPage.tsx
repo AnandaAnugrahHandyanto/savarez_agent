@@ -675,6 +675,13 @@ export default function CronPage() {
           const deliver = asText(job.deliver);
           const profile = getJobProfile(job);
           const jobKey = getJobKey(job);
+          const model = asText(job.model);
+          const provider = asText(job.provider);
+          const modelLabel = model
+            ? provider
+              ? `${model} · ${provider}`
+              : model
+            : "";
 
           return (
             <Card key={jobKey}>
@@ -690,6 +697,11 @@ export default function CronPage() {
                     <Badge tone="outline">{profileLabel(profile)}</Badge>
                     {deliver && deliver !== "local" && (
                       <Badge tone="outline">{deliver}</Badge>
+                    )}
+                    {modelLabel && (
+                      <Badge tone="outline" title={modelLabel}>
+                        {modelLabel}
+                      </Badge>
                     )}
                   </div>
                   {hasName && promptText && (
