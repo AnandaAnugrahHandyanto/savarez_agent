@@ -904,14 +904,8 @@ def _jarvis_cockpit_read_gates() -> tuple[list[dict[str, Any]], Dict[str, Any]]:
     return gates, _jarvis_cockpit_source_record("gates", gates_dir, "ok")
 
 
-@app.get("/api/jarvis/cockpit")
-async def get_jarvis_cockpit():
-    """Read-only local Jarvis Cockpit contract for Hermes Desktop.
-
-    This endpoint reads only the narrow Jarvis-Core docs allowlist below. It
-    deliberately does not touch Graph, Blikk, mail, Dispatch databases, auth
-    caches, Keychain, .env, profile config, cron, NUC or backup resources.
-    """
+def _jarvis_cockpit_contract() -> Dict[str, Any]:
+    """Build the read-only local Jarvis Cockpit contract."""
     sources: list[dict[str, Any]] = []
     for source_id, relative_path in _JARVIS_COCKPIT_SAFE_FILES:
         _path, source = _jarvis_cockpit_safe_regular_file(source_id, relative_path)
@@ -974,6 +968,110 @@ async def get_jarvis_cockpit():
         "sources": sources,
         "missing": missing_sources,
         "safety": _jarvis_cockpit_safety(),
+    }
+
+
+@app.get("/api/jarvis/cockpit")
+async def get_jarvis_cockpit():
+    """Read-only local Jarvis Cockpit contract for Hermes Desktop.
+
+    This endpoint reads only the narrow Jarvis-Core docs allowlist below. It
+    deliberately does not touch Graph, Blikk, mail, Dispatch databases, auth
+    caches, Keychain, .env, profile config, cron, NUC or backup resources.
+    """
+    return _jarvis_cockpit_contract()
+
+
+def _jarvis_cockpit_report_safety() -> Dict[str, bool]:
+    """Safety receipt for local-only Cockpit report generation."""
+    return {
+        "local_only": True,
+        "read_only_sources": True,
+        "external_writes": False,
+        "microsoft_writes": False,
+        "blikk_writes": False,
+        "mail_mutation": False,
+        "secrets_read": False,
+        "cron_changed": False,
+    }
+
+
+def _jarvis_cockpit_report_dir() -> Path:
+    return _JARVIS_COCKPIT_DOCS_ROOT / "runbooks" / "jarvis-cockpit-reports"
+
+
+def _jarvis_cockpit_write_local_report(contract: Dict[str, Any]) -> Path:
+    """Write a local-only markdown receipt from the read-only Cockpit contract."""
+    report_dir = _jarvis_cockpit_report_dir()
+    if report_dir.exists() and report_dir.is_symlink():
+        raise HTTPException(status_code=400, detail="Jarvis Cockpit report directory is not safe")
+    report_dir.mkdir(parents=True, exist_ok=True)
+    if not report_dir.is_dir() or report_dir.is_symlink():
+        raise HTTPException(status_code=400, detail="Jarvis Cockpit report directory is not safe")
+
+    now = datetime.now(timezone.utc)
+    filename = f"jarvis-cockpit-local-report-{now.strftime('%Y%m%dT%H%M%SZ')}.md"
+    path = report_dir / filename
+    if path.exists() or path.is_symlink():
+        filename = f"jarvis-cockpit-local-report-{now.strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(3)}.md"
+        path = report_dir / filename
+
+    raw_todo_items = contract.get("jarvis_todo")
+    raw_gates = contract.get("gates")
+    raw_missing = contract.get("missing")
+    todo_items: list[dict[str, Any]] = [item for item in raw_todo_items if isinstance(item, dict)] if isinstance(raw_todo_items, list) else []
+    gates: list[dict[str, Any]] = [gate for gate in raw_gates if isinstance(gate, dict)] if isinstance(raw_gates, list) else []
+    missing: list[dict[str, Any]] = [source for source in raw_missing if isinstance(source, dict)] if isinstance(raw_missing, list) else []
+    safety = _jarvis_cockpit_report_safety()
+    todo_lines = [f"- {item.get('id', item.get('title', 'untitled'))}: {item.get('title', item.get('status', ''))}" for item in todo_items[:10]]
+    missing_lines = [f"- {source.get('id', 'unknown')}: {source.get('reason', source.get('state', 'missing'))}" for source in missing[:10]]
+    content = "\n".join([
+        "# Jarvis Cockpit Local Report",
+        "",
+        f"Generated: {now.isoformat()}",
+        "Status: LOCAL ONLY",
+        "",
+        "## Snapshot",
+        "",
+        f"- Cockpit status: {contract.get('status', 'unknown')}",
+        f"- Jarvis To Do items: {len(todo_items)}",
+        f"- Gates returned: {len(gates)}",
+        f"- Missing sources: {len(missing)}",
+        "",
+        "## Jarvis To Do",
+        "",
+        *(todo_lines or ["- No local Jarvis action items returned."]),
+        "",
+        "## Missing sources",
+        "",
+        *(missing_lines or ["- None reported."]),
+        "",
+        "## Safety receipt",
+        "",
+        f"- Local only: {'YES' if safety['local_only'] else 'NO'}",
+        f"- External writes: {'YES' if safety['external_writes'] else 'NO'}",
+        f"- Microsoft writes: {'YES' if safety['microsoft_writes'] else 'NO'}",
+        f"- Blikk writes: {'YES' if safety['blikk_writes'] else 'NO'}",
+        f"- Mail mutation: {'YES' if safety['mail_mutation'] else 'NO'}",
+        f"- Secrets read: {'YES' if safety['secrets_read'] else 'NO'}",
+        f"- Cron changed: {'YES' if safety['cron_changed'] else 'NO'}",
+        "",
+    ])
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+@app.post("/api/jarvis/cockpit/local-report")
+async def post_jarvis_cockpit_local_report():
+    """Generate a local-only markdown receipt from the read-only Cockpit contract."""
+    contract = _jarvis_cockpit_contract()
+    report_path = _jarvis_cockpit_write_local_report(contract)
+    return {
+        "status": "ok",
+        "action": "jarvis-cockpit-local-report",
+        "report_path": str(report_path),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "safety": _jarvis_cockpit_report_safety(),
     }
 
 

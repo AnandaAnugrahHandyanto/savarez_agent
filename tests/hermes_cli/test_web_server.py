@@ -410,6 +410,56 @@ class TestWebServerEndpoints:
         assert source["state"] == "missing"
         assert source["reason"] == "not_a_safe_regular_file"
 
+    def test_post_jarvis_cockpit_report_writes_local_only_markdown_receipt(self, tmp_path, monkeypatch):
+        """Phase 5 report generation writes only a local Cockpit receipt with no external side effects."""
+        import hermes_cli.web_server as ws
+
+        docs_root = tmp_path / "docs"
+        todo_dir = docs_root / "runbooks" / "jarvis-todo"
+        todo_dir.mkdir(parents=True)
+        (todo_dir / "jarvis-actions.json").write_text(json.dumps({
+            "updated_at": "2026-06-07T10:00:00+02:00",
+            "items": [{"id": "cockpit-local-report", "title": "Regenerate local Cockpit report", "status": "todo"}],
+            "artifact_pointers": [],
+        }))
+        (docs_root / "source-map").mkdir()
+        (docs_root / "source-map" / "jarvis-system-current-state.md").write_text("# state\n")
+
+        monkeypatch.setattr(ws, "_JARVIS_COCKPIT_DOCS_ROOT", docs_root)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("external or forbidden helper was called")
+
+        monkeypatch.setattr(ws.urllib.request, "urlopen", forbidden)
+        monkeypatch.setattr(ws.subprocess, "run", forbidden)
+        monkeypatch.setattr(ws, "load_config", forbidden, raising=False)
+
+        resp = self.client.post("/api/jarvis/cockpit/local-report")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["action"] == "jarvis-cockpit-local-report"
+        assert data["safety"] == {
+            "local_only": True,
+            "read_only_sources": True,
+            "external_writes": False,
+            "microsoft_writes": False,
+            "blikk_writes": False,
+            "mail_mutation": False,
+            "secrets_read": False,
+            "cron_changed": False,
+        }
+        report = Path(data["report_path"])
+        assert report.exists()
+        assert report.is_relative_to(docs_root / "runbooks" / "jarvis-cockpit-reports")
+        text = report.read_text(encoding="utf-8")
+        assert "# Jarvis Cockpit Local Report" in text
+        assert "Jarvis To Do items: 1" in text
+        assert "External writes: NO" in text
+        assert "Microsoft writes: NO" in text
+        assert "cockpit-local-report" in text
+
     def test_get_sessions_uses_only_persisted_cwd(self, monkeypatch):
         """Session rows without persisted cwd must not inherit TERMINAL_CWD.
 

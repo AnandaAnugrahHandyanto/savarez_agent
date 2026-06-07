@@ -78,6 +78,13 @@ interface JarvisCockpitResponse {
   updated_at?: string
 }
 
+interface JarvisCockpitLocalReportResponse {
+  report_path?: string
+  safety?: Record<string, boolean>
+  status?: string
+  updated_at?: string
+}
+
 const sourceLabels: Record<string, string> = {
   'alfred-dispatch-operator-pack': 'Dispatch operator pointer',
   gates: 'Gates directory',
@@ -138,7 +145,10 @@ const sourceLabel = (source?: CockpitSource | string) => {
 export function JarvisCockpitView() {
   const [data, setData] = useState<JarvisCockpitResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [reportError, setReportError] = useState<string | null>(null)
+  const [reportReceipt, setReportReceipt] = useState<JarvisCockpitLocalReportResponse | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [reporting, setReporting] = useState(false)
 
   const loadCockpit = async () => {
     setRefreshing(true)
@@ -151,6 +161,24 @@ export function JarvisCockpitView() {
       setError(err instanceof Error ? err.message : 'Could not load Jarvis Cockpit')
     } finally {
       setRefreshing(false)
+    }
+  }
+
+  const generateLocalReport = async () => {
+    setReporting(true)
+    setReportError(null)
+    setReportReceipt(null)
+
+    try {
+      const response = await window.hermesDesktop.api<JarvisCockpitLocalReportResponse>({
+        path: '/api/jarvis/cockpit/local-report',
+        method: 'POST'
+      })
+      setReportReceipt(response)
+    } catch (err) {
+      setReportError(err instanceof Error ? err.message : 'Could not generate local Cockpit report')
+    } finally {
+      setReporting(false)
     }
   }
 
@@ -186,6 +214,15 @@ export function JarvisCockpitView() {
             {data?.updated_at && <Pill label={`Updated ${niceDate(data.updated_at)}`} />}
             <button
               className="inline-flex h-8 items-center gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-control-background) px-3 text-sm font-medium text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background) hover:text-foreground disabled:opacity-60"
+              disabled={reporting || !data}
+              onClick={() => void generateLocalReport()}
+              type="button"
+            >
+              <Codicon className={cn('size-4', reporting && 'animate-pulse')} name="file-media" />
+              {reporting ? 'Generating report' : 'Generate local report'}
+            </button>
+            <button
+              className="inline-flex h-8 items-center gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-control-background) px-3 text-sm font-medium text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background) hover:text-foreground disabled:opacity-60"
               disabled={refreshing}
               onClick={() => void loadCockpit()}
               type="button"
@@ -199,6 +236,19 @@ export function JarvisCockpitView() {
         {error && (
           <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200">
             {error}
+          </div>
+        )}
+
+        {reportError && (
+          <div className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200">
+            {reportError}
+          </div>
+        )}
+
+        {reportReceipt && (
+          <div className="mt-4 rounded-xl border border-emerald-500/25 bg-emerald-500/10 p-4 text-sm text-emerald-100">
+            Local report created: <span className="text-emerald-200">{reportReceipt.report_path || 'local Cockpit report'}</span>
+            {reportReceipt.safety?.external_writes === false ? <span className="ml-2 text-emerald-300">External writes: NO</span> : null}
           </div>
         )}
 
