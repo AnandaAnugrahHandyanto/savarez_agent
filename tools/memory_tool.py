@@ -23,6 +23,7 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -34,6 +35,14 @@ from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
 from utils import atomic_replace
+from tools.memory_beliefs import (
+    EntryMeta, ContradictionEdge, MetaStore,
+    MaturityLevel, BeliefStatus, KnowledgeType, SourceKind, ContradictionMode,
+    SOURCE_AUTHORITY_DEFAULT, text_hash,
+    compute_decayed_confidence, evaluate_promotion, resolve_contradiction,
+    record_hit, record_surface, record_ignore, record_observed_behavior,
+    check_validation_decay,
+)
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
@@ -121,13 +130,18 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 3000, user_char_limit: int = 2000):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        # Dialectical belief metadata sidecar
+        self._meta_store: Dict[str, MetaStore] = {
+            "memory": MetaStore(),
+            "user": MetaStore(),
+        }
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
@@ -168,6 +182,10 @@ class MemoryStore:
             "memory": self._render_block("memory", sanitized_memory),
             "user": self._render_block("user", sanitized_user),
         }
+
+        # Load meta sidecar files
+        self._load_meta_from_disk("memory")
+        self._load_meta_from_disk("user")
 
     @staticmethod
     def _sanitize_entries_for_snapshot(entries: List[str], filename: str) -> List[str]:
@@ -294,7 +312,8 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
-    def add(self, target: str, content: str) -> Dict[str, Any]:
+    def add(self, target: str, content: str,
+            source_kind: SourceKind = SourceKind.USER_EXPLICIT) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
         if not content:
@@ -341,6 +360,14 @@ class MemoryStore:
             entries.append(content)
             self._set_entries(target, entries)
             self.save_to_disk(target)
+
+            # Create/update meta for new entry
+            entry_id = self._ensure_entry_id(target, content)
+            entry_meta = self._meta_store[target].entries[entry_id]
+            entry_meta.source_kind = source_kind
+            entry_meta.authority = SOURCE_AUTHORITY_DEFAULT.get(source_kind, 0.7)
+            entry_meta.updated_at = time.time()
+            self._save_meta_to_disk(target)
 
         return self._success_response(target, "Entry added.")
 
@@ -598,6 +625,126 @@ class MemoryStore:
         except (OSError, IOError) as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
+    # -- Dialectical belief metadata sidecar methods ----------------------------
+
+    def _load_meta_from_disk(self, target: str) -> None:
+        """Load the JSON sidecar file for a target."""
+        path = self._path_for(target).with_suffix(".meta.json")
+        if path.exists():
+            try:
+                raw = path.read_text(encoding="utf-8")
+                self._meta_store[target] = MetaStore.from_dict(json.loads(raw))
+            except Exception:
+                self._meta_store[target] = MetaStore()
+        else:
+            meta = MetaStore()
+            for entry in self._entries_for(target):
+                self._ensure_entry_id(target, entry)
+            self._meta_store[target] = meta
+
+    def _save_meta_to_disk(self, target: str) -> None:
+        """Persist the meta sidecar using atomic temp+rename."""
+        path = self._path_for(target).with_suffix(".meta.json")
+        content = json.dumps(self._meta_store[target].to_dict(), ensure_ascii=False, indent=2)
+        fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".meta_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+            atomic_replace(tmp_path, path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    def _ensure_entry_id(self, target: str, entry_text: str) -> str:
+        """Get or create entry_id for a text entry using sha256 hash."""
+        meta = self._meta_store[target]
+        h = text_hash(entry_text)
+        if h in meta.text_to_id:
+            return meta.text_to_id[h]
+        new_meta = EntryMeta(source_kind=SourceKind.AGENT_INFERRED)
+        meta.entries[new_meta.entry_id] = new_meta
+        meta.text_to_id[h] = new_meta.entry_id
+        return new_meta.entry_id
+
+    def get_entry_meta(self, target: str, entry_text: str) -> Optional[EntryMeta]:
+        """Get meta for a specific entry by its text content."""
+        meta = self._meta_store[target]
+        h = text_hash(entry_text)
+        entry_id = meta.text_to_id.get(h)
+        if entry_id:
+            return meta.entries.get(entry_id)
+        return None
+
+    def update_entry_meta(self, target: str, entry_text: str, update_fn) -> None:
+        """Apply a function to an entry's meta and persist."""
+        entry_meta = self.get_entry_meta(target, entry_text)
+        if entry_meta is None:
+            return
+        update_fn(entry_meta)
+        self._save_meta_to_disk(target)
+
+    def get_contradictions(self, target: str,
+                           mode: ContradictionMode = ContradictionMode.FILTER) -> list:
+        """Get contradicting entry pairs."""
+        meta = self._meta_store[target]
+        results = []
+        for edge in meta.contradictions:
+            if mode == ContradictionMode.FILTER and edge.resolved:
+                continue
+            text_a = self._find_text_by_id(target, edge.from_id)
+            text_b = self._find_text_by_id(target, edge.to_id)
+            if text_a and text_b:
+                results.append({
+                    "entry_a": text_a, "entry_b": text_b,
+                    "reason": edge.reason, "edge_id": edge.edge_id,
+                })
+        return results
+
+    def _find_text_by_id(self, target: str, entry_id: str) -> Optional[str]:
+        """Reverse lookup: find entry text for a given entry_id."""
+        meta = self._meta_store[target]
+        for h, eid in meta.text_to_id.items():
+            if eid == entry_id:
+                for entry in self._entries_for(target):
+                    if text_hash(entry) == h:
+                        return entry
+        return None
+
+    def run_maintenance(self, target: str) -> Dict[str, Any]:
+        """Run maintenance: check decay, evaluate promotion, prune old superseded."""
+        meta = self._meta_store[target]
+        now = time.time()
+        actions = {"decayed": 0, "promoted": 0, "pruned": 0}
+
+        for entry_id, entry_meta in meta.entries.items():
+            if entry_meta.status != BeliefStatus.ACTIVE:
+                continue
+            new_status = check_validation_decay(entry_meta, now)
+            if new_status:
+                entry_meta.status = new_status
+                actions["decayed"] += 1
+                continue
+            target_maturity = evaluate_promotion(entry_meta, now)
+            if target_maturity:
+                entry_meta.maturity = target_maturity
+                entry_meta.updated_at = now
+                actions["promoted"] += 1
+
+        for entry_id, entry_meta in meta.entries.items():
+            if entry_meta.status == BeliefStatus.SUPERSEDED:
+                if (now - entry_meta.updated_at) / 86400 > 90:
+                    entry_meta.status = BeliefStatus.DECAYED
+                    actions["pruned"] += 1
+
+        if any(actions.values()):
+            self._save_meta_to_disk(target)
+        return actions
+
 
 def memory_tool(
     action: str,
@@ -605,12 +752,10 @@ def memory_tool(
     content: str = None,
     old_text: str = None,
     store: Optional[MemoryStore] = None,
+    source_kind: str = None,
+    contradiction_mode: str = None,
 ) -> str:
-    """
-    Single entry point for the memory tool. Dispatches to MemoryStore methods.
-
-    Returns JSON string with results.
-    """
+    """Single entry point for the memory tool. Dispatches to MemoryStore methods."""
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
 
@@ -620,7 +765,8 @@ def memory_tool(
     if action == "add":
         if not content:
             return tool_error("Content is required for 'add' action.", success=False)
-        result = store.add(target, content)
+        sk = SourceKind(source_kind) if source_kind else SourceKind.USER_EXPLICIT
+        result = store.add(target, content, source_kind=sk)
 
     elif action == "replace":
         if not old_text:
@@ -634,8 +780,16 @@ def memory_tool(
             return tool_error("old_text is required for 'remove' action.", success=False)
         result = store.remove(target, old_text)
 
+    elif action == "contradictions":
+        mode = ContradictionMode(contradiction_mode) if contradiction_mode else ContradictionMode.FILTER
+        pairs = store.get_contradictions(target, mode)
+        result = {"success": True, "target": target, "contradictions": pairs}
+
+    elif action == "maintenance":
+        result = store.run_maintenance(target)
+
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove, contradictions, maintenance", success=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -671,7 +825,11 @@ MEMORY_SCHEMA = {
         "- 'user': who the user is -- name, role, preferences, communication style, pet peeves\n"
         "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
         "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
-        "remove (delete -- old_text identifies it).\n\n"
+        "remove (delete -- old_text identifies it), "
+        "contradictions (view conflicting entries), maintenance (run decay/promotion cycle).\n\n"
+        "BEHAVIOR OBSERVATION: When you observe the user doing something that confirms or "
+        "contradicts a memory entry, use source_kind='observed'. Observed behavior is "
+        "weighted higher than stated preferences.\n\n"
         "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
     ),
     "parameters": {
@@ -679,7 +837,7 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
+                "enum": ["add", "replace", "remove", "contradictions", "maintenance"],
                 "description": "The action to perform."
             },
             "target": {
@@ -694,6 +852,16 @@ MEMORY_SCHEMA = {
             "old_text": {
                 "type": "string",
                 "description": "Short unique substring identifying the entry to replace or remove."
+            },
+            "source_kind": {
+                "type": "string",
+                "enum": ["user_explicit", "observed", "agent_inferred", "user_correction", "background_review", "derived"],
+                "description": "How this entry was created. 'observed' = behavior evidence, weighted higher."
+            },
+            "contradiction_mode": {
+                "type": "string",
+                "enum": ["surface", "filter"],
+                "description": "For 'contradictions' action: 'surface' keeps both sides, 'filter' keeps winner only."
             },
         },
         "required": ["action", "target"],
@@ -713,6 +881,8 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
+        source_kind=args.get("source_kind"),
+        contradiction_mode=args.get("contradiction_mode"),
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
