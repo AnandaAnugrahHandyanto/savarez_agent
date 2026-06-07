@@ -7643,10 +7643,20 @@ async def get_workflows():
     return {"workflows": [f.stem for f in files]}
 
 
+def _get_workflow_path(name: str) -> Path:
+    workflows_dir = get_hermes_home() / "workflows"
+    workflows_dir.mkdir(parents=True, exist_ok=True)
+    if not re.match(r"^[a-zA-Z0-9_.-]+$", name) or ".." in name:
+        raise HTTPException(status_code=400, detail="Invalid workflow name")
+    path = (workflows_dir / f"{name}.json").resolve()
+    if not path.is_relative_to(workflows_dir.resolve()):
+        raise HTTPException(status_code=400, detail="Invalid workflow name")
+    return path
+
+
 @app.get("/api/workflows/{name}")
 async def get_workflow(name: str):
-    workflows_dir = get_hermes_home() / "workflows"
-    path = workflows_dir / f"{name}.json"
+    path = _get_workflow_path(name)
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Workflow '{name}' not found")
     try:
@@ -7663,9 +7673,7 @@ class WorkflowSaveBody(BaseModel):
 
 @app.post("/api/workflows/{name}")
 async def save_workflow(name: str, body: WorkflowSaveBody):
-    workflows_dir = get_hermes_home() / "workflows"
-    workflows_dir.mkdir(parents=True, exist_ok=True)
-    path = workflows_dir / f"{name}.json"
+    path = _get_workflow_path(name)
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(body.graph, f, indent=2, ensure_ascii=False)
@@ -7676,8 +7684,7 @@ async def save_workflow(name: str, body: WorkflowSaveBody):
 
 @app.delete("/api/workflows/{name}")
 async def delete_workflow(name: str):
-    workflows_dir = get_hermes_home() / "workflows"
-    path = workflows_dir / f"{name}.json"
+    path = _get_workflow_path(name)
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Workflow '{name}' not found")
     try:
@@ -7702,8 +7709,7 @@ class WorkflowThreadShim:
 
 @app.post("/api/workflows/{name}/execute")
 async def execute_workflow(name: str):
-    workflows_dir = get_hermes_home() / "workflows"
-    path = workflows_dir / f"{name}.json"
+    path = _get_workflow_path(name)
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Workflow '{name}' not found")
 
