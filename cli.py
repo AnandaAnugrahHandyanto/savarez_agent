@@ -5111,8 +5111,9 @@ class HermesCLI:
         if not self._ensure_runtime_credentials():
             return False
 
-        from hermes_cli.mcp_startup import wait_for_mcp_discovery
+        from hermes_cli.mcp_startup import start_background_mcp_discovery, wait_for_mcp_discovery
 
+        start_background_mcp_discovery(logger=logger, thread_name="cli-mcp-discovery")
         wait_for_mcp_discovery()
 
         # Initialize SQLite session store for CLI sessions (if not already done in __init__)
