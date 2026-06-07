@@ -2844,6 +2844,26 @@ class TestVoiceTTSPlayback:
         assert "Do not invent live/current facts" in prompt
         assert "concise, natural text only" in prompt
 
+    def test_voice_reply_sanitizer_removes_observed_english_persona_leak(self):
+        """Voice replies strip persona/status boilerplate before TTS and bench."""
+        runner = self._make_runner()
+
+        response = runner._sanitize_voice_reply_response(
+            "Leo here - Confirmed, test 1ok.\n\nOperational for the current session."
+        )
+
+        assert response == "Confirmed, test 1ok."
+
+    def test_voice_reply_sanitizer_removes_observed_romanian_persona_leak(self):
+        """Romanian voice replies strip the leaked Leo intro only."""
+        runner = self._make_runner()
+
+        response = runner._sanitize_voice_reply_response(
+            "Leo aici. Te aud tare și clar, Pafi. OK."
+        )
+
+        assert response == "Te aud tare și clar, Pafi. OK."
+
     def test_voice_reply_context_prompt_absent_for_text_input(self):
         """voice_only must not constrain normal text turns."""
         from gateway.config import Platform
@@ -2926,9 +2946,9 @@ class TestVoiceTTSPlayback:
 
         assert route["model"] == "gemini-3-flash-preview"
         assert route["runtime"]["provider"] == "google-gemini-cli"
-        assert route["runtime"]["max_tokens"] == 220
+        assert route["runtime"]["max_tokens"] == 120
         assert route["enabled_toolsets"] == []
-        assert route["max_iterations"] == 3
+        assert route["max_iterations"] == 1
         assert route["reasoning_config"] == {"enabled": False}
 
     def test_voice_fast_reply_route_clamps_excessive_max_turns(self, monkeypatch):
@@ -2950,7 +2970,7 @@ class TestVoiceTTSPlayback:
             "voice": {"fast_reply": {"enabled": True, "max_turns": 99}}
         })
 
-        assert route["max_iterations"] == 3
+        assert route["max_iterations"] == 1
 
 
 class TestUDPKeepalive:
