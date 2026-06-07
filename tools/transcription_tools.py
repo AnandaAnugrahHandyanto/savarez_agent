@@ -153,7 +153,23 @@ def _find_binary(binary_name: str) -> Optional[str]:
 
 
 def _find_ffmpeg_binary() -> Optional[str]:
-    return _find_binary("ffmpeg")
+    result = _find_binary("ffmpeg")
+    if result:
+        return result
+    # Windows fallback: Hermes bundles ffmpeg under its tools dir.
+    # LOCALAPPDATA differs per user (LocalSystem vs interactive), so check
+    # the common user-profile path explicitly.
+    for base in (
+        os.environ.get("LOCALAPPDATA", ""),
+        os.path.expandvars(r"%USERPROFILE%\AppData\Local"),
+        os.path.expandvars(r"C:\Users\D\AppData\Local"),
+    ):
+        if not base:
+            continue
+        candidate = Path(base) / "hermes" / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe"
+        if candidate.exists():
+            return str(candidate)
+    return None
 
 
 def _find_whisper_binary() -> Optional[str]:
@@ -1216,11 +1232,17 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             if prep_error:
                 return {"success": False, "transcript": "", "error": prep_error}
 
+            def _q(v):
+                """Quote a value for the current platform's shell."""
+                if os.name == "nt":
+                    return subprocess.list2cmdline([v])
+                return shlex.quote(v)
+
             command = command_template.format(
-                input_path=shlex.quote(prepared_input),
-                output_dir=shlex.quote(output_dir),
-                language=shlex.quote(language),
-                model=shlex.quote(normalized_model),
+                input_path=_q(prepared_input),
+                output_dir=_q(output_dir),
+                language=_q(language),
+                model=_q(normalized_model),
             )
             # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
             use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())

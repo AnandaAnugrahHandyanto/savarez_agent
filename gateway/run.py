@@ -4767,18 +4767,15 @@ class GatewayRunner:
         planned_restart_notification_pending = _planned_restart_notification_pending()
         await self._send_restart_notification()
 
-        # Broadcast a lightweight "gateway is back" message to configured home
-        # channels only for non-chat planned restarts (terminal/SIGUSR1/service
-        # paths). Chat-originated /restart already has a precise reply target
-        # in .restart_notify.json, so keep that lifecycle in the originating
-        # chat/topic instead of also leaking it to the configured home channel.
+        # Always send startup notification to configured home channels —
+        # both on cold boots and planned restarts. This lets the user know
+        # the gateway is back online even after a crash or nssm restart.
+        await self._send_home_channel_startup_notifications(
+            skip_targets=None,
+        )
+
         if planned_restart_notification_pending:
-            try:
-                await self._send_home_channel_startup_notifications(
-                    skip_targets=None,
-                )
-            finally:
-                _clear_planned_restart_notification()
+            _clear_planned_restart_notification()
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
@@ -15613,7 +15610,7 @@ class GatewayRunner:
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
-        message = "♻️ Gateway online — Hermes is back and ready."
+        message = "🐱 郁郁上線囉！"
 
         for platform, adapter in self.adapters.items():
             home = self.config.get_home_channel(platform)
