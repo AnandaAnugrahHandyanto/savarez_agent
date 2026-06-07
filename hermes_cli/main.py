@@ -10370,7 +10370,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 return
             print("✗ Not a git repository. Please reinstall:")
             print(
-                "  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
+                "  curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.sh | bash"
             )
             sys.exit(1)
 
