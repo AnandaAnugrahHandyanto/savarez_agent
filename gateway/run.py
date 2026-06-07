@@ -6945,12 +6945,8 @@ class GatewayRunner:
                 return None
             return WeComAdapter(config)
 
-        elif platform == Platform.WEIXIN:
-            from gateway.platforms.weixin import WeixinAdapter, check_weixin_requirements
-            if not check_weixin_requirements():
-                logger.warning("Weixin: aiohttp/cryptography not installed")
-                return None
-            return WeixinAdapter(config)
+        # weixin migrated to a bundled plugin (plugins/platforms/weixin/);
+        # the platform_registry check at the top of this method creates it.
 
         elif platform == Platform.MATRIX:
             from gateway.platforms.matrix import MatrixAdapter, check_matrix_requirements
