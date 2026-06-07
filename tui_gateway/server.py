@@ -211,7 +211,7 @@ _stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
-    def __init__(self, session_key: str, model: str):
+    def __init__(self, session_key: str, model: str, profile_home: str | None = None):
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
@@ -227,6 +227,10 @@ class _SlashWorker:
         if model:
             argv += ["--model", model]
 
+        env = os.environ.copy()
+        if profile_home:
+            env["HERMES_HOME"] = profile_home
+
         self.proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
@@ -235,7 +239,7 @@ class _SlashWorker:
             text=True,
             bufsize=1,
             cwd=os.getcwd(),
-            env=os.environ.copy(),
+            env=env,
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
@@ -704,7 +708,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             current["agent"] = agent
 
             try:
-                worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
+                worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()), profile_home=current.get("profile_home"))
                 current["slash_worker"] = worker
             except Exception:
                 pass
@@ -1430,6 +1434,7 @@ def _restart_slash_worker(session: dict):
         session["slash_worker"] = _SlashWorker(
             session["session_key"],
             getattr(session.get("agent"), "model", _resolve_model()),
+            profile_home=session.get("profile_home"),
         )
     except Exception:
         session["slash_worker"] = None
@@ -2678,7 +2683,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
     _register_session_cwd(_sessions[sid])
     try:
         _sessions[sid]["slash_worker"] = _SlashWorker(
-            key, getattr(agent, "model", _resolve_model())
+            key, getattr(agent, "model", _resolve_model()), profile_home=_sessions[sid].get("profile_home")
         )
     except Exception:
         # Defer hard-failure to slash.exec; chat still works without slash worker.
@@ -7425,6 +7430,7 @@ def _(rid, params: dict) -> dict:
             worker = _SlashWorker(
                 session["session_key"],
                 getattr(session.get("agent"), "model", _resolve_model()),
+                profile_home=session.get("profile_home"),
             )
             session["slash_worker"] = worker
         except Exception as e:
@@ -8442,6 +8448,10 @@ def _(rid, params: dict) -> dict:
     cmd = params.get("command", "")
     if not cmd:
         return _err(rid, 4004, "empty command")
+    
+    # SECURITY: Dangerous command approval gate (fail-closed)
+    # If the approval module cannot be imported, we MUST fail closed and block
+    # execution to prevent implicit RCE vulnerability. See issue #36847.
     try:
         from tools.approval import detect_dangerous_command
 
@@ -8450,8 +8460,16 @@ def _(rid, params: dict) -> dict:
             return _err(
                 rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands."
             )
-    except ImportError:
-        pass
+    except ImportError as e:
+        # Fail-closed: if approval module is missing, block execution
+        # Do not silently skip the gate; that would be an RCE vulnerability
+        logger.error("SECURITY: Approval module unavailable (ImportError), blocking shell.exec: %s", e)
+        return _err(
+            rid, 5001, 
+            "Security gate unavailable: approval module could not be loaded. "
+            "Shell execution is blocked for safety. Please contact support."
+        )
+    
     try:
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()
