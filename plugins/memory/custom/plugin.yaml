@@ -1,0 +1,6 @@
+name: custom
+version: 1.0.0
+description: "Custom memory — recall from and write to your own LLM wiki / second brain / Obsidian vault (files backend; HTTP planned)."
+hooks:
+  - on_memory_write
+  - on_session_end

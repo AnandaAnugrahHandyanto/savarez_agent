@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, custom
 ```
 
 ## How It Works
@@ -540,6 +540,38 @@ hermes-memori install
 hermes config set memory.provider memori
 hermes memory setup
 ```
+
+---
+
+### Custom
+
+Recall from and write to a knowledge store **you already maintain** — an LLM wiki, "second brain", or Obsidian-style markdown vault — instead of a hosted service. Because Hermes is self-improving, new memories are written back into the same vault so future sessions can recall them. Ships a `files` backend (a local or NFS/SMB-mounted note directory); an `http` backend (your own API endpoint) is planned.
+
+| | |
+|---|---|
+| **Best for** | Pointing Hermes at an existing Obsidian vault / LLM wiki / second brain |
+| **Requires** | A directory of markdown/text notes (no extra dependencies) |
+| **Data storage** | Your own vault directory (local or mounted share) |
+| **Cost** | Free |
+
+**Tools:** `memory_search` (recall notes from your store), `memory_add` (save a durable note)
+
+**Setup:**
+```bash
+hermes memory setup    # select "custom", then point it at your vault
+```
+```yaml
+memory:
+  provider: custom
+  custom:
+    mode: files                      # "files" (this version); "http" planned
+    dir: "/path/to/obsidian-vault"   # your LLM wiki / second brain root
+    write_subdir: "hermes-memory"    # where Hermes writes new notes
+    write_format: markdown           # "markdown" (vault-native, recalled) | "jsonl" (export log)
+    max_results: 5
+```
+
+With `write_format: markdown`, notes Hermes writes become part of your vault and are recalled on later turns (a full read+write loop). With `jsonl`, writes are a structured export log and are not recalled.
 
 ---
 
