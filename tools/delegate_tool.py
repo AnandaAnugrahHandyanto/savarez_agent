@@ -1115,6 +1115,8 @@ def _build_child_agent(
     # agent does.  _fallback_chain is a list accepted by AIAgent's
     # fallback_model parameter (which handles both list and dict forms).
     parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
+    if override_base_url or override_provider:
+        parent_fallback = None
 
     # Inherit the parent's OpenRouter provider-preference filters by default
     # (so subagents routed to the same provider honour the same routing
@@ -1184,7 +1186,15 @@ def _build_child_agent(
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
-    child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)
+    #
+    # Direct endpoint overrides are already a complete credential bundle. Do
+    # not attach a pool: the lease path swaps in the pool entry's base_url and
+    # api_key, which can silently reroute a direct-endpoint child back to the
+    # parent's endpoint.
+    direct_endpoint_override = bool(str(delegation_cfg.get("base_url") or "").strip())
+    child_pool = None
+    if not direct_endpoint_override:
+        child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)
     if child_pool is not None:
         child._credential_pool = child_pool
 
@@ -2516,26 +2526,28 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config from persistent config first.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    ``cli.CLI_CONFIG`` is built once at CLI import time. During long-running
+    sessions it can lag behind ``~/.hermes/config.yaml`` or hold partially
+    updated delegation settings, which is dangerous when the child should use
+    a different endpoint: it can inherit the parent's base_url while only
+    overriding the model. Prefer the persistent config so explicit
+    ``delegation.base_url`` always wins at the moment a child is spawned.
     """
     try:
-        from cli import CLI_CONFIG
+        from hermes_cli.config import load_config
 
-        cfg = CLI_CONFIG.get("delegation") or {}
+        full = load_config()
+        cfg = full.get("delegation") or {}
         if cfg:
             return cfg
     except Exception:
         pass
     try:
-        from hermes_cli.config import load_config
+        from cli import CLI_CONFIG
 
-        full = load_config()
-        return full.get("delegation") or {}
+        return CLI_CONFIG.get("delegation") or {}
     except Exception:
         return {}
 
