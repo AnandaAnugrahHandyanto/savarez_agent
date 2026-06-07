@@ -2375,6 +2375,7 @@ StartLimitIntervalSec=0
 Type=simple
 User={username}
 Group={group_name}
+ExecStartPre={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway _cleanup-pidfile
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
 WorkingDirectory={working_dir}
 Environment="HOME={home_dir}"
@@ -2413,6 +2414,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+ExecStartPre={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway _cleanup-pidfile
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
@@ -3754,6 +3756,15 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
         _exit_diag("gateway.exit_nonzero")
         sys.exit(1)
     _exit_diag("gateway.exit_clean")
+
+
+def cleanup_gateway_pidfile() -> None:
+    """Best-effort service preflight: remove stale gateway pidfile metadata."""
+    from gateway.status import get_running_pid
+
+    # get_running_pid() performs the robust stale-pidfile cleanup as a side
+    # effect, while leaving an actual live gateway's pidfile intact.
+    get_running_pid(cleanup_stale=True)
 
 
 # =============================================================================
@@ -6145,6 +6156,10 @@ def _gateway_command_inner(args):
         quiet = getattr(args, "quiet", False)
         replace = getattr(args, "replace", False)
         run_gateway(verbose, quiet=quiet, replace=replace)
+        return
+
+    if subcmd == "_cleanup-pidfile":
+        cleanup_gateway_pidfile()
         return
 
     if subcmd == "setup":
