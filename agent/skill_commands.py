@@ -157,6 +157,62 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
         pass  # Non-critical — skill still loads without config injection
 
 
+def resolve_skill_model_override(skill_name: str) -> Optional[Dict[str, str]]:
+    """Resolve a per-skill model override from config or SKILL.md frontmatter.
+
+    Resolution order (highest priority first):
+    1. ``config.yaml`` → ``skills.model_overrides.<skill_name>``
+    2. ``SKILL.md`` frontmatter → ``metadata.hermes.model``
+    3. No override (returns ``None``)
+
+    Returns ``{"model": ..., "provider": ...}`` or ``None``.
+    """
+    # 1. Check user's config.yaml override (highest priority)
+    try:
+        from hermes_constants import get_config_path as _gcfg
+
+        _cp = _gcfg()
+        if _cp.exists():
+            import yaml as _yaml
+
+            _cfg = _yaml.safe_load(_cp.read_text(encoding="utf-8"))
+            if isinstance(_cfg, dict):
+                _overrides = _cfg.get("skills", {}).get("model_overrides", {})
+                if isinstance(_overrides, dict) and skill_name in _overrides:
+                    _ov = _overrides[skill_name]
+                    if isinstance(_ov, dict) and _ov.get("model"):
+                        return {
+                            "model": _ov["model"],
+                            "provider": _ov.get("provider", ""),
+                        }
+    except Exception:
+        pass
+
+    # 2. Check SKILL.md frontmatter (skill author's recommendation)
+    try:
+        from tools.skills_tool import skill_view as _sv
+
+        _loaded = json.loads(_sv(skill_name, preprocess=False))
+        if _loaded.get("success"):
+            _raw = str(_loaded.get("raw_content") or _loaded.get("content") or "")
+            if _raw:
+                from agent.skill_utils import parse_frontmatter as _pf
+
+                _fm, _ = _pf(_raw)
+                _h = _fm.get("metadata", {}).get("hermes", {})
+                if isinstance(_h, dict):
+                    _mc = _h.get("model", {})
+                    if isinstance(_mc, dict) and _mc.get("model"):
+                        return {
+                            "model": _mc["model"],
+                            "provider": _mc.get("provider", ""),
+                        }
+    except Exception:
+        pass
+
+    return None
+
+
 def _build_skill_message(
     loaded_skill: dict[str, Any],
     skill_dir: Path | None,
