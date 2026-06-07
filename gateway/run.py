@@ -3678,6 +3678,28 @@ class GatewayRunner:
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
 
+    def _home_notification_targets(self, platform: Platform, adapter) -> list[HomeChannel]:
+        """Return platform home targets, allowing facade adapters to expand them."""
+        home = self.config.get_home_channel(platform)
+        resolver = getattr(adapter, "home_notification_targets", None)
+        if callable(resolver):
+            try:
+                targets = resolver(home)
+            except Exception:
+                logger.debug(
+                    "Failed to resolve home notification targets for %s",
+                    platform.value,
+                    exc_info=True,
+                )
+            else:
+                return [
+                    target
+                    for target in (targets or [])
+                    if target is not None and getattr(target, "chat_id", None)
+                ]
+
+        return [home] if home and home.chat_id else []
+
     async def _notify_active_sessions_of_shutdown(self) -> None:
         """Send shutdown/restart notifications to active chats and home channels.
 
@@ -3801,10 +3823,6 @@ class GatewayRunner:
         # ``RuntimeError: dictionary changed size during iteration`` —
         # observed in a user report during gateway shutdown.
         for platform, adapter in list(self.adapters.items()):
-            home = self.config.get_home_channel(platform)
-            if not home or not home.chat_id:
-                continue
-
             platform_cfg = self.config.platforms.get(platform)
             if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
                 logger.info(
@@ -3813,43 +3831,44 @@ class GatewayRunner:
                 )
                 continue
 
-            dedup_key = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
-            if dedup_key in notified:
-                continue
+            for home in self._home_notification_targets(platform, adapter):
+                dedup_key = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
+                if dedup_key in notified:
+                    continue
 
-            try:
-                metadata = self._thread_metadata_for_target(
-                    platform,
-                    home.chat_id,
-                    home.thread_id,
-                    adapter=adapter,
-                )
-                if metadata:
-                    result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
-                else:
-                    result = await adapter.send(str(home.chat_id), msg)
-                if result is not None and getattr(result, "success", True) is False:
+                try:
+                    metadata = self._thread_metadata_for_target(
+                        platform,
+                        home.chat_id,
+                        home.thread_id,
+                        adapter=adapter,
+                    )
+                    if metadata:
+                        result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
+                    else:
+                        result = await adapter.send(str(home.chat_id), msg)
+                    if result is not None and getattr(result, "success", True) is False:
+                        logger.debug(
+                            "Failed to send shutdown notification to home channel %s:%s: %s",
+                            platform.value,
+                            home.chat_id,
+                            getattr(result, "error", "send returned success=False"),
+                        )
+                        continue
+
+                    notified.add(dedup_key)
+                    logger.info(
+                        "Sent shutdown notification to home channel %s:%s",
+                        platform.value,
+                        home.chat_id,
+                    )
+                except Exception as e:
                     logger.debug(
                         "Failed to send shutdown notification to home channel %s:%s: %s",
                         platform.value,
                         home.chat_id,
-                        getattr(result, "error", "send returned success=False"),
+                        e,
                     )
-                    continue
-
-                notified.add(dedup_key)
-                logger.info(
-                    "Sent shutdown notification to home channel %s:%s",
-                    platform.value,
-                    home.chat_id,
-                )
-            except Exception as e:
-                logger.debug(
-                    "Failed to send shutdown notification to home channel %s:%s: %s",
-                    platform.value,
-                    home.chat_id,
-                    e,
-                )
 
     def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
@@ -4588,6 +4607,9 @@ class GatewayRunner:
                 if success:
                     self.adapters[platform] = adapter
                     self._sync_voice_mode_state_to_adapter(adapter)
+                    sync_children = getattr(adapter, "sync_child_runtime_state", None)
+                    if callable(sync_children):
+                        sync_children()
                     connected_count += 1
                     self._update_platform_runtime_status(
                         platform.value,
@@ -6331,6 +6353,9 @@ class GatewayRunner:
                     if success:
                         self.adapters[platform] = adapter
                         self._sync_voice_mode_state_to_adapter(adapter)
+                        sync_children = getattr(adapter, "sync_child_runtime_state", None)
+                        if callable(sync_children):
+                            sync_children()
                         self.delivery_router.adapters = self.adapters
                         del self._failed_platforms[platform]
                         self._update_platform_runtime_status(
@@ -6946,10 +6971,17 @@ class GatewayRunner:
             return WeComAdapter(config)
 
         elif platform == Platform.WEIXIN:
-            from gateway.platforms.weixin import WeixinAdapter, check_weixin_requirements
+            from gateway.platforms.weixin import (
+                WeixinAdapter,
+                WeixinMultiAccountAdapter,
+                check_weixin_requirements,
+                resolve_weixin_accounts,
+            )
             if not check_weixin_requirements():
                 logger.warning("Weixin: aiohttp/cryptography not installed")
                 return None
+            if len(resolve_weixin_accounts(config)) > 1:
+                return WeixinMultiAccountAdapter(config)
             return WeixinAdapter(config)
 
         elif platform == Platform.MATRIX:
@@ -7063,6 +7095,38 @@ class GatewayRunner:
             if isinstance(extra, dict):
                 policy = extra.get("dm_policy")
         return str(policy or "").strip().lower()
+
+    def _adapter_authorized_source_at_intake(self, source: SessionSource) -> Optional[bool]:
+        """Ask the live adapter whether this source already passed intake auth.
+
+        This is intentionally narrower than ``enforces_own_access_policy``: most
+        adapters still let env allowlists override the adapter-trust fallback for
+        backward compatibility. Multi-account adapters can use this hook when a
+        single platform-wide env allowlist is too coarse to represent their
+        account-scoped policy.
+        """
+        platform = getattr(source, "platform", None)
+        if not platform:
+            return None
+        adapters = getattr(self, "adapters", None) or {}
+        adapter = adapters.get(platform)
+        if adapter is None:
+            return None
+        checker = getattr(adapter, "authorized_source_at_intake", None)
+        if not callable(checker):
+            return None
+        try:
+            result = checker(source)
+        except Exception:
+            logger.debug(
+                "Adapter intake-auth check failed for %s",
+                platform.value if hasattr(platform, "value") else platform,
+                exc_info=True,
+            )
+            return None
+        if result is None:
+            return None
+        return bool(result)
 
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
@@ -7193,6 +7257,10 @@ class GatewayRunner:
         if self.pairing_store.is_approved(platform_name, user_id):
             return True
 
+        adapter_authorized = self._adapter_authorized_source_at_intake(source)
+        if adapter_authorized is not None:
+            return adapter_authorized
+
         # Check platform-specific and global allowlists
         platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
         group_user_allowlist = ""
@@ -7304,19 +7372,56 @@ class GatewayRunner:
 
         return bool(check_ids & allowed_ids)
 
-    def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
+    def _adapter_unauthorized_dm_behavior_for_source(self, source) -> Optional[str]:
+        """Ask the platform adapter for a source-scoped unauthorized DM policy."""
+        if source is None:
+            return None
+
+        platform = getattr(source, "platform", None)
+        adapters = getattr(self, "adapters", {}) or {}
+        adapter = adapters.get(platform) if platform else None
+        if not adapter:
+            return None
+
+        resolver = getattr(adapter, "unauthorized_dm_behavior_for_source", None)
+        if not callable(resolver):
+            return None
+
+        try:
+            behavior = resolver(source)
+        except Exception:
+            logger.debug(
+                "Adapter unauthorized DM behavior hook failed for %s",
+                platform.value if platform else "unknown",
+                exc_info=True,
+            )
+            return None
+
+        behavior = str(behavior or "").strip().lower()
+        if behavior in {"pair", "ignore"}:
+            return behavior
+        return None
+
+    def _get_unauthorized_dm_behavior(
+        self,
+        platform: Optional[Platform],
+        source=None,
+    ) -> str:
         """Return how unauthorized DMs should be handled for a platform.
 
         Resolution order:
         1. Explicit per-platform ``unauthorized_dm_behavior`` in config — always wins.
         2. Explicit global ``unauthorized_dm_behavior`` in config — wins when no per-platform.
-        3. When an allowlist (``PLATFORM_ALLOWED_USERS``,
+        3. Source-scoped adapter policy, when the platform adapter can resolve
+           the exact account/source that produced the message.
+        4. Config-driven platform ``dm_policy``.
+        5. When an allowlist (``PLATFORM_ALLOWED_USERS``,
            ``PLATFORM_GROUP_ALLOWED_USERS`` / ``PLATFORM_GROUP_ALLOWED_CHATS``,
            or ``GATEWAY_ALLOWED_USERS``) is configured, default to ``"ignore"`` —
            the allowlist signals that the owner has deliberately restricted
            access; spamming unknown contacts with pairing codes is both noisy
            and a potential info-leak. (#9337)
-        4. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
+        6. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
         """
         config = getattr(self, "config", None)
 
@@ -7331,6 +7436,10 @@ class GatewayRunner:
         if config and hasattr(config, "unauthorized_dm_behavior"):
             if config.unauthorized_dm_behavior != "pair":  # non-default → explicit override
                 return config.unauthorized_dm_behavior
+
+        source_scoped_behavior = self._adapter_unauthorized_dm_behavior_for_source(source)
+        if source_scoped_behavior:
+            return source_scoped_behavior
 
         # Config-driven dm_policy (WeCom / Weixin / Yuanbao / QQBot). An
         # allowlist or disabled DM policy means the operator restricted access,
@@ -7492,7 +7601,7 @@ class GatewayRunner:
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
-            if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
+            if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform, source=source) == "pair":
                 platform_name = source.platform.value if source.platform else "unknown"
                 # Rate-limit ALL pairing responses (code or rejection) to
                 # prevent spamming the user with repeated messages when
@@ -11809,9 +11918,13 @@ class GatewayRunner:
         if session_key and hasattr(adapter, "register_post_delivery_callback"):
             try:
                 generation = None
-                active = getattr(adapter, "_active_sessions", {}).get(session_key)
-                if active is not None:
-                    generation = getattr(active, "_hermes_run_generation", None)
+                generation_getter = getattr(adapter, "active_run_generation", None)
+                if callable(generation_getter):
+                    generation = generation_getter(session_key)
+                else:
+                    active = getattr(adapter, "_active_sessions", {}).get(session_key)
+                    if active is not None:
+                        generation = getattr(active, "_hermes_run_generation", None)
                 adapter.register_post_delivery_callback(
                     session_key,
                     _deliver,
@@ -15616,10 +15729,6 @@ class GatewayRunner:
         message = "♻️ Gateway online — Hermes is back and ready."
 
         for platform, adapter in self.adapters.items():
-            home = self.config.get_home_channel(platform)
-            if not home or not home.chat_id:
-                continue
-
             platform_cfg = self.config.platforms.get(platform)
             if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
                 logger.info(
@@ -15628,43 +15737,44 @@ class GatewayRunner:
                 )
                 continue
 
-            target = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
-            if target in skipped or target in delivered:
-                continue
+            for home in self._home_notification_targets(platform, adapter):
+                target = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
+                if target in skipped or target in delivered:
+                    continue
 
-            try:
-                metadata = self._thread_metadata_for_target(
-                    platform,
-                    home.chat_id,
-                    home.thread_id,
-                    adapter=adapter,
-                )
-                if metadata:
-                    result = await adapter.send(str(home.chat_id), message, metadata=metadata)
-                else:
-                    result = await adapter.send(str(home.chat_id), message)
-                if result is not None and getattr(result, "success", True) is False:
+                try:
+                    metadata = self._thread_metadata_for_target(
+                        platform,
+                        home.chat_id,
+                        home.thread_id,
+                        adapter=adapter,
+                    )
+                    if metadata:
+                        result = await adapter.send(str(home.chat_id), message, metadata=metadata)
+                    else:
+                        result = await adapter.send(str(home.chat_id), message)
+                    if result is not None and getattr(result, "success", True) is False:
+                        logger.warning(
+                            "Home-channel startup notification failed for %s:%s: %s",
+                            platform.value,
+                            home.chat_id,
+                            getattr(result, "error", "send returned success=False"),
+                        )
+                        continue
+
+                    delivered.add(target)
+                    logger.info(
+                        "Sent home-channel startup notification to %s:%s",
+                        platform.value,
+                        home.chat_id,
+                    )
+                except Exception as exc:
                     logger.warning(
                         "Home-channel startup notification failed for %s:%s: %s",
                         platform.value,
                         home.chat_id,
-                        getattr(result, "error", "send returned success=False"),
+                        exc,
                     )
-                    continue
-
-                delivered.add(target)
-                logger.info(
-                    "Sent home-channel startup notification to %s:%s",
-                    platform.value,
-                    home.chat_id,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Home-channel startup notification failed for %s:%s: %s",
-                    platform.value,
-                    home.chat_id,
-                    exc,
-                )
 
         return delivered
 
@@ -16495,6 +16605,9 @@ class GatewayRunner:
         if not adapter or not session_key or generation is None:
             return
         try:
+            binder = getattr(adapter, "bind_run_generation", None)
+            if callable(binder) and binder(session_key, generation):
+                return
             interrupt_event = getattr(adapter, "_active_sessions", {}).get(session_key)
             if interrupt_event is not None:
                 setattr(interrupt_event, "_hermes_run_generation", int(generation))

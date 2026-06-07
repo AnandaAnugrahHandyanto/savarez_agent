@@ -264,6 +264,40 @@ async def test_send_home_channel_startup_notification_to_configured_home(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_uses_adapter_targets(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="legacy-home",
+        name="Legacy Home",
+    )
+    adapter.home_notification_targets = MagicMock(
+        return_value=[
+            HomeChannel(Platform.TELEGRAM, "acct-a:home-a", "Owner A"),
+            HomeChannel(Platform.TELEGRAM, "acct-b:home-b", "Owner B"),
+        ]
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+
+    delivered = await runner._send_home_channel_startup_notifications()
+
+    assert delivered == {
+        ("telegram", "acct-a:home-a", None),
+        ("telegram", "acct-b:home-b", None),
+    }
+    assert [call.args[0] for call in adapter.send.await_args_list] == [
+        "acct-a:home-a",
+        "acct-b:home-b",
+    ]
+    adapter.home_notification_targets.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_send_home_channel_startup_notification_preserves_thread_metadata(
     tmp_path, monkeypatch
 ):

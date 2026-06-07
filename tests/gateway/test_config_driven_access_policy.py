@@ -192,6 +192,71 @@ def test_env_allowlist_still_takes_precedence_for_own_policy_platform(monkeypatc
     assert runner._is_user_authorized(stranger) is False
 
 
+def test_account_scoped_adapter_intake_auth_can_bypass_env_allowlist(monkeypatch):
+    """Multi-account adapters can override a stale platform-wide allowlist."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WEIXIN_ALLOWED_USERS", "first-user")
+    config = GatewayConfig(
+        platforms={Platform.WEIXIN: PlatformConfig(enabled=True, extra={"dm_policy": "allowlist"})}
+    )
+    runner, adapter = _make_runner(Platform.WEIXIN, config, enforces=True)
+    adapter.authorized_source_at_intake = lambda source: True
+
+    second_account_user = SessionSource(
+        platform=Platform.WEIXIN,
+        user_id="second-user",
+        chat_id="acct-b:second-user",
+        user_name="tester",
+        chat_type="dm",
+        parent_chat_id="acct-b",
+    )
+
+    assert runner._is_user_authorized(second_account_user) is True
+
+
+def test_adapter_intake_auth_defer_preserves_env_allowlist(monkeypatch):
+    """A None intake-auth result falls through to the legacy env allowlist."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WEIXIN_ALLOWED_USERS", "first-user")
+    config = GatewayConfig(
+        platforms={Platform.WEIXIN: PlatformConfig(enabled=True, extra={"dm_policy": "open"})}
+    )
+    runner, adapter = _make_runner(Platform.WEIXIN, config, enforces=True)
+    adapter.authorized_source_at_intake = lambda source: None
+
+    second_account_user = SessionSource(
+        platform=Platform.WEIXIN,
+        user_id="second-user",
+        chat_id="acct-b:second-user",
+        user_name="tester",
+        chat_type="dm",
+        parent_chat_id="acct-b",
+    )
+
+    assert runner._is_user_authorized(second_account_user) is False
+
+
+def test_adapter_intake_auth_false_overrides_adapter_trust(monkeypatch):
+    """A false intake-auth result denies even when the adapter owns policy."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={Platform.WEIXIN: PlatformConfig(enabled=True, extra={"dm_policy": "pairing"})}
+    )
+    runner, adapter = _make_runner(Platform.WEIXIN, config, enforces=True)
+    adapter.authorized_source_at_intake = lambda source: False
+
+    unpaired_user = SessionSource(
+        platform=Platform.WEIXIN,
+        user_id="second-user",
+        chat_id="acct-b:second-user",
+        user_name="tester",
+        chat_type="dm",
+        parent_chat_id="acct-b",
+    )
+
+    assert runner._is_user_authorized(unpaired_user) is False
+
+
 def test_unknown_adapter_does_not_crash_trust_check(monkeypatch):
     """No adapter registered for the platform → safe default-deny."""
     _clear_auth_env(monkeypatch)
@@ -307,3 +372,55 @@ def test_unauthorized_dm_behavior_open_policy_keeps_default(monkeypatch):
 
     # No allowlist + no restrictive policy → open-gateway pairing default.
     assert runner._get_unauthorized_dm_behavior(Platform.WECOM) == "pair"
+
+
+def test_source_scoped_unauthorized_dm_behavior_can_pair_despite_env_allowlist(monkeypatch):
+    """A multi-account adapter can choose pairing for the exact inbound account."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WEIXIN_ALLOWED_USERS", "legacy-user")
+    config = GatewayConfig(
+        platforms={Platform.WEIXIN: PlatformConfig(enabled=True, extra={"dm_policy": "open"})}
+    )
+    runner, adapter = _make_runner(Platform.WEIXIN, config, enforces=True)
+    adapter.unauthorized_dm_behavior_for_source = lambda source: "pair"
+
+    assert (
+        runner._get_unauthorized_dm_behavior(Platform.WEIXIN, source=_source(Platform.WEIXIN))
+        == "pair"
+    )
+
+
+def test_source_scoped_unauthorized_dm_behavior_none_preserves_env_allowlist(monkeypatch):
+    """If the adapter cannot decide, the legacy allowlist behavior remains."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WEIXIN_ALLOWED_USERS", "legacy-user")
+    config = GatewayConfig(
+        platforms={Platform.WEIXIN: PlatformConfig(enabled=True, extra={"dm_policy": "open"})}
+    )
+    runner, adapter = _make_runner(Platform.WEIXIN, config, enforces=True)
+    adapter.unauthorized_dm_behavior_for_source = lambda source: None
+
+    assert (
+        runner._get_unauthorized_dm_behavior(Platform.WEIXIN, source=_source(Platform.WEIXIN))
+        == "ignore"
+    )
+
+
+def test_explicit_unauthorized_dm_behavior_overrides_source_scoped_behavior(monkeypatch):
+    """Operator-level explicit config still wins over adapter source policy."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.WEIXIN: PlatformConfig(
+                enabled=True,
+                extra={"unauthorized_dm_behavior": "ignore"},
+            )
+        }
+    )
+    runner, adapter = _make_runner(Platform.WEIXIN, config, enforces=True)
+    adapter.unauthorized_dm_behavior_for_source = lambda source: "pair"
+
+    assert (
+        runner._get_unauthorized_dm_behavior(Platform.WEIXIN, source=_source(Platform.WEIXIN))
+        == "ignore"
+    )

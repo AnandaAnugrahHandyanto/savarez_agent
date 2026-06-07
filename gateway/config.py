@@ -423,7 +423,7 @@ class StreamingConfig:
 # Slack, Matrix, Mattermost, HomeAssistant) do not need an entry here.
 _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] = {
     Platform.WEIXIN: lambda cfg: bool(
-        cfg.extra.get("account_id") and (cfg.token or cfg.extra.get("token"))
+        _weixin_has_configured_account(cfg)
     ),
     Platform.WHATSAPP: lambda cfg: True,  # bridge handles auth
     Platform.SIGNAL: lambda cfg: bool(cfg.extra.get("http_url")),
@@ -453,6 +453,25 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
         and (cfg.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET"))
     ),
 }
+
+
+def _weixin_has_configured_account(config: PlatformConfig) -> bool:
+    accounts = config.extra.get("accounts")
+    if isinstance(accounts, str):
+        try:
+            accounts = json.loads(accounts)
+        except json.JSONDecodeError:
+            accounts = None
+    if isinstance(accounts, dict):
+        accounts = accounts.get("accounts") if isinstance(accounts.get("accounts"), list) else list(accounts.values())
+    if isinstance(accounts, list):
+        return any(
+            isinstance(account, dict)
+            and bool(str(account.get("account_id") or "").strip())
+            and bool(str(account.get("token") or "").strip())
+            for account in accounts
+        )
+    return bool(config.extra.get("account_id") and (config.token or config.extra.get("token")))
 
 
 @dataclass
@@ -524,10 +543,7 @@ class GatewayConfig:
         # Weixin requires both a token and an account_id (checked first so
         # the generic token branch doesn't let it through without account_id).
         if platform == Platform.WEIXIN:
-            return bool(
-                config.extra.get("account_id")
-                and (config.token or config.extra.get("token"))
-            )
+            return _weixin_has_configured_account(config)
 
         # Generic token/api_key auth covers Telegram, Discord, Slack, etc.
         if config.token or config.api_key:
@@ -1694,7 +1710,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # Weixin (personal WeChat via iLink Bot API)
     weixin_token = os.getenv("WEIXIN_TOKEN")
     weixin_account_id = os.getenv("WEIXIN_ACCOUNT_ID")
-    if weixin_token or weixin_account_id:
+    weixin_accounts_json = os.getenv("WEIXIN_ACCOUNTS_JSON", "").strip()
+    if weixin_token or weixin_account_id or weixin_accounts_json:
         if Platform.WEIXIN not in config.platforms:
             config.platforms[Platform.WEIXIN] = PlatformConfig()
         config.platforms[Platform.WEIXIN].enabled = True
@@ -1703,6 +1720,17 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         extra = config.platforms[Platform.WEIXIN].extra
         if weixin_account_id:
             extra["account_id"] = weixin_account_id
+        if weixin_accounts_json:
+            try:
+                accounts = json.loads(weixin_accounts_json)
+                if isinstance(accounts, dict) and isinstance(accounts.get("accounts"), list):
+                    accounts = accounts["accounts"]
+                if isinstance(accounts, list):
+                    extra["accounts"] = accounts
+                else:
+                    logger.error("WEIXIN_ACCOUNTS_JSON must decode to a list or {accounts: [...]}")
+            except json.JSONDecodeError as exc:
+                logger.error("Invalid WEIXIN_ACCOUNTS_JSON: %s", exc)
         weixin_base_url = os.getenv("WEIXIN_BASE_URL", "").strip()
         if weixin_base_url:
             extra["base_url"] = weixin_base_url.rstrip("/")

@@ -1229,6 +1229,31 @@ async def test_restart_notifies_home_channel_even_without_active_sessions():
 
 
 @pytest.mark.asyncio
+async def test_restart_home_channel_notification_uses_adapter_targets():
+    runner, adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="legacy-home",
+        name="Legacy Home",
+    )
+    adapter.home_notification_targets = MagicMock(
+        return_value=[
+            HomeChannel(Platform.TELEGRAM, "acct-a:home-a", "Owner A"),
+            HomeChannel(Platform.TELEGRAM, "acct-b:home-b", "Owner B"),
+        ]
+    )
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert [call[0] for call in adapter.sent_calls] == [
+        "acct-a:home-a",
+        "acct-b:home-b",
+    ]
+    adapter.home_notification_targets.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_restart_home_channel_notification_dedupes_active_chat():
     runner, adapter = make_restart_runner()
     runner._restart_requested = True

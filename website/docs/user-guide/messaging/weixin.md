@@ -85,6 +85,46 @@ WEIXIN_HOME_CHANNEL=chat_id
 WEIXIN_HOME_CHANNEL_NAME=Home
 ```
 
+### Multiple iLink Bot Accounts
+
+Hermes can run multiple Weixin/iLink bot identities inside one gateway. This is
+useful when different WeChat users cannot all reach the same iLink bot contact,
+but you still want one Hermes home, one dashboard, one session database, and one
+memory store.
+
+Set `WEIXIN_ACCOUNTS_JSON` to a JSON array. Each entry is one iLink bot account:
+
+```bash
+WEIXIN_ACCOUNTS_JSON='[
+  {
+    "account_id": "first@im.bot",
+    "token": "first-token",
+    "dm_policy": "allowlist",
+    "allow_from": "user_a@im.wechat",
+    "home_channel": "user_a@im.wechat"
+  },
+  {
+    "account_id": "second@im.bot",
+    "token": "second-token",
+    "dm_policy": "allowlist",
+    "allow_from": "user_b@im.wechat",
+    "home_channel": "user_b@im.wechat"
+  }
+]'
+```
+
+`WEIXIN_ACCOUNTS_JSON` is a complete account list. When it is set, include every
+iLink account that this gateway should connect. Inbound sessions are keyed by
+`account_id + peer_id`, so two bot identities do not share short-term chat
+context, while persistent Hermes memory remains shared because the gateway still
+uses the same `HERMES_HOME`.
+
+For multi-account deployments, prefer setting `dm_policy` and `allow_from` on
+each account entry. The legacy `WEIXIN_ALLOWED_USERS` value is only used as a
+default for entries that do not specify their own `allow_from`.
+Set `home_channel` per account when you want cron delivery and gateway
+startup/shutdown notices to be sent from that same iLink bot identity.
+
 ### 3. Start the Gateway
 
 ```bash
@@ -303,6 +343,7 @@ Only one Weixin gateway instance can use a given token at a time. The adapter ac
 |----------|----------|---------|-------------|
 | `WEIXIN_ACCOUNT_ID` | ✅ | — | iLink Bot account ID (from QR login) |
 | `WEIXIN_TOKEN` | ✅ | — | iLink Bot token (auto-saved from QR login) |
+| `WEIXIN_ACCOUNTS_JSON` | — | — | JSON array of multiple iLink bot accounts for one gateway. When set, include each account's `account_id` and `token`. |
 | `WEIXIN_BASE_URL` | — | `https://ilinkai.weixin.qq.com` | iLink API base URL |
 | `WEIXIN_CDN_BASE_URL` | — | `https://novac2c.cdn.weixin.qq.com/c2c` | CDN base URL for media transfer |
 | `WEIXIN_DM_POLICY` | — | `open` | DM access policy: `open`, `allowlist`, `disabled`, `pairing` |

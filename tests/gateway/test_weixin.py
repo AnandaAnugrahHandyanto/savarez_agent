@@ -13,7 +13,13 @@ from gateway.config import GatewayConfig, HomeChannel, Platform, _apply_env_over
 from gateway.platforms.base import SendResult
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.platforms import weixin
-from gateway.platforms.weixin import ContextTokenStore, WeixinAdapter
+from gateway.platforms.weixin import (
+    ContextTokenStore,
+    WeixinAdapter,
+    WeixinMultiAccountAdapter,
+    resolve_weixin_accounts,
+)
+from gateway.session import SessionSource, build_session_key
 from tools.send_message_tool import _parse_target_ref, _send_to_platform
 
 
@@ -213,6 +219,57 @@ class TestWeixinConfig:
         assert platform_config.extra["allow_from"] == "wxid_1,wxid_2"
         assert platform_config.home_channel == HomeChannel(Platform.WEIXIN, "wxid_1", "Primary DM")
 
+    def test_apply_env_overrides_configures_weixin_accounts_json(self):
+        config = GatewayConfig()
+        accounts_json = json.dumps(
+            [
+                {"account_id": "acct-a", "token": "token-a", "allow_from": "wxid_a"},
+                {"account_id": "acct-b", "token": "token-b", "allow_from": "wxid_b"},
+            ]
+        )
+
+        with patch.dict(os.environ, {"WEIXIN_ACCOUNTS_JSON": accounts_json}, clear=True):
+            _apply_env_overrides(config)
+
+        platform_config = config.platforms[Platform.WEIXIN]
+        assert platform_config.enabled is True
+        assert platform_config.extra["accounts"][0]["account_id"] == "acct-a"
+        assert platform_config.extra["accounts"][1]["token"] == "token-b"
+        assert config.get_connected_platforms() == [Platform.WEIXIN]
+
+    def test_resolve_weixin_accounts_keeps_legacy_single_account(self):
+        config = PlatformConfig(
+            enabled=True,
+            token="bot-token",
+            extra={"account_id": "bot-account", "dm_policy": "allowlist", "allow_from": "wxid_1"},
+        )
+
+        accounts = resolve_weixin_accounts(config)
+
+        assert len(accounts) == 1
+        assert accounts[0]["account_id"] == "bot-account"
+        assert accounts[0]["token"] == "bot-token"
+        assert accounts[0]["dm_policy"] == "allowlist"
+        assert accounts[0]["allow_from"] == "wxid_1"
+
+    def test_resolve_weixin_accounts_reads_explicit_multi_accounts(self):
+        config = PlatformConfig(
+            enabled=True,
+            extra={
+                "accounts": [
+                    {"account_id": "acct-a", "token": "token-a"},
+                    {"account_id": "acct-b", "token": "token-b", "home_channel": "wxid_b"},
+                ],
+                "dm_policy": "allowlist",
+            },
+        )
+
+        accounts = resolve_weixin_accounts(config)
+
+        assert [account["account_id"] for account in accounts] == ["acct-a", "acct-b"]
+        assert accounts[1]["home_channel"] == "wxid_b"
+        assert accounts[0]["dm_policy"] == "allowlist"
+
     def test_get_connected_platforms_includes_weixin_with_token(self):
         config = GatewayConfig(
             platforms={
@@ -237,6 +294,307 @@ class TestWeixinConfig:
         )
 
         assert config.get_connected_platforms() == []
+
+
+class TestWeixinMultiAccountAdapter:
+    def _multi_adapter(self) -> WeixinMultiAccountAdapter:
+        return WeixinMultiAccountAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "accounts": [
+                        {"account_id": "acct-a", "token": "token-a", "dm_policy": "open"},
+                        {"account_id": "acct-b", "token": "token-b", "dm_policy": "open"},
+                    ]
+                },
+            )
+        )
+
+    def test_multi_account_session_key_includes_account_id(self):
+        adapter = WeixinAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="token-a",
+                extra={"account_id": "acct-a", "account_session_prefix": True},
+            )
+        )
+        source = adapter.build_source(
+            chat_id=adapter._session_chat_id("same-peer"),
+            chat_type="dm",
+            user_id="same-peer",
+        )
+
+        assert build_session_key(source) == "agent:main:weixin:dm:acct-a:same-peer"
+
+    def test_multi_account_send_routes_prefixed_chat_to_matching_child(self):
+        adapter = self._multi_adapter()
+        child_a = adapter._adapters_by_account["acct-a"]
+        child_b = adapter._adapters_by_account["acct-b"]
+        child_a.send = AsyncMock(return_value=SendResult(success=True, message_id="msg-a"))
+        child_b.send = AsyncMock(return_value=SendResult(success=True, message_id="msg-b"))
+        adapter._connected_adapters = {"acct-a": child_a, "acct-b": child_b}
+
+        result = asyncio.run(adapter.send("acct-b:wxid_test", "hello"))
+
+        assert result.message_id == "msg-b"
+        child_a.send.assert_not_awaited()
+        child_b.send.assert_awaited_once_with(
+            "wxid_test",
+            "hello",
+            reply_to=None,
+            metadata=None,
+        )
+
+    def test_multi_account_send_defaults_to_primary_for_unprefixed_chat(self):
+        adapter = self._multi_adapter()
+        child_a = adapter._adapters_by_account["acct-a"]
+        child_b = adapter._adapters_by_account["acct-b"]
+        child_a.send = AsyncMock(return_value=SendResult(success=True, message_id="msg-a"))
+        child_b.send = AsyncMock(return_value=SendResult(success=True, message_id="msg-b"))
+        adapter._connected_adapters = {"acct-a": child_a, "acct-b": child_b}
+
+        result = asyncio.run(adapter.send("wxid_test", "hello"))
+
+        assert result.message_id == "msg-a"
+        child_a.send.assert_awaited_once()
+        child_b.send.assert_not_awaited()
+
+    def test_multi_account_home_notification_targets_include_account_prefixes(self):
+        adapter = WeixinMultiAccountAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "accounts": [
+                        {
+                            "account_id": "acct-a",
+                            "token": "token-a",
+                            "home_channel": "wxid_a",
+                            "home_channel_name": "Owner A",
+                        },
+                        {
+                            "account_id": "acct-b",
+                            "token": "token-b",
+                            "home_channel": "wxid_b",
+                            "home_channel_name": "Owner B",
+                        },
+                    ]
+                },
+            )
+        )
+
+        targets = adapter.home_notification_targets()
+
+        assert [(target.chat_id, target.name) for target in targets] == [
+            ("acct-a:wxid_a", "Owner A"),
+            ("acct-b:wxid_b", "Owner B"),
+        ]
+
+    def test_multi_account_home_notification_targets_prefix_legacy_home_channel(self):
+        adapter = self._multi_adapter()
+        legacy_home = HomeChannel(Platform.WEIXIN, "wxid_owner", "Owner")
+
+        targets = adapter.home_notification_targets(legacy_home)
+
+        assert len(targets) == 1
+        assert targets[0].chat_id == "acct-a:wxid_owner"
+        assert targets[0].name == "Owner"
+
+    def test_multi_account_marks_child_authorized_source_as_intake_authorized(self):
+        adapter = self._multi_adapter()
+        child_b = adapter._adapters_by_account["acct-b"]
+        child_b._dm_policy = "allowlist"
+        child_b._allow_from = ["wxid_test"]
+        source = SessionSource(
+            platform=Platform.WEIXIN,
+            chat_id="acct-b:wxid_test",
+            user_id="wxid_test",
+            chat_type="dm",
+            parent_chat_id="acct-b",
+        )
+
+        assert adapter.authorized_source_at_intake(source) is True
+
+    def test_multi_account_unknown_child_is_not_intake_authorized(self):
+        adapter = self._multi_adapter()
+        source = SessionSource(
+            platform=Platform.WEIXIN,
+            chat_id="acct-z:wxid_test",
+            user_id="wxid_test",
+            chat_type="dm",
+            parent_chat_id="acct-z",
+        )
+
+        assert adapter.authorized_source_at_intake(source) is False
+
+    def test_multi_account_open_child_defers_auth_to_gateway(self):
+        adapter = self._multi_adapter()
+        source = SessionSource(
+            platform=Platform.WEIXIN,
+            chat_id="acct-b:wxid_test",
+            user_id="wxid_test",
+            chat_type="dm",
+            parent_chat_id="acct-b",
+        )
+
+        assert adapter.authorized_source_at_intake(source) is None
+
+    def test_multi_account_allowlist_child_rejects_unlisted_source(self):
+        adapter = self._multi_adapter()
+        child_b = adapter._adapters_by_account["acct-b"]
+        child_b._dm_policy = "allowlist"
+        child_b._allow_from = ["other_user"]
+        source = SessionSource(
+            platform=Platform.WEIXIN,
+            chat_id="acct-b:wxid_test",
+            user_id="wxid_test",
+            chat_type="dm",
+            parent_chat_id="acct-b",
+        )
+
+        assert adapter.authorized_source_at_intake(source) is False
+
+    def test_multi_account_pairing_child_is_not_intake_authorized(self):
+        adapter = self._multi_adapter()
+        adapter._adapters_by_account["acct-b"]._dm_policy = "pairing"
+        source = SessionSource(
+            platform=Platform.WEIXIN,
+            chat_id="acct-b:wxid_test",
+            user_id="wxid_test",
+            chat_type="dm",
+            parent_chat_id="acct-b",
+        )
+
+        assert adapter.authorized_source_at_intake(source) is False
+
+    @pytest.mark.parametrize(
+        "dm_policy, expected",
+        [
+            ("pairing", "pair"),
+            ("allowlist", "ignore"),
+            ("disabled", "ignore"),
+            ("open", None),
+        ],
+    )
+    def test_multi_account_unauthorized_dm_behavior_follows_child_policy(
+        self,
+        dm_policy,
+        expected,
+    ):
+        adapter = self._multi_adapter()
+        adapter._adapters_by_account["acct-b"]._dm_policy = dm_policy
+        source = SessionSource(
+            platform=Platform.WEIXIN,
+            chat_id="acct-b:wxid_test",
+            user_id="wxid_test",
+            chat_type="dm",
+            parent_chat_id="acct-b",
+        )
+
+        assert adapter.unauthorized_dm_behavior_for_source(source) == expected
+
+    def test_multi_account_group_allowlist_child_authorizes_chat(self):
+        adapter = self._multi_adapter()
+        child_b = adapter._adapters_by_account["acct-b"]
+        child_b._group_policy = "allowlist"
+        child_b._group_allow_from = ["room@chatroom"]
+        source = SessionSource(
+            platform=Platform.WEIXIN,
+            chat_id="acct-b:room@chatroom",
+            chat_id_alt="room@chatroom",
+            user_id="wxid_test",
+            chat_type="group",
+            parent_chat_id="acct-b",
+        )
+
+        assert adapter.authorized_source_at_intake(source) is True
+
+    def test_multi_account_interrupt_session_activity_routes_to_child(self):
+        async def scenario():
+            adapter = self._multi_adapter()
+            child_b = adapter._adapters_by_account["acct-b"]
+            child_b.stop_typing = AsyncMock()
+            adapter._connected_adapters = {"acct-b": child_b}
+            session_key = "agent:main:weixin:dm:acct-b:wxid_test"
+            interrupt_event = asyncio.Event()
+            child_b._active_sessions[session_key] = interrupt_event
+
+            await adapter.interrupt_session_activity(session_key, "acct-b:wxid_test")
+
+            assert interrupt_event.is_set()
+            child_b.stop_typing.assert_awaited_once_with("wxid_test")
+
+        asyncio.run(scenario())
+
+    def test_multi_account_pending_interrupt_checks_child_state(self):
+        adapter = self._multi_adapter()
+        child_b = adapter._adapters_by_account["acct-b"]
+        session_key = "agent:main:weixin:dm:acct-b:wxid_test"
+        interrupt_event = asyncio.Event()
+        interrupt_event.set()
+        child_b._active_sessions[session_key] = interrupt_event
+
+        assert adapter.has_pending_interrupt(session_key) is True
+
+    def test_multi_account_get_pending_message_reads_child_queue(self):
+        adapter = self._multi_adapter()
+        child_b = adapter._adapters_by_account["acct-b"]
+        session_key = "agent:main:weixin:dm:acct-b:wxid_test"
+        pending = object()
+        child_b._pending_messages[session_key] = pending
+
+        assert adapter.get_pending_message(session_key) is pending
+        assert session_key not in child_b._pending_messages
+
+    def test_multi_account_post_delivery_callbacks_route_to_child(self):
+        adapter = self._multi_adapter()
+        child_b = adapter._adapters_by_account["acct-b"]
+        session_key = "agent:main:weixin:dm:acct-b:wxid_test"
+        callback = Mock()
+
+        adapter.register_post_delivery_callback(session_key, callback, generation=7)
+
+        assert session_key in child_b._post_delivery_callbacks
+        assert adapter.pop_post_delivery_callback(session_key, generation=7) is callback
+        assert session_key not in child_b._post_delivery_callbacks
+
+    def test_multi_account_bind_run_generation_updates_child_event(self):
+        adapter = self._multi_adapter()
+        child_b = adapter._adapters_by_account["acct-b"]
+        session_key = "agent:main:weixin:dm:acct-b:wxid_test"
+        interrupt_event = asyncio.Event()
+        child_b._active_sessions[session_key] = interrupt_event
+
+        assert adapter.bind_run_generation(session_key, 11) is True
+        assert adapter.active_run_generation(session_key) == 11
+        assert getattr(interrupt_event, "_hermes_run_generation") == 11
+
+    def test_multi_account_pause_resume_typing_routes_prefixed_chat_to_child(self):
+        adapter = self._multi_adapter()
+        child_b = adapter._adapters_by_account["acct-b"]
+
+        adapter.pause_typing_for_chat("acct-b:wxid_test")
+
+        assert "acct-b:wxid_test" in adapter._typing_paused
+        assert "wxid_test" in child_b._typing_paused
+        adapter.resume_typing_for_chat("acct-b:wxid_test")
+        assert "acct-b:wxid_test" not in adapter._typing_paused
+        assert "wxid_test" not in child_b._typing_paused
+        assert "acct-b:wxid_test" not in child_b._typing_paused
+
+    def test_multi_account_cancel_background_tasks_cancels_all_children(self):
+        async def scenario():
+            adapter = self._multi_adapter()
+            child_a = adapter._adapters_by_account["acct-a"]
+            child_b = adapter._adapters_by_account["acct-b"]
+            child_a.cancel_background_tasks = AsyncMock()
+            child_b.cancel_background_tasks = AsyncMock()
+
+            await adapter.cancel_background_tasks()
+
+            child_a.cancel_background_tasks.assert_awaited_once()
+            child_b.cancel_background_tasks.assert_awaited_once()
+
+        asyncio.run(scenario())
 
 
 class TestWeixinStatePersistence:
