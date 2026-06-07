@@ -106,7 +106,6 @@ export const FIELD_LABELS: Record<string, string> = {
   'browser.auto_local_for_private_urls': 'Local Browser For Private URLs',
   'checkpoints.enabled': 'File Checkpoints',
   'checkpoints.max_snapshots': 'Checkpoint Limit',
-  'voice.record_key': 'Voice Shortcut',
   'voice.max_recording_seconds': 'Max Recording Length',
   'voice.auto_tts': 'Read Responses Aloud',
   'stt.enabled': 'Speech To Text',
@@ -262,7 +261,6 @@ export const SECTIONS: DesktopConfigSection[] = [
       'stt.elevenlabs.language_code',
       'stt.elevenlabs.tag_audio_events',
       'stt.elevenlabs.diarize',
-      'voice.record_key',
       'voice.max_recording_seconds'
     ]
   },
