@@ -238,9 +238,12 @@ export const ALL_PROFILES = '__all__'
 
 const SHOW_ALL_PROFILES_STORAGE_KEY = 'hermes.desktop.showAllProfiles'
 
-// Opt-in unified view. When false, scope follows the live gateway profile, so
-// single-profile users (who never see the switcher) are completely unaffected.
-export const $showAllProfiles = atom<boolean>(storedBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, false))
+// Unified view is the safe default for multi-profile Desktop installs: gateway
+// chats may arrive under a non-default profile (e.g. WhatsApp under `desktop`)
+// while the embedded dashboard initially connects to `default`. Showing all
+// profiles prevents those externally-created sessions from looking "missing".
+// Users can still switch to a concrete profile from the rail.
+export const $showAllProfiles = atom<boolean>(storedBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, true))
 
 $showAllProfiles.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value))
 
