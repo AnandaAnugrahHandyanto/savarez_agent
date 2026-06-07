@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -32,6 +33,41 @@ for _name in ("SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT", "SIGUSR1", "SIGUSR2"):
     _val = getattr(signal, _name, None)
     if _val is not None:
         _SIGNAL_NAME_BY_NUM[int(_val)] = _name
+
+
+def detect_service_manager() -> Optional[str]:
+    """Best-effort detection of an auto-restarting supervisor.
+
+    Returns ``"systemd"``, ``"launchd"``, ``"container"``, or ``None``.
+
+    Used to decide whether a *planned* restart should exit with code 75 (let
+    the supervisor respawn us via systemd ``RestartForceExitStatus=75`` or
+    launchd ``KeepAlive``) versus self-respawning a detached subprocess.
+    Getting this wrong on macOS is what made a launchd-managed gateway take
+    the detached path — and made a *manually* foreground-launched gateway
+    look (via ``ppid==1``) like it was supervised when nothing would restart
+    it.
+
+    Detection, in priority order:
+    * systemd sets ``INVOCATION_ID`` in the unit's environment.
+    * launchd (macOS): a managed LaunchAgent/Daemon is a direct child of
+      launchd (``ppid==1``); ``XPC_SERVICE_NAME`` carries the job label for
+      managed jobs ("0" or unset for interactive shells). A manual
+      ``hermes gateway`` in a Terminal has the shell as its parent, so it is
+      correctly reported as *unmanaged* (``None``).
+    * Docker/Podman expose ``/.dockerenv`` / ``/run/.containerenv``.
+    """
+    if os.environ.get("INVOCATION_ID"):
+        return "systemd"
+    if sys.platform == "darwin":
+        if os.getppid() == 1:
+            return "launchd"
+        xpc = os.environ.get("XPC_SERVICE_NAME", "")
+        if xpc and xpc != "0" and "." in xpc:
+            return "launchd"
+    if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
+        return "container"
+    return None
 
 
 def _signal_name(sig: Any) -> str:
@@ -140,7 +176,13 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     journal_stream = os.environ.get("JOURNAL_STREAM")
     if journal_stream:
         ctx["systemd_journal_stream"] = journal_stream
-    ctx["under_systemd"] = bool(invocation_id) or ppid == 1
+    # Which supervisor (if any) will restart us — systemd / launchd / container.
+    # Note: ``ppid==1`` alone is NOT enough (a manual macOS foreground run that
+    # gets reparented could look supervised); detect_service_manager() scopes
+    # the ppid==1 signal to darwin/launchd.
+    ctx["service_manager"] = detect_service_manager()
+    # Back-compat: keep ``under_systemd`` but make it mean specifically systemd.
+    ctx["under_systemd"] = ctx["service_manager"] == "systemd"
 
     # Load average — high load points the finger at "something else
     # crushing the box" rather than "external killer".
@@ -194,6 +236,79 @@ def snapshot_shutdown_context(received_signal: Any = None) -> Dict[str, Any]:
     return ctx
 
 
+def _diagnostic_script(signal_name: str) -> str:
+    """Build the shutdown-diagnostic shell snippet for the current platform.
+
+    Linux exposes ``/proc``, GNU ``ps``/``pstree`` and ``dmesg``/``journalctl``.
+    macOS has none of those — BSD ``ps`` rejects ``--sort``/``f``, there is no
+    ``/proc``, and ``dmesg`` needs root — so a Linux-only snippet writes empty
+    sections. Each branch uses its platform's native equivalents so a correctly
+    installed gateway produces a useful snapshot on either OS.
+    """
+    pid = os.getpid()
+    header = (
+        f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
+        "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
+    )
+
+    if sys.platform == "darwin":
+        return (
+            header
+            + "echo '--- ps (top 60 by cpu) ---'; "
+            "ps -Ao pid,ppid,pcpu,pmem,rss,stat,lstart,command -r 2>/dev/null | head -60; "
+            "echo '--- our process chain ---'; "
+            f"ps -Ao pid,ppid,command 2>/dev/null | awk 'NR==1 || $1=={pid} || $2=={pid}'; "
+            "echo '--- load average ---'; "
+            "sysctl -n vm.loadavg 2>/dev/null || uptime || true; "
+            "echo '--- memory pressure (vm_stat) ---'; "
+            "vm_stat 2>/dev/null | head -8 || true; "
+            "echo '--- recent kills/low-memory (log show, best-effort) ---'; "
+            "log show --last 2m --predicate 'eventMessage CONTAINS \"low swap\" "
+            'OR senderImagePath CONTAINS "Kernel"\' 2>/dev/null '
+            "| grep -iE 'kill|memory|swap' | tail -20 || true; "
+            "echo '=== end ==='"
+        )
+
+    # Linux / other POSIX targets.
+    return (
+        header
+        + "echo '--- ps auxf (top 60 by cpu) ---'; "
+        "ps auxf --sort=-pcpu 2>/dev/null | head -60; "
+        "echo '--- pstree of self ---'; "
+        f"pstree -plau {pid} 2>/dev/null | head -40 || true; "
+        "echo '--- /proc/loadavg ---'; "
+        "cat /proc/loadavg 2>/dev/null || true; "
+        "echo '--- recent dmesg (oom/killed) ---'; "
+        "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
+        "echo '=== end ==='"
+    )
+
+
+def _bounded_diagnostic_argv(script: str, timeout_seconds: float) -> list:
+    """Wrap ``script`` so it self-terminates within ``timeout_seconds``.
+
+    Prefers GNU coreutils ``timeout`` (standard on Linux). On a stock macOS
+    that binary is absent (it's ``gtimeout`` from Homebrew coreutils, if
+    installed at all) — the old hard-coded ``["timeout", ...]`` made
+    ``Popen`` raise ``FileNotFoundError`` there, so the snapshot silently
+    never ran. When no external timeout helper exists, fall back to a shell
+    watchdog that kills our own process group after the deadline
+    (``start_new_session=True`` at the call site makes the spawned shell the
+    group leader, so ``kill -- -$$`` reaps any straggling children).
+    """
+    for name in ("timeout", "gtimeout"):
+        helper = shutil.which(name)
+        if helper:
+            return [helper, f"{timeout_seconds:.0f}", "bash", "-c", script]
+
+    guarded = (
+        f"( sleep {timeout_seconds:.0f}; kill -TERM -$$ 2>/dev/null ) & __wd=$!; "
+        f"{script}; "
+        "kill $__wd 2>/dev/null || true"
+    )
+    return ["bash", "-c", guarded]
+
+
 def spawn_async_diagnostic(
     log_path: Path,
     signal_name: str,
@@ -226,19 +341,7 @@ def spawn_async_diagnostic(
     if sys.platform == "win32":
         return None
 
-    script = (
-        f"echo '=== shutdown diagnostic @ {signal_name} ==='; "
-        "echo '--- date ---'; date -u +%Y-%m-%dT%H:%M:%SZ; "
-        "echo '--- ps auxf (top 60 by cpu) ---'; "
-        "ps auxf --sort=-pcpu 2>/dev/null | head -60; "
-        "echo '--- pstree of self ---'; "
-        f"pstree -plau {os.getpid()} 2>/dev/null | head -40 || true; "
-        "echo '--- /proc/loadavg ---'; "
-        "cat /proc/loadavg 2>/dev/null || true; "
-        "echo '--- recent dmesg (oom/killed) ---'; "
-        "dmesg -T 2>/dev/null | tail -20 || journalctl --user -n 20 --no-pager 2>/dev/null | tail -20 || true; "
-        "echo '=== end ==='"
-    )
+    script = _diagnostic_script(signal_name)
 
     try:
         # Open the log file in append mode and let the subprocess inherit.
@@ -255,7 +358,7 @@ def spawn_async_diagnostic(
         # start_new_session, a SIGKILL on our cgroup takes the diag down
         # before it can flush.
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
+            _bounded_diagnostic_argv(script, timeout_seconds),
             stdout=fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
@@ -285,7 +388,7 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
     parent_cmd = parent.get("cmdline", "(unknown)")
     parent_name = parent.get("name") or "?"
     parent_pid = parent.get("pid") or "?"
-    under_systemd = "yes" if ctx.get("under_systemd") else "no"
+    service_mgr = ctx.get("service_manager") or "none"
     load = ctx.get("loadavg_1m")
     load_str = f"{load:.2f}" if isinstance(load, (int, float)) else "?"
     extras: List[str] = []
@@ -302,7 +405,7 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
     # Parent cmdline is the most useful single signal — log it prominently.
     return (
         f"signal={sig} "
-        f"under_systemd={under_systemd} "
+        f"service_mgr={service_mgr} "
         f"parent_pid={parent_pid} "
         f"parent_name={parent_name} "
         f"loadavg_1m={load_str}"
