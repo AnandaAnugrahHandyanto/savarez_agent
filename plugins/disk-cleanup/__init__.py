@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 from . import disk_cleanup as dg
+from hermes_cli._subprocess_compat import safe_split_command
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +110,7 @@ def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
     if isinstance(cmd, str) and cmd:
         # Tokenise the command — catches `touch /tmp/hermes-x/test_foo.py`
         try:
-            for tok in shlex.split(cmd, posix=True):
+            for tok in safe_split_command(cmd, posix=True):
                 if tok.startswith(("/", "~")):
                     paths.add(tok)
         except ValueError:

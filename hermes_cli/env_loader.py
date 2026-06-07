@@ -14,6 +14,7 @@ from utils import atomic_replace
 # only env vars whose values we sanitize on load — we must not silently
 # alter arbitrary user env vars, but credentials are known to require
 # pure ASCII (they become HTTP header values).
+from hermes_constants import get_hermes_home
 _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
 
 # Names we've already warned about during this process, so repeated
@@ -224,7 +225,7 @@ def load_hermes_dotenv(
     """
     loaded: list[Path] = []
 
-    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    home_path = Path(hermes_home or os.getenv("HERMES_HOME", get_hermes_home()))
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 

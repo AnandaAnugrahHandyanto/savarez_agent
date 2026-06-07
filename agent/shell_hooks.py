@@ -13,7 +13,7 @@ Design notes
   :func:`hermes_cli.plugins.invoke_hook` and its aggregators.  Python
   plugins are registered first (via ``discover_and_load()``) so their
   block decisions win ties over shell-hook blocks.
-* Subprocess execution uses ``shlex.split(os.path.expanduser(command))``
+* Subprocess execution uses ``safe_split_command(os.path.expanduser(command))``
   with ``shell=False`` — no shell injection footguns.  Users that need
   pipes/redirection wrap their logic in a script.
 * First-use consent is gated by the allowlist under
@@ -69,6 +69,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
+from hermes_cli._subprocess_compat import safe_split_command
 
 try:
     import fcntl  # POSIX only; Windows falls back to best-effort without flock.
@@ -380,7 +381,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         "error": None,
     }
     try:
-        argv = shlex.split(os.path.expanduser(spec.command))
+        argv = safe_split_command(os.path.expanduser(spec.command))
     except ValueError as exc:
         result["error"] = f"command {spec.command!r} cannot be parsed: {exc}"
         return result
@@ -732,7 +733,7 @@ def _command_script_path(command: str) -> str:
     common bare-path form.
     """
     try:
-        parts = shlex.split(command)
+        parts = safe_split_command(command)
     except ValueError:
         return command
     if not parts:
@@ -819,7 +820,7 @@ def script_is_executable(command: str) -> bool:
     if not os.path.isfile(expanded):
         return False
     try:
-        argv = shlex.split(command)
+        argv = safe_split_command(command)
     except ValueError:
         return False
     is_bare_invocation = bool(argv) and argv[0] == path

@@ -13,6 +13,7 @@ from pathlib import Path
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
+from hermes_cli._subprocess_compat import secure_file_chmod
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
@@ -627,7 +628,7 @@ def run_doctor(args):
                 # creation. touch() obeys umask which is commonly 0o022,
                 # leaving the file world-readable; tighten explicitly.
                 try:
-                    os.chmod(str(env_path), 0o600)
+                    secure_file_chmod(str(env_path))
                 except OSError:
                     pass
                 check_ok(f"Created empty {_DHH}/.env")

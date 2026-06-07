@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
+from hermes_cli._subprocess_compat import secure_file_chmod
 
 logger = logging.getLogger(__name__)
 
@@ -394,7 +395,7 @@ def run_import(args) -> None:
                 with zf.open(member) as src, open(target, "wb") as dst:
                     dst.write(src.read())
                 if target.name in _SECRET_FILE_NAMES:
-                    os.chmod(target, 0o600)
+                    secure_file_chmod(target)
                 restored += 1
             except (PermissionError, OSError) as exc:
                 errors.append(f"  {rel}: {exc}")

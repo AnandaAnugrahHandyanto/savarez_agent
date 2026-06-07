@@ -32,6 +32,7 @@ from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_p
 # ---------------------------------------------------------------------------
 # Small formatting helpers
 # ---------------------------------------------------------------------------
+from hermes_cli._subprocess_compat import safe_split_command
 
 _STATUS_ICONS = {
     "todo":     "◻",
@@ -2762,7 +2763,7 @@ def run_slash(rest: str) -> str:
     import io
     import contextlib
 
-    tokens = shlex.split(rest) if rest and rest.strip() else []
+    tokens = safe_split_command(rest) if rest and rest.strip() else []
 
     # Bare ``/kanban`` or ``/kanban help`` / ``--help`` / ``-h`` / ``?``:
     # show the curated short-help block instead of dumping argparse's full

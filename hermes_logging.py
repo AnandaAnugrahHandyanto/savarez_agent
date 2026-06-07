@@ -39,6 +39,7 @@ from hermes_constants import get_config_path, get_hermes_home
 # Sentinel to track whether setup_logging() has already run.  The function
 # is idempotent — calling it twice is safe but the second call is a no-op
 # unless ``force=True``.
+from hermes_cli._subprocess_compat import secure_file_chmod
 _logging_initialized = False
 
 # Thread-local storage for per-conversation session context.
@@ -357,7 +358,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
     def _chmod_if_managed(self):
         if self._managed:
             try:
-                os.chmod(self.baseFilename, 0o660)
+                secure_file_chmod(self.baseFilename, mode=0o660)
             except OSError:
                 pass
 
