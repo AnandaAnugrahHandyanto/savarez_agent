@@ -107,6 +107,11 @@ def test_source_unknown_dirty_uses_isolated_worktree_when_authorized(tmp_path, m
         worktree_calls.append((repo_arg, stage_id, git_head))
         isolated.mkdir(parents=True)
         (isolated / "README.md").write_text("hello\n", encoding="utf-8")
+        _git(isolated, "init")
+        _git(isolated, "config", "user.email", "test@example.com")
+        _git(isolated, "config", "user.name", "Test User")
+        _git(isolated, "add", "README.md")
+        _git(isolated, "commit", "-m", "isolated base")
         return {"path": str(isolated), "branch": "work/phase-20260606-abc123", "source_head": git_head}
 
     def fake_staged(args):
@@ -327,10 +332,16 @@ def test_leftover_candidate_reported_after_staged_leaves_dirty(tmp_path, monkeyp
         )
 
     monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(
+        workflow,
+        "_run_packet_only_review",
+        lambda **kwargs: _packet_review("packet_only_unusable", must_fix_count=None),
+        raising=False,
+    )
 
     result = _call(workdir=str(repo))
 
-    assert result["status"] == "staged_called"
+    assert result["status"] == "staged_review_unavailable"
     assert result["leftover_candidate"]["requires_review"] is True
     assert result["leftover_candidate"]["requires_hermes_verification"] is True
     assert result["leftover_candidate"]["candidate_id"] == "cand-left"
@@ -476,3 +487,354 @@ def test_dry_run_source_dirty_does_not_create_isolated_worktree(tmp_path, monkey
     assert source_path.exists()
     assert staged_calls == []
     assert worktree_calls == []
+
+
+def _packet_review(status: str, *, must_fix_count: int | None = 0, summary: str = "review summary") -> dict:
+    return {
+        "status": status,
+        "reason": None,
+        "must_fix_count": must_fix_count,
+        "final_judgment": "可以继续" if status == "packet_only_passed" else "需要先修",
+        "summary": summary,
+        "raw_log_path": "/tmp/codex-review.raw.log",
+        "final_file": "/tmp/codex-review.final.txt",
+    }
+
+
+def test_auto_packet_review_passes_ready_candidate(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    review_calls = []
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\nreviewed\n", encoding="utf-8")
+        return json.dumps(
+            {
+                "status": "ready_for_review",
+                "candidate_id": "cand-p0",
+                "candidate_disposition": "pending_review",
+                "completion_trusted": True,
+            }
+        )
+
+    def fake_review(**kwargs):
+        review_calls.append(kwargs)
+        return _packet_review("packet_only_passed", must_fix_count=0)
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(workflow, "_run_packet_only_review", fake_review, raising=False)
+
+    result = _call(workdir=str(repo))
+
+    assert result["status"] == "staged_reviewed"
+    assert result["codex_packet_review"]["status"] == "packet_only_passed"
+    assert result["codex_packet_review"]["must_fix_count"] == 0
+    assert result["leftover_candidate"]["requires_review"] is False
+    assert result["leftover_candidate"]["requires_fixes"] is False
+    assert result["leftover_candidate"]["requires_hermes_verification"] is True
+    assert result["leftover_candidate"]["packet_review_status"] == "packet_only_passed"
+    assert review_calls[0]["repo"] == repo
+    assert review_calls[0]["touched_files"] == ["README.md"]
+    assert review_calls[0]["dirty_baseline_paths"] == []
+    assert "dirty" not in review_calls[0]
+
+
+def test_auto_packet_review_blocks_on_must_fix(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\nblocked\n", encoding="utf-8")
+        return json.dumps({"status": "review_needed", "candidate_id": "cand-blocked"})
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(
+        workflow,
+        "_run_packet_only_review",
+        lambda **kwargs: _packet_review("packet_only_failed", must_fix_count=1),
+        raising=False,
+    )
+
+    result = _call(workdir=str(repo))
+
+    assert result["status"] == "staged_review_blocked"
+    assert result["codex_packet_review"]["status"] == "packet_only_failed"
+    assert result["codex_packet_review"]["must_fix_count"] == 1
+    assert result["leftover_candidate"]["requires_review"] is False
+    assert result["leftover_candidate"]["requires_fixes"] is True
+    assert result["leftover_candidate"]["requires_hermes_verification"] is True
+
+
+def test_auto_packet_review_unusable_fail_closed(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\nunusable\n", encoding="utf-8")
+        return json.dumps({"status": "ready_for_review", "candidate_id": "cand-unusable"})
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(
+        workflow,
+        "_run_packet_only_review",
+        lambda **kwargs: _packet_review("packet_only_unusable", must_fix_count=None),
+        raising=False,
+    )
+
+    result = _call(workdir=str(repo))
+
+    assert result["status"] == "staged_review_unavailable"
+    assert result["codex_packet_review"]["status"] == "packet_only_unusable"
+    assert result["leftover_candidate"]["requires_review"] is True
+    assert result["leftover_candidate"]["requires_fixes"] is False
+    assert result["leftover_candidate"]["requires_hermes_verification"] is True
+
+
+def test_takeover_candidate_review_pass_does_not_become_trusted_completion(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\ntakeover\n", encoding="utf-8")
+        return json.dumps(
+            {
+                "status": "takeover_candidate",
+                "candidate_id": "cand-takeover",
+                "candidate_disposition": "takeover_required",
+                "completion_trusted": False,
+            }
+        )
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(
+        workflow,
+        "_run_packet_only_review",
+        lambda **kwargs: _packet_review("packet_only_passed", must_fix_count=0),
+        raising=False,
+    )
+
+    result = _call(workdir=str(repo))
+
+    assert result["status"] == "staged_reviewed"
+    assert result["codex_staged_result"]["status"] == "takeover_candidate"
+    assert result["leftover_candidate"]["completion_trusted"] is False
+    assert result["leftover_candidate"]["candidate_disposition"] == "takeover_required"
+    assert result["leftover_candidate"]["requires_hermes_verification"] is True
+    assert "approved" not in json.dumps(result)
+
+
+def test_blocked_staged_status_does_not_run_packet_review(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\nblocked by allowlist\n", encoding="utf-8")
+        return json.dumps({"status": "blocked_by_allowlist", "candidate_id": "cand-blocked"})
+
+    def fake_review(**kwargs):
+        raise AssertionError("blocked staged status must not run packet review")
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(workflow, "_run_packet_only_review", fake_review, raising=False)
+
+    result = _call(workdir=str(repo))
+
+    assert result["status"] == "staged_called"
+    assert result["codex_packet_review"]["status"] == "not_run"
+    assert result["codex_packet_review"]["reason"] == "staged_status_blocked_by_allowlist"
+    assert result["leftover_candidate"]["requires_review"] is True
+
+
+def test_checkpoint_path_does_not_auto_review_or_commit_without_evidence(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\ncheckpoint\n", encoding="utf-8")
+        return json.dumps({"status": "ready_for_review", "candidate_id": "cand-checkpoint"})
+
+    def fake_review(**kwargs):
+        raise AssertionError("checkpoint path must not run packet review")
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(workflow, "_run_packet_only_review", fake_review, raising=False)
+
+    result = _call(workdir=str(repo), standing_authorization=True, checkpoint_verified_diff=True)
+
+    assert result["status"] == "checkpoint_blocked"
+    assert result["checkpoint"]["reason"] == "missing_verification_evidence"
+
+
+def test_dry_run_never_runs_packet_review(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    def fake_review(**kwargs):
+        raise AssertionError("dry_run must not run packet review")
+
+    monkeypatch.setattr(workflow, "_run_packet_only_review", fake_review, raising=False)
+
+    result = _call(workdir=str(repo), mode="dry_run")
+
+    assert result["status"] == "dry_run"
+    assert result["codex_packet_review"] is None
+
+
+def test_review_output_is_bounded(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    def fake_staged(args):
+        (Path(args["workdir"]) / "README.md").write_text("hello\nbounded\n", encoding="utf-8")
+        return json.dumps({"status": "ready_for_review", "candidate_id": "cand-bounded"})
+
+    def fake_review(**kwargs):
+        result = _packet_review("packet_only_passed", must_fix_count=0)
+        result["raw_review_text"] = "diff --git a/README.md b/README.md\n" + "source line\n" * 100
+        result["full_diff"] = "@@ should not be returned @@"
+        return result
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+    monkeypatch.setattr(workflow, "_run_packet_only_review", fake_review, raising=False)
+
+    result = _call(workdir=str(repo))
+    encoded = json.dumps(result)
+
+    assert result["codex_packet_review"]["status"] == "packet_only_passed"
+    assert "diff --git" not in encoded
+    assert "@@ should not be returned @@" not in encoded
+
+
+def test_malformed_structured_review_fails_closed():
+    malformed_reviews = [
+        {"status": "passed", "review": {}},
+        {
+            "status": "passed",
+            "review": {
+                "verdict": "passed",
+                "must_fix": "not-a-list",
+                "final_judgment": "可以继续",
+                "summary": "bad must_fix type",
+            },
+        },
+        {
+            "status": "passed",
+            "review": {
+                "verdict": "unknown",
+                "must_fix": [],
+                "final_judgment": "可以继续",
+                "summary": "bad verdict",
+            },
+        },
+        {
+            "status": "passed",
+            "review": {
+                "verdict": "passed",
+                "must_fix": [],
+                "summary": "missing final judgment",
+            },
+        },
+        {
+            "status": "passed",
+            "review": {
+                "verdict": "passed",
+                "must_fix": [],
+                "final_judgment": "不能继续",
+                "summary": "contradictory final judgment",
+            },
+        },
+        {
+            "status": "passed",
+            "review": {
+                "verdict": "failed",
+                "must_fix": [],
+                "final_judgment": "可以继续",
+                "summary": "contradictory failed verdict",
+            },
+        },
+        {
+            "status": "passed",
+            "review": {
+                "verdict": "failed",
+                "must_fix": [],
+                "final_judgment": "需要先修",
+                "summary": "failed verdict without actionable blockers",
+            },
+        },
+    ]
+
+    for raw in malformed_reviews:
+        normalized = workflow._normalize_packet_review_result(raw)
+
+        assert normalized["status"] == "packet_only_unusable"
+        assert normalized["reason"] == "review_guard_schema_invalid"
+
+
+def test_direct_packet_review_passed_shape_is_validated():
+    malformed_passes = [
+        {"status": "packet_only_passed"},
+        {
+            "status": "packet_only_passed",
+            "must_fix_count": 1,
+            "final_judgment": "可以继续",
+            "summary": "contradictory pass",
+        },
+        {
+            "status": "packet_only_passed",
+            "must_fix_count": 0,
+            "final_judgment": "需要先修",
+            "summary": "contradictory judgment",
+        },
+        {
+            "status": "packet_only_passed",
+            "must_fix_count": 0,
+            "final_judgment": "可以继续",
+            "summary": "",
+        },
+    ]
+
+    for raw in malformed_passes:
+        normalized = workflow._normalize_packet_review_result(raw)
+
+        assert normalized["status"] == "packet_only_unusable"
+        assert normalized["reason"] == "review_guard_schema_invalid"
+
+
+def test_direct_packet_review_failed_requires_must_fix_count():
+    normalized = workflow._normalize_packet_review_result(
+        {
+            "status": "packet_only_failed",
+            "must_fix_count": 0,
+            "final_judgment": "需要先修",
+            "summary": "failed without blockers",
+        }
+    )
+
+    assert normalized["status"] == "packet_only_unusable"
+    assert normalized["reason"] == "review_guard_schema_invalid"
+
+
+def test_packet_review_summary_omits_diff_like_content():
+    summarized = workflow._summarize_packet_review(
+        {
+            "status": "packet_only_passed",
+            "must_fix_count": 0,
+            "final_judgment": "可以继续",
+            "summary": "diff --git a/file.py b/file.py\n@@ giant source excerpt @@",
+            "raw_log_path": "/tmp/raw.log",
+            "final_file": "/tmp/final.txt",
+        }
+    )
+
+    assert summarized["status"] == "packet_only_passed"
+    assert "diff --git" not in summarized["summary"]
+    assert "@@" not in summarized["summary"]
+
+
+def test_packet_review_reason_omits_diff_like_content():
+    summarized = workflow._summarize_packet_review(
+        {
+            "status": "packet_only_unusable",
+            "reason": "diff --git a/file.py b/file.py\n@@ giant source excerpt @@",
+            "summary": "review unavailable",
+            "raw_log_path": "/tmp/raw.log",
+            "final_file": "/tmp/final.txt",
+        }
+    )
+    encoded = json.dumps(summarized)
+
+    assert summarized["status"] == "packet_only_unusable"
+    assert "diff --git" not in encoded
+    assert "@@" not in encoded

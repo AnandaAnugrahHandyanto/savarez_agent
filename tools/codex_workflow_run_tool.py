@@ -1,9 +1,12 @@
 import datetime as _datetime
 import fnmatch
 import json
+import os
 import re
 import shutil
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +18,19 @@ _SUPPORTED_MODES = {"execute", "dry_run"}
 _SUPPORTED_CONTINUE_POLICY = "stop-on-review-needed"
 _SUPPORTED_DIRTY_POLICY = "require-clean"
 _ALLOWED_VERIFY_IDS = {"diff-check", "none"}
+_AUTO_PACKET_REVIEW_STATUSES = {"ready_for_review", "review_needed", "takeover_candidate"}
+_PACKET_REVIEW_STATUSES = {"packet_only_passed", "packet_only_failed", "packet_only_unusable"}
+_PACKET_REVIEW_SUMMARY_KEYS = {
+    "status",
+    "reason",
+    "must_fix_count",
+    "final_judgment",
+    "summary",
+    "raw_log_path",
+    "final_file",
+}
+_MAX_PACKET_REVIEW_SUMMARY_CHARS = 1200
+_SUMMARY_LEAK_MARKERS = ("diff --git", "\n@@", "@@ ", "--- a/", "+++ b/")
 
 
 def _json_result(payload: dict[str, Any]) -> str:
@@ -41,6 +57,7 @@ def _base(
             "isolated_worktree": None,
         },
         "codex_staged_result": codex_staged_result,
+        "codex_packet_review": None,
     }
     result.update(extra)
     return result
@@ -219,6 +236,7 @@ def _commit_checkpoint(repo: Path, *, touched_files: list[str], message: str | N
 def _leftover_candidate(dirty: dict[str, Any], codex_staged_result: dict[str, Any]) -> dict[str, Any]:
     result = {
         "requires_review": True,
+        "requires_fixes": False,
         "requires_hermes_verification": True,
         "touched_files": _current_dirty_paths(dirty),
         "dirty_state_id": dirty.get("dirty_state_id"),
@@ -227,6 +245,389 @@ def _leftover_candidate(dirty: dict[str, Any], codex_staged_result: dict[str, An
         if key in codex_staged_result:
             result[key] = codex_staged_result.get(key)
     return result
+
+
+def _bounded_review_summary(summary: str | None) -> str | None:
+    if not isinstance(summary, str):
+        return None
+    stripped = summary.strip()
+    if not stripped:
+        return None
+    if any(marker in stripped for marker in _SUMMARY_LEAK_MARKERS):
+        return "[summary omitted: looked like diff/source output]"
+    if len(stripped) > _MAX_PACKET_REVIEW_SUMMARY_CHARS:
+        return stripped[: _MAX_PACKET_REVIEW_SUMMARY_CHARS - 24].rstrip() + "...[truncated]"
+    return stripped
+
+
+def _bounded_review_reason(reason: str | None) -> str | None:
+    if not isinstance(reason, str):
+        return None
+    stripped = reason.strip()
+    if not stripped:
+        return None
+    if "\n" in stripped or any(marker in stripped for marker in _SUMMARY_LEAK_MARKERS):
+        return "review_reason_omitted"
+    if len(stripped) > 160:
+        return stripped[:136].rstrip() + "...[truncated]"
+    return stripped
+
+
+def _bounded_review_final_judgment(final_judgment: str | None) -> str | None:
+    if not isinstance(final_judgment, str):
+        return None
+    stripped = final_judgment.strip()
+    if not stripped:
+        return None
+    if any(marker in stripped for marker in _SUMMARY_LEAK_MARKERS):
+        return "[final judgment omitted: looked like diff/source output]"
+    if len(stripped) > 240:
+        return stripped[:216].rstrip() + "...[truncated]"
+    return stripped
+
+
+def _safe_review_artifact_path(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped or "\n" in stripped or any(marker in stripped for marker in _SUMMARY_LEAK_MARKERS):
+        return None
+    if len(stripped) > 500:
+        return None
+    return stripped
+
+
+def _packet_review_result(
+    status: str,
+    *,
+    reason: str | None = None,
+    must_fix_count: int | None = None,
+    final_judgment: str | None = None,
+    summary: str | None = None,
+    raw_log_path: str | None = None,
+    final_file: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "reason": _bounded_review_reason(reason),
+        "must_fix_count": must_fix_count,
+        "final_judgment": _bounded_review_final_judgment(final_judgment),
+        "summary": _bounded_review_summary(summary),
+        "raw_log_path": _safe_review_artifact_path(raw_log_path),
+        "final_file": _safe_review_artifact_path(final_file),
+    }
+
+
+def _packet_review_not_run(reason: str) -> dict[str, Any]:
+    return _packet_review_result("not_run", reason=reason)
+
+
+def _safe_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _normalize_packet_review_result(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return _packet_review_result("packet_only_unusable", reason="malformed_review_result")
+
+    status = raw.get("status")
+    if status in _PACKET_REVIEW_STATUSES:
+        must_fix_count = _safe_int(raw.get("must_fix_count"))
+        final_judgment = raw.get("final_judgment") if isinstance(raw.get("final_judgment"), str) else None
+        summary = raw.get("summary") if isinstance(raw.get("summary"), str) else None
+        if status == "packet_only_passed" and (
+            must_fix_count != 0
+            or not (isinstance(final_judgment, str) and final_judgment.strip())
+            or "需要先修" in final_judgment
+            or "可以继续" not in final_judgment
+            or not _bounded_review_summary(summary)
+        ):
+            return _packet_review_result(
+                "packet_only_unusable",
+                reason="review_guard_schema_invalid",
+                raw_log_path=raw.get("raw_log_path") if isinstance(raw.get("raw_log_path"), str) else None,
+                final_file=raw.get("final_file") if isinstance(raw.get("final_file"), str) else None,
+            )
+        if status == "packet_only_failed" and (
+            must_fix_count is None
+            or must_fix_count <= 0
+            or not (isinstance(final_judgment, str) and "需要先修" in final_judgment)
+            or not _bounded_review_summary(summary)
+        ):
+            return _packet_review_result(
+                "packet_only_unusable",
+                reason="review_guard_schema_invalid",
+                raw_log_path=raw.get("raw_log_path") if isinstance(raw.get("raw_log_path"), str) else None,
+                final_file=raw.get("final_file") if isinstance(raw.get("final_file"), str) else None,
+            )
+        return _packet_review_result(
+            status,
+            reason=raw.get("reason") if isinstance(raw.get("reason"), str) else None,
+            must_fix_count=must_fix_count,
+            final_judgment=final_judgment,
+            summary=summary,
+            raw_log_path=raw.get("raw_log_path") if isinstance(raw.get("raw_log_path"), str) else None,
+            final_file=raw.get("final_file") if isinstance(raw.get("final_file"), str) else None,
+        )
+
+    if any(
+        raw.get(flag)
+        for flag in (
+            "diff_flood_detected",
+            "source_flood_detected",
+            "json_field_flood_detected",
+            "terminated_by_guard",
+        )
+    ):
+        return _packet_review_result(
+            "packet_only_unusable",
+            reason=str(raw.get("reason") or "review_guard_flood_or_terminated"),
+            raw_log_path=raw.get("raw_log_path") if isinstance(raw.get("raw_log_path"), str) else None,
+            final_file=raw.get("final_file") if isinstance(raw.get("final_file"), str) else None,
+        )
+
+    if status != "passed":
+        return _packet_review_result(
+            "packet_only_unusable",
+            reason=f"review_guard_status_{status or 'missing'}",
+            raw_log_path=raw.get("raw_log_path") if isinstance(raw.get("raw_log_path"), str) else None,
+            final_file=raw.get("final_file") if isinstance(raw.get("final_file"), str) else None,
+        )
+
+    review = raw.get("review")
+    if not isinstance(review, dict):
+        return _packet_review_result(
+            "packet_only_unusable",
+            reason="missing_structured_review",
+            raw_log_path=raw.get("raw_log_path") if isinstance(raw.get("raw_log_path"), str) else None,
+            final_file=raw.get("final_file") if isinstance(raw.get("final_file"), str) else None,
+        )
+
+    must_fix = review.get("must_fix")
+    verdict = review.get("verdict") if isinstance(review.get("verdict"), str) else None
+    final_judgment = review.get("final_judgment") if isinstance(review.get("final_judgment"), str) else None
+    summary = review.get("summary") if isinstance(review.get("summary"), str) else None
+    if (
+        verdict not in {"passed", "failed"}
+        or not isinstance(must_fix, list)
+        or any(not isinstance(item, str) for item in must_fix)
+        or not (isinstance(final_judgment, str) and final_judgment.strip())
+        or (verdict == "passed" and "可以继续" not in final_judgment)
+        or (verdict == "failed" and "需要先修" not in final_judgment)
+        or (verdict == "failed" and isinstance(must_fix, list) and not must_fix)
+        or any(marker in final_judgment for marker in _SUMMARY_LEAK_MARKERS)
+        or not (isinstance(summary, str) and summary.strip())
+    ):
+        return _packet_review_result(
+            "packet_only_unusable",
+            reason="review_guard_schema_invalid",
+            raw_log_path=raw.get("raw_log_path") if isinstance(raw.get("raw_log_path"), str) else None,
+            final_file=raw.get("final_file") if isinstance(raw.get("final_file"), str) else None,
+        )
+
+    must_fix_count = len(must_fix)
+    failed = must_fix_count > 0 or verdict == "failed" or "需要先修" in final_judgment
+
+    return _packet_review_result(
+        "packet_only_failed" if failed else "packet_only_passed",
+        reason=None,
+        must_fix_count=must_fix_count,
+        final_judgment=final_judgment,
+        summary=summary,
+        raw_log_path=raw.get("raw_log_path") if isinstance(raw.get("raw_log_path"), str) else None,
+        final_file=raw.get("final_file") if isinstance(raw.get("final_file"), str) else None,
+    )
+
+
+def _should_auto_packet_review(
+    *,
+    staged_result: dict[str, Any],
+    post_dirty: dict[str, Any],
+    checkpoint_requested: bool,
+) -> tuple[bool, str]:
+    if checkpoint_requested:
+        return False, "checkpoint_requested"
+    if post_dirty.get("is_clean"):
+        return False, "no_candidate_diff"
+    status = staged_result.get("status")
+    if status not in _AUTO_PACKET_REVIEW_STATUSES:
+        return False, f"staged_status_{status or 'missing'}"
+    return True, "candidate_ready"
+
+
+def _completion_trusted_arg(value: Any) -> str:
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return "unknown"
+
+
+def _candidate_disposition_arg(value: Any) -> str | None:
+    if value in {"pending_review", "takeover_required", "rejected", "unavailable"}:
+        return str(value)
+    return None
+
+
+def _review_env() -> dict[str, str]:
+    env = dict(os.environ)
+    home = Path.home()
+    extra = [
+        str(home / ".local" / "node-v22.21.1-linux-x64" / "bin"),
+        str(home / ".local" / "bin"),
+    ]
+    env["PATH"] = ":".join([*extra, env.get("PATH", "")])
+    return env
+
+
+def _run_packet_only_review(
+    *,
+    repo: Path,
+    touched_files: list[str],
+    allowlist: dict[str, list[str]],
+    dirty_baseline_paths: list[str],
+    staged_result: dict[str, Any],
+) -> dict[str, Any]:
+    root = Path(__file__).resolve().parents[1]
+    packet_script = root / "scripts" / "runtime" / "codex_review_packet.py"
+    guard_script = root / "scripts" / "runtime" / "codex_review_guard.py"
+    review_dir = Path(tempfile.mkdtemp(prefix="codex-workflow-review-"))
+    packet_file = review_dir / "packet.md"
+    prompt_file = review_dir / "prompt.txt"
+    raw_log = review_dir / "raw.log"
+    final_file = review_dir / "final.txt"
+
+    packet_cmd = [sys.executable, str(packet_script), "--workdir", str(repo)]
+    for path in touched_files:
+        packet_cmd.extend(["--file", path])
+    for path in allowlist.get("files", []):
+        packet_cmd.extend(["--allowed-file", path])
+    for pattern in allowlist.get("globs", []):
+        packet_cmd.extend(["--allowed-glob", pattern])
+    for path in dirty_baseline_paths:
+        packet_cmd.extend(["--dirty-baseline", path])
+    candidate_id = staged_result.get("candidate_id")
+    if isinstance(candidate_id, str) and candidate_id.strip():
+        packet_cmd.extend(["--candidate-id", candidate_id.strip()])
+    disposition = _candidate_disposition_arg(staged_result.get("candidate_disposition"))
+    if disposition:
+        packet_cmd.extend(["--candidate-disposition", disposition])
+    packet_cmd.extend(["--completion-trusted", _completion_trusted_arg(staged_result.get("completion_trusted"))])
+
+    try:
+        packet_proc = subprocess.run(
+            packet_cmd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+        )
+    except Exception as exc:
+        return _packet_review_result("packet_only_unusable", reason=f"packet_build_exception:{type(exc).__name__}")
+    if packet_proc.returncode != 0:
+        return _packet_review_result("packet_only_unusable", reason="packet_build_failed")
+    packet_file.write_text(packet_proc.stdout, encoding="utf-8")
+
+    prompt_file.write_text(
+        "Review this bounded packet only. Do not edit files. Do not run shell commands. "
+        "Do not request full source or full diffs. Focus on requirements fit, fail-closed "
+        "semantics, scope creep, and whether Hermes verification is still required. Return "
+        "structured Chinese review sections with must-fix items and final judgment.\n",
+        encoding="utf-8",
+    )
+    guard_cmd = [
+        sys.executable,
+        str(guard_script),
+        "--workdir",
+        str(repo),
+        "--prompt-file",
+        str(prompt_file),
+        "--review-packet-file",
+        str(packet_file),
+        "--raw-log",
+        str(raw_log),
+        "--final-file",
+        str(final_file),
+        "--timeout-seconds",
+        "420",
+    ]
+    try:
+        guard_proc = subprocess.run(
+            guard_cmd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=480,
+            env=_review_env(),
+        )
+    except subprocess.TimeoutExpired:
+        return _packet_review_result(
+            "packet_only_unusable",
+            reason="review_guard_timeout",
+            raw_log_path=str(raw_log),
+            final_file=str(final_file),
+        )
+    except Exception as exc:
+        return _packet_review_result(
+            "packet_only_unusable",
+            reason=f"review_guard_exception:{type(exc).__name__}",
+            raw_log_path=str(raw_log),
+            final_file=str(final_file),
+        )
+    if guard_proc.returncode != 0:
+        return _packet_review_result(
+            "packet_only_unusable",
+            reason="review_guard_failed",
+            raw_log_path=str(raw_log),
+            final_file=str(final_file),
+        )
+    try:
+        decoded = json.loads(guard_proc.stdout)
+    except Exception:
+        return _packet_review_result(
+            "packet_only_unusable",
+            reason="review_guard_malformed_json",
+            raw_log_path=str(raw_log),
+            final_file=str(final_file),
+        )
+    return _normalize_packet_review_result(decoded)
+
+
+def _summarize_packet_review(raw: Any) -> dict[str, Any]:
+    normalized = _normalize_packet_review_result(raw)
+    return {key: normalized.get(key) for key in _PACKET_REVIEW_SUMMARY_KEYS}
+
+
+def _apply_packet_review_to_leftover(
+    leftover: dict[str, Any],
+    packet_review: dict[str, Any],
+) -> None:
+    status = packet_review.get("status")
+    leftover["packet_review_status"] = status
+    if status == "packet_only_passed":
+        leftover["requires_review"] = False
+        leftover["requires_fixes"] = False
+    elif status == "packet_only_failed":
+        leftover["requires_review"] = False
+        leftover["requires_fixes"] = True
+    else:
+        leftover["requires_review"] = True
+        leftover["requires_fixes"] = False
+
+
+def _status_after_packet_review(packet_review: dict[str, Any]) -> str:
+    status = packet_review.get("status")
+    if status == "packet_only_passed":
+        return "staged_reviewed"
+    if status == "packet_only_failed":
+        return "staged_review_blocked"
+    if status == "packet_only_unusable":
+        return "staged_review_unavailable"
+    return "staged_called"
 
 
 def _finish_after_staged(
@@ -290,7 +691,30 @@ def _finish_after_staged(
         return _json_result(result)
 
     if not post_dirty.get("is_clean"):
-        result["leftover_candidate"] = _leftover_candidate(post_dirty, staged_result)
+        leftover = _leftover_candidate(post_dirty, staged_result)
+        should_review, reason = _should_auto_packet_review(
+            staged_result=staged_result,
+            post_dirty=post_dirty,
+            checkpoint_requested=checkpoint_requested,
+        )
+        if should_review:
+            packet_review = _summarize_packet_review(
+                _run_packet_only_review(
+                    repo=repo,
+                    touched_files=leftover["touched_files"],
+                    allowlist=allowlist,
+                    dirty_baseline_paths=[],
+                    staged_result=staged_result,
+                )
+            )
+        else:
+            packet_review = _packet_review_not_run(reason)
+        result["codex_packet_review"] = packet_review
+        _apply_packet_review_to_leftover(leftover, packet_review)
+        result["leftover_candidate"] = leftover
+        result["status"] = _status_after_packet_review(packet_review)
+    else:
+        result["codex_packet_review"] = _packet_review_not_run("no_candidate_diff")
     return _json_result(result)
 
 
@@ -463,7 +887,8 @@ _SCHEMA = {
         "High-level Hermes orchestrator for dirty worktree recovery before guarded Codex "
         "candidate implementation. It validates repo, scope, and policies; may remove "
         "cache-only dirty paths with standing authorization; may create an isolated clean "
-        "worktree with standing authorization; then delegates to codex_staged_implement."
+        "worktree with standing authorization; delegates to codex_staged_implement; then "
+        "runs bounded packet-only review for safe staged candidates."
     ),
     "parameters": {
         "type": "object",
