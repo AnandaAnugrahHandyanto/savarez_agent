@@ -90,6 +90,27 @@ def test_transition_passes_conversation_id_from_gateway_session_key():
     assert captured.get("platform") == "telegram"
 
 
+def test_transition_prefers_explicit_session_source(monkeypatch):
+    """``--source`` metadata must stay consistent with the DB session source."""
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "tool")
+    engine = MagicMock()
+    engine.context_length = 200_000
+    captured: dict = {}
+    engine.on_session_start.side_effect = lambda sid, **kw: captured.update(kw)
+
+    agent = _bare_agent()
+    agent.platform = "cli"
+    agent.context_compressor = engine
+
+    agent._transition_context_engine_session(
+        old_session_id="old-sid",
+        new_session_id="new-sid",
+        previous_messages=[{"role": "user", "content": "hi"}],
+    )
+
+    assert captured.get("platform") == "tool"
+
+
 def test_transition_skips_optional_hooks_when_engine_lacks_them():
     """Engines that don't implement on_session_end/carry_over still work."""
     class MinimalEngine:

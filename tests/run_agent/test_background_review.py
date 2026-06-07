@@ -148,6 +148,19 @@ def test_background_review_summarizer_receives_captured_messages_after_close(mon
     assert captured["prior_snapshot"] == messages_snapshot
 
 
+def test_memory_write_metadata_prefers_explicit_session_source(monkeypatch):
+    """Background review provenance should match explicit ``--source`` tags."""
+    from agent.background_review import build_memory_write_metadata
+
+    agent = _bare_agent()
+    agent.platform = "cli"
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "tool")
+
+    metadata = build_memory_write_metadata(agent)
+
+    assert metadata["platform"] == "tool"
+
+
 def test_background_review_installs_auto_deny_approval_callback(monkeypatch):
     """Regression guard for #15216.
 
