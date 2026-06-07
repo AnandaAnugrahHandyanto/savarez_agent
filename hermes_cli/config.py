@@ -1743,6 +1743,13 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Prompt verbosity for the skills catalog block injected into the
+        # system prompt.  "full" (default) lists every installed skill with
+        # its description — gated/disactivated skills are already filtered
+        # out.  "compact" replaces the catalog with a short summary line
+        # ("N skills available — use skills_list() to browse") saving ~4-6K
+        # tokens at session start when you have 100+ skills installed.
+        "prompt_mode": "full",
     },
 
     # Curator — background skill maintenance.
@@ -2078,6 +2085,19 @@ DEFAULT_CONFIG = {
     # See tools/tool_search.py for full design notes and the
     # openclaw-tool-search-report PDF in this PR for the rationale.
     "tools": {
+        # When true, strip verbose descriptions from tool schemas before
+        # sending them to the model.  Parameter-level descriptions are
+        # removed and top-level tool descriptions are truncated to the
+        # first sentence (up to 80 chars).  Saves ~3-5K tokens per API
+        # call when many tools are loaded.  Default false (keep full
+        # descriptions for better argument-filling accuracy).
+        "compact_schemas": False,
+        # Tool names to always defer through tool_search, regardless of
+        # core-tool status.  By default only MCP and plugin tools are
+        # deferred; adding names here forces those tools to be lazy-loaded
+        # through the bridge tools.  Useful for reducing per-iteration
+        # token cost on tools you rarely use.  Example: ["web_search"].
+        "deferrable": [],
         "tool_search": {
             # "auto" (default) — activate only when deferrable tool schemas
             #   exceed ``threshold_pct`` of the active model's context length,

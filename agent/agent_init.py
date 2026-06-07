@@ -1198,11 +1198,39 @@ def init_agent(
 
     # Skills config: nudge interval for skill creation reminders
     agent._skill_nudge_interval = 10
+    agent._skills_prompt_mode = "full"
     try:
         skills_config = _agent_cfg.get("skills", {})
         agent._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
+        agent._skills_prompt_mode = skills_config.get("prompt_mode", "full")
     except Exception:
         pass
+
+    # ── Compact tool schemas ──────────────────────────────────────────
+    # Strip verbose descriptions when config.yaml tools.compact_schemas
+    # is true.  Saves ~3-5K tokens per API call.  Mutates agent.tools
+    # in-place — callers treat schemas as read-only so this is safe.
+    try:
+        _tools_cfg = _agent_cfg.get("tools", {})
+        if _tools_cfg.get("compact_schemas", False):
+            for _tool in agent.tools:
+                _func = _tool.get("function", {})
+                # Trim top-level description to first sentence, max 80 chars
+                _desc = _func.get("description", "")
+                if _desc:
+                    _first_sentence = _desc.split(".")[0].strip() + "."
+                    if len(_first_sentence) > 82:
+                        _first_sentence = _first_sentence[:80].rsplit(" ", 1)[0].strip() + "."
+                    _func["description"] = _first_sentence
+                # Strip all parameter-level descriptions
+                _params = _func.get("parameters", {})
+                _props = _params.get("properties", {})
+                if isinstance(_props, dict):
+                    for _prop in _props.values():
+                        if isinstance(_prop, dict) and "description" in _prop:
+                            del _prop["description"]
+    except Exception:
+        pass  # never let schema trimming break agent startup
 
     # Tool-use enforcement config: "auto" (default — matches hardcoded
     # model list), true (always), false (never), or list of substrings.
