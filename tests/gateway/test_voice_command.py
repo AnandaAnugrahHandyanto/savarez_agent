@@ -3196,6 +3196,42 @@ class TestVoiceTTSPlayback:
             "Audit Hermes research and check why the profile router was not invoked."
         ) is False
 
+    @pytest.mark.asyncio
+    async def test_prepared_voice_transcript_routes_to_research_profile(self):
+        """Profile routing must run after STT has converted voice into text."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SessionSource
+
+        runner = self._make_runner()
+        runner._invoke_profile_runtime_child = AsyncMock(return_value={
+            "status": "success",
+            "output": "Research profile answer with sources.",
+            "truncated": False,
+        })
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            user_id="user1",
+        )
+        message = (
+            "[The user sent a voice message~ Here's what they said: "
+            "\"I want you to research how can we connect Hermes agent to a "
+            "platform so that we can run live calls. Is WhatsApp call or "
+            "regular call best?\"]"
+        )
+
+        routed, did_route = await runner._maybe_route_research_profile_message(
+            message_text=message,
+            source=source,
+            session_key="agent:main:telegram:dm:123",
+            task_id="agent:main:telegram:dm:123",
+        )
+
+        assert did_route is True
+        assert routed.startswith("[Hermes profile-router]")
+        assert "Research profile answer with sources." in routed
+        runner._invoke_profile_runtime_child.assert_awaited_once()
+
     def test_voice_fast_reply_route_uses_configured_fast_runtime(self, monkeypatch):
         """voice.fast_reply can route voice notes to a fast, tool-free model."""
         from hermes_cli import runtime_provider
