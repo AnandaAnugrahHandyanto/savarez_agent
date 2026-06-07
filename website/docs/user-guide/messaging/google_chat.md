@@ -198,7 +198,8 @@ Google Chat renders a limited markdown subset:
 | Supported | Not supported |
 |-----------|---------------|
 | `*bold*`, `_italic_`, `~strike~`, `` `code` `` | Headings, lists |
-| Inline images via URL | Interactive Card v2 buttons (v1 of this gateway) |
+| Inline images via URL | Headings, lists |
+| Card v2 approval buttons (Allow Once / Session / Always / Deny) | Clarify/slash-confirm buttons (text fallback only) |
 | Native file attachments (after `/setup-files` — see Step 10) | Native voice notes / circular video notes |
 
 The agent's system prompt includes a Google Chat–specific hint so it knows these

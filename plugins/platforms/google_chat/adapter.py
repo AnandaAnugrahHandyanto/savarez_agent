@@ -30,14 +30,15 @@ Pub/Sub delivery diagram::
 Event type routing
 ------------------
 Inbound envelope carries ``type`` in [MESSAGE, ADDED_TO_SPACE, REMOVED_FROM_SPACE,
-CARD_CLICKED]. Only MESSAGE dispatches to the agent. ADDED_TO_SPACE caches the
+CARD_CLICKED]. MESSAGE dispatches to the agent. ADDED_TO_SPACE caches the
 bot's resource name (belt-and-suspenders on top of eager resolution in connect()).
-CARD_CLICKED is ACK'd only in v1 (follow-up PR implements interactivity).
+CARD_CLICKED routes to ``send_exec_approval`` button callbacks (approval UX).
 """
 
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import logging
 import os
@@ -186,6 +187,10 @@ _RETRY_BASE_DELAY = 1.0
 _RETRY_MAX_DELAY = 8.0
 _RETRY_JITTER = 0.3
 _RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+# Card v2 onClick.action.function name for exec-approval buttons.
+_HERMES_APPROVAL_FN = "hermes_approval"
+_APPROVAL_CHOICES = frozenset({"once", "session", "always", "deny"})
 
 
 def _is_retryable_error(exc: BaseException) -> bool:
@@ -542,6 +547,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
         # FlowControl knobs (env-configurable).
         self._max_messages = int(os.getenv("GOOGLE_CHAT_MAX_MESSAGES", "1"))
         self._max_bytes = int(os.getenv("GOOGLE_CHAT_MAX_BYTES", str(16 * 1024 * 1024)))
+        # Exec-approval inline buttons (Card v2 CARD_CLICKED callbacks).
+        self._approval_counter = itertools.count(1)
+        self._approval_state: Dict[int, Dict[str, str]] = {}
 
     # ------------------------------------------------------------------
     # Configuration loading and validation
@@ -1202,10 +1210,15 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 message.ack()
                 return
 
-            # --- Card-click events (v2 follow-up) ---
-            if "widget" in ce_type or "card" in ce_type.lower():
-                logger.info(
-                    "[GoogleChat] Card/widget event ack'd (v2 feature, deferred)"
+            # --- Card-click events (exec-approval buttons, etc.) ---
+            if (
+                chat_block.get("cardClickedPayload")
+                or envelope.get("type") == "CARD_CLICKED"
+                or "card" in ce_type.lower()
+                or "widget" in ce_type
+            ):
+                self._submit_on_loop(
+                    self._handle_card_clicked(envelope, ce_type)
                 )
                 message.ack()
                 return
@@ -1970,6 +1983,339 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
         resp = await asyncio.to_thread(_do_patch)
         return SendResult(success=True, message_id=resp.get("name", message_name))
+
+    # ------------------------------------------------------------------
+    # Exec approval — Card v2 buttons + CARD_CLICKED callbacks
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _approval_button(label: str, approval_id: int, choice: str) -> Dict[str, Any]:
+        return {
+            "text": label,
+            "onClick": {
+                "action": {
+                    "function": _HERMES_APPROVAL_FN,
+                    "parameters": [
+                        {"key": "approval_id", "value": str(approval_id)},
+                        {"key": "choice", "value": choice},
+                    ],
+                }
+            },
+        }
+
+    def _build_exec_approval_card(
+        self, approval_id: int, cmd_preview: str, description: str
+    ) -> Dict[str, Any]:
+        """Build a Card v2 body for ``messages.create`` / ``messages.patch``."""
+        return {
+            "cardsV2": [
+                {
+                    "cardId": f"hermes-approval-{approval_id}",
+                    "card": {
+                        "header": {
+                            "title": "⚠️ Command Approval Required",
+                        },
+                        "sections": [
+                            {
+                                "widgets": [
+                                    {
+                                        "textParagraph": {
+                                            "text": (
+                                                f"Command:\n{cmd_preview}\n\n"
+                                                f"Reason: {description}"
+                                            ),
+                                        }
+                                    },
+                                    {
+                                        "buttonList": {
+                                            "buttons": [
+                                                self._approval_button(
+                                                    "✅ Allow Once", approval_id, "once"
+                                                ),
+                                                self._approval_button(
+                                                    "✅ Session", approval_id, "session"
+                                                ),
+                                                self._approval_button(
+                                                    "✅ Always", approval_id, "always"
+                                                ),
+                                                self._approval_button(
+                                                    "❌ Deny", approval_id, "deny"
+                                                ),
+                                            ],
+                                        }
+                                    },
+                                ],
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Card v2 approval prompt with Allow/Deny buttons.
+
+        Button clicks arrive as ``CARD_CLICKED`` Pub/Sub events and resolve
+        via ``tools.approval.resolve_gateway_approval`` — same contract as
+        Telegram/Slack/Teams.
+        """
+        if not self._chat_api:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            approval_id = next(self._approval_counter)
+            cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
+            body = self._build_exec_approval_card(
+                approval_id, cmd_preview, description
+            )
+            thread_id = self._resolve_thread_id(None, metadata, chat_id=chat_id)
+            if thread_id:
+                body["thread"] = {"name": thread_id}
+
+            result = await self._create_message(chat_id, body)
+            if result.success:
+                self._approval_state[approval_id] = {
+                    "session_key": session_key,
+                    "message_id": result.message_id or "",
+                    "chat_id": chat_id,
+                }
+            return result
+        except HttpError as exc:
+            return SendResult(success=False, error=_redact_sensitive(str(exc)))
+        except Exception as exc:
+            logger.warning("[GoogleChat] send_exec_approval failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+    def _parse_approval_click_parameters(
+        self,
+        envelope: Dict[str, Any],
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Tuple[int, str]]:
+        """Extract ``(approval_id, choice)`` from a CARD_CLICKED envelope."""
+        params: Dict[str, str] = {}
+        common = envelope.get("common") or (payload or {}).get("common") or {}
+        if isinstance(common, dict):
+            invoked = common.get("invokedFunction") or common.get("invoked_function")
+            if invoked and invoked != _HERMES_APPROVAL_FN:
+                return None
+            raw_params = common.get("parameters") or {}
+            if isinstance(raw_params, dict):
+                for key, value in raw_params.items():
+                    params[str(key)] = str(value)
+
+        action = (
+            envelope.get("action")
+            or (payload or {}).get("action")
+            or {}
+        )
+        if isinstance(action, dict):
+            fn = (
+                action.get("function")
+                or action.get("actionMethodName")
+                or action.get("action_method_name")
+                or ""
+            )
+            if fn and fn != _HERMES_APPROVAL_FN:
+                return None
+            for entry in action.get("parameters") or []:
+                if not isinstance(entry, dict):
+                    continue
+                key = entry.get("key")
+                if key is None:
+                    continue
+                params[str(key)] = str(entry.get("value", ""))
+
+        approval_raw = params.get("approval_id")
+        choice = params.get("choice")
+        if not approval_raw or not choice:
+            return None
+        if choice not in _APPROVAL_CHOICES:
+            return None
+        try:
+            approval_id = int(approval_raw)
+        except (TypeError, ValueError):
+            return None
+        return approval_id, choice
+
+    def _extract_card_clicked_context(
+        self, envelope: Dict[str, Any], ce_type: str = ""
+    ) -> Optional[Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Tuple[int, str]]]:
+        """Return ``(space, message, user, (approval_id, choice))`` or None."""
+        chat_block = envelope.get("chat") or {}
+        payload = chat_block.get("cardClickedPayload")
+        if payload:
+            parsed = self._parse_approval_click_parameters(envelope, payload)
+            if not parsed:
+                return None
+            return (
+                payload.get("space") or envelope.get("space") or {},
+                payload.get("message") or envelope.get("message") or {},
+                payload.get("user") or envelope.get("user") or {},
+                parsed,
+            )
+
+        if envelope.get("type") == "CARD_CLICKED" or "CARD_CLICKED" in ce_type.upper():
+            parsed = self._parse_approval_click_parameters(envelope)
+            if not parsed:
+                return None
+            return (
+                envelope.get("space") or {},
+                envelope.get("message") or {},
+                envelope.get("user") or {},
+                parsed,
+            )
+
+        return None
+
+    def _is_card_click_user_authorized(
+        self,
+        *,
+        user_email: str,
+        user_resource: str,
+        chat_id: str,
+        space_type: str,
+    ) -> bool:
+        """Return whether the CARD_CLICKED actor may approve commands."""
+        canonical_user = (user_email or user_resource or "").strip()
+        if not canonical_user:
+            return False
+
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                from gateway.session import SessionSource
+
+                chat_type = (
+                    "dm"
+                    if str(space_type).upper() in {"DIRECT_MESSAGE", "DM"}
+                    else "group"
+                )
+                source = SessionSource(
+                    platform=Platform("google_chat"),
+                    chat_id=chat_id or canonical_user,
+                    chat_type=chat_type,
+                    user_id=canonical_user,
+                    user_name=canonical_user,
+                )
+                return bool(auth_fn(source))
+            except Exception:
+                logger.debug(
+                    "[GoogleChat] Falling back to env-only card-click auth",
+                    exc_info=True,
+                )
+
+        allow_all = os.getenv("GOOGLE_CHAT_ALLOW_ALL_USERS", "").strip().lower()
+        if allow_all in {"1", "true", "yes"}:
+            return True
+        allowed_csv = os.getenv("GOOGLE_CHAT_ALLOWED_USERS", "").strip()
+        if not allowed_csv:
+            allow_all_global = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower()
+            return allow_all_global in {"true", "1", "yes"}
+        allowed = {entry.strip().lower() for entry in allowed_csv.split(",") if entry.strip()}
+        if "*" in allowed:
+            return True
+        return canonical_user.lower() in allowed
+
+    async def _handle_card_clicked(
+        self, envelope: Dict[str, Any], ce_type: str = ""
+    ) -> None:
+        """Process CARD_CLICKED — resolve exec approvals from Card v2 buttons."""
+        extracted = self._extract_card_clicked_context(envelope, ce_type)
+        if not extracted:
+            logger.debug(
+                "[GoogleChat] CARD_CLICKED ignored (not a hermes approval click)"
+            )
+            return
+
+        space, message, user, (approval_id, choice) = extracted
+        space_name = (space.get("name") or "").strip()
+        message_name = (message.get("name") or "").strip()
+        user_email = (user.get("email") or "").strip()
+        user_resource = (user.get("name") or "").strip()
+        user_display = user.get("displayName") or user_email or user_resource or "User"
+        space_type = space.get("type") or space.get("spaceType") or ""
+
+        if not self._is_card_click_user_authorized(
+            user_email=user_email,
+            user_resource=user_resource,
+            chat_id=space_name,
+            space_type=str(space_type),
+        ):
+            logger.warning(
+                "[GoogleChat] Unauthorized CARD_CLICKED by %s in %s",
+                user_email or user_resource or "?",
+                space_name or "?",
+            )
+            return
+
+        state = self._approval_state.pop(approval_id, None)
+        if not state:
+            logger.debug(
+                "[GoogleChat] Approval %s already resolved or unknown", approval_id
+            )
+            return
+
+        expected_chat = state.get("chat_id") or ""
+        if expected_chat and space_name and expected_chat != space_name:
+            logger.warning(
+                "[GoogleChat] Approval %s chat mismatch (expected=%s, got=%s)",
+                approval_id,
+                expected_chat,
+                space_name,
+            )
+            self._approval_state[approval_id] = state
+            return
+
+        label_map = {
+            "once": "✅ Approved once",
+            "session": "✅ Approved for session",
+            "always": "✅ Approved permanently",
+            "deny": "❌ Denied",
+        }
+        label = label_map.get(choice, "Resolved")
+
+        try:
+            from tools.approval import resolve_gateway_approval
+
+            count = resolve_gateway_approval(state["session_key"], choice)
+            logger.info(
+                "[GoogleChat] Button resolved %d approval(s) for session %s "
+                "(choice=%s, user=%s)",
+                count,
+                state["session_key"],
+                choice,
+                user_display,
+            )
+        except Exception as exc:
+            logger.error(
+                "[GoogleChat] Failed to resolve gateway approval from button: %s",
+                exc,
+            )
+            count = 0
+
+        if count and space_name:
+            self.resume_typing_for_chat(space_name)
+
+        patch_target = message_name or state.get("message_id") or ""
+        if patch_target:
+            try:
+                await self._patch_message(
+                    patch_target,
+                    {"text": f"{label} by {user_display}"},
+                )
+            except Exception:
+                logger.debug(
+                    "[GoogleChat] Failed to patch approval card after click",
+                    exc_info=True,
+                )
 
     def _chunk_text(self, text: str) -> List[str]:
         if not text:
@@ -3328,9 +3674,9 @@ def register(ctx) -> None:
             "files, include MEDIA:/absolute/path/to/file in your response. "
             "Native file attachments require the user to run /setup-files "
             "once in their own DM — until they do, file requests fall back "
-            "to a text notice with the host path. Do NOT generate interactive "
-            "Card v2 buttons — Google Chat interactivity is not yet supported "
-            "by this gateway; ask for typed confirmations instead. While you "
+            "to a text notice with the host path. Dangerous-command approvals "
+            "render as Card v2 buttons (Allow Once / Session / Always / Deny); "
+            "the text `/approve` fallback still works if buttons fail. While you "
             "are generating a response, a 'Hermes is thinking…' marker message "
             "appears in the space and is deleted once your response is ready. "
             "You do NOT have access to Google Chat-specific APIs — you cannot "
