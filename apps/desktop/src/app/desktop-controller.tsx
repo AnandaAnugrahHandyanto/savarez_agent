@@ -1,4 +1,4 @@
-import { useStore } from '@nanostores/react'
+﻿import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
@@ -33,6 +33,7 @@ import { $activeGatewayProfile, $freshSessionRequest, normalizeProfileKey, refre
 import {
   $activeSessionId,
   $currentCwd,
+  $currentModel,
   $freshDraftReady,
   $gatewayState,
   $selectedStoredSessionId,
@@ -526,10 +527,10 @@ export function DesktopController() {
 
   // Swapping the live gateway to another profile must re-pull that profile's
   // global model + active-profile pill. Both are nanostores, so the blanket
-  // invalidateQueries() the profile store fires on swap doesn't touch them —
+  // invalidateQueries() the profile store fires on swap doesn't touch them â€”
   // without this the statusbar keeps showing the previous profile's model
   // (the "forgets the LLM setting" report). gatewayState stays 'open' across a
-  // swap (background sockets persist), so the open→open effect won't re-run.
+  // swap (background sockets persist), so the openâ†’open effect won't re-run.
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const lastGatewayProfileRef = useRef(activeGatewayProfile)
 
@@ -818,8 +819,8 @@ export function DesktopController() {
     </div>
   )
 
-  // Flipped layout mirrors the default: sessions sidebar → right, file
-  // browser + preview rail → left. Same panes, swapped sides.
+  // Flipped layout mirrors the default: sessions sidebar â†’ right, file
+  // browser + preview rail â†’ left. Same panes, swapped sides.
   const sidebarSide = panesFlipped ? 'right' : 'left'
   const railSide = panesFlipped ? 'left' : 'right'
 
@@ -934,3 +935,4 @@ function LegacySessionRedirect() {
 
   return <Navigate replace to={sessionId ? sessionRoute(sessionId) : NEW_CHAT_ROUTE} />
 }
+
