@@ -557,6 +557,20 @@ def _copy_dist_payload(
     """
     target.mkdir(parents=True, exist_ok=True)
 
+    # Build an ignore function that only excludes USER_OWNED_EXCLUDE entries
+    # at the root of the staged tree — same two-tier pattern used by
+    # ``_clone_all_copytree_ignore`` and ``_default_export_ignore``.
+    # Nested directories named ``bin`` (e.g. ``control-plane/bin/``) must
+    # NOT be filtered; only the top-level ``bin/`` of a default Hermes
+    # installation (which contains host-specific binaries like tirith) is
+    # infrastructure, not distribution content.
+    staged_resolved = staged.resolve()
+
+    def _copytree_ignore(directory: str, names: list[str]) -> list[str]:
+        if Path(directory).resolve() == staged_resolved:
+            return [n for n in names if n in USER_OWNED_EXCLUDE]
+        return []
+
     for entry in staged.iterdir():
         name = entry.name
 
@@ -573,11 +587,7 @@ def _copy_dist_payload(
         if entry.is_dir():
             if dest.exists():
                 shutil.rmtree(dest)
-            shutil.copytree(
-                entry,
-                dest,
-                ignore=lambda d, names: [n for n in names if n in USER_OWNED_EXCLUDE],
-            )
+            shutil.copytree(entry, dest, ignore=_copytree_ignore)
         else:
             shutil.copy2(entry, dest)
 
