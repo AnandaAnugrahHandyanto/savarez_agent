@@ -951,8 +951,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         ``resource.not.found`` for proactive sends because it requires a prior
         conversation context — the batchSend API does not.
 
-        For groups: uses ``v1.0/robot/orgGroupSend`` REST API with
-        open_conversation_id. No userId/staffId needed for groups.
+        For groups: uses ``v1.0/robot/groupMessages/send`` REST API with
+        openConversationId. No userId/staffId needed for groups.
 
         Requires:
         - ``_http_client`` initialized (always available after connect())
@@ -1027,22 +1027,25 @@ class DingTalkAdapter(BasePlatformAdapter):
             })
 
             if is_group:
-                # ---- Group proactive send via orgGroupSend REST API ----
-                # POST https://api.dingtalk.com/v1.0/robot/orgGroupSend
-                # Uses open_conversation_id directly — no userId/staffId needed.
-                # This REST API is more reliable than the SDK wrapper
-                # (OrgGroupSendRequest) and works without the alibabacloud
-                # DingTalk SDK being installed.
-                group_url = "https://api.dingtalk.com/v1.0/robot/orgGroupSend"
+                # ---- Group proactive send via groupMessages/send REST API ----
+                # POST https://api.dingtalk.com/v1.0/robot/groupMessages/send
+                # Uses openConversationId directly — no userId/staffId needed.
+                # NOTE: The old /v1.0/robot/orgGroupSend endpoint returns 404
+                # InvalidAction.NotFound — it no longer exists. The SDK method
+                # OrgGroupSendRequest actually calls /v1.0/robot/groupMessages/send
+                # internally. The REST API uses camelCase parameter names:
+                #   openConversationId (not open_conversation_id)
+                #   robotCode, msgKey, msgParam (same as batchSend)
+                group_url = "https://api.dingtalk.com/v1.0/robot/groupMessages/send"
                 group_headers = {
                     "x-acs-dingtalk-access-token": access_token,
                     "Content-Type": "application/json",
                 }
                 group_payload = {
-                    "open_conversation_id": chat_id,
-                    "robot_code": self._robot_code,
-                    "msg_key": "sampleMarkdown",
-                    "msg_param": msg_param,
+                    "openConversationId": chat_id,
+                    "robotCode": self._robot_code,
+                    "msgKey": "sampleMarkdown",
+                    "msgParam": msg_param,
                 }
 
                 group_resp = await self._http_client.post(
@@ -1051,18 +1054,18 @@ class DingTalkAdapter(BasePlatformAdapter):
                 if group_resp.status_code >= 300:
                     body_text = group_resp.text[:500]
                     logger.warning(
-                        "[%s] Proactive orgGroupSend HTTP %d for chat_id=%s: %s",
+                        "[%s] Proactive groupMessages/send HTTP %d for chat_id=%s: %s",
                         self.name, group_resp.status_code, chat_id, body_text,
                     )
                     return SendResult(
                         success=False,
-                        error=f"Proactive orgGroupSend HTTP {group_resp.status_code}: {body_text}",
+                        error=f"Proactive groupMessages/send HTTP {group_resp.status_code}: {body_text}",
                     )
 
                 group_data = group_resp.json()
                 process_key = group_data.get("processQueryKey", "")
                 logger.info(
-                    "[%s] Proactive orgGroupSend succeeded for chat_id=%s",
+                    "[%s] Proactive groupMessages/send succeeded for chat_id=%s",
                     self.name, chat_id,
                 )
                 return SendResult(success=True, message_id=process_key or uuid.uuid4().hex[:12])
@@ -1081,7 +1084,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                           "has sent a message to the bot so sender_staff_id can "
                           "be cached. If this chat_id is a group, add "
                           "'type: \"group\"' to the channel_directory entry so "
-                          "the orgGroupSend API is used instead.",
+                          "the groupMessages/send API is used instead.",
                 )
 
             batch_url = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend"
