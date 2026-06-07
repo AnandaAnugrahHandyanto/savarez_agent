@@ -1477,6 +1477,14 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     via this function), so persist-mode idle envs are similarly no-op'd —
     only the orphan reaper at next startup reclaims them.
     """
+    # Normal agent-turn task_ids are per-turn UUIDs, but terminal/file/code
+    # environments are deliberately collapsed to the shared ``default`` key by
+    # _resolve_container_task_id().  Resolve here too; otherwise per-turn
+    # cleanup_vm(uuid) pops a non-existent UUID entry and leaves a wedged
+    # ``default`` environment + ShellFileOperations cache alive indefinitely.
+    original_task_id = task_id
+    task_id = _resolve_container_task_id(task_id)
+
     # Remove from tracking dicts while holding the lock, but defer the
     # actual (potentially slow) env.cleanup() call to outside the lock
     # so other tool calls aren't blocked.
@@ -1484,15 +1492,22 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     with _env_lock:
         env = _active_environments.pop(task_id, None)
         _last_activity.pop(task_id, None)
+        if env is None and original_task_id != task_id:
+            env = _active_environments.pop(original_task_id, None)
+            _last_activity.pop(original_task_id, None)
 
     # Clean up per-task creation lock
     with _creation_locks_lock:
         _creation_locks.pop(task_id, None)
+        if original_task_id != task_id:
+            _creation_locks.pop(original_task_id, None)
 
     # Invalidate stale file_ops cache entry
     try:
         from tools.file_tools import clear_file_ops_cache
         clear_file_ops_cache(task_id)
+        if original_task_id != task_id:
+            clear_file_ops_cache(original_task_id)
     except ImportError:
         pass
 
@@ -2323,7 +2338,7 @@ def terminal_tool(
                     env_type=env_type,
                 )
                 for hook_result in hook_results:
-                    if isinstance(hook_result, str):
+                    if isinstance(hook_result, str) and hook_result:
                         output = hook_result
                         break
             except Exception:

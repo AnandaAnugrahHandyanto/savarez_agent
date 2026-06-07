@@ -105,3 +105,29 @@ def test_get_active_env_honours_rl_override():
         terminal_tool.clear_task_env_overrides("rl-42")
         terminal_tool._active_environments.pop("default", None)
         terminal_tool._active_environments.pop("rl-42", None)
+
+
+
+def test_cleanup_vm_collapses_session_id_before_clearing_shared_env(monkeypatch):
+    class DummyEnv:
+        persist = False
+        def __init__(self):
+            self.cleaned = False
+        def cleanup(self):
+            self.cleaned = True
+
+    env = DummyEnv()
+    terminal_tool._active_environments["default"] = env
+    terminal_tool._creation_locks["default"] = object()
+    cleared = []
+
+    import tools.file_tools as file_tools
+    monkeypatch.setattr(file_tools, "clear_file_ops_cache", lambda tid: cleared.append(tid))
+
+    terminal_tool.cleanup_vm("sess-123e4567-e89b-12d3")
+
+    assert env.cleaned is True
+    assert "default" not in terminal_tool._active_environments
+    assert "default" not in terminal_tool._creation_locks
+    assert "default" in cleared
+    assert "sess-123e4567-e89b-12d3" in cleared

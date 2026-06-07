@@ -77,6 +77,14 @@ def test_result_ignores_non_string_hook_returns(monkeypatch):
     assert out == '{"output": "original"}'
 
 
+def test_result_ignores_empty_string_hook_return(monkeypatch):
+    out = _run_handle_function_call(
+        monkeypatch,
+        invoke_hook=lambda hook_name, **kw: ["", None],
+    )
+    assert out == '{"output": "original"}'
+
+
 def test_first_valid_string_return_replaces_result(monkeypatch):
     out = _run_handle_function_call(
         monkeypatch,
