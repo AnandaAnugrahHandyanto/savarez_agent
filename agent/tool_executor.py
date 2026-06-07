@@ -28,6 +28,7 @@ from agent.display import (
     get_tool_emoji as _get_tool_emoji,
     _detect_tool_failure,
 )
+from agent.events import emit_tool_completed, emit_tool_failed, emit_tool_started
 from agent.tool_guardrails import ToolGuardrailDecision
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
@@ -446,6 +447,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 agent.tool_start_callback(tc.id, name, args)
             except Exception as cb_err:
                 logging.debug(f"Tool start callback error: {cb_err}")
+        emit_tool_started(agent, tc.id, name, args)
 
     # ── Concurrent execution ─────────────────────────────────────────
     # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag, middleware_trace)
@@ -657,6 +659,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     middleware_trace=list(middleware_trace),
                 )
             tool_duration = 0.0
+            is_error = True
         else:
             function_name, function_args, function_result, tool_duration, is_error, blocked, middleware_trace = r
 
@@ -719,6 +722,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 agent.tool_complete_callback(tc.id, name, args, function_result)
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
+
+        if blocked or is_error:
+            emit_tool_failed(agent, tc.id, name, args, function_result, tool_duration)
+        else:
+            emit_tool_completed(agent, tc.id, name, args, function_result, tool_duration)
 
         function_result = maybe_persist_tool_result(
             content=function_result,
@@ -901,6 +909,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent.tool_start_callback(tool_call.id, function_name, function_args)
             except Exception as cb_err:
                 logging.debug(f"Tool start callback error: {cb_err}")
+        if not _execution_blocked:
+            emit_tool_started(agent, tool_call.id, function_name, function_args)
 
         # Checkpoint: snapshot working dir before file-mutating tools
         if not _execution_blocked and function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
@@ -1338,6 +1348,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent.tool_complete_callback(tool_call.id, function_name, function_args, function_result)
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
+
+        if _execution_blocked or _is_error_result:
+            emit_tool_failed(agent, tool_call.id, function_name, function_args, function_result, tool_duration)
+        else:
+            emit_tool_completed(agent, tool_call.id, function_name, function_args, function_result, tool_duration)
 
         function_result = maybe_persist_tool_result(
             content=function_result,
