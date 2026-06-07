@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import stat
 
 from gateway import voice_bench
 
@@ -26,6 +27,29 @@ def test_append_event_redacts_and_renames_text_fields(tmp_path, monkeypatch):
     assert "transcript" not in item
     assert item["transcript_chars"] == 39
     assert item["transcript_preview"] == "use api_key=[REDACTED] and continue"
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_append_event_redacts_standalone_github_tokens(tmp_path, monkeypatch):
+    path = tmp_path / "voice_bench.jsonl"
+    monkeypatch.setenv("HERMES_VOICE_BENCH_PATH", str(path))
+    monkeypatch.setenv("HERMES_VOICE_BENCH_SYNC", "1")
+    token = "ghp_abcdefghijklmnopqrstuvwxyz123456"
+
+    voice_bench.append_event(
+        {
+            "turn_id": "voice-token",
+            "stage": "agent",
+            "platform": "telegram",
+            "chat_id": "123",
+            "response": f"standalone token {token}",
+        }
+    )
+
+    item = json.loads(path.read_text(encoding="utf-8"))
+    assert token not in item["response_preview"]
+    assert "[REDACTED]" in item["response_preview"]
 
 
 def test_format_recent_displays_safe_previews(tmp_path, monkeypatch):
@@ -138,4 +162,12 @@ def test_format_recent_reports_unavailable_on_read_failure(monkeypatch):
 
     assert voice_bench.format_recent("telegram", "123") == (
         "Voice bench unavailable: telemetry read failed."
+    )
+
+
+def test_format_recent_reports_unavailable_on_write_failure(monkeypatch):
+    monkeypatch.setattr(voice_bench, "_LAST_WRITE_ERROR", "disk full")
+
+    assert voice_bench.format_recent("telegram", "123") == (
+        "Voice bench unavailable: telemetry write failed."
     )

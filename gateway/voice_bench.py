@@ -7,6 +7,7 @@ import logging
 import os
 import queue
 import re
+import stat
 import threading
 import time
 import uuid
@@ -31,7 +32,9 @@ _SECRET_PATTERNS = (
         r"(?i)\b(api[_-]?key|token|secret|password|passwd|authorization)\s*[:=]\s*"
         r"([^\s,;]{4,})"
     ),
-    re.compile(r"\b(?:sk|ghp|gho|ghu|ghs|glpat|xox[abprs])-[-A-Za-z0-9_]{8,}\b"),
+    re.compile(r"\b(?:sk|glpat|xox[abprs])-[-A-Za-z0-9_]{8,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{8,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{8,}\b"),
 )
 
 
@@ -79,9 +82,21 @@ def _safe_event(event: dict[str, Any]) -> dict[str, Any]:
 def _write_payload(path: Path, payload: dict[str, Any]) -> None:
     global _LAST_WRITE_ERROR
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            path.parent.chmod(0o700)
+        except OSError:
+            pass
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+            with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         _LAST_WRITE_ERROR = None
     except OSError as exc:
         _LAST_WRITE_ERROR = str(exc)
@@ -237,6 +252,8 @@ def _stage_item(stage: Any) -> dict[str, Any]:
 
 def format_recent(platform: str | None = None, chat_id: str | None = None, *, limit: int = DEFAULT_LIMIT) -> str:
     flush_events()
+    if _LAST_WRITE_ERROR:
+        return "Voice bench unavailable: telemetry write failed."
     events = recent_events(platform=platform, chat_id=chat_id)
     if _LAST_READ_ERROR:
         return "Voice bench unavailable: telemetry read failed."

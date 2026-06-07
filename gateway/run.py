@@ -12084,7 +12084,7 @@ class GatewayRunner:
 
         if args == "smoke":
             return await self._run_voice_smoke()
-        elif args.startswith("bench"):
+        elif args == "bench" or args.startswith("bench "):
             if not self._is_voice_bench_user_authorized(event.source):
                 return "Voice bench is restricted to an authorized user."
             parts = args.split()
@@ -12147,6 +12147,10 @@ class GatewayRunner:
                     return "\n".join(lines)
             return t("gateway.voice.status_mode", label=labels.get(mode, mode))
         else:
+            if args:
+                return (
+                    "Unknown /voice option. Usage: /voice on|off|tts|status|bench|smoke."
+                )
             # Toggle: off → on, on/all → off
             current = self._voice_mode.get(voice_key, "off")
             if current == "off":
