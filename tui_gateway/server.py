@@ -211,7 +211,7 @@ _stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
-    def __init__(self, session_key: str, model: str):
+    def __init__(self, session_key: str, model: str, profile: str | None = None, profile_home: str | None = None):
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
@@ -226,6 +226,14 @@ class _SlashWorker:
         ]
         if model:
             argv += ["--model", model]
+        if profile:
+            argv += ["--profile", profile]
+
+        env = os.environ.copy()
+        if profile_home:
+            env["HERMES_HOME"] = profile_home
+        if profile:
+            env["HERMES_PROFILE"] = profile
 
         self.proc = subprocess.Popen(
             argv,
@@ -235,7 +243,7 @@ class _SlashWorker:
             text=True,
             bufsize=1,
             cwd=os.getcwd(),
-            env=os.environ.copy(),
+            env=env,
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
@@ -704,7 +712,12 @@ def _start_agent_build(sid: str, session: dict) -> None:
             current["agent"] = agent
 
             try:
-                worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
+                worker = _SlashWorker(
+                    key,
+                    getattr(agent, "model", _resolve_model()),
+                    profile=current.get("profile_name"),
+                    profile_home=current.get("profile_home"),
+                )
                 current["slash_worker"] = worker
             except Exception:
                 pass
@@ -1430,6 +1443,8 @@ def _restart_slash_worker(session: dict):
         session["slash_worker"] = _SlashWorker(
             session["session_key"],
             getattr(session.get("agent"), "model", _resolve_model()),
+            profile=session.get("profile_name"),
+            profile_home=session.get("profile_home"),
         )
     except Exception:
         session["slash_worker"] = None
@@ -2680,7 +2695,8 @@ def _make_agent(
     )
 
 
-def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
+def _init_session(sid: str, key: str, agent, history: list, cols: int = 80,
+                  profile_name: str | None = None, profile_home: str | None = None):
     now = time.time()
     with _sessions_lock:
         _sessions[sid] = {
@@ -2709,6 +2725,9 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
             # Pin async event emissions to whichever transport created the
             # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
             "transport": current_transport() or _stdio_transport,
+            # Per-session profile scoping (app-global remote mode).
+            "profile_name": profile_name,
+            "profile_home": profile_home,
         }
     db = _get_db()
     if db is not None:
@@ -2725,7 +2744,10 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
     _register_session_cwd(_sessions[sid])
     try:
         _sessions[sid]["slash_worker"] = _SlashWorker(
-            key, getattr(agent, "model", _resolve_model())
+            key,
+            getattr(agent, "model", _resolve_model()),
+            profile=_sessions[sid].get("profile_name"),
+            profile_home=_sessions[sid].get("profile_home"),
         )
     except Exception:
         # Defer hard-failure to slash.exec; chat still works without slash worker.
@@ -3133,6 +3155,7 @@ def _(rid, params: dict) -> dict:
             "last_active": now,
             "pending_title": title or None,
             "profile_home": str(profile_home) if profile_home is not None else None,
+            "profile_name": profile,
             "running": False,
             "session_key": key,
             "show_reasoning": _load_show_reasoning(),
@@ -3375,14 +3398,12 @@ def _(rid, params: dict) -> dict:
             payload["resumed"] = target
             return _ok(rid, payload)
         try:
-            _init_session(sid, target, agent, history, cols=cols)
+            _init_session(
+                sid, target, agent, history, cols=cols,
+                profile_name=profile, profile_home=str(profile_home) if profile_home is not None else None,
+            )
             if sid in _sessions:
                 _sessions[sid]["display_history_prefix"] = display_history_prefix
-                # Remember the profile home so each turn re-binds HERMES_HOME (the
-                # agent persists to its own db, but mid-turn home reads — memory,
-                # skills — must resolve to the resumed profile too).
-                if profile_home is not None:
-                    _sessions[sid]["profile_home"] = str(profile_home)
         except Exception as e:
             return _err(rid, 5000, f"resume failed: {e}")
         session = _sessions.get(sid) or {}
@@ -4049,7 +4070,9 @@ def _(rid, params: dict) -> dict:
         finally:
             _clear_session_context(tokens)
         _init_session(
-            new_sid, new_key, agent, list(history), cols=session.get("cols", 80)
+            new_sid, new_key, agent, list(history), cols=session.get("cols", 80),
+            profile_name=session.get("profile_name"),
+            profile_home=session.get("profile_home"),
         )
     except Exception as e:
         return _err(rid, 5000, f"agent init failed on branch: {e}")
@@ -7740,6 +7763,8 @@ def _(rid, params: dict) -> dict:
             worker = _SlashWorker(
                 session["session_key"],
                 getattr(session.get("agent"), "model", _resolve_model()),
+                profile=session.get("profile_name"),
+                profile_home=session.get("profile_home"),
             )
             session["slash_worker"] = worker
         except Exception as e:

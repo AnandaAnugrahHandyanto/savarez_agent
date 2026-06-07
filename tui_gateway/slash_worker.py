@@ -47,10 +47,13 @@ def main():
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--session-key", required=True)
     p.add_argument("--model", default="")
+    p.add_argument("--profile", default="")
     args = p.parse_args()
 
     os.environ["HERMES_SESSION_KEY"] = args.session_key
     os.environ["HERMES_INTERACTIVE"] = "1"
+    if args.profile:
+        os.environ["HERMES_PROFILE"] = args.profile
 
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         cli = HermesCLI(model=args.model or None, compact=True, resume=args.session_key, verbose=False)
