@@ -16,6 +16,7 @@ import {
   Zap,
   ZapFilled
 } from '@/lib/icons'
+import { useI18n } from '@/i18n'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
@@ -42,7 +43,6 @@ import { $subagentsBySession, activeSubagentCount } from '@/store/subagents'
 import { $desktopVersion, $updateApply, $updateStatus, setUpdateOverlayOpen } from '@/store/updates'
 import type { StatusResponse } from '@/types/hermes'
 
-import { useT } from '@/i18n/useT'
 import { CRON_ROUTE } from '../../routes'
 import type { StatusbarItem } from '../statusbar-controls'
 
@@ -79,7 +79,8 @@ export function useStatusbarItems({
   statusSnapshot,
   toggleCommandCenter
 }: StatusbarItemsOptions) {
-  const { t, tf } = useT()
+  const { t } = useI18n()
+  const copy = t.shell.statusbar
   const activeSessionId = useStore($activeSessionId)
   const yoloActive = useStore($yoloActive)
   const busy = useStore($busy)
@@ -162,13 +163,13 @@ export function useStatusbarItems({
 
   const gatewayDetail = gatewayOpen
     ? inferenceStatus?.ready
-      ? t('statusbar.gateway_ready')
+      ? copy.gatewayReady
       : inferenceStatus
-        ? t('statusbar.gateway_needs_setup')
-        : t('statusbar.gateway_checking')
+        ? copy.gatewayNeedsSetup
+        : copy.gatewayChecking
     : gatewayConnecting
-      ? t('statusbar.gateway_connecting')
-      : t('statusbar.gateway_offline')
+      ? copy.gatewayConnecting
+      : copy.gatewayOffline
 
   const gatewayClassName = inferenceReady
     ? undefined
@@ -181,21 +182,21 @@ export function useStatusbarItems({
     const sha = updateStatus?.currentSha?.slice(0, 7) ?? null
     const behind = updateStatus?.behind ?? 0
     const applying = updateApply.applying || updateApply.stage === 'restart'
-    const base = appVersion ? `v${appVersion}` : (sha ?? t('statusbar.version_unknown'))
+    const base = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
     const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
 
     const label = applying
       ? updateApply.stage === 'restart'
-        ? tf('statusbar.version_restart', base)
-        : tf('statusbar.version_update', base)
+        ? `${base} · ${copy.restart}`
+        : `${base} · ${copy.update}`
       : `${base}${behindHint}`
 
     const tooltip = [
-      applying ? (updateApply.message || t('statusbar.update_in_progress')) : null,
-      !applying && behind > 0 && `${behind} commit${behind === 1 ? '' : 's'} behind ${updateStatus?.branch ?? '…'}`,
-      appVersion && `Hermes Desktop v${appVersion}`,
-      sha && `commit ${sha}`,
-      updateStatus?.branch && `branch ${updateStatus.branch}`
+      applying ? updateApply.message || copy.updateInProgress : null,
+      !applying && behind > 0 && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
+      appVersion && copy.desktopVersion(appVersion),
+      sha && copy.commit(sha),
+      updateStatus?.branch && copy.branch(updateStatus.branch)
     ]
       .filter(Boolean)
       .join(' · ')
@@ -213,6 +214,7 @@ export function useStatusbarItems({
     }
   }, [
     desktopVersion?.appVersion,
+    copy,
     updateApply.applying,
     updateApply.message,
     updateApply.stage,
@@ -228,7 +230,7 @@ export function useStatusbarItems({
         icon: <Command className="size-3.5" />,
         id: 'command-center',
         onSelect: toggleCommandCenter,
-        title: commandCenterOpen ? t('statusbar.command_center_close') : t('statusbar.command_center_open'),
+        title: commandCenterOpen ? copy.closeCommandCenter : copy.openCommandCenter,
         variant: 'action'
       },
       {
@@ -236,10 +238,10 @@ export function useStatusbarItems({
         detail: gatewayDetail,
         icon: inferenceReady ? <Activity className="size-3" /> : <AlertCircle className="size-3" />,
         id: 'gateway-health',
-        label: t('statusbar.gateway'),
+        label: copy.gateway,
         menuClassName: 'w-72',
         menuContent: gatewayMenuContent,
-        title: inferenceStatus?.reason || t('statusbar.gateway_title'),
+        title: inferenceStatus?.reason || copy.gatewayTitle,
         variant: 'menu'
       },
       {
@@ -249,11 +251,11 @@ export function useStatusbarItems({
         ),
         detail:
           subagentsRunning > 0
-            ? tf(subagentsRunning === 1 ? 'statusbar.agents_subagents' : 'statusbar.agents_subagents_plural', subagentsRunning)
+            ? copy.subagents(subagentsRunning)
             : bgFailed > 0
-              ? tf('statusbar.agents_failed', bgFailed)
+              ? copy.failed(bgFailed)
               : bgRunning > 0
-                ? tf('statusbar.agents_running', bgRunning)
+                ? copy.running(bgRunning)
                 : undefined,
         icon:
           bgFailed > 0 ? (
@@ -264,16 +266,16 @@ export function useStatusbarItems({
             <Sparkles className="size-3" />
           ),
         id: 'agents',
-        label: t('statusbar.agents'),
+        label: copy.agents,
         onSelect: openAgents,
-        title: agentsOpen ? t('statusbar.agents_close') : t('statusbar.agents_open'),
+        title: agentsOpen ? copy.closeAgents : copy.openAgents,
         variant: 'action'
       },
       {
         icon: <Clock className="size-3" />,
         id: 'cron',
-        label: t('statusbar.cron'),
-        title: t('statusbar.cron_title'),
+        label: copy.cron,
+        title: copy.openCron,
         to: CRON_ROUTE,
         variant: 'action'
       }
@@ -283,6 +285,7 @@ export function useStatusbarItems({
       bgFailed,
       bgRunning,
       commandCenterOpen,
+      copy,
       gatewayMenuContent,
       gatewayClassName,
       gatewayDetail,
@@ -301,8 +304,8 @@ export function useStatusbarItems({
         hidden: !busy || !turnStartedAt,
         icon: <Loader2 className="size-3 animate-spin" />,
         id: 'running-timer',
-        label: t('statusbar.running'),
-        title: t('statusbar.running_title'),
+        label: copy.turnRunning,
+        title: copy.currentTurnElapsed,
         variant: 'text'
       },
       {
@@ -310,15 +313,15 @@ export function useStatusbarItems({
         hidden: !contextUsage,
         id: 'context-usage',
         label: contextUsage,
-        title: t('statusbar.context_title'),
+        title: copy.contextUsage,
         variant: 'text'
       },
       {
         detail: <LiveDuration since={sessionStartedAt} />,
         hidden: !sessionStartedAt,
         id: 'session-timer',
-        label: t('statusbar.session'),
-        title: t('statusbar.session_title'),
+        label: copy.session,
+        title: copy.runtimeSessionElapsed,
         variant: 'text'
       },
       {
@@ -331,9 +334,7 @@ export function useStatusbarItems({
         ),
         id: 'yolo',
         onSelect: () => void toggleYolo(),
-        title: yoloActive
-          ? t('statusbar.yolo_on')
-          : t('statusbar.yolo_off'),
+        title: yoloActive ? copy.yoloOn : copy.yoloOff,
         variant: 'action'
       },
       {
@@ -354,12 +355,16 @@ export function useStatusbarItems({
               menuAlign: 'end' as const,
               menuClassName: 'w-64',
               menuContent: modelMenuContent,
-              title: currentProvider ? tf('statusbar.model_title', currentProvider, currentModel || t('statusbar.model_none')) : t('statusbar.switch_model'),
+              title: currentProvider
+                ? copy.modelTitle(currentProvider, currentModel || copy.modelNone)
+                : copy.switchModel,
               variant: 'menu' as const
             }
           : {
               onSelect: () => setModelPickerOpen(true),
-              title: currentProvider ? `${currentProvider} · ${currentModel || t('statusbar.model_none')}` : t('statusbar.open_model_picker'),
+              title: currentProvider
+                ? copy.providerModelTitle(currentProvider, currentModel || copy.noModel)
+                : copy.openModelPicker,
               variant: 'action' as const
             })
       },
@@ -369,6 +374,7 @@ export function useStatusbarItems({
       busy,
       contextBar,
       contextUsage,
+      copy,
       currentFastMode,
       currentModel,
       currentProvider,

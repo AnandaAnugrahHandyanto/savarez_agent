@@ -2,9 +2,10 @@ import * as React from 'react'
 
 import { Button } from '@/components/ui/button'
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
+import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Copy, X } from '@/lib/icons'
-import { useT } from '@/i18n/useT'
 import { cn } from '@/lib/utils'
 
 type CopyPayload = string | (() => Promise<string> | string)
@@ -71,7 +72,9 @@ export function CopyButton({
   text,
   title
 }: CopyButtonProps) {
-  const { t } = useT()
+  const { t } = useI18n()
+  const resolvedErrorMessage = errorMessage ?? t.common.copyFailed
+  const resolvedLabel = label ?? t.common.copy
   const [status, setStatus] = React.useState<CopyStatus>('idle')
   const resetRef = React.useRef<number | null>(null)
 
@@ -136,14 +139,12 @@ export function CopyButton({
   const Icon = status === 'copied' ? Check : status === 'error' ? X : Copy
   const icon = <Icon className={cn('size-3.5', iconClassName)} />
 
-  const resolvedLabel = label ?? t('copy_button.label')
-
   const visibleChildren =
     (showLabel ?? (appearance !== 'icon' && appearance !== 'tool-row'))
       ? status === 'copied'
-        ? t('copy_button.copied')
+        ? t.common.copied
         : status === 'error'
-          ? t('copy_button.failed')
+          ? t.common.failed
           : (children ?? resolvedLabel)
       : null
 
@@ -154,7 +155,8 @@ export function CopyButton({
     </>
   )
 
-  const feedbackLabel = status === 'copied' ? t('copy_button.copied') : status === 'error' ? errorMessage : (title ?? resolvedLabel)
+  const feedbackLabel =
+    status === 'copied' ? t.common.copied : status === 'error' ? resolvedErrorMessage : (title ?? resolvedLabel)
   const ariaLabel = status === 'idle' ? resolvedLabel : feedbackLabel
 
   if (appearance === 'menu-item') {
@@ -182,7 +184,6 @@ export function CopyButton({
         )}
         disabled={disabled}
         onClick={event => void copy(event)}
-        title={feedbackLabel}
         type="button"
       >
         {content}
@@ -192,34 +193,37 @@ export function CopyButton({
 
   if (appearance === 'tool-row') {
     return (
-      <button
-        aria-label={ariaLabel}
-        className={cn(
-          'grid size-6 place-items-center rounded-md text-muted-foreground/70 opacity-0 transition-opacity hover:bg-accent/55 hover:text-foreground focus-visible:opacity-100 group-hover/tool-row:opacity-100 disabled:opacity-40',
-          className
-        )}
-        disabled={disabled}
-        onClick={event => void copy(event)}
-        title={feedbackLabel}
-        type="button"
-      >
-        {icon}
-      </button>
+      <Tip label={feedbackLabel}>
+        <button
+          aria-label={ariaLabel}
+          className={cn(
+            'grid size-6 place-items-center rounded-md text-muted-foreground/70 opacity-0 transition-opacity hover:bg-accent/55 hover:text-foreground focus-visible:opacity-100 group-hover/tool-row:opacity-100 disabled:opacity-40',
+            className
+          )}
+          disabled={disabled}
+          onClick={event => void copy(event)}
+          type="button"
+        >
+          {icon}
+        </button>
+      </Tip>
     )
   }
 
-  return (
+  const button = (
     <Button
       aria-label={ariaLabel}
       className={className}
       disabled={disabled}
       onClick={event => void copy(event)}
       size={buttonSize ?? (appearance === 'icon' ? 'icon' : 'default')}
-      title={feedbackLabel}
       type="button"
       variant={buttonVariant}
     >
       {content}
     </Button>
   )
+
+  // Only icon-only buttons need a tooltip; the text variant already shows its label.
+  return appearance === 'icon' ? <Tip label={feedbackLabel}>{button}</Tip> : button
 }

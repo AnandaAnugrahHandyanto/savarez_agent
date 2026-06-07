@@ -1,4 +1,3 @@
-import { useT } from '@/i18n/useT'
 import type { ChangeEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -14,11 +13,13 @@ import {
   getHermesConfigSchema,
   saveHermesConfig
 } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
+import { fieldCopyForSchemaKey } from './field-copy'
 import { enumOptionsFor, getNested, prettyName, setNested } from './helpers'
 import { ModelSettings } from './model-settings'
 import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
@@ -38,11 +39,23 @@ function ConfigField({
   optionLabels?: Record<string, string>
   onChange: (value: unknown) => void
 }) {
-  const { t, tf } = useT()
-  const rawLabel = FIELD_LABELS[schemaKey] ?? prettyName(schemaKey.split('.').pop() ?? schemaKey)
-  const label = t('config.field.' + schemaKey) || rawLabel
+  const { t } = useI18n()
+  const c = t.settings.config
+
+  const label =
+    fieldCopyForSchemaKey(t.settings.fieldLabels, schemaKey) ??
+    fieldCopyForSchemaKey(FIELD_LABELS, schemaKey) ??
+    prettyName(schemaKey.split('.').pop() ?? schemaKey)
+
   const normalize = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '')
-  const rawDescription = t('config.desc.' + schemaKey) || (FIELD_DESCRIPTIONS[schemaKey] ?? schema.description ?? '').trim()
+
+  const rawDescription = (
+    fieldCopyForSchemaKey(t.settings.fieldDescriptions, schemaKey) ??
+    fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, schemaKey) ??
+    schema.description ??
+    ''
+  ).trim()
+
   const normalizedDesc = normalize(rawDescription)
 
   const description =
@@ -79,8 +92,8 @@ function ConfigField({
               {option
                 ? (optionLabels?.[option] ?? prettyName(option))
                 : schemaKey === 'display.personality'
-                  ? t('config.personality_none')
-                  : t('config.none_paren')}
+                  ? c.none
+                  : c.noneParen}
             </SelectItem>
           ))}
         </SelectContent>
@@ -100,7 +113,7 @@ function ConfigField({
             onChange(n)
           }
         }}
-        placeholder={t('config.not_set_placeholder')}
+        placeholder={c.notSet}
         type="number"
         value={value === undefined || value === null ? '' : String(value)}
       />
@@ -119,7 +132,7 @@ function ConfigField({
               .filter(Boolean)
           )
         }
-        placeholder={t('config.list_placeholder')}
+        placeholder={c.commaSeparated}
         value={Array.isArray(value) ? value.join(', ') : String(value ?? '')}
       />
     )
@@ -136,7 +149,7 @@ function ConfigField({
             /* keep last valid */
           }
         }}
-        placeholder={t('config.not_set_placeholder')}
+        placeholder={c.notSet}
         spellCheck={false}
         value={JSON.stringify(value, null, 2)}
       />,
@@ -151,14 +164,14 @@ function ConfigField({
       <Textarea
         className={cn('min-h-24 resize-y bg-background', CONTROL_TEXT)}
         onChange={e => onChange(e.target.value)}
-        placeholder={t('config.not_set_placeholder')}
+        placeholder={c.notSet}
         value={String(value ?? '')}
       />
     ) : (
       <Input
         className={CONTROL_TEXT}
         onChange={e => onChange(e.target.value)}
-        placeholder={t('config.not_set_placeholder')}
+        placeholder={c.notSet}
         value={String(value ?? '')}
       />
     ),
@@ -177,7 +190,8 @@ export function ConfigSettings({
   onMainModelChanged?: (provider: string, model: string) => void
   importInputRef: React.RefObject<HTMLInputElement | null>
 }) {
-  const { t } = useT()
+  const { t } = useI18n()
+  const c = t.settings.config
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [_defaults, setDefaults] = useState<HermesConfigRecord | null>(null)
   const [schema, setSchema] = useState<Record<string, ConfigFieldSchema> | null>(null)
@@ -198,7 +212,7 @@ export function ConfigSettings({
         setDefaults(d)
         setSchema(s.fields)
       })
-      .catch(err => notifyError(err, t('config.load_error')))
+      .catch(err => notifyError(err, c.failedLoad))
 
     return () => void (cancelled = true)
   }, [])
@@ -242,7 +256,7 @@ export function ConfigSettings({
           }
         } catch (err) {
           if (saveVersionRef.current === v) {
-            notifyError(err, t('config.autosave_error'))
+            notifyError(err, c.autosaveFailed)
           }
         }
       })()
@@ -315,9 +329,9 @@ export function ConfigSettings({
     reader.onload = () => {
       try {
         updateConfig(JSON.parse(String(reader.result)))
-        notify({ kind: 'success', title: t('config.import_success_title'), message: t('config.import_saving_msg') })
+        notify({ kind: 'success', title: c.imported, message: t.common.saving })
       } catch (err) {
-        notifyError(err, t('config.import_error'))
+        notifyError(err, c.invalidJson)
       }
     }
 
@@ -326,7 +340,7 @@ export function ConfigSettings({
   }
 
   if (!config || !schema) {
-    return <LoadingState label={t('config.loading')} />
+    return <LoadingState label={c.loading} />
   }
 
   return (
@@ -337,7 +351,7 @@ export function ConfigSettings({
         </div>
       )}
       {fields.length === 0 ? (
-        <EmptyState description={t('config.empty_desc')} title={t('config.empty_title')} />
+        <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : (
         <div className="grid gap-1">
           {fields.map(([key, field]) => (

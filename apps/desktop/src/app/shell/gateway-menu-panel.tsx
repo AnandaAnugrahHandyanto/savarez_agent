@@ -1,8 +1,9 @@
 import { IconLayoutDashboard } from '@tabler/icons-react'
 
-import { useT } from '@/i18n/useT'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
+import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 import { Activity, AlertCircle } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { cn } from '@/lib/utils'
@@ -40,24 +41,25 @@ export function GatewayMenuPanel({
   onOpenSystem,
   statusSnapshot
 }: GatewayMenuPanelProps) {
-  const { t, tf } = useT()
+  const { t } = useI18n()
+  const copy = t.shell.gatewayMenu
   const gatewayOpen = gatewayState === 'open'
   const gatewayConnecting = gatewayState === 'connecting'
   const inferenceReady = gatewayOpen && inferenceStatus?.ready === true
 
   const connectionLabel = gatewayOpen
-    ? t('gateway_panel.connected')
+    ? copy.connected
     : gatewayConnecting
-      ? t('gateway_panel.connecting')
-      : prettyState(gatewayState || 'offline')
+      ? copy.connecting
+      : prettyState(gatewayState || copy.offline)
 
   const inferenceLabel = gatewayOpen
     ? inferenceStatus?.ready
-      ? t('gateway_panel.inference_ready')
+      ? copy.inferenceReady
       : inferenceStatus
-        ? t('gateway_panel.inference_not_ready')
-        : t('gateway_panel.inference_checking')
-    : t('gateway_panel.disconnected')
+        ? copy.inferenceNotReady
+        : copy.checkingInference
+    : copy.disconnected
 
   const platforms = Object.entries(statusSnapshot?.gateway_platforms || {}).sort(([l], [r]) => l.localeCompare(r))
   const recentLogs = logLines.slice(-5)
@@ -71,58 +73,59 @@ export function GatewayMenuPanel({
           ) : (
             <AlertCircle className={cn('size-3.5', gatewayOpen ? 'text-amber-600' : 'text-destructive')} />
           )}
-          <span className="font-medium">{t('gateway_panel.gateway')}</span>
+          <span className="font-medium">{copy.gateway}</span>
           <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <StatusDot tone={inferenceReady ? 'good' : gatewayOpen ? 'warn' : 'bad'} />
             {inferenceLabel}
           </span>
         </div>
         <div className="flex items-center">
-          <Button
-            aria-label={t('gateway_panel.open_system')}
-            className="text-muted-foreground hover:text-foreground"
-            onClick={onOpenSystem}
-            size="icon-sm"
-            title={t('gateway_panel.open_system')}
-            variant="ghost"
-          >
-            <IconLayoutDashboard />
-          </Button>
+          <Tip label={copy.openSystem}>
+            <Button
+              aria-label={copy.openSystem}
+              className="text-muted-foreground hover:text-foreground"
+              onClick={onOpenSystem}
+              size="icon-sm"
+              variant="ghost"
+            >
+              <IconLayoutDashboard />
+            </Button>
+          </Tip>
         </div>
       </div>
 
       <div className="border-t border-border/50 px-3 py-2 text-xs text-muted-foreground">
-        <div>{tf('gateway_panel.connection', connectionLabel)}</div>
+        <div>{copy.connection(connectionLabel)}</div>
         {inferenceStatus?.reason && <div className="mt-1 line-clamp-3">{inferenceStatus.reason}</div>}
       </div>
 
       {recentLogs.length > 0 && (
         <div className="border-t border-border/50 px-3 py-2">
-          <SectionLabel>{t('gateway_panel.recent_activity')}</SectionLabel>
+          <SectionLabel>{copy.recentActivity}</SectionLabel>
           <ul className="mt-1.5 space-y-0.5">
             {recentLogs.map((line, index) => (
-              <li
-                className="truncate font-mono text-[0.68rem] text-muted-foreground/85"
-                key={`${index}:${line}`}
-                title={line.trim()}
-              >
-                {trimLogLine(line) || '\u00A0'}
-              </li>
+              <Tip key={`${index}:${line}`} label={line.trim()}>
+                <li className="truncate font-mono text-[0.68rem] text-muted-foreground/85">
+                  {trimLogLine(line) || '\u00A0'}
+                </li>
+              </Tip>
             ))}
           </ul>
-          <button
-            className="mt-1.5 text-[0.66rem] font-medium text-muted-foreground hover:text-foreground"
+          <Button
+            className="-ml-2 mt-1.5 font-medium text-muted-foreground"
             onClick={onOpenSystem}
+            size="xs"
             type="button"
+            variant="text"
           >
-            {t('gateway_panel.view_all_logs')}
-          </button>
+            {copy.viewAllLogs}
+          </Button>
         </div>
       )}
 
       {platforms.length > 0 && (
         <div className="border-t border-border/50 px-3 py-2">
-          <SectionLabel>{t('gateway_panel.messaging_platforms')}</SectionLabel>
+          <SectionLabel>{copy.messagingPlatforms}</SectionLabel>
           <ul className="mt-1.5 space-y-1">
             {platforms.map(([name, platform]) => (
               <li className="flex items-center justify-between gap-2 text-xs" key={name}>
