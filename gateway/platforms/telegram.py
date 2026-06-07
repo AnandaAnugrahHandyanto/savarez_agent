@@ -6044,10 +6044,11 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return False
         try:
+            from telegram._reaction import ReactionTypeEmoji
             await self._bot.set_message_reaction(
                 chat_id=int(chat_id),
                 message_id=int(message_id),
-                reaction=emoji,
+                reaction=ReactionTypeEmoji(emoji=emoji),
             )
             return True
         except Exception as e:
@@ -6089,7 +6090,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         chat_id, message_id = self._reaction_event_ids(event)
         if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\u270d\ufe0f")  # ✍️
+            await self._set_reaction(chat_id, message_id, "\u270d")  # ✍
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Set final success/failure reaction."""
