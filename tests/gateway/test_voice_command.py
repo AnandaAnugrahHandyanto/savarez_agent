@@ -919,9 +919,11 @@ class TestVoiceChannelCommands:
         await runner._handle_voice_channel_input(111, 42, "Hello")
 
     @pytest.mark.asyncio
-    async def test_input_creates_event_and_dispatches(self, runner):
+    async def test_input_creates_event_and_dispatches(self, runner, monkeypatch):
         """Voice input creates synthetic event and calls handle_message."""
         from gateway.config import Platform
+        import gateway.run as gateway_run
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
         mock_adapter = AsyncMock()
         mock_adapter._voice_text_channels = {111: 123}
         mock_adapter._voice_sources = {}
