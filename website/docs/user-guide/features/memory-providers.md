@@ -271,25 +271,252 @@ Context database by Volcengine (ByteDance) with filesystem-style knowledge hiera
 | **Data storage** | Self-hosted (local or cloud) |
 | **Cost** | Free (open-source, AGPL-3.0) |
 
-**Tools:** `viking_search` (semantic search), `viking_read` (tiered: abstract/overview/full), `viking_browse` (filesystem navigation), `viking_remember` (store facts), `viking_add_resource` (ingest URLs/docs)
+**Tools (5):** `viking_search` (semantic search), `viking_read` (tiered: abstract/overview/full), `viking_browse` (filesystem navigation), `viking_remember` (store facts), `viking_add_resource` (ingest URLs/docs)
 
 **Setup:**
-```bash
-# Start the OpenViking server first
-pip install openviking
-openviking-server
 
-# Then configure Hermes
+```bash
+# 1. Install OpenViking
+pip install openviking
+
+# 2. Configure the server — JSON config at ~/.openviking/ov.conf
+mkdir -p ~/.openviking
+cat > ~/.openviking/ov.conf << 'EOF'
+{
+  "server": { "host": "127.0.0.1", "port": 1933, "workers": 1 },
+  "storage": { "workspace": "/root/.openviking/workspace" },
+  "embedding": {
+    "dense": {
+      "api_base": "https://api.openai.com/v1",
+      "api_key": "sk-...",
+      "provider": "openai",
+      "model": "text-embedding-3-large",
+      "dimension": 3072
+    },
+    "max_concurrent": 10
+  },
+  "vlm": {
+    "api_base": "https://api.openai.com/v1",
+    "api_key": "sk-...",
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "max_concurrent": 100
+  }
+}
+EOF
+
+# 3. Start via systemd (REQUIRED — never run openviking-server manually)
+sudo tee /etc/systemd/system/openviking.service > /dev/null << 'EOF'
+[Unit]
+Description=OpenViking Memory Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/openviking-server --host 127.0.0.1 --port 1933
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now openviking.service
+
+# 4. Configure Hermes
 hermes memory setup    # select "openviking"
 # Or manually:
 hermes config set memory.provider openviking
 echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.hermes/.env
 ```
 
-**Key features:**
-- Tiered context loading: L0 (~100 tokens) → L1 (~2k) → L2 (full)
-- Automatic memory extraction on session commit (profile, preferences, entities, events, cases, patterns)
-- `viking://` URI scheme for hierarchical knowledge browsing
+:::tip Ubuntu 24.04+ (PEP 668)
+The system blocks `pip install` outside a venv. Use `pip3 install --break-system-packages openviking` or `pipx install openviking`.
+:::
+
+:::caution Never start the server manually
+Running `openviking-server` directly creates data directory locks, conflicts with Hermes, and disappears on reboot. Always use systemd.
+:::
+
+**Environment variables** (set in `~/.hermes/.env`, profile-scoped):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENVIKING_ENDPOINT` | `http://127.0.0.1:1933` | Server URL |
+| `OPENVIKING_API_KEY` | *(empty)* | API key (leave blank for local dev mode) |
+| `OPENVIKING_ACCOUNT` | `default` | Tenant account ID |
+| `OPENVIKING_USER` | `default` | Tenant user ID |
+| `OPENVIKING_AGENT` | `hermes` | Agent ID (useful in multi-agent setups) |
+
+**How it works:**
+
+Hermes automatically:
+1. **Prefetches** relevant memories before each turn via background thread (non-blocking)
+2. **Syncs** conversation turns to OpenViking's session after each response
+3. **Commits** the session on session end — triggering automatic extraction of 6 memory categories: profile, preferences, entities, events, cases, and patterns
+4. **Mirrors** built-in `memory()` tool writes to OpenViking (user profile → preferences, agent notes → patterns)
+
+**Tiered context loading (L0 → L1 → L2):**
+
+The `viking_read` tool supports three detail levels — start with abstract, escalate only when needed:
+
+| Level | Tokens | When to use |
+|-------|--------|-------------|
+| `abstract` (L0) | ~100 | Quick relevance check |
+| `overview` (L1) | ~2,000 | Key points without full detail |
+| `full` (L2) | complete | Deep dive into specific content |
+
+**CLI reference** (`ov` command — installed with `openviking`):
+
+| Command | Purpose |
+|---------|---------|
+| `ov add-resource <path> --to <uri> --wait` | Import file/directory |
+| `ov ls <uri>` / `ov tree <uri>` | List / browse hierarchy |
+| `ov read <uri>` / `ov abstract <uri>` / `ov overview <uri>` | Read at L2/L0/L1 |
+| `ov find <query>` | Semantic search |
+| `ov grep <pattern>` | Full-text content search |
+| `ov add-memory` | Add memory entry |
+| `ov rm <uri>` / `ov mv <old> <new>` | Delete / move |
+| `ov system health` | Quick health check |
+| `ov status` | Full status (queues, DB, models) |
+
+**viking:// URI scheme:**
+
+Resources are organized hierarchically under `viking://`:
+```
+viking://resources/           ← imported docs, guides, project files
+viking://resources/guides/    ← documentation
+viking://resources/projects/  ← project-specific knowledge
+viking://user/<id>/memories/  ← user memories (auto-extracted)
+viking://agent/<id>/memories/ ← agent identity & memories
+```
+
+:::important Scope rules
+`viking_add_resource` (tool) and `ov add-resource` (CLI) **only** work under `viking://resources/`. Using `viking://user/...` or `viking://agent/...` returns `INVALID_URI`. For user memories, use `viking_remember` or `ov add-memory`.
+:::
+
+**Bulk import example:**
+
+```bash
+# Import a GitHub repo's docs
+git clone --depth 1 https://github.com/user/repo.git /tmp/repo
+ov add-resource /tmp/repo --parent viking://resources/guides/ --include "*.md"
+
+# Monitor processing
+ov observer queue
+```
+
+**Reading content — use tools, not raw HTTP:**
+
+- **DO** use `viking_read`, `viking_browse`, `viking_search` (Hermes tools) or `ov read`, `ov tree`, `ov ls` (CLI)
+- **DO NOT** use `curl` against the REST API content endpoints — they return empty content for direct HTTP reads
+
+<details>
+<summary>Server pitfalls & troubleshooting</summary>
+
+- **`storage.workspace` missing in ov.conf** — Without `"storage": { "workspace": "/root/.openviking/workspace" }`, the server uses a default workspace and silently ignores files you copy. Always verify: `grep workspace ~/.openviking/ov.conf`
+- **Embedding dimension mismatch** — If you copy a `vectordb/` from a source using `text-embedding-3-large` (3072d) but your `ov.conf` uses `text-embedding-3-small` (512d), vector search returns garbage. Align model and dimension.
+- **First systemd start may fail once** — The first `openviking-server` process can exit with `Application startup failed. Exiting.` (embedding model init race). `Restart=always` + `RestartSec=5` handles this automatically.
+- **Health endpoint** is `/health`, not `/api/v1/health` or `/v1/health`.
+- **`ov mv` on chunked resources fails** — Once OpenViking has processed and chunked a resource, `ov mv` returns `Internal server error`. Fix: delete the old one (`ov rm --recursive`) before re-importing.
+- **Large files (>50k chars) timeout with `--wait`** — Add without `--wait`; the resource is processed asynchronously.
+- **VLM model** — `gpt-4-vision-preview` is deprecated by OpenAI. Use `gpt-4o-mini` or `gpt-4o` in the `vlm` section of `ov.conf`.
+- **Windows: `ov` CLI double-escapes paths** — Use `viking://` URI prefix (not bare paths). `ov ls resources` returns `NOT_FOUND`; use `ov ls viking://resources`.
+- **Windows: BOM in ovcli.conf** — If PowerShell created the config file, a UTF-8 BOM makes the CLI fail. Rewrite from Python or scp from Linux.
+- **Account mismatch** — If `ov find` returns empty but health check passes, verify the `account` field in `ovcli.conf` matches your server config.
+</details>
+
+<details>
+<summary>Cross-machine sync (content migration)</summary>
+
+When syncing between machines with different embedding models (e.g. `text-embedding-3-large` 3072d on one, `text-embedding-3-small` 512d on another):
+
+```bash
+# 1. Stop OpenViking on both machines
+systemctl stop openviking
+
+# 2. Clear target's vectordb (MANDATORY if embedding models differ)
+rm -rf /root/.openviking/workspace/vectordb/
+
+# 3. Sync content (exclude vectordb and internal state)
+rsync -avz --delete \
+  --exclude='vectordb/' --exclude='queue/' --exclude='.openviking.pid' --exclude='LOCK' \
+  /root/.openviking/workspace/ root@target:/root/.openviking/workspace/
+
+# 4. Restart both
+systemctl start openviking
+```
+
+The target's vectordb rebuilds asynchronously on startup. Vector search returns empty until indexing completes (~30s for ~3.5MB of content).
+
+**Critical:** Never copy `vectordb/` between machines with different embedding dimensions — it causes silent corruption.
+</details>
+
+<details>
+<summary>OpenViking Memory Plugin for OpenCode</summary>
+
+A TypeScript plugin connects OpenViking directly into OpenCode, providing 4 memory tools (`memsearch`, `memread`, `membrowse`, `memcommit`) plus auto-recall (injection into every user message) and auto-commit (background extraction every 10 min).
+
+```bash
+mkdir -p ~/.config/opencode/plugins
+curl -sL "https://raw.githubusercontent.com/volcengine/OpenViking/main/examples/opencode-memory-plugin/openviking-memory.ts" \
+  -o ~/.config/opencode/plugins/openviking-memory.ts
+```
+
+Config at `~/.config/opencode/plugins/openviking-config.json`:
+```json
+{
+  "endpoint": "http://localhost:1933",
+  "apiKey": "",
+  "enabled": true,
+  "timeoutMs": 30000,
+  "autoCommit": { "enabled": true, "intervalMinutes": 10 },
+  "autoRecall": { "enabled": true, "limit": 6, "scoreThreshold": 0.15,
+    "maxContentChars": 500, "preferAbstract": true, "tokenBudget": 2000 }
+}
+```
+
+No entry in `opencode.json` needed. Restart OpenCode server after installation.
+</details>
+
+<details>
+<summary>REST API reference (for scripting)</summary>
+
+The OpenViking REST API works via curl when the `ov` CLI isn't available.
+
+**Server:** `http://127.0.0.1:1933` (dev mode, no API key needed)
+
+```bash
+# Health check
+curl -s http://127.0.0.1:1933/health
+
+# Semantic search
+curl -s http://127.0.0.1:1933/api/v1/search/search \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"your search query","limit":10}'
+
+# Find (no session context)
+curl -s http://127.0.0.1:1933/api/v1/search/find \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"hermes","target_uri":"viking://resources","limit":5}'
+
+# Glob (pattern matching)
+curl -s http://127.0.0.1:1933/api/v1/search/glob \
+  -H 'Content-Type: application/json' \
+  -d '{"pattern":"**/*hermes*","uri":"viking://resources","node_limit":20}'
+
+# Grep (full-text search)
+curl -s http://127.0.0.1:1933/api/v1/search/grep \
+  -H 'Content-Type: application/json' \
+  -d '{"uri":"viking://resources","pattern":"hermes","case_insensitive":true}'
+```
+
+**Direct filesystem access:** Resources are stored at `/root/.openviking/workspace/viking/default/resources/`. Direct writes bypass the embedding pipeline — use `viking_add_resource` or `ov add-resource` for indexed content.
+</details>
+
 
 ---
 
