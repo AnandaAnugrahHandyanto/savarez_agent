@@ -185,6 +185,21 @@ class TestHandleVoiceCommand:
         assert calls == {}
 
     @pytest.mark.asyncio
+    async def test_voice_bench_does_not_match_longer_command_words(self, runner, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "user1")
+        calls = {}
+        monkeypatch.setattr(
+            "gateway.run._voice_bench_format_recent",
+            lambda *_args, **_kwargs: calls.update({"called": True}) or "bench ok",
+        )
+        event = _make_event("/voice benchmark")
+
+        result = await runner._handle_voice_command(event)
+
+        assert "unknown" in result.lower() or "usage" in result.lower()
+        assert calls == {}
+
+    @pytest.mark.asyncio
     async def test_toggle_off_to_on(self, runner):
         event = _make_event("/voice")
         result = await runner._handle_voice_command(event)
