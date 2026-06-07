@@ -8290,6 +8290,9 @@ class GatewayRunner:
         if canonical == "usage":
             return await self._handle_usage_command(event)
 
+        if canonical == "codex-usage":
+            return await self._handle_codex_usage_command(event)
+
         if canonical == "insights":
             return await self._handle_insights_command(event)
 
@@ -14243,6 +14246,23 @@ class GatewayRunner:
                 parts.extend(credits_lines)
             return "\n".join(parts)
         return t("gateway.usage.no_data")
+
+    async def _handle_codex_usage_command(self, event: MessageEvent) -> str:
+        """Handle /codex-usage command -- show OpenAI Codex subscription usage."""
+        try:
+            snapshot = await asyncio.to_thread(fetch_account_usage, "openai-codex")
+        except Exception as exc:
+            logger.error("Codex usage lookup failed: %s", exc, exc_info=True)
+            return f"OpenAI Codex usage lookup failed: {exc}"
+
+        if not snapshot:
+            return (
+                "No OpenAI Codex usage data available. "
+                "Make sure you're signed in with the OpenAI Codex / ChatGPT account first."
+            )
+
+        lines = render_account_usage_lines(snapshot, markdown=True)
+        return "\n".join(lines)
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:
         """Handle /insights command -- show usage insights and analytics."""
