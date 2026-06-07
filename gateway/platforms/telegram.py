@@ -1645,6 +1645,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
             # Decide between webhook and polling mode
             webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
+            drop_pending = not os.getenv("TELEGRAM_CATCHUP_ON_STARTUP", "").strip().lower() in {"1", "true", "yes", "on"}
 
             if webhook_url:
                 # ── Webhook mode ─────────────────────────────────────
@@ -1683,7 +1684,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     webhook_url=webhook_url,
                     secret_token=webhook_secret,
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    drop_pending_updates=drop_pending,
                 )
                 self._webhook_mode = True
                 logger.info(
@@ -1716,7 +1717,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    drop_pending_updates=drop_pending,
                     error_callback=_polling_error_callback,
                 )
             
