@@ -6,6 +6,7 @@ import { TYPING_IDLE_MS } from '../config/timing.js'
 import type {
   ApprovalRespondResponse,
   ConfigSetResponse,
+  ImageClearResponse,
   SecretRespondResponse,
   SudoRespondResponse,
   VoiceRecordResponse
@@ -77,6 +78,28 @@ export function applyVoiceRecordResponse(
   } else {
     voice.setProcessing(false)
   }
+}
+
+export async function clearAttachedImages(
+  gateway: Pick<InputHandlerContext['gateway'], 'rpc'>,
+  sessionId: null | string,
+  sys: (text: string) => void
+): Promise<boolean> {
+  if (!sessionId) {
+    return false
+  }
+
+  const count = await gateway
+    .rpc<ImageClearResponse>('image.clear', { session_id: sessionId })
+    .then(result => Number(result?.removed ?? 0))
+
+  if (count <= 0) {
+    return false
+  }
+
+  sys(`cleared ${count} attached image${count === 1 ? '' : 's'}`)
+
+  return true
 }
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
@@ -497,11 +520,19 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return cActions.clearIn()
       }
 
-      return actions.die()
+      return void clearAttachedImages(gateway, live.sid, actions.sys).then(cleared => {
+        if (!cleared) {
+          actions.die()
+        }
+      })
     }
 
     if (isAction(key, ch, 'd')) {
-      return actions.die()
+      return void clearAttachedImages(gateway, live.sid, actions.sys).then(cleared => {
+        if (!cleared) {
+          actions.die()
+        }
+      })
     }
 
     if (isAction(key, ch, 'l')) {
