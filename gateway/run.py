@@ -4076,10 +4076,19 @@ class GatewayRunner:
                 )
                 """
             ).strip()
+            # Strip _HERMES_GATEWAY from the helper's environment so it does
+            # not inherit the gateway's self-targeting guard.  The helper is
+            # not the gateway — it is the replacement launcher.  If the marker
+            # is present, the CLI restart guard treats the helper's
+            # `hermes gateway restart` as if it came from inside the live
+            # gateway and refuses to proceed, leaving the gateway stopped.
+            # Ref: issue #39969.
+            _helper_env = {k: v for k, v in os.environ.items() if k != "_HERMES_GATEWAY"}
             subprocess.Popen(
                 [sys.executable, "-c", watcher, str(current_pid), *cmd_argv],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=_helper_env,
                 **windows_detach_popen_kwargs(),
             )
             return
