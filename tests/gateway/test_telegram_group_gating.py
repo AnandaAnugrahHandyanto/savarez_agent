@@ -313,6 +313,23 @@ def test_observed_group_context_replays_normally_without_telegram_prompt():
     assert agent_history == [{"role": "user", "content": "[Alice|111]\nside chatter"}]
 
 
+def test_replayed_text_history_preserves_stored_timestamp():
+    from gateway.run import _build_gateway_agent_history
+
+    history = [
+        {"role": "user", "content": "old question", "timestamp": 1710000000.0},
+        {"role": "assistant", "content": "old answer", "timestamp": 1710000001.5},
+    ]
+
+    agent_history, observed_context = _build_gateway_agent_history(history, channel_prompt=None)
+
+    assert observed_context is None
+    assert agent_history == [
+        {"role": "user", "content": "old question", "timestamp": 1710000000.0},
+        {"role": "assistant", "content": "old answer", "timestamp": 1710000001.5},
+    ]
+
+
 def test_observed_group_context_preserves_slash_command_text_for_dispatch():
     from gateway.platforms.base import MessageEvent, MessageType, Platform, SessionSource
 

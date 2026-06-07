@@ -541,6 +541,8 @@ def _build_replay_entry(role: str, content: Any, msg: Dict[str, Any]) -> Dict[st
     providers.
     """
     entry: Dict[str, Any] = {"role": role, "content": content}
+    if msg.get("timestamp") is not None:
+        entry["timestamp"] = msg["timestamp"]
     if role == "assistant":
         for _rkey in _ASSISTANT_REPLAY_FIELDS:
             if _rkey not in msg:

@@ -25,6 +25,11 @@ def test_add_sent_timestamp_prefix_is_idempotent():
     assert add_sent_timestamp_prefix(stamped, now) == stamped
 
 
+def test_add_sent_timestamp_prefix_does_not_invent_now_without_timestamp():
+    assert add_sent_timestamp_prefix("old message") == "old message"
+    assert sent_timestamp_prefix(None) == ""
+
+
 def test_strip_sent_timestamp_prefix_removes_internal_marker():
     assert (
         strip_sent_timestamp_prefix("[sent: 2026-06-07T17:42+02:00]\nhello")

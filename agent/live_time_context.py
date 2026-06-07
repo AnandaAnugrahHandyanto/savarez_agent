@@ -48,9 +48,7 @@ def sent_timestamp_prefix(timestamp: Any = None) -> str:
     """Return the compact prefix used for LLM-visible message time context."""
     dt = _coerce_datetime(timestamp)
     if dt is None:
-        from hermes_time import now as _hermes_now
-
-        dt = _hermes_now()
+        return ""
     return f"[sent: {_format_sent_timestamp(dt)}]"
 
 
@@ -60,7 +58,10 @@ def add_sent_timestamp_prefix(content: Any, timestamp: Any = None) -> Any:
         return content
     if _TIMESTAMP_PREFIX_RE.match(content):
         return content
-    return f"{sent_timestamp_prefix(timestamp)}\n{content}"
+    prefix = sent_timestamp_prefix(timestamp)
+    if not prefix:
+        return content
+    return f"{prefix}\n{content}"
 
 
 def strip_sent_timestamp_prefix(content: Any) -> Any:
