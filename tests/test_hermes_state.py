@@ -1988,7 +1988,7 @@ class TestSchemaInit:
         assert "title" in columns
 
     def test_topic_mode_schema_is_not_auto_migrated_on_open(self, tmp_path):
-        """Opening an old DB should not add topic-mode columns until /topic opts in.
+        """Opening an old DB should not add topic-mode tables until /topic opts in.
 
         The gateway must remain rollback-safe: simply upgrading Hermes and starting
         the old bot should not eagerly mutate the state DB for this feature.
@@ -2053,9 +2053,15 @@ class TestSchemaInit:
         conn.close()
 
         db = SessionDB(db_path=old_db)
-        cursor = db._conn.execute("PRAGMA table_info(sessions)")
-        columns = {row[1] for row in cursor.fetchall()}
-        assert {"chat_id", "chat_type", "thread_id", "session_key"}.isdisjoint(columns)
+        tables = {
+            row[0]
+            for row in db._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        assert "telegram_dm_topic_mode" not in tables
+        assert "telegram_dm_topic_bindings" not in tables
+        assert db.get_meta("telegram_dm_topic_schema_version") is None
         db.close()
 
     def test_apply_telegram_topic_migration_creates_topic_tables_explicitly(self, tmp_path):
@@ -2412,6 +2418,65 @@ class TestSchemaInit:
         db2.close()
 
         assert cols1 == cols2
+
+    def test_session_origin_columns_are_reconciled_before_deferred_indexes(self, tmp_path):
+        """Legacy sessions tables should gain gateway-origin columns before
+        indexes that reference those columns are created.
+        """
+        import sqlite3
+
+        db_path = tmp_path / "legacy_sessions.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (7);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                timestamp REAL NOT NULL
+            );
+        """)
+        conn.commit()
+        assert {
+            r[1] for r in conn.execute("PRAGMA table_info(sessions)").fetchall()
+        }.isdisjoint({"chat_id", "session_key"})
+        conn.close()
+
+        migrated_db = SessionDB(db_path=db_path)
+
+        session_cols = {
+            r[1]
+            for r in migrated_db._conn.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+        assert {
+            "chat_id",
+            "chat_type",
+            "chat_name",
+            "thread_id",
+            "parent_chat_id",
+            "session_key",
+        }.issubset(session_cols)
+
+        index_names = {
+            r[1]
+            for r in migrated_db._conn.execute("PRAGMA index_list(sessions)").fetchall()
+        }
+        assert "idx_sessions_session_key" in index_names
+        migrated_db.close()
 
     def test_schema_sql_is_source_of_truth(self, db):
         """Every column in SCHEMA_SQL exists in the live database.
