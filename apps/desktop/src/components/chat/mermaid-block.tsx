@@ -8,12 +8,17 @@ import { cn } from '@/lib/utils'
 // Lazy singleton: the desktop build inlines all chunks (vite.config.ts sets
 // `codeSplitting: false`), so the win here isn't a separate chunk — it's
 // deferring evaluation of mermaid's multi-megabyte module graph until the
-// first diagram actually appears.
+// first diagram actually appears. A failed load drops the cache so the next
+// diagram retries instead of every fence in the session silently falling
+// back off one transient failure.
 let mermaidPromise: Promise<Mermaid> | null = null
 
 function loadMermaid() {
   if (!mermaidPromise) {
     mermaidPromise = import('mermaid').then(mod => mod.default)
+    mermaidPromise.catch(() => {
+      mermaidPromise = null
+    })
   }
 
   return mermaidPromise
@@ -83,9 +88,12 @@ export function MermaidBlock({ chart, className, fallback }: MermaidBlockProps) 
           setSvg(result.svg)
         }
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         // render() can still throw past a successful parse (e.g. unsupported
         // directives) and leaves its scratch element behind when it does.
+        // Log it — the UI degrades to the source card on purpose, but a
+        // silent catch makes load/render failures undiagnosable.
+        console.warn('[mermaid-block] falling back to source card:', err)
         document.getElementById(id)?.remove()
         document.getElementById(`d${id}`)?.remove()
       })
