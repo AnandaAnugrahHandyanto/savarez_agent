@@ -2403,27 +2403,38 @@ def _credential_fingerprint(provider: str) -> str:
     except Exception:
         pass
 
-    # OAuth / external-file mtimes that change on re-auth
-    try:
-        from hermes_constants import get_hermes_home
-        for rel in ("auth.json", "credentials.json"):
-            p = get_hermes_home() / rel
-            try:
-                parts.append(f"{rel}@{p.stat().st_mtime_ns}")
-            except FileNotFoundError:
-                parts.append(f"{rel}@missing")
-            except Exception:
-                pass
-    except Exception:
-        pass
+    # OAuth / external-file mtimes that change on re-auth.
+    # PERF: Use provider-scoped external files instead of global auth.json
+    # mtime so that one provider's re-auth doesn't bust the cache for ALL
+    # other providers. auth.json is now only included for OAuth providers
+    # (codex, copilot, nous, anthropic) that actually store tokens there.
+    _OAUTH_PROVIDERS = {"openai-codex", "copilot", "copilot-acp", "nous", "anthropic"}
+    if provider.lower() in _OAUTH_PROVIDERS:
+        try:
+            from hermes_constants import get_hermes_home
+            for rel in ("auth.json", "credentials.json"):
+                p = get_hermes_home() / rel
+                try:
+                    parts.append(f"{rel}@{p.stat().st_mtime_ns}")
+                except FileNotFoundError:
+                    parts.append(f"{rel}@missing")
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
-    # External well-known credential file locations
-    for path in (
-        _os.path.expanduser("~/.codex/auth.json"),
-        _os.path.expanduser("~/.claude/.credentials.json"),
-        _os.path.expanduser("~/.config/github-copilot/hosts.json"),
-        _os.path.expanduser("~/.minimax/credentials.json"),
-    ):
+    # External well-known credential files — only include those relevant
+    # to the provider being fingerprinted.
+    _PROVIDER_EXTERNAL_CRED_FILES: dict[str, list[str]] = {
+        "openai-codex": ["~/.codex/auth.json"],
+        "copilot": ["~/.config/github-copilot/hosts.json"],
+        "copilot-acp": ["~/.config/github-copilot/hosts.json"],
+        "anthropic": ["~/.claude/.credentials.json"],
+        "minimax": ["~/.minimax/credentials.json"],
+        "minimax-cn": ["~/.minimax/credentials.json"],
+    }
+    for path in _PROVIDER_EXTERNAL_CRED_FILES.get(provider.lower(), []):
+        path = _os.path.expanduser(path)
         try:
             mt = _os.stat(path).st_mtime_ns
             parts.append(f"{path}@{mt}")

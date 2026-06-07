@@ -1657,39 +1657,36 @@ def list_authenticated_providers(
     # any overlapping ``custom_providers:`` entries.  Callers typically pass
     # both (gateway/CLI invoke ``get_compatible_custom_providers()`` which
     # merges ``providers:`` into the list) — without this, the same endpoint
-    # produces two picker rows: one bare-slug ("openrouter") from section 3
-    # and one "custom:openrouter" from section 4, both labelled identically.
+    # produces two picker rows: one bare-slug (``openrouter``) from section 3
+    # and one ``custom:openrouter`` from section 4, both labelled identically.
     _section3_emitted_pairs: set = set()
     if user_providers and isinstance(user_providers, dict):
+        # PERF: Pre-build per-entry data, then fire all live /models probes in
+        # parallel (ThreadPoolExecutor) instead of serial.  A slow remote
+        # endpoint (e.g. agent-router, freemodel-dev) no longer blocks every
+        # other provider — total wait = max(slowest) instead of sum(all).
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from hermes_cli.models import fetch_api_models as _fetch_api_models
+
+        # Phase A: collect entries that need a live probe, build static data.
+        _ep_static: list[tuple[str, dict, list, str, str, bool]] = []
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
                 continue
-            # Skip if this slug was already emitted (e.g. canonical provider
-            # with the same name) or will be picked up by section 4.
             if ep_name.lower() in seen_slugs:
                 continue
             display_name = ep_cfg.get("name", "") or ep_name
-            # ``base_url`` is Hermes's canonical write key (matches
-            # custom_providers and _save_custom_provider); ``api`` / ``url``
-            # remain as fallbacks for hand-edited / legacy configs.
             api_url = (
                 ep_cfg.get("base_url", "")
                 or ep_cfg.get("api", "")
                 or ep_cfg.get("url", "")
                 or ""
             )
-            # ``default_model`` is the legacy key; ``model`` matches what
-            # custom_providers entries use, so accept either.
             default_model = ep_cfg.get("default_model", "") or ep_cfg.get("model", "")
 
-            # Build models list from both default_model and full models array
-            models_list = []
+            models_list: list[str] = []
             if default_model:
                 models_list.append(default_model)
-            # Also include the full models list from config.
-            # Hermes writes ``models:`` as a dict keyed by model id
-            # (see hermes_cli/main.py::_save_custom_provider); older
-            # configs or hand-edited files may still use a list.
             cfg_models = ep_cfg.get("models", [])
             if isinstance(cfg_models, dict):
                 for m in cfg_models:
@@ -1700,8 +1697,6 @@ def list_authenticated_providers(
                     if m and m not in models_list:
                         models_list.append(m)
 
-            # Official OpenAI API rows in providers: often have base_url but no
-            # explicit models: dict — avoid a misleading zero count in /model.
             if not models_list:
                 url_lower = str(api_url).strip().lower()
                 if "api.openai.com" in url_lower:
@@ -1709,10 +1704,6 @@ def list_authenticated_providers(
                     if fb:
                         models_list = list(fb)
 
-            # Prefer the endpoint's live /models list when credentials are
-            # available, unless the provider explicitly opts out via
-            # discover_models: false (e.g. dedicated endpoints that expose
-            # the entire aggregator catalog via /models).
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
@@ -1720,18 +1711,42 @@ def list_authenticated_providers(
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
-            if api_url and api_key and discover:
+
+            _ep_static.append((ep_name, ep_cfg, models_list, api_url, api_key, discover))
+
+        # Phase B: fire all live probes in parallel (max 8 workers, 5 s timeout).
+        _needs_probe = [
+            (ep_name, ep_cfg, models_list, api_url, api_key)
+            for ep_name, ep_cfg, models_list, api_url, api_key, discover in _ep_static
+            if api_url and api_key and discover
+        ]
+        _live_results: dict[str, list[str]] = {}
+        if _needs_probe:
+            def _probe(args: tuple) -> tuple[str, list[str] | None]:
+                ep_name, _cfg, _ml, url, key = args
                 try:
-                    from hermes_cli.models import fetch_api_models
-                    live_models = fetch_api_models(api_key, api_url)
-                    if live_models:
-                        models_list = live_models
+                    return ep_name, _fetch_api_models(key, url)
                 except Exception:
-                    pass
+                    return ep_name, None
+
+            with ThreadPoolExecutor(max_workers=min(8, len(_needs_probe))) as _pool:
+                _futures = {_pool.submit(_probe, item): item[0] for item in _needs_probe}
+                for _fut in as_completed(_futures, timeout=10):
+                    try:
+                        _ename, _live = _fut.result()
+                        if _live:
+                            _live_results[_ename] = _live
+                    except Exception:
+                        pass
+
+        # Phase C: assemble results in original order.
+        for ep_name, ep_cfg, models_list, api_url, api_key, discover in _ep_static:
+            if ep_name in _live_results:
+                models_list = _live_results[ep_name]
 
             results.append({
                 "slug": ep_name,
-                "name": display_name,
+                "name": ep_cfg.get("name", "") or ep_name,
                 "is_current": ep_name == current_provider,
                 "is_user_defined": True,
                 "models": models_list,
@@ -1740,9 +1755,9 @@ def list_authenticated_providers(
                 "api_url": api_url,
             })
             seen_slugs.add(ep_name.lower())
-            seen_slugs.add(custom_provider_slug(display_name).lower())
+            seen_slugs.add(custom_provider_slug((ep_cfg.get("name", "") or ep_name)).lower())
             _pair = (
-                str(display_name).strip().lower(),
+                str(ep_cfg.get("name", "") or ep_name).strip().lower(),
                 str(api_url).strip().rstrip("/").lower(),
             )
             if _pair[0] and _pair[1]:
