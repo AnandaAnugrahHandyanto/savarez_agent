@@ -77,7 +77,9 @@ def _make_runner(tmp_path):
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
+    runner._voice_provider_mode = {}
     runner._VOICE_MODE_PATH = tmp_path / "gateway_voice_mode.json"
+    runner._VOICE_PROVIDER_MODE_PATH = tmp_path / "gateway_voice_provider_mode.json"
     runner._session_db = None
     runner.session_store = MagicMock()
     runner._is_user_authorized = lambda source: True
@@ -115,6 +117,35 @@ class TestHandleVoiceCommand:
         result = await runner._handle_voice_command(event)
         assert "tts" in result.lower()
         assert runner._voice_mode["telegram:123"] == "all"
+
+    @pytest.mark.asyncio
+    async def test_voice_experiment_xai_on_is_per_chat_and_persisted(self, runner):
+        event = _make_event("/voice experiment xai on")
+        result = await runner._handle_voice_command(event)
+
+        assert "xai" in result.lower()
+        assert runner._voice_provider_mode["telegram:123"] == "xai"
+        data = json.loads(runner._VOICE_PROVIDER_MODE_PATH.read_text())
+        assert data["telegram:123"] == "xai"
+
+    @pytest.mark.asyncio
+    async def test_voice_experiment_off_clears_provider_override(self, runner):
+        runner._voice_provider_mode["telegram:123"] = "xai"
+        event = _make_event("/voice experiment off")
+
+        result = await runner._handle_voice_command(event)
+
+        assert "disabled" in result.lower() or "off" in result.lower()
+        assert runner._voice_provider_mode["telegram:123"] == "off"
+
+    @pytest.mark.asyncio
+    async def test_voice_experiment_status_reports_provider_override(self, runner):
+        runner._voice_provider_mode["telegram:123"] = "xai"
+        event = _make_event("/voice experiment status")
+
+        result = await runner._handle_voice_command(event)
+
+        assert "xai" in result.lower()
 
     @pytest.mark.asyncio
     async def test_voice_status_off(self, runner):

@@ -320,6 +320,14 @@ def _load_tts_config() -> Dict[str, Any]:
 
 def _get_provider(tts_config: Dict[str, Any]) -> str:
     """Get the configured TTS provider name."""
+    try:
+        from gateway.session_context import get_session_env
+
+        override = get_session_env("HERMES_VOICE_TTS_PROVIDER_OVERRIDE", "").strip().lower()
+        if override in BUILTIN_TTS_PROVIDERS:
+            return override
+    except Exception:
+        pass
     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
 
 

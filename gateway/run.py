@@ -2124,6 +2124,8 @@ class GatewayRunner:
 
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
+        # Per-chat voice provider experiment mode: "off" | "xai"
+        self._voice_provider_mode: Dict[str, str] = self._load_voice_provider_modes()
         # Recent voice transcripts per (guild,user) for duplicate suppression.
         # Protects against the same utterance being emitted twice by the voice
         # capture / STT pipeline, which otherwise produces a second delayed reply.
@@ -2226,6 +2228,7 @@ class GatewayRunner:
     # -- Voice mode persistence ------------------------------------------
 
     _VOICE_MODE_PATH = _hermes_home / "gateway_voice_mode.json"
+    _VOICE_PROVIDER_MODE_PATH = _hermes_home / "gateway_voice_provider_mode.json"
 
     def _voice_key(self, platform: Platform, chat_id: str) -> str:
         """Return a platform-namespaced key for voice mode state."""
@@ -2271,6 +2274,45 @@ class GatewayRunner:
             tmp_path.replace(self._VOICE_MODE_PATH)
         except OSError as e:
             logger.warning("Failed to save voice modes: %s", e)
+
+    def _load_voice_provider_modes(self) -> Dict[str, str]:
+        try:
+            data = json.loads(self._VOICE_PROVIDER_MODE_PATH.read_text())
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return {}
+
+        if not isinstance(data, dict):
+            return {}
+
+        valid_modes = {"off", "xai"}
+        result = {}
+        for chat_id, mode in data.items():
+            if mode not in valid_modes:
+                continue
+            key = str(chat_id)
+            if ":" not in key:
+                logger.warning(
+                    "Skipping legacy unprefixed voice provider mode key %r during migration.",
+                    key,
+                )
+                continue
+            result[key] = mode
+        return result
+
+    def _save_voice_provider_modes(self) -> None:
+        try:
+            self._VOICE_PROVIDER_MODE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self._VOICE_PROVIDER_MODE_PATH.with_suffix(
+                self._VOICE_PROVIDER_MODE_PATH.suffix + ".tmp"
+            )
+            with tmp_path.open("w", encoding="utf-8") as fh:
+                fh.write(json.dumps(self._voice_provider_mode, indent=2))
+                fh.write("\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            tmp_path.replace(self._VOICE_PROVIDER_MODE_PATH)
+        except OSError as e:
+            logger.warning("Failed to save voice provider modes: %s", e)
 
     def _set_adapter_auto_tts_disabled(self, adapter, chat_id: str, disabled: bool) -> None:
         """Update an adapter's in-memory auto-TTS suppression set if present."""
@@ -12138,6 +12180,23 @@ class GatewayRunner:
             if adapter:
                 self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
             return t("gateway.voice.enabled_voice_only")
+        elif args == "experiment" or args.startswith("experiment "):
+            parts = args.split()
+            mode = self._voice_provider_mode.get(voice_key, "off")
+            if len(parts) == 1 or parts[1] == "status":
+                return f"Voice experiment provider: {mode}"
+            if parts[1] in {"off", "disable", "disabled"}:
+                self._voice_provider_mode[voice_key] = "off"
+                self._save_voice_provider_modes()
+                return "Voice experiment provider disabled for this chat."
+            if parts[1] == "xai" and (len(parts) == 2 or parts[2] in {"on", "enable", "enabled"}):
+                self._voice_provider_mode[voice_key] = "xai"
+                self._save_voice_provider_modes()
+                return (
+                    "Voice experiment provider xAI enabled for this chat. "
+                    "Use /voice experiment off to return to the configured providers."
+                )
+            return "Usage: /voice experiment [status|xai on|off]"
         elif args in {"off", "disable"}:
             self._voice_mode[voice_key] = "off"
             self._save_voice_modes()
@@ -16370,6 +16429,15 @@ class GatewayRunner:
         in a ``finally`` block.
         """
         from gateway.session_context import set_session_vars
+        voice_provider_override = ""
+        try:
+            source = context.source
+            key = self._voice_key(source.platform, source.chat_id)
+            mode = getattr(self, "_voice_provider_mode", {}).get(key, "off")
+            if mode == "xai":
+                voice_provider_override = "xai"
+        except Exception:
+            voice_provider_override = ""
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -16379,6 +16447,8 @@ class GatewayRunner:
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
+            voice_stt_provider_override=voice_provider_override,
+            voice_tts_provider_override=voice_provider_override,
         )
 
     def _clear_session_env(self, tokens: list) -> None:
