@@ -185,12 +185,24 @@ class TestHandleVoiceCommand:
 
         assert result == "provider bench ok"
         assert runner._voice_mode == {}
-        runner._run_voice_provider_bench.assert_awaited_once()
+        runner._run_voice_provider_bench.assert_awaited_once_with("default")
+
+    @pytest.mark.asyncio
+    async def test_voice_bench_providers_accepts_profile_alias(self, runner, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "user1")
+        runner._run_voice_provider_bench = AsyncMock(return_value="provider bench ro ok")
+        event = _make_event("/voice bench providers ro")
+
+        result = await runner._handle_voice_command(event)
+
+        assert result == "provider bench ro ok"
+        runner._run_voice_provider_bench.assert_awaited_once_with("ro")
 
     def test_voice_provider_bench_formatter_reports_provider_timings(self, runner):
         result = runner._format_voice_provider_bench_result(
             {
                 "passed": True,
+                "profile": "ro",
                 "artifact_dir": "/home/pafi/.hermes/voice-provider-bench/run",
                 "results": [
                     {
@@ -212,6 +224,7 @@ class TestHandleVoiceCommand:
         )
 
         assert "Voice provider bench PASS" in result
+        assert "Profile: ro" in result
         assert "- current STT (groq): ok 238ms text=Test, okay." in result
         assert "- xAI TTS (xai): ok 911ms bytes=9792" in result
         assert "Artifacts: run" in result
@@ -256,7 +269,7 @@ class TestHandleVoiceCommand:
 
         result = await runner._handle_voice_command(event)
 
-        assert result == "Usage: /voice bench [1-20|providers|xai|models]"
+        assert result == "Usage: /voice bench [1-20|providers [default|ro|long-ro]|xai|models]"
 
     @pytest.mark.asyncio
     async def test_voice_bench_rejects_out_of_range_limit(self, runner, monkeypatch):
@@ -265,7 +278,7 @@ class TestHandleVoiceCommand:
 
         result = await runner._handle_voice_command(event)
 
-        assert result == "Usage: /voice bench [1-20|providers|xai|models]"
+        assert result == "Usage: /voice bench [1-20|providers [default|ro|long-ro]|xai|models]"
 
     @pytest.mark.asyncio
     async def test_toggle_off_to_on(self, runner):

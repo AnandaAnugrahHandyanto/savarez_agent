@@ -12113,9 +12113,10 @@ class GatewayRunner:
             if not self._is_voice_bench_user_authorized(event.source):
                 return "Voice bench is restricted to an authorized user."
             parts = args.split()
-            bench_usage = "Usage: /voice bench [1-20|providers|xai|models]"
+            bench_usage = "Usage: /voice bench [1-20|providers [default|ro|long-ro]|xai|models]"
             if len(parts) > 1 and parts[1] in {"providers", "provider", "xai", "models"}:
-                return await self._run_voice_provider_bench()
+                profile = parts[2] if len(parts) > 2 else "default"
+                return await self._run_voice_provider_bench(profile)
             limit = 5
             if len(parts) > 1:
                 try:
@@ -12308,6 +12309,9 @@ class GatewayRunner:
         """Render a compact Telegram-safe summary for provider probes."""
         passed = bool(metrics.get("passed"))
         lines = [f"Voice provider bench {'PASS' if passed else 'FAIL'}"]
+        profile = str(metrics.get("profile") or "").strip()
+        if profile:
+            lines.append(f"Profile: {profile}")
         if metrics.get("error"):
             error = _redact_gateway_user_facing_secrets(str(metrics.get("error")))
             lines.append(f"Error: {error[:180]}")
@@ -12338,13 +12342,30 @@ class GatewayRunner:
         return "\n".join(lines)
 
     @staticmethod
-    def _run_voice_provider_bench_sync(artifact_dir: Path) -> dict[str, Any]:
+    def _voice_provider_bench_prompt(profile: str) -> tuple[str, str, str]:
+        """Resolve a small named benchmark prompt profile."""
+        normalized = re.sub(r"[^a-z0-9_-]+", "-", str(profile or "default").strip().lower()).strip("-")
+        if normalized in {"", "default", "en", "short", "short-en"}:
+            return "default", "Test OK.", "en"
+        if normalized in {"ro", "short-ro", "romanian", "romana", "română"}:
+            return "ro", "Test OK. Răspunde scurt în română.", "ro"
+        if normalized in {"long", "long-ro", "ro-long", "romanian-long", "romana-lung", "română-lung"}:
+            return (
+                "long-ro",
+                "Salut Hermes. Acesta este un test de voce în română pentru latență, claritate și naturalețe. "
+                "Te rog răspunde calm, natural și scurt.",
+                "ro",
+            )
+        return normalized, os.environ.get("HERMES_VOICE_PROVIDER_BENCH_TEXT", "Test OK.").strip() or "Test OK.", "en"
+
+    @staticmethod
+    def _run_voice_provider_bench_sync(artifact_dir: Path, profile: str = "default") -> dict[str, Any]:
         """Run STT/TTS provider probes without mutating Hermes config."""
         artifact_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         with contextlib.suppress(OSError):
             artifact_dir.chmod(0o700)
 
-        prompt_text = os.environ.get("HERMES_VOICE_PROVIDER_BENCH_TEXT", "Test OK.").strip() or "Test OK."
+        profile_name, prompt_text, language = GatewayRunner._voice_provider_bench_prompt(profile)
         results: list[dict[str, Any]] = []
         sample_audio: Path | None = None
 
@@ -12386,7 +12407,7 @@ class GatewayRunner:
                 {
                     "xai": {
                         "voice_id": os.environ.get("HERMES_XAI_TTS_VOICE", "leo"),
-                        "language": os.environ.get("HERMES_XAI_TTS_LANGUAGE", "en"),
+                        "language": os.environ.get("HERMES_XAI_TTS_LANGUAGE", language),
                     }
                 },
             )
@@ -12497,14 +12518,16 @@ class GatewayRunner:
 
         return {
             "passed": all(item.get("status") == "ok" for item in results),
+            "profile": profile_name,
             "artifact_dir": str(artifact_dir),
             "results": results,
         }
 
-    async def _run_voice_provider_bench(self) -> str:
+    async def _run_voice_provider_bench(self, profile: str = "default") -> str:
         """Run benchmark-only voice provider probes and return a chat summary."""
         output_root = Path.home() / ".hermes" / "voice-provider-bench"
-        artifact_dir = output_root / datetime.now().strftime("%Y%m%dT%H%M%S")
+        profile_name, _prompt_text, _language = self._voice_provider_bench_prompt(profile)
+        artifact_dir = output_root / f"{datetime.now().strftime('%Y%m%dT%H%M%S')}-{profile_name}"
         try:
             timeout = float(os.environ.get("HERMES_VOICE_PROVIDER_BENCH_TIMEOUT", "90"))
         except ValueError:
@@ -12512,12 +12535,13 @@ class GatewayRunner:
         timeout = max(10.0, min(timeout, 180.0))
         try:
             payload = await asyncio.wait_for(
-                asyncio.to_thread(self._run_voice_provider_bench_sync, artifact_dir),
+                asyncio.to_thread(self._run_voice_provider_bench_sync, artifact_dir, profile_name),
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
             payload = {
                 "passed": False,
+                "profile": profile_name,
                 "artifact_dir": str(artifact_dir),
                 "error": f"timed out after {timeout:.0f}s",
                 "results": [],
@@ -12525,6 +12549,7 @@ class GatewayRunner:
         except Exception as exc:
             payload = {
                 "passed": False,
+                "profile": profile_name,
                 "artifact_dir": str(artifact_dir),
                 "error": f"{type(exc).__name__}: {exc}",
                 "results": [],
