@@ -5267,6 +5267,12 @@ class HermesCLI:
                 notice_callback=self._on_notice,
                 notice_clear_callback=self._on_notice_clear,
             )
+            if getattr(self, "orchestration_mode", False):
+                try:
+                    from agent.orchestration_mode import set_enabled as _set_orchestration_enabled
+                    _set_orchestration_enabled(self.agent, True)
+                except Exception:
+                    pass
             # Store reference for atexit memory provider shutdown
             global _active_agent_ref
             _active_agent_ref = self.agent
@@ -9058,6 +9064,8 @@ class HermesCLI:
             self._toggle_yolo()
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
+        elif canonical == "orchestrate":
+            self._handle_orchestrate_command(cmd_original)
         elif canonical == "fast":
             self._handle_fast_command(cmd_original)
         elif canonical == "compress":
@@ -10291,6 +10299,45 @@ class HermesCLI:
             _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
         else:
             _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only){_RST}")
+
+    def _handle_orchestrate_command(self, cmd: str):
+        """Handle /orchestrate — session-scoped exhaustive delegation mode."""
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else "status"
+        if arg not in {"on", "off", "status"}:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /orchestrate [on|off|status]{_RST}")
+            return
+
+        if arg == "status":
+            enabled = bool(getattr(self, "orchestration_mode", False))
+            if self.agent:
+                try:
+                    from agent.orchestration_mode import is_enabled
+                    enabled = is_enabled(self.agent)
+                except Exception:
+                    pass
+            label = "ON" if enabled else "OFF"
+            _cprint(f"  {_ACCENT}Orchestration mode: {label}{_RST}")
+            _cprint(f"  {_DIM}When ON: reasoning=xhigh and substantive turns get delegation reminders.{_RST}")
+            return
+
+        enabled = arg == "on"
+        if enabled and not getattr(self, "orchestration_mode", False):
+            self._orchestration_previous_reasoning_config = self.reasoning_config
+        self.orchestration_mode = enabled
+        if self.agent:
+            from agent.orchestration_mode import set_enabled
+            set_enabled(self.agent, enabled)
+        if enabled:
+            self.reasoning_config = {"enabled": True, "effort": "xhigh"}
+            _cprint(f"  {_ACCENT}✓ Orchestration mode ON for this session{_RST}")
+            _cprint(f"  {_DIM}  Substantive turns will default to scout + parallel delegate_task fan-out.{_RST}")
+        else:
+            if hasattr(self, "_orchestration_previous_reasoning_config"):
+                self.reasoning_config = self._orchestration_previous_reasoning_config
+                delattr(self, "_orchestration_previous_reasoning_config")
+            _cprint(f"  {_ACCENT}✓ Orchestration mode OFF for this session{_RST}")
 
     def _handle_busy_command(self, cmd: str):
         """Handle /busy — control what Enter does while Hermes is working.
