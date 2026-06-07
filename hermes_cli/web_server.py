@@ -5469,6 +5469,7 @@ class CronJobCreate(BaseModel):
     schedule: str
     name: str = ""
     deliver: str = "local"
+    wrap_response: Optional[bool] = None
 
 
 class CronJobUpdate(BaseModel):
@@ -5594,6 +5595,7 @@ async def create_cron_job(body: CronJobCreate, profile: str = "default"):
             schedule=body.schedule,
             name=body.name,
             deliver=body.deliver,
+            wrap_response=body.wrap_response,
         )
     except Exception as e:
         _log.exception("POST /api/cron/jobs failed")
