@@ -825,6 +825,7 @@ export interface Translations {
     row: {
       pin: string
       unpin: string
+      openInNewWindow: string
       copyId: string
       export: string
       rename: string
