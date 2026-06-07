@@ -463,6 +463,16 @@ def _db_unavailable_error(rid, *, code: int):
     return _err(rid, code, f"state.db unavailable: {detail}")
 
 
+def _prompt_persistence_unavailable_error(rid, *, detail: str | None = None):
+    reason = detail or _db_error or "state.db unavailable"
+    return _err(
+        rid,
+        5037,
+        "state.db unavailable: "
+        f"{reason}; refusing to start prompt because the transcript would not be saved",
+    )
+
+
 # ── per-session profile scoping (global remote mode) ───────────────────────────
 # One dashboard normally serves its launch profile. But the desktop's app-global
 # remote mode points every profile at this single backend, so resume/prompt must
@@ -881,7 +891,7 @@ def _register_session_cwd(session: dict | None) -> None:
         pass
 
 
-def _ensure_session_db_row(session: dict) -> None:
+def _ensure_session_db_row(session: dict) -> tuple[bool, str | None]:
     """Idempotently persist the session's DB row on first real activity.
 
     Called from prompt.submit so a row only exists once the user actually sends
@@ -898,7 +908,7 @@ def _ensure_session_db_row(session: dict) -> None:
     """
     key = session.get("session_key")
     if not key:
-        return
+        return False, "session key missing"
     # Persist into the session's own profile db (global remote mode), not the
     # launch profile's — otherwise the row lands in the wrong state.db, the
     # unified list mis-tags it, and resume 404s ("session not found").
@@ -908,15 +918,15 @@ def _ensure_session_db_row(session: dict) -> None:
 
         try:
             db = SessionDB(db_path=Path(profile_home) / "state.db")
-        except Exception:
-            logger.debug("failed to open profile db for session row", exc_info=True)
-            return
+        except Exception as exc:
+            logger.warning("failed to open profile db for session row: %s", exc)
+            return False, str(exc)
         close_db = True
     else:
         db = _get_db()
         close_db = False
     if db is None:
-        return
+        return False, _db_error or "state.db unavailable"
     try:
         db.create_session(
             key,
@@ -924,8 +934,10 @@ def _ensure_session_db_row(session: dict) -> None:
             model=_resolve_model(),
             cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
         )
-    except Exception:
-        logger.debug("failed to persist desktop session row", exc_info=True)
+        return True, None
+    except Exception as exc:
+        logger.warning("failed to persist desktop session row: %s", exc)
+        return False, str(exc)
     finally:
         if close_db:
             try:
@@ -4346,6 +4358,7 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    assert session is not None
     # Re-bind to the current client transport for this request. This keeps
     # streaming events on the active websocket even if an earlier disconnect
     # or fallback moved the session transport to stdio.
@@ -4364,19 +4377,22 @@ def _(rid, params: dict) -> dict:
             if ordinal >= len(user_indices):
                 return _err(rid, 4018, "target user message is no longer in session history")
             truncated = history[: user_indices[ordinal]]
+            db = _get_db()
+            if db is None:
+                return _prompt_persistence_unavailable_error(rid)
+            try:
+                db.replace_messages(session["session_key"], truncated)
+            except Exception as exc:
+                return _prompt_persistence_unavailable_error(rid, detail=str(exc))
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1
-            if (db := _get_db()) is not None:
-                try:
-                    db.replace_messages(session["session_key"], truncated)
-                except Exception as exc:
-                    print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
+        ok, detail = _ensure_session_db_row(session)
+        if not ok:
+            return _prompt_persistence_unavailable_error(rid, detail=detail)
         session["running"] = True
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)
 
-    # Persist the DB row lazily, now that the user has actually sent a message.
-    _ensure_session_db_row(session)
     _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
