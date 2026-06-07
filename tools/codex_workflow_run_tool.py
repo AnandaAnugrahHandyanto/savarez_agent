@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from agent import codex_workflow_ledger as ledger
 from agent import codex_workflow_provenance as provenance
 from tools import codex_staged_implement_tool as staged
 from tools.registry import registry
@@ -403,6 +404,46 @@ def _cleanup_decisions(
     }
 
 
+def _dry_run_preview_decisions(
+    *,
+    args: dict[str, Any],
+    repo: Path,
+    git_head: str | None,
+    dirty: dict[str, Any],
+    allowlist: dict[str, list[str]],
+) -> dict[str, dict[str, Any]]:
+    """Build ownership/cleanup preview without invoking cleanup helpers.
+
+    Dry-run may classify current dirty paths, but it must not call code paths
+    that clean, delete, overwrite, write ledgers/provenance, create worktrees,
+    or invoke Codex/review guards.
+    """
+    branch = _current_branch(repo)
+    cleanup_allowlist = _cleanup_allowlist(args, allowlist)
+    decisions: dict[str, dict[str, Any]] = {}
+    for rel_path in _current_dirty_paths(dirty):
+        decision = provenance.classify_path(
+            repo=repo,
+            rel_path=rel_path,
+            current_session_id=args.get("session_id") if isinstance(args.get("session_id"), str) else None,
+            branch=branch,
+            head_sha=git_head,
+            events=_provenance_events(args),
+        )
+        reasons = set(decision.get("blocking_reasons") or [])
+        reasons.add("dry_run_non_mutating")
+        if decision.get("owner_policy") not in {"current_session", "review_artifact_current_session"}:
+            reasons.add("owner_policy_not_current_session")
+        if not _path_in_allowlist(rel_path, cleanup_allowlist):
+            reasons.add("path_not_in_allowlist")
+        if not bool(args.get("standing_authorization")):
+            reasons.add("authorization_required")
+        decision["cleanup_allowed"] = False
+        decision["blocking_reasons"] = sorted(reasons)
+        decisions[rel_path] = decision
+    return decisions
+
+
 def _cleanup_blocking_reasons(decisions: dict[str, dict[str, Any]]) -> list[str]:
     reasons: set[str] = set()
     for decision in decisions.values():
@@ -412,6 +453,83 @@ def _cleanup_blocking_reasons(decisions: dict[str, dict[str, Any]]) -> list[str]
 
 def _ownership_preview_from_decisions(decisions: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     return [decisions[path] for path in sorted(decisions)]
+
+
+def _dirty_overlaps_scope(dirty_paths: list[str], allowlist: dict[str, list[str]]) -> list[str]:
+    return sorted(path for path in dirty_paths if _path_in_allowlist(path, allowlist))
+
+
+def _dry_run_blocking_reasons(
+    *,
+    dirty: dict[str, Any],
+    allowlist: dict[str, list[str]],
+    cleanup_decisions: dict[str, dict[str, Any]],
+) -> list[str]:
+    if dirty.get("is_clean"):
+        return []
+    dirty_paths = _current_dirty_paths(dirty)
+    unknown_or_foreign = [
+        path
+        for path, decision in cleanup_decisions.items()
+        if decision.get("owner_policy") in {"unknown_unowned", "other_known_session", "dangerous_conflict"}
+    ]
+    reasons: set[str] = set()
+    overlapping = _dirty_overlaps_scope(unknown_or_foreign, allowlist)
+    if overlapping:
+        reasons.add("unknown_dirty_overlaps_write_scope")
+    elif unknown_or_foreign or dirty_paths:
+        reasons.add("unknown_dirty_non_overlap_recommend_isolated_worktree")
+    return sorted(reasons)
+
+
+def _recommended_next_stage(
+    *,
+    args: dict[str, Any],
+    normalized: dict[str, Any],
+    blocking_reasons: list[str],
+) -> dict[str, Any]:
+    if "unknown_dirty_overlaps_write_scope" in blocking_reasons:
+        stage_id = "stop_for_user"
+    elif "unknown_dirty_non_overlap_recommend_isolated_worktree" in blocking_reasons:
+        stage_id = "isolated_worktree"
+    else:
+        stage_id = args.get("stage_id") or "phase12a0-provenance-contract"
+    return {
+        "stage_id": stage_id,
+        "allowed_files": normalized.get("allowed_files", []),
+        "allowed_globs": normalized.get("allowed_globs", []),
+        "verify_cmd_ids": normalized.get("verify_cmd_ids", []),
+    }
+
+
+def _ledger_event_preview(
+    *,
+    repo: Path,
+    git_head: str | None,
+    args: dict[str, Any],
+    dirty: dict[str, Any],
+    blocking_reasons: list[str],
+) -> list[dict[str, Any]]:
+    branch = _current_branch(repo)
+    stage_id = args.get("stage_id") or "phase12a0-provenance-contract"
+    return [
+        ledger.redact(
+            {
+                "schema_version": 1,
+                "repo_id": ledger.repo_id(repo),
+                "branch": branch,
+                "head_sha": git_head,
+                "stage_id": stage_id,
+                "session_id": args.get("session_id") if isinstance(args.get("session_id"), str) else "unknown",
+                "actor": "hermes",
+                "tool": "codex_workflow_run",
+                "operation": "dry_run_plan",
+                "dirty_state_id": dirty.get("dirty_state_id"),
+                "dirty_paths": _current_dirty_paths(dirty),
+                "blocking_reasons": blocking_reasons,
+            }
+        )
+    ]
 
 
 def _stage_slug(stage_id: Any) -> str:
@@ -457,20 +575,27 @@ def codex_workflow_run(args: dict[str, Any]) -> str:
     dirty = staged._dirty_check(repo)
 
     if validated["mode"] == "dry_run":
-        cleanup_decisions = _cleanup_decisions(
+        cleanup_decisions = _dry_run_preview_decisions(
             args=args,
             repo=repo,
             git_head=git_head,
             dirty=dirty,
             allowlist=validated["allowlist"],
-            dry_run=True,
         )
+        blocking_reasons = _dry_run_blocking_reasons(
+            dirty=dirty,
+            allowlist=validated["allowlist"],
+            cleanup_decisions=cleanup_decisions,
+        )
+        stage_id = args.get("stage_id") or "phase12a0-provenance-contract"
+        branch = _current_branch(repo)
         return _json_result(
             _base(
                 "dry_run",
                 repo=repo,
                 git_head=git_head,
                 dirty=dirty,
+                mode="dry_run",
                 resolved_allowlist=validated["allowlist"],
                 would_call_staged=bool(dirty.get("is_clean")),
                 would_run_review=False,
@@ -481,20 +606,26 @@ def codex_workflow_run(args: dict[str, Any]) -> str:
                 would_deploy_or_restart=False,
                 would_write_ledger=True,
                 would_record_ledger_events=True,
-                ledger_event_preview=[],
+                ledger_path=str(ledger.ledger_path(repo=repo, branch=branch, stage_id=stage_id)),
+                ledger_event_preview=_ledger_event_preview(
+                    repo=repo,
+                    git_head=git_head,
+                    args=args,
+                    dirty=dirty,
+                    blocking_reasons=blocking_reasons,
+                ),
                 dirty_ownership=_ownership_preview_from_decisions(cleanup_decisions),
                 cleanup_allowed=False,
                 cleanup_blocking_reasons=_cleanup_blocking_reasons(cleanup_decisions),
                 would_delete_paths=[],
                 would_overwrite_paths=[],
-                blocking_reasons=[],
+                blocking_reasons=blocking_reasons,
                 authorization_required=["write_stage"],
-                recommended_next_stage={
-                    "stage_id": args.get("stage_id") or "phase12a0-provenance-contract",
-                    "allowed_files": normalized.get("allowed_files", []),
-                    "allowed_globs": normalized.get("allowed_globs", []),
-                    "verify_cmd_ids": normalized.get("verify_cmd_ids", []),
-                },
+                recommended_next_stage=_recommended_next_stage(
+                    args=args,
+                    normalized=normalized,
+                    blocking_reasons=blocking_reasons,
+                ),
             )
         )
 

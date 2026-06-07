@@ -435,6 +435,8 @@ def test_dry_run_clean_repo_does_not_call_staged_or_checkpoint(tmp_path, monkeyp
     assert "checkpoint" not in result
     assert calls == []
     assert _git(repo, "status", "--porcelain=v1", "--untracked-files=all") == ""
+    ledger_root = Path(result["ledger_path"]).parents[3]
+    assert not ledger_root.exists()
 
 
 def test_dry_run_cache_dirty_does_not_clean_cache_or_call_staged(tmp_path, monkeypatch):
@@ -464,6 +466,144 @@ def test_dry_run_cache_dirty_does_not_clean_cache_or_call_staged(tmp_path, monke
         ".pytest_cache/v/cache/nodeids"
     ]
     assert calls == []
+
+
+def test_dry_run_ledger_event_preview_without_writing_ledger(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    result = _call(workdir=str(repo), mode="dry_run", stage_id="phase12a-ledger-resume")
+
+    assert result["status"] == "dry_run"
+    assert result["would_write_ledger"] is True
+    assert result["would_record_ledger_events"] is True
+    assert result["ledger_event_preview"][0]["operation"] == "dry_run_plan"
+    assert result["ledger_event_preview"][0]["stage_id"] == "phase12a-ledger-resume"
+    assert not Path(result["ledger_path"]).exists()
+    assert not (hermes_home / "runtime" / "codex_workflows").exists()
+
+
+def test_dry_run_no_mutation_even_when_write_authorized(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    source_path = repo / "README.md"
+    source_path.write_text("authorized dirty\n", encoding="utf-8")
+    calls = []
+
+    def fake_staged(args):
+        calls.append(args)
+        raise AssertionError("dry_run must not call staged implementation")
+
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+
+    result = _call(
+        workdir=str(repo),
+        mode="dry_run",
+        standing_authorization=True,
+        allowed_files=["README.md"],
+        cleanup_allowed_files=["README.md"],
+        session_id="session-a",
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["would_call_staged"] is False
+    assert result["would_delete_paths"] == []
+    assert result["would_overwrite_paths"] == []
+    assert result["cleanup_allowed"] is False
+    assert source_path.read_text(encoding="utf-8") == "authorized dirty\n"
+    assert calls == []
+
+
+def test_dry_run_blocks_overlap_with_unknown_source_dirty(tmp_path):
+    repo = _clean_repo(tmp_path)
+    (repo / "README.md").write_text("unknown dirty\n", encoding="utf-8")
+
+    result = _call(workdir=str(repo), mode="dry_run", allowed_files=["README.md"])
+
+    assert result["status"] == "dry_run"
+    assert result["would_call_staged"] is False
+    assert "unknown_dirty_overlaps_write_scope" in result["blocking_reasons"]
+    assert result["recommended_next_stage"]["stage_id"] == "stop_for_user"
+    assert result["authorization_required"] == ["write_stage"]
+
+
+def test_dry_run_recommends_isolated_worktree_for_non_overlap_unknown_dirty(tmp_path):
+    repo = _clean_repo(tmp_path)
+    scratch = repo / "scratch.tmp"
+    scratch.write_text("dirty\n", encoding="utf-8")
+
+    result = _call(workdir=str(repo), mode="dry_run", allowed_files=["README.md"])
+
+    assert result["status"] == "dry_run"
+    assert result["would_create_isolated_worktree"] is False
+    assert "unknown_dirty_non_overlap_recommend_isolated_worktree" in result["blocking_reasons"]
+    assert result["recommended_next_stage"]["stage_id"] == "isolated_worktree"
+    assert scratch.exists()
+
+
+def test_dry_run_cleanup_block_reasons_include_ownership_and_cleanup_scope(tmp_path):
+    repo = _clean_repo(tmp_path)
+    cache_path = repo / ".pytest_cache" / "v" / "cache" / "nodeids"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("cached\n", encoding="utf-8")
+
+    result = _call(
+        workdir=str(repo),
+        mode="dry_run",
+        standing_authorization=True,
+        auto_clean_cache=True,
+        allowed_files=["README.md"],
+        cleanup_allowed_globs=[],
+        session_id="session-a",
+    )
+
+    assert result["cleanup_allowed"] is False
+    assert "dry_run_non_mutating" in result["cleanup_blocking_reasons"]
+    assert "owner_policy_not_current_session" in result["cleanup_blocking_reasons"]
+    assert "path_not_in_allowlist" in result["cleanup_blocking_reasons"]
+    assert result["dirty_ownership"][0]["cleanup_allowed"] is False
+    assert cache_path.exists()
+
+
+def test_dry_run_no_delete_or_overwrite_for_unknown_unowned(tmp_path):
+    repo = _clean_repo(tmp_path)
+    (repo / "README.md").write_text("unknown dirty\n", encoding="utf-8")
+
+    result = _call(
+        workdir=str(repo),
+        mode="dry_run",
+        standing_authorization=True,
+        cleanup_allowed_files=["README.md"],
+        session_id="session-a",
+    )
+
+    assert result["dirty_ownership"][0]["owner_policy"] == "unknown_unowned"
+    assert result["would_delete_paths"] == []
+    assert result["would_overwrite_paths"] == []
+    assert result["cleanup_allowed"] is False
+
+
+def test_dry_run_never_commit_push_deploy_or_restart(tmp_path):
+    repo = _clean_repo(tmp_path)
+
+    result = _call(
+        workdir=str(repo),
+        mode="dry_run",
+        standing_authorization=True,
+        checkpoint_verified_diff=True,
+    )
+
+    assert result["would_commit"] is False
+    assert result["would_push"] is False
+    assert result["would_deploy_or_restart"] is False
+
+
+def test_dry_run_authorization_required_for_write_stage(tmp_path):
+    repo = _clean_repo(tmp_path)
+
+    result = _call(workdir=str(repo), mode="dry_run")
+
+    assert result["authorization_required"] == ["write_stage"]
 
 
 def test_dry_run_source_dirty_does_not_create_isolated_worktree(tmp_path, monkeypatch):
@@ -698,3 +838,35 @@ def test_cleanup_allowlist_is_separate_from_codex_write_scope():
     )
 
     assert cleanup_scope == {"files": [], "globs": [".pytest_cache/**"]}
+
+
+def test_dry_run_does_not_call_mutating_or_cleanup_helpers(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    (repo / "README.md").write_text("dirty\n", encoding="utf-8")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("dry_run must not call mutating helper")
+
+    monkeypatch.setattr(workflow, "_call_staged", forbidden)
+    monkeypatch.setattr(workflow, "_create_isolated_worktree", forbidden)
+    monkeypatch.setattr(workflow, "_clean_cache_dirty_paths", forbidden)
+    monkeypatch.setattr(workflow.ledger, "write_ledger", forbidden)
+    monkeypatch.setattr(workflow.provenance, "cleanup_decision", forbidden)
+    monkeypatch.setattr(workflow.provenance, "provenance_event", forbidden)
+
+    result = _call(
+        workdir=str(repo),
+        mode="dry_run",
+        standing_authorization=True,
+        checkpoint_verified_diff=True,
+        allowed_files=["README.md"],
+        cleanup_allowed_files=["README.md"],
+        session_id="session-a",
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["would_call_staged"] is False
+    assert result["would_create_isolated_worktree"] is False
+    assert result["would_delete_paths"] == []
+    assert result["would_overwrite_paths"] == []
+    assert (repo / "README.md").read_text(encoding="utf-8") == "dirty\n"
