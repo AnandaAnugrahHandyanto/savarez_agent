@@ -7995,6 +7995,9 @@ class HermesCLI:
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
                 save_config_value("model.provider", result.target_provider)
+            # Always persist base_url and api_mode — empty string clears stale values
+            save_config_value("model.base_url", result.base_url or "")
+            save_config_value("model.api_mode", result.api_mode or "")
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
@@ -8244,6 +8247,9 @@ class HermesCLI:
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
                 save_config_value("model.provider", result.target_provider)
+            # Always persist base_url and api_mode — empty string clears stale values
+            save_config_value("model.base_url", result.base_url or "")
+            save_config_value("model.api_mode", result.api_mode or "")
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
