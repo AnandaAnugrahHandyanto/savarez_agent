@@ -93,7 +93,7 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
         result = check_for_updates()
 
     assert result == 5
-    assert mock_run.call_count == 2  # git fetch + git rev-list
+    assert mock_run.call_count == 3  # git fetch + git rev-list
 
 
 def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
