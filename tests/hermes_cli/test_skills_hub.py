@@ -5,7 +5,7 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import do_check, do_inspect, do_install, do_list, do_update, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -743,3 +743,95 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
 
+
+
+# ---------------------------------------------------------------------------
+# Regression: skills inspect must resolve locally-authored filesystem skills
+# ---------------------------------------------------------------------------
+
+def _write_skill_md(directory, name, description, body="# Body\n"):
+    """Create a SKILL.md with minimal valid frontmatter."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\n\n{body}",
+        encoding="utf-8",
+    )
+
+
+def test_do_inspect_finds_local_skill_flat(monkeypatch, tmp_path):
+    """Bare-name inspect resolves a flat local skill without hitting hub sources."""
+    import tools.skills_tool as skills_tool
+
+    skill_dir = tmp_path / "skills" / "my-test-skill"
+    _write_skill_md(skill_dir, "my-test-skill", "A test skill for regression testing.")
+
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", tmp_path / "skills")
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_inspect("my-test-skill", console=console)
+    output = sink.getvalue()
+
+    assert "my-test-skill" in output
+    assert "A test skill for regression testing." in output
+    assert "SKILL.md Preview" in output
+    assert "Resolving" not in output
+    assert "No skill named" not in output
+
+
+def test_do_inspect_finds_local_skill_in_category(monkeypatch, tmp_path):
+    """Bare-name inspect resolves a categorised local skill (skills/devops/name/)."""
+    import tools.skills_tool as skills_tool
+
+    skill_dir = tmp_path / "skills" / "devops" / "my-test-skill"
+    _write_skill_md(skill_dir, "my-test-skill", "A devops test skill.")
+
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", tmp_path / "skills")
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_inspect("my-test-skill", console=console)
+    output = sink.getvalue()
+
+    assert "my-test-skill" in output
+    assert "A devops test skill." in output
+    assert "SKILL.md Preview" in output
+    assert "No skill named" not in output
+
+
+def test_do_inspect_local_shows_source_as_local(monkeypatch, tmp_path):
+    """inspect output must label the skill as 'local', not 'github' or 'official'."""
+    import tools.skills_tool as skills_tool
+
+    skill_dir = tmp_path / "skills" / "my-local-skill"
+    _write_skill_md(skill_dir, "my-local-skill", "A locally authored skill.")
+
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", tmp_path / "skills")
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_inspect("my-local-skill", console=console)
+    output = sink.getvalue()
+
+    assert "local" in output
+    assert "official" not in output
+    assert "github" not in output
+
+
+def test_do_inspect_missing_skill_shows_error(monkeypatch, tmp_path):
+    """When the skill doesn't exist locally or on hub, show an error."""
+    import tools.skills_tool as skills_tool
+    from unittest.mock import MagicMock, patch
+
+    (tmp_path / "skills").mkdir()
+    monkeypatch.setattr(skills_tool, "SKILLS_DIR", tmp_path / "skills")
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    with patch("tools.skills_hub.create_source_router", return_value=[]), \
+         patch("tools.skills_hub.GitHubAuth"):
+        do_inspect("no-such-skill-xyz", console=console)
+
+    output = sink.getvalue()
+    assert "no-such-skill-xyz" in output.lower() or "No skill named" in output or "Error" in output

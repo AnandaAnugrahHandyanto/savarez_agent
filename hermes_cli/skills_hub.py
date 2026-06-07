@@ -687,11 +687,94 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         c.print("[dim]Use /reset to start a new session now, or --now to activate immediately (invalidates prompt cache).[/]\n")
 
 
+def _do_inspect_local(name: str, c: Console) -> bool:
+    """Render a locally-installed skill by name.
+
+    Scans SKILLS_DIR and external dirs (same set as ``_find_all_skills``).
+    Returns True and prints the Panel output when found; returns False silently
+    so the caller can fall through to hub lookup.
+    """
+    try:
+        from agent.skill_utils import (
+            EXCLUDED_SKILL_DIRS,
+            get_external_skills_dirs,
+            iter_skill_index_files,
+        )
+        import tools.skills_tool as _skills_tool
+        from hermes_constants import display_hermes_home, get_hermes_home
+    except Exception:
+        return False
+
+    # Access SKILLS_DIR via module attribute so tests can monkeypatch it.
+    skills_dir = _skills_tool.SKILLS_DIR
+    dirs_to_scan = []
+    if skills_dir.exists():
+        dirs_to_scan.append(skills_dir)
+    try:
+        dirs_to_scan.extend(get_external_skills_dirs())
+    except Exception:
+        pass
+
+    for scan_dir in dirs_to_scan:
+        for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
+            if any(part in EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+                continue
+            try:
+                content = skill_md.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            try:
+                fm, _ = _skills_tool._parse_frontmatter(content)
+            except Exception:
+                fm = {}
+            skill_name = fm.get("name", skill_md.parent.name)
+            if skill_name.lower() != name.lower():
+                continue
+
+            # Found — render in the same style as do_inspect.
+            description = fm.get("description", "")
+            c.print()
+            info_lines = [
+                f"[bold]Name:[/] {skill_name}",
+                f"[bold]Description:[/] {description}",
+                f"[bold]Source:[/] local",
+                f"[bold]Trust:[/] [dim]local[/]",
+                f"[bold]Identifier:[/] {skill_name}",
+            ]
+            tags = fm.get("tags")
+            if isinstance(tags, list) and tags:
+                info_lines.append(f"[bold]Tags:[/] {', '.join(str(t) for t in tags)}")
+            try:
+                rel = skill_md.relative_to(get_hermes_home())
+                info_lines.append(f"[bold]Path:[/] {display_hermes_home()}/{rel}")
+            except ValueError:
+                info_lines.append(f"[bold]Path:[/] {skill_md}")
+
+            c.print(Panel("\n".join(info_lines), title=f"Skill: {skill_name}"))
+
+            lines = content.split("\n")
+            preview = "\n".join(lines[:50])
+            if len(lines) > 50:
+                preview += f"\n\n... ({len(lines) - 50} more lines)"
+            c.print(Panel(preview, title="SKILL.md Preview",
+                          subtitle="local skill — edit directly on disk"))
+            c.print()
+            return True
+
+    return False
+
+
 def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     """Preview a skill's SKILL.md content without installing."""
     from tools.skills_hub import GitHubAuth, create_source_router
 
     c = console or _console
+
+    # For bare names (no /), check local filesystem first — instant, no network.
+    if "/" not in identifier:
+        if _do_inspect_local(identifier, c):
+            return
+
     auth = GitHubAuth()
     sources = create_source_router(auth)
 
