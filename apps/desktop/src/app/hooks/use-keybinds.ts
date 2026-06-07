@@ -127,6 +127,12 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // IME composition (e.g. Chinese input): ignore keydown events so they
+      // don't accidentally trigger shortcuts like mod+, → settings.
+      if (event.isComposing) {
+        return
+      }
+
       // Capture mode: the next real key becomes the binding. Swallow everything
       // so e.g. ⌘K rebinds instead of opening the palette.
       const capturing = $capture.get()
@@ -150,6 +156,13 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         setBinding(capturing, [combo])
         endCapture()
 
+        return
+      }
+
+      // macOS: in editable elements, Ctrl+key events are frequently used
+      // by CJK IMEs (e.g. Ctrl+, → fullwidth comma). Skip shortcuts to
+      // avoid conflicts — Cmd+key still works for the same bindings.
+      if (event.ctrlKey && !event.metaKey && isEditableTarget(event.target) && /Mac/.test(navigator.platform)) {
         return
       }
 
