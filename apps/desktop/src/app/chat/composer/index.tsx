@@ -1074,11 +1074,13 @@ export function ChatBar({
   }
 
   const queueCurrentDraft = useCallback(() => {
-    if (!activeQueueSessionKey || (!draft.trim() && attachments.length === 0)) {
+    const currentDraft = draftRef.current
+
+    if (!activeQueueSessionKey || (!currentDraft.trim() && attachments.length === 0)) {
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: draft, attachments })) {
+    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: currentDraft, attachments })) {
       return false
     }
 
@@ -1087,7 +1089,7 @@ export function ChatBar({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draft])
+  }, [activeQueueSessionKey, attachments, clearDraft])
 
   // Steer the live turn (nudge without interrupting). Clears the draft up front
   // for snappy feedback; if the gateway rejects (no live tool window) the words
@@ -1212,6 +1214,25 @@ export function ChatBar({
   }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const submitDraft = () => {
+    // Flush the live DOM content into draftRef before reading it.  When
+    // typing fast and pressing Enter immediately, the React state (`draft`)
+    // may not have committed yet — `draftRef` is updated synchronously in
+    // handleEditorInput, but as a safety net we also read the editor
+    // directly so we never submit stale, empty, or truncated text.
+    const editor = editorRef.current
+
+    if (editor) {
+      const liveText = composerPlainText(editor)
+
+      if (liveText !== draftRef.current) {
+        draftRef.current = liveText
+        aui.composer().setText(liveText)
+      }
+    }
+
+    const currentDraft = draftRef.current
+    const hasPayload = currentDraft.trim().length > 0 || attachments.length > 0
+
     if (queueEdit) {
       exitQueuedEdit('save')
     } else if (busy) {
@@ -1222,12 +1243,12 @@ export function ChatBar({
       // busy guard for commands that genuinely need an idle session (skill
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
-      if (!attachments.length && SLASH_COMMAND_RE.test(draft.trim())) {
-        const submitted = draft
+      if (!attachments.length && SLASH_COMMAND_RE.test(currentDraft.trim())) {
+        const submitted = currentDraft
         triggerHaptic('submit')
         clearDraft()
         void onSubmit(submitted)
-      } else if (hasComposerPayload) {
+      } else if (hasPayload) {
         queueCurrentDraft()
       } else {
         // Stop button (the only way to reach here while busy with an empty
@@ -1235,10 +1256,10 @@ export function ChatBar({
         triggerHaptic('cancel')
         void Promise.resolve(onCancel())
       }
-    } else if (!hasComposerPayload && queuedPrompts.length > 0) {
+    } else if (!hasPayload && queuedPrompts.length > 0) {
       void drainNextQueued()
-    } else if (draft.trim() || attachments.length > 0) {
-      const submitted = draft
+    } else if (currentDraft.trim() || attachments.length > 0) {
+      const submitted = currentDraft
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
