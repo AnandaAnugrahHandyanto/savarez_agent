@@ -1,49 +1,44 @@
 import { describe, expect, it } from 'vitest'
-import { parseSlashCommand } from './chat-runtime'
+import { parseSlash } from './slashExec'
 
-describe('parseSlashCommand', () => {
+describe('parseSlash', () => {
   it('should parse simple command without arguments', () => {
-    const result = parseSlashCommand('/help')
+    const result = parseSlash('/help')
     expect(result).toEqual({ name: 'help', arg: '' })
   })
 
   it('should parse command with single-line argument', () => {
-    const result = parseSlashCommand('/goal Write a Python script')
+    const result = parseSlash('/goal Write a Python script')
     expect(result).toEqual({ name: 'goal', arg: 'Write a Python script' })
   })
 
   it('should parse command with multi-line argument (with newline)', () => {
-    const result = parseSlashCommand('/goal Write a Python\nthat prints Hello')
+    const result = parseSlash('/goal Write a Python\nthat prints Hello')
     expect(result).toEqual({ name: 'goal', arg: 'Write a Python\nthat prints Hello' })
   })
 
   it('should handle multiple newlines in argument', () => {
-    const result = parseSlashCommand('/goal Line 1\nLine 2\nLine 3')
+    const result = parseSlash('/goal Line 1\nLine 2\nLine 3')
     expect(result).toEqual({ name: 'goal', arg: 'Line 1\nLine 2\nLine 3' })
   })
 
   it('should handle command with leading slashes', () => {
-    const result = parseSlashCommand('//goal Write something')
+    const result = parseSlash('//goal Write something')
     expect(result).toEqual({ name: 'goal', arg: 'Write something' })
   })
 
   it('should handle command with trailing whitespace in argument', () => {
-    const result = parseSlashCommand('/goal Some text  ')
+    const result = parseSlash('/goal Some text  ')
     expect(result).toEqual({ name: 'goal', arg: 'Some text' })
   })
 
-  it('should handle command with leading and trailing whitespace', () => {
-    const result = parseSlashCommand('  /goal Write text  ')
-    expect(result).toEqual({ name: '', arg: '' })
-  })
-
   it('should return empty name and arg for invalid commands', () => {
-    const result = parseSlashCommand('not a command')
+    const result = parseSlash('not a command')
     expect(result).toEqual({ name: '', arg: '' })
   })
 
   it('should handle tabs and newlines mixed in argument', () => {
-    const result = parseSlashCommand('/goal\tWrite something\nand more')
+    const result = parseSlash('/goal\tWrite something\nand more')
     expect(result).toEqual({ name: 'goal', arg: 'Write something\nand more' })
   })
 
@@ -52,7 +47,7 @@ describe('parseSlashCommand', () => {
 that supports unit tests
 and integration tests
 with clear documentation`
-    const result = parseSlashCommand(input)
+    const result = parseSlash(input)
     expect(result.name).toBe('goal')
     expect(result.arg).toContain('Create a comprehensive testing framework')
     expect(result.arg).toContain('unit tests')

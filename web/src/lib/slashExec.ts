@@ -127,7 +127,7 @@ export async function executeSlash({
 }
 
 export function parseSlash(command: string): { name: string; arg: string } {
-  const m = command.replace(/^\/+/, "").match(/^(\S+)\s*(.*)$/);
+  const m = command.replace(/^\\/+/, "").match(/^(\S+)\s*(.*)$/s);
   return m ? { name: m[1], arg: m[2].trim() } : { name: "", arg: "" };
 }
 
