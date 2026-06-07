@@ -800,3 +800,119 @@ class TestResolveUpdatePrompt:
         await adapter._resolve_update_prompt(99, "n", "Nobody")
 
         assert not (tmp_path / ".hermes" / ".update_response").exists()
+
+# ===========================================================================
+# Regression: webhook SimpleNamespace handling (issue #33354)
+# ===========================================================================
+
+def _make_webhook_card_action_data(
+    action_value: dict,
+    chat_id: str = "oc_12345",
+    open_id: str = "ou_user1",
+    token: str = "tok_abc",
+) -> SimpleNamespace:
+    """Simulate _namespace_from_mapping converting dicts to SimpleNamespace.
+
+    In webhook mode, the entire payload is recursively converted via
+    ``_namespace_from_mapping``, so action.value arrives as a SimpleNamespace
+    rather than a dict.
+    """
+    def _to_ns(obj):
+        if isinstance(obj, dict):
+            return SimpleNamespace(**{k: _to_ns(v) for k, v in obj.items()})
+        if isinstance(obj, list):
+            return [_to_ns(item) for item in obj]
+        return obj
+
+    return SimpleNamespace(
+        event=SimpleNamespace(
+            token=token,
+            context=SimpleNamespace(open_chat_id=chat_id),
+            operator=SimpleNamespace(open_id=open_id),
+            action=SimpleNamespace(
+                tag="button",
+                value=_to_ns(action_value),
+            ),
+        ),
+    )
+
+
+class TestWebhookSimpleNamespaceHandling:
+    """Verify that card actions arriving as SimpleNamespace (webhook mode) are
+    correctly routed — the original bug was that isinstance(action_value, dict)
+    returned False for SimpleNamespace, silently dropping all card actions."""
+
+    def test_approval_action_routed_when_value_is_simplenamespace(self, _patch_callback_card_types):
+        """_on_card_action_trigger must detect hermes_action even when
+        action_value is a SimpleNamespace (webhook mode)."""
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._approval_state[1] = {
+            "session_key": "sess-1",
+            "message_id": "msg-1",
+            "chat_id": "oc_12345",
+        }
+        adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+        data = _make_webhook_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 1},
+            open_id="ou_bob",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        assert response.card.type == "raw"
+        card = response.card.data
+        assert "Approved once" in card["header"]["title"]["content"]
+
+    def test_update_prompt_action_routed_when_value_is_simplenamespace(self, _patch_callback_card_types):
+        """_on_card_action_trigger must detect hermes_update_prompt_action even
+        when action_value is a SimpleNamespace."""
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._is_interactive_operator_authorized = MagicMock(return_value=True)
+        adapter._update_prompt_state[1] = {
+            "session_key": "sess-up",
+            "message_id": "msg-up",
+            "chat_id": "oc_12345",
+        }
+        adapter._sender_name_cache["ou_user1"] = ("Alice", 9999999999)
+        data = _make_webhook_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": 1},
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+
+    @pytest.mark.asyncio
+    async def test_card_action_event_serialises_simplenamespace_value(self):
+        """_handle_card_action_event must serialise SimpleNamespace action_value
+        to JSON, not silently produce empty text."""
+        adapter = _make_adapter()
+        data = _make_webhook_card_action_data(
+            {"custom_action": "something_else"},
+            token="tok_ns",
+        )
+
+        with (
+            patch.object(
+                adapter, "_resolve_sender_profile", new_callable=AsyncMock,
+                return_value={"user_id": "ou_u", "user_name": "Dave", "user_id_alt": None},
+            ),
+            patch.object(adapter, "get_chat_info", new_callable=AsyncMock, return_value={"name": "Test Chat"}),
+            patch.object(adapter, "_handle_message_with_guards", new_callable=AsyncMock) as mock_handle,
+        ):
+            await adapter._handle_card_action_event(data)
+
+        mock_handle.assert_called_once()
+        event = mock_handle.call_args[0][0]
+        # The serialised value should contain the action data, not be empty
+        assert "custom_action" in event.text
+        assert "something_else" in event.text
