@@ -19,6 +19,7 @@ import pytest
 # Trigger the shared discord mock from tests/gateway/conftest.py before
 # importing the production module.
 from plugins.platforms.discord.adapter import (  # noqa: E402
+    ClarifyChoiceView,
     ExecApprovalView,
     ModelPickerView,
     SlashConfirmView,
@@ -59,6 +60,34 @@ def test_component_check_empty_allowlists_allows_everyone():
     interaction = _interaction(11111)
     assert _component_check_auth(interaction, set(), set()) is True
     assert _component_check_auth(interaction, None, None) is True
+
+
+def test_component_check_empty_allowlists_defer_to_auth_callback():
+    interaction = _interaction(11111)
+    assert _component_check_auth(
+        interaction,
+        set(),
+        set(),
+        auth_callback=lambda _i: False,
+    ) is False
+    assert _component_check_auth(
+        interaction,
+        set(),
+        set(),
+        auth_callback=lambda _i: True,
+    ) is True
+
+
+def test_component_check_auth_callback_can_authorize_allowlist_miss():
+    """Pairing/global auth must remain an OR-path even when local Discord
+    allowlists are configured and the clicker misses them."""
+    interaction = _interaction(99999, role_ids=[7])
+    assert _component_check_auth(
+        interaction,
+        {"11111"},
+        {42},
+        auth_callback=lambda _i: True,
+    ) is True
 
 
 # ── user allowlist ─────────────────────────────────────────────────────────
@@ -194,6 +223,24 @@ def test_model_picker_view_accepts_role_allowlist():
     )
     assert view._check_auth(_interaction(99999, role_ids=[42])) is True
     assert view._check_auth(_interaction(99999, role_ids=[7])) is False
+
+
+def test_clarify_choice_view_empty_allowlists_use_auth_callback():
+    view = ClarifyChoiceView(
+        choices=["apple"],
+        clarify_id="cid-1",
+        allowed_user_ids=set(),
+        auth_callback=lambda _i: False,
+    )
+    assert view._check_auth(_interaction(99999)) is False
+
+    view_ok = ClarifyChoiceView(
+        choices=["apple"],
+        clarify_id="cid-2",
+        allowed_user_ids=set(),
+        auth_callback=lambda _i: True,
+    )
+    assert view_ok._check_auth(_interaction(99999)) is True
 
 
 # ---------------------------------------------------------------------------
