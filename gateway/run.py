@@ -5789,6 +5789,19 @@ class GatewayRunner:
         in-flight ``to_thread`` returns on its own after the current
         ``dispatch_once`` call finishes (typically <1ms on an idle board).
         """
+        # Prevent multiple gateway instances from running on the same profile.
+        lock_file = os.path.join(self.profile_dir, "dispatcher.lock")
+        try:
+            from gateway.lock import FileLock
+            self._disp_lock = FileLock(lock_file)
+            self._disp_lock.__enter__()
+        except Exception:
+            logger.error(
+                "kanban dispatcher: Another gateway instance is already running "
+                "for this profile. Exiting dispatcher loop."
+            )
+            return
+
         # Read config once at boot. If the user flips the flag later, they
         # restart the gateway; same pattern as every other background
         # watcher here. Honours HERMES_KANBAN_DISPATCH_IN_GATEWAY env var
