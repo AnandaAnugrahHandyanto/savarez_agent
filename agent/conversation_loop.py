@@ -467,6 +467,12 @@ def run_conversation(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    # Stall detector: track repeated tool-call batches to prevent the
+    # agent from spinning its wheels (issue #41313).
+    if not hasattr(agent, "_stall_detector"):
+        from agent.stall_detector import StallDetector
+        agent._stall_detector = StallDetector()
+    agent._stall_detector.reset()
     # True until the server rejects an image_url content part with an error
     # like "Only 'text' content type is supported."  Set to False on first
     # rejection and kept False for the rest of the session so we never re-send
@@ -4115,6 +4121,27 @@ def run_conversation(
                             except Exception:
                                 pass
                     break
+
+                # ── Stall detection (issue #41313) ──────────────────────
+                # Check if the agent is repeating the same tool calls.
+                _stall_sig = agent._stall_detector.tool_batch_signature(
+                    assistant_message.tool_calls
+                )
+                _stall_result = agent._stall_detector.check(_stall_sig)
+                if _stall_result.is_stall:
+                    agent._emit_status(f"🔄 {_stall_result.message[:200]}")
+                    # Inject the stall warning as a system-context message
+                    # so the model sees it on the next iteration.
+                    messages.append({
+                        "role": "system",
+                        "content": f"[Stall Detector] {_stall_result.message}",
+                    })
+                    if _stall_result.hard_stop:
+                        _turn_exit_reason = "stall_hard_stop"
+                        final_response = _stall_result.message
+                        if not agent.quiet_mode:
+                            agent._safe_print(f"\n⚠️  {_stall_result.message}\n")
+                        break
 
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the
