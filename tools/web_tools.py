@@ -189,7 +189,7 @@ def _get_capability_backend(capability: str) -> str:
     """
     cfg = _load_web_config()
     specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
-    if specific in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-search", "brave-free", "ddgs"}:
+    if specific in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-search", "brave-free", "ddgs", "xai"}:
         return specific
     return _get_backend()
 
@@ -1159,7 +1159,7 @@ async def web_extract_tool(
 
 # Convenience function to check Firecrawl credentials
 def check_web_api_key() -> bool:
-    """Check whether the configured web backend is available."""
+    """Check whether the configured web search backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
     if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-search", "brave-free", "ddgs", "xai"}:
         return _is_backend_available(configured)
@@ -1167,6 +1167,14 @@ def check_web_api_key() -> bool:
         _is_backend_available(backend)
         for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-search", "brave-free", "ddgs", "xai")
     )
+
+
+def check_web_extract_api_key() -> bool:
+    """Check whether the configured web extract backend is available."""
+    backend = _get_extract_backend()
+    if backend not in {"exa", "parallel", "firecrawl", "tavily"}:
+        return False
+    return _is_backend_available(backend)
 
 
 def check_auxiliary_model() -> bool:
@@ -1345,7 +1353,7 @@ registry.register(
     schema=WEB_EXTRACT_SCHEMA,
     handler=lambda args, **kw: web_extract_tool(
         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
-    check_fn=check_web_api_key,
+    check_fn=check_web_extract_api_key,
     requires_env=_web_requires_env(),
     is_async=True,
     emoji="📄",

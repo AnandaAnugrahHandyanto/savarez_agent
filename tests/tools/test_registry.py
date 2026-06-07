@@ -160,6 +160,49 @@ class TestToolsetAvailability:
         assert reqs["ok"] is True
         assert reqs["nope"] is False
 
+    def test_toolset_with_mixed_checks_is_available_when_any_tool_passes(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="locked",
+            toolset="mixed",
+            schema=_make_schema("locked"),
+            handler=_dummy_handler,
+            check_fn=lambda: False,
+        )
+        reg.register(
+            name="ready",
+            toolset="mixed",
+            schema=_make_schema("ready"),
+            handler=_dummy_handler,
+            check_fn=lambda: True,
+        )
+
+        assert reg.is_toolset_available("mixed") is True
+        assert reg.check_toolset_requirements()["mixed"] is True
+
+    def test_deregister_rebuilds_mixed_toolset_check(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="locked",
+            toolset="mixed",
+            schema=_make_schema("locked"),
+            handler=_dummy_handler,
+            check_fn=lambda: False,
+        )
+        reg.register(
+            name="ready",
+            toolset="mixed",
+            schema=_make_schema("ready"),
+            handler=_dummy_handler,
+            check_fn=lambda: True,
+        )
+        assert reg.is_toolset_available("mixed") is True
+
+        reg.deregister("ready")
+
+        assert reg.is_toolset_available("mixed") is False
+        assert reg.check_toolset_requirements()["mixed"] is False
+
     def test_get_all_tool_names(self):
         reg = ToolRegistry()
         reg.register(

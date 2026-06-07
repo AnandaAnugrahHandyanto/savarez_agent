@@ -75,6 +75,7 @@ def brave_search_tool(args: Dict[str, Any]) -> str:
 
     limit = _safe_limit(args.get("limit", 5))
     country = _validated_text(args.get("country"), default="ALL")
+    llm_country = "US" if country.upper() == "ALL" else country
     search_lang = _validated_text(args.get("search_lang"), default="en")
     safesearch = _validated_text(args.get("safesearch"), default="moderate")
     if safesearch not in {"off", "moderate", "strict"}:
@@ -118,7 +119,7 @@ def brave_search_tool(args: Dict[str, Any]) -> str:
         response = client.llm_context(
             query,
             limit,
-            country=country,
+            country=llm_country,
             search_lang=search_lang,
             safesearch=safesearch,
             freshness=freshness,

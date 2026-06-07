@@ -54,8 +54,8 @@ class BraveSearchWebProvider(WebSearchProvider):
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
             "name": "Brave Search API",
-            "badge": "paid · search · grounding",
-            "tag": "Brave Search API Search plan with web, images, news, videos, suggestions, and grounding context.",
+            "badge": "paid · search",
+            "tag": "Brave Search API provider for generic web_search. The same key also enables direct brave_search rich modes.",
             "env_vars": [
                 {
                     "key": "BRAVE_SEARCH_API_KEY",

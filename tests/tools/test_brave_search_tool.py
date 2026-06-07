@@ -159,6 +159,24 @@ def test_llm_mode_passes_locale_options(monkeypatch):
     assert captured["params"]["freshness"] == "pw"
 
 
+def test_llm_mode_maps_default_all_country_to_us(monkeypatch):
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "secret-value")
+
+    from tools.brave_search_tool import brave_search_tool
+
+    captured = {}
+
+    def fake_get(url, **kwargs):
+        captured["params"] = kwargs["params"]
+        return _mock_resp({"grounding": {"generic": []}})
+
+    with patch("plugins.web.brave_search.client.httpx.get", side_effect=fake_get):
+        result = json.loads(brave_search_tool({"query": "Hermes", "mode": "llm"}))
+
+    assert result["success"] is True
+    assert captured["params"]["country"] == "US"
+
+
 def test_images_mode_returns_images(monkeypatch):
     monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "secret-value")
 
