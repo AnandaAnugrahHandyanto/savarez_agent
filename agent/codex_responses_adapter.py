@@ -435,9 +435,13 @@ def _chat_messages_to_responses_input(
                             "status": _normalize_responses_message_status(raw_item.get("status")),
                             "content": normalized_content_parts,
                         }
-                        item_id = raw_item.get("id")
-                        if isinstance(item_id, str) and item_id.strip():
-                            replay_item["id"] = item_id.strip()
+                        # Do NOT replay persisted message item ids. Hermes uses
+                        # store=False for Responses calls; sending an `id` makes
+                        # the API try to resolve server-side state that was not
+                        # persisted and it returns 404 (`Item ... not found`).
+                        # The text/phase payload is self-contained enough for
+                        # continuity and prefix-cache hints without relying on
+                        # provider-side item storage.
                         phase = raw_item.get("phase")
                         if isinstance(phase, str) and phase.strip():
                             replay_item["phase"] = phase.strip()
@@ -689,9 +693,11 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 "status": _normalize_responses_message_status(item.get("status")),
                 "content": normalized_content,
             }
-            item_id = item.get("id")
-            if isinstance(item_id, str) and item_id.strip():
-                normalized_item["id"] = item_id.strip()
+            # Do NOT replay message item ids with store=False. Unlike
+            # function_call ids (local call linkage), Responses message ids are
+            # server-side item references; if the original response was not
+            # stored, replaying them causes 404 `Item ... not found`.
+            # Preserve phase but send a self-contained message payload.
             phase = item.get("phase")
             if isinstance(phase, str) and phase.strip():
                 normalized_item["phase"] = phase.strip()
