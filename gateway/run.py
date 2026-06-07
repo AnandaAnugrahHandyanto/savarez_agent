@@ -3707,6 +3707,10 @@ class GatewayRunner:
         messages can be delivered. Best-effort: individual send failures are
         logged and swallowed so they never block the shutdown sequence.
         """
+        await self._send_liveness_notification(
+            "restart" if self._restart_requested else "shutdown",
+        )
+
         active = self._snapshot_running_agents()
         restart_source = self._restart_command_source if self._restart_requested else None
 
@@ -3872,6 +3876,96 @@ class GatewayRunner:
                     home.chat_id,
                     e,
                 )
+
+    def _liveness_notification_config(self) -> dict:
+        """Return the raw gateway.liveness_notifications config block."""
+        try:
+            cfg = _load_gateway_config()
+            gateway_cfg = cfg.get("gateway") if isinstance(cfg, dict) else None
+            live_cfg = gateway_cfg.get("liveness_notifications") if isinstance(gateway_cfg, dict) else None
+            return live_cfg if isinstance(live_cfg, dict) else {}
+        except Exception:
+            return {}
+
+    async def _send_liveness_notification(self, event: str) -> None:
+        """Send low-noise gateway lifecycle notifications to a monitor target."""
+        cfg = self._liveness_notification_config()
+        if not cfg.get("enabled", False):
+            return
+
+        notify_key = {
+            "start": "notify_on_start",
+            "restart": "notify_on_restart",
+            "shutdown": "notify_on_shutdown",
+            "abnormal_exit": "notify_on_abnormal_exit",
+        }.get(event)
+        if notify_key and not cfg.get(notify_key, True):
+            return
+
+        target = str(cfg.get("target") or "").strip()
+        if not target or ":" not in target:
+            logger.debug("Liveness notification target is not configured or invalid: %r", target)
+            return
+
+        platform_name, target_ref = target.split(":", 1)
+        platform_name = platform_name.strip().lower()
+        target_ref = target_ref.strip()
+        if not platform_name or not target_ref:
+            return
+
+        parts = target_ref.split(":", 1)
+        chat_id = parts[0].strip()
+        thread_id = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
+        if not chat_id:
+            return
+
+        try:
+            platform = Platform(platform_name)
+        except Exception:
+            logger.debug("Unknown liveness notification platform: %s", platform_name)
+            return
+
+        adapter = self.adapters.get(platform)
+        if not adapter:
+            logger.debug("No adapter for liveness notification platform: %s", platform_name)
+            return
+
+        icon = {
+            "start": "🟢",
+            "restart": "🔁",
+            "shutdown": "🟡",
+            "abnormal_exit": "🔴",
+        }.get(event, "ℹ️")
+        state = {
+            "start": "started",
+            "restart": "restarting",
+            "shutdown": "shutting down",
+            "abnormal_exit": "abnormal exit detected",
+        }.get(event, event)
+        pid = os.getpid()
+        when = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+        message = f"{icon} Hermes gateway {state} — pid={pid} at {when}"
+        metadata = {"thread_id": thread_id} if thread_id else None
+
+        try:
+            timeout_s = float(cfg.get("send_timeout_seconds", 5.0) or 5.0)
+        except (TypeError, ValueError):
+            timeout_s = 5.0
+        try:
+            result = await asyncio.wait_for(
+                adapter.send(chat_id, message, metadata=metadata),
+                timeout=max(timeout_s, 0.1),
+            )
+            if result is not None and getattr(result, "success", True) is False:
+                logger.debug(
+                    "Liveness notification send returned success=False for %s: %s",
+                    target,
+                    getattr(result, "error", "unknown error"),
+                )
+                return
+            logger.info("Sent liveness notification to %s", target)
+        except Exception as exc:
+            logger.debug("Failed to send liveness notification to %s: %s", target, exc)
 
     def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
@@ -4784,6 +4878,7 @@ class GatewayRunner:
         # helps Discord thread deliveries right after reconnect.
         if connected_count > 0:
             await asyncio.sleep(1.0)
+            await self._send_liveness_notification("start")
 
         # Notify the chat that initiated /restart that the gateway is back.
         planned_restart_notification_pending = _planned_restart_notification_pending()
@@ -8577,6 +8672,10 @@ class GatewayRunner:
         # same session — corrupting the transcript.
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
         self._running_agents_ts[_quick_key] = time.time()
+        # Keep gateway_state.json live while a turn is running.  The status
+        # file used to be refreshed at startup/shutdown only, so active_agents
+        # stayed at 0 and updated_at looked stale during normal Discord turns.
+        self._update_runtime_status("running")
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
@@ -16712,6 +16811,7 @@ class GatewayRunner:
         self._running_agents_ts.pop(session_key, None)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
+        self._update_runtime_status("draining" if self._draining else "running")
         return True
 
     def _clear_session_boundary_security_state(self, session_key: str) -> None:
@@ -18982,6 +19082,8 @@ class GatewayRunner:
             self._running_agents[session_key] = agent_holder[0]
             if self._draining:
                 self._update_runtime_status("draining")
+            else:
+                self._update_runtime_status("running")
         
         tracking_task = asyncio.create_task(track_agent())
         

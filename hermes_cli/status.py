@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch status.subprocess to guard against regressions
 from pathlib import Path
+from datetime import datetime, timezone
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -45,7 +46,6 @@ def _format_iso_timestamp(value) -> str:
     """Format ISO timestamps for status output, converting to local timezone."""
     if not value or not isinstance(value, str):
         return "(unknown)"
-    from datetime import datetime, timezone
     text = value.strip()
     if not text:
         return "(unknown)"
@@ -58,6 +58,27 @@ def _format_iso_timestamp(value) -> str:
     except Exception:
         return value
     return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def _runtime_status_age(value) -> str:
+    """Return a compact relative age for gateway_state.json timestamps."""
+    if not value or not isinstance(value, str):
+        return "unknown age"
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        age_s = max(0, int((datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()))
+    except Exception:
+        return "unknown age"
+    if age_s < 60:
+        return f"{age_s}s ago"
+    if age_s < 3600:
+        return f"{age_s // 60}m ago"
+    return f"{age_s // 3600}h ago"
 
 
 def _configured_model_label(config: dict) -> str:
@@ -477,6 +498,7 @@ def show_status(args):
 
     try:
         from hermes_cli.gateway import get_gateway_runtime_snapshot, _format_gateway_pids
+        from gateway.status import read_runtime_status
 
         snapshot = get_gateway_runtime_snapshot()
         is_running = snapshot.running
@@ -491,6 +513,21 @@ def show_status(args):
             print("  Note:         Android may stop background jobs when Termux is suspended")
         elif snapshot.service_installed and not snapshot.service_running:
             print("  Service:      installed but stopped")
+
+        runtime_status = read_runtime_status() or {}
+        if runtime_status:
+            state = runtime_status.get("gateway_state") or "unknown"
+            active = runtime_status.get("active_agents", 0)
+            updated_at = runtime_status.get("updated_at")
+            print(f"  Health:       {state} (active agents: {active}, updated {_runtime_status_age(updated_at)})")
+            platforms_status = runtime_status.get("platforms") or {}
+            if isinstance(platforms_status, dict) and platforms_status:
+                platform_bits = []
+                for name, info in sorted(platforms_status.items()):
+                    if isinstance(info, dict):
+                        platform_bits.append(f"{name}={info.get('state') or 'unknown'}")
+                if platform_bits:
+                    print(f"  Platforms:    {', '.join(platform_bits)}")
     except Exception:
         if _is_termux():
             print(f"  Status:       {color('unknown', Colors.DIM)}")

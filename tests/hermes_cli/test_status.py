@@ -351,3 +351,29 @@ class TestShowStatusXaiOAuth:
 
         assert "xAI OAuth" in out
         assert "not logged in (run: hermes auth add xai-oauth)" in out
+
+
+def test_show_status_includes_gateway_runtime_health(monkeypatch, capsys, tmp_path):
+    import gateway.status as gateway_status
+
+    status_mod = _base_xai_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        gateway_status,
+        "read_runtime_status",
+        lambda: {
+            "gateway_state": "running",
+            "active_agents": 2,
+            "updated_at": "not-a-date",
+            "platforms": {
+                "discord": {"state": "connected"},
+                "telegram": {"state": "disabled"},
+            },
+        },
+        raising=False,
+    )
+
+    status_mod.show_status(SimpleNamespace(all=False, deep=False))
+    out = capsys.readouterr().out
+
+    assert "Health:       running (active agents: 2, updated unknown age)" in out
+    assert "Platforms:    discord=connected, telegram=disabled" in out
