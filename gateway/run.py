@@ -8663,11 +8663,11 @@ class GatewayRunner:
         # Declare at outer scope so the audio-file-paths handling block below
         # remains safe when ``event.media_urls`` is empty (no inner block runs).
         audio_file_paths: list[str] = []
+        video_paths: list[str] = []
 
         if event.media_urls:
             image_paths = []
             audio_paths = []
-            video_paths = []
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
