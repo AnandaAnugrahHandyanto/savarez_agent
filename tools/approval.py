@@ -660,10 +660,133 @@ def _classify_runtime_risk(command: str) -> str:
     is_hardline, _ = detect_hardline_command(command)
     if is_hardline:
         return "high"
-    is_dangerous, _, _ = detect_dangerous_command(command)
+    is_dangerous, _, desc = detect_dangerous_command(command)
     if is_dangerous:
-        return "medium"
+        return _classify_pattern_risk(desc or "")
     return "low"
+
+
+# Keywords in the pattern description that elevate medium → high. These
+# are the genuinely-destructive non-hardline patterns: data loss,
+# system-file overwrites, raw-device writes, remote-code-execution,
+# privilege escalation, ratio-of-blast-radius high enough that "I
+# approved without reading" is unrecoverable.
+_HIGH_RISK_DESCRIPTION_MARKERS = (
+    "recursive delete",      # rm -rf in any path
+    "delete in root",
+    "recursive world",       # chmod -R 777
+    "recursive chown to root",
+    "format filesystem",
+    "write to block device",
+    "raw block device",
+    "block device",
+    "sql drop",
+    "sql delete without",    # DELETE FROM without WHERE
+    "sql truncate",
+    "overwrite system config",
+    "overwrite system file",
+    "pipe remote content",   # curl|sh
+    "execute remote script",
+    "kill all processes",
+)
+
+
+def _render_approval_display_text(
+    *,
+    approval_id: str,
+    risk_level: str,
+    command: str,
+    risk_reason: str,
+    cwd: Optional[str] = None,
+    backend: Optional[str] = None,
+    diff_text: Optional[str] = None,
+    diff_summary: Optional[str] = None,
+) -> str:
+    """Build the user-visible approval prompt text.
+
+    Phase 4 contract: when ``risk_level == 'high'`` the rendered text MUST
+    include a HIGH RISK marker, default-deny statement, the exact command,
+    available context (cwd/backend), pinned risk reason, the approval id,
+    and EITHER a diff/summary OR an explicit "no diff available" warning.
+
+    Platforms (Telegram/Matrix/Slack/etc) MAY override rendering using the
+    structured fields in approval_data; this string is the fallback /
+    canonical rendering and is what tests assert against.
+    """
+    lines: list = []
+    is_high = risk_level == "high"
+
+    if is_high:
+        lines.append("🚨 HIGH RISK")
+        lines.append("Default: DENY")
+        lines.append("")
+
+    lines.append(f"Command:")
+    lines.append(f"  {command}")
+    lines.append("")
+
+    if cwd or backend:
+        lines.append("Context:")
+        if cwd:
+            lines.append(f"  cwd: {cwd}")
+        if backend:
+            lines.append(f"  backend: {backend}")
+        lines.append("")
+
+    lines.append("Pinned policy:")
+    lines.append(f"  risk: {risk_level}")
+    if risk_reason:
+        lines.append(f"  reason: {risk_reason}")
+    lines.append("")
+
+    if diff_text or diff_summary:
+        lines.append("Diff / change summary:")
+        if diff_summary:
+            lines.append(f"  {diff_summary}")
+        if diff_text:
+            # Bound the inline preview so a huge diff doesn't fill the message.
+            preview = diff_text if len(diff_text) <= 1500 else (
+                diff_text[:1500] + "\n  …[diff truncated; inspect full via command-side tooling]"
+            )
+            lines.append("  ---")
+            for ln in preview.split("\n"):
+                lines.append(f"  {ln}")
+        lines.append("")
+    else:
+        # Spec: missing diff MUST be explicit, not silent.
+        lines.append(
+            "Diff/summary: NOT AVAILABLE — approve only if you have "
+            "independently reviewed the command/context."
+        )
+        lines.append("")
+
+    if is_high:
+        lines.append("Approve only after reading the diff/summary:")
+        lines.append(f"  /approve {approval_id}")
+        lines.append("")
+        lines.append("Deny:")
+        lines.append(f"  /deny {approval_id}")
+    else:
+        lines.append(f"Approve: /approve {approval_id}")
+        lines.append(f"Deny:    /deny {approval_id}")
+
+    return "\n".join(lines)
+
+
+def _classify_pattern_risk(description: str) -> str:
+    """Map a dangerous-pattern description string to ``high`` or ``medium``.
+
+    Hardlines and missing/None descriptions both map to ``high`` (defensive
+    default: an unknown dangerous pattern is treated as high until proven
+    safe via explicit categorisation).
+    """
+    if not description:
+        return "high"
+    desc_lower = description.lower()
+    for marker in _HIGH_RISK_DESCRIPTION_MARKERS:
+        if marker in desc_lower:
+            return "high"
+    return "medium"
 
 
 def register_gateway_notify(session_key: str, cb) -> None:
@@ -1328,10 +1451,39 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     if store is not None:
         import secrets as _secrets
         approval_id = _secrets.token_urlsafe(8)
-        # Include approval_id in the data shown to the user so they can
-        # eventually use /approve <id> (next commit). Carrying it now
-        # keeps the wire format stable across the migration.
-        approval_data = {**approval_data, "approval_id": approval_id}
+
+        # Phase 4: real risk classification at proposal time. The
+        # description coming from check_all_command_guards is the
+        # classifier's own match. Map it to high/medium per the keyword
+        # table. Hardlines never reach here (blocked earlier) but if a
+        # description is empty/unknown, default to high (defensive).
+        risk_level = _classify_pattern_risk(description or primary_key or "")
+        diff_text = approval_data.get("diff_text")
+        diff_summary = approval_data.get("diff_summary")
+        cwd = approval_data.get("cwd")
+        backend = approval_data.get("backend")
+
+        display_text = _render_approval_display_text(
+            approval_id=approval_id,
+            risk_level=risk_level,
+            command=command,
+            risk_reason=description or primary_key or "",
+            cwd=cwd,
+            backend=backend,
+            diff_text=diff_text,
+            diff_summary=diff_summary,
+        )
+
+        # Carry pinned policy + render data into approval_data so the
+        # platform-side notify callback can either render structured or
+        # use the pre-built display_text verbatim.
+        approval_data = {
+            **approval_data,
+            "approval_id": approval_id,
+            "risk_level": risk_level,
+            "default_decision": "deny",
+            "display_text": display_text,
+        }
         try:
             from tools.approval_store import ApprovalProposal
             timeout_for_proposal = _get_approval_config().get(
@@ -1348,17 +1500,16 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
                 expires_at=created + max(timeout_for_proposal, 0),
                 session_key=session_key,
                 command=command,
-                backend=approval_data.get("backend"),
-                # Conservative classification for shadow phase; refined
-                # in the policy-pinning commit (Phase 3).
-                risk_level="medium",
+                cwd=cwd,
+                backend=backend,
+                risk_level=risk_level,
                 risk_reason=description or primary_key or "dangerous-command-pattern",
                 policy_decision="needs_approval",
                 requires_explicit_approval=True,
                 default_decision="deny",
-                display_text=(
-                    f"Approval requested for: {command[:200]}"
-                ),
+                diff_text=diff_text,
+                diff_summary=diff_summary,
+                display_text=display_text,
             )
             store.submit(proposal)
         except Exception as e:
