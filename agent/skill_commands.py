@@ -15,6 +15,7 @@ from hermes_constants import display_hermes_home
 from agent.skill_preprocessing import (
     expand_inline_shell as _expand_inline_shell,
     load_skills_config as _load_skills_config,
+    resolve_backend_skill_dir as _resolve_backend_skill_dir,
     substitute_template_vars as _substitute_template_vars,
 )
 
@@ -170,12 +171,20 @@ def _build_skill_message(
 
     content = str(loaded_skill.get("content") or "")
 
+    # ── Resolve backend-visible paths ──
+    # For non-local backends (Docker, SSH, Modal, etc.) the agent needs
+    # container/remote paths, not host filesystem paths.  Keep the original
+    # host *skill_dir* for file-system operations (exists(), rglob) and
+    # inline-shell CWD, but use the backend-mapped path everywhere the agent
+    # sees the path.
+    display_skill_dir = _resolve_backend_skill_dir(skill_dir) if skill_dir else skill_dir
+
     # ── Template substitution and inline-shell expansion ──
     # Done before anything else so downstream blocks (setup notes,
     # supporting-file hints) see the expanded content.
     skills_cfg = _load_skills_config()
     if skills_cfg.get("template_vars", True):
-        content = _substitute_template_vars(content, skill_dir, session_id)
+        content = _substitute_template_vars(content, display_skill_dir, session_id)
     if skills_cfg.get("inline_shell", False):
         timeout = int(skills_cfg.get("inline_shell_timeout", 10) or 10)
         content = _expand_inline_shell(content, skill_dir, timeout)
@@ -186,7 +195,7 @@ def _build_skill_message(
     #    bundled scripts without an extra skill_view() round-trip. ──
     if skill_dir:
         parts.append("")
-        parts.append(f"[Skill directory: {skill_dir}]")
+        parts.append(f"[Skill directory: {display_skill_dir}]")
         parts.append(
             "Resolve any relative paths in this skill (e.g. `scripts/foo.js`, "
             "`templates/config.yaml`) against that directory, then run them "
@@ -242,11 +251,11 @@ def _build_skill_message(
         parts.append("")
         parts.append("[This skill has supporting files:]")
         for sf in supporting:
-            parts.append(f"- {sf}  ->  {skill_dir / sf}")
+            parts.append(f"- {sf}  ->  {display_skill_dir / sf}")
         parts.append(
             f'\nLoad any of these with skill_view(name="{skill_view_target}", '
             f'file_path="<path>"), or run scripts directly by absolute path '
-            f"(e.g. `node {skill_dir}/scripts/foo.js`)."
+            f"(e.g. `node {display_skill_dir}/scripts/foo.js`)."
         )
 
     if user_instruction:

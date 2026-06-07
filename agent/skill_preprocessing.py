@@ -120,6 +120,44 @@ def expand_inline_shell(
     return _INLINE_SHELL_RE.sub(_replace, content)
 
 
+def resolve_backend_skill_dir(skill_dir: Path) -> Path:
+    """Map a host skill directory to the backend-visible path.
+
+    When the terminal backend is non-local (Docker, SSH, Modal, Daytona,
+    Singularity), skill paths injected into the agent prompt must use the
+    container/remote path instead of the host filesystem path.  Otherwise the
+    agent tries to run scripts at paths that only exist on the host.
+
+    For the local backend the original *skill_dir* is returned unchanged.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        backend = (cfg.get("terminal") or {}).get("backend", "local")
+        if not backend or backend == "local":
+            return skill_dir
+    except Exception:
+        return skill_dir
+
+    # Build the host→container mapping from the credential-files mount table.
+    try:
+        from tools.credential_files import get_skills_directory_mount
+
+        mounts = get_skills_directory_mount()
+        skill_dir_resolved = skill_dir.resolve()
+        for mount in mounts:
+            host = Path(mount["host_path"]).resolve()
+            if skill_dir_resolved == host or skill_dir_resolved.is_relative_to(host):
+                # Replace the host prefix with the container prefix.
+                rel = skill_dir_resolved.relative_to(host)
+                return Path(mount["container_path"]) / rel
+    except Exception:
+        logger.debug("resolve_backend_skill_dir: mount lookup failed", exc_info=True)
+
+    return skill_dir
+
+
 def preprocess_skill_content(
     content: str,
     skill_dir: Path | None,

@@ -803,3 +803,145 @@ class TestInlineShellExpansion:
         # The command's intended stdout never made it through — only the
         # timeout marker (which echoes the command text) survives.
         assert "DYN_MARKER" not in msg.replace("sleep 5 && printf DYN_MARKER", "")
+
+
+class TestBackendSkillDirResolution:
+    """When the terminal backend is non-local, skill paths visible to the
+    agent must use the container/remote path instead of the host path."""
+
+    def test_local_backend_returns_unchanged(self, tmp_path):
+        from agent.skill_preprocessing import resolve_backend_skill_dir
+
+        skill_dir = tmp_path / "skills" / "my-skill"
+        skill_dir.mkdir(parents=True)
+        with patch("hermes_cli.config.load_config", return_value={}):
+            result = resolve_backend_skill_dir(skill_dir)
+        assert result == skill_dir
+
+    def test_docker_backend_maps_to_container_path(self, tmp_path):
+        from agent.skill_preprocessing import resolve_backend_skill_dir
+
+        host_skills = tmp_path / "host_skills"
+        host_skills.mkdir()
+        skill_dir = host_skills / "my-skill"
+        skill_dir.mkdir()
+
+        mounts = [{
+            "host_path": str(host_skills),
+            "container_path": "/root/.hermes/skills",
+        }]
+        with (
+            patch("hermes_cli.config.load_config",
+                  return_value={"terminal": {"backend": "docker"}}),
+            patch("tools.credential_files.get_skills_directory_mount",
+                  return_value=mounts),
+        ):
+            result = resolve_backend_skill_dir(skill_dir)
+        assert result == Path("/root/.hermes/skills/my-skill")
+
+    def test_subpath_inside_mount_maps_correctly(self, tmp_path):
+        from agent.skill_preprocessing import resolve_backend_skill_dir
+
+        host_skills = tmp_path / "host_skills"
+        host_skills.mkdir()
+        skill_dir = host_skills / "category" / "my-skill"
+        skill_dir.mkdir(parents=True)
+
+        mounts = [{
+            "host_path": str(host_skills),
+            "container_path": "/root/.hermes/skills",
+        }]
+        with (
+            patch("hermes_cli.config.load_config",
+                  return_value={"terminal": {"backend": "docker"}}),
+            patch("tools.credential_files.get_skills_directory_mount",
+                  return_value=mounts),
+        ):
+            result = resolve_backend_skill_dir(skill_dir)
+        assert result == Path("/root/.hermes/skills/category/my-skill")
+
+    def test_unmapped_path_returns_unchanged(self, tmp_path):
+        from agent.skill_preprocessing import resolve_backend_skill_dir
+
+        skill_dir = tmp_path / "other" / "my-skill"
+        skill_dir.mkdir(parents=True)
+
+        mounts = [{
+            "host_path": str(tmp_path / "skills"),
+            "container_path": "/root/.hermes/skills",
+        }]
+        with (
+            patch("hermes_cli.config.load_config",
+                  return_value={"terminal": {"backend": "docker"}}),
+            patch("tools.credential_files.get_skills_directory_mount",
+                  return_value=mounts),
+        ):
+            result = resolve_backend_skill_dir(skill_dir)
+        assert result == skill_dir
+
+    def test_build_skill_message_uses_container_path_in_display(self, tmp_path):
+        """The [Skill directory: ...] header and supporting-file hints must
+        show the container path, not the host path, for non-local backends."""
+        host_skills = tmp_path / "host_skills"
+        host_skills.mkdir()
+        skill_dir = host_skills / "display-test"
+        skill_dir.mkdir()
+        (skill_dir / "scripts").mkdir()
+        (skill_dir / "scripts" / "run.js").write_text("console.log('hi')")
+
+        mounts = [{
+            "host_path": str(host_skills),
+            "container_path": "/root/.hermes/skills",
+        }]
+        container_dir = Path("/root/.hermes/skills/display-test")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", host_skills),
+            patch("hermes_cli.config.load_config",
+                  return_value={"terminal": {"backend": "docker"}}),
+            patch("tools.credential_files.get_skills_directory_mount",
+                  return_value=mounts),
+        ):
+            _make_skill(host_skills, "display-test")
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/display-test")
+
+        assert msg is not None
+        # Container path in the header
+        assert f"[Skill directory: {container_dir}]" in msg
+        # Container path in supporting-file hints
+        assert f"{container_dir}/scripts/run.js" in msg
+        # Host path must NOT appear in agent-visible sections
+        header_section = msg.split("[Skill directory:")[1] if "[Skill directory:" in msg else ""
+        assert str(host_skills) not in header_section
+
+    def test_template_var_uses_container_path(self, tmp_path):
+        """${HERMES_SKILL_DIR} must resolve to the container path, not the host path."""
+        host_skills = tmp_path / "host_skills"
+        host_skills.mkdir()
+
+        mounts = [{
+            "host_path": str(host_skills),
+            "container_path": "/root/.hermes/skills",
+        }]
+        container_dir = Path("/root/.hermes/skills/templated")
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", host_skills),
+            patch("hermes_cli.config.load_config",
+                  return_value={"terminal": {"backend": "docker"}}),
+            patch("tools.credential_files.get_skills_directory_mount",
+                  return_value=mounts),
+        ):
+            _make_skill(
+                host_skills,
+                "templated",
+                body="Run: node ${HERMES_SKILL_DIR}/scripts/foo.js",
+            )
+            scan_skill_commands()
+            msg = build_skill_invocation_message("/templated")
+
+        assert msg is not None
+        assert f"node {container_dir}/scripts/foo.js" in msg
+        # The literal template token must not leak through.
+        assert "${HERMES_SKILL_DIR}" not in msg.split("[Skill directory:")[0]
