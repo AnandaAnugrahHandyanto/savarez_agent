@@ -153,6 +153,19 @@ class TestHandleVoiceCommand:
         assert "Output: /home/pafi/.hermes-voice/output/run/response.wav" in result
 
     @pytest.mark.asyncio
+    async def test_voice_bench_reports_current_chat(self, runner, monkeypatch):
+        calls = {}
+        monkeypatch.setattr(
+            "gateway.run._voice_bench_format_recent",
+            lambda platform, chat_id, limit=5: calls.update({"platform": platform, "chat_id": chat_id, "limit": limit}) or "bench ok",
+        )
+        event = _make_event("/voice bench 3")
+        result = await runner._handle_voice_command(event)
+        assert result == "bench ok"
+        assert calls == {"platform": "telegram", "chat_id": "123", "limit": 3}
+        assert runner._voice_mode == {}
+
+    @pytest.mark.asyncio
     async def test_toggle_off_to_on(self, runner):
         event = _make_event("/voice")
         result = await runner._handle_voice_command(event)

@@ -54,6 +54,9 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from gateway.voice_bench import append_event as _voice_bench_append
+from gateway.voice_bench import format_recent as _voice_bench_format_recent
+from gateway.voice_bench import new_turn_id as _voice_bench_new_turn_id
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -8691,7 +8694,10 @@ class GatewayRunner:
                     )
 
             if audio_paths:
+                if not getattr(event, "voice_bench_id", None):
+                    event.voice_bench_id = _voice_bench_new_turn_id()
                 _stt_result = await self._enrich_message_with_transcription_result(
+                    event,
                     message_text,
                     audio_paths,
                 )
@@ -9566,6 +9572,19 @@ class GatewayRunner:
                 _platform_name, source.chat_id or "unknown",
                 _response_time, _api_calls, _resp_len,
             )
+            _voice_turn_id = str(getattr(event, "voice_bench_id", "") or "")
+            if _voice_turn_id:
+                _voice_bench_append({
+                    "turn_id": _voice_turn_id,
+                    "stage": "agent",
+                    "platform": _platform_name,
+                    "chat_id": source.chat_id,
+                    "message_id": getattr(event, "message_id", None),
+                    "elapsed_ms": round(_response_time * 1000, 1),
+                    "api_calls": _api_calls,
+                    "response_chars": _resp_len,
+                    "response": response[:300],
+                })
 
             # Successful turn — clear any stuck-loop counter for this session.
             # This ensures the counter only accumulates across CONSECUTIVE
@@ -12033,7 +12052,7 @@ class GatewayRunner:
         return None
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
-        """Handle /voice [on|off|tts|smoke|channel|leave|status] command."""
+        """Handle /voice [on|off|tts|smoke|bench|channel|leave|status] command."""
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
         platform = event.source.platform
@@ -12043,6 +12062,16 @@ class GatewayRunner:
 
         if args == "smoke":
             return await self._run_voice_smoke()
+        elif args.startswith("bench"):
+            parts = args.split()
+            limit = 5
+            if len(parts) > 1:
+                try:
+                    limit = int(parts[1])
+                except ValueError:
+                    limit = 5
+            platform_name = str(getattr(platform, "value", platform) or "")
+            return _voice_bench_format_recent(platform_name, chat_id, limit=limit)
         elif args in {"on", "enable"}:
             self._voice_mode[voice_key] = "voice_only"
             self._save_voice_modes()
@@ -12591,9 +12620,11 @@ class GatewayRunner:
             )
             os.makedirs(os.path.dirname(audio_path), exist_ok=True)
 
+            _tts_start = time.perf_counter()
             result_json = await asyncio.to_thread(
                 text_to_speech_tool, text=tts_text, output_path=audio_path
             )
+            _tts_elapsed_ms = round((time.perf_counter() - _tts_start) * 1000, 1)
             try:
                 result = json.loads(result_json)
             except (json.JSONDecodeError, TypeError):
@@ -12605,6 +12636,20 @@ class GatewayRunner:
             if not result.get("success") or not os.path.isfile(actual_path):
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
                 return
+            _turn_id = str(getattr(event, "voice_bench_id", "") or "")
+            _platform_name = str(getattr(event.source.platform, "value", event.source.platform) or "")
+            if _turn_id:
+                _voice_bench_append({
+                    "turn_id": _turn_id,
+                    "stage": "tts",
+                    "platform": _platform_name,
+                    "chat_id": event.source.chat_id,
+                    "message_id": getattr(event, "message_id", None),
+                    "elapsed_ms": _tts_elapsed_ms,
+                    "provider": result.get("provider"),
+                    "voice_compatible": result.get("voice_compatible"),
+                    "audio_path": os.path.basename(str(actual_path)),
+                })
 
             adapter = self.adapters.get(event.source.platform)
 
@@ -12636,7 +12681,18 @@ class GatewayRunner:
                     "reply_to": reply_anchor,
                     "metadata": thread_meta,
                 }
+                _send_start = time.perf_counter()
                 await adapter.send_voice(**send_kwargs)
+                if _turn_id:
+                    _voice_bench_append({
+                        "turn_id": _turn_id,
+                        "stage": "delivery",
+                        "platform": _platform_name,
+                        "chat_id": event.source.chat_id,
+                        "message_id": getattr(event, "message_id", None),
+                        "elapsed_ms": round((time.perf_counter() - _send_start) * 1000, 1),
+                        "method": "runner_send_voice",
+                    })
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
         finally:
@@ -16076,6 +16132,7 @@ class GatewayRunner:
 
     async def _enrich_message_with_transcription_result(
         self,
+        event: MessageEvent,
         user_text: str,
         audio_paths: List[str],
     ) -> Dict[str, Any]:
@@ -16104,22 +16161,58 @@ class GatewayRunner:
 
         enriched_parts = []
         failures: List[Dict[str, Any]] = []
+        platform_name = str(getattr(event.source.platform, "value", event.source.platform) or "")
+        turn_id = str(getattr(event, "voice_bench_id", "") or _voice_bench_new_turn_id())
+        event.voice_bench_id = turn_id
         for path in audio_paths:
+            _stt_start = time.perf_counter()
             try:
                 logger.debug("Transcribing user voice: %s", path)
                 result = await asyncio.to_thread(transcribe_audio, path)
+                _elapsed_ms = round((time.perf_counter() - _stt_start) * 1000, 1)
                 if result["success"]:
                     transcript = result["transcript"]
                     enriched_parts.append(
                         f'[The user sent a voice message~ '
                         f'Here\'s what they said: "{transcript}"]'
                     )
+                    _voice_bench_append({
+                        "turn_id": turn_id,
+                        "stage": "stt",
+                        "platform": platform_name,
+                        "chat_id": event.source.chat_id,
+                        "message_id": getattr(event, "message_id", None),
+                        "elapsed_ms": _elapsed_ms,
+                        "audio_path": os.path.basename(path),
+                        "transcript": transcript,
+                    })
                 else:
                     error = result.get("error", "unknown error")
                     failures.append({"path": path, "error": error})
+                    _voice_bench_append({
+                        "turn_id": turn_id,
+                        "stage": "stt",
+                        "platform": platform_name,
+                        "chat_id": event.source.chat_id,
+                        "message_id": getattr(event, "message_id", None),
+                        "elapsed_ms": _elapsed_ms,
+                        "audio_path": os.path.basename(path),
+                        "error": str(error)[:240],
+                    })
             except Exception as e:
+                _elapsed_ms = round((time.perf_counter() - _stt_start) * 1000, 1)
                 logger.error("Transcription error: %s", e)
                 failures.append({"path": path, "error": f"{type(e).__name__}: {e}"})
+                _voice_bench_append({
+                    "turn_id": turn_id,
+                    "stage": "stt",
+                    "platform": platform_name,
+                    "chat_id": event.source.chat_id,
+                    "message_id": getattr(event, "message_id", None),
+                    "elapsed_ms": _elapsed_ms,
+                    "audio_path": os.path.basename(path),
+                    "error": f"{type(e).__name__}: {e}"[:240],
+                })
 
         if enriched_parts:
             prefix = "\n\n".join(enriched_parts)
@@ -16151,7 +16244,12 @@ class GatewayRunner:
         audio_paths: List[str],
     ) -> str:
         """Backward-compatible wrapper for callers that only need text."""
-        result = await self._enrich_message_with_transcription_result(user_text, audio_paths)
+        event = MessageEvent(
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="unknown"),
+            text=user_text,
+            message_type=MessageType.VOICE,
+        )
+        result = await self._enrich_message_with_transcription_result(event, user_text, audio_paths)
         return str(result.get("text") or "")
 
     def _build_process_event_source(self, evt: dict):
