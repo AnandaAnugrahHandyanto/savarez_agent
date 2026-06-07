@@ -6420,11 +6420,19 @@ def _default_spawn(
         sbpl = Path(__file__).resolve().parent / "sbpl" / "implementer.sbpl"
         if not sbpl.is_file():
             raise SpawnRefused(task.id, f"implementer.sbpl missing: {sbpl}")
+        # Codex R4 H1 하드닝: supervisor는 **부모(unsandboxed) 신뢰 프로세스**다.
+        # cwd=workspace + `python -m` 이면 워커가 심은 ``workspace/hermes_cli/m2_supervisor.py``
+        # 가 sys.path[0](cwd) 우선으로 로드돼 부모 권한·credential로 임의코드 실행 가능.
+        # 방어: ① PYTHONSAFEPATH=1 로 cwd/script-dir sys.path 선주입 차단(py3.11+)
+        #       ② cwd를 신뢰 source root로 고정(workspace 아님). supervisor는 workspace를
+        #          task에서 resolve하므로 cwd=workspace가 불필요.
+        trusted_cwd = _source_root()
         sup_env = dict(os.environ)
-        _prepend_pythonpath(sup_env, _source_root())
+        _prepend_pythonpath(sup_env, trusted_cwd)
+        sup_env["PYTHONSAFEPATH"] = "1"
         sup_env["HERMES_KANBAN_DB"] = str(kanban_db_path(board=board))
         sup_env["HERMES_KANBAN_BOARD"] = _normalize_board_slug(board) or get_current_board()
-        sup_cmd = [sys.executable, "-m", "hermes_cli.m2_supervisor", "--task", task.id]
+        sup_cmd = [sys.executable, "-P", "-m", "hermes_cli.m2_supervisor", "--task", task.id]
         if board:
             sup_cmd += ["--board", board]
         log_dir = worker_logs_dir(board=board)
@@ -6433,7 +6441,7 @@ def _default_spawn(
         try:
             proc = subprocess.Popen(  # noqa: S603 -- fixed argv
                 sup_cmd,
-                cwd=workspace if os.path.isdir(workspace) else None,
+                cwd=trusted_cwd if os.path.isdir(trusted_cwd) else None,
                 stdin=subprocess.DEVNULL,
                 stdout=sup_log,
                 stderr=subprocess.STDOUT,

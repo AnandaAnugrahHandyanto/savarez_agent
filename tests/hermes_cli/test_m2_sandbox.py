@@ -101,6 +101,52 @@ def test_build_cmd_rejects_noncanonical_sock(tmp_path):
         sb.build_implementer_cmd(str(ws), [leaf], proxy_sock="/tmp/x/p.sock")
 
 
+def test_prepare_synth_happy(tmp_path):
+    ws = tmp_path / "ws"; ws.mkdir()
+    root = sb.prepare_synth_workspace(str(ws))
+    assert os.path.realpath(str(ws)) == root
+    wscript = ws / sb.WORKER_SCRIPT_NAME
+    st = os.lstat(str(wscript))
+    import stat as _s
+    assert _s.S_ISREG(st.st_mode) and not _s.S_ISLNK(st.st_mode)
+    assert (ws / "synth" / "sample_input.py").exists()
+    # 재실행 멱등(symlink-safe 재기록)
+    sb.prepare_synth_workspace(str(ws))
+
+
+def test_prepare_synth_rejects_real_data_marker(tmp_path):
+    ws = tmp_path / "ws"; ws.mkdir()
+    (ws / ".env").write_text("OPENAI_API_KEY=sk-secret\n", encoding="utf-8")  # 실데이터 마커
+    with pytest.raises(sb.SandboxAssemblyError, match="실데이터/비밀 마커"):
+        sb.prepare_synth_workspace(str(ws))
+
+
+def test_prepare_synth_rejects_git(tmp_path):
+    ws = tmp_path / "ws"; ws.mkdir()
+    (ws / ".git").mkdir()
+    with pytest.raises(sb.SandboxAssemblyError, match="실데이터/비밀 마커"):
+        sb.prepare_synth_workspace(str(ws))
+
+
+def test_prepare_synth_rejects_symlinked_worker_dst(tmp_path):
+    # 사전 심은 symlink가 워커 스크립트 자리를 차지 → 추종 쓰기 거부(H2).
+    ws = tmp_path / "ws"; ws.mkdir()
+    victim = tmp_path / "victim.txt"
+    victim.write_text("DO NOT OVERWRITE\n", encoding="utf-8")
+    (ws / sb.WORKER_SCRIPT_NAME).symlink_to(victim)
+    with pytest.raises(sb.SandboxAssemblyError, match="symlink dst 거부"):
+        sb.prepare_synth_workspace(str(ws))
+    assert victim.read_text(encoding="utf-8") == "DO NOT OVERWRITE\n"  # 미변경
+
+
+def test_prepare_synth_rejects_symlinked_dir(tmp_path):
+    ws = tmp_path / "ws"; ws.mkdir()
+    outside = tmp_path / "outside"; outside.mkdir()
+    (ws / "source_staging").symlink_to(outside)  # symlink 디렉토리
+    with pytest.raises(sb.SandboxAssemblyError, match="symlink 디렉토리 거부"):
+        sb.prepare_synth_workspace(str(ws))
+
+
 def test_build_cmd_rejects_missing_worker_script(tmp_path):
     ws = tmp_path / "ws"; ws.mkdir()
     (ws / "source_staging").mkdir()

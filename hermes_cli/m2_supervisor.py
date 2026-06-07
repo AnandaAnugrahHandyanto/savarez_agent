@@ -303,13 +303,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     # R4 seam: 실 워커 declared manifest는 워커 제출본에서 온다. R1 미배선이라
     # deliverable leaf 하나를 기본으로 둔다(실 배선 시 교체).
     deliverable = ip.IMPLEMENTER_POLICY["deliverable"]
-    declared_writes = [deliverable]
+    # R4 워커는 source_staging/ 아래 코드 leaf를 쓴다(deliverable=proposal은 부모가 조립).
+    declared_writes = ["source_staging/gen.py"]
 
+    # Codex R4 LOW: 라이브 main()은 _no_proxy 기본이라 armed 경로가 PROXY_SOCK=None으로
+    # fail-closed였다. R4는 mock provider 프록시 컨텍스트를 명시 주입한다(실 provider=R5에서
+    # 이 자리만 교체). 워커가 net-deny+프록시-only egress 경로를 실제로 타게 한다.
+    from hermes_cli import m2_proxy_ctx
     res = supervise(
         conn, task, str(workspace),
         declared_writes=declared_writes,
         deliverable=deliverable,
         run_id=run_id,
+        proxy_ctx_fn=m2_proxy_ctx.mock_proxy_ctx,
     )
     print(json.dumps({"completed": res.get("completed"),
                       "error": res.get("error")}, ensure_ascii=False))

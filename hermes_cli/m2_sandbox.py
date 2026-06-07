@@ -18,7 +18,7 @@ implementer.sbpl 6 파라미터(SYNTH_ROOT·R2·MW_0·PF_LEAF·ENTRY_BIN·PROXY_
 from __future__ import annotations
 
 import os
-import shutil
+import stat as _stat
 import sys
 from pathlib import Path
 
@@ -26,33 +26,70 @@ SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 IMPLEMENTER_SBPL = Path(__file__).resolve().parent / "sbpl" / "implementer.sbpl"
 # 워커 스크립트 basename(SYNTH_ROOT 안에 이 이름으로 복사돼 있어야 함 — prepare_synth_workspace 배치).
 WORKER_SCRIPT_NAME = "m2_worker_mock.py"
+# B-track 경계: workspace가 실데이터/비밀을 품으면 SYNTH_ROOT로 못 쓴다(Codex R4 H3).
+_REAL_DATA_MARKERS = (
+    ".env", ".git", ".aws", ".ssh", ".gnupg", ".netrc", "credentials",
+    "id_rsa", "id_ed25519", ".git-credentials", "master.key", ".npmrc",
+)
 
 
 class SandboxAssemblyError(Exception):
     """fail-closed: 안전한 sandbox 명령을 조립할 수 없음."""
 
 
+def _safe_write_bytes(dst: str, data: bytes) -> None:
+    """symlink-안전 부모 쓰기(Codex R4 H2): 기존 경로가 symlink/타소유/비정규면 거부.
+    정규파일이고 현재 uid 소유면 unlink 후 O_CREAT|O_EXCL|O_NOFOLLOW로 새로 생성(추종 0)."""
+    try:
+        st = os.lstat(dst)
+        if _stat.S_ISLNK(st.st_mode):
+            raise SandboxAssemblyError(f"symlink dst 거부(추종 차단): {dst}")
+        if st.st_uid != os.geteuid():
+            raise SandboxAssemblyError(f"dst 타소유 거부: {dst}")
+        if not _stat.S_ISREG(st.st_mode):
+            raise SandboxAssemblyError(f"dst 비정규 거부: {dst}")
+        os.unlink(dst)
+    except FileNotFoundError:
+        pass
+    fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+
+
 def prepare_synth_workspace(workspace: str) -> str:
     """S3 — task workspace를 implementer SYNTH_ROOT로 준비(라이브 무접촉, 격리).
 
-    - source_staging/·proposal/·synth/ 디렉토리 생성.
-    - 워커 스크립트(m2_worker_mock.py)를 SYNTH_ROOT 안으로 복사(read allow-back 영역).
-    - sanitized 샘플 입력을 synth/에 배치(워커가 실데이터 아닌 합성 자료만 봄 — B-track).
-    반환 = canonical SYNTH_ROOT. **실데이터·credential·git을 넣지 않는다.**
+    하드닝(Codex R4 적대검토):
+      - H3: workspace가 실데이터/비밀 마커(.env·.git·.ssh 등)를 품으면 **fail-closed**
+            (B-track: 워커는 sanitized/synthetic만 봐야 한다). ⚠️ **R5 잔여**: 완전한 격리는
+            workspace와 분리된 fresh parent-owned synth root + sanitized 입력만 복사 —
+            R4(mock 워커)는 워커가 exfil 안 하므로 스캔 가드로 충분, 실 워커(R5) 전 refactor.
+      - H2/M2: 워커 스크립트·합성 자료를 **symlink-안전**(O_NOFOLLOW|O_EXCL, lstat 검증)으로
+            기록. 디렉토리 컴포넌트 symlink도 거부.
+    반환 = canonical SYNTH_ROOT.
     """
     ws = os.path.realpath(workspace)
     if not os.path.isdir(ws):
         raise SandboxAssemblyError(f"workspace 디렉토리 아님: {ws}")
+    # H3: 실데이터/비밀 마커 스캔(최상위) → 있으면 거부.
+    for marker in _REAL_DATA_MARKERS:
+        if os.path.lexists(os.path.join(ws, marker)):
+            raise SandboxAssemblyError(
+                f"workspace에 실데이터/비밀 마커 '{marker}' → SYNTH_ROOT 부적합(fail-closed)")
+    # 디렉토리: symlink 컴포넌트 거부하며 생성.
     for d in ("source_staging", "proposal", "synth"):
-        os.makedirs(os.path.join(ws, d), exist_ok=True)
+        p = os.path.join(ws, d)
+        if os.path.islink(p):
+            raise SandboxAssemblyError(f"symlink 디렉토리 거부: {p}")
+        os.makedirs(p, exist_ok=True)
     src = Path(__file__).resolve().parent / WORKER_SCRIPT_NAME
     if not src.is_file():
         raise SandboxAssemblyError(f"워커 스크립트 원본 부재: {src}")
-    shutil.copyfile(str(src), os.path.join(ws, WORKER_SCRIPT_NAME))
-    sample = os.path.join(ws, "synth", "sample_input.py")
-    if not os.path.exists(sample):
-        with open(sample, "w", encoding="utf-8") as f:
-            f.write("# sanitized synthetic input (실데이터·credential 0)\nSAMPLE_VALUE = 42\n")
+    _safe_write_bytes(os.path.join(ws, WORKER_SCRIPT_NAME), src.read_bytes())
+    _safe_write_bytes(
+        os.path.join(ws, "synth", "sample_input.py"),
+        b"# sanitized synthetic input (\xec\x8b\xa4\xeb\x8d\xb0\xec\x9d\xb4\xed\x84\xb0"
+        b"\xc2\xb7credential 0)\nSAMPLE_VALUE = 42\n")
     return ws
 
 
