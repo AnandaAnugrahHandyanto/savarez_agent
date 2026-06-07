@@ -446,8 +446,9 @@ class TestPreflightCompression:
         # that the compressed result (2 short messages) fits in a single pass.
         agent.context_compressor.context_length = 2000
         agent.context_compressor.threshold_tokens = 200
+        agent.context_compressor.preflight_threshold_tokens = 200
 
-        # Build a history that will be large enough to trigger preflight
+        # Build a history that will be large enough to trigger emergency preflight
         # (each message ~50 chars ≈ 13 tokens, 40 messages ≈ 520 tokens > 200 threshold)
         big_history = []
         for i in range(20):
@@ -487,7 +488,7 @@ class TestPreflightCompression:
         assert result["completed"] is True
         assert result["final_response"] == "After preflight"
         assert any(
-            ev == "lifecycle" and "Preflight compression" in msg
+            ev == "lifecycle" and "Preflight emergency compression" in msg
             for ev, msg in status_messages
         )
 
@@ -536,6 +537,7 @@ class TestPreflightCompression:
         agent.compression_enabled = True
         agent.context_compressor.context_length = 200_000
         agent.context_compressor.threshold_tokens = 100_000
+        agent.context_compressor.preflight_threshold_tokens = 100_000
         agent.context_compressor.last_prompt_tokens = 58_000
         agent.context_compressor.last_real_prompt_tokens = 58_000
         agent.context_compressor.last_rough_tokens_when_real_prompt_fit = 113_000
@@ -641,6 +643,7 @@ class TestPreflightCompression:
         agent.compression_enabled = True
         agent.context_compressor.context_length = 2000
         agent.context_compressor.threshold_tokens = 200
+        agent.context_compressor.preflight_threshold_tokens = 200
 
         big_history = []
         for i in range(20):
@@ -651,7 +654,7 @@ class TestPreflightCompression:
         agent.client.chat.completions.create.side_effect = [ok_resp]
 
         with (
-            patch.object(agent.context_compressor, "should_compress", return_value=False) as mock_should,
+            patch.object(agent.context_compressor, "should_compress_emergency", return_value=False) as mock_should,
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -659,7 +662,7 @@ class TestPreflightCompression:
         ):
             result = agent.run_conversation("hello", conversation_history=big_history)
 
-        # The gate consulted should_compress — anti-thrash had a chance to vote.
+        # The emergency gate was consulted — anti-thrash had a chance to vote.
         mock_should.assert_called()
         # And vetoed: even though tokens >= threshold, no compression ran.
         mock_compress.assert_not_called()
@@ -735,13 +738,53 @@ class TestPreflightCompression:
 
 
 class TestToolResultPreflightCompression:
-    """Compression should trigger when tool results push context past the threshold."""
+    """In-loop compression now uses the emergency fallback threshold."""
 
-    def test_large_tool_results_trigger_compression(self, agent):
-        """When tool results push estimated tokens past threshold, compress before next call."""
+    def test_large_tool_results_do_not_trigger_before_emergency_threshold(self, agent):
+        """Tool-result pressure at the normal threshold waits for post-response compression."""
         agent.compression_enabled = True
         agent.context_compressor.context_length = 200_000
-        agent.context_compressor.threshold_tokens = 130_000  # below the 135k reported usage
+        agent.context_compressor.threshold_tokens = 130_000  # normal post-response threshold
+        agent.context_compressor.preflight_threshold_tokens = 180_000  # emergency fallback threshold
+        agent.context_compressor.last_prompt_tokens = 130_000
+        agent.context_compressor.last_completion_tokens = 5_000
+
+        tc = SimpleNamespace(
+            id="tc1", type="function",
+            function=SimpleNamespace(name="web_search", arguments='{"query":"test"}'),
+        )
+        tool_resp = _mock_response(
+            content=None, finish_reason="stop", tool_calls=[tc],
+            usage={"prompt_tokens": 130_000, "completion_tokens": 5_000, "total_tokens": 135_000},
+        )
+        ok_resp = _mock_response(
+            content="Done after compression", finish_reason="stop",
+            usage={"prompt_tokens": 50_000, "completion_tokens": 100, "total_tokens": 50_100},
+        )
+        agent.client.chat.completions.create.side_effect = [tool_resp, ok_resp]
+        large_result = "x" * 100_000
+
+        with (
+            patch("run_agent.handle_function_call", return_value=large_result),
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "hello"}], "compressed prompt",
+            )
+            result = agent.run_conversation("hello")
+
+        mock_compress.assert_not_called()
+        assert result["completed"] is True
+
+    def test_large_tool_results_trigger_at_emergency_threshold(self, agent):
+        """The in-loop safety net still compresses once the emergency threshold is crossed."""
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.threshold_tokens = 100_000
+        agent.context_compressor.preflight_threshold_tokens = 130_000
         agent.context_compressor.last_prompt_tokens = 130_000
         agent.context_compressor.last_completion_tokens = 5_000
 

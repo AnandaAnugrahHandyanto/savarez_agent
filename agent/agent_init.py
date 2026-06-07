@@ -1228,14 +1228,39 @@ def init_agent(
         _compression_cfg = {}
     compression_threshold = float(_compression_cfg.get("threshold", 0.50))
     try:
+        _preflight_raw = _compression_cfg.get("preflight_threshold", None)
+        if _preflight_raw is None:
+            # Opportunistic post-response compression owns the normal threshold;
+            # pre-turn/in-loop compression is now an emergency fallback.
+            compression_preflight_threshold = min(0.95, max(0.85, compression_threshold * 1.6))
+        else:
+            compression_preflight_threshold = float(_preflight_raw)
+    except (TypeError, ValueError):
+        compression_preflight_threshold = min(0.95, max(0.85, compression_threshold * 1.6))
+    compression_preflight_threshold = max(compression_threshold, min(0.99, compression_preflight_threshold))
+    try:
         from agent.auxiliary_client import _compression_threshold_for_model as _cthresh_fn
         _model_cthresh = _cthresh_fn(agent.model)
         if _model_cthresh is not None:
             compression_threshold = _model_cthresh
     except Exception:
         pass
+    compression_preflight_threshold = max(compression_threshold, compression_preflight_threshold)
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
+    _post_buffer_raw = _compression_cfg.get("post_response_buffer_tokens", None)
+    _post_buffer_fraction = None
+    if _post_buffer_raw is None:
+        try:
+            _post_buffer_fraction = float(_compression_cfg.get("post_response_buffer", 0.05))
+        except (TypeError, ValueError):
+            _post_buffer_fraction = 0.05
+        compression_post_response_buffer_tokens = 0
+    else:
+        try:
+            compression_post_response_buffer_tokens = max(0, int(_post_buffer_raw))
+        except (TypeError, ValueError):
+            compression_post_response_buffer_tokens = 0
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
     # protect_first_n is the number of non-system messages to protect at
     # the head, in addition to the system prompt (which is always
@@ -1449,6 +1474,16 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
+        try:
+            agent.context_compressor.preflight_threshold_percent = compression_preflight_threshold
+            agent.context_compressor.preflight_threshold_tokens = max(
+                int(_plugin_ctx_len * compression_preflight_threshold),
+                getattr(agent.context_compressor, "threshold_tokens", 0) or 0,
+                MINIMUM_CONTEXT_LENGTH,
+            )
+            agent.context_compressor.post_response_buffer_tokens = compression_post_response_buffer_tokens
+        except Exception:
+            pass
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:
@@ -1466,8 +1501,17 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
+            preflight_threshold_percent=compression_preflight_threshold,
+            post_response_buffer_tokens=compression_post_response_buffer_tokens,
         )
     agent.compression_enabled = compression_enabled
+    if _post_buffer_fraction is not None:
+        try:
+            agent.context_compressor.post_response_buffer_tokens = int(
+                max(0.0, _post_buffer_fraction) * agent.context_compressor.threshold_tokens
+            )
+        except Exception:
+            agent.context_compressor.post_response_buffer_tokens = 0
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).

@@ -630,23 +630,25 @@ def run_conversation(
 
         if _preflight_deferred:
             logger.info(
-                "Skipping preflight compression: rough estimate ~%s >= %s, "
+                "Skipping preflight compression: rough estimate ~%s >= %s normal threshold, "
                 "but last real provider prompt was %s after compression",
                 f"{_preflight_tokens:,}",
                 f"{_compressor.threshold_tokens:,}",
                 f"{_compressor.last_real_prompt_tokens:,}",
             )
-        elif _compressor.should_compress(_preflight_tokens):
+        elif _compressor.should_compress_emergency(_preflight_tokens):
             logger.info(
-                "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
+                "Preflight emergency compression: ~%s tokens >= %s emergency threshold "
+                "(normal threshold %s, model %s, ctx %s)",
                 f"{_preflight_tokens:,}",
+                f"{getattr(_compressor, 'preflight_threshold_tokens', _compressor.threshold_tokens):,}",
                 f"{_compressor.threshold_tokens:,}",
                 agent.model,
                 f"{_compressor.context_length:,}",
             )
             agent._emit_status(
-                f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
-                f">= {_compressor.threshold_tokens:,} threshold. "
+                f"📦 Preflight emergency compression: ~{_preflight_tokens:,} tokens "
+                f">= {getattr(_compressor, 'preflight_threshold_tokens', _compressor.threshold_tokens):,} emergency threshold. "
                 "This may take a moment."
             )
             # May need multiple passes for very large sessions with small
@@ -681,7 +683,7 @@ def run_conversation(
                     system_prompt=active_system_prompt or "",
                     tools=agent.tools or None,
                 )
-                if not _compressor.should_compress(_preflight_tokens):
+                if not _compressor.should_compress_emergency(_preflight_tokens):
                     break  # Under threshold or anti-thrash guard stopped it
 
     # Plugin hook: pre_llm_call
@@ -3962,7 +3964,7 @@ def run_conversation(
                         messages, tools=agent.tools or None
                     )
 
-                if agent.compression_enabled and _compressor.should_compress(_real_tokens):
+                if agent.compression_enabled and _compressor.should_compress_emergency(_real_tokens):
                     agent._safe_print("  ⟳ compacting context…")
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message,

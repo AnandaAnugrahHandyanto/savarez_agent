@@ -124,6 +124,26 @@ class ContextEngine(ABC):
         """
         return False
 
+    def should_compress_emergency(self, prompt_tokens: int | None = None) -> bool:
+        """Return True for pre-turn/in-loop emergency compaction.
+
+        Engines that do not distinguish normal and emergency thresholds keep
+        their historical behaviour by delegating to ``should_compress``.
+        """
+        if prompt_tokens is None:
+            return self.should_compress()
+        return self.should_compress(prompt_tokens)
+
+    def should_compress_post_response(self, prompt_tokens: int | None = None) -> bool:
+        """Return True for opportunistic post-response compaction.
+
+        Engines that do not expose a separate post-send threshold keep their
+        historical behaviour by delegating to ``should_compress``.
+        """
+        if prompt_tokens is None:
+            return self.should_compress()
+        return self.should_compress(prompt_tokens)
+
     # -- Optional: manual /compress preflight ------------------------------
 
     def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:

@@ -320,6 +320,74 @@ def _emit_post_compression_pressure_advisory(
         logger.debug("post-compression pressure advisory failed", exc_info=True)
 
 
+def maybe_compress_post_response(
+    agent: Any,
+    messages: list,
+    system_message: str,
+    *,
+    task_id: str = "default",
+) -> Tuple[list, str, bool]:
+    """Run opportunistic post-response compression after delivery.
+
+    This path is intentionally separate from the pre-turn/emergency fallback:
+    it checks the normal threshold minus ``post_response_buffer_tokens`` after
+    the final assistant message is already in ``messages`` and the caller has
+    delivered it to the user.  If compression does not trigger, it is a cheap
+    rough-token estimate plus logging only.
+    """
+    if not getattr(agent, "compression_enabled", False):
+        return messages, getattr(agent, "_cached_system_prompt", None) or "", False
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None:
+        return messages, getattr(agent, "_cached_system_prompt", None) or "", False
+    if len(messages) <= getattr(compressor, "protect_first_n", 0) + getattr(compressor, "protect_last_n", 0) + 1:
+        return messages, getattr(agent, "_cached_system_prompt", None) or "", False
+
+    active_system_prompt = getattr(agent, "_cached_system_prompt", None) or agent._build_system_prompt(system_message)
+    projected_tokens = estimate_request_tokens_rough(
+        messages,
+        system_prompt=active_system_prompt or "",
+        tools=getattr(agent, "tools", None) or None,
+    )
+    should_post = getattr(compressor, "should_compress_post_response", compressor.should_compress)
+    if not should_post(projected_tokens):
+        logger.info(
+            "post-response compression skipped: projected_tokens=~%s threshold=%s buffer=%s session=%s",
+            f"{projected_tokens:,}",
+            f"{getattr(compressor, 'threshold_tokens', 0):,}",
+            f"{getattr(compressor, 'post_response_buffer_tokens', 0):,}",
+            getattr(agent, "session_id", None) or "none",
+        )
+        return messages, active_system_prompt, False
+
+    logger.info(
+        "post-response compression triggered: projected_tokens=~%s threshold=%s buffer=%s session=%s",
+        f"{projected_tokens:,}",
+        f"{getattr(compressor, 'threshold_tokens', 0):,}",
+        f"{getattr(compressor, 'post_response_buffer_tokens', 0):,}",
+        getattr(agent, "session_id", None) or "none",
+    )
+    compressed, new_system_prompt = compress_context(
+        agent,
+        messages,
+        system_message,
+        approx_tokens=projected_tokens,
+        task_id=task_id,
+    )
+    ran = len(compressed) < len(messages)
+    if ran:
+        logger.info(
+            "post-response compression completed: messages=%d->%d session=%s",
+            len(messages), len(compressed), getattr(agent, "session_id", None) or "none",
+        )
+    else:
+        logger.info(
+            "post-response compression attempted but made no progress: messages=%d session=%s",
+            len(messages), getattr(agent, "session_id", None) or "none",
+        )
+    return compressed, new_system_prompt, ran
+
+
 def compress_context(
     agent: Any,
     messages: list,

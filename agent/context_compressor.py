@@ -573,6 +573,11 @@ class ContextCompressor(ContextEngine):
             int(context_length * self.threshold_percent),
             MINIMUM_CONTEXT_LENGTH,
         )
+        self.preflight_threshold_tokens = max(
+            int(context_length * getattr(self, "preflight_threshold_percent", self.threshold_percent)),
+            self.threshold_tokens,
+            MINIMUM_CONTEXT_LENGTH,
+        )
         # Recalculate token budgets for the new context length so the
         # compressor stays calibrated after a model switch (e.g. 200K → 32K).
         target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
@@ -596,6 +601,8 @@ class ContextCompressor(ContextEngine):
         provider: str = "",
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
+        preflight_threshold_percent: float | None = None,
+        post_response_buffer_tokens: int = 0,
     ):
         self.model = model
         self.base_url = base_url
@@ -603,6 +610,10 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.threshold_percent = threshold_percent
+        if preflight_threshold_percent is None:
+            preflight_threshold_percent = threshold_percent
+        self.preflight_threshold_percent = max(threshold_percent, preflight_threshold_percent)
+        self.post_response_buffer_tokens = max(0, int(post_response_buffer_tokens or 0))
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
@@ -624,6 +635,11 @@ class ContextCompressor(ContextEngine):
         # for models right at the minimum.
         self.threshold_tokens = max(
             int(self.context_length * threshold_percent),
+            MINIMUM_CONTEXT_LENGTH,
+        )
+        self.preflight_threshold_tokens = max(
+            int(self.context_length * self.preflight_threshold_percent),
+            self.threshold_tokens,
             MINIMUM_CONTEXT_LENGTH,
         )
         self.compression_count = 0
@@ -726,14 +742,37 @@ class ContextCompressor(ContextEngine):
         return True
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
-        """Check if context exceeds the compression threshold.
+        """Check if context exceeds the normal compression threshold.
 
         Includes anti-thrashing protection: if the last two compressions
         each saved less than 10%, skip compression to avoid infinite loops
         where each pass removes only 1-2 messages.
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
-        if tokens < self.threshold_tokens:
+        return self._should_compress_at_tokens(tokens, self.threshold_tokens)
+
+    def should_compress_emergency(self, prompt_tokens: int | None = None) -> bool:
+        """Check emergency pre-turn / in-loop compression threshold.
+
+        Post-response opportunistic compression owns the normal threshold.
+        The pre-turn path remains as a safety fallback and therefore uses the
+        larger ``preflight_threshold_tokens`` guard.
+        """
+        tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
+        return self._should_compress_at_tokens(
+            int(tokens or 0),
+            getattr(self, "preflight_threshold_tokens", self.threshold_tokens),
+        )
+
+    def should_compress_post_response(self, prompt_tokens: int | None = None) -> bool:
+        """Check the normal post-response threshold minus its configured buffer."""
+        tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
+        threshold = max(0, self.threshold_tokens - getattr(self, "post_response_buffer_tokens", 0))
+        return self._should_compress_at_tokens(int(tokens or 0), threshold)
+
+    def _should_compress_at_tokens(self, tokens: int, threshold: int) -> bool:
+        """Shared compression threshold check with anti-thrashing protection."""
+        if tokens < threshold:
             return False
         # Anti-thrashing: back off if recent compressions were ineffective
         if self._ineffective_compression_count >= 2:

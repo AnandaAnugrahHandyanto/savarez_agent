@@ -12519,6 +12519,30 @@ class HermesCLI:
             if self._voice_tts and response and not use_streaming_tts:
                 self._voice_speak_response_async(response)
 
+            # Opportunistic post-response compression: only after the final
+            # assistant response has been rendered/scheduled for delivery.
+            # The existing pre-turn path remains as the emergency fallback.
+            if self.agent and result and response and not result.get("failed") and not result.get("interrupted"):
+                try:
+                    messages_after_post, _post_system_prompt, _post_ran = self.agent._maybe_compress_post_response(
+                        result.get("messages", self.conversation_history),
+                        getattr(self.agent, "_base_system_message", ""),
+                        task_id=self.session_id,
+                    )
+                    if _post_ran:
+                        result["messages"] = messages_after_post
+                        self.conversation_history = messages_after_post
+                        if (
+                            self.agent
+                            and getattr(self.agent, "session_id", None)
+                            and self.agent.session_id != self.session_id
+                        ):
+                            self._transfer_session_yolo(self.session_id, self.agent.session_id)
+                            self.session_id = self.agent.session_id
+                            self._pending_title = None
+                except Exception:
+                    logger.debug("post-response compression failed", exc_info=True)
+
 
             # Re-queue the interrupt message (and any that arrived while we were
             # processing the first) as the next prompt for process_loop.
