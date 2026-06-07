@@ -1382,7 +1382,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str], Optional[st
         if not script_path:
             err = "no_agent=True but no script is set for this job"
             logger.error("Job '%s': %s", job_id, err)
-            return False, "", "", err
+            return False, "", "", err, None, None
 
         # Apply workdir if configured — lets scripts use predictable relative
         # paths. For no_agent jobs this is just the subprocess cwd (not an
@@ -1439,7 +1439,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str], Optional[st
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (wakeAgent=false)\n"
             )
-            return True, silent_doc, SILENT_MARKER, None
+            return True, silent_doc, SILENT_MARKER, None, None, None
 
         if not output.strip():
             logger.info("Job '%s' (no_agent): empty stdout — silent run", job_id)
@@ -1450,7 +1450,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str], Optional[st
                 f"**Mode:** no_agent (script)\n"
                 f"**Status:** silent (empty output)\n"
             )
-            return True, silent_doc, SILENT_MARKER, None
+            return True, silent_doc, SILENT_MARKER, None, None, None
 
         doc = (
             f"# Cron Job: {job_name}\n\n"
@@ -1499,7 +1499,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str], Optional[st
                 f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 "Script gate returned `wakeAgent=false` — agent skipped.\n"
             )
-            return True, silent_doc, SILENT_MARKER, None
+            return True, silent_doc, SILENT_MARKER, None, None, None
 
     try:
         prompt = _build_job_prompt(job, prerun_script=prerun_script)
@@ -1525,10 +1525,10 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str], Optional[st
             "and the match is a false positive, rephrase the content to avoid "
             "the threat pattern (`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
         )
-        return False, blocked_doc, "", str(block_exc)
+        return False, blocked_doc, "", str(block_exc), None, None
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
-        return True, "", SILENT_MARKER, None
+        return True, "", SILENT_MARKER, None, None, None
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
