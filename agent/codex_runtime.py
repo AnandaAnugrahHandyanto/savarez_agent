@@ -381,7 +381,28 @@ def _consume_codex_event_stream(
     # if none arrived but we streamed plain text deltas (no tool calls), synthesize
     # a single message item so downstream normalization has something to work with.
     if collected_output_items:
-        output = list(collected_output_items)
+        # Some providers (e.g. Bedrock mantle) emit cumulative message
+        # output_items where each item is a prefix-superset of the prior.
+        # Concatenating them would duplicate text quadratically.  Collapse
+        # consecutive message-type items to the last (most complete) one,
+        # preserving function_call / reasoning / other item types untouched.
+        deduped: List[Any] = []
+        last_msg_idx: int | None = None
+        for idx, item in enumerate(collected_output_items):
+            item_type = getattr(item, "type", None)
+            if item_type == "message":
+                # Replace the previous message slot with this (longer) one.
+                if last_msg_idx is not None:
+                    deduped[last_msg_idx] = item
+                else:
+                    deduped.append(item)
+                    last_msg_idx = len(deduped) - 1
+            else:
+                # Non-message items (function_call, reasoning, …) always kept.
+                deduped.append(item)
+                # Reset message slot so a message after tool calls is kept.
+                last_msg_idx = None
+        output = deduped
     elif collected_text_deltas and not has_tool_calls:
         assembled = "".join(collected_text_deltas)
         output = [SimpleNamespace(
