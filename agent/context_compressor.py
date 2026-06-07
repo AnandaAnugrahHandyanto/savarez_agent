@@ -1607,16 +1607,16 @@ Use this exact structure:
     def _fallback_to_main_for_compression(self, e: Exception, reason: str) -> None:
         """Switch from a separate ``summary_model`` back to the main model.
 
-        Centralises the bookkeeping shared by every fallback branch in
-        :meth:`_generate_summary` (model-not-found, timeout, JSON decode,
-        malformed provider output, unknown error): record the aux-model
+        Centralises the bookkeeping shared by aux-to-main fallback branches in
+        :meth:`_generate_summary` (permanent model-unavailable errors and
+        scrubbed dirty/JSON provider-output failures): record the aux-model
         failure for ``/usage``-style callers, clear the summary model so the
         next call uses the main one, and clear the cooldown so the immediate
         retry can run.
 
         ``reason`` is a short human-readable phrase ("unavailable",
-        "timed out", "returned invalid JSON", "failed") that is interpolated
-        into the warning log.
+        "returned invalid JSON", "failed") that is interpolated into the
+        warning log.
         """
         self._summary_model_fallen_back = True
         logger.warning(
@@ -1821,32 +1821,59 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             return None
         except Exception as e:
             # If the summary model is different from the main model and the
-            # error looks permanent (model not found, 503, 404), fall back to
-            # using the main model instead of entering cooldown that leaves
-            # context growing unbounded.  (#8620 sub-issue 4)
+            # error looks permanent (model not found, 404), fall back to using
+            # the main model instead of entering cooldown that leaves context
+            # growing unbounded. Transient provider stalls such as 503 are
+            # handled by chunked recovery below. (#8620 sub-issue 4)
             _status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
             _err_str = str(e).lower()
             _is_model_not_found = (
-                _status in {404, 503}
+                _status in {404}
                 or "model_not_found" in _err_str
                 or "does not exist" in _err_str
                 or "no available channel" in _err_str
             )
-            _is_timeout = (
-                _status in {408, 429, 500, 502, 503, 504}
-                or "timeout" in _err_str
-                or "timed out" in _err_str
-                or "temporarily unavailable" in _err_str
+            _is_rate_limited = (
+                _status == 429
                 or "rate limit" in _err_str
+                or "rate_limit" in _err_str
+                or "rate-limit" in _err_str
+                or "ratelimit" in _err_str
             )
+            _has_temporarily_unavailable = (
+                "temporarily unavailable" in _err_str
+                or "temporarily-unavailable" in _err_str
+                or "temporarily_unavailable" in _err_str
+            )
+            _is_http_timeout = _status == 408
+            _is_timeout_text = (
+                "timeout" in _err_str
+                or "timed out" in _err_str
+            )
+            _looks_opaque_400 = (
+                _status == 400
+                or re.search(r"\b400\b", _err_str) is not None
+                or "badrequest" in _err_str
+                or "bad request" in _err_str
+            )
+            _is_transient_5xx = (
+                _status in {500, 502, 503, 504}
+                or (_status is None and _has_temporarily_unavailable and not _looks_opaque_400)
+            )
+            _is_opaque_temporarily_unavailable_400 = (
+                _looks_opaque_400 and _has_temporarily_unavailable
+            )
+            _is_timeout = _is_http_timeout or _is_timeout_text or _is_transient_5xx
             # Non-JSON / malformed-body responses from misconfigured providers
             # or proxies (e.g. an HTML 502 page returned with
             # ``Content-Type: application/json``) bubble up as
             # ``json.JSONDecodeError`` from the OpenAI SDK's ``response.json()``,
             # or as a wrapping ``APIResponseValidationError`` whose message
-            # carries the substring "expecting value".  Treat these like a
-            # transient provider failure: one retry on the main model, then a
-            # short cooldown.  Issue #22244.
+            # carries the substring "expecting value".  Non-timeout malformed
+            # responses use the safe-recovery/fallback path; if they also carry
+            # timeout/5xx status and no safety/filter marker, transport-stall
+            # routing below sends them directly to chunked recovery.
+            # Issue #22244.
             _is_json_decode = (
                 isinstance(e, json.JSONDecodeError)
                 or "expecting value" in _err_str
@@ -1855,16 +1882,31 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # ConnectionError subclasses or plain Exception with characteristic
             # substrings ("incomplete chunked read", "peer closed connection",
             # "response ended prematurely", "unexpected eof").  These are
-            # transient network events; treat them like a timeout so we fall
-            # back to the main model instead of entering a 60-second cooldown.
-            # See issue #18458.
+            # transport stalls; scrubbing raw content or retrying another
+            # whole-context request does not help, so they go to chunked
+            # recovery before local extractive fallback. See issue #18458.
             _is_streaming_closed = _is_connection_error(e)
             _is_dirty_provider = self._looks_dirty_provider_error(e)
+            _is_filter_blocked = self._looks_filter_blocked_error(e)
+            # Transport/provider stalls are not fixed by scrubbing raw content;
+            # retrying the same whole-context request just burns another full
+            # timeout. Send those directly to chunked recovery. Safety/filter
+            # blocks still use safe retry first because scrubbing high-risk raw
+            # material can legitimately make that request acceptable.
+            # Rate limits and opaque 400 temporarily-unavailable responses are
+            # request-budget / ambiguous rejection cases: do not turn one failed
+            # whole-summary request into chunked or main-model network recovery.
+            _network_recovery_blocked = (
+                _is_rate_limited or _is_opaque_temporarily_unavailable_400
+            )
+            _should_direct_chunked_recovery = (
+                (_is_timeout or _is_streaming_closed)
+                and not _is_filter_blocked
+                and not _network_recovery_blocked
+            )
             _needs_safe_recovery = (
-                self._looks_filter_blocked_error(e)
-                or _is_timeout
+                _is_filter_blocked
                 or _is_json_decode
-                or _is_streaming_closed
                 or _is_dirty_provider
             )
             if _is_json_decode and not _is_model_not_found and not _is_timeout:
@@ -1879,55 +1921,63 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     e,
                 )
             if (
-                (
-                    _is_model_not_found
-                    or (_is_timeout and not _is_dirty_provider)
-                    or _is_json_decode
-                    or _is_streaming_closed
-                )
+                _is_model_not_found
+                and not _network_recovery_blocked
+                and not _needs_safe_recovery
                 and self.summary_model
                 and self.summary_model != self.model
                 and not getattr(self, "_summary_model_fallen_back", False)
             ):
-                if _is_json_decode:
-                    _reason = "returned invalid JSON"
-                elif _is_model_not_found:
-                    _reason = "unavailable"
-                elif _is_streaming_closed:
-                    _reason = "closed stream prematurely"
-                else:
-                    _reason = "timed out"
-                self._fallback_to_main_for_compression(e, _reason)
+                self._fallback_to_main_for_compression(e, "unavailable")
                 return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)  # retry immediately
 
-            # Unknown-error best-effort retry on main model.  Losing N turns of
-            # context is almost always worse than one extra summary attempt, so
-            # if we haven't already fallen back and the summary model differs
-            # from the main model, try once more on main before entering
-            # cooldown.  Errors that DID match _is_model_not_found above are
-            # already handled by the fast-path retry; this branch catches
-            # everything else (400s, provider-specific "no route" strings,
-            # aggregator rejections, etc.) where auto-retry is still safer
-            # than dropping the turns.
-            if (
-                self.summary_model
-                and self.summary_model != self.model
-                and not getattr(self, "_summary_model_fallen_back", False)
-                and not _is_dirty_provider
-            ):
-                self._fallback_to_main_for_compression(e, "failed")
-                return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+            # Unknown non-transport errors are not retried as another
+            # whole-context request on the main model.  Only explicit
+            # model-unavailable/config-routing failures use the aux-to-main
+            # fast path above; other failures fall through to cooldown plus
+            # local extractive fallback below.
 
             err_text = str(e).strip() or e.__class__.__name__
             if len(err_text) > 220:
                 err_text = err_text[:217].rstrip() + "..."
 
-            # Provider safety blocks, timeouts/transient provider failures,
-            # dirty/malformed provider responses, and connection closures are
-            # often caused or amplified by one raw log/tool blob inside the
-            # summary prompt. Retry once with high-risk content scrubbed. If
-            # even the scrubbed prompt fails, try scrubbed chunks before the
-            # local extractive fallback.
+            if _should_direct_chunked_recovery:
+                if getattr(self, "chunked_summary_enabled", True):
+                    self._last_summary_recovery_stage = "chunked"
+                    logging.warning(
+                        "Context summary failed with transport/provider stall; attempting chunked summary."
+                    )
+                    chunked = self._generate_chunked_summary_after_block(
+                        turns_to_summarize,
+                        focus_topic=focus_topic,
+                        error=err_text,
+                    )
+                    if chunked:
+                        return chunked
+                self._summary_failure_cooldown_until = time.monotonic() + 30
+                if getattr(self, "extractive_fallback_enabled", True):
+                    self._last_summary_recovery_stage = "extractive_fallback"
+                    self._last_summary_error = f"extractive fallback after summary failure: {err_text}"
+                    logging.warning(
+                        "Context chunked summary unavailable after transport/provider stall; using local extractive fallback."
+                    )
+                    return self._generate_extractive_fallback_summary(
+                        turns_to_summarize,
+                        error=err_text,
+                    )
+                self._last_summary_error = err_text
+                logging.warning(
+                    "Context summary failed and direct chunked recovery is unavailable: %s",
+                    err_text,
+                )
+                return None
+
+            # Provider safety blocks, dirty/malformed provider responses,
+            # and malformed JSON responses are often caused or amplified by
+            # one raw log/tool blob inside the summary prompt. Retry once
+            # with high-risk content scrubbed. If even the scrubbed prompt
+            # fails, try scrubbed chunks before the local extractive fallback
+            # unless the error is rate-limited or an opaque 400 rejection.
             if _needs_safe_recovery:
                 if not _safe_retry and getattr(self, "safe_retry_enabled", True):
                     self._last_summary_recovery_stage = "safe_retry"
@@ -1940,7 +1990,11 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                         _safe_retry=True,
                     )
                 if (
-                    _is_dirty_provider
+                    (_is_dirty_provider or _is_json_decode)
+                    and _safe_retry
+                    and not _is_filter_blocked
+                    and not _should_direct_chunked_recovery
+                    and not _network_recovery_blocked
                     and self.summary_model
                     and self.summary_model != self.model
                     and not getattr(self, "_summary_model_fallen_back", False)
@@ -1954,11 +2008,20 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                         focus_topic=focus_topic,
                         _safe_retry=_safe_retry,
                     )
-                if _safe_retry and getattr(self, "chunked_summary_enabled", True):
+                if (
+                    (_safe_retry or not getattr(self, "safe_retry_enabled", True))
+                    and getattr(self, "chunked_summary_enabled", True)
+                    and not _network_recovery_blocked
+                ):
                     self._last_summary_recovery_stage = "chunked"
-                    logging.warning(
-                        "Context summary safe retry failed; attempting chunked summary."
-                    )
+                    if _safe_retry:
+                        logging.warning(
+                            "Context summary safe retry failed; attempting chunked summary."
+                        )
+                    else:
+                        logging.warning(
+                            "Context summary safe retry disabled; attempting chunked summary."
+                        )
                     chunked = self._generate_chunked_summary_after_block(
                         turns_to_summarize,
                         focus_topic=focus_topic,

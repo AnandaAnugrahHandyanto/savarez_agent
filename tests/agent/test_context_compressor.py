@@ -283,11 +283,10 @@ class TestSummaryFailureCooldown:
 
 
 class TestSummaryFallbackToMainModel:
-    """When ``summary_model`` differs from the main model and the summary LLM
-    call fails, the compressor should retry once on the main model before
-    giving up — losing N turns of context is almost always worse than one
-    extra summary attempt.  Covers both the fast-path (explicit
-    model-not-found errors) and the unknown-error best-effort retry."""
+    """When ``summary_model`` differs from the main model, only explicit
+    model-unavailable/config-routing failures should retry once on the main
+    model. Transport stalls, safety/filter blocks, and generic unknown errors
+    use their dedicated recovery paths instead of another whole-summary call."""
 
     def _msgs(self):
         return [
@@ -332,17 +331,44 @@ class TestSummaryFallbackToMainModel:
         assert c._last_aux_model_failure_error is not None
         assert "404" in c._last_aux_model_failure_error
 
-    def test_unknown_error_falls_back_to_main_and_succeeds(self):
-        """Errors that don't match the 404/503/model_not_found fast-path
-        (400s, provider-specific 'no route', aggregator rejections) should
-        ALSO trigger a best-effort retry on main before entering cooldown."""
+    def test_no_available_channel_falls_back_to_main_and_succeeds(self):
+        """Provider-specific permanent model routing failures still retry on main."""
         mock_ok = MagicMock()
         mock_ok.choices = [MagicMock()]
         mock_ok.choices[0].message.content = "summary via main model"
 
-        # A 400 from OpenRouter / Nous portal with an opaque message — does
-        # NOT match _is_model_not_found, but still an unrecoverable misconfig.
-        err_400 = Exception("400 Bad Request: provider rejected model")
+        err_no_channel = Exception("no available channel for requested model")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="broken-aux-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err_no_channel, mock_ok],
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert mock_call.call_args_list[0].kwargs.get("model") == "broken-aux-model"
+        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert result is not None
+        assert "summary via main model" in result
+        assert c._last_aux_model_failure_model == "broken-aux-model"
+        assert c._last_aux_model_failure_error is not None
+        assert "no available channel" in c._last_aux_model_failure_error
+
+    def test_unknown_error_does_not_fallback_to_main(self):
+        """Generic non-transport, non-model-unavailable errors should not
+        trigger another whole-context request on the main model."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model"
+
+        err_400 = Exception("400 Bad Request: provider rejected request")
         err_400.status_code = 400
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
@@ -358,15 +384,13 @@ class TestSummaryFallbackToMainModel:
         ) as mock_call:
             result = c._generate_summary(self._msgs())
 
-        assert mock_call.call_count == 2
+        assert mock_call.call_count == 1
         assert mock_call.call_args_list[0].kwargs.get("model") == "broken-aux-model"
-        assert "model" not in mock_call.call_args_list[1].kwargs
         assert result is not None
-        assert "summary via main model" in result
-        # Aux-model failure recorded despite successful recovery
-        assert c._last_aux_model_failure_model == "broken-aux-model"
-        assert c._last_aux_model_failure_error is not None
-        assert "400" in c._last_aux_model_failure_error
+        assert "summary via main model" not in result
+        assert "## Active Task" in result
+        assert c._last_aux_model_failure_model is None
+        assert getattr(c, "_summary_model_fallen_back", False) is False
 
     def test_no_fallback_when_summary_model_equals_main_model(self):
         """If the aux model IS the main model, there's nowhere to fall back
@@ -394,10 +418,9 @@ class TestSummaryFallbackToMainModel:
         assert getattr(c, "_summary_model_fallen_back", False) is False
 
     def test_fallback_only_happens_once_per_compressor(self):
-        """If the retry-on-main ALSO fails, don't loop forever — enter
-        cooldown like the normal failure path."""
-        err1 = Exception("400 aux model rejected")
-        err2 = Exception("500 main model also exploded")
+        """If retry-on-main after true model-unavailable also fails, don't loop forever."""
+        err1 = Exception("model_not_found: aux model rejected")
+        err2 = Exception("main model also exploded")
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
@@ -421,8 +444,8 @@ class TestSummaryFallbackToMainModel:
     def test_json_decode_error_falls_back_to_main_and_succeeds(self):
         """JSONDecodeError from the OpenAI SDK's ``response.json()`` (raised
         when a misconfigured proxy returns HTML/plain-text with
-        ``Content-Type: application/json``) should trigger the same
-        retry-on-main path as 404/timeout.  Issue #22244."""
+        ``Content-Type: application/json``) should safe retry first, then use
+        the aux-to-main malformed-response fallback path. Issue #22244."""
         import json as _json
 
         mock_ok = MagicMock()
@@ -444,13 +467,17 @@ class TestSummaryFallbackToMainModel:
 
         with patch(
             "agent.context_compressor.call_llm",
-            side_effect=[err_json, mock_ok],
+            side_effect=[err_json, err_json, mock_ok],
         ) as mock_call:
             result = c._generate_summary(self._msgs())
 
-        assert mock_call.call_count == 2
-        assert mock_call.call_args_list[0].kwargs.get("model") == "aux-via-broken-proxy"
-        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert mock_call.call_count == 3
+        first_call = mock_call.call_args_list[0].kwargs
+        second_call = mock_call.call_args_list[1].kwargs
+        third_call = mock_call.call_args_list[2].kwargs
+        assert first_call.get("model") == "aux-via-broken-proxy"
+        assert second_call.get("model") == "aux-via-broken-proxy"
+        assert "model" not in third_call
         assert result is not None
         assert "summary via main model" in result
         # Aux-model failure recorded so /usage / gateway warnings can surface it
@@ -463,8 +490,8 @@ class TestSummaryFallbackToMainModel:
         """When the OpenAI SDK wraps the raw JSONDecodeError inside its own
         ``APIResponseValidationError`` (or similar), ``isinstance`` no longer
         matches but the substring "expecting value" still appears in
-        ``str(e)``.  We detect this case by string match and fall back the
-        same way."""
+        ``str(e)``.  We detect this case by string match and route it through
+        the same safe-retry-then-main-fallback path."""
         mock_ok = MagicMock()
         mock_ok.choices = [MagicMock()]
         mock_ok.choices[0].message.content = "summary via main model"
@@ -482,11 +509,14 @@ class TestSummaryFallbackToMainModel:
 
         with patch(
             "agent.context_compressor.call_llm",
-            side_effect=[err_wrapped, mock_ok],
+            side_effect=[err_wrapped, err_wrapped, mock_ok],
         ) as mock_call:
             result = c._generate_summary(self._msgs())
 
-        assert mock_call.call_count == 2
+        assert mock_call.call_count == 3
+        assert mock_call.call_args_list[0].kwargs.get("model") == "aux-model"
+        assert mock_call.call_args_list[1].kwargs.get("model") == "aux-model"
+        assert "model" not in mock_call.call_args_list[2].kwargs
         assert result is not None
         assert "summary via main model" in result
 
@@ -519,9 +549,10 @@ class TestSummaryFallbackToMainModel:
 
 
 class TestStreamingClosedFallback:
-    """httpcore / httpx streaming premature-close errors must be classified the
-    same as timeouts so the compressor retries on the main model instead of
-    entering a 60-second cooldown.  Issue #18458.
+    """httpcore / httpx streaming premature-close errors are classified as
+    transport stalls. They should not retry the same whole-context request on
+    the main model; the compressor should use chunked/local recovery instead.
+    Issue #18458.
 
     ``_is_connection_error`` is patched here because the test venv may not
     have ``openai`` installed (the real function does ``from openai import ...``
@@ -536,9 +567,9 @@ class TestStreamingClosedFallback:
             {"role": "assistant", "content": "ok"},
         ]
 
-    def test_incomplete_chunked_read_falls_back_to_main(self):
-        """``httpcore.RemoteProtocolError: incomplete chunked read`` triggers
-        the retry-on-main path when ``_is_connection_error`` returns True."""
+    def test_incomplete_chunked_read_does_not_fallback_to_main(self):
+        """``httpcore.RemoteProtocolError: incomplete chunked read`` should
+        avoid retrying another whole summary on the main model."""
         mock_ok = MagicMock()
         mock_ok.choices = [MagicMock()]
         mock_ok.choices[0].message.content = "summary via main model"
@@ -550,6 +581,7 @@ class TestStreamingClosedFallback:
                 model="main-model",
                 summary_model_override="aux-stream-model",
                 quiet_mode=True,
+                chunked_summary_enabled=False,
             )
 
         with patch(
@@ -561,14 +593,16 @@ class TestStreamingClosedFallback:
         ):
             result = c._generate_summary(self._msgs())
 
-        assert mock_call.call_count == 2
+        assert mock_call.call_count == 1
         assert mock_call.call_args_list[0].kwargs.get("model") == "aux-stream-model"
-        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert not getattr(c, "_summary_model_fallen_back", False)
+        assert c._last_summary_recovery_stage == "extractive_fallback"
         assert result is not None
-        assert "summary via main model" in result
+        assert "summary via main model" not in result
+        assert "## Active Task" in result
 
-    def test_peer_closed_connection_falls_back_to_main(self):
-        """``peer closed connection`` triggers the retry-on-main path."""
+    def test_peer_closed_connection_does_not_fallback_to_main(self):
+        """``peer closed connection`` should not retry whole-summary on main."""
         mock_ok = MagicMock()
         mock_ok.choices = [MagicMock()]
         mock_ok.choices[0].message.content = "summary ok"
@@ -580,6 +614,7 @@ class TestStreamingClosedFallback:
                 model="main-model",
                 summary_model_override="aux-model",
                 quiet_mode=True,
+                chunked_summary_enabled=False,
             )
 
         with patch(
@@ -591,7 +626,9 @@ class TestStreamingClosedFallback:
         ):
             result = c._generate_summary(self._msgs())
 
-        assert mock_call.call_count == 2
+        assert mock_call.call_count == 1
+        assert not getattr(c, "_summary_model_fallen_back", False)
+        assert c._last_summary_recovery_stage == "extractive_fallback"
         assert result is not None
 
     def test_streaming_closed_on_main_uses_short_cooldown(self):
@@ -646,11 +683,11 @@ class TestStreamingClosedFallback:
 
 
 class TestAuxModelFallbackSurfacedToCallers:
-    """When summary_model fails but retry-on-main succeeds, compress() must
-    expose the aux-model failure via _last_aux_model_failure_{model,error}
-    so gateway /compress and CLI callers can warn the user about their
-    broken auxiliary.compression.model config — silent recovery would hide
-    a misconfiguration only the user can fix."""
+    """When summary_model is explicitly unavailable and retry-on-main succeeds,
+    compress() must expose the aux-model failure via
+    _last_aux_model_failure_{model,error} so gateway /compress and CLI callers
+    can warn the user about their broken auxiliary.compression.model config —
+    silent recovery would hide a misconfiguration only the user can fix."""
 
     def _make_msgs(self):
         return [
@@ -664,12 +701,12 @@ class TestAuxModelFallbackSurfacedToCallers:
             {"role": "user", "content": "msg 7"},
         ]
 
-    def test_compress_exposes_aux_failure_fields_after_successful_fallback(self):
+    def test_compress_exposes_aux_failure_fields_after_successful_model_unavailable_fallback(self):
         mock_ok = MagicMock()
         mock_ok.choices = [MagicMock()]
         mock_ok.choices[0].message.content = "summary via main"
-        err_400 = Exception("400 provider rejected configured model")
-        err_400.status_code = 400
+        err_unavailable = Exception("404 model_not_found: configured aux model is unavailable")
+        err_unavailable.status_code = 404
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
@@ -682,7 +719,7 @@ class TestAuxModelFallbackSurfacedToCallers:
 
         with patch(
             "agent.context_compressor.call_llm",
-            side_effect=[err_400, mock_ok],
+            side_effect=[err_unavailable, mock_ok],
         ):
             result = c.compress(self._make_msgs())
 
@@ -691,7 +728,7 @@ class TestAuxModelFallbackSurfacedToCallers:
         # But aux-model failure IS recorded for the gateway/CLI warning
         assert c._last_aux_model_failure_model == "broken-aux-model"
         assert c._last_aux_model_failure_error is not None
-        assert "400" in c._last_aux_model_failure_error
+        assert "model_not_found" in c._last_aux_model_failure_error
         # Result is well-formed with a real summary, not a placeholder
         assert any(
             isinstance(m.get("content"), str) and "summary via main" in m["content"]
@@ -704,8 +741,8 @@ class TestAuxModelFallbackSurfacedToCallers:
         mock_ok = MagicMock()
         mock_ok.choices = [MagicMock()]
         mock_ok.choices[0].message.content = "summary via main"
-        err_400 = Exception("400 aux model busted")
-        err_400.status_code = 400
+        err_unavailable = Exception("404 model_not_found: aux model busted")
+        err_unavailable.status_code = 404
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
@@ -716,10 +753,10 @@ class TestAuxModelFallbackSurfacedToCallers:
                 protect_last_n=2,
             )
 
-        # Call 1: aux fails, retry-on-main succeeds
+        # Call 1: aux unavailable, retry-on-main succeeds
         with patch(
             "agent.context_compressor.call_llm",
-            side_effect=[err_400, mock_ok],
+            side_effect=[err_unavailable, mock_ok],
         ):
             c.compress(self._make_msgs())
         assert c._last_aux_model_failure_model == "broken-aux-model"
@@ -811,10 +848,10 @@ class TestCompressionStageStatusCallback:
                 status_callback=lambda stage, payload: events.append((stage, payload)),
             )
 
-        # 2 failures: normal summary then safe retry. Seven chunk summaries + merge succeed.
+        # 2 safety/filter failures: normal summary then safe retry. Seven chunk summaries + merge succeed.
         responses = [
-            Exception("timeout while summarizing"),
-            Exception("timeout while summarizing"),
+            Exception("Your request was blocked by content policy."),
+            Exception("Your request was blocked by content policy."),
             *[self._mock_summary_response(f"partial {i}") for i in range(7)],
             self._mock_summary_response("merged summary"),
         ]
@@ -2259,33 +2296,35 @@ class TestSummarySafeRetryAndExtractiveFallback:
         assert result.startswith(SUMMARY_PREFIX)
         assert c._last_summary_error is None
 
-    def test_dirty_provider_timeout_status_prefers_safe_retry_before_main_model_fallback(self):
+    def test_dirty_provider_timeout_status_goes_directly_to_chunked(self):
         class ProviderError(Exception):
             status_code = 502
 
         err = ProviderError("bad gateway provider error: malformed response")
-        ok = self._mock_summary("## Active Task\ncontinue safely")
+        chunk1 = self._mock_summary("## Active Task\npart one")
+        chunk2 = self._mock_summary("## Active Task\npart two")
+        chunk3 = self._mock_summary("## Active Task\npart three")
+        merged = self._mock_summary("## Active Task\nchunked dirty-timeout recovery")
+        events = []
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="main-model",
                 quiet_mode=True,
                 summary_model_override="aux-summary-model",
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
             )
 
-        with patch("agent.context_compressor.call_llm", side_effect=[err, ok]) as mock_call:
+        with patch("agent.context_compressor.call_llm", side_effect=[err, chunk1, chunk2, chunk3, merged]) as mock_call:
             result = c._generate_summary(self._messages_with_risky_tool_output())
 
-        assert mock_call.call_count == 2
-        first_call = mock_call.call_args_list[0].kwargs
-        second_call = mock_call.call_args_list[1].kwargs
-        second_prompt = second_call["messages"][0]["content"]
-        assert first_call["model"] == "aux-summary-model"
-        assert second_call["model"] == "aux-summary-model"
-        assert "Traceback (most recent call last)" not in second_prompt
-        assert "blocked scary output" not in second_prompt
-        assert "[tool output summarized for safe compression retry]" in second_prompt
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 5
+        assert "safe_retry_started" not in stages
+        assert stages.index("normal_summary_started") < stages.index("chunked_summary_started")
+        assert not getattr(c, "_summary_model_fallen_back", False)
         assert result is not None
-        assert result.startswith(SUMMARY_PREFIX)
+        assert "chunked dirty-timeout recovery" in result
 
     def test_dirty_provider_error_falls_back_to_main_after_scrubbed_retry_fails(self):
         err = Exception("malformed response from provider error: invalid response body")
@@ -2316,33 +2355,39 @@ class TestSummarySafeRetryAndExtractiveFallback:
         assert result is not None
         assert result.startswith(SUMMARY_PREFIX)
 
-    def test_dirty_provider_error_falls_back_to_main_when_safe_retry_disabled(self):
+    def test_dirty_provider_error_uses_chunked_when_safe_retry_disabled(self):
         err = Exception("malformed response from provider error: invalid response body")
-        ok = self._mock_summary("## Active Task\nmain recovered")
+        chunk1 = self._mock_summary("## Active Task\npart one")
+        chunk2 = self._mock_summary("## Active Task\npart two")
+        chunk3 = self._mock_summary("## Active Task\npart three")
+        merged = self._mock_summary("## Active Task\nchunked dirty safe-retry-disabled recovery")
+        events = []
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="main-model",
                 quiet_mode=True,
                 summary_model_override="aux-summary-model",
                 safe_retry_enabled=False,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
             )
 
-        with patch("agent.context_compressor.call_llm", side_effect=[err, ok]) as mock_call:
+        with patch("agent.context_compressor.call_llm", side_effect=[err, chunk1, chunk2, chunk3, merged]) as mock_call:
             result = c._generate_summary(self._messages_with_risky_tool_output())
 
-        assert mock_call.call_count == 2
-        first_call = mock_call.call_args_list[0].kwargs
-        second_call = mock_call.call_args_list[1].kwargs
-        assert first_call["model"] == "aux-summary-model"
-        assert "model" not in second_call
-        assert c._last_aux_model_failure_model == "aux-summary-model"
-        assert c.summary_model == ""
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 5
+        assert "safe_retry_started" not in stages
+        assert stages.index("normal_summary_started") < stages.index("chunked_summary_started")
+        assert not getattr(c, "_summary_model_fallen_back", False)
+        assert c._last_aux_model_failure_model is None
+        assert c.summary_model == "aux-summary-model"
         assert result is not None
-        assert result.startswith(SUMMARY_PREFIX)
+        assert "chunked dirty safe-retry-disabled recovery" in result
 
-    def test_filter_blocked_aux_summary_still_falls_back_to_main_model(self):
+    def test_filter_blocked_aux_summary_safe_retries_without_main_model(self):
         err = Exception("Your request was blocked by content policy.")
-        ok = self._mock_summary("## Active Task\nmain recovered")
+        ok = self._mock_summary("## Active Task\nsafe retry recovered")
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(
                 model="main-model",
@@ -2357,9 +2402,10 @@ class TestSummarySafeRetryAndExtractiveFallback:
         first_call = mock_call.call_args_list[0].kwargs
         second_call = mock_call.call_args_list[1].kwargs
         assert first_call["model"] == "aux-summary-model"
-        assert "model" not in second_call
-        assert c._last_aux_model_failure_model == "aux-summary-model"
-        assert c.summary_model == ""
+        assert second_call["model"] == "aux-summary-model"
+        assert c._last_aux_model_failure_model is None
+        assert c.summary_model == "aux-summary-model"
+        assert c._last_summary_recovery_stage == "safe_retry"
         assert result is not None
         assert result.startswith(SUMMARY_PREFIX)
 
@@ -2381,10 +2427,41 @@ class TestSummarySafeRetryAndExtractiveFallback:
         assert c._last_summary_fallback_used is True
         assert c._last_summary_error == "extractive fallback after summary failure: Your request was blocked."
 
-    def test_safe_retry_can_be_disabled(self):
+    def test_safe_retry_disabled_uses_chunked_summary_when_available(self):
+        err = Exception("Your request was blocked.")
+        chunk1 = self._mock_summary("## Active Task\npart one")
+        chunk2 = self._mock_summary("## Active Task\npart two")
+        chunk3 = self._mock_summary("## Active Task\npart three")
+        merged = self._mock_summary("## Active Task\nchunked safe-retry-disabled recovery")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                safe_retry_enabled=False,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, chunk1, chunk2, chunk3, merged]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 5
+        assert "safe_retry_started" not in stages
+        assert stages.index("normal_summary_started") < stages.index("chunked_summary_started")
+        assert result is not None
+        assert "chunked safe-retry-disabled recovery" in result
+
+    def test_safe_retry_can_be_disabled_with_chunked_disabled(self):
         err = Exception("Your request was blocked.")
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="main-model", quiet_mode=True, safe_retry_enabled=False)
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                safe_retry_enabled=False,
+                chunked_summary_enabled=False,
+            )
 
         with patch("agent.context_compressor.call_llm", side_effect=[err]) as mock_call:
             result = c._generate_summary(self._messages_with_risky_tool_output())
@@ -2392,6 +2469,41 @@ class TestSummarySafeRetryAndExtractiveFallback:
         assert mock_call.call_count == 1
         assert result is not None
         assert "extractive fallback" in c._last_summary_error
+
+    @pytest.mark.parametrize("case", ["dirty_provider", "json_decode", "wrapped_json_decode"])
+    def test_safe_retry_and_chunked_disabled_dirty_json_uses_local_fallback_not_main(self, case):
+        import json as _json
+
+        if case == "dirty_provider":
+            err = Exception("malformed response from provider error: invalid response body")
+        elif case == "json_decode":
+            err = _json.JSONDecodeError("Expecting value", "<!DOCTYPE html>", 0)
+        else:
+            err = Exception("Expecting value: line 1 column 1 (char 0)")
+
+        mock_ok = self._mock_summary("## Active Task\nsummary via main should not run")
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                summary_model_override="aux-summary-model",
+                safe_retry_enabled=False,
+                chunked_summary_enabled=False,
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, mock_ok]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        assert mock_call.call_count == 1
+        assert mock_call.call_args_list[0].kwargs["model"] == "aux-summary-model"
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+        assert "summary via main should not run" not in result
+        assert c._last_summary_recovery_stage == "extractive_fallback"
+        assert "extractive fallback" in c._last_summary_error
+        assert c._last_aux_model_failure_model is None
+        assert c.summary_model == "aux-summary-model"
+        assert not getattr(c, "_summary_model_fallen_back", False)
 
     def test_chunked_summary_can_be_disabled(self):
         err = Exception("Your request was blocked.")
@@ -2582,6 +2694,611 @@ class TestSummarySafeRetryAndExtractiveFallback:
         assert "chunk one summarized" in result
         assert "chunk two summarized" in result
         assert c._last_summary_fallback_used is False
+
+    def test_timeout_error_goes_directly_to_chunked_summary_without_safe_retry(self):
+        err = Exception("compression request timed out")
+        chunk1 = self._mock_summary("## Active Task\npart one")
+        chunk2 = self._mock_summary("## Active Task\npart two")
+        chunk3 = self._mock_summary("## Active Task\npart three")
+        merged = self._mock_summary("## Active Task\nchunked timeout recovery")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, chunk1, chunk2, chunk3, merged]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 5
+        assert "safe_retry_started" not in stages
+        assert stages.index("normal_summary_started") < stages.index("chunked_summary_started")
+        assert mock_call.call_args_list[1].kwargs["messages"][0]["content"].startswith(
+            "You are creating one partial context checkpoint"
+        )
+        assert result is not None
+        assert "chunked timeout recovery" in result
+
+    def test_summary_model_timeout_does_not_fallback_to_main_whole_summary(self):
+        err = Exception("summary model timed out")
+        chunk1 = self._mock_summary("## Active Task\npart one")
+        chunk2 = self._mock_summary("## Active Task\npart two")
+        chunk3 = self._mock_summary("## Active Task\npart three")
+        merged = self._mock_summary("## Active Task\nchunked summary-model timeout recovery")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="summary-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, chunk1, chunk2, chunk3, merged]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 5
+        assert "safe_retry_started" not in stages
+        assert stages.index("normal_summary_started") < stages.index("chunked_summary_started")
+        assert not getattr(c, "_summary_model_fallen_back", False)
+        assert result is not None
+        assert "chunked summary-model timeout recovery" in result
+
+    def test_summary_model_503_goes_directly_to_chunked_without_main_fallback(self):
+        class ServiceUnavailableError(Exception):
+            status_code = 503
+
+        err = ServiceUnavailableError("service unavailable")
+        chunk1 = self._mock_summary("## Active Task\npart one")
+        chunk2 = self._mock_summary("## Active Task\npart two")
+        chunk3 = self._mock_summary("## Active Task\npart three")
+        merged = self._mock_summary("## Active Task\nchunked 503 recovery")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="summary-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, chunk1, chunk2, chunk3, merged]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 5
+        assert "safe_retry_started" not in stages
+        assert stages.index("normal_summary_started") < stages.index("chunked_summary_started")
+        assert not getattr(c, "_summary_model_fallen_back", False)
+        assert result is not None
+        assert "chunked 503 recovery" in result
+
+    def test_summary_model_response_status_503_goes_directly_to_chunked(self):
+        class Response:
+            status_code = 503
+
+        err = Exception("upstream temporarily unavailable")
+        err.response = Response()
+        chunk1 = self._mock_summary("## Active Task\npart one")
+        chunk2 = self._mock_summary("## Active Task\npart two")
+        chunk3 = self._mock_summary("## Active Task\npart three")
+        merged = self._mock_summary("## Active Task\nchunked response-503 recovery")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="summary-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, chunk1, chunk2, chunk3, merged]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 5
+        assert "safe_retry_started" not in stages
+        assert stages.index("normal_summary_started") < stages.index("chunked_summary_started")
+        assert not getattr(c, "_summary_model_fallen_back", False)
+        assert result is not None
+        assert "chunked response-503 recovery" in result
+
+    def test_rate_limit_does_not_expand_to_chunked_or_main_fallback(self):
+        err = Exception("rate limit exceeded")
+        err.status_code = 429
+        chunk1 = self._mock_summary("## Active Task\npart one")
+        chunk2 = self._mock_summary("## Active Task\npart two")
+        chunk3 = self._mock_summary("## Active Task\npart three")
+        merged = self._mock_summary("## Active Task\nchunked rate-limit recovery should not run")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="summary-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, chunk1, chunk2, chunk3, merged]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 1
+        assert "safe_retry_started" not in stages
+        assert "chunked_summary_started" not in stages
+        assert not getattr(c, "_summary_model_fallen_back", False)
+        assert c._last_aux_model_failure_model is None
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+        assert "chunked rate-limit recovery should not run" not in result
+        assert c._last_summary_recovery_stage == "extractive_fallback"
+
+    def test_opaque_400_temporarily_unavailable_does_not_go_directly_to_chunked(self):
+        err = Exception("temporarily unavailable")
+        err.status_code = 400
+        chunk1 = self._mock_summary("## Active Task\npart one")
+        chunk2 = self._mock_summary("## Active Task\npart two")
+        chunk3 = self._mock_summary("## Active Task\npart three")
+        merged = self._mock_summary("## Active Task\nchunked opaque-400 recovery should not run")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="summary-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, chunk1, chunk2, chunk3, merged]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 1
+        assert "safe_retry_started" not in stages
+        assert "chunked_summary_started" not in stages
+        assert not getattr(c, "_summary_model_fallen_back", False)
+        assert c._last_aux_model_failure_model is None
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+        assert "chunked opaque-400 recovery should not run" not in result
+        assert c._last_summary_recovery_stage == "extractive_fallback"
+
+    def test_response_status_400_temporarily_unavailable_does_not_go_directly_to_chunked(self):
+        class Response:
+            status_code = 400
+
+        err = Exception("temporarily unavailable")
+        err.response = Response()
+        chunk1 = self._mock_summary("## Active Task\npart one")
+        chunk2 = self._mock_summary("## Active Task\npart two")
+        chunk3 = self._mock_summary("## Active Task\npart three")
+        merged = self._mock_summary("## Active Task\nchunked response-400 recovery should not run")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="summary-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, chunk1, chunk2, chunk3, merged]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 1
+        assert "safe_retry_started" not in stages
+        assert "chunked_summary_started" not in stages
+        assert not getattr(c, "_summary_model_fallen_back", False)
+        assert c._last_aux_model_failure_model is None
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+        assert "chunked response-400 recovery should not run" not in result
+        assert c._last_summary_recovery_stage == "extractive_fallback"
+
+    @pytest.mark.parametrize("message", [
+        "400 temporarily unavailable",
+        "400 temporarily-unavailable model_not_found",
+        "BadRequestError: temporarily_unavailable model_not_found",
+    ])
+    def test_text_only_opaque_400_temporarily_unavailable_does_not_chunk_or_main(self, message):
+        err = Exception(message)
+        mock_ok = self._mock_summary("## Active Task\nsummary via main should not run")
+        chunk1 = self._mock_summary("## Active Task\nchunked text-400 recovery should not run")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="summary-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, mock_ok, chunk1]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 1
+        assert "safe_retry_started" not in stages
+        assert "chunked_summary_started" not in stages
+        assert not getattr(c, "_summary_model_fallen_back", False)
+        assert c._last_aux_model_failure_model is None
+        assert c.summary_model == "summary-model"
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+        assert "summary via main should not run" not in result
+        assert "chunked text-400 recovery should not run" not in result
+        assert c._last_summary_recovery_stage == "extractive_fallback"
+
+    @pytest.mark.parametrize("rate_limit_text", [
+        "rate limit exceeded",
+        "rate_limit_exceeded",
+        "rate-limit exceeded",
+        "ratelimit exceeded",
+    ])
+    def test_rate_limit_text_without_status_does_not_expand_to_chunked(self, rate_limit_text):
+        err = Exception(f"temporarily unavailable: {rate_limit_text}")
+        chunk1 = self._mock_summary("## Active Task\npart one")
+        chunk2 = self._mock_summary("## Active Task\npart two")
+        chunk3 = self._mock_summary("## Active Task\npart three")
+        merged = self._mock_summary("## Active Task\nchunked rate-limit-text recovery should not run")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="summary-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, chunk1, chunk2, chunk3, merged]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 1
+        assert "safe_retry_started" not in stages
+        assert "chunked_summary_started" not in stages
+        assert not getattr(c, "_summary_model_fallen_back", False)
+        assert c._last_aux_model_failure_model is None
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+        assert "chunked rate-limit-text recovery should not run" not in result
+        assert c._last_summary_recovery_stage == "extractive_fallback"
+
+    @pytest.mark.parametrize("case", ["rate_limit_dirty", "rate_limit_json", "opaque_400_dirty"])
+    def test_limited_or_opaque_400_dirty_json_does_not_fallback_to_main_after_safe_retry(self, case):
+        import json as _json
+
+        if case == "rate_limit_dirty":
+            err = Exception("rate_limit_exceeded: malformed response from provider error")
+        elif case == "rate_limit_json":
+            err = _json.JSONDecodeError("Expecting value", "<!DOCTYPE html>", 0)
+            err.status_code = 429
+        else:
+            class Response:
+                status_code = 400
+
+            err = Exception("temporarily unavailable: malformed response from provider error")
+            err.response = Response()
+
+        mock_ok = self._mock_summary("## Active Task\nsummary via main should not run")
+        chunk1 = self._mock_summary("## Active Task\nchunked mixed-error recovery should not run")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="summary-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, err, mock_ok, chunk1]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 2
+        assert stages.index("normal_summary_started") < stages.index("safe_retry_started")
+        assert "chunked_summary_started" not in stages
+        assert not getattr(c, "_summary_model_fallen_back", False)
+        assert c._last_aux_model_failure_model is None
+        assert c.summary_model == "summary-model"
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+        assert "summary via main should not run" not in result
+        assert "chunked mixed-error recovery should not run" not in result
+        assert c._last_summary_recovery_stage == "extractive_fallback"
+
+    @pytest.mark.parametrize("case", [
+        "rate_limit_model_not_found",
+        "rate_limit_hyphen_model_not_found",
+        "opaque_400_model_not_found",
+        "opaque_400_hyphen_model_not_found",
+    ])
+    def test_network_blocked_model_not_found_marker_does_not_fallback_to_main(self, case):
+        if case == "rate_limit_model_not_found":
+            err = Exception("rate_limit_exceeded model_not_found")
+        elif case == "rate_limit_hyphen_model_not_found":
+            err = Exception("rate-limit exceeded model_not_found")
+        elif case == "opaque_400_model_not_found":
+            class Response:
+                status_code = 400
+
+            err = Exception("temporarily unavailable model_not_found")
+            err.response = Response()
+        else:
+            class Response:
+                status_code = 400
+
+            err = Exception("temporarily-unavailable model_not_found")
+            err.response = Response()
+
+        mock_ok = self._mock_summary("## Active Task\nsummary via main should not run")
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="summary-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, mock_ok]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        assert mock_call.call_count == 1
+        assert mock_call.call_args_list[0].kwargs["model"] == "summary-model"
+        assert not getattr(c, "_summary_model_fallen_back", False)
+        assert c._last_aux_model_failure_model is None
+        assert c.summary_model == "summary-model"
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+        assert "summary via main should not run" not in result
+        assert c._last_summary_recovery_stage == "extractive_fallback"
+
+    def test_dirty_model_not_found_marker_safe_retries_before_main_fallback(self):
+        err = Exception("malformed response from provider error: model_not_found")
+        mock_ok = self._mock_summary("## Active Task\nmain after scrubbed retry")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="summary-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, err, mock_ok]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 3
+        assert stages.index("normal_summary_started") < stages.index("safe_retry_started")
+        assert mock_call.call_args_list[0].kwargs["model"] == "summary-model"
+        assert mock_call.call_args_list[1].kwargs["model"] == "summary-model"
+        assert "model" not in mock_call.call_args_list[2].kwargs
+        assert getattr(c, "_summary_model_fallen_back", False) is False
+        assert c._last_aux_model_failure_model == "summary-model"
+        assert c.summary_model == ""
+        assert result is not None
+        assert "main after scrubbed retry" in result
+
+    def test_summary_model_response_status_503_with_dirty_marker_goes_directly_to_chunked(self):
+        class Response:
+            status_code = 503
+
+        err = Exception("provider error: upstream error")
+        err.response = Response()
+        chunk1 = self._mock_summary("## Active Task\npart one")
+        chunk2 = self._mock_summary("## Active Task\npart two")
+        chunk3 = self._mock_summary("## Active Task\npart three")
+        merged = self._mock_summary("## Active Task\nchunked dirty-503 recovery")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="summary-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, chunk1, chunk2, chunk3, merged]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 5
+        assert "safe_retry_started" not in stages
+        assert stages.index("normal_summary_started") < stages.index("chunked_summary_started")
+        assert not getattr(c, "_summary_model_fallen_back", False)
+        assert result is not None
+        assert "chunked dirty-503 recovery" in result
+
+    def test_summary_model_json_decode_with_503_goes_directly_to_chunked(self):
+        err = Exception("Expecting value: line 1 column 1 (char 0)")
+        err.status_code = 503
+        chunk1 = self._mock_summary("## Active Task\npart one")
+        chunk2 = self._mock_summary("## Active Task\npart two")
+        chunk3 = self._mock_summary("## Active Task\npart three")
+        merged = self._mock_summary("## Active Task\nchunked json-503 recovery")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="summary-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, chunk1, chunk2, chunk3, merged]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 5
+        assert "safe_retry_started" not in stages
+        assert stages.index("normal_summary_started") < stages.index("chunked_summary_started")
+        assert not getattr(c, "_summary_model_fallen_back", False)
+        assert result is not None
+        assert "chunked json-503 recovery" in result
+
+    def test_summary_model_safety_block_safe_retries_without_main_fallback(self):
+        err = Exception("Your request was blocked by content policy.")
+        chunk1 = self._mock_summary("## Active Task\npart one")
+        chunk2 = self._mock_summary("## Active Task\npart two")
+        chunk3 = self._mock_summary("## Active Task\npart three")
+        merged = self._mock_summary("## Active Task\nchunked safety recovery")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="summary-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, err, chunk1, chunk2, chunk3, merged]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 6
+        assert stages.index("normal_summary_started") < stages.index("safe_retry_started")
+        assert stages.index("safe_retry_started") < stages.index("chunked_summary_started")
+        assert not getattr(c, "_summary_model_fallen_back", False)
+        assert result is not None
+        assert "chunked safety recovery" in result
+
+    def test_summary_model_safety_block_with_dirty_marker_safe_retries_without_main_fallback(self):
+        err = Exception("provider error: request was blocked by content policy")
+        chunk1 = self._mock_summary("## Active Task\npart one")
+        chunk2 = self._mock_summary("## Active Task\npart two")
+        chunk3 = self._mock_summary("## Active Task\npart three")
+        merged = self._mock_summary("## Active Task\nchunked dirty-safety recovery")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="summary-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, err, chunk1, chunk2, chunk3, merged]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 6
+        assert stages.index("normal_summary_started") < stages.index("safe_retry_started")
+        assert stages.index("safe_retry_started") < stages.index("chunked_summary_started")
+        assert not getattr(c, "_summary_model_fallen_back", False)
+        assert result is not None
+        assert "chunked dirty-safety recovery" in result
+
+    def test_summary_model_safety_block_with_503_safe_retries_without_main_fallback(self):
+        err = Exception("provider error: request was blocked by content policy")
+        err.status_code = 503
+        chunk1 = self._mock_summary("## Active Task\npart one")
+        chunk2 = self._mock_summary("## Active Task\npart two")
+        chunk3 = self._mock_summary("## Active Task\npart three")
+        merged = self._mock_summary("## Active Task\nchunked safety-503 recovery")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="summary-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, err, chunk1, chunk2, chunk3, merged]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 6
+        assert stages.index("normal_summary_started") < stages.index("safe_retry_started")
+        assert stages.index("safe_retry_started") < stages.index("chunked_summary_started")
+        assert not getattr(c, "_summary_model_fallen_back", False)
+        assert result is not None
+        assert "chunked safety-503 recovery" in result
+
+    def test_stream_closed_error_goes_directly_to_chunked_summary_without_safe_retry(self):
+        err = Exception("RemoteProtocolError: incomplete chunked read; unexpected EOF")
+        chunk1 = self._mock_summary("## Active Task\npart one")
+        chunk2 = self._mock_summary("## Active Task\npart two")
+        chunk3 = self._mock_summary("## Active Task\npart three")
+        merged = self._mock_summary("## Active Task\nchunked stream recovery")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err, chunk1, chunk2, chunk3, merged],
+        ) as mock_call, patch(
+            "agent.context_compressor._is_connection_error",
+            return_value=True,
+        ):
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 5
+        assert "safe_retry_started" not in stages
+        assert stages.index("normal_summary_started") < stages.index("chunked_summary_started")
+        assert mock_call.call_args_list[1].kwargs["messages"][0]["content"].startswith(
+            "You are creating one partial context checkpoint"
+        )
+        assert result is not None
+        assert "chunked stream recovery" in result
+
+    def test_safety_block_still_safe_retries_before_chunked_summary(self):
+        err = Exception("Your request was blocked by content policy.")
+        chunk1 = self._mock_summary("## Active Task\npart one")
+        chunk2 = self._mock_summary("## Active Task\npart two")
+        chunk3 = self._mock_summary("## Active Task\npart three")
+        merged = self._mock_summary("## Active Task\nchunked safety recovery")
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, err, chunk1, chunk2, chunk3, merged]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 6
+        assert stages.index("normal_summary_started") < stages.index("safe_retry_started")
+        assert stages.index("safe_retry_started") < stages.index("chunked_summary_started")
+        safe_retry_prompt = mock_call.call_args_list[1].kwargs["messages"][0]["content"]
+        first_chunk_prompt = mock_call.call_args_list[2].kwargs["messages"][0]["content"]
+        assert "[tool output summarized for safe compression retry]" in safe_retry_prompt
+        assert first_chunk_prompt.startswith("You are creating one partial context checkpoint")
+        assert result is not None
+        assert "chunked safety recovery" in result
 
     def test_chunked_summary_falls_back_extractively_when_one_chunk_blocked(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
