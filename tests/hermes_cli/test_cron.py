@@ -127,3 +127,19 @@ class TestCronCommandLifecycle:
 
         out = capsys.readouterr().out
         assert "Repeat:    ∞" in out
+
+    def test_list_does_not_crash_when_deliver_is_null(self, tmp_cron_dir, capsys):
+        """A job can be persisted with ``"deliver": null``. ``cron list``
+        must render it gracefully rather than crashing on ``join(None)``."""
+        from cron.jobs import load_jobs, save_jobs
+
+        create_job(prompt="No deliver", schedule="every 1h")
+        # Force deliver=null like a job created without a delivery target.
+        jobs = load_jobs()
+        jobs[0]["deliver"] = None
+        save_jobs(jobs)
+
+        cron_command(Namespace(cron_command="list", all=True))
+
+        out = capsys.readouterr().out
+        assert "Deliver:   —" in out
