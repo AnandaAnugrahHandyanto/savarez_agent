@@ -1718,6 +1718,7 @@ async def get_profiles_sessions(
     profile: str = "all",
     source: str = None,
     exclude_sources: str = None,
+    model: str = None,
 ):
     """Unified, read-only session list aggregated across ALL profiles.
 
@@ -1758,7 +1759,6 @@ async def get_profiles_sessions(
     # newest cron sessions can't starve the recents page.
     source_filter = source or None
     exclude_list = [s for s in (exclude_sources or "").split(",") if s.strip()]
-    model_filter = (model or "").strip()
     model_filter = (model or "").strip()
     # Over-fetch per profile so the merged+sorted window is correct for the
     # requested page. Capped so a huge profile can't blow up the response.
