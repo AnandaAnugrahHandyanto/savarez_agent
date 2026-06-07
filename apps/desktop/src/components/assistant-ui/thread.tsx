@@ -60,6 +60,7 @@ import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
 import { GeneratedImageProvider, useGeneratedImageContext } from '@/components/chat/generated-image-context'
+import { TimelineDots } from '@/components/assistant-ui/timeline-dots'
 import { ImageGenerationPlaceholder } from '@/components/chat/image-generation-placeholder'
 import { Intro, type IntroProps } from '@/components/chat/intro'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -168,6 +169,7 @@ export const Thread: FC<{
           loadingIndicator={loading === 'response' ? <ResponseLoadingIndicator /> : null}
           sessionKey={sessionKey}
         />
+        <TimelineDots />
         {loading === 'session' && <CenteredThreadSpinner />}
       </div>
     </GeneratedImageProvider>
