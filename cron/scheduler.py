@@ -1303,6 +1303,15 @@ def _scan_assembled_cron_prompt(
 
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+    """Execute a single cron job, applying any per-job profile override."""
+    job_id = job["id"]
+    with _job_profile_context(job_id, job.get("profile")):
+        return _run_job_impl(job)
+
+
+def _job_requires_sequential_pool(job: dict) -> bool:
+    """Return True when the job mutates process-global runtime state."""
+    return bool((job.get("workdir") or "").strip() or (job.get("profile") or "").strip())
 def run_job_immediate(job_id: str) -> tuple[bool, Optional[str]]:
     """Execute a job now, bypassing the tick cycle.
 
@@ -1318,17 +1327,19 @@ def run_job_immediate(job_id: str) -> tuple[bool, Optional[str]]:
     if not job:
         return False, f"Job '{job_id}' not found"
 
-    advance_next_run(job["id"])
-
-    pool = _get_parallel_pool(None)
     with _running_lock:
         if job["id"] in _running_job_ids:
-            return False, f"Job '{job_id}' is already running"
+            return False, f"Job '{job_id}' is already running; this manual run was not queued"
         _running_job_ids.add(job["id"])
 
-    def _run_and_release(j=job):
+    advance_next_run(job["id"])
+
+    pool = _get_sequential_pool() if _job_requires_sequential_pool(job) else _get_parallel_pool(None)
+    _ctx = contextvars.copy_context()
+
+    def _run_and_release(j=job, ctx=_ctx):
         try:
-            success, output, final_response, error = run_job(j)
+            success, output, final_response, error = ctx.run(run_job, j)
             save_job_output(j["id"], output)
             deliver_content = (
                 final_response if success
@@ -1354,7 +1365,12 @@ def run_job_immediate(job_id: str) -> tuple[bool, Optional[str]]:
             with _running_lock:
                 _running_job_ids.discard(j["id"])
 
-    pool.submit(_run_and_release)
+    try:
+        pool.submit(_run_and_release)
+    except Exception:
+        with _running_lock:
+            _running_job_ids.discard(job["id"])
+        raise
     return True, None
     """
     Execute a single cron job.
@@ -2140,12 +2156,15 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 mark_job_run(job["id"], False, str(e))
                 return False
 
-        # Partition due jobs: those with a per-job workdir mutate
-        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global —
-        # so they MUST run sequentially to avoid corrupting each other.  Jobs
-        # without a workdir leave env untouched and stay parallel-safe.
-        sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        # Partition due jobs: jobs with a per-job workdir and/or profile touch
+        # process-global runtime state inside run_job. Workdir jobs temporarily
+        # set os.environ["TERMINAL_CWD"]; profile jobs use a context-local
+        # Hermes home override, scheduler _hermes_home hook, and temporary
+        # profile .env load into os.environ with snapshot/restore. They MUST run
+        # sequentially to avoid corrupting each other. Jobs without either field
+        # stay parallel-safe.
+        sequential_jobs = [j for j in due_jobs if _job_requires_sequential_pool(j)]
+        parallel_jobs = [j for j in due_jobs if not _job_requires_sequential_pool(j)]
 
         _results: list = []
         _all_futures: list = []
