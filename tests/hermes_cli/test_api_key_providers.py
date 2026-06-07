@@ -1225,6 +1225,102 @@ class TestNovitaProvider:
 
 
 # =============================================================================
+# Nebius Token Factory provider tests (added by feat/add-nebius-provider)
+# =============================================================================
+
+class TestNebiusProvider:
+    """Tests for Nebius Token Factory — an OpenAI-compatible LLM platform."""
+
+    def test_nebius_profile_loads(self):
+        from providers import get_provider_profile
+        profile = get_provider_profile("nebius")
+        assert profile is not None
+        assert profile.name == "nebius"
+        assert profile.display_name == "Nebius Token Factory"
+        assert profile.base_url == "https://api.tokenfactory.nebius.com/v1"
+        assert "NEBIUS_API_KEY" in profile.env_vars
+
+    def test_nebius_aliases(self):
+        from providers import get_provider_profile
+        profile = get_provider_profile("nebius")
+        assert "nebius-token-factory" in profile.aliases
+        assert "tokenfactory" in profile.aliases
+
+    def test_nebius_alias_resolves(self):
+        assert resolve_provider("nebius-token-factory") == "nebius"
+        assert resolve_provider("token-factory") == "nebius"
+        assert resolve_provider("tokenfactory") == "nebius"
+        assert resolve_provider("nebius-ai-studio") == "nebius"
+
+    def test_nebius_in_provider_registry(self):
+        """Auto-registration from ProviderProfile should expose Nebius."""
+        assert "nebius" in PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY["nebius"]
+        assert pconfig.auth_type == "api_key"
+        assert pconfig.id == "nebius"
+        assert pconfig.inference_base_url == "https://api.tokenfactory.nebius.com/v1"
+        assert pconfig.api_key_env_vars == ("NEBIUS_API_KEY",)
+        assert pconfig.base_url_env_var == "NEBIUS_BASE_URL"
+
+    def test_nebius_aliases_in_registry(self):
+        assert "nebius-token-factory" in PROVIDER_REGISTRY
+        assert "tokenfactory" in PROVIDER_REGISTRY
+
+    def test_main_provider_models_has_nebius(self):
+        from hermes_cli.main import _PROVIDER_MODELS
+        assert "nebius" in _PROVIDER_MODELS
+        assert len(_PROVIDER_MODELS["nebius"]) >= 1
+
+    def test_models_py_has_nebius(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "nebius" in _PROVIDER_MODELS
+        assert len(_PROVIDER_MODELS["nebius"]) >= 1
+
+    def test_nebius_model_lists_match(self):
+        """Model lists in main.py and models.py should be identical."""
+        from hermes_cli.main import _PROVIDER_MODELS as main_models
+        from hermes_cli.models import _PROVIDER_MODELS as models_models
+        assert main_models["nebius"] == models_models["nebius"]
+
+    def test_nebius_models_use_org_name_format(self):
+        """Nebius models should use org/name format (HuggingFace-style)."""
+        from hermes_cli.models import _PROVIDER_MODELS
+        for model in _PROVIDER_MODELS["nebius"]:
+            assert "/" in model, f"Nebius model {model!r} missing org/ prefix"
+
+    def test_nebius_aliases_in_models_py(self):
+        from hermes_cli.models import _PROVIDER_ALIASES
+        assert _PROVIDER_ALIASES.get("nebius-token-factory") == "nebius"
+        assert _PROVIDER_ALIASES.get("tokenfactory") == "nebius"
+
+    def test_nebius_label(self):
+        from hermes_cli.models import _PROVIDER_LABELS
+        assert "nebius" in _PROVIDER_LABELS
+        assert _PROVIDER_LABELS["nebius"] == "Nebius Token Factory"
+
+    def test_nebius_in_provider_prefixes(self):
+        from agent.model_metadata import _PROVIDER_PREFIXES
+        assert "nebius" in _PROVIDER_PREFIXES
+
+    def test_nebius_url_to_provider(self):
+        """Reverse hostname map is auto-derived from the provider profile."""
+        from agent.model_metadata import _URL_TO_PROVIDER
+        assert _URL_TO_PROVIDER.get("api.tokenfactory.nebius.com") == "nebius"
+
+    def test_nebius_in_models_dev_mapping(self):
+        """Nebius must be in PROVIDER_TO_MODELS_DEV (no identity fallback)."""
+        from agent.models_dev import PROVIDER_TO_MODELS_DEV
+        assert PROVIDER_TO_MODELS_DEV.get("nebius") == "nebius"
+
+    def test_nebius_overlay_transport(self):
+        """Overlay should route Nebius through the OpenAI chat transport."""
+        from hermes_cli.providers import HERMES_OVERLAYS
+        overlay = HERMES_OVERLAYS["nebius"]
+        assert overlay.transport == "openai_chat"
+        assert overlay.base_url_env_var == "NEBIUS_BASE_URL"
+
+
+# =============================================================================
 # MiniMax OAuth provider tests (added by feat/minimax-oauth-provider)
 # =============================================================================
 

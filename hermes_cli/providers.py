@@ -167,6 +167,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="NOVITA_BASE_URL",
     ),
+    # Nebius Token Factory — OpenAI-compatible; base_url comes from models.dev.
+    "nebius": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        base_url_env_var="NEBIUS_BASE_URL",
+    ),
     "xai": HermesOverlay(
         transport="codex_responses",
         base_url_override="https://api.x.ai/v1",
@@ -323,6 +329,12 @@ ALIASES: Dict[str, str] = {
     # novita
     "novita-ai": "novita",
     "novitaai": "novita",
+
+    # nebius (Token Factory)
+    "nebius-token-factory": "nebius",
+    "token-factory": "nebius",
+    "tokenfactory": "nebius",
+    "nebius-ai-studio": "nebius",
 
     # xiaomi
     "mimo": "xiaomi",
