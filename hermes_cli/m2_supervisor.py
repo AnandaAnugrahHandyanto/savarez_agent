@@ -39,22 +39,30 @@ DEFAULT_TIMEOUT = 300
 # ---------------------------------------------------------------------------
 def _real_spawn_capture(task, workspace: str, declared_leaves, *,
                         proxy_sock: str, timeout: int):
-    """실 워커 spawn: implementer.sbpl 샌드박스 + clean env + PROXY_SOCK.
+    """실 워커 spawn (R4 배선 완료): implementer.sbpl 샌드박스 + clean env + PROXY_SOCK.
 
-    **계약(Codex M2-R1 #2)**: 이 seam의 구현체는 반드시 워커를
-    start_new_session으로 띄우고, 종료/timeout 후 **killpg(reap)** 한 뒤에야
-    capture를 고정해야 한다. ``m2_spawn.run_and_capture`` 가 그 reap+capture를
-    이미 보장하며(killpg→capture 순서), capture_dir도 workspace 밖 0700
-    mkdtemp로 만든다. R4 배선은 이 함수에서 run_and_capture를 호출하도록 완성한다.
+    **계약(Codex M2-R1 #2)**: 워커를 start_new_session으로 띄우고, 종료/timeout 후
+    **killpg(reap)** 한 뒤에야 capture를 고정한다 — 이를 ``m2_spawn.run_and_capture``
+    가 보장(killpg→capture 순서 + ``reaped:True`` 마커, capture_dir=workspace 밖 0700).
+    이 함수는 ``m2_sandbox.build_implementer_cmd``로 sandbox-exec 명령(implementer.sbpl
+    6 파라미터 + clean env, credential 0, egress=PROXY_SOCK 하나)을 조립해 run_and_capture
+    에 넘긴다. SYNTH_ROOT(=workspace)에 워커 스크립트·합성 자료를 사전 배치한다.
 
-    R4(ARM) 배선 지점. R1에서는 호출되지 않는다(flag off). sandbox-exec +
-    프로파일 entry 바이너리 조립은 R4 승인 후 완성. 미배선이면 fail-closed.
+    **R4 범위**: mock 워커 + mock provider(proxy_ctx) + sanitized source. 실 LLM 워커·실
+    credential은 R5(별도 승인 — proxy_ctx의 provider_call 1지점만 교체). flag off면 애초에
+    ``_default_spawn``에서 입구거부되어 이 함수는 호출되지 않는다(이중 방어).
     """
-    raise NotImplementedError(
-        "real worker spawn is R4 (ARM) scope — the implementation MUST reap "
-        "(killpg) before capture, via m2_spawn.run_and_capture(..., timeout=timeout). "
-        "Inject spawn_capture_fn for tests; live dispatch is refused at "
-        "_default_spawn while implementer_enabled is off"
+    from hermes_cli import m2_sandbox, m2_spawn
+
+    leaves = list(declared_leaves)
+    # SYNTH_ROOT(=workspace) 준비: 워커 스크립트 복사 + 합성 자료(실데이터 0).
+    synth_root = m2_sandbox.prepare_synth_workspace(workspace)
+    cmd, env = m2_sandbox.build_implementer_cmd(
+        workspace, leaves, proxy_sock=proxy_sock, synth_root=synth_root,
+    )
+    # reap+capture+reaped 마커는 run_and_capture가 보장(F2/F3). 사전오염·symlink는 거기서 fail-closed.
+    return m2_spawn.run_and_capture(
+        cmd, env, timeout=timeout, declared_leaves=leaves, workspace=workspace,
     )
 
 
