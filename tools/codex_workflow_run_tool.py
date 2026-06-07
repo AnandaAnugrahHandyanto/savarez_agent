@@ -43,6 +43,7 @@ def _base(
     repo: Path | None = None,
     git_head: str | None = None,
     dirty: dict[str, Any] | None = None,
+    preflight: dict[str, Any] | None = None,
     codex_staged_result: dict[str, Any] | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
@@ -56,6 +57,7 @@ def _base(
             "cache_cleaned_paths": [],
             "isolated_worktree": None,
         },
+        "preflight": preflight,
         "codex_staged_result": codex_staged_result,
         "codex_packet_review": None,
     }
@@ -484,6 +486,77 @@ def _review_env() -> dict[str, str]:
     return env
 
 
+def _tool_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _codex_preflight(repo: Path) -> dict[str, Any]:
+    _ = repo
+    root = _tool_root()
+    workflow_path = _review_env().get("PATH", "")
+    checks = {
+        "impl_guard_exists": (root / "scripts" / "runtime" / "codex_impl_guard.py").is_file(),
+        "stage_runner_exists": (root / "scripts" / "runtime" / "codex_stage_runner.py").is_file(),
+        "review_guard_exists": (root / "scripts" / "runtime" / "codex_review_guard.py").is_file(),
+        "review_packet_exists": (root / "scripts" / "runtime" / "codex_review_packet.py").is_file(),
+        "codex_bin_found": shutil.which("codex-yuna", path=workflow_path) is not None,
+        "node_bin_found": shutil.which("node", path=workflow_path) is not None,
+        "sandbox_verified_env": os.environ.get("HERMES_CODEX_IMPL_GUARD_SANDBOX_VERIFIED") == "1",
+    }
+    blocker_codes = {
+        "impl_guard_exists": "missing_impl_guard",
+        "stage_runner_exists": "missing_stage_runner",
+        "review_guard_exists": "missing_review_guard",
+        "review_packet_exists": "missing_review_packet",
+        "codex_bin_found": "missing_codex_bin",
+        "node_bin_found": "missing_node_bin",
+        "sandbox_verified_env": "sandbox_not_verified",
+    }
+    blockers = [code for name, code in blocker_codes.items() if checks.get(name) is not True]
+    return {"status": "passed" if not blockers else "blocked", "checks": checks, "blockers": blockers}
+
+
+def _preflight_passed(preflight: dict[str, Any] | None) -> bool:
+    if not isinstance(preflight, dict) or preflight.get("status") != "passed":
+        return False
+    checks = preflight.get("checks")
+    blockers = preflight.get("blockers")
+    required_checks = {
+        "impl_guard_exists",
+        "stage_runner_exists",
+        "review_guard_exists",
+        "review_packet_exists",
+        "codex_bin_found",
+        "node_bin_found",
+        "sandbox_verified_env",
+    }
+    return (
+        isinstance(checks, dict)
+        and set(checks) == required_checks
+        and all(value is True for value in checks.values())
+        and blockers == []
+    )
+
+
+def _preflight_blocked_result(
+    *,
+    repo: Path,
+    git_head: str | None,
+    dirty: dict[str, Any],
+    preflight: dict[str, Any],
+) -> str:
+    return _json_result(
+        _base(
+            "preflight_blocked",
+            repo=repo,
+            git_head=git_head,
+            dirty=dirty,
+            preflight=preflight,
+            codex_packet_review=_packet_review_not_run("preflight_blocked"),
+        )
+    )
+
+
 def _run_packet_only_review(
     *,
     repo: Path,
@@ -492,7 +565,7 @@ def _run_packet_only_review(
     dirty_baseline_paths: list[str],
     staged_result: dict[str, Any],
 ) -> dict[str, Any]:
-    root = Path(__file__).resolve().parents[1]
+    root = _tool_root()
     packet_script = root / "scripts" / "runtime" / "codex_review_packet.py"
     guard_script = root / "scripts" / "runtime" / "codex_review_guard.py"
     review_dir = Path(tempfile.mkdtemp(prefix="codex-workflow-review-"))
@@ -636,6 +709,7 @@ def _finish_after_staged(
     repo: Path,
     git_head: str | None,
     initial_dirty: dict[str, Any],
+    preflight: dict[str, Any] | None,
     normalized: dict[str, Any],
     allowlist: dict[str, list[str]],
     staged_result: dict[str, Any],
@@ -646,6 +720,7 @@ def _finish_after_staged(
         repo=repo,
         git_head=git_head,
         dirty=initial_dirty,
+        preflight=preflight,
         codex_staged_result=staged_result,
     )
     if dirty_recovery_update:
@@ -800,6 +875,7 @@ def codex_workflow_run(args: dict[str, Any]) -> str:
     git_head = validated["git_head"]
     normalized = validated["normalized"]
     dirty = staged._dirty_check(repo)
+    preflight = _codex_preflight(repo)
 
     if validated["mode"] == "dry_run":
         return _json_result(
@@ -808,10 +884,14 @@ def codex_workflow_run(args: dict[str, Any]) -> str:
                 repo=repo,
                 git_head=git_head,
                 dirty=dirty,
+                preflight=preflight,
                 resolved_allowlist=validated["allowlist"],
-                would_call_staged=bool(dirty.get("is_clean")),
+                would_call_staged=bool(dirty.get("is_clean")) and _preflight_passed(preflight),
             )
         )
+
+    if not _preflight_passed(preflight):
+        return _preflight_blocked_result(repo=repo, git_head=git_head, dirty=dirty, preflight=preflight)
 
     if dirty.get("is_clean"):
         staged_result = _call_staged(normalized)
@@ -820,6 +900,7 @@ def codex_workflow_run(args: dict[str, Any]) -> str:
             repo=repo,
             git_head=git_head,
             initial_dirty=dirty,
+            preflight=preflight,
             normalized=normalized,
             allowlist=validated["allowlist"],
             staged_result=staged_result,
@@ -836,6 +917,7 @@ def codex_workflow_run(args: dict[str, Any]) -> str:
                 repo=repo,
                 git_head=git_head,
                 initial_dirty=dirty,
+                preflight=preflight,
                 normalized=normalized,
                 allowlist=validated["allowlist"],
                 staged_result=staged_result,
@@ -845,7 +927,7 @@ def codex_workflow_run(args: dict[str, Any]) -> str:
                     "post_cleanup_dirty_check": after,
                 },
             )
-        result = _base("dirty_recovery_required", repo=repo, git_head=git_head, dirty=dirty)
+        result = _base("dirty_recovery_required", repo=repo, git_head=git_head, dirty=dirty, preflight=preflight)
         result["dirty_recovery"].update(
             {
                 "strategy": "cache_cleanup_incomplete",
@@ -859,7 +941,7 @@ def codex_workflow_run(args: dict[str, Any]) -> str:
         try:
             worktree_info = _create_isolated_worktree(repo, stage_id=args.get("stage_id"), git_head=git_head)
         except Exception as exc:
-            result = _base("dirty_recovery_required", repo=repo, git_head=git_head, dirty=dirty)
+            result = _base("dirty_recovery_required", repo=repo, git_head=git_head, dirty=dirty, preflight=preflight)
             result["dirty_recovery"].update({"strategy": "isolated_worktree_failed", "error": str(exc)})
             return _json_result(result)
         isolated_args = dict(normalized)
@@ -870,13 +952,14 @@ def codex_workflow_run(args: dict[str, Any]) -> str:
             repo=Path(worktree_info["path"]),
             git_head=git_head,
             initial_dirty=dirty,
+            preflight=preflight,
             normalized=isolated_args,
             allowlist=validated["allowlist"],
             staged_result=staged_result,
             dirty_recovery_update={"strategy": "isolated_worktree", "isolated_worktree": worktree_info},
         )
 
-    result = _base("dirty_recovery_required", repo=repo, git_head=git_head, dirty=dirty)
+    result = _base("dirty_recovery_required", repo=repo, git_head=git_head, dirty=dirty, preflight=preflight)
     result["dirty_recovery"].update(staged._dirty_decision_metadata(dirty))
     return _json_result(result)
 
@@ -885,10 +968,10 @@ _SCHEMA = {
     "name": "codex_workflow_run",
     "description": (
         "High-level Hermes orchestrator for dirty worktree recovery before guarded Codex "
-        "candidate implementation. It validates repo, scope, and policies; may remove "
-        "cache-only dirty paths with standing authorization; may create an isolated clean "
-        "worktree with standing authorization; delegates to codex_staged_implement; then "
-        "runs bounded packet-only review for safe staged candidates."
+        "candidate implementation. It validates repo, scope, policies, and local Codex "
+        "workflow preflight; may remove cache-only dirty paths with standing authorization; "
+        "may create an isolated clean worktree with standing authorization; delegates to "
+        "codex_staged_implement; then runs bounded packet-only review for safe staged candidates."
     ),
     "parameters": {
         "type": "object",

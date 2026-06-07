@@ -2,6 +2,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 import toolsets
 from tools import codex_workflow_run_tool as workflow
 from tools.registry import registry
@@ -35,6 +37,206 @@ def _call(**kwargs):
     }
     defaults.update(kwargs)
     return json.loads(workflow.codex_workflow_run(defaults))
+
+
+def _preflight(status: str = "passed", *, blockers: list[str] | None = None) -> dict:
+    checks = {
+        "impl_guard_exists": True,
+        "stage_runner_exists": True,
+        "review_guard_exists": True,
+        "review_packet_exists": True,
+        "codex_bin_found": True,
+        "node_bin_found": True,
+        "sandbox_verified_env": True,
+    }
+    for blocker in blockers or []:
+        if blocker == "missing_codex_bin":
+            checks["codex_bin_found"] = False
+        elif blocker == "missing_node_bin":
+            checks["node_bin_found"] = False
+        elif blocker == "sandbox_not_verified":
+            checks["sandbox_verified_env"] = False
+    return {"status": status, "checks": checks, "blockers": blockers or []}
+
+
+@pytest.fixture(autouse=True)
+def _default_preflight_passed(monkeypatch, request):
+    if request.node.name.startswith("test_real_codex_preflight"):
+        return
+    monkeypatch.setattr(workflow, "_codex_preflight", lambda repo: _preflight(), raising=False)
+
+
+def test_real_codex_preflight_reports_bounded_blockers(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    monkeypatch.delenv("HERMES_CODEX_IMPL_GUARD_SANDBOX_VERIFIED", raising=False)
+    monkeypatch.setattr(
+        workflow.shutil,
+        "which",
+        lambda name, path=None: None if name == "codex-yuna" else "/tmp/fake-node",
+    )
+
+    result = workflow._codex_preflight(repo)
+    encoded = json.dumps(result)
+
+    assert result["status"] == "blocked"
+    assert result["checks"]["codex_bin_found"] is False
+    assert result["checks"]["node_bin_found"] is True
+    assert result["checks"]["sandbox_verified_env"] is False
+    assert "missing_codex_bin" in result["blockers"]
+    assert "sandbox_not_verified" in result["blockers"]
+    assert all(isinstance(value, bool) for value in result["checks"].values())
+    assert "PATH" not in encoded
+    assert "HERMES_CODEX_IMPL_GUARD_SANDBOX_VERIFIED" not in encoded
+    assert "/tmp/fake-node" not in encoded
+
+
+def test_preflight_passed_requires_consistent_checks_and_no_blockers():
+    assert workflow._preflight_passed(_preflight()) is True
+    assert workflow._preflight_passed(_preflight("blocked", blockers=["sandbox_not_verified"])) is False
+    assert workflow._preflight_passed({"status": "passed", "checks": {}, "blockers": []}) is False
+    assert workflow._preflight_passed({"status": "passed", "checks": {"codex_bin_found": False}, "blockers": []}) is False
+    assert workflow._preflight_passed({"status": "passed", "checks": {"codex_bin_found": True}, "blockers": ["x"]}) is False
+
+
+def test_preflight_blocked_clean_repo_does_not_call_staged(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    calls = []
+
+    def fake_staged(args):
+        calls.append(args)
+        raise AssertionError("blocked preflight must not call staged implementation")
+
+    monkeypatch.setattr(workflow, "_codex_preflight", lambda repo: _preflight("blocked", blockers=["sandbox_not_verified"]))
+    monkeypatch.setattr(workflow.staged, "codex_staged_implement", fake_staged)
+
+    result = _call(workdir=str(repo))
+
+    assert result["status"] == "preflight_blocked"
+    assert result["preflight"]["status"] == "blocked"
+    assert result["preflight"]["blockers"] == ["sandbox_not_verified"]
+    assert result["codex_staged_result"] is None
+    assert result["codex_packet_review"]["status"] == "not_run"
+    assert result["codex_packet_review"]["reason"] == "preflight_blocked"
+    assert calls == []
+
+
+def test_preflight_blocked_cache_dirty_does_not_clean_cache(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    cache_path = repo / ".pytest_cache" / "v" / "cache" / "nodeids"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("cached\n", encoding="utf-8")
+
+    monkeypatch.setattr(workflow, "_codex_preflight", lambda repo: _preflight("blocked", blockers=["missing_codex_bin"]))
+    monkeypatch.setattr(
+        workflow.staged,
+        "codex_staged_implement",
+        lambda args: (_ for _ in ()).throw(AssertionError("staged must not run")),
+    )
+
+    result = _call(workdir=str(repo), standing_authorization=True, auto_clean_cache=True)
+
+    assert result["status"] == "preflight_blocked"
+    assert cache_path.exists()
+    assert result["dirty_recovery"]["strategy"] == "none"
+
+
+def test_preflight_blocked_source_dirty_does_not_create_worktree(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    source_path = repo / "tools" / "dirty_tool.py"
+    source_path.parent.mkdir()
+    source_path.write_text("dirty\n", encoding="utf-8")
+    worktree_calls = []
+
+    def fake_create(*args, **kwargs):
+        worktree_calls.append((args, kwargs))
+        raise AssertionError("blocked preflight must not create isolated worktree")
+
+    monkeypatch.setattr(workflow, "_codex_preflight", lambda repo: _preflight("blocked", blockers=["sandbox_not_verified"]))
+    monkeypatch.setattr(workflow, "_create_isolated_worktree", fake_create)
+
+    result = _call(workdir=str(repo), standing_authorization=True, allow_isolated_worktree=True)
+
+    assert result["status"] == "preflight_blocked"
+    assert source_path.exists()
+    assert worktree_calls == []
+
+
+def test_preflight_blocked_checkpoint_does_not_commit(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    initial_head = _git(repo, "rev-parse", "HEAD")
+
+    monkeypatch.setattr(workflow, "_codex_preflight", lambda repo: _preflight("blocked", blockers=["sandbox_not_verified"]))
+    monkeypatch.setattr(
+        workflow.staged,
+        "codex_staged_implement",
+        lambda args: (_ for _ in ()).throw(AssertionError("staged must not run")),
+    )
+
+    result = _call(
+        workdir=str(repo),
+        standing_authorization=True,
+        checkpoint_verified_diff=True,
+        verification_evidence=_verified_evidence(repo),
+        checkpoint_message="should not commit",
+    )
+
+    assert result["status"] == "preflight_blocked"
+    assert _git(repo, "rev-parse", "HEAD") == initial_head
+
+
+def test_dry_run_reports_blocked_preflight_without_mutation(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+    cache_path = repo / ".pytest_cache" / "v" / "cache" / "nodeids"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("cached\n", encoding="utf-8")
+
+    monkeypatch.setattr(workflow, "_codex_preflight", lambda repo: _preflight("blocked", blockers=["missing_node_bin"]))
+    monkeypatch.setattr(
+        workflow,
+        "_run_packet_only_review",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("dry_run must not review")),
+        raising=False,
+    )
+
+    result = _call(
+        workdir=str(repo),
+        mode="dry_run",
+        standing_authorization=True,
+        auto_clean_cache=True,
+        allow_isolated_worktree=True,
+        checkpoint_verified_diff=True,
+    )
+
+    assert result["status"] == "dry_run"
+    assert result["preflight"]["status"] == "blocked"
+    assert result["codex_staged_result"] is None
+    assert result["codex_packet_review"] is None
+    assert cache_path.exists()
+
+
+def test_dry_run_passed_preflight_predicts_staged_without_mutation(tmp_path, monkeypatch):
+    repo = _clean_repo(tmp_path)
+
+    monkeypatch.setattr(
+        workflow.staged,
+        "codex_staged_implement",
+        lambda args: (_ for _ in ()).throw(AssertionError("dry_run must not call staged")),
+    )
+    monkeypatch.setattr(
+        workflow,
+        "_run_packet_only_review",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("dry_run must not review")),
+        raising=False,
+    )
+
+    result = _call(workdir=str(repo), mode="dry_run")
+
+    assert result["status"] == "dry_run"
+    assert result["preflight"]["status"] == "passed"
+    assert result["would_call_staged"] is True
+    assert result["codex_staged_result"] is None
+    assert result["codex_packet_review"] is None
 
 
 def test_clean_repo_calls_staged_implementation(tmp_path, monkeypatch):
@@ -526,6 +728,7 @@ def test_auto_packet_review_passes_ready_candidate(tmp_path, monkeypatch):
     result = _call(workdir=str(repo))
 
     assert result["status"] == "staged_reviewed"
+    assert result["preflight"]["status"] == "passed"
     assert result["codex_packet_review"]["status"] == "packet_only_passed"
     assert result["codex_packet_review"]["must_fix_count"] == 0
     assert result["leftover_candidate"]["requires_review"] is False
