@@ -12113,14 +12113,17 @@ class GatewayRunner:
             if not self._is_voice_bench_user_authorized(event.source):
                 return "Voice bench is restricted to an authorized user."
             parts = args.split()
+            bench_usage = "Usage: /voice bench [1-20|providers|xai|models]"
+            if len(parts) > 1 and parts[1] in {"providers", "provider", "xai", "models"}:
+                return await self._run_voice_provider_bench()
             limit = 5
             if len(parts) > 1:
                 try:
                     limit = int(parts[1])
                 except ValueError:
-                    return "Usage: /voice bench [1-20]"
+                    return bench_usage
                 if limit < 1 or limit > 20:
-                    return "Usage: /voice bench [1-20]"
+                    return bench_usage
             platform_name = str(getattr(platform, "value", platform) or "")
             return await asyncio.to_thread(
                 _voice_bench_format_recent,
@@ -12299,6 +12302,234 @@ class GatewayRunner:
         if proc.returncode not in (0, None) and payload.get("passed"):
             summary += f"\nWarning: smoke exited {proc.returncode}"
         return summary
+
+    @staticmethod
+    def _format_voice_provider_bench_result(metrics: dict[str, Any]) -> str:
+        """Render a compact Telegram-safe summary for provider probes."""
+        passed = bool(metrics.get("passed"))
+        lines = [f"Voice provider bench {'PASS' if passed else 'FAIL'}"]
+        if metrics.get("error"):
+            error = _redact_gateway_user_facing_secrets(str(metrics.get("error")))
+            lines.append(f"Error: {error[:180]}")
+        results = metrics.get("results") if isinstance(metrics.get("results"), list) else []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "provider").strip()
+            provider = str(item.get("provider") or "?").strip()
+            status = str(item.get("status") or "warn").strip()
+            elapsed = item.get("elapsed_ms")
+            elapsed_text = f"{elapsed:.0f}ms" if isinstance(elapsed, (int, float)) else "?ms"
+            line = f"- {name} ({provider}): {status} {elapsed_text}"
+            transcript = str(item.get("transcript") or "").strip()
+            if transcript:
+                transcript = _redact_gateway_user_facing_secrets(transcript)
+                line += f" text={transcript[:80]}"
+            byte_count = item.get("bytes")
+            if isinstance(byte_count, int):
+                line += f" bytes={byte_count}"
+            if item.get("error"):
+                error = _redact_gateway_user_facing_secrets(str(item.get("error")))
+                line += f" error={error[:100]}"
+            lines.append(line)
+        artifact_dir = str(metrics.get("artifact_dir") or "").strip()
+        if artifact_dir:
+            lines.append(f"Artifacts: {os.path.basename(artifact_dir)}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _run_voice_provider_bench_sync(artifact_dir: Path) -> dict[str, Any]:
+        """Run STT/TTS provider probes without mutating Hermes config."""
+        artifact_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with contextlib.suppress(OSError):
+            artifact_dir.chmod(0o700)
+
+        prompt_text = os.environ.get("HERMES_VOICE_PROVIDER_BENCH_TEXT", "Test OK.").strip() or "Test OK."
+        results: list[dict[str, Any]] = []
+        sample_audio: Path | None = None
+
+        def record(
+            *,
+            name: str,
+            provider: str,
+            status: str,
+            elapsed_ms: float,
+            transcript: str | None = None,
+            byte_count: int | None = None,
+            error: str | None = None,
+        ) -> None:
+            item: dict[str, Any] = {
+                "name": name,
+                "provider": provider,
+                "status": status,
+                "elapsed_ms": round(elapsed_ms, 1),
+            }
+            if transcript:
+                item["transcript"] = transcript
+            if isinstance(byte_count, int):
+                item["bytes"] = byte_count
+            if error:
+                item["error"] = error
+            results.append(item)
+
+        def elapsed_since(start: float) -> float:
+            return (time.perf_counter() - start) * 1000
+
+        start = time.perf_counter()
+        try:
+            from tools.tts_tool import _generate_xai_tts
+
+            xai_tts_path = artifact_dir / "xai-tts.mp3"
+            _generate_xai_tts(
+                prompt_text,
+                str(xai_tts_path),
+                {
+                    "xai": {
+                        "voice_id": os.environ.get("HERMES_XAI_TTS_VOICE", "leo"),
+                        "language": os.environ.get("HERMES_XAI_TTS_LANGUAGE", "en"),
+                    }
+                },
+            )
+            sample_audio = xai_tts_path
+            record(
+                name="xAI TTS",
+                provider="xai",
+                status="ok",
+                elapsed_ms=elapsed_since(start),
+                byte_count=xai_tts_path.stat().st_size,
+            )
+        except Exception as exc:
+            record(
+                name="xAI TTS",
+                provider="xai",
+                status="warn",
+                elapsed_ms=elapsed_since(start),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+        start = time.perf_counter()
+        try:
+            from tools.tts_tool import _get_provider as _get_tts_provider
+            from tools.tts_tool import _load_tts_config, text_to_speech_tool
+
+            tts_config = _load_tts_config()
+            current_provider = _get_tts_provider(tts_config)
+            current_tts_path = artifact_dir / "current-tts.mp3"
+            raw = text_to_speech_tool(prompt_text, output_path=str(current_tts_path))
+            elapsed_ms = elapsed_since(start)
+            payload = json.loads(raw) if isinstance(raw, str) else {}
+            if payload.get("success"):
+                written = Path(str(payload.get("file_path") or current_tts_path)).expanduser()
+                record(
+                    name="current TTS",
+                    provider=current_provider,
+                    status="ok",
+                    elapsed_ms=elapsed_ms,
+                    byte_count=written.stat().st_size if written.exists() else None,
+                )
+            else:
+                record(
+                    name="current TTS",
+                    provider=current_provider,
+                    status="warn",
+                    elapsed_ms=elapsed_ms,
+                    error=str(payload.get("error") or raw)[:300],
+                )
+        except Exception as exc:
+            record(
+                name="current TTS",
+                provider="current",
+                status="warn",
+                elapsed_ms=elapsed_since(start),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+        start = time.perf_counter()
+        try:
+            from tools.transcription_tools import _get_provider as _get_stt_provider
+            from tools.transcription_tools import _load_stt_config, transcribe_audio
+
+            stt_config = _load_stt_config()
+            current_provider = _get_stt_provider(stt_config)
+            if sample_audio is None:
+                raise RuntimeError("xAI TTS sample audio unavailable")
+            stt_result = transcribe_audio(str(sample_audio))
+            record(
+                name="current STT",
+                provider=str(stt_result.get("provider") or current_provider),
+                status="ok" if stt_result.get("success") else "warn",
+                elapsed_ms=elapsed_since(start),
+                transcript=str(stt_result.get("transcript") or ""),
+                error=None if stt_result.get("success") else str(stt_result.get("error") or "unknown"),
+            )
+        except Exception as exc:
+            record(
+                name="current STT",
+                provider="current",
+                status="warn",
+                elapsed_ms=elapsed_since(start),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+        start = time.perf_counter()
+        try:
+            from tools.transcription_tools import _transcribe_xai
+
+            if sample_audio is None:
+                raise RuntimeError("xAI TTS sample audio unavailable")
+            xai_stt_result = _transcribe_xai(str(sample_audio), "grok-stt")
+            record(
+                name="xAI STT",
+                provider="xai",
+                status="ok" if xai_stt_result.get("success") else "warn",
+                elapsed_ms=elapsed_since(start),
+                transcript=str(xai_stt_result.get("transcript") or ""),
+                error=None if xai_stt_result.get("success") else str(xai_stt_result.get("error") or "unknown"),
+            )
+        except Exception as exc:
+            record(
+                name="xAI STT",
+                provider="xai",
+                status="warn",
+                elapsed_ms=elapsed_since(start),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+        return {
+            "passed": all(item.get("status") == "ok" for item in results),
+            "artifact_dir": str(artifact_dir),
+            "results": results,
+        }
+
+    async def _run_voice_provider_bench(self) -> str:
+        """Run benchmark-only voice provider probes and return a chat summary."""
+        output_root = Path.home() / ".hermes" / "voice-provider-bench"
+        artifact_dir = output_root / datetime.now().strftime("%Y%m%dT%H%M%S")
+        try:
+            timeout = float(os.environ.get("HERMES_VOICE_PROVIDER_BENCH_TIMEOUT", "90"))
+        except ValueError:
+            timeout = 90.0
+        timeout = max(10.0, min(timeout, 180.0))
+        try:
+            payload = await asyncio.wait_for(
+                asyncio.to_thread(self._run_voice_provider_bench_sync, artifact_dir),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            payload = {
+                "passed": False,
+                "artifact_dir": str(artifact_dir),
+                "error": f"timed out after {timeout:.0f}s",
+                "results": [],
+            }
+        except Exception as exc:
+            payload = {
+                "passed": False,
+                "artifact_dir": str(artifact_dir),
+                "error": f"{type(exc).__name__}: {exc}",
+                "results": [],
+            }
+        return self._format_voice_provider_bench_result(payload)
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""

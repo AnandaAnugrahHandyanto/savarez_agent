@@ -176,6 +176,47 @@ class TestHandleVoiceCommand:
         assert runner._voice_mode == {}
 
     @pytest.mark.asyncio
+    async def test_voice_bench_providers_runs_probe_without_toggling_mode(self, runner, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "user1")
+        runner._run_voice_provider_bench = AsyncMock(return_value="provider bench ok")
+        event = _make_event("/voice bench providers")
+
+        result = await runner._handle_voice_command(event)
+
+        assert result == "provider bench ok"
+        assert runner._voice_mode == {}
+        runner._run_voice_provider_bench.assert_awaited_once()
+
+    def test_voice_provider_bench_formatter_reports_provider_timings(self, runner):
+        result = runner._format_voice_provider_bench_result(
+            {
+                "passed": True,
+                "artifact_dir": "/home/pafi/.hermes/voice-provider-bench/run",
+                "results": [
+                    {
+                        "name": "current STT",
+                        "status": "ok",
+                        "provider": "groq",
+                        "elapsed_ms": 238.4,
+                        "transcript": "Test, okay.",
+                    },
+                    {
+                        "name": "xAI TTS",
+                        "status": "ok",
+                        "provider": "xai",
+                        "elapsed_ms": 911.2,
+                        "bytes": 9792,
+                    },
+                ],
+            }
+        )
+
+        assert "Voice provider bench PASS" in result
+        assert "- current STT (groq): ok 238ms text=Test, okay." in result
+        assert "- xAI TTS (xai): ok 911ms bytes=9792" in result
+        assert "Artifacts: run" in result
+
+    @pytest.mark.asyncio
     async def test_voice_bench_rejects_group_chat_allowlist_without_user(self, runner, monkeypatch):
         monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
         monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
@@ -215,7 +256,7 @@ class TestHandleVoiceCommand:
 
         result = await runner._handle_voice_command(event)
 
-        assert result == "Usage: /voice bench [1-20]"
+        assert result == "Usage: /voice bench [1-20|providers|xai|models]"
 
     @pytest.mark.asyncio
     async def test_voice_bench_rejects_out_of_range_limit(self, runner, monkeypatch):
@@ -224,7 +265,7 @@ class TestHandleVoiceCommand:
 
         result = await runner._handle_voice_command(event)
 
-        assert result == "Usage: /voice bench [1-20]"
+        assert result == "Usage: /voice bench [1-20|providers|xai|models]"
 
     @pytest.mark.asyncio
     async def test_toggle_off_to_on(self, runner):
