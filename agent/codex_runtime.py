@@ -431,7 +431,23 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     import httpx as _httpx
 
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
-    max_stream_retries = 1
+    # Stream retries. Bumped from 1 → 3 because Copilot's Responses API
+    # closes the streaming socket with EPIPE / RemoteProtocolError when the
+    # server-side reasoning step takes longer than the proxy's idle timeout
+    # on large prompts + high reasoning_effort. Empirically: 12 KB prompt +
+    # gpt-5.5 + xhigh reasoning hits this in ~30 % of calls. One retry was
+    # not enough — three matches chat_completions' default and ~halves the
+    # failure rate again (the second retry usually catches a transient slow
+    # path; the third is for cold-start variance). See HERMES_CODEX_STREAM_RETRIES
+    # to override at runtime.
+    import os as _os
+    try:
+        max_stream_retries = max(
+            0,
+            int(_os.environ.get("HERMES_CODEX_STREAM_RETRIES", "3")),
+        )
+    except (TypeError, ValueError):
+        max_stream_retries = 3
     # Accumulate streamed text so callers / compat shims can read it.
     agent._codex_streamed_text_parts: list = []
 
@@ -459,7 +475,22 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
 
         try:
             event_stream = active_client.responses.create(**stream_kwargs)
-        except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
+        except (
+            _httpx.RemoteProtocolError,
+            _httpx.ReadTimeout,
+            _httpx.ConnectError,
+            ConnectionError,
+            # BrokenPipeError (Errno 32 / EPIPE) is an OSError, NOT a
+            # ConnectionError subclass — it bypassed this handler before the
+            # fix, surfacing as "API call failed after 3 retries: [Errno 32]
+            # Broken pipe" from the outer retry loop. Copilot's Responses API
+            # raises this on large-prompt + high-effort timeouts when the
+            # proxy closes the upstream socket while the server is still
+            # generating reasoning tokens. Including BrokenPipeError +
+            # OSError here lets the stream retry catch it instead.
+            BrokenPipeError,
+            OSError,
+        ) as exc:
             if attempt < max_stream_retries:
                 logger.debug(
                     "Codex Responses stream connect failed (attempt %s/%s); retrying. %s error=%s",
@@ -485,7 +516,17 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     on_event=_on_event,
                     interrupt_check=_interrupt_check,
                 )
-            except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
+            except (
+                _httpx.RemoteProtocolError,
+                _httpx.ReadTimeout,
+                _httpx.ConnectError,
+                ConnectionError,
+                # Same EPIPE / OSError catch as the connect-time handler
+                # above: BrokenPipeError can fire mid-stream too when the
+                # server times out partway through the SSE response.
+                BrokenPipeError,
+                OSError,
+            ) as exc:
                 if attempt < max_stream_retries:
                     logger.debug(
                         "Codex Responses stream transport failed mid-iteration "
