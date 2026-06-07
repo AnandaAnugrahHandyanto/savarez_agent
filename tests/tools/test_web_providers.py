@@ -177,7 +177,7 @@ class TestPerCapabilityBackendSelection:
         monkeypatch.setenv("PARALLEL_API_KEY", "test-key")
         assert web_tools._get_extract_backend() == "parallel"
 
-    def test_search_backend_ignored_when_not_available(self, monkeypatch):
+    def test_search_backend_selected_even_when_not_available(self, monkeypatch):
         from tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
@@ -185,9 +185,33 @@ class TestPerCapabilityBackendSelection:
             "search_backend": "exa",  # set but no EXA_API_KEY
         })
         monkeypatch.delenv("EXA_API_KEY", raising=False)
-        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-key")
-        # Should fall back to firecrawl since exa isn't configured
-        assert web_tools._get_search_backend() == "firecrawl"
+
+        # Explicit per-capability config wins so the user gets a precise
+        # credential/setup error for the backend they selected.
+        assert web_tools._get_search_backend() == "exa"
+
+    def test_search_backend_accepts_xai_override(self, monkeypatch):
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
+            "backend": "firecrawl",
+            "search_backend": "xai",
+        })
+
+        assert web_tools._get_search_backend() == "xai"
+
+    def test_search_only_backend_does_not_enable_extract(self, monkeypatch):
+        from tools import web_tools
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
+            "backend": "brave-search",
+            "search_backend": "",
+            "extract_backend": "",
+        })
+        monkeypatch.setenv("BRAVE_API_KEY", "test-key")
+
+        assert web_tools.check_web_api_key() is True
+        assert web_tools.check_web_extract_api_key() is False
 
     def test_fully_backward_compatible_with_web_backend_only(self, monkeypatch):
         from tools import web_tools

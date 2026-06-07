@@ -141,6 +141,24 @@ def _check_fn_cached(fn: Callable) -> bool:
     return value
 
 
+def _any_available_check(*checks: Callable) -> Callable:
+    """Return a check_fn that passes when any constituent check passes."""
+
+    flattened: List[Callable] = []
+    for check in checks:
+        nested = getattr(check, "_toolset_checks", None)
+        if nested:
+            flattened.extend(nested)
+        else:
+            flattened.append(check)
+
+    def combined() -> bool:
+        return any(_check_fn_cached(check) for check in flattened)
+
+    combined._toolset_checks = tuple(flattened)  # type: ignore[attr-defined]
+    return combined
+
+
 def invalidate_check_fn_cache() -> None:
     """Drop all cached ``check_fn`` results. Call after config changes that
     affect tool availability (e.g. ``hermes tools enable``)."""
@@ -178,6 +196,19 @@ class ToolRegistry:
     def _snapshot_toolset_checks(self) -> Dict[str, Callable]:
         """Return a stable snapshot of toolset availability checks."""
         return self._snapshot_state()[1]
+
+    def _rebuild_toolset_check_locked(self, toolset: str) -> None:
+        """Recompute one toolset check from the currently registered entries."""
+        checks = [
+            entry.check_fn for entry in self._tools.values()
+            if entry.toolset == toolset and entry.check_fn is not None
+        ]
+        if not checks:
+            self._toolset_checks.pop(toolset, None)
+        elif len(checks) == 1:
+            self._toolset_checks[toolset] = checks[0]
+        else:
+            self._toolset_checks[toolset] = _any_available_check(*checks)
 
     def _evaluate_toolset_check(self, toolset: str, check: Callable | None) -> bool:
         """Run a toolset check, treating missing or failing checks as unavailable/available."""
@@ -300,8 +331,7 @@ class ToolRegistry:
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
             )
-            if check_fn and toolset not in self._toolset_checks:
-                self._toolset_checks[toolset] = check_fn
+            self._rebuild_toolset_check_locked(toolset)
             self._generation += 1
 
     def deregister(self, name: str) -> None:
@@ -327,6 +357,8 @@ class ToolRegistry:
                     for alias, target in self._toolset_aliases.items()
                     if target != entry.toolset
                 }
+            else:
+                self._rebuild_toolset_check_locked(entry.toolset)
             self._generation += 1
         logger.debug("Deregistered tool: %s", name)
 
