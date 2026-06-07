@@ -667,14 +667,26 @@ def run_conversation(
             )
             # May need multiple passes for very large sessions with small
             # context windows (each pass summarises the middle N turns).
+            _tokens_before = _preflight_tokens
             for _pass in range(3):
                 _orig_len = len(messages)
                 messages, active_system_prompt = agent._compress_context(
                     messages, system_message, approx_tokens=_preflight_tokens,
                     task_id=effective_task_id,
                 )
-                if len(messages) >= _orig_len:
+                # Re-estimate tokens after compression so we can detect
+                # token reduction even when message count stays the same
+                _preflight_tokens = estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=active_system_prompt or "",
+                    tools=agent.tools or None,
+                )
+                # Determine if we made progress: either fewer messages or fewer tokens
+                progress_made = (len(messages) < _orig_len) or (_preflight_tokens < _tokens_before)
+                if not progress_made:
                     break  # Cannot compress further
+                # Update baseline for next pass
+                _tokens_before = _preflight_tokens
                 # Compression created a new session — clear the history
                 # reference so _flush_messages_to_session_db writes ALL
                 # compressed messages to the new session's SQLite, not
@@ -691,12 +703,6 @@ def run_conversation(
                 agent._last_content_with_tools = None
                 agent._last_content_tools_all_housekeeping = False
                 agent._mute_post_response = False
-                # Re-estimate after compression
-                _preflight_tokens = estimate_request_tokens_rough(
-                    messages,
-                    system_prompt=active_system_prompt or "",
-                    tools=agent.tools or None,
-                )
                 if not _compressor.should_compress(_preflight_tokens):
                     break  # Under threshold or anti-thrash guard stopped it
 
