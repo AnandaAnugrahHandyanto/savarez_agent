@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+import os
+from typing import Any, Optional
 
 
 def _normalized_base_url(value: Any) -> str:
@@ -46,6 +47,55 @@ def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
         str(entry.get("model") or "").strip().lower(),
         _normalized_base_url(entry.get("base_url")).lower(),
     )
+
+
+def resolve_explicit_api_key_for_fallback(
+    entry: dict[str, Any] | None,
+) -> Optional[str]:
+    """Return the api_key string that should be forwarded to
+    ``resolve_runtime_provider`` for a single fallback entry.
+
+    Honors three sources, in order:
+
+    1. Inline ``api_key`` on the entry (raw secret pasted into config.yaml).
+    2. Env var named by ``api_key_env`` (Hermes' documented form, matches
+       the Azure Foundry / custom_providers guides).
+    3. Env var named by ``key_env`` (the canonical field name on
+       ``custom_providers`` — accepted for parity so an operator can copy
+       a custom_providers block straight into ``fallback_providers``
+       without renaming the key).
+
+    Env vars are looked up via :func:`hermes_cli.config.get_env_value` so
+    values persisted in ``~/.hermes/.env`` (the per-profile dotenv) are
+    honored alongside the live environment. Falls back to ``os.getenv``
+    if that import path explodes (matches the rest of the runtime
+    provider resolution: never fail closed just because an optional
+    import didn't work).
+
+    Returns ``None`` when nothing is configured or the named env var is
+    unset / empty — the caller (typically the fallback loop in
+    ``cli.py`` or ``gateway/run.py``) should then let
+    ``resolve_runtime_provider`` perform its own credential-pool /
+    env-var lookups.
+    """
+    if not isinstance(entry, dict):
+        return None
+    inline = entry.get("api_key")
+    if isinstance(inline, str) and inline.strip():
+        return inline.strip()
+    for hint_key in ("api_key_env", "key_env"):
+        env_name = str(entry.get(hint_key) or "").strip()
+        if not env_name:
+            continue
+        value = None
+        try:
+            from hermes_cli.config import get_env_value
+            value = get_env_value(env_name)
+        except Exception:
+            value = os.getenv(env_name)
+        if value and value.strip():
+            return value.strip()
+    return None
 
 
 def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
