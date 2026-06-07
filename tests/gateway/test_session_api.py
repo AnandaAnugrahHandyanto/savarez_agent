@@ -86,8 +86,8 @@ async def test_session_crud_and_message_history(adapter, session_db):
         assert created["object"] == "hermes.session"
         assert created["session"]["title"] == "Mobile chat"
 
-        session_db.append_message(session_id, "user", "hello from phone")
-        session_db.append_message(session_id, "assistant", "hello from hermes")
+        session_db.append_message(session_id, "user", "hello from phone", timestamp=1710000000.25)
+        session_db.append_message(session_id, "assistant", "hello from hermes", timestamp=1710000001.5)
 
         list_resp = await cli.get("/api/sessions?limit=10&offset=0")
         assert list_resp.status == 200
@@ -108,6 +108,8 @@ async def test_session_crud_and_message_history(adapter, session_db):
         assert messages["object"] == "list"
         assert [m["role"] for m in messages["data"]] == ["user", "assistant"]
         assert messages["data"][0]["content"] == "hello from phone"
+        assert messages["data"][0]["timestamp"] == 1710000000.25
+        assert messages["data"][1]["timestamp"] == 1710000001.5
 
         patch_resp = await cli.patch(f"/api/sessions/{session_id}", json={"title": "Renamed"})
         assert patch_resp.status == 200

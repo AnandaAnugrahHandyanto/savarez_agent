@@ -2959,13 +2959,16 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             tc_info = tool_call_args.get(tc_id) if tc_id else None
             name = (tc_info[0] if tc_info else None) or m.get("tool_name") or "tool"
             args = (tc_info[1] if tc_info else None) or {}
-            messages.append(
-                {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
-            )
+            msg = {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
+            if m.get("timestamp") is not None:
+                msg["timestamp"] = m.get("timestamp")
+            messages.append(msg)
             continue
         if not content_text.strip():
             continue
         msg = {"role": role, "text": content_text}
+        if m.get("timestamp") is not None:
+            msg["timestamp"] = m.get("timestamp")
         if role == "assistant":
             for key in (
                 "reasoning",
