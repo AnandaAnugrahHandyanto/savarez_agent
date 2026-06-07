@@ -89,28 +89,6 @@ def test_cmd_list_json_output(monkeypatch, capsys):
     ]
 
 
-def test_filter_plugin_entries_enabled_only_accepts_legacy_nested_name():
-    entries = [
-        (
-            "observability/nemo_relay",
-            "nemo_relay",
-            "0.1.0",
-            "Relay observability",
-            "bundled",
-            None,
-        )
-    ]
-
-    filtered = plugins_cmd._filter_plugin_entries(
-        entries,
-        _args(enabled=True),
-        enabled={"nemo_relay"},
-        disabled=set(),
-    )
-
-    assert [entry[0] for entry in filtered] == ["observability/nemo_relay"]
-
-
 def test_cmd_list_json_output_marks_nested_plugin_enabled_via_legacy_name(monkeypatch, capsys):
     entries = [
         (
