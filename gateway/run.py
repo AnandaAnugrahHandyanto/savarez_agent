@@ -7329,7 +7329,7 @@ class GatewayRunner:
 
         # Check for an explicit global config override.
         if config and hasattr(config, "unauthorized_dm_behavior"):
-            if config.unauthorized_dm_behavior != "pair":  # non-default → explicit override
+            if config.has_explicit_global_unauthorized_dm_behavior():
                 return config.unauthorized_dm_behavior
 
         # Config-driven dm_policy (WeCom / Weixin / Yuanbao / QQBot). An
