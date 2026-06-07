@@ -699,3 +699,9 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+
+
+def test_web_requires_env_includes_serper_key():
+    from tools.web_tools import _web_requires_env
+
+    assert "SERPER_API_KEY" in _web_requires_env()
