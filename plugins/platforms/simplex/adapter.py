@@ -159,22 +159,37 @@ class SimplexAdapter(BasePlatformAdapter):
             logger.error("SimpleX: SIMPLEX_WS_URL is required")
             return False
 
-        # Quick connectivity check — try to open and immediately close
+        # Acquire scoped lock to prevent duplicate SimpleX listeners for the
+        # same daemon URL (two gateways would each dispatch every inbound
+        # message, causing duplicate agent turns).
+        lock_acquired = False
         try:
-            import websockets as _wsclient
-            async with _wsclient.connect(self.ws_url, open_timeout=10):
-                pass
+            if not self._acquire_platform_lock("simplex-ws", self.ws_url, "SimpleX daemon URL"):
+                return False
+            lock_acquired = True
         except Exception as e:
-            logger.error("SimpleX: cannot reach daemon at %s: %s", self.ws_url, e)
-            return False
+            logger.warning("SimpleX: Could not acquire daemon URL lock (non-fatal): %s", e)
 
-        self._running = True
-        self._last_ws_activity = time.time()
-        self._ws_task = asyncio.create_task(self._ws_listener())
-        self._health_task = asyncio.create_task(self._health_monitor())
+        try:
+            # Quick connectivity check — try to open and immediately close
+            try:
+                import websockets as _wsclient
+                async with _wsclient.connect(self.ws_url, open_timeout=10):
+                    pass
+            except Exception as e:
+                logger.error("SimpleX: cannot reach daemon at %s: %s", self.ws_url, e)
+                return False
 
-        logger.info("SimpleX: connected to %s", self.ws_url)
-        return True
+            self._running = True
+            self._last_ws_activity = time.time()
+            self._ws_task = asyncio.create_task(self._ws_listener())
+            self._health_task = asyncio.create_task(self._health_monitor())
+
+            logger.info("SimpleX: connected to %s", self.ws_url)
+            return True
+        finally:
+            if not self._running and lock_acquired:
+                self._release_platform_lock()
 
     async def disconnect(self) -> None:
         """Stop WebSocket listener and clean up."""
@@ -204,6 +219,8 @@ class SimplexAdapter(BasePlatformAdapter):
             except Exception:
                 pass
             self._ws = None
+
+        self._release_platform_lock()
 
         logger.info("SimpleX: disconnected")
 
