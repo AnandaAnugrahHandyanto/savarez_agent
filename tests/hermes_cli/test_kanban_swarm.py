@@ -115,3 +115,56 @@ def test_swarm_verifier_and_synthesis_are_dependency_gated(tmp_path):
         assert kb.get_task(conn, created.synthesizer_id).status == "ready"
     finally:
         conn.close()
+
+
+def test_create_swarm_propagates_session_id_to_every_card(tmp_path):
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        created = create_swarm(
+            conn,
+            goal="Run a session-scoped swarm.",
+            workers=[SwarmWorkerSpec(profile="researcher", title="Evidence", body="Find proof")],
+            verifier_assignee="reviewer",
+            synthesizer_assignee="writer",
+            session_id="gateway-session-123",
+        )
+
+        for task_id in [
+            created.root_id,
+            *created.worker_ids,
+            created.verifier_id,
+            created.synthesizer_id,
+        ]:
+            assert kb.get_task(conn, task_id).session_id == "gateway-session-123"
+    finally:
+        conn.close()
+
+
+def test_create_swarm_refuses_idempotency_key_owned_by_non_swarm_task(tmp_path):
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        existing = kb.create_task(
+            conn,
+            title="ordinary idempotent task",
+            assignee="worker",
+            idempotency_key="shared-key",
+        )
+
+        try:
+            create_swarm(
+                conn,
+                goal="Should not mutate the ordinary task.",
+                workers=[SwarmWorkerSpec(profile="researcher", title="Evidence", body="Find proof")],
+                verifier_assignee="reviewer",
+                synthesizer_assignee="writer",
+                idempotency_key="shared-key",
+            )
+        except ValueError as exc:
+            assert "idempotency_key already belongs to non-swarm task" in str(exc)
+        else:  # pragma: no cover - test should fail before this branch
+            raise AssertionError("expected non-swarm idempotency collision to fail")
+
+        assert kb.get_task(conn, existing).status == "ready"
+        assert kb.child_ids(conn, existing) == []
+    finally:
+        conn.close()
