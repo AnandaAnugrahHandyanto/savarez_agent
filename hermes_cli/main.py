@@ -2798,6 +2798,8 @@ def select_provider_and_model(args=None):
         _model_flow_minimax_oauth(config, current_model, args=args)
     elif selected_provider == "google-gemini-cli":
         _model_flow_google_gemini_cli(config, current_model)
+    elif selected_provider == "claude-code":
+        _model_flow_claude_code(config, current_model)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
     elif selected_provider == "copilot":
@@ -5242,6 +5244,73 @@ def _model_flow_copilot(config, current_model=""):
                 print(f"Reasoning effort set to: {selected_effort}")
     else:
         print("No change.")
+
+
+def _model_flow_claude_code(config, current_model=""):
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        deactivate_provider,
+        get_external_process_provider_status,
+        resolve_external_process_provider_credentials,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS, _prompt_model_selection, _save_model_choice
+    from hermes_cli.config import load_config, save_config
+
+    del config
+
+    provider_id = "claude-code"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+
+    status = get_external_process_provider_status(provider_id)
+    resolved_command = (
+        status.get("resolved_command") or status.get("command") or "claude"
+    )
+    effective_base = status.get("base_url") or pconfig.inference_base_url
+
+    print("  Claude Code CLI delegates Hermes turns to the installed `claude -p` command.")
+    print("  Hermes uses Claude Code's native auth, model access, and CLI harness.")
+    print("  Hermes disables Claude Code's own tools and routes actions through Hermes tools.")
+    print(f"  Command: {resolved_command}")
+    print(f"  Backend marker: {effective_base}")
+    print()
+
+    try:
+        creds = resolve_external_process_provider_credentials(provider_id)
+    except Exception as exc:
+        print(f"  ⚠ {exc}")
+        print(
+            "  Set HERMES_CLAUDE_CODE_COMMAND or CLAUDE_CODE_CLI_PATH if Claude Code is installed elsewhere."
+        )
+        return
+
+    effective_base = creds.get("base_url") or effective_base
+    model_list = _PROVIDER_MODELS.get(provider_id, [])
+    if model_list:
+        selected = _prompt_model_selection(model_list, current_model=current_model)
+    else:
+        try:
+            selected = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if not selected:
+        print("No change.")
+        return
+
+    _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = effective_base
+    model["api_mode"] = "chat_completions"
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Default model set to: {selected} (via {pconfig.name})")
 
 
 def _model_flow_copilot_acp(config, current_model=""):

@@ -30,6 +30,7 @@ class TestProviderRegistry:
 
     @pytest.mark.parametrize("provider_id,name,auth_type", [
         ("copilot-acp", "GitHub Copilot ACP", "external_process"),
+        ("claude-code", "Claude Code CLI", "external_process"),
         ("copilot", "GitHub Copilot", "api_key"),
         ("huggingface", "Hugging Face", "api_key"),
         ("zai", "Z.AI / GLM", "api_key"),
@@ -373,6 +374,19 @@ class TestApiKeyProviderStatus:
         assert status["args"] == ["--acp", "--stdio", "--debug"]
         assert status["base_url"] == "acp://copilot"
 
+    def test_claude_code_status_detects_local_cli(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CLAUDE_CODE_ARGS", "--print --output-format json --model sonnet")
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+        status = get_external_process_provider_status("claude-code")
+
+        assert status["configured"] is True
+        assert status["logged_in"] is True
+        assert status["command"] == "claude"
+        assert status["resolved_command"] == "/usr/local/bin/claude"
+        assert status["args"] == ["--print", "--output-format", "json", "--model", "sonnet"]
+        assert status["base_url"] == "claude-code://cli"
+
     def test_get_auth_status_dispatches_to_external_process(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/opt/bin/{command}")
 
@@ -477,6 +491,19 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["base_url"] == "acp://copilot"
         assert creds["command"] == "/usr/local/bin/copilot"
         assert creds["args"] == ["--acp", "--stdio"]
+        assert creds["source"] == "process"
+
+    def test_resolve_claude_code_with_local_cli(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CLAUDE_CODE_ARGS", "--print --output-format json")
+        monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
+
+        creds = resolve_external_process_provider_credentials("claude-code")
+
+        assert creds["provider"] == "claude-code"
+        assert creds["api_key"] == "claude-code-cli"
+        assert creds["base_url"] == "claude-code://cli"
+        assert creds["command"] == "/usr/local/bin/claude"
+        assert creds["args"] == ["--print", "--output-format", "json"]
         assert creds["source"] == "process"
 
     def test_resolve_kimi_with_key(self, monkeypatch):
