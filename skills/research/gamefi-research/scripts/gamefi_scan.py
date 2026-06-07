@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
-"""gamefi_scan.py — starter GitHub scanner for the gamefi-research skill.
+"""gamefi_scan.py — starter GitHub scanner for the game research skill.
 
-A lightweight prototype that searches GitHub for early-stage Web3 gaming
-("GameFi") repositories, filters to recently created ones, removes duplicates,
-and prints the results in the terminal.
+A lightweight prototype that searches GitHub for early-stage game projects
+(including Web3 / GameFi games), filters to recently created ones, removes
+duplicates, fetches README content where available, computes a neutral
+Game Research Signal Score (0-100) from public repository signals, and
+classifies each project as WATCH / TEST / CONTACT / SKIP.
 
-This is a *discovery* helper for the gamefi-research workflow. It collects
-public repository signals only. It does NOT score, summarize, or recommend
-anything — scoring arrives in a later milestone.
+It collects public repository signals only. It does NOT generate a Markdown
+report yet and does NOT recommend anything.
 
-Research only — not financial advice, not a trading tool, not an investment
-recommendation. All results are unverified public signals; confirm manually.
+Research only — not financial advice. All results are unverified public
+signals; confirm manually.
 
 Usage:
     python gamefi_scan.py
-    python gamefi_scan.py --days 14 --limit 25 --per-keyword 30
+    python gamefi_scan.py --days 14 --limit 10 --per-keyword 10
+    python gamefi_scan.py --fetch-cap 40
 
 Auth (optional but recommended to avoid low rate limits):
     Set GITHUB_TOKEN in your environment or in a .env file next to this script.
-    See .env.example.
+    README fetching uses the GitHub core API (60 requests/hour without a token),
+    so a token is strongly recommended for scoring. See .env.example.
 """
 
 from __future__ import annotations
@@ -39,8 +42,8 @@ except ImportError:
 
 GITHUB_SEARCH_URL = "https://api.github.com/search/repositories"
 
-# Keywords used to discover candidate game projects. Multi-word phrases are
-# quoted in the query so GitHub treats them as a phrase.
+# Keywords used to discover candidate game projects. Kept unchanged for now.
+# Multi-word phrases are quoted in the query so GitHub treats them as a phrase.
 KEYWORDS: list[str] = [
     "gamefi",
     "web3 game",
@@ -65,6 +68,46 @@ FIELDS = (
     "forks_count",
     "language",
     "topics",
+)
+
+# --- Signal keyword sets (lowercase). Used only to detect public signals. ---
+
+# Setup / "how to run" markers in a README.
+HOWTO_KEYWORDS = (
+    "getting started", "installation", "install", "how to play", "how to run",
+    "npm install", "yarn", "pnpm", "cargo", "pip install", "docker", "build",
+    "setup", "quick start", "quickstart", "usage",
+)
+
+# Early-access / testnet markers.
+EARLY_ACCESS_KEYWORDS = (
+    "testnet", "devnet", "early access", "whitelist", "waitlist",
+    "closed beta", "open beta", "beta", "playtest", "points",
+)
+
+# Demo / playability markers.
+PLAYABILITY_KEYWORDS = (
+    "playable", "play now", "live demo", "demo", "gameplay", "download",
+    "itch.io", "webgl", "web build", "apk", "client", "try it",
+    "play the game", "launch the game",
+)
+
+# Languages commonly seen in relevant game projects.
+RELEVANT_LANGUAGES = {
+    "Solidity", "Rust", "TypeScript", "Python", "C#", "JavaScript",
+    "C++", "Go", "Move", "Cairo",
+}
+
+# Promotional markers (used only together with a lack of technical markers).
+PROMO_KEYWORDS = (
+    "to the moon", "100x", "1000x", "guaranteed", "huge gains", "next big",
+    "presale", "get rich", "don't miss", "dont miss", "pump",
+)
+
+# Technical markers that indicate real substance.
+TECH_KEYWORDS = (
+    "install", "build", "run", "code", "function", "contract", "api", "sdk",
+    "npm", "cargo", "docker", "compile", "commit", "class", "module",
 )
 
 
@@ -179,21 +222,233 @@ def scan(days: int, per_keyword: int, headers: dict[str, str]) -> list[dict]:
     return results
 
 
-def print_results(results: list[dict], limit: int) -> None:
-    """Print the top results to the terminal, sorted by stars (desc)."""
-    if not results:
+def fetch_readme(full_name: str, headers: dict[str, str]) -> tuple[str | None, bool]:
+    """Fetch a repo's README as raw text.
+
+    Returns (content, available):
+      - (text, True)  README present
+      - (None, True)  confirmed no README (HTTP 404)
+      - (None, False) could not retrieve (network error / rate limit)
+    """
+    url = f"https://api.github.com/repos/{full_name}/readme"
+    raw_headers = dict(headers)
+    raw_headers["Accept"] = "application/vnd.github.raw"
+    try:
+        resp = requests.get(url, headers=raw_headers, timeout=30)
+    except requests.RequestException:
+        return None, False
+
+    if resp.status_code == 200:
+        return resp.text, True
+    if resp.status_code == 404:
+        return None, True
+    if resp.status_code == 403 and "rate limit" in resp.text.lower():
+        return None, False
+    return None, False
+
+
+def repo_age_days(created_at: str | None) -> int | None:
+    """Return the repository age in days, or None if the date is unparseable."""
+    if not created_at:
+        return None
+    try:
+        created = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return None
+    return (datetime.now(timezone.utc) - created).days
+
+
+def score_project(
+    repo: dict, readme: str | None, readme_known: bool
+) -> dict:
+    """Compute a neutral Game Research Signal Score (0-100) from public signals.
+
+    The score reflects research signal strength (how much there is to look at,
+    how active/early the project appears) — not financial merit. Returns a dict
+    with the score, a component breakdown, detected signals, risk notes, and a
+    few booleans used for classification.
+    """
+    components: list[str] = []
+    signals: list[str] = []
+    risks: list[str] = []
+    score = 0.0
+
+    # Base.
+    score += 20
+    components.append("base +20")
+
+    # Repository activity (stars + forks), capped.
+    stars = repo.get("stargazers_count") or 0
+    forks = repo.get("forks_count") or 0
+    activity = min(20.0, stars * 0.3 + forks * 1.5)
+    score += activity
+    components.append(f"activity +{activity:.0f} (stars {stars}, forks {forks})")
+
+    # Freshness: newer is higher; 0 at ~30 days old.
+    days = repo_age_days(repo.get("created_at"))
+    if days is None:
+        freshness = 0.0
+        risks.append("unknown creation date")
+    else:
+        freshness = max(0.0, 15.0 - days * 0.5)
+    score += freshness
+    age_note = f" ({days}d old)" if days is not None else ""
+    components.append(f"freshness +{freshness:.0f}{age_note}")
+
+    # Documentation quality.
+    text = readme or ""
+    low = text.lower()
+    readme_present = bool(text.strip())
+    doc = 0.0
+    if readme_present:
+        doc += 10
+        signals.append("README present")
+        if len(text) >= 800:
+            doc += 10
+            signals.append("detailed README")
+        elif len(text) >= 200:
+            doc += 4
+        if any(k in low for k in HOWTO_KEYWORDS):
+            doc += 5
+            signals.append("setup/run instructions")
+    elif readme_known:
+        risks.append("no README")
+    else:
+        risks.append("README not retrieved (set GITHUB_TOKEN)")
+    doc = min(25.0, doc)
+    score += doc
+    components.append(f"docs +{doc:.0f}")
+
+    # Testing / demo / playability indicators.
+    has_test_signal = any(k in low for k in EARLY_ACCESS_KEYWORDS)
+    has_play_signal = any(k in low for k in PLAYABILITY_KEYWORDS)
+    play = 0.0
+    if has_test_signal:
+        play += 10
+        signals.append("early-access/testnet signal")
+    if has_play_signal:
+        play += 10
+        signals.append("demo/playable signal")
+    play = min(20.0, play)
+    score += play
+    components.append(f"testing/demo +{play:.0f}")
+
+    # Project clarity (description + relevant language).
+    desc = (repo.get("description") or "").strip()
+    clarity = 0.0
+    if desc:
+        clarity += 5
+    else:
+        risks.append("empty description")
+    lang = repo.get("language")
+    if lang in RELEVANT_LANGUAGES:
+        clarity += 5
+        signals.append(f"relevant language ({lang})")
+    score += clarity
+    components.append(f"clarity +{clarity:.0f}")
+
+    # Risk deductions for missing / unclear information.
+    deductions = 0.0
+    if readme_known and not readme_present:
+        deductions += 10
+    if not desc:
+        deductions += 10
+    unclear_purpose = not desc and len(text) < 200
+    if unclear_purpose:
+        deductions += 15
+        risks.append("unclear purpose")
+    promo_no_substance = (
+        any(k in low for k in PROMO_KEYWORDS)
+        and not any(k in low for k in TECH_KEYWORDS)
+    )
+    if promo_no_substance:
+        deductions += 15
+        risks.append("promotional language without technical substance")
+    if deductions:
+        score -= deductions
+        components.append(f"risk -{deductions:.0f}")
+
+    score = max(0.0, min(100.0, score))
+    return {
+        "score": round(score),
+        "components": components,
+        "signals": signals,
+        "risks": risks,
+        "readme_present": readme_present,
+        "readme_known": readme_known,
+        "has_desc": bool(desc),
+        "has_test_signal": has_test_signal,
+        "has_play_signal": has_play_signal,
+        "unclear_purpose": unclear_purpose,
+    }
+
+
+def classify(s: dict) -> str:
+    """Map a score result to WATCH / TEST / CONTACT / SKIP.
+
+    Mirrors the decision rules in SKILL.md: apply the first match, top to
+    bottom, preferring the more conservative category when in doubt.
+    """
+    # SKIP: confirmed missing docs, unclear purpose, or too little signal.
+    if (s["readme_known"] and not s["readme_present"]) or s["unclear_purpose"]:
+        return "SKIP"
+    if s["score"] < 35:
+        return "SKIP"
+    # TEST: a concrete way to test/review exists, with at least some docs.
+    if (s["has_play_signal"] or s["has_test_signal"]) and s["readme_present"]:
+        return "TEST"
+    # CONTACT: enough substance for outreach, but no open test yet.
+    if s["score"] >= 55:
+        return "CONTACT"
+    # WATCH: interesting but needs more observation.
+    return "WATCH"
+
+
+def score_and_rank(
+    repos: list[dict], headers: dict[str, str], fetch_cap: int
+) -> list[dict]:
+    """Fetch READMEs for a bounded candidate pool, score, classify, and rank.
+
+    To bound the number of core-API requests, only the top `fetch_cap` repos
+    (by stars) have their README fetched and scored.
+    """
+    pool = sorted(
+        repos, key=lambda r: r.get("stargazers_count") or 0, reverse=True
+    )[:fetch_cap]
+    if len(repos) > fetch_cap:
+        print(
+            f"\nNote: scoring the top {fetch_cap} of {len(repos)} repos "
+            "(use --fetch-cap to change).",
+            file=sys.stderr,
+        )
+
+    scored: list[dict] = []
+    for repo in pool:
+        readme, available = fetch_readme(repo["full_name"], headers)
+        result = score_project(repo, readme, available)
+        result["repo"] = repo
+        result["classification"] = classify(result)
+        scored.append(result)
+
+    scored.sort(key=lambda r: r["score"], reverse=True)
+    return scored
+
+
+def print_scored(scored: list[dict], limit: int) -> None:
+    """Print the top scored projects with their classification."""
+    if not scored:
         print("\nNo repositories found. Try a longer --days window.")
         return
 
-    ranked = sorted(
-        results, key=lambda r: r.get("stargazers_count") or 0, reverse=True
-    )[:limit]
-
-    print(f"\nFound {len(results)} unique repositories. Top {len(ranked)}:\n")
-    for i, repo in enumerate(ranked, start=1):
-        topics = ", ".join(repo.get("topics") or []) or "none"
-        desc = (repo.get("description") or "").strip() or "(no description)"
-        print(f"{i}. {repo.get('full_name')}")
+    top = scored[:limit]
+    print(f"\nScored {len(scored)} repositories. Top {len(top)}:\n")
+    for i, s in enumerate(top, start=1):
+        repo = s["repo"]
+        signals = "; ".join(s["signals"]) or "none"
+        risks = "; ".join(s["risks"]) or "none"
+        print(f"{i}. {repo.get('full_name')}  —  {s['score']}/100  [{s['classification']}]")
         print(f"   {repo.get('html_url')}")
         print(
             f"   stars: {repo.get('stargazers_count')} | "
@@ -201,18 +456,20 @@ def print_results(results: list[dict], limit: int) -> None:
             f"lang: {repo.get('language') or 'unknown'} | "
             f"created: {repo.get('created_at')}"
         )
-        print(f"   topics: {topics}")
-        print(f"   {desc}\n")
+        print(f"   signals: {signals}")
+        print(f"   risks: {risks}")
+        print(f"   score: {', '.join(s['components'])}\n")
 
     print(
-        "Disclaimer: neutral research signals only — not financial advice. "
-        "All results are unverified; confirm manually."
+        "Game Research Signal Score = research signal strength, not financial "
+        "merit.\nDisclaimer: neutral research signals only — not financial "
+        "advice. All results are unverified; confirm manually."
     )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Starter GitHub scanner for early-stage Web3 game projects."
+        description="Starter GitHub scanner + scorer for early-stage game projects."
     )
     parser.add_argument(
         "--days",
@@ -223,14 +480,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--limit",
         type=int,
-        default=25,
-        help="Number of top results to print (default: 25).",
+        default=10,
+        help="Number of top results to print (default: 10).",
     )
     parser.add_argument(
         "--per-keyword",
         type=int,
         default=30,
         help="Max results to fetch per keyword, 1-100 (default: 30).",
+    )
+    parser.add_argument(
+        "--fetch-cap",
+        type=int,
+        default=40,
+        help="Max repos to fetch README + score, to bound API use (default: 40).",
     )
     return parser.parse_args(argv)
 
@@ -247,12 +510,13 @@ def main(argv: list[str] | None = None) -> int:
     if "Authorization" not in headers:
         print(
             "note: no GITHUB_TOKEN found — using unauthenticated requests "
-            "(lower rate limit).\n",
+            "(lower rate limit; README scoring may be limited).\n",
             file=sys.stderr,
         )
 
     results = scan(args.days, args.per_keyword, headers)
-    print_results(results, args.limit)
+    scored = score_and_rank(results, headers, args.fetch_cap)
+    print_scored(scored, args.limit)
     return 0
 
 
