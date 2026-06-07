@@ -91,6 +91,17 @@ class ApprovalProposal:
     diff_summary: Optional[str] = None
     display_text: str = ""             # exact text shown to user (or reconstruct hints)
 
+    # --- Post-consume execution outcome (audit-distinct from consume) ---
+    # status='consumed' means "user clicked /approve and the store row was
+    # atomically transitioned". It does NOT mean the command actually ran.
+    # The Phase 3 runtime guard may block execution AFTER consume, and the
+    # waiter may be gone at gateway restart. These fields record that
+    # distinction so retrospective incident review can answer "did this
+    # approval lead to an execution?".
+    execution_status: str = "not_started"  # not_started | executed | blocked_after_consume
+    execution_reason: Optional[str] = None   # e.g. 'phase3_runtime_stricter', 'orphan_no_waiter'
+    execution_recorded_at: Optional[float] = None
+
     def __post_init__(self) -> None:
         """Validate pinned-policy completeness at construction time.
 
@@ -246,6 +257,29 @@ class ApprovalStore(Protocol):
         as a background job — but ``consume`` of an expired proposal MUST
         always return ``None`` regardless of whether this method has been
         called.
+        """
+        ...
+
+    def mark_post_consume(self, approval_id: str, *, executed: bool,
+                          reason: Optional[str] = None,
+                          now: Optional[float] = None) -> bool:
+        """Record the post-consume execution outcome.
+
+        Called after ``consume`` succeeded and the caller knows whether
+        the command actually executed (``executed=True``) or was blocked
+        by a runtime guard / orphan / other post-consume failure
+        (``executed=False`` + reason).
+
+        Returns True if the row was updated, False if the approval_id is
+        missing or not in 'consumed' status. Idempotent within the same
+        outcome; calling twice with different outcomes overwrites (last
+        writer wins) but in practice this should only ever be called
+        once per consume.
+
+        This is the audit signal that distinguishes "user approved
+        AND command ran" from "user approved BUT execution was blocked".
+        ``status`` stays 'consumed' either way — consume IS exactly-once.
+        ``execution_status`` carries the outcome.
         """
         ...
 

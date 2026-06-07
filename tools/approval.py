@@ -979,15 +979,30 @@ def resolve_gateway_approval_by_id(session_key: str, approval_id: str,
         return 1
     # Store accepted but no live waiter — original agent thread is gone
     # (gateway restart, agent run finished). The store row is now
-    # consumed/denied; no command will execute. Return 1 to indicate the
-    # store transition was applied, so the user gets feedback that their
-    # action took effect.
+    # consumed/denied; no command will execute. We mark the audit row
+    # accordingly and return -1 to signal "orphan: store updated but no
+    # execution happened". Handler should surface a DISTINCT message to
+    # the user — saying "approved" here would lie about a side effect
+    # that never occurred.
+    if choice != "deny":
+        try:
+            store.mark_post_consume(
+                approval_id, executed=False,
+                reason="orphan_no_waiter",
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to mark orphan-consume execution status "
+                "(approval_id=%s): %s", approval_id, e,
+            )
     logger.info(
         "Gateway approval %s consumed/denied but no live waiter "
-        "(session=%s) — store row updated, no command will execute",
+        "(session=%s) — store row updated with execution_status=%s; "
+        "no command will execute",
         approval_id, session_key,
+        "blocked_after_consume" if choice != "deny" else "not_started",
     )
-    return 1
+    return -1
 
 
 def submit_pending(session_key: str, approval: dict):
@@ -1752,28 +1767,57 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     # distinguish timeout from explicit deny.
     _outcome = "timeout" if not resolved else (choice if choice else "timeout")
 
-    # ── Mirror outcome into the durable approval store (Phase 2/3) ─────
-    # Best-effort bookkeeping in this commit — the gate is still the
-    # in-memory entry.event. Future commits will invert this: the store
-    # becomes the gate, and the event-set only fires AFTER store.consume
-    # or store.deny succeeds.
-    if approval_id is not None and store is not None:
+    # ── Mirror outcome to the durable store + record execution audit ───
+    # The store row may or may not already be in a terminal state:
+    #
+    #   - resolve_gateway_approval_by_id (the strict /approve <id> path,
+    #     used by the slash-command handler) already transitioned the
+    #     row to consumed/denied before signalling the event.
+    #
+    #   - resolve_gateway_approval (legacy FIFO path, still used by
+    #     platform inline-button callbacks in Telegram, Slack, Matrix,
+    #     QQBot, Feishu, api_server) signals the event but does NOT
+    #     touch the store. We need to transition here.
+    #
+    # Both consume() and deny() are idempotent-by-WHERE-clause: if the
+    # row is already terminal, they return None/False harmlessly.
+    #
+    # We distinguish ``user_choice`` (what the user actually clicked,
+    # captured on entry.result) from ``choice`` (the possibly-Phase-3-
+    # overridden final outcome). That distinction is what makes
+    # execution_status auditable:
+    #
+    #   user_choice = approve, final_choice = approve  → executed
+    #   user_choice = approve, final_choice = deny     → blocked_after_consume
+    #                                                    (Phase 3 overrode)
+    #   user_choice = deny                              → not_started (never executes)
+    user_choice = entry.result  # raw user input, pre-Phase-3
+    if approval_id is not None and store is not None and resolved:
         try:
-            if not resolved or choice is None:
-                # Timeout: row is left to expire naturally via its
-                # expires_at column. expire_due() can run later.
-                pass
-            elif choice == "deny":
+            if user_choice == "deny":
                 store.deny(approval_id, denied_by=f"session:{session_key}")
-            else:
-                # "once" / "session" / "always" all imply a successful
-                # consume from the user's perspective.
+                # execution_status stays at 'not_started' — denied
+                # proposals never reach the post-consume audit path.
+            elif user_choice in {"once", "session", "always"}:
                 store.consume(approval_id, consumed_by=f"session:{session_key}")
+                if choice == "deny":
+                    # Phase 3 guard fail-closed the user's approve.
+                    # status='consumed' (user clicked /approve), but
+                    # execution_status='blocked_after_consume' so the
+                    # audit trail doesn't misreport this as executed.
+                    store.mark_post_consume(
+                        approval_id, executed=False,
+                        reason="phase3_runtime_stricter",
+                    )
+                else:
+                    # Approve confirmed by Phase 3 — agent thread about
+                    # to release for execution.
+                    store.mark_post_consume(approval_id, executed=True)
         except Exception as e:
             logger.warning(
-                "Failed to mirror approval outcome to store "
-                "(approval_id=%s, choice=%s): %s",
-                approval_id, choice, e,
+                "Failed to mirror execution outcome to store "
+                "(approval_id=%s, user_choice=%s, final_choice=%s): %s",
+                approval_id, user_choice, choice, e,
             )
 
     _fire_approval_hook(

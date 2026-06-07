@@ -68,13 +68,19 @@ from tools.approval_store import (
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS gateway_approvals (
-    approval_id  TEXT PRIMARY KEY,
-    created_at   REAL NOT NULL,
-    expires_at   REAL,
-    status       TEXT NOT NULL DEFAULT 'pending',
-    consumed_at  REAL,
-    consumed_by  TEXT,
-    payload_json TEXT NOT NULL
+    approval_id            TEXT PRIMARY KEY,
+    created_at             REAL NOT NULL,
+    expires_at             REAL,
+    status                 TEXT NOT NULL DEFAULT 'pending',
+    consumed_at            REAL,
+    consumed_by            TEXT,
+    -- Post-consume execution outcome (audit-distinct from consume).
+    -- 'consumed' status means user clicked /approve; execution_status
+    -- means the command actually ran (or didn't) after that.
+    execution_status       TEXT NOT NULL DEFAULT 'not_started',
+    execution_reason       TEXT,
+    execution_recorded_at  REAL,
+    payload_json           TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_gateway_approvals_status
@@ -84,7 +90,33 @@ ON gateway_approvals(status);
 CREATE INDEX IF NOT EXISTS idx_gateway_approvals_pending_expires
 ON gateway_approvals(expires_at)
 WHERE status = 'pending';
+
+-- Audit slice: "consumed proposals where execution was blocked" — the
+-- exact pattern incident review will look for first.
+CREATE INDEX IF NOT EXISTS idx_gateway_approvals_blocked_after_consume
+ON gateway_approvals(execution_status)
+WHERE execution_status = 'blocked_after_consume';
 """
+
+
+def _migrate_existing_schema(conn: sqlite3.Connection) -> None:
+    """Idempotent ALTER TABLE for execution_* columns on databases that
+    were created by an earlier schema version. CREATE TABLE IF NOT EXISTS
+    can't add columns to an existing table; we do it explicitly here.
+    """
+    cur = conn.execute("PRAGMA table_info(gateway_approvals)")
+    existing = {row[1] for row in cur.fetchall()}
+    for col_def in (
+        ("execution_status",
+         "ALTER TABLE gateway_approvals ADD COLUMN execution_status TEXT NOT NULL DEFAULT 'not_started'"),
+        ("execution_reason",
+         "ALTER TABLE gateway_approvals ADD COLUMN execution_reason TEXT"),
+        ("execution_recorded_at",
+         "ALTER TABLE gateway_approvals ADD COLUMN execution_recorded_at REAL"),
+    ):
+        col_name, ddl = col_def
+        if col_name not in existing:
+            conn.execute(ddl)
 
 
 # Module-level lock taken only briefly during schema-init to avoid two
@@ -125,6 +157,10 @@ def _ensure_schema(db_path: Path) -> None:
         try:
             _apply_wal(conn)
             conn.executescript(SCHEMA_SQL)
+            # ALTER for execution_* columns on pre-existing DBs that were
+            # created by an earlier schema. Safe to call always — checks
+            # PRAGMA table_info before each ADD COLUMN.
+            _migrate_existing_schema(conn)
         finally:
             conn.close()
         _schema_initialised.add(db_path)
@@ -182,8 +218,10 @@ class SqliteApprovalStore:
                 conn.execute(
                     "INSERT INTO gateway_approvals "
                     "(approval_id, created_at, expires_at, status, "
-                    " consumed_at, consumed_by, payload_json) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    " consumed_at, consumed_by, "
+                    " execution_status, execution_reason, execution_recorded_at, "
+                    " payload_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         proposal.approval_id,
                         proposal.created_at,
@@ -191,6 +229,9 @@ class SqliteApprovalStore:
                         proposal.status,
                         proposal.consumed_at,
                         proposal.consumed_by,
+                        proposal.execution_status,
+                        proposal.execution_reason,
+                        proposal.execution_recorded_at,
                         payload,
                     ),
                 )
@@ -211,7 +252,9 @@ class SqliteApprovalStore:
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT status, consumed_at, consumed_by, payload_json "
+                "SELECT status, consumed_at, consumed_by, "
+                "       execution_status, execution_reason, execution_recorded_at, "
+                "       payload_json "
                 "FROM gateway_approvals WHERE approval_id = ?",
                 (approval_id,),
             ).fetchone()
@@ -246,7 +289,15 @@ class SqliteApprovalStore:
             conn.close()
         if row is None:
             return None
-        return self._row_to_proposal("consumed", ts, consumed_by, row[0])
+        # At consume-time, execution_status is at its default
+        # ('not_started'); mark_post_consume() updates it later when
+        # the caller knows whether the command actually ran or was
+        # blocked post-consume.
+        return self._row_to_proposal(
+            "consumed", ts, consumed_by,
+            "not_started", None, None,
+            row[0],
+        )
 
     def deny(self, approval_id: str, *, denied_by: str,
              now: Optional[float] = None) -> bool:
@@ -295,11 +346,40 @@ class SqliteApprovalStore:
             conn.close()
         return affected
 
+    def mark_post_consume(self, approval_id: str, *, executed: bool,
+                          reason: Optional[str] = None,
+                          now: Optional[float] = None) -> bool:
+        """Record post-consume execution outcome. See base class docstring."""
+        ts = now if now is not None else time.time()
+        new_status = "executed" if executed else "blocked_after_consume"
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur = conn.execute(
+                    "UPDATE gateway_approvals "
+                    "SET execution_status = ?, execution_reason = ?, "
+                    "    execution_recorded_at = ? "
+                    "WHERE approval_id = ? AND status = 'consumed'",
+                    (new_status, reason, ts, approval_id),
+                )
+                affected = cur.rowcount
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        finally:
+            conn.close()
+        return affected == 1
+
     # ----- Helpers -----
 
     @staticmethod
     def _row_to_proposal(status: str, consumed_at: Optional[float],
                          consumed_by: Optional[str],
+                         execution_status: str,
+                         execution_reason: Optional[str],
+                         execution_recorded_at: Optional[float],
                          payload_json: str) -> ApprovalProposal:
         """Reconstruct the proposal, overlaying current lifecycle columns."""
         try:
@@ -315,6 +395,9 @@ class SqliteApprovalStore:
         payload["status"] = status
         payload["consumed_at"] = consumed_at
         payload["consumed_by"] = consumed_by
+        payload["execution_status"] = execution_status
+        payload["execution_reason"] = execution_reason
+        payload["execution_recorded_at"] = execution_recorded_at
         # Filter out any fields not in the dataclass to be forward-compatible
         # if older payloads exist.
         allowed = {f for f in ApprovalProposal.__dataclass_fields__}

@@ -15022,6 +15022,17 @@ class GatewayRunner:
                 candidate_id, session_key,
             )
             return t("gateway.approve.no_pending")
+        if count == -1:
+            # Orphan: store row consumed, but no live waiter existed
+            # (gateway restart, agent run finished). The command did NOT
+            # execute. User must know — saying "approved/resuming" would
+            # lie about a side effect that never occurred.
+            logger.info(
+                "Gateway /approve %s consumed orphan — no live waiter "
+                "(session=%s); no command executed",
+                candidate_id, session_key,
+            )
+            return t("gateway.approve.orphan_consumed")
 
         _adapter = self.adapters.get(source.platform)
         if _adapter:
@@ -15060,6 +15071,14 @@ class GatewayRunner:
                 candidate_id, session_key,
             )
             return t("gateway.deny.no_pending")
+        if count == -1:
+            # Orphan: store row marked denied, but original waiter is gone.
+            # Still meaningful — the proposal can no longer be approved.
+            logger.info(
+                "Gateway /deny %s denied orphan (session=%s)",
+                candidate_id, session_key,
+            )
+            return t("gateway.deny.orphan_denied")
 
         _adapter = self.adapters.get(source.platform)
         if _adapter:

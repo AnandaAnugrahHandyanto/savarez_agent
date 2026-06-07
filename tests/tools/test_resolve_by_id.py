@@ -168,17 +168,26 @@ def test_resolve_by_id_deny_path():
     assert store.get("appr-todeny").status == "denied"
 
 
-def test_resolve_by_id_orphan_consumes_store_but_returns_1():
+def test_resolve_by_id_orphan_consumes_store_but_returns_minus_one():
     """Proposal exists in store but no live waiter (gateway restart scenario):
-    consume the row anyway, but no command can execute."""
+    consume the row anyway, but return -1 so the handler can surface a
+    DISTINCT 'command was NOT executed' message to the user. Previously
+    this returned 1 (success) which lied — handler showed '✅ approved'
+    while no command actually ran.
+
+    Also: execution_status is recorded as 'blocked_after_consume' with
+    reason 'orphan_no_waiter' so audit retrospective can tell."""
     store = InMemoryApprovalStore()
     set_default_approval_store(store)
     store.submit(_proposal("appr-orphan"))
     # No entry in _gateway_queues — simulates post-restart state.
 
     count = resolve_gateway_approval_by_id("session-A", "appr-orphan", "once")
-    assert count == 1  # Store transition succeeded.
-    assert store.get("appr-orphan").status == "consumed"
+    assert count == -1  # Distinct from 1 (signalled) and 0 (rejected)
+    proposal = store.get("appr-orphan")
+    assert proposal.status == "consumed"
+    assert proposal.execution_status == "blocked_after_consume"
+    assert proposal.execution_reason == "orphan_no_waiter"
 
 
 def test_resolve_by_id_falls_back_to_fifo_when_no_store():

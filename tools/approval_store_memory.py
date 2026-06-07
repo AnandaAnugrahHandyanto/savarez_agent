@@ -92,6 +92,24 @@ class InMemoryApprovalStore:
             )
             return True
 
+    def mark_post_consume(self, approval_id: str, *, executed: bool,
+                          reason: Optional[str] = None,
+                          now: Optional[float] = None) -> bool:
+        ts = now if now is not None else time.time()
+        new_status = "executed" if executed else "blocked_after_consume"
+        with self._lock:
+            proposal = self._proposals.get(approval_id)
+            if proposal is None or proposal.status != "consumed":
+                return False
+            from dataclasses import replace
+            self._proposals[approval_id] = replace(
+                proposal,
+                execution_status=new_status,
+                execution_reason=reason,
+                execution_recorded_at=ts,
+            )
+            return True
+
     def expire_due(self, now: Optional[float] = None) -> int:
         ts = now if now is not None else time.time()
         count = 0
