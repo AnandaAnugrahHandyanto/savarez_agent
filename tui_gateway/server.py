@@ -4893,7 +4893,23 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             print(
                 f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True
             )
-            _emit("error", sid, {"message": str(e)})
+            # Always close the turn with a terminal message.complete. The happy
+            # path balances every message.start with a message.complete (see the
+            # success branch above); the error edge must do the same, or a
+            # frontend that settles the turn / drains queued deltas / clears the
+            # inflight bubble on message.complete — the success edge most UIs
+            # anchor to — is left hanging after a backend exception. Surface the
+            # failure as the turn's text with status="error", mirroring how
+            # provider 4xx errors are already reported, so message.start is
+            # always followed by exactly one message.complete.
+            with session["history_lock"]:
+                _clear_inflight_turn(session)
+            err_payload = {"text": f"Error: {e}", "status": "error"}
+            try:
+                err_payload["usage"] = _get_usage(agent)
+            except Exception:
+                pass
+            _emit("message.complete", sid, err_payload)
         finally:
             try:
                 if approval_token is not None:

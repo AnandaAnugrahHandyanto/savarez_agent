@@ -4311,6 +4311,70 @@ def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
     assert text in {"", None}, f"expected empty text, got {text!r}"
 
 
+def test_prompt_submit_closes_turn_with_message_complete_when_run_raises(monkeypatch):
+    """Streaming contract: an opened turn (message.start) must always be closed
+    by exactly one terminal message.complete — even when run_conversation raises.
+
+    Previously the except branch emitted a bare ``error`` event and never a
+    ``message.complete``, so any frontend that settles the turn / drains queued
+    deltas on message.complete (the success edge most UIs anchor to) was left
+    hanging after a backend exception. The failure must now surface through a
+    terminal message.complete with status="error", mirroring how soft provider
+    errors are already reported.
+    """
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            raise RuntimeError("provider exploded mid-turn")
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    emitted: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload or {})),
+    )
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+
+    try:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hello"},
+            }
+        )
+
+        events = [e[0] for e in emitted]
+        assert "message.start" in events, "turn must open with message.start"
+        complete_events = [e for e in emitted if e[0] == "message.complete"]
+        assert len(complete_events) == 1, (
+            "exactly one terminal message.complete must close the turn even "
+            f"when the backend raises; got events: {events}"
+        )
+
+        # message.complete must come AFTER message.start (turn balanced).
+        assert events.index("message.complete") > events.index("message.start")
+
+        payload = complete_events[0][2]
+        assert payload.get("status") == "error"
+        assert payload.get("text", "").startswith("Error:")
+        assert "provider exploded mid-turn" in payload.get("text", "")
+
+        # The turn was settled and the inflight bubble cleared.
+        assert server._sessions["sid"]["running"] is False
+        assert server._sessions["sid"].get("inflight_turn") is None
+    finally:
+        server._sessions.pop("sid", None)
+
+
 # ── active live TUI sessions ─────────────────────────────────────────
 
 
