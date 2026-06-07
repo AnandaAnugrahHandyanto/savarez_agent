@@ -1377,6 +1377,58 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["base_url"] == ""
 
+    def test_set_model_main_reports_stale_auxiliary_pins(self):
+        """Switching the main provider must report auxiliary slots still pinned
+        to a *different* provider so the UI can warn the user their helper tasks
+        aren't following the switch (the silent credit-burn path)."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["model"] = {"provider": "nous", "default": "hermes-4"}
+        cfg["auxiliary"] = {
+            # Pinned to nous — same as the OLD main, becomes stale after switch.
+            "compression": {"provider": "nous", "model": "anthropic/claude-sonnet-4.6"},
+            # Auto — follows main, never stale.
+            "vision": {"provider": "auto", "model": ""},
+            # Pinned to a third provider — also stale vs the new main.
+            "curator": {"provider": "deepseek", "model": "deepseek-chat"},
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+        )
+        assert resp.status_code == 200
+        stale = resp.json()["stale_aux"]
+        stale_tasks = {entry["task"] for entry in stale}
+        assert stale_tasks == {"compression", "curator"}
+        # auto slot must never appear.
+        assert "vision" not in stale_tasks
+        # Provider/model echoed back for the UI label.
+        comp = next(e for e in stale if e["task"] == "compression")
+        assert comp["provider"] == "nous"
+        assert comp["model"] == "anthropic/claude-sonnet-4.6"
+
+    def test_set_model_main_no_stale_when_aux_matches_new_provider(self):
+        """Aux slots pinned to the SAME provider as the new main are not stale."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["model"] = {"provider": "nous", "default": "hermes-4"}
+        cfg["auxiliary"] = {
+            "compression": {"provider": "openrouter", "model": "google/gemini-2.5-flash"},
+            "vision": {"provider": "auto", "model": ""},
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["stale_aux"] == []
+
         model_cfg = load_config().get("model")
         assert model_cfg["provider"] == "openrouter"
         assert model_cfg.get("base_url", "") == ""
@@ -4212,3 +4264,38 @@ class TestValidateProviderCredential:
     def test_empty_value_rejected(self):
         data = self._post("OPENAI_API_KEY", "   ").json()
         assert data["ok"] is False
+
+
+class TestDesktopCronTicker:
+    """The dashboard backend fires cron jobs itself only when desktop-spawned."""
+
+    def _client(self):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+        from hermes_cli.web_server import app
+
+        return TestClient(app)
+
+    def test_ticker_runs_when_desktop(self, monkeypatch, _isolate_hermes_home):
+        import threading
+        import cron.scheduler as sched
+
+        called = threading.Event()
+        monkeypatch.setattr(sched, "tick", lambda *a, **k: called.set())
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+
+        with self._client():
+            assert called.wait(3.0), "expected cron tick under HERMES_DESKTOP=1"
+
+    def test_ticker_skipped_without_desktop(self, monkeypatch, _isolate_hermes_home):
+        import threading
+        import cron.scheduler as sched
+
+        called = threading.Event()
+        monkeypatch.setattr(sched, "tick", lambda *a, **k: called.set())
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+
+        with self._client():
+            assert not called.wait(0.5), "ticker must not run outside the desktop app"

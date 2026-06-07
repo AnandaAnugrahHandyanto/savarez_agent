@@ -32,6 +32,7 @@ import type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  SessionInfo,
   SessionMessagesResponse,
   SessionSearchResponse,
   SkillInfo,
@@ -94,6 +95,7 @@ export type {
   SessionSearchResponse,
   SessionSearchResult,
   SkillInfo,
+  StaleAuxAssignment,
   StatusResponse,
   ToolsetConfig,
   ToolsetInfo
@@ -148,19 +150,36 @@ export async function listSessions(
 // primary backend straight off each profile's state.db — no per-profile backend
 // is spawned. Single-profile users get the same rows as listSessions(), tagged
 // profile="default".
+// Source scoping lets callers split the unified list into independent slices:
+// recents pass `excludeSources: ['cron']`, the cron-jobs section passes
+// `source: 'cron'`. Without this a burst of (always-newest) cron sessions
+// consumes the whole recents page and starves real conversations.
+export interface SessionSourceFilter {
+  source?: string
+  excludeSources?: string[]
+  model?: string
+}
+
 export async function listAllProfileSessions(
   limit = 40,
   minMessages = 0,
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent',
   profile: 'all' | (string & {}) = 'all',
-  model = ''
+  filter: SessionSourceFilter = {}
 ): Promise<PaginatedSessions> {
-  const modelQuery = model.trim() ? `&model=${encodeURIComponent(model.trim())}` : ''
+  const sourceParam = filter.source ? `&source=${encodeURIComponent(filter.source)}` : ''
+
+  const excludeParam = filter.excludeSources?.length
+    ? `&exclude_sources=${encodeURIComponent(filter.excludeSources.join(','))}`
+    : ''
+
+  const modelParam = filter.model?.trim() ? `&model=${encodeURIComponent(filter.model.trim())}` : ''
+
   const result = await window.hermesDesktop.api<PaginatedSessions>({
     path:
       `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
-      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${modelQuery}`
+      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`
   })
 
   return {
@@ -444,6 +463,15 @@ export function selectToolsetProvider(
   })
 }
 
+export function runToolsetPostSetup(name: string, key: string): Promise<ActionResponse & { key: string }> {
+  return window.hermesDesktop.api<ActionResponse & { key: string }>({
+    ...profileScoped(),
+    path: `/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`,
+    method: 'POST',
+    body: { key }
+  })
+}
+
 export function getMessagingPlatforms(): Promise<MessagingPlatformsResponse> {
   return window.hermesDesktop.api<MessagingPlatformsResponse>({
     path: '/api/messaging/platforms'
@@ -478,6 +506,14 @@ export function getCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`
   })
+}
+
+export async function getCronJobRuns(jobId: string, limit = 20): Promise<SessionInfo[]> {
+  const { runs } = await window.hermesDesktop.api<{ runs: SessionInfo[] }>({
+    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/runs?limit=${limit}`
+  })
+
+  return runs ?? []
 }
 
 export function createCronJob(body: CronJobCreatePayload): Promise<CronJob> {
@@ -524,15 +560,10 @@ export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
   })
 }
 
-const SCOTT_OMEGA_PROFILE = 'scott-omega-profile'
-
-export async function getProfiles(): Promise<ProfilesResponse> {
-  const response = await window.hermesDesktop.api<ProfilesResponse>({
+export function getProfiles(): Promise<ProfilesResponse> {
+  return window.hermesDesktop.api<ProfilesResponse>({
     path: '/api/profiles'
   })
-  const scottOmegaProfile = response.profiles.find(profile => profile.name === SCOTT_OMEGA_PROFILE)
-
-  return scottOmegaProfile ? { ...response, profiles: [scottOmegaProfile] } : response
 }
 
 export function createProfile(body: ProfileCreatePayload): Promise<{ name: string; ok: boolean; path: string }> {
