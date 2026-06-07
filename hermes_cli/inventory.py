@@ -116,7 +116,6 @@ def build_models_payload(
     canonical_order: bool = False,
     pricing: bool = False,
     capabilities: bool = False,
-    force_fresh_nous_tier: bool = False,
     max_models: int = 50,
 ) -> dict:
     """Build the ``{providers, model, provider}`` shape every consumer
@@ -140,10 +139,6 @@ def build_models_payload(
       ``{model: {fast, reasoning}}`` so pickers can gate the model-options
       controls (fast toggle / reasoning) to what each model actually
       supports, instead of offering knobs the backend would reject.
-    - ``force_fresh_nous_tier``: bypass the short Nous free-tier cache when
-      selecting Portal-recommended Nous models and applying tier gating. Keep
-      this false for UI picker opens; explicit auth/model flows can opt in
-      when they need freshly-purchased credits to show up immediately.
     """
     from hermes_cli.model_switch import list_authenticated_providers
 
@@ -153,7 +148,6 @@ def build_models_payload(
         current_model=ctx.current_model,
         user_providers=ctx.user_providers,
         custom_providers=ctx.custom_providers,
-        force_fresh_nous_tier=force_fresh_nous_tier,
         max_models=max_models,
     )
 
@@ -164,7 +158,7 @@ def build_models_payload(
     if canonical_order:
         rows = _reorder_canonical(rows)
     if pricing:
-        _apply_pricing(rows, force_fresh_nous_tier=force_fresh_nous_tier)
+        _apply_pricing(rows)
     if capabilities:
         _apply_capabilities(rows)
 
@@ -299,11 +293,7 @@ def _reorder_canonical(rows: list[dict]) -> list[dict]:
     return canon + extras
 
 
-def _apply_pricing(
-    rows: list[dict],
-    *,
-    force_fresh_nous_tier: bool = False,
-) -> None:
+def _apply_pricing(rows: list[dict]) -> None:
     """Enrich each provider row with per-model pricing + Nous tier gating.
 
     Mutates ``rows`` in-place. For every row whose provider supports live
@@ -369,9 +359,7 @@ def _apply_pricing(
         if slug == "nous":
             try:
                 if nous_free_tier is None:
-                    nous_free_tier = check_nous_free_tier(
-                        force_fresh=force_fresh_nous_tier
-                    )
+                    nous_free_tier = check_nous_free_tier(force_fresh=True)
                 row["free_tier"] = bool(nous_free_tier)
                 if nous_free_tier:
                     _selectable, unavailable = partition_nous_models_by_tier(
