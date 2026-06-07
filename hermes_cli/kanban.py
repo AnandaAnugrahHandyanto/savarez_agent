@@ -2762,6 +2762,15 @@ def run_slash(rest: str) -> str:
     import io
     import contextlib
 
+    # Normalize Unicode curly quotes to ASCII straight quotes so shlex
+    # recognises them as quoting delimiters.  iOS autocorrect and rich-text
+    # editors commonly produce U+201C/U+201D (double) and U+2018/U+2019
+    # (single) curly quotes which shlex.split() treats as ordinary characters.
+    # Only outer paired delimiters are replaced; curly quotes inside an
+    # already-quoted span are left intact.
+    if rest:
+        rest = rest.replace("\u201c", '"').replace("\u201d", '"')
+        rest = rest.replace("\u2018", "'").replace("\u2019", "'")
     tokens = shlex.split(rest) if rest and rest.strip() else []
 
     # Bare ``/kanban`` or ``/kanban help`` / ``--help`` / ``-h`` / ``?``:
