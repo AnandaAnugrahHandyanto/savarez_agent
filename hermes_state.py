@@ -242,6 +242,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     started_at REAL NOT NULL,
     ended_at REAL,
     end_reason TEXT,
+    deleted_at REAL,
     message_count INTEGER DEFAULT 0,
     tool_call_count INTEGER DEFAULT 0,
     input_tokens INTEGER DEFAULT 0,
@@ -1646,6 +1647,9 @@ class SessionDB:
         where_clauses = []
         params = []
 
+        # Hide soft-deleted (trashed) chats from the listing.
+        where_clauses.append("s.deleted_at IS NULL")
+
         if not include_children:
             # Show root sessions and branch sessions, while still hiding
             # sub-agent runs and compression continuations (which also carry a
@@ -2927,6 +2931,7 @@ class SessionDB:
         # Build WHERE clauses dynamically
         where_clauses = ["messages_fts MATCH ?"]
         params: list = [query]
+        where_clauses.append("s.deleted_at IS NULL")  # exclude trashed chats
         if not include_inactive:
             where_clauses.append("m.active = 1")
 
@@ -3008,6 +3013,7 @@ class SessionDB:
                 trigram_query = " ".join(parts)
                 tri_where = ["messages_fts_trigram MATCH ?"]
                 tri_params: list = [trigram_query]
+                tri_where.append("s.deleted_at IS NULL")  # exclude trashed chats
                 if not include_inactive:
                     tri_where.append("m.active = 1")
                 if source_filter is not None:
@@ -3242,13 +3248,14 @@ class SessionDB:
             if source:
                 cursor = self._conn.execute(
                     f"{select_with_last_active}"
-                    "WHERE s.source = ? "
+                    "WHERE s.source = ? AND s.deleted_at IS NULL "
                     "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
                     (source, limit, offset),
                 )
             else:
                 cursor = self._conn.execute(
                     f"{select_with_last_active}"
+                    "WHERE s.deleted_at IS NULL "
                     "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 )
@@ -3283,6 +3290,9 @@ class SessionDB:
         """
         where_clauses = []
         params = []
+
+        # Hide soft-deleted (trashed) chats from counts (mirror list_sessions_rich).
+        where_clauses.append("s.deleted_at IS NULL")
 
         if exclude_children:
             # Mirror list_sessions_rich's child-exclusion clause exactly so the
@@ -3650,6 +3660,194 @@ class SessionDB:
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count
+
+    def prune_inactive_sessions(
+        self,
+        older_than_days: int = 90,
+        sessions_dir: Optional[Path] = None,
+        source: Optional[str] = None,
+    ) -> int:
+        """Delete completed chats that have been INACTIVE for *older_than_days*.
+
+        State-of-the-art retention: a chat is removed only once it has been
+        finished and then left untouched for the retention window, measured
+        from its completion time (``ended_at``) — i.e. its last activity.
+        Continuing a chat re-opens and later re-ends it, refreshing
+        ``ended_at`` and so resetting the clock; this gives "never delete a
+        chat I'm still using" without needing a fragile per-open signal.
+
+        Safety semantics mirror :meth:`prune_sessions`:
+
+        * Only ended, non-archived sessions are candidates — active/live
+          sessions and ones the user archived (to keep forever) are never
+          touched.
+        * Children of a pruned session are orphaned
+          (``parent_session_id → NULL``) rather than cascade-deleted, so a
+          branch / subagent transcript survives an inadvertent parent cleanup.
+        * Row deletion is atomic via a single ``_execute_write`` callback;
+          on-disk transcript files are cleaned up outside the DB transaction
+          when *sessions_dir* is provided.
+
+        Differs from :meth:`prune_sessions` only in the cutoff column: age is
+        measured from ``ended_at`` (last activity) instead of ``started_at``
+        (creation), so a long-running chat finished yesterday is not deleted
+        just because it was first opened months ago.
+
+        When *source* is given, only sessions from that source (e.g. ``"cron"``
+        for automated runs) are candidates — enabling a shorter retention
+        window for ephemeral automated chats than for interactive ones.
+
+        Returns the number of sessions deleted.
+        """
+        cutoff = time.time() - (older_than_days * 86400)
+        removed_ids: list[str] = []
+
+        def _do(conn):
+            if source is not None:
+                cursor = conn.execute(
+                    "SELECT id FROM sessions "
+                    "WHERE ended_at IS NOT NULL "
+                    "AND archived = 0 "
+                    "AND ended_at < ? "
+                    "AND source = ?",
+                    (cutoff, source),
+                )
+            else:
+                cursor = conn.execute(
+                    "SELECT id FROM sessions "
+                    "WHERE ended_at IS NOT NULL "
+                    "AND archived = 0 "
+                    "AND ended_at < ?",
+                    (cutoff,),
+                )
+            session_ids = {row["id"] for row in cursor.fetchall()}
+
+            if not session_ids:
+                return 0
+
+            placeholders = ",".join("?" * len(session_ids))
+            conn.execute(
+                f"UPDATE sessions SET parent_session_id = NULL "
+                f"WHERE parent_session_id IN ({placeholders})",
+                list(session_ids),
+            )
+
+            for sid in session_ids:
+                conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+                conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+                removed_ids.append(sid)
+            return len(session_ids)
+
+        count = self._execute_write(_do)
+        # Clean up on-disk files outside the DB transaction
+        for sid in removed_ids:
+            self._remove_session_files(sessions_dir, sid)
+        return count
+
+    def delete_orphan_messages(self) -> int:
+        """Delete messages whose parent session no longer exists.
+
+        Hygiene sweep: non-cascading deletes or interrupted prunes can leave
+        message rows whose ``session_id`` has no matching session — unreachable
+        (no session to render them) yet still consuming disk and FTS index
+        entries. ``messages.id`` is the FTS external-content rowid, so the
+        FTS delete triggers fire as these rows are removed, keeping the
+        full-text index in sync. Returns the number of orphan rows removed.
+        """
+        def _do(conn):
+            cur = conn.execute(
+                "DELETE FROM messages "
+                "WHERE session_id NOT IN (SELECT id FROM sessions)"
+            )
+            return cur.rowcount
+
+        return self._execute_write(_do)
+
+    def soft_delete_inactive_sessions(
+        self,
+        older_than_days: int = 90,
+        source: Optional[str] = None,
+    ) -> int:
+        """Move inactive completed chats to Trash (soft-delete).
+
+        Sets ``deleted_at`` on ended, non-archived, not-already-trashed chats
+        whose last activity (``ended_at``) is older than *older_than_days*.
+        Trashed chats are hidden from listings/counts/search but remain on disk
+        and are fully restorable via :meth:`restore_session` until
+        :meth:`purge_trashed_sessions` hard-deletes them after the grace
+        window — the reversible front half of the retention timer.
+
+        When *source* is given, only that source is affected (tiered policy).
+        Returns the number of chats moved to Trash.
+        """
+        cutoff = time.time() - (older_than_days * 86400)
+        now = time.time()
+
+        def _do(conn):
+            if source is not None:
+                cur = conn.execute(
+                    "UPDATE sessions SET deleted_at = ? "
+                    "WHERE ended_at IS NOT NULL AND archived = 0 "
+                    "AND deleted_at IS NULL AND ended_at < ? AND source = ?",
+                    (now, cutoff, source),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE sessions SET deleted_at = ? "
+                    "WHERE ended_at IS NOT NULL AND archived = 0 "
+                    "AND deleted_at IS NULL AND ended_at < ?",
+                    (now, cutoff),
+                )
+            return cur.rowcount
+
+        return self._execute_write(_do)
+
+    def purge_trashed_sessions(
+        self,
+        grace_days: int = 30,
+        sessions_dir: Optional[Path] = None,
+    ) -> int:
+        """Hard-delete chats that have been in Trash longer than *grace_days*.
+
+        The back half of the soft-delete retention timer: chats soft-deleted by
+        :meth:`soft_delete_inactive_sessions` are permanently removed once their
+        ``deleted_at`` is older than the grace window. Delegates to
+        :meth:`delete_sessions` so the same safety contract applies (children
+        orphaned, on-disk transcripts cleaned up). Returns the number purged.
+        """
+        cutoff = time.time() - (grace_days * 86400)
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id FROM sessions "
+                "WHERE deleted_at IS NOT NULL AND deleted_at < ?",
+                (cutoff,),
+            ).fetchall()
+        ids = [r["id"] if isinstance(r, sqlite3.Row) else r[0] for r in rows]
+        if not ids:
+            return 0
+        return self.delete_sessions(ids, sessions_dir=sessions_dir)
+
+    def restore_session(self, session_id: str) -> bool:
+        """Restore a soft-deleted (trashed) chat by clearing ``deleted_at``.
+
+        Returns True if a trashed session with this id was found and restored.
+        """
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE sessions SET deleted_at = NULL "
+                "WHERE id = ? AND deleted_at IS NOT NULL",
+                (session_id,),
+            )
+            return cur.rowcount
+
+        return self._execute_write(_do) > 0
+
+    def count_trashed_sessions(self) -> int:
+        """Return how many chats are currently in Trash (soft-deleted)."""
+        with self._lock:
+            return self._conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE deleted_at IS NOT NULL"
+            ).fetchone()[0]
 
     # ── Meta key/value (for scheduler bookkeeping) ──
 
@@ -4198,8 +4396,25 @@ class SessionDB:
         min_interval_hours: int = 24,
         vacuum: bool = True,
         sessions_dir: Optional[Path] = None,
+        inactive_days: Optional[int] = None,
+        automated_inactive_days: Optional[int] = None,
+        automated_source: str = "cron",
+        trash_grace_days: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Idempotent auto-maintenance: prune old sessions + optional VACUUM.
+        """Idempotent auto-maintenance: prune sessions + optional VACUUM.
+
+        When *inactive_days* is set, the state-of-the-art inactivity policy is
+        used: completed chats are deleted once they have been untouched for
+        that many days (measured from ``ended_at``, via
+        :meth:`prune_inactive_sessions`); active and archived chats are kept,
+        and continuing a chat resets its clock. Otherwise the legacy age-based
+        policy (*retention_days*, measured from ``started_at``, via
+        :meth:`prune_sessions`) applies.
+
+        When *automated_inactive_days* is also set, sessions from
+        *automated_source* (default ``"cron"``) use that shorter window — a
+        tiered/source-differentiated policy (à la Slack) so ephemeral
+        automated chats are cleaned up sooner than interactive ones.
 
         Records the last run timestamp in state_meta so subsequent calls
         within ``min_interval_hours`` no-op. Designed to be called once at
@@ -4232,15 +4447,58 @@ class SessionDB:
                 except (TypeError, ValueError):
                     pass  # corrupt meta; treat as no prior run
 
-            pruned = self.prune_sessions(
-                older_than_days=retention_days,
-                sessions_dir=sessions_dir,
-            )
+            if inactive_days is not None and trash_grace_days is not None:
+                # Reversible two-phase retention: move inactive chats to Trash
+                # (soft-delete — hidden but restorable), then hard-purge Trash
+                # older than the grace window.
+                trashed = self.soft_delete_inactive_sessions(
+                    older_than_days=inactive_days,
+                )
+                if automated_inactive_days is not None and automated_source:
+                    trashed += self.soft_delete_inactive_sessions(
+                        older_than_days=automated_inactive_days,
+                        source=automated_source,
+                    )
+                result["trashed"] = trashed
+                pruned = self.purge_trashed_sessions(
+                    grace_days=trash_grace_days,
+                    sessions_dir=sessions_dir,
+                )
+            elif inactive_days is not None:
+                pruned = self.prune_inactive_sessions(
+                    older_than_days=inactive_days,
+                    sessions_dir=sessions_dir,
+                )
+                # Tier: automated (e.g. cron) chats get a shorter window. The
+                # general sweep above already removed any > inactive_days, so
+                # this only adds the automated rows aged between the two
+                # windows — no double counting.
+                if automated_inactive_days is not None and automated_source:
+                    pruned += self.prune_inactive_sessions(
+                        older_than_days=automated_inactive_days,
+                        sessions_dir=sessions_dir,
+                        source=automated_source,
+                    )
+            else:
+                pruned = self.prune_sessions(
+                    older_than_days=retention_days,
+                    sessions_dir=sessions_dir,
+                )
             result["pruned"] = pruned
+
+            # Hygiene: remove messages whose session was deleted (non-cascading
+            # deletes / interrupted prunes leave orphans that waste disk + FTS
+            # entries). Cheap; runs every sweep so it self-heals over time.
+            try:
+                orphans = self.delete_orphan_messages()
+            except Exception as exc:
+                orphans = 0
+                logger.debug("state.db orphan-message sweep failed: %s", exc)
+            result["orphan_messages"] = orphans
 
             # Only VACUUM if we actually freed rows — VACUUM on a tight DB
             # is wasted I/O. Threshold keeps small DBs from paying the cost.
-            if vacuum and pruned > 0:
+            if vacuum and (pruned > 0 or orphans > 0):
                 try:
                     self.vacuum()
                     result["vacuumed"] = True
@@ -4253,9 +4511,10 @@ class SessionDB:
 
             if pruned > 0:
                 logger.info(
-                    "state.db auto-maintenance: pruned %d session(s) older than %d days%s",
+                    "state.db auto-maintenance: pruned %d session(s) %s %d days%s",
                     pruned,
-                    retention_days,
+                    "inactive" if inactive_days is not None else "older than",
+                    inactive_days if inactive_days is not None else retention_days,
                     " + VACUUM" if result["vacuumed"] else "",
                 )
         except Exception as exc:

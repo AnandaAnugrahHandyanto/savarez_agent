@@ -2252,6 +2252,26 @@ DEFAULT_CONFIG = {
         # the sweep on every CLI invocation).  Tracked via state_meta in
         # state.db itself, so it's shared across all processes.
         "min_interval_hours": 24,
+        # State-of-the-art inactivity retention.  When set (days), the auto
+        # sweep deletes a completed chat only after it has been untouched for
+        # this many days, measured from ``ended_at`` (last activity) via
+        # SessionDB.prune_inactive_sessions — instead of the age-based
+        # retention_days (measured from creation).  Active and archived chats
+        # are never deleted; continuing a chat resets its clock.  null/None
+        # falls back to the legacy retention_days policy.
+        "delete_inactive_after_days": None,
+        # Tiered retention: automated sessions whose ``source`` matches
+        # ``automated_source`` (default "cron") use this shorter inactivity
+        # window instead of delete_inactive_after_days, so ephemeral automated
+        # chats are cleaned up sooner than interactive ones.  null/None = treat
+        # them the same as everything else.
+        "delete_automated_inactive_after_days": None,
+        "automated_source": "cron",
+        # Reversible soft-delete: when set (days), the inactivity sweep moves
+        # chats to a hidden Trash first and only hard-deletes them after this
+        # grace window — so an auto-removed chat stays restorable
+        # (restore_session) until then.  null/None = hard-delete immediately.
+        "trash_grace_days": None,
         # Legacy per-session JSON snapshot writer.  When true, the agent
         # rewrites ``~/.hermes/sessions/session_{sid}.json`` on every turn
         # boundary with the full message list.  state.db is canonical and
