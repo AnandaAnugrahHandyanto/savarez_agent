@@ -786,7 +786,7 @@ install_node() {
             ;;
     esac
 
-    # Resolve the latest v22.x.x tarball name from the index page
+    # Resolve the latest v${NODE_VERSION}.x tarball name from the index page
     local index_url="https://nodejs.org/dist/latest-v${NODE_VERSION}.x/"
     local tarball_name
     tarball_name=$(curl -fsSL "$index_url" \
