@@ -378,6 +378,14 @@ class ChatCompletionsTransport(ProviderTransport):
         # extra_body assembly
         extra_body: dict[str, Any] = {}
 
+        # Ollama-specific handling for all models using local Ollama backend.
+        _base_url_str = str(params.get("base_url") or "")
+        if ":11434" in _base_url_str:  # Local Ollama default port
+            api_kwargs["max_tokens"] = max(
+                api_kwargs.get("max_tokens", 0), 16384
+            )
+            extra_body["num_predict"] = -1
+
         is_openrouter = params.get("is_openrouter", False)
         is_nous = params.get("is_nous", False)
         is_github_models = params.get("is_github_models", False)
