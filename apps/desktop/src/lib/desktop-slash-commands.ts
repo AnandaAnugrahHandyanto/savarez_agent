@@ -97,6 +97,7 @@ const TERMINAL_ONLY_COMMANDS = new Set([
   '/snap',
   '/snapshot',
   '/statusbar',
+  '/sync',
   '/toolsets',
   '/tools',
   '/update',
