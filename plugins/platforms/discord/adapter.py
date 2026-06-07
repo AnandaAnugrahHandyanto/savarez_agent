@@ -564,6 +564,7 @@ class _DiscordEditState:
     last_seen_has_bot_mention: bool = False
     processed_due_to_edit: bool = False
     processed_triggers: set = field(default_factory=set)
+    processing_triggers: set = field(default_factory=set)
     attachment_hash: str = ""
     content_hash: str = ""
     updated_at: float = field(default_factory=time.time)
@@ -4881,10 +4882,14 @@ class DiscordAdapter(BasePlatformAdapter):
         if not should_process:
             self._record_discord_edit_state(after, processed=False)
             return
-        if state is not None and reason in state.processed_triggers:
+        if state is not None and (
+            reason in state.processed_triggers or reason in state.processing_triggers
+        ):
             logger.info("ignored message edit: already processed message_id=%s reason=%s", getattr(after, "id", None), reason)
             self._record_discord_edit_state(after, processed=False)
             return
+        state = self._record_discord_edit_state(after, processed=False)
+        state.processing_triggers.add(reason)
 
         if reason == "message_update:mention_added":
             note = "[System note: the user edited this Discord message to @mention the bot after sending it; process it normally.]"
@@ -4894,8 +4899,13 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
-        await self._handle_message(after)
-        self._record_discord_edit_state(after, processed=True, trigger_reason=reason)
+        try:
+            await self._handle_message(after)
+        except Exception:
+            state.processing_triggers.discard(reason)
+            raise
+        state = self._record_discord_edit_state(after, processed=True, trigger_reason=reason)
+        state.processing_triggers.discard(reason)
 
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
@@ -4927,20 +4937,29 @@ class DiscordAdapter(BasePlatformAdapter):
         mention_prefix = False
 
         snapshot_attachments = []
+        snapshot_text_parts = []
         if hasattr(message, "message_snapshots") and message.message_snapshots:
-            snapshot_text_parts = []
             for snap in message.message_snapshots:
                 if getattr(snap, "content", None):
                     snapshot_text_parts.append(snap.content.strip())
                 snapshot_attachments.extend(getattr(snap, "attachments", []) or [])
-            if snapshot_text_parts and not raw_content:
-                raw_content = "\n".join(snapshot_text_parts)
-                normalized_content = raw_content
         if self._client.user and self._client.user in message.mentions:
             mention_prefix = True
             normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
             normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
+        if snapshot_text_parts:
+            snapshot_text = "\n".join(part for part in snapshot_text_parts if part).strip()
+            if snapshot_text:
+                snapshot_context = f"[Referenced Discord message]\n{snapshot_text}"
+                if normalized_content:
+                    normalized_content = f"{normalized_content}\n\n{snapshot_context}"
+                else:
+                    normalized_content = snapshot_context
+                try:
+                    message.content = normalized_content
+                except Exception:
+                    pass
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:

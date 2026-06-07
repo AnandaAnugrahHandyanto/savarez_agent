@@ -1,5 +1,6 @@
 """Tests for Discord MESSAGE_UPDATE/edit-trigger handling."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -80,6 +81,31 @@ async def test_message_without_mention_then_edit_adds_mention_enqueues_once():
 
     assert adapter._handle_message.await_count == 1
     assert "edited this Discord message" in adapter._handle_message.await_args.args[0].content
+
+
+@pytest.mark.asyncio
+async def test_cached_and_raw_updates_do_not_double_enqueue_while_processing():
+    adapter = _adapter()
+    bot = adapter._client.user
+    before = _message(content="这是马后炮吗？")
+    adapter._record_discord_edit_state(before, processed=False)
+    after = _message(content="<@42> 这是马后炮吗？", mentions=[bot])
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_handle(_message):
+        started.set()
+        await release.wait()
+
+    adapter._handle_message = AsyncMock(side_effect=slow_handle)
+
+    first = asyncio.create_task(adapter._handle_message_edit(before, after, raw=False))
+    await started.wait()
+    await adapter._handle_message_edit(before, after, raw=True)
+    release.set()
+    await first
+
+    assert adapter._handle_message.await_count == 1
 
 
 @pytest.mark.asyncio
