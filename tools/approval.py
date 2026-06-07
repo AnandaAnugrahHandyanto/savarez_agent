@@ -12,6 +12,7 @@ import contextvars
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import time
@@ -544,12 +545,78 @@ def _normalize_command_for_detection(command: str) -> str:
     return command
 
 
+def _contains_shell_expansions(command: str) -> bool:
+    """Check if command contains shell expansions that bypass static analysis.
+    
+    Returns True if the command contains command substitution ($(...), `...`),
+    parameter expansion (${...}), or other dynamic shell constructs that
+    cannot be safely analyzed via regex alone.
+    """
+    # Command substitution: $(...) or `...`
+    if '$(' in command or '`' in command:
+        return True
+    # Parameter expansion with transformations: ${...}
+    # Matches patterns like ${0/x/y}, ${var:-default}, ${PARAMETER/PATTERN/REPLACEMENT}, etc.
+    if '${' in command and '}' in command:
+        # Simple check: any ${ ... } sequence is a parameter expansion
+        return True
+    return False
+
+
+def _extract_command_name(normalized_command: str) -> str:
+    """Extract the command name from a normalized command string.
+    
+    Uses shlex.split to properly parse the command and extract the first
+    token, handling quotes and special characters correctly. Falls back to
+    simple whitespace split if parsing fails.
+    
+    Returns the command name (e.g., 'rm', 'bash', 'sudo', etc.)
+    """
+    try:
+        tokens = shlex.split(normalized_command)
+        if not tokens:
+            return ""
+        
+        # Strip common wrappers: sudo, env, exec, nohup, setsid, time
+        wrappers = {'sudo', 'env', 'exec', 'nohup', 'setsid', 'time'}
+        cmd_name = tokens[0].lower()
+        
+        # If first token is a wrapper, find the actual command
+        idx = 0
+        while cmd_name in wrappers and idx < len(tokens) - 1:
+            # Skip wrapper and its arguments (env VAR=VAL, sudo -u user, etc.)
+            idx += 1
+            while idx < len(tokens) and '=' in tokens[idx]:
+                idx += 1
+            if idx < len(tokens):
+                cmd_name = tokens[idx].lower()
+            else:
+                break
+        
+        return cmd_name
+    except (ValueError, IndexError):
+        # Fallback: simple whitespace split for commands that shlex can't parse
+        parts = normalized_command.split()
+        if parts:
+            return parts[0].lower()
+        return ""
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
+
+    First checks for shell expansions that bypass static analysis (command
+    substitution, parameter expansion). Then applies regex pattern matching
+    on the normalized command.
 
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
+    # Reject commands with shell expansions that we can't analyze statically
+    if _contains_shell_expansions(command):
+        return (True, "shell expansion bypass", "command contains shell expansion (cannot be statically analyzed)")
+    
+    # Apply regex-based pattern matching on normalized command
     command_lower = _normalize_command_for_detection(command).lower()
     for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
         if pattern_re.search(command_lower):

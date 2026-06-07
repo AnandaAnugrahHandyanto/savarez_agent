@@ -896,7 +896,7 @@ class TestPgrepKillExpansion:
         cmd = 'kill -9 $(pgrep -f "hermes.*gateway")'
         dangerous, _, desc = detect_dangerous_command(cmd)
         assert dangerous is True
-        assert "pgrep" in desc.lower()
+        assert "shell expansion" in desc.lower()
 
     def test_kill_backtick_pgrep_detected(self):
         cmd = "kill -9 `pgrep hermes`"
