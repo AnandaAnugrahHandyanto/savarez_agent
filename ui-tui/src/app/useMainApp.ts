@@ -728,7 +728,7 @@ export function useMainApp(gw: GatewayClient) {
           resumeById: session.resumeById,
           setCatalog
         },
-        submission: { submitRef },
+        submission: { dispatchSubmission, submitRef },
         system: { bellOnComplete, stdout, sys },
         transcript: { appendMessage, panel, setHistoryItems },
         voice: {
@@ -742,7 +742,7 @@ export function useMainApp(gw: GatewayClient) {
       appendMessage,
       bellOnComplete,
       clearSelection,
-      composerActions.setInput,
+      dispatchSubmission,
       gateway,
       panel,
       session.newSession,

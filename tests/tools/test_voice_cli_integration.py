@@ -32,7 +32,9 @@ def _make_voice_cli(**overrides):
     cli._pending_input = queue.Queue()
     cli._app = None
     cli._attached_images = []
+    cli._test_force_direct_tts_playback = True
     cli.console = SimpleNamespace(width=80)
+    cli._prewarm_voice_transcription = MagicMock()
     for k, v in overrides.items():
         setattr(cli, k, v)
     return cli
@@ -568,24 +570,27 @@ class TestCtrlCResetsContinuousMode:
         with open("cli.py") as f:
             source = f.read()
 
-        # Find the Ctrl+C handler's voice cancel block
-        lines = source.split("\n")
-        in_cancel_block = False
-        found_continuous_reset = False
-        for i, line in enumerate(lines):
-            if "Cancel active voice recording" in line:
-                in_cancel_block = True
-            if in_cancel_block:
-                if "_voice_continuous = False" in line:
-                    found_continuous_reset = True
-                    break
-                # Block ends at next comment section or return
-                if "return" in line and in_cancel_block:
-                    break
+        # Shared cancel helper must reset continuous mode, and Ctrl+C should
+        # call that helper rather than duplicating the non-blocking cancel path.
+        from cli import HermesCLI
+        import inspect
 
-        assert found_continuous_reset, (
-            "Ctrl+C voice cancel block must set _voice_continuous = False"
-        )
+        cancel_source = inspect.getsource(HermesCLI._voice_cancel_recording)
+        assert "_voice_continuous = False" in cancel_source
+
+        lines = source.split("\n")
+        in_ctrl_c = False
+        found_helper_call = False
+        for line in lines:
+            if "def handle_ctrl_c" in line:
+                in_ctrl_c = True
+            elif in_ctrl_c and line.strip().startswith("def "):
+                break
+            elif in_ctrl_c and "_voice_cancel_recording()" in line:
+                found_helper_call = True
+                break
+
+        assert found_helper_call, "Ctrl+C must call _voice_cancel_recording()"
 
 
 class TestDisableVoiceModeStopsTTS:
@@ -838,6 +843,13 @@ class TestHandleVoiceCommandReal:
         cli._show_voice_status.assert_called_once()
 
     @patch("cli._cprint")
+    def test_status_ignores_accidentally_pasted_next_line(self, _cp):
+        cli = self._cli()
+        cli._handle_voice_command("/voice status\n/voice on")
+        cli._show_voice_status.assert_called_once()
+        cli._enable_voice_mode.assert_not_called()
+
+    @patch("cli._cprint")
     def test_toggle_off_when_enabled(self, _cp):
         cli = self._cli()
         cli._voice_mode = True
@@ -875,6 +887,7 @@ class TestEnableVoiceModeReal:
         cli = _make_voice_cli()
         cli._enable_voice_mode()
         assert cli._voice_mode is True
+        cli._prewarm_voice_transcription.assert_called_once()
 
     @patch("cli._cprint")
     def test_already_enabled_noop(self, _cp):
@@ -933,6 +946,19 @@ class TestEnableVoiceModeReal:
         cli = _make_voice_cli()
         cli._enable_voice_mode()
         assert cli._voice_mode is True
+
+    @patch("cli.threading.Thread")
+    def test_prewarm_voice_transcription_runs_in_background(self, mock_thread):
+        from cli import HermesCLI
+
+        cli = HermesCLI.__new__(HermesCLI)
+        mock_thread.return_value = MagicMock(start=MagicMock())
+
+        cli._prewarm_voice_transcription()
+
+        mock_thread.assert_called_once()
+        assert mock_thread.call_args.kwargs["daemon"] is True
+        mock_thread.return_value.start.assert_called_once()
 
 
 class TestVoiceBeepConfigReal:
@@ -1133,6 +1159,35 @@ class TestVoiceSpeakResponseReal:
         mock_play.assert_called_once()
 
 
+class TestVoiceCancelRecordingReal:
+    """Tests cancelling active voice recordings without transcription."""
+
+    @patch("cli.threading.Thread")
+    @patch("cli._cprint")
+    def test_cancel_discards_audio_and_does_not_queue_input(self, _cp, mock_thread):
+        recorder = MagicMock()
+        mock_thread.return_value = MagicMock(start=MagicMock())
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder,
+                              _voice_continuous=True)
+
+        assert cli._voice_cancel_recording() is True
+
+        assert cli._voice_recording is False
+        assert cli._voice_continuous is False
+        assert cli._pending_input.empty()
+        mock_thread.assert_called_once()
+        assert mock_thread.call_args.kwargs["target"] is recorder.cancel
+        mock_thread.return_value.start.assert_called_once()
+
+    @patch("cli.threading.Thread")
+    @patch("cli._cprint")
+    def test_cancel_returns_false_when_not_recording(self, _cp, mock_thread):
+        cli = _make_voice_cli(_voice_recording=False, _voice_recorder=MagicMock())
+
+        assert cli._voice_cancel_recording() is False
+        mock_thread.assert_not_called()
+
+
 class TestVoiceStopAndTranscribeReal:
     """Tests _voice_stop_and_transcribe with real CLI instance."""
 
@@ -1185,6 +1240,30 @@ class TestVoiceStopAndTranscribeReal:
         cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
         cli._voice_stop_and_transcribe()
         assert cli._pending_input.get_nowait() == "hello world"
+
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("hermes_cli.config.load_config", return_value={"stt": {}})
+    @patch("tools.voice_mode.transcribe_recording",
+           return_value={"success": True, "transcript": "guide this task"})
+    @patch("tools.voice_mode.play_beep")
+    def test_successful_transcription_steers_when_agent_running(
+        self, _beep, _tr, _cfg, _isf, _unl, _cp
+    ):
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/test.wav"
+        agent = MagicMock()
+        agent.steer.return_value = True
+        cli = _make_voice_cli(
+            _voice_recording=True,
+            _voice_recorder=recorder,
+            _agent_running=True,
+            agent=agent,
+        )
+        cli._voice_stop_and_transcribe()
+        agent.steer.assert_called_once_with("guide this task")
+        assert cli._pending_input.empty()
 
     @patch("cli._cprint")
     @patch("cli.os.unlink")

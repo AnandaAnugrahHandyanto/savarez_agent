@@ -264,6 +264,7 @@ export interface GatewayEventHandlerContext {
     setCatalog: StateSetter<null | SlashCatalog>
   }
   submission: {
+    dispatchSubmission: (value: string) => void
     submitRef: MutableRefObject<(value: string) => void>
   }
   system: {

@@ -9,6 +9,9 @@ Dependencies (optional):
     or: pip install hermes-agent[voice]
 """
 
+import contextlib
+import errno
+import fcntl
 import logging
 import os
 import platform
@@ -19,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 import wave
 from typing import Any, Dict, List, Optional
 
@@ -282,6 +286,18 @@ SILENCE_DURATION_SECONDS = 3.0  # Seconds of continuous silence before auto-stop
 
 # Temp directory for voice recordings
 _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_voice")
+
+
+def create_tts_output_path(temp_dir: Optional[str] = None, suffix: str = ".mp3") -> str:
+    """Return a unique, atomically reserved path for CLI/TUI TTS output."""
+    directory = temp_dir or _TEMP_DIR
+    os.makedirs(directory, exist_ok=True)
+    suffix = suffix if suffix.startswith(".") else f".{suffix}"
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    name = f"tts_{timestamp}_{time.time_ns()}_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+    fd, path = tempfile.mkstemp(prefix=f"{name}_", suffix=suffix, dir=directory)
+    os.close(fd)
+    return path
 
 
 # ============================================================================
@@ -902,6 +918,13 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
     return result
 
 
+def prewarm_transcription(model: Optional[str] = None) -> Dict[str, Any]:
+    """Warm the configured STT backend when voice mode starts."""
+    from tools.transcription_tools import prewarm_local_whisper_model
+
+    return prewarm_local_whisper_model(model=model)
+
+
 def _should_chunk_for_transcription(file_path: str, max_file_size: int) -> bool:
     """Return whether a CLI WAV recording needs to be split before STT."""
     if not file_path.lower().endswith(".wav"):
@@ -1017,6 +1040,72 @@ def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[s
 # Global reference to the active playback process so it can be interrupted.
 _active_playback: Optional[subprocess.Popen] = None
 _playback_lock = threading.Lock()
+_GLOBAL_TTS_LOCK_PATH = os.path.join(tempfile.gettempdir(), "hermes_voice", "tts_playback.lock")
+_GLOBAL_TTS_STOP_PATH = os.path.join(tempfile.gettempdir(), "hermes_voice", "tts_playback.stop")
+
+
+def _tts_stop_generation(path: Optional[str] = None) -> int:
+    """Return the current global TTS stop marker generation."""
+    marker = path or _GLOBAL_TTS_STOP_PATH
+    try:
+        return os.stat(marker).st_mtime_ns
+    except OSError:
+        return 0
+
+
+def request_global_tts_stop(path: Optional[str] = None) -> int:
+    """Signal all Hermes CLI processes to stop/skip stale TTS playback."""
+    marker = path or _GLOBAL_TTS_STOP_PATH
+    marker_dir = os.path.dirname(marker)
+    if marker_dir:
+        os.makedirs(marker_dir, exist_ok=True)
+    with open(marker, "a", encoding="utf-8") as f:
+        f.write(f"{time.time_ns()} {os.getpid()}\n")
+        f.flush()
+        os.fsync(f.fileno())
+    return _tts_stop_generation(marker)
+
+
+def stop_all_tts_playback() -> None:
+    """Interrupt local playback and ask other Hermes CLI processes to stop too."""
+    request_global_tts_stop()
+    stop_playback()
+
+
+@contextlib.contextmanager
+def global_tts_playback_lock(
+    lock_path: Optional[str] = None,
+    timeout: float = 300.0,
+    poll_interval: float = 0.05,
+):
+    """Serialize speaker playback across independent Hermes CLI processes.
+
+    Each Hermes CLI process has its own in-memory ``_voice_tts_lock``.  When
+    several CLI windows finish work at nearly the same time, those local locks
+    do not coordinate and their audio players overlap.  This advisory file lock
+    creates a simple FIFO-ish critical section around actual speaker playback:
+    later completions wait until the current TTS audio finishes.
+    """
+    path = lock_path or _GLOBAL_TTS_LOCK_PATH
+    lock_dir = os.path.dirname(path)
+    if lock_dir:
+        os.makedirs(lock_dir, exist_ok=True)
+    deadline = time.monotonic() + max(timeout, 0.0)
+    with open(path, "a+") as lock_file:
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"Timed out waiting for TTS playback lock: {path}")
+                time.sleep(poll_interval)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def stop_playback() -> None:
@@ -1039,7 +1128,7 @@ def stop_playback() -> None:
         pass
 
 
-def play_audio_file(file_path: str) -> bool:
+def play_audio_file(file_path: str, interrupt_generation: Optional[int] = None) -> bool:
     """Play an audio file through the default output device.
 
     Strategy:
@@ -1053,6 +1142,9 @@ def play_audio_file(file_path: str) -> bool:
         ``True`` if playback succeeded, ``False`` otherwise.
     """
     global _active_playback
+    playback_request_generation = (
+        _tts_stop_generation() if interrupt_generation is None else interrupt_generation
+    )
 
     if not os.path.isfile(file_path):
         logger.warning("Audio file not found: %s", file_path)
@@ -1091,27 +1183,60 @@ def play_audio_file(file_path: str) -> bool:
     if system == "Linux":
         players.append(["aplay", "-q", file_path])
 
-    for cmd in players:
-        exe = shutil.which(cmd[0])
-        if exe:
-            try:
-                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                with _playback_lock:
-                    _active_playback = proc
-                proc.wait(timeout=300)
-                with _playback_lock:
-                    _active_playback = None
-                return True
-            except subprocess.TimeoutExpired:
-                logger.warning("System player %s timed out, killing process", cmd[0])
-                proc.kill()
-                proc.wait()
-                with _playback_lock:
-                    _active_playback = None
-            except Exception as e:
-                logger.debug("System player %s failed: %s", cmd[0], e)
-                with _playback_lock:
-                    _active_playback = None
+    with global_tts_playback_lock():
+        playback_request_generation = _tts_stop_generation()
+        for cmd in players:
+            exe = shutil.which(cmd[0])
+            if exe:
+                proc = None
+                try:
+                    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    with _playback_lock:
+                        _active_playback = proc
+                    deadline = time.monotonic() + 300.0
+                    while proc.poll() is None:
+                        if _tts_stop_generation() > playback_request_generation:
+                            logger.info("Audio playback interrupted by global stop request")
+                            try:
+                                proc.terminate()
+                            except Exception:
+                                pass
+                            try:
+                                proc.wait(timeout=2)
+                            except subprocess.TimeoutExpired:
+                                proc.kill()
+                                proc.wait()
+                            with _playback_lock:
+                                if _active_playback is proc:
+                                    _active_playback = None
+                            return False
+                        if time.monotonic() >= deadline:
+                            raise subprocess.TimeoutExpired(cmd, 300)
+                        time.sleep(0.05)
+                    try:
+                        proc.wait(timeout=0)
+                    except Exception:
+                        pass
+                    with _playback_lock:
+                        if _active_playback is proc:
+                            _active_playback = None
+                    if _tts_stop_generation() > playback_request_generation:
+                        logger.info("Audio playback interrupted by global stop request")
+                        return False
+                    return True
+                except subprocess.TimeoutExpired:
+                    logger.warning("System player %s timed out, killing process", cmd[0])
+                    if proc is not None:
+                        proc.kill()
+                        proc.wait()
+                    with _playback_lock:
+                        if _active_playback is proc:
+                            _active_playback = None
+                except Exception as e:
+                    logger.debug("System player %s failed: %s", cmd[0], e)
+                    with _playback_lock:
+                        if _active_playback is proc:
+                            _active_playback = None
 
     logger.warning("No audio player available for %s", file_path)
     return False

@@ -31,7 +31,8 @@ const buildCtx = (appended: Msg[]) =>
       setCatalog: vi.fn()
     },
     submission: {
-      submitRef: { current: vi.fn() }
+      submitRef: { current: vi.fn() },
+      dispatchSubmission: vi.fn()
     },
     system: {
       bellOnComplete: false,
@@ -57,6 +58,20 @@ describe('createGatewayEventHandler', () => {
     resetTurnState()
     turnController.fullReset()
     patchUiState({ showReasoning: true })
+  })
+
+  it('routes voice transcripts through normal submission so busy-mode interrupt and steer work mid-turn', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    patchUiState({ busy: true, busyInputMode: 'interrupt', sid: 'sid-1' })
+
+    onEvent({ payload: { text: '补充一下刚才那条病例' }, type: 'voice.transcript' } as any)
+
+    expect(ctx.composer.setInput).toHaveBeenCalledWith('')
+    expect(ctx.submission.submitRef.current).not.toHaveBeenCalled()
+    expect(ctx.submission.dispatchSubmission).toHaveBeenCalledWith('补充一下刚才那条病例')
   })
 
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
