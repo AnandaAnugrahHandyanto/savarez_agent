@@ -367,13 +367,13 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
     return _TELEGRAM_COMMAND_MENTION_RE.sub(_replace, text)
 
 
-# Only auto-continue interrupted gateway turns while the interruption is fresh.
+# Only annotate interrupted gateway turns while the interruption is fresh.
 # Stale tool-tail/resume markers can otherwise revive an unrelated old task
 # after a gateway restart when the user's next message starts new work.
 #
 # The freshness signal is the timestamp of the last transcript row, which
 # ``hermes_state.get_messages`` carries on every persisted message.  This
-# handles the two auto-continue cases uniformly:
+# handles the two restart-recovery cases uniformly:
 #   * resume_pending (gateway restart/shutdown watchdog marked the session)
 #   * tool-tail     (last persisted message is a tool result the agent
 #                    never got to reply to)
@@ -4223,27 +4223,20 @@ class GatewayRunner:
     )
 
     def _schedule_resume_pending_sessions(self, platform=None) -> int:
-        """Auto-continue fresh restart-interrupted sessions after startup.
+        """Count fresh restart-interrupted sessions without synthesizing turns.
 
-        ``resume_pending`` already preserves the transcript AND the existing
-        ``_is_resume_pending`` branch in ``_handle_message_with_agent``
-        injects a reason-aware recovery system note on the next turn.  This
-        method closes the UX gap by synthesizing that next turn once
-        adapters are back online — the event text is empty so the existing
-        injection path owns the wording and we never double up.
+        ``resume_pending`` preserves the transcript and the existing
+        ``_is_resume_pending`` branch in ``_handle_message_with_agent`` injects
+        a reason-aware recovery system note on the NEXT REAL user turn.  Do not
+        manufacture an empty internal ``MessageEvent`` at gateway startup: an
+        empty synthetic turn can revive a stale compaction ``Active Task`` with
+        no current user intent, especially after a restart/shutdown in a long
+        Telegram work thread.  Leaving the flag in place lets the user's next
+        non-empty message be the authoritative anchor.
 
-        Adapters that are not yet ready (adapter missing from
-        ``self.adapters``) are skipped silently; their sessions stay
-        ``resume_pending`` and will auto-resume on the next real user
-        message, or when the platform reconnects — the reconnect watcher
-        calls this again scoped to that ``platform``.
-
-        ``platform`` (a ``Platform``) restricts the pass to sessions that
-        originated on that platform.  The reconnect path passes it so a
-        platform coming back online retries only its own sessions and never
-        re-touches another platform's in-flight recoveries.  Sessions whose
-        agent is already running are skipped regardless, so a session
-        scheduled at startup is never resumed a second time.
+        ``platform`` restricts the count to sessions from that platform.  The
+        return value is retained for observability/backward compatibility; no
+        adapter handler is invoked here.
         """
         window = _auto_continue_freshness_window()
         try:
@@ -4262,47 +4255,23 @@ class GatewayRunner:
             return 0
 
         now = datetime.now()
-        scheduled = 0
+        pending = 0
         for entry in candidates:
             marker = entry.last_resume_marked_at or entry.updated_at
             if marker is not None and (now - marker).total_seconds() > window:
                 continue
 
-            # Already being resumed (e.g. scheduled at startup and still
-            # in-flight) — don't synthesize a second continuation turn.
             if entry.session_key in self._running_agents:
                 continue
 
-            source = entry.origin
-            adapter = self.adapters.get(source.platform)
-            if adapter is None:
-                logger.debug(
-                    "Skipping auto-resume for %s: adapter not ready for %s",
-                    entry.session_key,
-                    getattr(source.platform, "value", source.platform),
-                )
-                continue
+            pending += 1
 
-            # Empty-text internal event — the _is_resume_pending branch in
-            # _handle_message_with_agent prepends the proper reason-aware
-            # system note before the turn runs.
-            event = MessageEvent(
-                text="",
-                message_type=MessageType.TEXT,
-                source=source,
-                internal=True,
-            )
-            task = asyncio.create_task(adapter.handle_message(event))
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
-            scheduled += 1
-
-        if scheduled:
+        if pending:
             logger.info(
-                "Scheduled auto-resume for %d restart-interrupted session(s)",
-                scheduled,
+                "Detected %d restart-interrupted session(s); waiting for next real user message to resume",
+                pending,
             )
-        return scheduled
+        return pending
 
     async def start(self) -> bool:
         """
@@ -18373,11 +18342,12 @@ class GatewayRunner:
             if _msn:
                 message = _msn + "\n\n" + message
 
-            # Auto-continue: if the loaded history ends with a tool result,
+            # Restart recovery: if the loaded history ends with a tool result,
             # the previous agent turn was interrupted mid-work (gateway
             # restart, crash, SIGTERM).  Prepend a system note so the model
-            # finishes processing the pending tool results before addressing
-            # the user's new message.  (#4493)
+            # can process TRUE pending tool results before addressing the
+            # user's new message.  Do not treat stale compaction summaries or
+            # saved Active Task text as fresh instructions.  (#4493)
             #
             # Session-level resume_pending (set on drain-timeout shutdown)
             # escalates the wording — the transcript's last role may be
@@ -18394,7 +18364,7 @@ class GatewayRunner:
             # ``timestamp`` field off tool/tool_call rows for API purity
             # (see the `k != "timestamp"` filter above).  Rows without a
             # timestamp (legacy transcripts) are treated as fresh so the
-            # historical auto-continue behaviour is preserved.
+            # historical recovery-note behaviour is preserved.
             _freshness_window = _auto_continue_freshness_window()
             _interruption_is_fresh = _is_fresh_gateway_interruption(
                 _last_transcript_timestamp(history),
@@ -18430,9 +18400,10 @@ class GatewayRunner:
                 message = (
                     f"[System note: Your previous turn in this session was interrupted "
                     f"by {_reason_phrase}. The conversation history below is intact. "
-                    f"If it contains unfinished tool result(s), process them first and "
-                    f"summarize what was accomplished, then address the user's new "
-                    f"message below.]\n\n"
+                    f"If it contains real unfinished tool result(s), process those first "
+                    f"and summarize what was accomplished. Do not treat compacted "
+                    f"summary Active Task text or stale saved plans as a new instruction. "
+                    f"The latest non-empty user message below is authoritative.]\n\n"
                     + message
                 )
             elif _has_fresh_tool_tail:
@@ -18440,8 +18411,9 @@ class GatewayRunner:
                     "[System note: Your previous turn was interrupted before you could "
                     "process the last tool result(s). The conversation history contains "
                     "tool outputs you haven't responded to yet. Please finish processing "
-                    "those results and summarize what was accomplished, then address the "
-                    "user's new message below.]\n\n"
+                    "those real tool results and summarize what was accomplished. Do not "
+                    "treat compacted summary Active Task text or stale saved plans as a new "
+                    "instruction; the latest non-empty user message below is authoritative.]\n\n"
                     + message
                 )
 

@@ -860,11 +860,11 @@ async def test_drain_timeout_skips_pending_sentinel_sessions():
 
 
 @pytest.mark.asyncio
-async def test_startup_auto_resume_schedules_fresh_pending_sessions():
-    """Fresh resume_pending sessions should continue automatically after startup.
+async def test_startup_auto_resume_counts_without_synthesizing_empty_turns():
+    """Fresh resume_pending sessions wait for the next real user message.
 
-    This closes the UX gap where restart recovery only happened if the user sent
-    another message after the gateway came back.
+    Gateway startup must not synthesize an empty internal message: doing so can
+    revive stale compaction Active Task state without a current user anchor.
     """
     runner, adapter = make_restart_runner()
     source = make_restart_source(chat_id="resume-chat", thread_id="topic-1")
@@ -887,26 +887,16 @@ async def test_startup_auto_resume_schedules_fresh_pending_sessions():
     await asyncio.sleep(0)
 
     assert scheduled == 1
-    adapter.handle_message.assert_awaited_once()
-    event = adapter.handle_message.await_args.args[0]
-    assert isinstance(event, MessageEvent)
-    assert event.internal is True
-    assert event.message_type == MessageType.TEXT
-    assert event.source == source
-    # Text is empty — the existing _is_resume_pending branch in
-    # _handle_message_with_agent owns the system-note injection so we don't
-    # double it up.
-    assert event.text == ""
+    adapter.handle_message.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_startup_auto_resume_includes_crash_recovery():
-    """Crash-recovered sessions (reason=restart_interrupted) are also auto-resumed.
+async def test_startup_resume_pending_count_includes_crash_recovery():
+    """Crash-recovered sessions (reason=restart_interrupted) are counted.
 
     suspend_recently_active() marks in-flight sessions with resume_reason
     "restart_interrupted" when the previous gateway exit was not clean
-    (crash/SIGKILL/OOM).  These should get the same magic continuation as
-    drain-timeout interruptions.
+    (crash/SIGKILL/OOM).  They should stay pending until a real user message.
     """
     runner, adapter = make_restart_runner()
     source = make_restart_source(chat_id="crash-chat")
@@ -929,7 +919,7 @@ async def test_startup_auto_resume_includes_crash_recovery():
     await asyncio.sleep(0)
 
     assert scheduled == 1
-    adapter.handle_message.assert_awaited_once()
+    adapter.handle_message.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1035,7 +1025,7 @@ async def test_startup_auto_resume_skips_disallowed_reasons():
 
 
 @pytest.mark.asyncio
-async def test_startup_auto_resume_skips_when_adapter_unavailable():
+async def test_startup_resume_pending_count_is_adapter_independent():
     runner, adapter = make_restart_runner()
     source = make_restart_source(chat_id="resume-chat")
     pending_entry = SessionEntry(
@@ -1056,20 +1046,16 @@ async def test_startup_auto_resume_skips_when_adapter_unavailable():
 
     scheduled = runner._schedule_resume_pending_sessions()
 
-    assert scheduled == 0
+    assert scheduled == 1
     adapter.handle_message.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_reconnect_reschedules_pending_after_late_platform_connect():
-    """A platform offline at startup gets its pending sessions auto-resumed
-    once it reconnects.
+async def test_reconnect_pending_sessions_still_wait_for_real_user_message():
+    """Platform reconnect should not synthesize an empty continuation turn.
 
-    Regression: the startup pass skips sessions whose adapter isn't connected
-    yet (see test_startup_auto_resume_skips_when_adapter_unavailable). Before
-    the fix those sessions were never rescheduled and recovered only if the
-    user sent a fresh message — the documented startup auto-resume silently
-    dropped. The reconnect watcher now retries the platform-scoped pass.
+    The pending marker remains the recovery mechanism; the next real user
+    message owns intent and receives the restart-recovery note.
     """
     runner, adapter = make_restart_runner()
     source = make_restart_source(chat_id="late-chat")
@@ -1088,30 +1074,25 @@ async def test_reconnect_reschedules_pending_after_late_platform_connect():
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
     adapter.handle_message = AsyncMock()
 
-    # Platform was not connected at gateway startup → session skipped.
+    # Platform was not connected at gateway startup, but counting is adapter
+    # independent because no synthetic turn will be scheduled either way.
     runner.adapters = {}
-    assert runner._schedule_resume_pending_sessions() == 0
+    assert runner._schedule_resume_pending_sessions() == 1
     adapter.handle_message.assert_not_called()
 
-    # Platform reconnects → its pending session is retried.
+    # Platform reconnects → the pending session is still only counted.
     runner.adapters = {Platform.TELEGRAM: adapter}
     scheduled = runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
     await asyncio.sleep(0)
 
     assert scheduled == 1
-    adapter.handle_message.assert_awaited_once()
-    event = adapter.handle_message.await_args.args[0]
-    assert isinstance(event, MessageEvent)
-    assert event.internal is True
-    assert event.message_type == MessageType.TEXT
-    assert event.text == ""
-    assert event.source == source
+    adapter.handle_message.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_reconnect_reschedule_is_platform_scoped():
     """The platform filter limits the pass to that platform's sessions, so
-    reconnecting one platform never resumes another's pending session."""
+    reconnecting one platform never counts another's pending session."""
     runner, adapter = make_restart_runner()
     tg_source = make_restart_source(chat_id="tg-chat")
     discord_source = SessionSource(
@@ -1151,12 +1132,10 @@ async def test_reconnect_reschedule_is_platform_scoped():
     scheduled = runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
     await asyncio.sleep(0)
 
-    # Only the telegram session is resumed; the discord session waits for its
-    # own reconnect.
+    # Only the telegram session is counted; the discord session waits for its
+    # own reconnect / next real user message.
     assert scheduled == 1
-    adapter.handle_message.assert_awaited_once()
-    event = adapter.handle_message.await_args.args[0]
-    assert event.source == tg_source
+    adapter.handle_message.assert_not_called()
 
 
 @pytest.mark.asyncio
