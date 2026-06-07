@@ -809,7 +809,7 @@ class ContextCompressor(ContextEngine):
                 msg_tokens = content_len // _CHARS_PER_TOKEN + 10
                 for tc in msg.get("tool_calls") or []:
                     if isinstance(tc, dict):
-                        args = tc.get("function", {}).get("arguments", "")
+                        args = (tc.get("function") or {}).get("arguments", "")
                         msg_tokens += len(args) // _CHARS_PER_TOKEN
                 if accumulated + msg_tokens > protect_tail_tokens and (len(result) - i) >= min_protect:
                     boundary = i
@@ -907,7 +907,7 @@ class ContextCompressor(ContextEngine):
             modified = False
             for tc in msg["tool_calls"]:
                 if isinstance(tc, dict):
-                    args = tc.get("function", {}).get("arguments", "")
+                    args = (tc.get("function") or {}).get("arguments", "")
                     if len(args) > 500:
                         new_args = _truncate_tool_call_args_json(args)
                         if new_args != args:
@@ -1810,7 +1810,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # Include tool call arguments in estimate
             for tc in msg.get("tool_calls") or []:
                 if isinstance(tc, dict):
-                    args = tc.get("function", {}).get("arguments", "")
+                    args = (tc.get("function") or {}).get("arguments", "")
                     msg_tokens += len(args) // _CHARS_PER_TOKEN
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:

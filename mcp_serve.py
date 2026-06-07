@@ -166,7 +166,7 @@ def _extract_attachments(msg: dict) -> List[dict]:
                 if url:
                     attachments.append({"type": "image", "url": url})
             elif ptype == "image":
-                url = part.get("url", part.get("source", {}).get("url", ""))
+                url = part.get("url", (part.get("source") or {}).get("url", ""))
                 if url:
                     attachments.append({"type": "image", "url": url})
             elif ptype not in {"text",}:

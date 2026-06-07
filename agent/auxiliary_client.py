@@ -1057,7 +1057,7 @@ class _AnthropicCompletionsAdapter:
         elif isinstance(tool_choice, dict):
             choice_type = str(tool_choice.get("type", "")).lower()
             if choice_type == "function":
-                normalized_tool_choice = tool_choice.get("function", {}).get("name")
+                normalized_tool_choice = (tool_choice.get("function") or {}).get("name")
             elif choice_type in {"auto", "required", "none"}:
                 normalized_tool_choice = choice_type
 
