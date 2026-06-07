@@ -10,7 +10,10 @@ E (_implementer_enabled flag) · F (_default_spawn 분기 + m2_supervisor) 를
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -343,9 +346,10 @@ def _mock_spawn_capture_factory(staged_src: str):
         # capture 본(부모전용)
         cap = Path(cap_dir) / Path(leaf).name
         cap.write_text(staged_src, encoding="utf-8")
+        # reap 계약(F2): mkdtemp는 0700·현재 uid·workspace 밖 → F3 검증도 통과.
         return {"rc": 0, "stdout": "WORKER_DONE", "stderr": "",
                 "capture": {leaf: {"captured": str(cap)}},
-                "capture_dir": cap_dir}
+                "capture_dir": cap_dir, "reaped": True}
     return _fn
 
 
@@ -431,3 +435,302 @@ def test_dispatch_refuses_implementer_when_flag_off_even_with_profile(
             "AND kind IN ('spawn_failed', 'auto_blocked')", (tid,)
         ).fetchone()[0]
         assert ev >= 1
+
+
+# ===========================================================================
+# Phase 1 (F2) — supervise reap 계약: reaped 마커 없으면 fail-closed
+# ===========================================================================
+def _spawn_returning(extra: dict, *, staged_src="x = 1\n", cap_dir_factory=None):
+    """capture_dir/reaped 등 반환 필드를 시험용으로 주입하는 mock spawn 팩토리."""
+    def _fn(task, workspace, declared_leaves, *, proxy_sock, timeout=None):
+        if cap_dir_factory is None:
+            cap_dir = tempfile.mkdtemp(prefix="m2cap_adv_")
+        else:
+            cap_dir = cap_dir_factory(workspace)
+        leaf = declared_leaves[0]
+        Path(leaf).parent.mkdir(parents=True, exist_ok=True)
+        Path(leaf).write_text(staged_src, encoding="utf-8")
+        cap = Path(cap_dir) / Path(leaf).name
+        try:
+            cap.write_text(staged_src, encoding="utf-8")
+        except OSError:
+            pass
+        base = {"rc": 0, "stdout": "", "stderr": "",
+                "capture": {leaf: {"captured": str(cap)}},
+                "capture_dir": cap_dir}
+        base.update(extra)
+        return base
+    return _fn
+
+
+def test_supervise_fails_closed_without_reap_marker(kanban_home, tmp_path):
+    ws = tmp_path / "ws"; ws.mkdir()
+    deliverable = "proposal/MERGE_PROPOSAL.json"
+    with kb.connect() as conn:
+        tid = _make_impl_task(conn, ws, deliverable)
+        kb.record_plan_submission(conn, tid, WRITE_PLAN)
+        task = kb.get_task(conn, tid)
+        res = m2_supervisor.supervise(
+            conn, task, str(ws),
+            declared_writes=["source_staging/gen.py"],
+            deliverable=deliverable,
+            spawn_capture_fn=_spawn_returning({}),  # reaped 마커 누락
+            codex_review_fn=lambda staged: {"verdict": "PASS", "high": 0},
+            timeout=10,
+        )
+        assert res["completed"] is False
+        assert res.get("error") == "reap_contract_violation"
+        assert kb.get_task(conn, tid).status != "done"
+
+
+def test_supervise_fails_closed_on_false_reap_marker(kanban_home, tmp_path):
+    ws = tmp_path / "ws"; ws.mkdir()
+    deliverable = "proposal/MERGE_PROPOSAL.json"
+    with kb.connect() as conn:
+        tid = _make_impl_task(conn, ws, deliverable)
+        kb.record_plan_submission(conn, tid, WRITE_PLAN)
+        task = kb.get_task(conn, tid)
+        res = m2_supervisor.supervise(
+            conn, task, str(ws),
+            declared_writes=["source_staging/gen.py"],
+            deliverable=deliverable,
+            spawn_capture_fn=_spawn_returning({"reaped": "yes"}),  # is True 아님
+            codex_review_fn=lambda staged: {"verdict": "PASS", "high": 0},
+            timeout=10,
+        )
+        assert res["completed"] is False
+        assert res.get("error") == "reap_contract_violation"
+
+
+def test_supervise_passes_timeout_to_spawn(kanban_home, tmp_path):
+    ws = tmp_path / "ws"; ws.mkdir()
+    deliverable = "proposal/MERGE_PROPOSAL.json"
+    seen = {}
+
+    def _fn(task, workspace, declared_leaves, *, proxy_sock, timeout=None):
+        seen["timeout"] = timeout
+        cap_dir = tempfile.mkdtemp(prefix="m2cap_to_")
+        leaf = declared_leaves[0]
+        Path(leaf).parent.mkdir(parents=True, exist_ok=True)
+        Path(leaf).write_text("x = 1\n", encoding="utf-8")
+        cap = Path(cap_dir) / Path(leaf).name
+        cap.write_text("x = 1\n", encoding="utf-8")
+        return {"rc": 0, "capture": {leaf: {"captured": str(cap)}},
+                "capture_dir": cap_dir, "reaped": True}
+
+    with kb.connect() as conn:
+        tid = _make_impl_task(conn, ws, deliverable)
+        kb.record_plan_submission(conn, tid, WRITE_PLAN)
+        task = kb.get_task(conn, tid)
+        m2_supervisor.supervise(
+            conn, task, str(ws),
+            declared_writes=["source_staging/gen.py"],
+            deliverable=deliverable,
+            spawn_capture_fn=_fn,
+            codex_review_fn=lambda staged: {"verdict": "PASS", "high": 0},
+            timeout=137,
+        )
+    assert seen["timeout"] == 137
+
+
+# ===========================================================================
+# Phase 2 (F3) — capture_dir 신뢰 전 검증: 악성 capture_dir 거부
+# ===========================================================================
+def _supervise_with_capture_dir(conn, tid, ws, deliverable, cap_dir_factory,
+                                monkeypatch=None):
+    task = kb.get_task(conn, tid)
+    return m2_supervisor.supervise(
+        conn, task, str(ws),
+        declared_writes=["source_staging/gen.py"],
+        deliverable=deliverable,
+        spawn_capture_fn=_spawn_returning({"reaped": True},
+                                          cap_dir_factory=cap_dir_factory),
+        codex_review_fn=lambda staged: {"verdict": "PASS", "high": 0},
+        timeout=10,
+    )
+
+
+def test_supervise_rejects_capture_dir_inside_workspace(kanban_home, tmp_path):
+    ws = tmp_path / "ws"; ws.mkdir()
+    deliverable = "proposal/MERGE_PROPOSAL.json"
+
+    def _inside(workspace):
+        d = Path(workspace) / "evil_cap"
+        d.mkdir(mode=0o700, exist_ok=True)
+        return str(d)
+
+    with kb.connect() as conn:
+        tid = _make_impl_task(conn, ws, deliverable)
+        kb.record_plan_submission(conn, tid, WRITE_PLAN)
+        res = _supervise_with_capture_dir(conn, tid, ws, deliverable, _inside)
+        assert res["completed"] is False
+        assert res.get("error") == "capture_dir_untrusted"
+        assert "workspace 내부" in (res.get("reason") or "")
+        assert kb.get_task(conn, tid).status != "done"
+
+
+def test_supervise_rejects_capture_dir_bad_mode(kanban_home, tmp_path):
+    ws = tmp_path / "ws"; ws.mkdir()
+    deliverable = "proposal/MERGE_PROPOSAL.json"
+
+    def _loose(workspace):
+        d = tempfile.mkdtemp(prefix="m2cap_777_")
+        os.chmod(d, 0o777)
+        return d
+
+    with kb.connect() as conn:
+        tid = _make_impl_task(conn, ws, deliverable)
+        kb.record_plan_submission(conn, tid, WRITE_PLAN)
+        res = _supervise_with_capture_dir(conn, tid, ws, deliverable, _loose)
+        assert res["completed"] is False
+        assert res.get("error") == "capture_dir_untrusted"
+        assert "mode" in (res.get("reason") or "")
+
+
+def test_supervise_rejects_capture_dir_symlink(kanban_home, tmp_path):
+    ws = tmp_path / "ws"; ws.mkdir()
+    deliverable = "proposal/MERGE_PROPOSAL.json"
+
+    def _symlinked(workspace):
+        real = tempfile.mkdtemp(prefix="m2cap_real_")
+        os.chmod(real, 0o700)
+        link = real + "_link"
+        os.symlink(real, link)
+        return link
+
+    with kb.connect() as conn:
+        tid = _make_impl_task(conn, ws, deliverable)
+        kb.record_plan_submission(conn, tid, WRITE_PLAN)
+        res = _supervise_with_capture_dir(conn, tid, ws, deliverable, _symlinked)
+        assert res["completed"] is False
+        assert res.get("error") == "capture_dir_untrusted"
+        assert "symlink" in (res.get("reason") or "")
+
+
+def test_supervise_rejects_capture_dir_wrong_owner(kanban_home, tmp_path, monkeypatch):
+    ws = tmp_path / "ws"; ws.mkdir()
+    deliverable = "proposal/MERGE_PROPOSAL.json"
+    # 소유자 검증: 현재 uid를 가짜로 바꿔(실 디렉토리 uid≠가짜) 거부 유도.
+    monkeypatch.setattr(os, "getuid", lambda: 999_999)
+
+    def _good(workspace):
+        d = tempfile.mkdtemp(prefix="m2cap_owner_")
+        os.chmod(d, 0o700)
+        return d
+
+    with kb.connect() as conn:
+        tid = _make_impl_task(conn, ws, deliverable)
+        kb.record_plan_submission(conn, tid, WRITE_PLAN)
+        res = _supervise_with_capture_dir(conn, tid, ws, deliverable, _good)
+        assert res["completed"] is False
+        assert res.get("error") == "capture_dir_untrusted"
+        assert "소유자" in (res.get("reason") or "")
+
+
+def test_validate_capture_dir_accepts_clean_tmp(tmp_path):
+    ws = tmp_path / "ws"; ws.mkdir()
+    d = tempfile.mkdtemp(prefix="m2cap_clean_")
+    os.chmod(d, 0o700)
+    ok, reason = m2_supervisor._validate_capture_dir(d, str(ws))
+    assert ok is True, reason
+    shutil.rmtree(d, ignore_errors=True)
+
+
+# ===========================================================================
+# Phase 3 — 게이트 우회 시도: run_id 불일치 / staged 심링크·하드링크
+# ===========================================================================
+def test_m2_gate_fails_closed_on_run_id_mismatch(kanban_home, tmp_path):
+    # capture는 run 111에 기록됐는데 태스크 current_run_id는 777 → stale 차단.
+    ws = tmp_path / "ws"; ws.mkdir()
+    _write_deliverable(ws)
+    staged = tmp_path / "cap" / "gen.py"
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_text("x = 1\n", encoding="utf-8")
+    with kb.connect() as conn:
+        tid = _make_impl_task(conn, ws)
+        kb.record_plan_submission(conn, tid, WRITE_PLAN)
+        with kb.write_txn(conn):
+            kb._append_event(conn, tid, "m2_supervisor_capture", {
+                "phase2_result": {"ok": True, "changed": [str(staged)]},
+                "codex_verdict": {"verdict": "PASS", "high": 0},
+                "staged_files": [str(staged)],
+            }, run_id=111)
+            conn.execute("UPDATE tasks SET current_run_id = 777 WHERE id = ?", (tid,))
+        with pytest.raises(kb.VerificationFailedError) as ei:
+            kb.complete_task(conn, tid, result="x")
+        types = {f["type"] for f in ei.value.findings if not f["ok"]}
+        assert {"writes_match_manifest", "codex_review_passed", "proposal_inert"} <= types
+
+
+def test_m2_gate_blocks_on_hardlink_staged(kanban_home, tmp_path):
+    ws = tmp_path / "ws"; ws.mkdir()
+    _write_deliverable(ws)
+    orig = tmp_path / "cap" / "gen.py"
+    orig.parent.mkdir(parents=True, exist_ok=True)
+    orig.write_text("x = 1\n", encoding="utf-8")
+    hard = tmp_path / "cap" / "hard.py"
+    os.link(orig, hard)  # nlink=2 → 외부 clobber 위험
+    with kb.connect() as conn:
+        tid = _make_impl_task(conn, ws)
+        kb.record_plan_submission(conn, tid, WRITE_PLAN)
+        _record_capture(
+            conn, tid,
+            phase2={"ok": True, "changed": [str(hard)]},
+            verdict={"verdict": "PASS", "high": 0},
+            staged_files=[str(hard)],
+        )
+        with pytest.raises(kb.VerificationFailedError) as ei:
+            kb.complete_task(conn, tid, result="x")
+        assert any(f["type"] == "proposal_inert" and not f["ok"]
+                   for f in ei.value.findings)
+
+
+def test_m2_gate_blocks_on_symlink_staged(kanban_home, tmp_path):
+    ws = tmp_path / "ws"; ws.mkdir()
+    _write_deliverable(ws)
+    orig = tmp_path / "cap" / "gen.py"
+    orig.parent.mkdir(parents=True, exist_ok=True)
+    orig.write_text("x = 1\n", encoding="utf-8")
+    sym = tmp_path / "cap" / "sym.py"
+    sym.symlink_to(orig)  # symlink staged → target 추종 차단
+    with kb.connect() as conn:
+        tid = _make_impl_task(conn, ws)
+        kb.record_plan_submission(conn, tid, WRITE_PLAN)
+        _record_capture(
+            conn, tid,
+            phase2={"ok": True, "changed": [str(sym)]},
+            verdict={"verdict": "PASS", "high": 0},
+            staged_files=[str(sym)],
+        )
+        with pytest.raises(kb.VerificationFailedError) as ei:
+            kb.complete_task(conn, tid, result="x")
+        assert any(f["type"] == "proposal_inert" and not f["ok"]
+                   for f in ei.value.findings)
+
+
+# ===========================================================================
+# Phase 3 — m2_spawn.run_and_capture reaped 마커 + 안전 capture_dir (실 reap)
+# ===========================================================================
+def test_run_and_capture_marks_reaped_and_secure_dir(tmp_path):
+    from hermes_cli import m2_spawn
+    ws = tmp_path / "ws"
+    (ws / "source_staging").mkdir(parents=True)
+    leaf = str(ws / "source_staging" / "gen.py")
+    cmd = ["/bin/sh", "-c", "printf 'x = 1\\n' > " + leaf]
+    res = m2_spawn.run_and_capture(
+        cmd, dict(os.environ), timeout=10,
+        declared_leaves=[leaf], workspace=str(ws))
+    try:
+        assert res["reaped"] is True
+        cap = res["capture_dir"]
+        st = os.stat(cap)
+        import stat as _s
+        assert _s.S_IMODE(st.st_mode) == 0o700
+        cdr = os.path.realpath(cap)
+        wsr = os.path.realpath(str(ws))
+        assert cdr != wsr and not cdr.startswith(wsr + os.sep)
+        # supervise의 F3 검증도 통과해야 한다(실 경로 적합성).
+        ok, reason = m2_supervisor._validate_capture_dir(cap, str(ws))
+        assert ok is True, reason
+    finally:
+        shutil.rmtree(res.get("capture_dir"), ignore_errors=True)

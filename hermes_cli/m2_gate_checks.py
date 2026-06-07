@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat as _stat
 from pathlib import Path
 
 from hermes_cli import m2_manifest_validate as mv  # noqa: E402  (FORBIDDEN_CORE_FRAGMENTS 재사용)
@@ -114,6 +115,12 @@ def proposal_inert(staged_files):
             hard.append(f"부수효과 파일명: {name}")
         try:
             st = os.lstat(p)
+            # Codex M2-R1 F3 확장: symlink staged 거부(target 추종 차단). capture
+            # 단계가 이미 symlink leaf를 거부하지만, 게이트 입력이 직접 주입돼도
+            # fail-closed 되도록 2차 방어. 추종하지 않고 즉시 hard 처리.
+            if _stat.S_ISLNK(st.st_mode):
+                hard.append(f"symlink staged: {name}")
+                continue
             if st.st_nlink > 1:                          # Codex M2 #3: 하드링크 산출물 거부
                 hard.append(f"하드링크(st_nlink={st.st_nlink}): {name}")
             if st.st_mode & 0o111:

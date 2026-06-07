@@ -74,6 +74,42 @@ def _no_proxy(*_a, **_k):
     yield None
 
 
+def _validate_capture_dir(capture_dir: Optional[str], workspace: str) -> tuple[bool, Optional[str]]:
+    """F3 하드닝(Codex M2-R1 #3): ``run["capture_dir"]`` 를 **신뢰하기 전에** 검증.
+
+    capture_dir은 부모전용 임시여야 한다. 다음을 모두 만족해야 신뢰:
+      ① symlink 아님 + 실존 디렉토리
+      ② realpath가 workspace **밖**(내부/경계면 rmtree·capture clobber 위험)
+      ③ mode == 0o700 (group/other 접근 차단)
+      ④ 소유자 uid == 현재 프로세스 uid
+
+    위반 시 (False, 사유). supervise는 fail-closed(complete_task 미호출).
+    실 경로는 ``m2_spawn.run_and_capture`` 가 workspace 밖 mkdtemp(0700)로 만든다.
+    """
+    import stat as _stat
+
+    if not capture_dir:
+        return False, "capture_dir 없음"
+    if os.path.islink(capture_dir):
+        return False, f"capture_dir가 symlink: {capture_dir}"
+    if not os.path.isdir(capture_dir):
+        return False, f"capture_dir가 디렉토리 아님: {capture_dir}"
+    cd = os.path.realpath(capture_dir)
+    wsr = os.path.realpath(workspace)
+    if cd == wsr or cd.startswith(wsr + os.sep):
+        return False, f"capture_dir가 workspace 내부: {cd}"
+    try:
+        st = os.stat(cd)
+    except OSError as exc:
+        return False, f"capture_dir stat 실패: {exc}"
+    mode = _stat.S_IMODE(st.st_mode)
+    if mode != 0o700:
+        return False, f"capture_dir mode {oct(mode)} != 0o700"
+    if st.st_uid != os.getuid():
+        return False, f"capture_dir 소유자 uid {st.st_uid} != {os.getuid()}"
+    return True, None
+
+
 # ---------------------------------------------------------------------------
 # core — 감독 1회 실행
 # ---------------------------------------------------------------------------
@@ -124,6 +160,25 @@ def supervise(
                 task, ws, declared_leaves, proxy_sock=proxy_sock, timeout=timeout,
             )
         capture_dir = run.get("capture_dir")
+        result["capture_dir"] = capture_dir
+
+        # F2(reap 계약): capture는 reap 이후 고정돼야 한다. spawn_capture_fn이
+        # reaped=True 마커를 돌려주지 않으면 capture를 신뢰하지 않고 fail-closed
+        # (complete_task 미호출). m2_spawn.run_and_capture가 이 마커를 보장한다.
+        if run.get("reaped") is not True:
+            result["completed"] = False
+            result["error"] = "reap_contract_violation"
+            result["reason"] = "spawn_capture_fn이 reaped=True를 반환하지 않음 → fail-closed"
+            return result
+
+        # F3(capture_dir 신뢰 전 검증): workspace 밖·0700·현재 uid 소유 확인.
+        cd_ok, cd_reason = _validate_capture_dir(capture_dir, ws)
+        if not cd_ok:
+            result["completed"] = False
+            result["error"] = "capture_dir_untrusted"
+            result["reason"] = cd_reason
+            return result
+
         capture = run.get("capture") or {}
         captured = m2_spawn.captured_paths(capture) if capture else (
             run.get("captured_paths") or []

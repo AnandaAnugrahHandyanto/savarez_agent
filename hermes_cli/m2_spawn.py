@@ -96,8 +96,12 @@ def run_and_capture(cmd, env, *, timeout: int, declared_leaves, capture_dir=None
     # 정상 종료여도 그룹 잔존 자식 제거(TOCTOU 사후 write 차단) → 즉시 capture
     _reap(proc.pid)
     capture = mp.capture_leaves(declared_leaves, cap_dir, workspace=workspace)
+    # **reap 계약 마커(Codex M2-R1 F2)**: capture가 reap 이후 고정됐음을 구조적으로
+    # 알린다. supervise는 이 마커가 True가 아니면 fail-closed(capture를 신뢰하지
+    # 않고 complete_task를 호출하지 않음). 이 자리에 오기까지 위 두 _reap이 모두
+    # 실행됐음을 함수 흐름이 보장한다.
     return {"rc": rc, "stdout": out or "", "stderr": err or "",
-            "capture": capture, "capture_dir": cap_dir}
+            "capture": capture, "capture_dir": cap_dir, "reaped": True}
 
 
 def captured_paths(capture: dict) -> list[str]:
