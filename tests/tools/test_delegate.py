@@ -11,8 +11,10 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import sys
 import threading
 import time
+import types
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -31,6 +33,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _load_config,
 )
 
 
@@ -367,6 +370,45 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_key"], parent.api_key)
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
+
+    def test_explicit_child_endpoint_does_not_inherit_parent_fallback_chain(self):
+        parent = _make_mock_parent(depth=0)
+        parent.base_url = "https://parent.example/v1"
+        parent.api_key = "parent-key"
+        parent.provider = "custom"
+        parent._fallback_chain = [
+            {
+                "provider": "custom",
+                "model": "parent-fallback-model",
+                "base_url": "https://parent.example/v1",
+            }
+        ]
+
+        with patch("tools.delegate_tool._load_config", return_value={}):
+            with patch("run_agent.AIAgent") as MockAgent:
+                mock_child = MagicMock()
+                MockAgent.return_value = mock_child
+
+                _build_child_agent(
+                    task_index=0,
+                    goal="Use worker endpoint",
+                    context=None,
+                    toolsets=None,
+                    model="worker-model",
+                    max_iterations=10,
+                    parent_agent=parent,
+                    task_count=1,
+                    override_provider="custom",
+                    override_base_url="https://worker.example/v1",
+                    override_api_key="worker-key",
+                    override_api_mode="chat_completions",
+                )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "worker-model")
+        self.assertEqual(kwargs["base_url"], "https://worker.example/v1")
+        self.assertEqual(kwargs["api_key"], "worker-key")
+        self.assertIsNone(kwargs["fallback_model"])
 
     def test_child_inherits_parent_print_fn(self):
         parent = _make_mock_parent(depth=0)
@@ -850,6 +892,32 @@ class TestBlockedTools(unittest.TestCase):
 
 class TestDelegationCredentialResolution(unittest.TestCase):
     """Tests for provider:model credential resolution in delegation config."""
+
+    def test_load_config_prefers_persistent_delegation_over_cached_cli_config(self):
+        fake_cli = types.SimpleNamespace(
+            CLI_CONFIG={
+                "delegation": {
+                    "model": "stale-model",
+                    "provider": "",
+                }
+            }
+        )
+        persistent_cfg = {
+            "delegation": {
+                "model": "worker-model",
+                "provider": "",
+                "base_url": "https://worker.example/v1",
+                "api_key": "worker-key",
+            }
+        }
+
+        with patch.dict(sys.modules, {"cli": fake_cli}):
+            with patch("hermes_cli.config.load_config", return_value=persistent_cfg):
+                cfg = _load_config()
+
+        self.assertEqual(cfg["model"], "worker-model")
+        self.assertEqual(cfg["base_url"], "https://worker.example/v1")
+        self.assertEqual(cfg["api_key"], "worker-key")
 
     def test_no_provider_returns_none_credentials(self):
         """When delegation.provider is empty, all credentials are None (inherit parent)."""
@@ -1453,7 +1521,8 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
         self.assertIsNone(result)
 
-    def test_build_child_agent_assigns_parent_pool_when_shared(self):
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_build_child_agent_assigns_parent_pool_when_shared(self, mock_cfg):
         parent = _make_mock_parent()
         mock_pool = MagicMock()
         parent._credential_pool = mock_pool
@@ -1474,6 +1543,35 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
             )
 
             self.assertEqual(mock_child._credential_pool, mock_pool)
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={"base_url": "https://worker.example/v1"},
+    )
+    def test_direct_endpoint_does_not_assign_parent_pool(self, mock_cfg):
+        parent = _make_mock_parent()
+        mock_pool = MagicMock()
+        parent._credential_pool = mock_pool
+
+        mock_child = types.SimpleNamespace()
+
+        with patch("run_agent.AIAgent", return_value=mock_child):
+            _build_child_agent(
+                task_index=0,
+                goal="Test direct endpoint pool isolation",
+                context=None,
+                toolsets=["terminal"],
+                model="worker-model",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider="custom",
+                override_base_url="https://worker.example/v1",
+                override_api_key="worker-key",
+                override_api_mode="chat_completions",
+            )
+
+        self.assertFalse(hasattr(mock_child, "_credential_pool"))
 
     @patch("tools.delegate_tool._load_config", return_value={})
     def test_build_child_agent_preserves_mcp_toolsets_by_default(self, mock_cfg):
