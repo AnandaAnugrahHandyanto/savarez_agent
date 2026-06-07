@@ -1445,7 +1445,7 @@ Pulls the latest `savarez-agent` code and reinstalls dependencies in your venv, 
 
 **pip installs:** `savarez update` detects pip-based installations automatically — it queries PyPI for the latest release and runs `pip install --upgrade savarez-agent` instead of `git pull`. PyPI releases track tagged versions (major/minor releases), not every commit on `main`. Use `--check` to see if a newer PyPI release is available without installing.
 
-**git installs:** `hermes update` pulls the configured update branch (default: `main`). If your checkout is on another branch, Hermes may check out the update branch before pulling. Commit branch work before updating when you want to keep it outside the update autostash flow.
+**git installs:** `hermes update` pulls the configured update branch (default: `main`). If your checkout is on another branch, Savarez may check out the update branch before pulling. Commit branch work before updating when you want to keep it outside the update autostash flow.
 
 | Option | Description |
 |--------|-------------|

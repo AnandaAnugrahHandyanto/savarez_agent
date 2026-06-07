@@ -1150,7 +1150,7 @@ updates:
   # Number of pre-update backup zips to retain.
   backup_keep: 5
 
-  # What non-interactive updates do with local source edits in the Hermes repo.
+  # What non-interactive updates do with local source edits in the Savarez repo.
   # Interactive terminal updates always prompt before restoring the autostash.
   #
   #   stash   - auto-stash before pull, then auto-restore after success (default)

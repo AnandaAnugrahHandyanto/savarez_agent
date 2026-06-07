@@ -110,7 +110,7 @@ The ChatGPT Codex OAuth backend hard-caps gpt-5.5 at a **272K** context window
 (the same slug exposes 1.05M on OpenAI's direct API and OpenRouter, and 400K on
 GitHub Copilot). At the default 50% trigger, compaction would fire at ~136K —
 half the window the model can actually use. When the active route is Codex
-OAuth (`provider: openai-codex`) and the model is gpt-5.5, Hermes raises the
+OAuth (`provider: openai-codex`) and the model is gpt-5.5, Savarez raises the
 trigger to **85%** (~231K) and prints a one-time notice with the opt-out
 command. Only this exact route is affected; gpt-5.5 on any other provider keeps
 your global `threshold`. To opt back down to the global value:

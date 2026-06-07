@@ -247,7 +247,7 @@ Then run `savarez mcp login googledrive` — with the pre-registered client, Sav
 
 ## mTLS / client certificates
 
-Remote HTTP MCP servers that require mutual TLS (client-certificate authentication) are supported via `client_cert` / `client_key`. Hermes passes the resolved certificate to the underlying HTTP client for the TLS handshake.
+Remote HTTP MCP servers that require mutual TLS (client-certificate authentication) are supported via `client_cert` / `client_key`. Savarez passes the resolved certificate to the underlying HTTP client for the TLS handshake.
 
 `client_cert` accepts three shapes:
 
