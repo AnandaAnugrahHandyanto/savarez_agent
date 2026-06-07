@@ -317,6 +317,8 @@ async def test_group_new_keeps_existing_reset_semantics_when_dm_topic_mode_enabl
 ):
     import gateway.run as gateway_run
 
+    monkeypatch.setattr("hermes_cli.tips.get_random_tip", lambda: "topic reset tip")
+
     session_db = SessionDB(db_path=tmp_path / "state.db")
     session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     runner = _make_runner(session_db=session_db)
@@ -347,6 +349,8 @@ async def test_group_new_keeps_existing_reset_semantics_when_dm_topic_mode_enabl
 @pytest.mark.asyncio
 async def test_new_inside_telegram_topic_resets_current_topic_with_parallel_tip(monkeypatch):
     import gateway.run as gateway_run
+
+    monkeypatch.setattr("hermes_cli.tips.get_random_tip", lambda: "topic reset tip")
 
     runner = _make_runner()
     runner._telegram_topic_mode_enabled = lambda source: True

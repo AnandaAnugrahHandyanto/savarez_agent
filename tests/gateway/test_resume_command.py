@@ -358,3 +358,68 @@ class TestHandleResumeCommand:
             f"session-id lookup failed: {result!r}"
         )
         db.close()
+
+
+class TestHandleSessionsCommand:
+    """Tests for GatewayRunner._handle_sessions_command."""
+
+    @pytest.mark.asyncio
+    async def test_sessions_lists_recent_sessions(self, tmp_path):
+        """Bare /sessions should reuse the /resume browsing output."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_001", "telegram")
+        db.create_session("sess_002", "telegram")
+        db.set_session_title("sess_001", "Research")
+        db.set_session_title("sess_002", "Coding")
+
+        event = _make_event(text="/sessions")
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_sessions_command(event)
+
+        assert "Named Sessions" in result
+        assert "Research" in result
+        assert "Coding" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_list_alias_matches_resume_browse(self, tmp_path):
+        """`/sessions list` should behave the same as bare `/resume`."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_001", "telegram")
+        db.set_session_title("sess_001", "Research")
+
+        event = _make_event(text="/sessions list")
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_sessions_command(event)
+
+        assert "Named Sessions" in result
+        assert "Research" in result
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_target_reuses_resume_switch(self, tmp_path):
+        """`/sessions <target>` should switch sessions exactly like `/resume`."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("old_session_abc", "telegram")
+        db.set_session_title("old_session_abc", "My Project")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/sessions My Project")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+        result = await runner._handle_sessions_command(event)
+
+        assert "Resumed" in result
+        runner.session_store.switch_session.assert_called_once()
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "old_session_abc"
+        db.close()

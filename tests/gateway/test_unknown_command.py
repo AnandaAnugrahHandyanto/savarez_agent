@@ -147,6 +147,34 @@ async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_known_sessions_command_dispatches_without_leaking_to_agent(monkeypatch, tmp_path):
+    """A registry-known /sessions must hit its handler, not fall through to the LLM."""
+    import gateway.run as gateway_run
+    from hermes_state import SessionDB
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/sessions leaked through to the agent")
+    )
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("sess-1", "telegram")
+    db.set_session_title("sess-1", "Research")
+    runner._session_db = db
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/sessions"))
+
+    assert result is not None
+    assert "Named Sessions" in result
+    assert "Research" in result
+    runner._run_agent.assert_not_called()
+    db.close()
+
+
+@pytest.mark.asyncio
 async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch):
     """Telegram autocomplete sends /reload_mcp for the /reload-mcp built-in.
     That must NOT be flagged as unknown."""

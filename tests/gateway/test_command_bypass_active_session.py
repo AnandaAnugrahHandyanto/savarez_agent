@@ -294,6 +294,7 @@ class TestAllResolvableCommandsBypassGuard:
             ("/insights 7", "insights"),
             ("/title my session", "title"),
             ("/resume yesterday", "resume"),
+            ("/sessions", "sessions"),
             ("/retry", "retry"),
             ("/undo", "undo"),
             ("/compress", "compress"),
@@ -325,7 +326,7 @@ class TestAllResolvableCommandsBypassGuard:
 
         for cmd in (
             "model", "reasoning", "personality", "voice", "insights", "title",
-            "resume", "retry", "undo", "compress", "usage",
+            "resume", "sessions", "retry", "undo", "compress", "usage",
             "reload-mcp", "sethome", "reset",
         ):
             assert should_bypass_active_session(cmd) is True, (
