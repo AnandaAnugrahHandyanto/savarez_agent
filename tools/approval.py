@@ -625,6 +625,47 @@ def get_default_approval_store():  # type: ignore[no-untyped-def]
     return _default_approval_store
 
 
+# ─── Phase 3: stricter-runtime fail-closed guard ───────────────────────────
+# Risk ordering for the post-consume re-classification check. Unknown values
+# rank ABOVE high so an unrecognised risk_level on the pinned proposal causes
+# fail-closed rather than silent acceptance.
+_RISK_ORDER = {
+    "low": 0,
+    "medium": 1,
+    "high": 2,
+}
+
+
+def _risk_rank(value) -> int:  # type: ignore[no-untyped-def]
+    """Return the order of *value* with unknown ranking above all known."""
+    if not value or not isinstance(value, str):
+        return 999
+    return _RISK_ORDER.get(value.lower(), 999)
+
+
+def _classify_runtime_risk(command: str) -> str:
+    """Re-classify *command* with the live classifier at execution-thread
+    wake-up time.
+
+    Returns a coarse risk level keyword: ``low`` / ``medium`` / ``high``.
+    This is the same lattice used in :class:`ApprovalProposal`'s
+    ``risk_level``. Used by Phase 3 fail-closed guard to detect cases
+    where the runtime classifier has become STRICTER than the pinned
+    policy between proposal-creation and execution.
+
+    Hardlines (``rm -rf /``, ``mkfs``, …) are already blocked before
+    reaching the gateway approval path, but we still report them as
+    ``high`` here for defensive parity with the pinning logic.
+    """
+    is_hardline, _ = detect_hardline_command(command)
+    if is_hardline:
+        return "high"
+    is_dangerous, _, _ = detect_dangerous_command(command)
+    if is_dangerous:
+        return "medium"
+    return "low"
+
+
 def register_gateway_notify(session_key: str, cb) -> None:
     """Register a per-session callback for sending approval requests to the user.
 
@@ -1398,6 +1439,68 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     _drop_entry()
 
     choice = entry.result
+
+    # ── Phase 3: stricter-runtime fail-closed guard ────────────────────
+    # The user just released the consume gate (via /approve <id>). Before
+    # the agent thread resumes and runs the command, re-classify the
+    # command against the live classifier/policy. If the live classifier
+    # has become STRICTER than the policy that was pinned at proposal
+    # creation (e.g. a new dangerous pattern landed between proposal and
+    # approval, or a regression made a previously-safe command risky),
+    # fail closed — do not silently execute under stale weaker risk.
+    #
+    # Allowed transitions:
+    #   pinned high  + runtime low/med  → still high (no downgrade)
+    #   pinned low   + runtime high     → FAIL CLOSED
+    #   pinned med   + runtime high     → FAIL CLOSED
+    #   missing pinned                   → FAIL CLOSED
+    #   matching levels                 → proceed
+    #
+    # The consumed approval is intentionally NOT put back into pending —
+    # store row stays consumed/denied. The user must obtain a new approval
+    # with fresh pinned policy if they want to retry. That keeps the
+    # exactly-once invariant intact.
+    if resolved and choice in {"once", "session", "always"} and \
+            approval_id is not None and store is not None:
+        try:
+            pinned_proposal = store.get(approval_id)
+        except Exception as e:
+            logger.error(
+                "Phase 3 guard: could not load pinned proposal %s "
+                "(failing closed): %s", approval_id, e,
+            )
+            choice = "deny"
+        else:
+            if pinned_proposal is None:
+                logger.error(
+                    "Phase 3 guard: pinned proposal %s missing post-consume "
+                    "(failing closed)", approval_id,
+                )
+                choice = "deny"
+            else:
+                pinned_risk = pinned_proposal.risk_level
+                try:
+                    runtime_risk = _classify_runtime_risk(command)
+                except Exception as e:
+                    # Classifier crashed — cannot prove safety, fail closed.
+                    logger.error(
+                        "Phase 3 guard: runtime classifier raised "
+                        "(failing closed) for approval %s: %s",
+                        approval_id, e, exc_info=True,
+                    )
+                    choice = "deny"
+                else:
+                    if _risk_rank(runtime_risk) > _risk_rank(pinned_risk):
+                        logger.warning(
+                            "Phase 3 fail-closed: runtime risk=%s exceeds "
+                            "pinned risk=%s for approval %s (command=%r) — "
+                            "overriding choice from %s to deny; user must "
+                            "obtain new approval",
+                            runtime_risk, pinned_risk, approval_id,
+                            command[:120], choice,
+                        )
+                        choice = "deny"
+
     # Normalize outcome for the post hook. Unresolved (timeout) and None both
     # mean the user never responded; report that explicitly so plugins can
     # distinguish timeout from explicit deny.
