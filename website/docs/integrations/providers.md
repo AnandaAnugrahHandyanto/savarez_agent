@@ -21,6 +21,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
+| **Nebius Token Factory** | `NEBIUS_API_KEY` in `~/.hermes/.env` (provider: `nebius`; alias: `tokenfactory`; open-weight models via one OpenAI-compatible endpoint) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
@@ -218,6 +219,10 @@ These providers have built-in support with dedicated provider IDs. Set the API k
 hermes chat --provider novita --model moonshotai/kimi-k2.5
 # Requires: NOVITA_API_KEY in ~/.hermes/.env
 
+# Nebius Token Factory
+hermes chat --provider nebius --model deepseek-ai/DeepSeek-V3.2
+# Requires: NEBIUS_API_KEY in ~/.hermes/.env
+
 # z.ai / ZhipuAI GLM
 hermes chat --provider zai --model glm-5
 # Requires: GLM_API_KEY in ~/.hermes/.env
@@ -267,7 +272,7 @@ model:
   default: "zai-org/GLM-5.1-FP8"
 ```
 
-Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
+Base URLs can be overridden with `NOVITA_BASE_URL`, `NEBIUS_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
 
 :::note Z.AI Endpoint Auto-Detection
 When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoints (global, China, coding variants) to find one that accepts your API key. You don't need to set `GLM_BASE_URL` manually — the working endpoint is detected and cached automatically.
@@ -316,6 +321,31 @@ model:
 ```
 
 Get your API key at [novita.ai/settings/key-management](https://novita.ai/settings/key-management). The base URL can be overridden with `NOVITA_BASE_URL`.
+
+### Nebius Token Factory
+
+[Nebius Token Factory](https://studio.nebius.com) serves a large catalog of open-weight models (Qwen, DeepSeek, GLM, Kimi, Llama, Gemma, Hermes, gpt-oss, and more) behind a single OpenAI-compatible endpoint. The live `/models` list is authoritative — Hermes fetches it once you set a key.
+
+```bash
+# Use any available model (fully-qualified id, as returned by /models)
+hermes chat --provider nebius --model deepseek-ai/DeepSeek-V3.2
+# Requires: NEBIUS_API_KEY in ~/.hermes/.env
+
+# Short alias
+hermes chat --provider tokenfactory --model Qwen/Qwen3-235B-A22B-Instruct-2507
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "nebius"
+  default: "deepseek-ai/DeepSeek-V3.2"
+  base_url: "https://api.tokenfactory.nebius.com/v1"
+```
+
+Get your API key at [studio.nebius.com](https://studio.nebius.com) (or set `NEBIUS_TOKEN_FACTORY_API_KEY`). The default base URL is the region-agnostic `https://api.tokenfactory.nebius.com/v1`; override it with `NEBIUS_BASE_URL` to pin a region (e.g. `https://api.tokenfactory.us-central1.nebius.com/v1`).
+
+**Reasoning models** (Qwen3 `*-Thinking`, DeepSeek-V4, Hermes-4, gpt-oss, MiniMax-M2, INTELLECT-3, Cosmos-Reasoner) are handled automatically — Hermes sends bounded reasoning parameters so thinking tokens don't consume the output budget and truncate tool calls. Plain chat models are sent no reasoning fields.
 
 ### Ollama Cloud — Managed Ollama Models, OAuth + API Key
 
