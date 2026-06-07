@@ -178,13 +178,13 @@ mode = "route"
 ```
 
 When the adaptive component is enabled and the installed NeMo Relay runtime
-exposes `llm.execute(...)` / `tools.execute(...)`, Hermes routes LLM and tool
+exposes `llm.execute(...)` / `tools.execute(...)`, Savarez routes LLM and tool
 execution through those middleware boundaries. The observer hooks still emit
 session, turn, approval, and subagent marks; the plugin skips its manual
 `llm.call` and `tools.call` spans for executions that are already managed by
 NeMo Relay.
 
-For the full generic Hermes middleware contract, see
+For the full generic Savarez middleware contract, see
 [`docs/middleware/README.md`](../../../docs/middleware/README.md).
 
 ## Canonical Local Examples
@@ -391,7 +391,7 @@ separate trajectories.
 
 ## Adaptive Middleware Example
 
-The `observability/nemo_relay` plugin uses Hermes execution middleware to hand
+The `observability/nemo_relay` plugin uses Savarez execution middleware to hand
 LLM and tool calls to NeMo Relay managed execution when an adaptive component is
 enabled.
 
@@ -408,26 +408,26 @@ enabled = true
 mode = "route"
 ```
 
-Enable it for Hermes:
+Enable it for Savarez:
 
 ```bash
 export HERMES_NEMO_RELAY_PLUGINS_TOML=/tmp/hermes-middleware-test/plugins.toml
 ```
 
 When the adaptive component is enabled and the installed NeMo Relay runtime
-exposes `llm.execute(...)` and `tools.execute(...)`, Hermes routes execution
+exposes `llm.execute(...)` and `tools.execute(...)`, Savarez routes execution
 through these boundaries:
 
 ```text
-Hermes provider call
+Savarez provider call
   -> llm_execution middleware
     -> nemo_relay.llm.execute(...)
-      -> Hermes provider adapter next_call(...)
+      -> Savarez provider adapter next_call(...)
 
-Hermes tool call
+Savarez tool call
   -> tool_execution middleware
     -> nemo_relay.tools.execute(...)
-      -> Hermes tool dispatcher next_call(...)
+      -> Savarez tool dispatcher next_call(...)
 ```
 
 The plugin still emits observer marks for sessions, turns, approvals, and
@@ -438,7 +438,7 @@ for the same execution.
 ### Local Adaptive E2E
 
 This example enables both NeMo Relay observability export and adaptive execution
-middleware for a local Hermes run.
+middleware for a local Savarez run.
 
 ```bash
 pip install "nemo-relay==0.3"
@@ -477,7 +477,7 @@ mode = "overwrite"
 enabled = true
 output_directory = "/tmp/hermes-middleware-test/atif"
 filename_template = "middleware-trajectory-{session_id}.json"
-agent_name = "Hermes Middleware E2E"
+agent_name = "Savarez Middleware E2E"
 agent_version = "local"
 
 [[components]]
@@ -522,7 +522,7 @@ Expected ATIF shape:
   "schema_version": "ATIF-v1.7",
   "session_id": "middleware-demo-session",
   "agent": {
-    "name": "Hermes Middleware E2E",
+    "name": "Savarez Middleware E2E",
     "version": "local",
     "model_name": "qwen3.6:35b"
   },

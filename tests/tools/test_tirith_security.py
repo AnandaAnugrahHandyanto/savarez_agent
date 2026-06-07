@@ -1155,7 +1155,7 @@ class TestDiskFailureMarker:
 # SAVAREZ_HOME isolation
 # ---------------------------------------------------------------------------
 
-class TestHermesHomeIsolation:
+class TestSavarezHomeIsolation:
     def test_hermes_bin_dir_respects_hermes_home(self):
         """_hermes_bin_dir must use SAVAREZ_HOME, not hardcoded ~/.savarez."""
         from tools.tirith_security import _hermes_bin_dir

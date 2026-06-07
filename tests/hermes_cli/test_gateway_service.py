@@ -1336,7 +1336,7 @@ class TestDetectVenvDir:
         assert result is None
 
 
-class TestSystemUnitHermesHome:
+class TestSystemUnitSavarezHome:
     """SAVAREZ_HOME in system units must reference the target user, not root."""
 
     def test_system_unit_uses_target_user_home_not_calling_user(self, monkeypatch):
@@ -1400,7 +1400,7 @@ class TestSystemUnitHermesHome:
         assert f'SAVAREZ_HOME={hermes_home}' in unit
 
 
-class TestHermesHomeForTargetUser:
+class TestSavarezHomeForTargetUser:
     """Unit tests for _hermes_home_for_target_user()."""
 
     def test_remaps_default_home(self, monkeypatch):
@@ -1964,7 +1964,7 @@ class TestDockerAwareGateway:
         assert "savarez gateway run" in out
 
 
-class TestLegacyHermesUnitDetection:
+class TestLegacySavarezUnitDetection:
     """Tests for _find_legacy_hermes_units / has_legacy_hermes_units.
 
     These guard against the scenario that tripped Luis in April 2026: an
@@ -2151,7 +2151,7 @@ class TestLegacyHermesUnitDetection:
         assert results == []
 
 
-class TestRemoveLegacyHermesUnits:
+class TestRemoveLegacySavarezUnits:
     """Tests for remove_legacy_hermes_units (the migration action)."""
 
     _OUR_UNIT_TEXT = (

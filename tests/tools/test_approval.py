@@ -389,7 +389,7 @@ class TestTeePattern:
         assert key is None
 
 
-class TestHermesConfigWriteProtection:
+class TestSavarezConfigWriteProtection:
     """Terminal-side pairing for the file_tools write_file/patch deny on
     ~/.savarez/config.yaml (#14639). config.yaml IS the security policy
     (approvals.mode/yolo live there, mtime-keyed cache reloads mid-session),

@@ -190,7 +190,7 @@ python -m pytest tests/ -q
 - 📚 [技能中心](https://agentskills.io)
 - 🐛 [问题反馈](https://github.com/AnandaAnugrahHandyanto/savarez_agent/issues)
 - 💡 [讨论区](https://github.com/AnandaAnugrahHandyanto/savarez_agent/discussions)
-- 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — 社区微信桥接：在同一微信账号上运行 Savarez AI Agent 和 OpenClaw。
+- 🔌 [SavarezClaw](https://github.com/AaronWong1999/hermesclaw) — 社区微信桥接：在同一微信账号上运行 Savarez AI Agent 和 OpenClaw。
 
 ---
 

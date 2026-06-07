@@ -1034,8 +1034,8 @@ class TestWebServerEndpoints:
                 "pairing_id": "pair123",
                 "poll_token": "poll-secret",
                 "suggested_username": "hermes_pair123_bot",
-                "deep_link": "https://t.me/newbot/HermesSetupBot/hermes_pair123_bot",
-                "qr_payload": "https://t.me/newbot/HermesSetupBot/hermes_pair123_bot",
+                "deep_link": "https://t.me/newbot/SavarezSetupBot/hermes_pair123_bot",
+                "qr_payload": "https://t.me/newbot/SavarezSetupBot/hermes_pair123_bot",
                 "expires_at": "2027-05-18T00:00:00.000Z",
             }
 
@@ -1043,7 +1043,7 @@ class TestWebServerEndpoints:
 
         resp = self.client.post(
             "/api/messaging/telegram/onboarding/start",
-            json={"bot_name": "Hosted Hermes"},
+            json={"bot_name": "Hosted Savarez"},
         )
 
         assert resp.status_code == 200
@@ -1054,7 +1054,7 @@ class TestWebServerEndpoints:
             (
                 "POST",
                 "/v1/telegram/pairings",
-                {"bot_name": "Hosted Hermes"},
+                {"bot_name": "Hosted Savarez"},
                 None,
             )
         ]
@@ -1072,8 +1072,8 @@ class TestWebServerEndpoints:
                     "pairing_id": "pair-ready",
                     "poll_token": "poll-secret",
                     "suggested_username": "hermes_pair_ready_bot",
-                    "deep_link": "https://t.me/newbot/HermesSetupBot/hermes_pair_ready_bot",
-                    "qr_payload": "https://t.me/newbot/HermesSetupBot/hermes_pair_ready_bot",
+                    "deep_link": "https://t.me/newbot/SavarezSetupBot/hermes_pair_ready_bot",
+                    "qr_payload": "https://t.me/newbot/SavarezSetupBot/hermes_pair_ready_bot",
                     "expires_at": "2027-05-18T00:00:00.000Z",
                 }
             assert method == "GET"
@@ -1126,8 +1126,8 @@ class TestWebServerEndpoints:
                 "pairing_id": "pair-waiting",
                 "poll_token": "poll-secret",
                 "suggested_username": "hermes_pair_waiting_bot",
-                "deep_link": "https://t.me/newbot/HermesSetupBot/hermes_pair_waiting_bot",
-                "qr_payload": "https://t.me/newbot/HermesSetupBot/hermes_pair_waiting_bot",
+                "deep_link": "https://t.me/newbot/SavarezSetupBot/hermes_pair_waiting_bot",
+                "qr_payload": "https://t.me/newbot/SavarezSetupBot/hermes_pair_waiting_bot",
                 "expires_at": "2027-05-18T00:00:00.000Z",
             }
 
@@ -1155,8 +1155,8 @@ class TestWebServerEndpoints:
                 "pairing_id": "pair-cancel",
                 "poll_token": "poll-secret",
                 "suggested_username": "hermes_pair_cancel_bot",
-                "deep_link": "https://t.me/newbot/HermesSetupBot/hermes_pair_cancel_bot",
-                "qr_payload": "https://t.me/newbot/HermesSetupBot/hermes_pair_cancel_bot",
+                "deep_link": "https://t.me/newbot/SavarezSetupBot/hermes_pair_cancel_bot",
+                "qr_payload": "https://t.me/newbot/SavarezSetupBot/hermes_pair_cancel_bot",
                 "expires_at": "2027-05-18T00:00:00.000Z",
             }
 

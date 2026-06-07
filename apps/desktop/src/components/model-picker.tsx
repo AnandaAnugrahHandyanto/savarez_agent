@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { useI18n } from '@/i18n'
 import type { ModelOptionProvider, ModelOptionsResponse, ModelPricing } from '@/types/hermes'
 
-import type { HermesGateway } from '../hermes'
+import type { SavarezGateway } from '../hermes'
 import { getGlobalModelOptions } from '../hermes'
 import { cn } from '../lib/utils'
 import { startManualOnboarding } from '../store/onboarding'
@@ -19,7 +19,7 @@ import { Skeleton } from './ui/skeleton'
 interface ModelPickerDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  gw?: HermesGateway
+  gw?: SavarezGateway
   sessionId?: string | null
   currentModel: string
   currentProvider: string

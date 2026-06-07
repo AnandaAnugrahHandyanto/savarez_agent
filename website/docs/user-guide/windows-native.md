@@ -17,7 +17,7 @@ If you prefer a real POSIX environment (for the dashboard's embedded terminal, `
 
 ## Quick install
 
-[Download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/desktop) from our website and run it.
+[Download the Savarez Desktop installer](https://hermes-agent.nousresearch.com/desktop) from our website and run it.
 
 Or, for a command-line only install, open **PowerShell** (or Windows Terminal) and run:
 
@@ -40,7 +40,7 @@ No admin rights required. The installer goes to `%LOCALAPPDATA%\savarez\` and ad
 | `-Tag`        | unset                                | Pin install to a specific git tag (e.g. `v0.14.0`)         |
 | `-NoVenv`     | off                                  | Skip venv creation (advanced — you manage Python yourself) |
 | `-SkipSetup`  | off                                  | Skip the post-install `hermes setup` wizard                |
-| `-HermesHome` | `%LOCALAPPDATA%\hermes`              | Override data directory                                    |
+| `-SavarezHome` | `%LOCALAPPDATA%\hermes`              | Override data directory                                    |
 | `-InstallDir` | `%LOCALAPPDATA%\hermes\hermes-agent` | Override code location                                     |
 
 The installer auto-retries flaky git fetches and strips BOM from any downloaded `install.ps1` payload, so a UTF-8 BOM picked up during HTTP transit no longer breaks the `[scriptblock]::Create((irm ...))` form.
@@ -49,7 +49,7 @@ The installer auto-retries flaky git fetches and strips BOM from any downloaded 
 
 On first launch (and on demand when a missing tool is detected), Savarez runs a small Python bootstrapper — `hermes_cli/dep_ensure.py` — that checks for and lazily installs the non-Python dependencies it needs. On Windows, the relevant ones are:
 
-| Dependency       | Why Hermes needs it                                                                                                          |
+| Dependency       | Why Savarez needs it                                                                                                          |
 | ---------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | **PortableGit**  | Provides `bash.exe` for the terminal tool and `git` for in-session clones. Provisioned at install time, not by `dep_ensure`. |
 | **Node.js 22**   | Required for the browser tool (`agent-browser`), the TUI's web bridge, and the WhatsApp bridge.                              |
@@ -172,7 +172,7 @@ savarez gateway install
 
 What happens under the hood:
 
-1. `schtasks /Create /SC ONLOGON /RL LIMITED /TN HermesGateway` — registers a task that runs at your login with standard (non-elevated) permissions. No UAC prompt.
+1. `schtasks /Create /SC ONLOGON /RL LIMITED /TN SavarezGateway` — registers a task that runs at your login with standard (non-elevated) permissions. No UAC prompt.
 2. If schtasks is blocked by group policy, falls back to writing a `start /min cmd.exe /d /c <wrapper>` shortcut into `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`. Same effect, slightly cruder.
 3. Spawns the gateway **detached via `pythonw.exe`** — not `python.exe`. `pythonw.exe` has no console attached, which immunizes it against `CTRL_C_EVENT` broadcasts from sibling processes (a real issue that used to kill the gateway when you Ctrl+C'd anything in the same process group).
 
@@ -248,7 +248,7 @@ These only affect native Windows installs:
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `HERMES_GIT_BASH_PATH`        | Override bash.exe discovery. Point at any bash — full Git-for-Windows, WSL bash via symlink, MSYS2, Cygwin. The installer sets this automatically. |
 | `HERMES_DISABLE_WINDOWS_UTF8` | Set to `1` to disable the UTF-8 stdio shim and fall back to the locale code page. Useful for bisecting an encoding bug.                            |
-| `EDITOR` / `VISUAL`           | Your editor for `/edit` and `Ctrl-X Ctrl-E`. Hermes defaults to `notepad` if both are unset.                                                       |
+| `EDITOR` / `VISUAL`           | Your editor for `/edit` and `Ctrl-X Ctrl-E`. Savarez defaults to `notepad` if both are unset.                                                       |
 
 ## Uninstall
 
@@ -292,7 +292,7 @@ You hit a shebang-script invocation that bypassed the `.cmd` shim. Savarez resol
 Your download of `install.ps1` picked up a UTF-8 BOM. The `irm | iex` form strips BOMs automatically; `[scriptblock]::Create((irm ...))` does not. Re-run with the simple `irm | iex` form, or download the script manually and save it without a BOM via `[IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding $false))`.
 
 **Gateway won't stay running after restart.**
-Check `savarez gateway status` — it merges the schtasks entry, the Startup-folder shortcut (if used), and the live PID. If schtasks is registered but not running, group policy may be blocking `ONLOGON` triggers. Run `schtasks /Query /TN HermesGateway /V /FO LIST` to see the task's failure reason, or fall back to the Startup-folder path by uninstalling and reinstalling with `HERMES_GATEWAY_FORCE_STARTUP=1`.
+Check `savarez gateway status` — it merges the schtasks entry, the Startup-folder shortcut (if used), and the live PID. If schtasks is registered but not running, group policy may be blocking `ONLOGON` triggers. Run `schtasks /Query /TN SavarezGateway /V /FO LIST` to see the task's failure reason, or fall back to the Startup-folder path by uninstalling and reinstalling with `HERMES_GATEWAY_FORCE_STARTUP=1`.
 
 **`/edit` still does nothing after setting `$env:EDITOR`.**
 You set it in the current process only; close and reopen the shell, or set it at User scope in System Properties → Environment Variables. Verify with `echo $env:EDITOR` in a new PowerShell window.

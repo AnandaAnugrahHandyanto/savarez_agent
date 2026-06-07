@@ -235,8 +235,8 @@ specifically, as the user who asked for the file.
 
 1. Go to **APIs & Services → Credentials** in the same GCP project.
 2. **Create credentials → OAuth client ID → Desktop app**.
-3. Download the JSON. Move it onto the host that runs Hermes.
-4. Register the client with Hermes (run under the profile you want it scoped to):
+3. Download the JSON. Move it onto the host that runs Savarez.
+4. Register the client with Savarez (run under the profile you want it scoped to):
 
 ```bash
 # Default profile:
@@ -248,7 +248,7 @@ hermes -p <profile> python -m plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 ```
 
-That writes the client secret into the active profile's Hermes home (e.g.
+That writes the client secret into the active profile's Savarez home (e.g.
 `~/.hermes/google_chat_user_client_secret.json` for the default profile). The
 client secret is **profile-scoped, not shared across profiles** — each profile
 registers its own. This is deliberate: profiles are isolated auth boundaries, so

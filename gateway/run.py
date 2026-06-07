@@ -10940,7 +10940,7 @@ class GatewayRunner:
 
 
     async def _handle_version_command(self, event: MessageEvent) -> str:
-        """Handle /version — show the running Hermes Agent version."""
+        """Handle /version — show the running Savarez Agent version."""
         from hermes_cli.banner import format_banner_version_label
 
         return format_banner_version_label()

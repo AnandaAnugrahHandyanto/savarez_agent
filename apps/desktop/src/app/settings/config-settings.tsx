@@ -8,15 +8,15 @@ import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import {
   getElevenLabsVoices,
-  getHermesConfigDefaults,
-  getHermesConfigRecord,
-  getHermesConfigSchema,
-  saveHermesConfig
+  getSavarezConfigDefaults,
+  getSavarezConfigRecord,
+  getSavarezConfigSchema,
+  saveSavarezConfig
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
+import type { ConfigFieldSchema, SavarezConfigRecord } from '@/types/hermes'
 
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { fieldCopyForSchemaKey } from './field-copy'
@@ -192,8 +192,8 @@ export function ConfigSettings({
 }) {
   const { t } = useI18n()
   const c = t.settings.config
-  const [config, setConfig] = useState<HermesConfigRecord | null>(null)
-  const [_defaults, setDefaults] = useState<HermesConfigRecord | null>(null)
+  const [config, setConfig] = useState<SavarezConfigRecord | null>(null)
+  const [_defaults, setDefaults] = useState<SavarezConfigRecord | null>(null)
   const [schema, setSchema] = useState<Record<string, ConfigFieldSchema> | null>(null)
   const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
@@ -202,7 +202,7 @@ export function ConfigSettings({
 
   useEffect(() => {
     let cancelled = false
-    Promise.all([getHermesConfigRecord(), getHermesConfigDefaults(), getHermesConfigSchema()])
+    Promise.all([getSavarezConfigRecord(), getSavarezConfigDefaults(), getSavarezConfigSchema()])
       .then(([c, d, s]) => {
         if (cancelled) {
           return
@@ -249,7 +249,7 @@ export function ConfigSettings({
     const t = window.setTimeout(() => {
       void (async () => {
         try {
-          await saveHermesConfig(config)
+          await saveSavarezConfig(config)
 
           if (saveVersionRef.current === v) {
             onConfigSaved?.()
@@ -265,7 +265,7 @@ export function ConfigSettings({
     return () => window.clearTimeout(t)
   }, [config, onConfigSaved, saveVersion])
 
-  const updateConfig = (next: HermesConfigRecord) => {
+  const updateConfig = (next: SavarezConfigRecord) => {
     saveVersionRef.current += 1
     setConfig(next)
     setSaveVersion(saveVersionRef.current)

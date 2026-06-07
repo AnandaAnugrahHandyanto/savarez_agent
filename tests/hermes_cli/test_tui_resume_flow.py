@@ -793,7 +793,7 @@ def test_oneshot_distinguishes_disabled_mcp_from_unknown(monkeypatch, capsys):
 
 
 def test_oneshot_wires_session_db_for_recall(monkeypatch):
-    """savarez -z bypasses HermesCLI, but recall still needs SessionDB."""
+    """savarez -z bypasses SavarezCLI, but recall still needs SessionDB."""
     from hermes_cli.oneshot import _run_agent
 
     captured = {}

@@ -13,8 +13,8 @@ import type {
   CronJobUpdates,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
-  HermesConfig,
-  HermesConfigRecord,
+  SavarezConfig,
+  SavarezConfigRecord,
   LogsResponse,
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
@@ -64,8 +64,8 @@ export type {
   ElevenLabsVoicesResponse,
   EnvVarInfo,
   GatewayReadyPayload,
-  HermesConfig,
-  HermesConfigRecord,
+  SavarezConfig,
+  SavarezConfigRecord,
   LogsResponse,
   MessagingEnvVarInfo,
   MessagingHomeChannel,
@@ -100,13 +100,13 @@ export type {
   ToolsetInfo
 } from '@/types/hermes'
 
-export class HermesGateway extends JsonRpcGatewayClient {
+export class SavarezGateway extends JsonRpcGatewayClient {
   constructor() {
     super({
-      closedErrorMessage: 'Hermes gateway connection closed',
-      connectErrorMessage: 'Could not connect to Hermes gateway',
+      closedErrorMessage: 'Savarez gateway connection closed',
+      connectErrorMessage: 'Could not connect to Savarez gateway',
       createRequestId: nextId => nextId,
-      notConnectedErrorMessage: 'Hermes gateway is not connected',
+      notConnectedErrorMessage: 'Savarez gateway is not connected',
       requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
     })
   }
@@ -266,35 +266,35 @@ export function getLogs(params: {
   })
 }
 
-export function getHermesConfig(): Promise<HermesConfig> {
-  return window.hermesDesktop.api<HermesConfig>({
+export function getSavarezConfig(): Promise<SavarezConfig> {
+  return window.hermesDesktop.api<SavarezConfig>({
     ...profileScoped(),
     path: '/api/config'
   })
 }
 
-export function getHermesConfigRecord(): Promise<HermesConfigRecord> {
-  return window.hermesDesktop.api<HermesConfigRecord>({
+export function getSavarezConfigRecord(): Promise<SavarezConfigRecord> {
+  return window.hermesDesktop.api<SavarezConfigRecord>({
     ...profileScoped(),
     path: '/api/config'
   })
 }
 
-export function getHermesConfigDefaults(): Promise<HermesConfigRecord> {
-  return window.hermesDesktop.api<HermesConfigRecord>({
+export function getSavarezConfigDefaults(): Promise<SavarezConfigRecord> {
+  return window.hermesDesktop.api<SavarezConfigRecord>({
     ...profileScoped(),
     path: '/api/config/defaults'
   })
 }
 
-export function getHermesConfigSchema(): Promise<ConfigSchemaResponse> {
+export function getSavarezConfigSchema(): Promise<ConfigSchemaResponse> {
   return window.hermesDesktop.api<ConfigSchemaResponse>({
     ...profileScoped(),
     path: '/api/config/schema'
   })
 }
 
-export function saveHermesConfig(config: HermesConfigRecord): Promise<{ ok: boolean }> {
+export function saveSavarezConfig(config: SavarezConfigRecord): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...profileScoped(),
     path: '/api/config',
@@ -642,7 +642,7 @@ export function restartGateway(): Promise<ActionResponse> {
   })
 }
 
-export function updateHermes(): Promise<ActionResponse> {
+export function updateSavarez(): Promise<ActionResponse> {
   return window.hermesDesktop.api<ActionResponse>({
     path: '/api/hermes/update',
     method: 'POST'

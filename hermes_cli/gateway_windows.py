@@ -49,7 +49,7 @@ _FALLBACK_PATTERNS = re.compile(
 )
 _ACCESS_DENIED_PATTERN = re.compile(r"(access is denied|acceso denegado)", re.IGNORECASE)
 
-_TASK_NAME_DEFAULT = "Hermes_Gateway"
+_TASK_NAME_DEFAULT = "Savarez_Gateway"
 _TASK_DESCRIPTION = "Savarez AI Agent Gateway - Messaging Platform Integration"
 
 
@@ -251,8 +251,8 @@ def _launch_elevated_uninstall() -> bool:
 def get_task_name() -> str:
     """Scheduled Task name, scoped per profile.
 
-    Default profile: ``Hermes_Gateway``
-    Named profile X: ``Hermes_Gateway_<X>``
+    Default profile: ``Savarez_Gateway``
+    Named profile X: ``Savarez_Gateway_<X>``
     """
     _assert_windows()
     # Local import to avoid circular module initialization during hermes_cli boot.

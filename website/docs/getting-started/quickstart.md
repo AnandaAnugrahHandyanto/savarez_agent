@@ -46,12 +46,12 @@ Pick the row that matches your goal:
 
 ---
 
-## 1. Install Hermes Agent
-### With the Hermes Desktop installer on macOS or Windows (recommended)
-To easily install the command-line and desktop applications, [download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/desktop) from our website and run it.
+## 1. Install Savarez Agent
+### With the Savarez Desktop installer on macOS or Windows (recommended)
+To easily install the command-line and desktop applications, [download the Savarez Desktop installer](https://hermes-agent.nousresearch.com/desktop) from our website and run it.
 
-### Without Hermes Desktop:
-For a command-line only install without Hermes Desktop, run:
+### Without Savarez Desktop:
+For a command-line only install without Savarez Desktop, run:
 
 #### Linux / macOS / WSL2 / Android (Termux)
 ```bash

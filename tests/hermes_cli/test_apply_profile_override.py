@@ -49,7 +49,7 @@ def _run_apply_profile_override(
     return os.environ.get("SAVAREZ_HOME")
 
 
-class TestApplyProfileOverrideHermesHomeGuard:
+class TestApplyProfileOverrideSavarezHomeGuard:
     """Regression guard for issue #22502.
 
     Verifies that SAVAREZ_HOME pointing to the savarez root does NOT suppress

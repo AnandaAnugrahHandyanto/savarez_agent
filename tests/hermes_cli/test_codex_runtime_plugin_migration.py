@@ -795,7 +795,7 @@ class TestStripUnmanagedPluginTables:
 # ---- Bug C: SAVAREZ_HOME tempdir leak into ~/.codex/config.toml ----
 
 
-class TestHermesHomeLeakGuard:
+class TestSavarezHomeLeakGuard:
     """Regression tests for issue #26250 Bug C.
 
     Previously ``_build_hermes_tools_mcp_entry()`` read ``SAVAREZ_HOME``

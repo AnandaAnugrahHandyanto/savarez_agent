@@ -7364,7 +7364,7 @@ def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
     next ``pack`` re-downloads and re-stages from scratch.
 
     Root cause of the ``ENOENT … rename '…/linux-unpacked/electron' ->
-    '…/linux-unpacked/Hermes'`` desktop build failure: a corrupt zip in the
+    '…/linux-unpacked/Savarez'`` desktop build failure: a corrupt zip in the
     per-user Electron download cache (a partial download resumed into the same
     file leaves prepended/concatenated junk, or an interrupted write truncates
     it). electron-builder's ``app-builder unpack-electron`` extracts the
@@ -7576,7 +7576,7 @@ def cmd_gui(args: argparse.Namespace):
             build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if build_result.returncode != 0 and not source_mode:
                 # A corrupt cached Electron zip makes `pack` fail with an ENOENT
-                # on the final `electron` -> `Hermes` rename: unpack-electron
+                # on the final `electron` -> `Savarez` rename: unpack-electron
                 # extracted a partial tree (missing the 193 MB binary) from the
                 # bad zip. We do NOT try to prove the zip is corrupt ourselves —
                 # stdlib zipfile silently tolerates the prepended/concatenated
@@ -8398,7 +8398,7 @@ def _discard_stashed_changes(
     if stash_selector is None:
         print(
             "⚠ Configured to discard local changes on non-interactive update, "
-            "but Hermes couldn't find the stash entry to drop."
+            "but Savarez couldn't find the stash entry to drop."
         )
         _print_stash_cleanup_guidance(stash_ref)
         return False
@@ -8411,7 +8411,7 @@ def _discard_stashed_changes(
     )
     if drop.returncode != 0:
         print(
-            "⚠ Configured to discard local changes, but Hermes couldn't drop "
+            "⚠ Configured to discard local changes, but Savarez couldn't drop "
             "the saved stash entry."
         )
         if drop.stderr.strip():
@@ -8446,7 +8446,7 @@ def _discard_stashed_changes(
     if stash_selector is None:
         print(
             "⚠ Configured to discard local changes on non-interactive update, "
-            "but Hermes couldn't find the stash entry to drop."
+            "but Savarez couldn't find the stash entry to drop."
         )
         _print_stash_cleanup_guidance(stash_ref)
         return False
@@ -8459,7 +8459,7 @@ def _discard_stashed_changes(
     )
     if drop.returncode != 0:
         print(
-            "⚠ Configured to discard local changes, but Hermes couldn't drop "
+            "⚠ Configured to discard local changes, but Savarez couldn't drop "
             "the saved stash entry."
         )
         if drop.stderr.strip():
@@ -10329,7 +10329,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("Could not read updates.non_interactive_local_changes: %s", exc)
             discard_local_changes = False
 
-    print("⚕ Updating Hermes Agent...")
+    print("⚕ Updating Savarez Agent...")
     print()
 
     # On Windows, abort early if another savarez.exe is holding the venv shim
@@ -15817,13 +15817,13 @@ Examples:
         action="store_true",
         help="List running savarez dashboard processes and exit",
     )
-    # Backward-compat shim: older Hermes desktop app shells (<= 0.15.x) spawn the
+    # Backward-compat shim: older Savarez desktop app shells (<= 0.15.x) spawn the
     # backend as `hermes dashboard --no-open --tui --host ... --port ...`. The
     # `--tui` flag was removed from this subcommand in cae6b5486 (embedded chat is
     # always on now). When a user's CLI updates past that commit but their desktop
     # app binary has not, argparse used to hard-error with "unrecognized arguments:
     # --tui" and exit(2) — the backend died before becoming ready and the GUI just
-    # showed "Hermes couldn't start" with no actionable cause. Accept and silently
+    # showed "Savarez couldn't start" with no actionable cause. Accept and silently
     # ignore the flag so an old app + new CLI degrades gracefully instead of
     # bricking. Hidden from --help; safe to delete once the floor app version is
     # well past 0.16.0.

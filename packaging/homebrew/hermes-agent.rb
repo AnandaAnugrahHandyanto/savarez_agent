@@ -1,4 +1,4 @@
-class HermesAgent < Formula
+class SavarezAgent < Formula
   include Language::Python::Virtualenv
 
   desc "Self-improving AI agent that creates skills from experience"

@@ -163,7 +163,7 @@ export interface GatewayReadyPayload {
   skin?: unknown
 }
 
-export interface HermesConfig {
+export interface SavarezConfig {
   agent?: {
     reasoning_effort?: string
     personalities?: Record<string, unknown>
@@ -184,7 +184,7 @@ export interface HermesConfig {
   }
 }
 
-export type HermesConfigRecord = Record<string, unknown>
+export type SavarezConfigRecord = Record<string, unknown>
 
 export interface ModelInfoResponse {
   auto_context_length?: number

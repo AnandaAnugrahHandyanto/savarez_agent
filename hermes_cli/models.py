@@ -2541,7 +2541,7 @@ def copilot_default_headers() -> dict[str, str]:
     except ImportError:
         return {
             "Editor-Version": COPILOT_EDITOR_VERSION,
-            "User-Agent": "HermesAgent/1.0",
+            "User-Agent": "SavarezAgent/1.0",
             "Openai-Intent": "conversation-edits",
             "x-initiator": "agent",
         }

@@ -116,7 +116,7 @@ def install_deps():
     except subprocess.CalledProcessError as e:
         pip_error = e
 
-    # Fallback: the interpreter has no pip (the Hermes Docker image's venv is
+    # Fallback: the interpreter has no pip (the Savarez Docker image's venv is
     # built with `uv sync`, which does not bootstrap pip). `uv pip install
     # --python <interpreter>` installs into that exact interpreter without
     # needing pip present. Targeting sys.executable keeps us on the venv the
@@ -138,7 +138,7 @@ def install_deps():
 
     print(f"ERROR: Failed to install dependencies: {pip_error}")
     print(
-        "On environments without pip (e.g. Nix, or the Hermes Docker image's "
+        "On environments without pip (e.g. Nix, or the Savarez Docker image's "
         "uv-managed venv), install the optional extra instead:"
     )
     print("  pip install 'hermes-agent[google]'")

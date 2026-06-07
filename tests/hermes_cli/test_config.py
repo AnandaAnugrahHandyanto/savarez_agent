@@ -25,7 +25,7 @@ from hermes_cli.config import (
 )
 
 
-class TestGetHermesHome:
+class TestGetSavarezHome:
     def test_default_path(self):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("SAVAREZ_HOME", None)
@@ -38,7 +38,7 @@ class TestGetHermesHome:
             assert home == Path("/custom/path")
 
 
-class TestEnsureHermesHome:
+class TestEnsureSavarezHome:
     def test_creates_subdirs(self, tmp_path):
         with patch.dict(os.environ, {"SAVAREZ_HOME": str(tmp_path)}):
             ensure_hermes_home()

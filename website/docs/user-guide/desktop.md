@@ -22,7 +22,7 @@ Pick whichever fits the moment. They share state, so you can start a session in 
 
 ## Install
 
-Follow the [installation instructions for Hermes Desktop](../getting-started/installation.md).
+Follow the [installation instructions for Savarez Desktop](../getting-started/installation.md).
 
 If you already have Savarez installed, simply run
 

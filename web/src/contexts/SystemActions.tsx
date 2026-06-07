@@ -73,7 +73,7 @@ export function SystemActionsProvider({
           await api.restartGateway();
           setActiveAction(action);
         } else {
-          const resp = await api.updateHermes();
+          const resp = await api.updateSavarez();
           // In a Docker install the image is immutable, so `savarez update`
           // can't apply — the endpoint returns 200 with a structured
           // {ok:false, error:"docker_update_unsupported", message, update_command}

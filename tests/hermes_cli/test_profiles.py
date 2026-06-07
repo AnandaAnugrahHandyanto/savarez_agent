@@ -1176,7 +1176,7 @@ class TestProfileIsolation:
 
 
 # ===================================================================
-# TestGetProfilesRoot / TestGetDefaultHermesHome (internal helpers)
+# TestGetProfilesRoot / TestGetDefaultSavarezHome (internal helpers)
 # ===================================================================
 
 class TestInternalHelpers:
