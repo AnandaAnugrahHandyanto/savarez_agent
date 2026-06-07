@@ -20,6 +20,7 @@ import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
+import { $customModels } from '@/store/custom-models'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -64,6 +65,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   const currentProvider = useStore($currentProvider)
   const currentReasoningEffort = useStore($currentReasoningEffort)
   const visibleModels = useStore($visibleModels)
+  const customModels = useStore($customModels)
 
   const modelOptions = useQuery({
     queryKey: ['model-options', activeSessionId || 'global'],
@@ -87,27 +89,53 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     : null
 
   const providers = modelOptions.data?.providers
+
   const effectiveVisibleModels = useMemo(
     () => effectiveVisibleKeys(visibleModels, providers ?? []),
     [visibleModels, providers]
   )
 
+  // Merge custom models into providers for the menu panel.
+  const providersWithCustom = useMemo(() => {
+    const base = providers ?? []
+
+    return base.map(p => {
+      const custom = customModels.filter(cm => cm.provider === p.slug).map(cm => cm.model)
+
+      if (custom.length === 0) {
+        return p
+      }
+
+      const merged = [...(p.models ?? [])]
+
+      for (const m of custom) {
+        if (!merged.includes(m)) {
+          merged.push(m)
+        }
+      }
+
+      return { ...p, models: merged }
+    })
+  }, [providers, customModels])
+
   const switchTo = (model: string, provider: string) =>
     onSelectModel({ model, persistGlobal: !activeSessionId, provider })
 
   const groups = useMemo(
-    () => groupModels(providers ?? [], search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels),
-    [providers, search, optionsModel, optionsProvider, effectiveVisibleModels]
+    () =>
+      groupModels(
+        providersWithCustom,
+        search,
+        { model: optionsModel, provider: optionsProvider },
+        effectiveVisibleModels,
+        customModels
+      ),
+    [providersWithCustom, search, optionsModel, optionsProvider, effectiveVisibleModels, customModels]
   )
 
   return (
     <>
-      <DropdownMenuSearch
-        aria-label={copy.search}
-        onValueChange={setSearch}
-        placeholder={copy.search}
-        value={search}
-      />
+      <DropdownMenuSearch aria-label={copy.search} onValueChange={setSearch} placeholder={copy.search} value={search} />
 
       <DropdownMenuSeparator className="mx-0" />
 
@@ -240,7 +268,8 @@ function groupModels(
   providers: ModelOptionProvider[],
   search: string,
   current: { model: string; provider: string },
-  visible: Set<string> | null
+  visible: Set<string> | null,
+  customModels: { provider: string; model: string }[] = []
 ): ProviderGroup[] {
   const q = search.trim().toLowerCase()
   const groups: ProviderGroup[] = []
@@ -257,6 +286,9 @@ function groupModels(
         .toLowerCase()
         .includes(q)
 
+    // Custom models for this provider are always shown.
+    const customForProvider = new Set(customModels.filter(cm => cm.provider === provider.slug).map(cm => cm.model))
+
     // Which model ids to show (the active one is always added on top of this).
     let shown: Set<string>
 
@@ -271,6 +303,11 @@ function groupModels(
     } else {
       // Default: curated top-N families per provider.
       shown = new Set(allFamilies.slice(0, DEFAULT_VISIBLE_PER_PROVIDER).map(family => family.id))
+    }
+
+    // Custom models are always visible regardless of the visibility filter.
+    for (const id of customForProvider) {
+      shown.add(id)
     }
 
     // Always include the active model — but keep every row in the provider's
