@@ -21,6 +21,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_VIDEO_TYPES,
 )
 
@@ -81,7 +82,7 @@ def _make_document(
     return doc
 
 
-def _make_message(document=None, caption=None, media_group_id=None, photo=None):
+def _make_message(document=None, caption=None, media_group_id=None, photo=None, reply_to_message=None):
     """Build a mock Telegram Message with the given document/photo."""
     msg = MagicMock()
     msg.message_id = 42
@@ -106,6 +107,8 @@ def _make_message(document=None, caption=None, media_group_id=None, photo=None):
     msg.from_user.id = 1
     msg.from_user.full_name = "Test User"
     msg.message_thread_id = None
+    msg.reply_to_message = reply_to_message
+    msg.quote = None
     return msg
 
 
@@ -259,6 +262,19 @@ class TestDocumentDownloadBlock:
         event = adapter.handle_message.call_args[0][0]
         assert event.media_urls and event.media_urls[0].endswith("archive.zip")
         assert event.media_types == ["application/zip"]
+
+    @pytest.mark.asyncio
+    async def test_epub_document_cached(self, adapter):
+        """An .epub upload should be cached as a supported document."""
+        file_obj = _make_file_obj(b"epub-bytes")
+        doc = _make_document(file_name="book.epub", mime_type="application/epub+zip", file_size=10, file_obj=file_obj)
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls and event.media_urls[0].endswith("book.epub")
+        assert event.media_types == ["application/epub+zip"]
 
     @pytest.mark.asyncio
     async def test_png_document_is_routed_as_image(self, adapter):
@@ -427,6 +443,76 @@ class TestVideoDownloadBlock:
         assert len(event.media_urls) == 1
         assert os.path.exists(event.media_urls[0])
         assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+
+
+class TestRepliedMediaBridge:
+    @pytest.mark.asyncio
+    async def test_text_reply_to_photo_attaches_replied_image(self, adapter):
+        file_obj = _make_file_obj(b"reply-photo-bytes")
+        file_obj.file_path = "photos/replied.jpeg"
+        replied = _make_message(photo=[_make_photo(file_obj)])
+        msg = _make_message(caption="@bot what is this", reply_to_message=replied)
+        event = adapter._build_message_event(msg, MessageType.TEXT)
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/replied.jpeg") as cache_mock:
+            await adapter._attach_replied_document_if_present(event, msg)
+
+        cache_mock.assert_called_once_with(b"reply-photo-bytes", ext=".jpeg")
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/replied.jpeg"]
+        assert event.media_types == ["image/jpeg"]
+        assert "Replied-to photo attached" in event.reply_to_text
+
+    @pytest.mark.asyncio
+    async def test_text_reply_to_image_document_attaches_replied_image(self, adapter):
+        file_obj = _make_file_obj(b"reply-image-document")
+        doc = _make_document(file_name="screenshot.png", mime_type="image/png", file_size=21, file_obj=file_obj)
+        replied = _make_message(document=doc)
+        msg = _make_message(caption="@bot whats in this", reply_to_message=replied)
+        event = adapter._build_message_event(msg, MessageType.TEXT)
+
+        with patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/replied.png") as cache_mock:
+            await adapter._attach_replied_document_if_present(event, msg)
+
+        cache_mock.assert_called_once_with(b"reply-image-document", ext=".png")
+        assert event.message_type == MessageType.PHOTO
+        assert event.media_urls == ["/tmp/replied.png"]
+        assert event.media_types == ["image/png"]
+        assert "Replied-to image document attached" in event.reply_to_text
+
+    @pytest.mark.asyncio
+    async def test_text_reply_to_pdf_still_attaches_replied_document(self, adapter):
+        file_obj = _make_file_obj(b"%PDF-1.4 reply")
+        doc = _make_document(file_name="report.pdf", mime_type="application/pdf", file_size=14, file_obj=file_obj)
+        replied = _make_message(document=doc)
+        msg = _make_message(caption="@bot summarize", reply_to_message=replied)
+        event = adapter._build_message_event(msg, MessageType.TEXT)
+
+        with patch("gateway.platforms.telegram.cache_document_from_bytes", return_value="/tmp/report.pdf") as cache_mock:
+            await adapter._attach_replied_document_if_present(event, msg)
+
+        cache_mock.assert_called_once_with(b"%PDF-1.4 reply", "report.pdf")
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_urls == ["/tmp/report.pdf"]
+        assert event.media_types == [SUPPORTED_DOCUMENT_TYPES[".pdf"]]
+        assert "Replied-to document attached" in event.reply_to_text
+
+    @pytest.mark.asyncio
+    async def test_text_reply_to_epub_attaches_replied_document(self, adapter):
+        file_obj = _make_file_obj(b"epub reply")
+        doc = _make_document(file_name="book.epub", mime_type="application/epub+zip", file_size=10, file_obj=file_obj)
+        replied = _make_message(document=doc)
+        msg = _make_message(caption="@bot summarize", reply_to_message=replied)
+        event = adapter._build_message_event(msg, MessageType.TEXT)
+
+        with patch("gateway.platforms.telegram.cache_document_from_bytes", return_value="/tmp/book.epub") as cache_mock:
+            await adapter._attach_replied_document_if_present(event, msg)
+
+        cache_mock.assert_called_once_with(b"epub reply", "book.epub")
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_urls == ["/tmp/book.epub"]
+        assert event.media_types == [SUPPORTED_DOCUMENT_TYPES[".epub"]]
+        assert "Replied-to document attached" in event.reply_to_text
 
 
 # ---------------------------------------------------------------------------
