@@ -103,6 +103,53 @@ async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypat
     """Without systemd, /restart uses the detached subprocess approach."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source = make_restart_source(chat_id="42")
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m1",
+    )
+
+    await runner._handle_restart_command(event)
+    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+@pytest.mark.asyncio
+async def test_restart_command_uses_service_restart_under_launchd(tmp_path, monkeypatch):
+    """Under macOS launchd, /restart exits non-zero so KeepAlive respawns it."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
+    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source = make_restart_source(chat_id="42")
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m1",
+    )
+
+    await runner._handle_restart_command(event)
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+
+
+@pytest.mark.asyncio
+async def test_restart_command_ignores_generic_xpc_service_name(tmp_path, monkeypatch):
+    """macOS shells often expose XPC_SERVICE_NAME=0; that is not launchd service ownership."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("XPC_SERVICE_NAME", "0")
+    monkeypatch.setattr(gateway_run.sys, "platform", "darwin")
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
