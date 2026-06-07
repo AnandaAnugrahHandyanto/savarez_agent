@@ -73,6 +73,13 @@ hermes meet auth                                         # optional
 hermes meet join https://meet.google.com/abc-defg-hij    # transcribe
 ```
 
+When the bot runs locally, it will try to attach to the live Hermes Chrome
+profile first via CDP instead of launching a fresh browser. The preferred
+endpoint is `http://127.0.0.1:18800`, or whatever you set in
+`browser.cdp_url` / `HERMES_BROWSER_CDP_URL` / `HERMES_MEET_CDP_URL`.
+If that endpoint is unavailable, it falls back to a separate Playwright
+Chromium instance.
+
 ## Realtime mode
 
 Linux (preferred, most automated):

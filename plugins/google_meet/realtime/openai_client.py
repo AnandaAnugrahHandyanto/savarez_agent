@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -22,6 +24,7 @@ from typing import Any, Callable, Optional
 
 
 REALTIME_URL = "wss://api.openai.com/v1/realtime"
+REALTIME_MODEL = os.getenv("OPENAI_REALTIME_MODEL", "gpt-realtime")
 
 
 def _require_websockets():
@@ -49,10 +52,18 @@ class RealtimeSession:
     different threads; a lock serializes WebSocket writes.
     """
 
+    DEFAULT_INSTRUCTIONS = (
+        "You are a text-to-speech engine for a Google Meet bot. "
+        "When given text to speak, read it verbatim and only verbatim. "
+        "Do not paraphrase, summarize, expand, continue from prior context, "
+        "or add any extra words. Output should be a clean spoken reading of "
+        "the provided text and nothing else."
+    )
+
     def __init__(
         self,
         api_key: str,
-        model: str = "gpt-realtime",
+        model: str = REALTIME_MODEL,
         voice: str = "alloy",
         instructions: str = "",
         audio_sink_path: Optional[Path] = None,
@@ -62,9 +73,11 @@ class RealtimeSession:
         self.api_key = api_key
         self.model = model
         self.voice = voice
-        self.instructions = instructions
+        self.instructions = instructions.strip() if instructions and instructions.strip() else self.DEFAULT_INSTRUCTIONS
         self.audio_sink_path = Path(audio_sink_path) if audio_sink_path else None
         self.sample_rate = sample_rate
+        self.tts_model = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
+        self._tts_client: Any = None
         self._ws: Any = None
         self._send_lock = _threading.Lock()
         self._last_response_id: Optional[str] = None
@@ -78,30 +91,51 @@ class RealtimeSession:
         """Open WS and send session.update with voice+instructions."""
         connect = _require_websockets()
         url = f"{REALTIME_URL}?model={self.model}"
+        sys.stderr.write(
+            f"[google_meet realtime] connect model={self.model} voice={self.voice} "
+            f"sample_rate={self.sample_rate} sink={self.audio_sink_path}\n"
+        )
         headers = [
             ("Authorization", f"Bearer {self.api_key}"),
-            ("OpenAI-Beta", "realtime=v1"),
         ]
+        # The realtime session is mostly idle between speaks; client-side
+        # keepalive pings have proven flaky here and can kill an otherwise
+        # healthy socket mid-session. Disable them and let reconnect logic
+        # handle real disconnects.
+        kwargs = {
+            "ping_interval": None,
+            "ping_timeout": None,
+        }
         # websockets.sync.client.connect accepts either additional_headers=
         # (newer) or extra_headers= depending on version; try the newer
         # name first and fall back.
         try:
-            self._ws = connect(url, additional_headers=headers)
+            self._ws = connect(url, additional_headers=headers, **kwargs)
         except TypeError:
-            self._ws = connect(url, extra_headers=headers)
+            self._ws = connect(url, extra_headers=headers, **kwargs)
 
         self._send_json(
             {
                 "type": "session.update",
                 "session": {
-                    "voice": self.voice,
+                    "type": "realtime",
+                    "model": self.model,
                     "instructions": self.instructions,
-                    "modalities": ["audio", "text"],
-                    "output_audio_format": "pcm16",
-                    "input_audio_format": "pcm16",
+                    "output_modalities": ["audio"],
+                    "audio": {
+                        "input": {
+                            "format": {"type": "audio/pcm", "rate": self.sample_rate},
+                            "turn_detection": {"type": "semantic_vad"},
+                        },
+                        "output": {
+                            "format": {"type": "audio/pcm", "rate": self.sample_rate},
+                            "voice": self.voice,
+                        },
+                    },
                 },
             }
         )
+        sys.stderr.write("[google_meet realtime] session.update sent\n")
 
     def close(self) -> None:
         if self._ws is not None:
@@ -113,6 +147,65 @@ class RealtimeSession:
 
     # ── speaking ──────────────────────────────────────────────────────────
 
+    def _speak_via_tts(self, text: str, timeout: float) -> dict:
+        """Generate PCM with the dedicated TTS endpoint and append it to the sink."""
+        try:
+            from openai import OpenAI
+        except ImportError as exc:  # pragma: no cover - dependency is expected to exist
+            raise RuntimeError("openai package is required for TTS playback") from exc
+
+        if self._tts_client is None:
+            self._tts_client = OpenAI(api_key=self.api_key)
+
+        start = time.monotonic()
+        preview = text.replace("\n", " ").strip()
+        if len(preview) > 120:
+            preview = preview[:120] + "…"
+        sys.stderr.write(
+            f"[google_meet tts] speak start model={self.tts_model} voice={self.voice} text={preview!r} timeout={timeout}\n"
+        )
+
+        response = self._tts_client.audio.speech.create(
+            model=self.tts_model,
+            voice=self.voice,
+            input=text,
+            instructions=self.instructions,
+            response_format="pcm",
+            timeout=timeout,
+        )
+
+        bytes_written = 0
+        sink_fp = None
+        if self.audio_sink_path is not None:
+            self.audio_sink_path.parent.mkdir(parents=True, exist_ok=True)
+            sink_fp = open(self.audio_sink_path, "ab")
+        try:
+            for chunk in response.iter_bytes():
+                if not chunk:
+                    continue
+                if sink_fp is not None:
+                    sink_fp.write(chunk)
+                    sink_fp.flush()
+                bytes_written += len(chunk)
+                self.audio_bytes_out += len(chunk)
+                self.last_audio_out_at = time.time()
+        finally:
+            if sink_fp is not None:
+                sink_fp.close()
+            try:
+                response.close()
+            except Exception:
+                pass
+
+        if bytes_written <= 0:
+            raise RuntimeError("TTS produced zero audio bytes")
+
+        duration_ms = (time.monotonic() - start) * 1000.0
+        sys.stderr.write(
+            f"[google_meet tts] response finished bytes={bytes_written} duration_ms={duration_ms:.1f}\n"
+        )
+        return {"ok": True, "bytes_written": bytes_written, "duration_ms": duration_ms}
+
     def speak(self, text: str, timeout: float = 30.0) -> dict:
         """Send ``text`` and accumulate the audio response.
 
@@ -123,7 +216,24 @@ class RealtimeSession:
         if self._ws is None:
             raise RuntimeError("RealtimeSession.connect() must be called first")
 
+        try:
+            return self._speak_via_tts(text, timeout)
+        except Exception as exc:
+            sys.stderr.write(f"[google_meet tts] failed, falling back to realtime: {exc}\n")
+
         start = time.monotonic()
+        preview = text.replace("\n", " ").strip()
+        if len(preview) > 120:
+            preview = preview[:120] + "…"
+        sys.stderr.write(f"[google_meet realtime] speak start text={preview!r} timeout={timeout}\n")
+
+        # Force a literal reading path: the model sees the text wrapped in an
+        # explicit verbatim instruction so it is less likely to continue or
+        # paraphrase prior context.
+        speak_text = (
+            "Read the following text verbatim, with no additions or omissions:\n"
+            f"```{text}```"
+        )
 
         self._send_json(
             {
@@ -131,14 +241,13 @@ class RealtimeSession:
                 "item": {
                     "type": "message",
                     "role": "user",
-                    "content": [{"type": "input_text", "text": text}],
+                    "content": [{"type": "input_text", "text": speak_text}],
                 },
             }
         )
         self._send_json(
             {
                 "type": "response.create",
-                "response": {"modalities": ["audio"]},
             }
         )
 
@@ -158,6 +267,7 @@ class RealtimeSession:
                 raw = self._recv(timeout=remaining)
                 if raw is None:
                     # Connection closed by peer.
+                    sys.stderr.write("[google_meet realtime] socket closed by peer while speaking\n")
                     break
                 try:
                     frame = json.loads(raw) if isinstance(raw, (str, bytes, bytearray)) else raw
@@ -166,7 +276,7 @@ class RealtimeSession:
                 if not isinstance(frame, dict):
                     continue
                 ftype = frame.get("type")
-                if ftype == "response.audio.delta":
+                if ftype in {"response.audio.delta", "response.output_audio.delta"}:
                     b64 = frame.get("delta") or frame.get("audio") or ""
                     if b64 and sink_fp is not None:
                         try:
@@ -179,23 +289,37 @@ class RealtimeSession:
                             bytes_written += len(chunk)
                             self.audio_bytes_out += len(chunk)
                             self.last_audio_out_at = time.time()
-                elif ftype == "response.created":
+                elif ftype in {"response.created", "response.output_item.created"}:
                     rid = (frame.get("response") or {}).get("id")
                     if rid:
                         self._last_response_id = rid
-                elif ftype in {"response.done", "response.completed", "response.cancelled"}:
+                        sys.stderr.write(f"[google_meet realtime] response created id={rid}\n")
+                elif ftype in {
+                    "response.done",
+                    "response.completed",
+                    "response.cancelled",
+                    "response.output_audio.done",
+                }:
+                    sys.stderr.write(
+                        f"[google_meet realtime] response finished type={ftype} bytes={bytes_written} "
+                        f"duration_ms={(time.monotonic() - start) * 1000.0:.1f}\n"
+                    )
                     break
                 elif ftype == "error":
                     err = frame.get("error") or frame
+                    sys.stderr.write(f"[google_meet realtime] error frame: {err}\n")
                     raise RuntimeError(f"realtime error: {err}")
-                # All other frames (response.created, response.output_item.*,
-                # response.audio_transcript.delta, rate_limits.updated, ...)
+                # All other frames (response.output_item.*,
+                # response.output_audio_transcript.delta, rate_limits.updated, ...)
                 # are ignored for v2.
         finally:
             if sink_fp is not None:
                 sink_fp.close()
 
         duration_ms = (time.monotonic() - start) * 1000.0
+        sys.stderr.write(
+            f"[google_meet realtime] speak done bytes={bytes_written} duration_ms={duration_ms:.1f}\n"
+        )
         return {
             "ok": True,
             "bytes_written": bytes_written,
@@ -311,13 +435,20 @@ class RealtimeSpeaker:
             # speak() call because new entries may have arrived.
             head = entries[0]
             text = (head.get("text") or "").strip()
+            sys.stderr.write(
+                f"[google_meet realtime] queue head id={head.get('id')} len={len(text)} remaining={len(entries)}\n"
+            )
             if text:
                 try:
                     result = self.session.speak(text)
                 except Exception as exc:
                     result = {"ok": False, "error": str(exc)}
+                    sys.stderr.write(f"[google_meet realtime] speak failed: {exc}\n")
             else:
                 result = {"ok": True, "bytes_written": 0, "duration_ms": 0.0}
+            sys.stderr.write(
+                f"[google_meet realtime] queue result id={head.get('id')} ok={result.get('ok')} bytes={result.get('bytes_written')}\n"
+            )
             self._append_processed(head, result)
 
             # Re-read the queue from disk in case it was appended to
