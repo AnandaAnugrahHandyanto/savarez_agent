@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import queue
+import shlex
 import subprocess
 import sys
 import threading
@@ -6628,9 +6629,10 @@ def _(rid, params: dict) -> dict:
     if name in qcmds:
         qc = qcmds[name]
         if qc.get("type") == "exec":
+            command = qc.get("command", "")
             r = subprocess.run(
-                qc.get("command", ""),
-                shell=True,
+                shlex.split(command) if command else [],
+                shell=False,
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -8774,7 +8776,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5001, "shell.exec unavailable: approval safety module not importable")
     try:
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()
+            shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=30, cwd=os.getcwd()
         )
         return _ok(
             rid,
