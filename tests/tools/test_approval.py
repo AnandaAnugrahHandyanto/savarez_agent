@@ -449,11 +449,22 @@ class TestSensitiveRedirectPattern:
         assert key is not None
         assert "project env/config" in desc.lower()
 
-    def test_redirect_from_local_dotenv_source_is_safe(self):
-        dangerous, key, desc = detect_dangerous_command("cat .env > backup.txt")
+    def test_redirect_from_nonsecret_source_is_safe(self):
+        # 음성 대조군: 비민감 소스를 비민감 목적지로 redirect → sensitive-redirect 패턴 오탐 없음.
+        # (원래 'cat .env > backup.txt' 였으나, secret-hygiene .env 평문 읽기 규칙이
+        #  이를 정당하게 위험 분류하게 되어 소스를 비밀 아닌 파일로 교체. 아래 양성 테스트 참조.)
+        dangerous, key, desc = detect_dangerous_command("cat notes.txt > backup.txt")
         assert dangerous is False
         assert key is None
         assert desc is None
+
+    def test_cat_dotenv_to_plaintext_flags_secret_read(self):
+        # secret-hygiene 강화: .env 평문 읽기는 시크릿(토큰·SUDO_PASSWORD)을 임의 평문
+        # 파일로 흘리는 노출 위험 → 승인 필요. 코드베이스 전반의 'cat .env' 위협 취급과 일치.
+        dangerous, key, desc = detect_dangerous_command("cat .env > backup.txt")
+        assert dangerous is True
+        assert key is not None
+        assert ".env file read" in desc.lower()
 
 
 class TestProjectSensitiveCopyPattern:

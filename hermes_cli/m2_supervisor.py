@@ -118,6 +118,10 @@ def _validate_capture_dir(capture_dir: Optional[str], workspace: str) -> tuple[b
     return True, None
 
 
+class ProposalWriteError(RuntimeError):
+    """Proposal artifact could not be written without following untrusted paths."""
+
+
 # ---------------------------------------------------------------------------
 # core — 감독 1회 실행
 # ---------------------------------------------------------------------------
@@ -205,7 +209,13 @@ def supervise(
 
         # 제안서 조립(inert JSON). artifact_exists 게이트의 deliverable.
         if assemble_proposal:
-            _assemble_proposal(ws, deliverable, phase2, verdict, captured)
+            try:
+                _assemble_proposal(ws, deliverable, phase2, verdict, captured)
+            except ProposalWriteError as exc:
+                result["completed"] = False
+                result["error"] = "proposal_write_failed"
+                result["reason"] = str(exc)
+                return result
 
         # capture/diff/verdict를 **부모가** 이벤트로 기록(워커가 못 만듦).
         with kdb.write_txn(conn):
@@ -248,15 +258,61 @@ def supervise(
     return result
 
 
+def _safe_proposal_path(workspace: str, deliverable: str) -> Path:
+    """Return a workspace-contained proposal path without following symlink dirs."""
+    ws = Path(workspace).resolve(strict=True)
+    rel = Path(deliverable)
+    if rel.is_absolute():
+        raise ProposalWriteError(f"deliverable must be relative: {deliverable}")
+    if any(part in ("", ".", "..") for part in rel.parts):
+        raise ProposalWriteError(f"deliverable has unsafe path component: {deliverable}")
+
+    parent = ws
+    for part in rel.parts[:-1]:
+        parent = parent / part
+        if parent.is_symlink():
+            raise ProposalWriteError(f"deliverable parent is symlink: {parent}")
+        if parent.exists() and not parent.is_dir():
+            raise ProposalWriteError(f"deliverable parent is not a directory: {parent}")
+        parent.mkdir(mode=0o700, exist_ok=True)
+        if parent.is_symlink():
+            raise ProposalWriteError(f"deliverable parent is symlink: {parent}")
+
+    out = parent / rel.name
+    if out.is_symlink():
+        raise ProposalWriteError(f"deliverable leaf is symlink: {out}")
+    if out.exists():
+        raise ProposalWriteError(f"deliverable leaf already exists: {out}")
+    return out
+
+
+def _write_proposal_exclusive_no_follow(out: Path, text: str) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd: int | None = None
+    try:
+        fd = os.open(out, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fd = None
+            fh.write(text)
+    except FileExistsError as exc:
+        raise ProposalWriteError(f"deliverable leaf already exists: {out}") from exc
+    except OSError as exc:
+        raise ProposalWriteError(f"proposal safe-write failed: {exc}") from exc
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def _assemble_proposal(workspace: str, deliverable: str, phase2: dict,
                        verdict: dict, captured) -> str:
-    """부모가 검증 결과로 MERGE_PROPOSAL.json(inert)을 조립한다.
+    """부모가 검증 결과로 MERGE_PROPOSAL.json(inert)을 안전 조립한다.
 
     이것은 **제안서까지**다 — merge·배포·실행은 절대 하지 않는다(마일3 사람 게이트).
-    내용은 diff 요약·verdict·capture 포인터뿐인 정적 JSON.
+    deliverable parent/leaf symlink를 거부하고, leaf는 O_EXCL/O_NOFOLLOW로 새 파일만 쓴다.
     """
-    out = Path(workspace) / deliverable
-    out.parent.mkdir(parents=True, exist_ok=True)
+    out = _safe_proposal_path(workspace, deliverable)
     proposal = {
         "kind": "MERGE_PROPOSAL",
         "inert": True,
@@ -270,7 +326,10 @@ def _assemble_proposal(workspace: str, deliverable: str, phase2: dict,
         "captured_count": len(list(captured or [])),
         "note": "proposal only — merge/deploy is a human gate (milestone3)",
     }
-    out.write_text(json.dumps(proposal, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_proposal_exclusive_no_follow(
+        out,
+        json.dumps(proposal, ensure_ascii=False, indent=2),
+    )
     return str(out)
 
 

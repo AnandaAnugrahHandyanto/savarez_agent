@@ -397,6 +397,70 @@ def test_supervise_smoke_blocked_on_codex(kanban_home, tmp_path):
         assert kb.get_task(conn, tid).status != "done"
 
 
+def test_assemble_proposal_rejects_symlink_deliverable_leaf(tmp_path):
+    ws = tmp_path / "ws"; ws.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text("do not overwrite\n", encoding="utf-8")
+    (ws / "proposal").mkdir()
+    (ws / "proposal" / "MERGE_PROPOSAL.json").symlink_to(outside)
+
+    with pytest.raises(m2_supervisor.ProposalWriteError):
+        m2_supervisor._assemble_proposal(
+            str(ws),
+            "proposal/MERGE_PROPOSAL.json",
+            {"ok": True, "changed": []},
+            {"verdict": "PASS", "high": 0},
+            [],
+        )
+
+    assert outside.read_text(encoding="utf-8") == "do not overwrite\n"
+
+
+def test_assemble_proposal_rejects_symlink_parent_component(tmp_path):
+    ws = tmp_path / "ws"; ws.mkdir()
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    (ws / "proposal").symlink_to(outside_dir, target_is_directory=True)
+
+    with pytest.raises(m2_supervisor.ProposalWriteError):
+        m2_supervisor._assemble_proposal(
+            str(ws),
+            "proposal/MERGE_PROPOSAL.json",
+            {"ok": True, "changed": []},
+            {"verdict": "PASS", "high": 0},
+            [],
+        )
+
+    assert not (outside_dir / "MERGE_PROPOSAL.json").exists()
+
+
+def test_supervise_fails_closed_on_unsafe_deliverable_leaf(kanban_home, tmp_path):
+    ws = tmp_path / "ws"; ws.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text("do not overwrite\n", encoding="utf-8")
+    deliverable = "proposal/MERGE_PROPOSAL.json"
+    (ws / "proposal").mkdir()
+    (ws / deliverable).symlink_to(outside)
+
+    with kb.connect() as conn:
+        tid = _make_impl_task(conn, ws, deliverable)
+        kb.record_plan_submission(conn, tid, WRITE_PLAN)
+        task = kb.get_task(conn, tid)
+        res = m2_supervisor.supervise(
+            conn, task, str(ws),
+            declared_writes=["source_staging/gen.py"],
+            deliverable=deliverable,
+            spawn_capture_fn=_mock_spawn_capture_factory("x = 1\n"),
+            codex_review_fn=lambda staged: {"verdict": "PASS", "high": 0},
+            timeout=10,
+        )
+
+        assert res["completed"] is False
+        assert res.get("error") == "proposal_write_failed"
+        assert kb.get_task(conn, tid).status != "done"
+    assert outside.read_text(encoding="utf-8") == "do not overwrite\n"
+
+
 # ===========================================================================
 # Phase H — dispatch_once 레벨 격리: flag off → implementer dispatchable 0
 # ===========================================================================
