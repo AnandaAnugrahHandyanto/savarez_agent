@@ -520,6 +520,10 @@ def test_content_route_skills_are_preloaded_without_dev_or_ops_skills(monkeypatc
         ("内容创意 复盘这周笔记数据和评论反馈", "content-feedback-loop"),
         ("内容创意 拆解这个短视频为什么火", "video-analysis-director"),
         ("内容创意 找南沙本地达人和教育博主合作", "influencer-discovery-advisor"),
+        ("内容创意 把这篇文案改得更像人话，去AI味", "humanizer"),
+        ("内容创意 做一张数学思维图解信息图", "baoyu-infographic"),
+        ("内容创意 做成四格知识漫画", "baoyu-comic"),
+        ("内容创意 给这篇文章统一插画和配图风格", "baoyu-article-illustrator"),
     ],
 )
 def test_content_route_intent_based_preload_adds_specialist_skill(message, expected_skill):
