@@ -9,9 +9,26 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
+
+
+@pytest.fixture(autouse=True)
+def _clear_model_options_cache():
+    """Isolate the module-level model.options payload cache between tests.
+
+    The cache is keyed on config stamp + provider/model, which are often
+    identical across tests in this file — without clearing, a payload cached
+    by an earlier test masks monkeypatched behavior in later ones (e.g.
+    test_model_options_propagates_list_exception expects the underlying
+    builder to raise, but a stale cache hit would swallow it).
+    """
+    server._MODEL_OPTIONS_CACHE.clear()
+    yield
+    server._MODEL_OPTIONS_CACHE.clear()
 
 
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
