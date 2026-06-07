@@ -491,3 +491,90 @@ class TestCustomProviderAliasCollision:
         assert isinstance(client, OpenAI)
         assert "override.example.com" in str(client.base_url)
         assert client.api_key == "override-key"
+
+
+class TestCustomVisionAsyncClient:
+    """#38679: custom vision provider must create a properly configured async client."""
+
+    def test_async_custom_vision_passes_is_vision_flag_to_provider_client(self):
+        """resolve_vision_provider_client must pass is_vision=True to resolve_provider_client."""
+        from agent.auxiliary_client import resolve_vision_provider_client
+
+        fake_sync = MagicMock()
+        fake_async = MagicMock()
+
+        with patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=(
+                "custom", "vision-model",
+                "https://custom.test/v1", "test-key", None,
+            ),
+        ), patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(fake_async, "vision-model"),
+        ) as mock_resolve:
+            provider, client, model = resolve_vision_provider_client(
+                provider="custom",
+                model="vision-model",
+                base_url="https://custom.test/v1",
+                api_key="test-key",
+                async_mode=True,
+            )
+
+        # The resolve_provider_client call must include is_vision=True
+        call_kwargs = mock_resolve.call_args.kwargs
+        assert call_kwargs.get("is_vision") is True, (
+            f"resolve_provider_client must receive is_vision=True for vision tasks, "
+            f"got {call_kwargs.get('is_vision')!r}"
+        )
+        assert provider == "custom"
+        assert client is fake_async
+        assert model == "vision-model"
+
+    def test_default_query_preserved_in_async_conversion(self):
+        """_to_async_client must propagate default_query from sync to async client."""
+        from agent.auxiliary_client import _to_async_client
+
+        sync_client = MagicMock()
+        sync_client.api_key = "test-key"
+        sync_client.base_url = "https://custom.test/v1"
+        sync_client.default_query = {"api-version": "2024-02-01"}
+
+        with patch(
+            "openai.AsyncOpenAI"
+        ) as mock_async_openai:
+            fake_async = MagicMock()
+            mock_async_openai.return_value = fake_async
+
+            client, model = _to_async_client(sync_client, "test-model", is_vision=True)
+
+            call_kwargs = mock_async_openai.call_args.kwargs
+            assert call_kwargs.get("default_query") == {"api-version": "2024-02-01"}, (
+                f"AsyncOpenAI must receive default_query from sync client, "
+                f"got {call_kwargs.get('default_query')!r}"
+            )
+            assert client is fake_async
+            assert model == "test-model"
+
+    def test_default_headers_preserved_in_async_conversion(self):
+        """_to_async_client must propagate default_headers from sync to async client."""
+        from agent.auxiliary_client import _to_async_client
+
+        sync_client = MagicMock()
+        sync_client.api_key = "test-key"
+        sync_client.base_url = "https://custom.test/v1"
+        sync_client.default_headers = {"X-Custom-Header": "value"}
+
+        with patch(
+            "openai.AsyncOpenAI"
+        ) as mock_async_openai:
+            fake_async = MagicMock()
+            mock_async_openai.return_value = fake_async
+
+            client, model = _to_async_client(sync_client, "test-model", is_vision=False)
+
+            call_kwargs = mock_async_openai.call_args.kwargs
+            assert call_kwargs.get("default_headers") == {"X-Custom-Header": "value"}, (
+                f"AsyncOpenAI must receive default_headers from sync client, "
+                f"got {call_kwargs.get('default_headers')!r}"
+            )
