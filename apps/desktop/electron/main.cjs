@@ -591,9 +591,61 @@ function rememberLog(chunk) {
   scheduleDesktopLogFlush()
 }
 
+function resolveLocalArtifactPath(raw) {
+  if (!raw) return null
+
+  if (raw.startsWith('~/.hermes/')) {
+    return path.join(HERMES_HOME, raw.slice('~/.hermes/'.length))
+  }
+
+  if (raw === '~/.hermes') {
+    return HERMES_HOME
+  }
+
+  if (raw.startsWith('~/')) {
+    return path.join(app.getPath('home'), raw.slice(2))
+  }
+
+  if (path.isAbsolute(raw) || /^[a-zA-Z]:[\/]/.test(raw)) {
+    return raw
+  }
+
+  if (raw.startsWith('./') || raw.startsWith('../')) {
+    return path.resolve(HERMES_HOME, raw)
+  }
+
+  return null
+}
+
+function openLocalFilePath(localPath) {
+  void shell
+    .openPath(localPath)
+    .then(error => {
+      if (!error) {
+        return
+      }
+
+      rememberLog(`[file] openPath failed: ${error}; revealing in folder instead`)
+
+      try {
+        shell.showItemInFolder(localPath)
+      } catch (revealError) {
+        rememberLog(`[file] showItemInFolder failed: ${revealError.message}`)
+      }
+    })
+    .catch(error => rememberLog(`[file] openPath rejected: ${error.message}`))
+
+  return true
+}
+
 function openExternalUrl(rawUrl) {
   const raw = String(rawUrl || '').trim()
   if (!raw) return false
+
+  const localCandidate = resolveLocalArtifactPath(raw)
+  if (localCandidate) {
+    return openLocalFilePath(localCandidate)
+  }
 
   let parsed
   try {
@@ -615,24 +667,7 @@ function openExternalUrl(rawUrl) {
       return false
     }
 
-    void shell
-      .openPath(localPath)
-      .then(error => {
-        if (!error) {
-          return
-        }
-
-        rememberLog(`[file] openPath failed: ${error}; revealing in folder instead`)
-
-        try {
-          shell.showItemInFolder(localPath)
-        } catch (revealError) {
-          rememberLog(`[file] showItemInFolder failed: ${revealError.message}`)
-        }
-      })
-      .catch(error => rememberLog(`[file] openPath rejected: ${error.message}`))
-
-    return true
+    return openLocalFilePath(localPath)
   }
 
   if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) {
@@ -4154,12 +4189,28 @@ function primaryProfileKey() {
   return readActiveDesktopProfile() || 'default'
 }
 
+function normalizeBackendProfileKey(profile) {
+  const primary = primaryProfileKey()
+  const key = profile && String(profile).trim() ? String(profile).trim() : primary
+
+  // Scott's single-profile Desktop hides the root/default profile in the UI, but
+  // stale renderer state can still ask the main process for "default" during
+  // early boot. Treat that as an alias for the pinned primary profile instead of
+  // spawning a second dashboard backend, which can leave the app stuck on
+  // Connecting after port conflicts/retries.
+  if (primary !== 'default' && key === 'default') {
+    return primary
+  }
+
+  return key
+}
+
 // Resolve a backend connection for the given profile. Routes the primary
 // profile to startHermes() (the window backend: boot UI, bootstrap, remote
 // mode), and any OTHER profile to a lazily-spawned pool backend. An empty /
 // unknown profile resolves to the primary, so all legacy callers are unchanged.
 async function ensureBackend(profile) {
-  const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
+  const key = normalizeBackendProfileKey(profile)
 
   if (key === primaryProfileKey()) {
     return startHermes()

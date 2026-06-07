@@ -644,30 +644,44 @@ class ModelAssignment(BaseModel):
 
 
 def _apply_main_model_assignment(
-    model_cfg: "Any", provider: str, model: str, base_url: str = ""
+    model_cfg: "Any", provider: str, model: str, base_url: str = "", custom_providers=None
 ) -> dict:
     """Apply a main-slot model assignment to a ``model`` config dict in place.
 
-    Sets ``provider``/``default``, then reconciles ``base_url``: custom/local
-    providers persist the supplied endpoint URL (the runtime resolver reads
-    ``model.base_url`` from config and ignores ``OPENAI_BASE_URL``), while every
-    other provider clears any stale URL so the resolver picks that provider's
-    own default endpoint. The hardcoded ``context_length`` override is always
-    dropped since the new model may have a different context window.
-
-    Returns the same dict (coerced to a fresh dict if the input wasn't one) so
-    callers can assign it straight back onto ``cfg["model"]``.
+    Sets ``provider``/``default``, then reconciles ``base_url``.  For custom
+    providers, an empty incoming ``base_url`` from Desktop must NOT clear the
+    active endpoint: the model picker normally sends only provider+model, while
+    endpoint details live in ``custom_providers``.  Clearing here makes the
+    gateway report setup-needed / no provider configured after any model-menu
+    interaction.
     """
     if not isinstance(model_cfg, dict):
         model_cfg = {}
     model_cfg["provider"] = provider
     model_cfg["default"] = model
-    if provider.strip().lower() == "custom" and base_url.strip():
-        model_cfg["base_url"] = base_url.strip()
+    provider_norm = provider.strip().lower()
+    supplied_base_url = base_url.strip()
+    if provider_norm == "custom":
+        resolved_base_url = supplied_base_url
+        if not resolved_base_url and isinstance(custom_providers, list):
+            model_norm = str(model or "").strip()
+            for entry in custom_providers:
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("model") or "").strip() == model_norm:
+                    resolved_base_url = str(entry.get("base_url") or "").strip()
+                    if resolved_base_url:
+                        break
+        if resolved_base_url:
+            model_cfg["base_url"] = resolved_base_url
+        elif model_cfg.get("base_url"):
+            # Preserve existing custom endpoint if Desktop omitted base_url.
+            model_cfg["base_url"] = str(model_cfg.get("base_url") or "").strip()
     elif model_cfg.get("base_url"):
         model_cfg["base_url"] = ""
     model_cfg.pop("context_length", None)
     return model_cfg
+
 
 
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
@@ -1641,6 +1655,7 @@ async def get_profiles_sessions(
     archived: str = "exclude",
     order: str = "recent",
     profile: str = "all",
+    model: str = "",
 ):
     """Unified, read-only session list aggregated across ALL profiles.
 
@@ -1676,6 +1691,7 @@ async def get_profiles_sessions(
     min_message_count = max(0, min_messages)
     archived_only = archived == "only"
     include_archived = archived == "include"
+    model_filter = (model or "").strip()
     # Over-fetch per profile so the merged+sorted window is correct for the
     # requested page. Capped so a huge profile can't blow up the response.
     per_profile = min(max(limit + offset, limit), 500)
@@ -1698,20 +1714,28 @@ async def get_profiles_sessions(
             errors.append({"profile": name, "error": str(exc)})
             continue
         try:
+            # When Desktop is scoped to a selected agent/model, filter by the
+            # session row's recorded model before computing totals.  Over-fetch
+            # for the filtered case so profile_totals/total describe the visible
+            # model-scoped list, not the unfiltered profile DB count.
             rows = db.list_sessions_rich(
-                limit=per_profile,
+                limit=5000 if model_filter else per_profile,
                 offset=0,
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
             )
-            profile_total = db.session_count(
-                min_message_count=min_message_count,
-                include_archived=include_archived,
-                archived_only=archived_only,
-                exclude_children=True,
-            )
+            if model_filter:
+                rows = [s for s in rows if (s.get("model") or "") == model_filter]
+                profile_total = len(rows)
+            else:
+                profile_total = db.session_count(
+                    min_message_count=min_message_count,
+                    include_archived=include_archived,
+                    archived_only=archived_only,
+                    exclude_children=True,
+                )
             total += profile_total
             profile_totals[name] = profile_total
             for s in rows:
@@ -2214,7 +2238,7 @@ async def set_model_assignment(body: ModelAssignment):
             if not provider or not model:
                 raise HTTPException(status_code=400, detail="provider and model required for main")
             model_cfg = _apply_main_model_assignment(
-                cfg.get("model", {}), provider, model, base_url
+                cfg.get("model", {}), provider, model, base_url, cfg.get("custom_providers")
             )
             cfg["model"] = model_cfg
 

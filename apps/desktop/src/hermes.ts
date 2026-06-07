@@ -153,12 +153,14 @@ export async function listAllProfileSessions(
   minMessages = 0,
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent',
-  profile: 'all' | (string & {}) = 'all'
+  profile: 'all' | (string & {}) = 'all',
+  model = ''
 ): Promise<PaginatedSessions> {
+  const modelQuery = model.trim() ? `&model=${encodeURIComponent(model.trim())}` : ''
   const result = await window.hermesDesktop.api<PaginatedSessions>({
     path:
       `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
-      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}`
+      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${modelQuery}`
   })
 
   return {
@@ -522,10 +524,15 @@ export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
   })
 }
 
-export function getProfiles(): Promise<ProfilesResponse> {
-  return window.hermesDesktop.api<ProfilesResponse>({
+const SCOTT_OMEGA_PROFILE = 'scott-omega-profile'
+
+export async function getProfiles(): Promise<ProfilesResponse> {
+  const response = await window.hermesDesktop.api<ProfilesResponse>({
     path: '/api/profiles'
   })
+  const scottOmegaProfile = response.profiles.find(profile => profile.name === SCOTT_OMEGA_PROFILE)
+
+  return scottOmegaProfile ? { ...response, profiles: [scottOmegaProfile] } : response
 }
 
 export function createProfile(body: ProfileCreatePayload): Promise<{ name: string; ok: boolean; path: string }> {

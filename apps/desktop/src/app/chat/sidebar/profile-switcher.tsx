@@ -127,6 +127,7 @@ export function ProfileRail() {
   const onDefault = !isAll && activeKey === 'default'
 
   const named = sortByProfileOrder(profiles.filter(profile => !profile.is_default), order)
+  const singleNamedProfile = profiles.length === 1 && !profiles[0]?.is_default ? profiles[0] : null
   const multiProfile = profiles.length > 1
 
   // distance constraint: a small drag reorders, a tap still selects the profile.
@@ -194,9 +195,17 @@ export function ProfileRail() {
           <ProfilePill active={isAll} glyph="layers" label="All profiles" onSelect={() => setShowAllProfiles(true)} />
         ))}
 
-      {/* Single-profile: the active default's home icon next to the create +. */}
+      {/* Single-profile: show the active default home icon, or the lone named profile when Desktop is profile-locked. */}
       {!multiProfile && defaultProfile && (
         <ProfilePill active glyph="home" label={defaultProfile.name} onSelect={() => selectProfile(defaultProfile.name)} />
+      )}
+      {!multiProfile && singleNamedProfile && (
+        <ProfilePill
+          active={!isAll && normalizeProfileKey(singleNamedProfile.name) === activeKey}
+          glyph="account"
+          label={singleNamedProfile.name}
+          onSelect={() => selectProfile(singleNamedProfile.name)}
+        />
       )}
 
       <div

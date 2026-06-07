@@ -33,6 +33,7 @@ import { $activeGatewayProfile, $freshSessionRequest, normalizeProfileKey, refre
 import {
   $activeSessionId,
   $currentCwd,
+  $currentModel,
   $freshDraftReady,
   $gatewayState,
   $selectedStoredSessionId,
@@ -133,6 +134,7 @@ export function DesktopController() {
   const gatewayState = useStore($gatewayState)
   const activeSessionId = useStore($activeSessionId)
   const currentCwd = useStore($currentCwd)
+  const currentModel = useStore($currentModel)
   const freshDraftReady = useStore($freshDraftReady)
   const filePreviewTarget = useStore($filePreviewTarget)
   const previewTarget = useStore($previewTarget)
@@ -262,10 +264,11 @@ export function DesktopController() {
       // Unified cross-profile list (served read-only off each profile's
       // state.db; no per-profile backend is spawned). Single-profile users get
       // the same rows tagged profile="default".
-      const result = await listAllProfileSessions(limit, 1)
+      const modelFilter = currentModel.trim()
+      const result = await listAllProfileSessions(limit, 1, 'exclude', 'recent', 'all', modelFilter)
 
       if (refreshSessionsRequestRef.current === requestId) {
-        setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()))
+        setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()).filter(s => !currentModel.trim() || !s.model || s.model === currentModel.trim()))
         setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
         setSessionProfileTotals(result.profile_totals ?? {})
       }
@@ -274,7 +277,7 @@ export function DesktopController() {
         setSessionsLoading(false)
       }
     }
-  }, [])
+  }, [currentModel])
 
   const loadMoreSessions = useCallback(() => {
     bumpSessionsLimit()
@@ -287,14 +290,15 @@ export function DesktopController() {
     const key = normalizeProfileKey(profile)
     const inKey = (s: SessionInfo) => normalizeProfileKey(s.profile) === key
     const loaded = $sessions.get().filter(inKey).length
-    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', key)
+    const modelFilter = currentModel.trim()
+    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', key, modelFilter)
     const keep = sessionsToKeep(key)
 
-    setSessions(prev => [...prev.filter(s => !inKey(s)), ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)])
+    setSessions(prev => [...prev.filter(s => !inKey(s)), ...mergeSessionPage(prev.filter(inKey), result.sessions, keep).filter(s => !modelFilter || !s.model || s.model === modelFilter)])
 
     const total = result.profile_totals?.[key] ?? result.total ?? result.sessions.length
     setSessionProfileTotals(prev => ({ ...prev, [key]: Math.max(total, result.sessions.length) }))
-  }, [])
+  }, [currentModel])
 
   const toggleSelectedPin = useCallback(() => {
     const sessionId = $selectedStoredSessionId.get()
@@ -611,6 +615,12 @@ export function DesktopController() {
       void refreshSessions().catch(() => undefined)
     }
   }, [gatewayState, refreshCurrentModel, refreshSessions])
+
+  useEffect(() => {
+    if (gatewayState === 'open') {
+      void refreshSessions().catch(() => undefined)
+    }
+  }, [currentModel, gatewayState, refreshSessions])
 
   useRouteResume({
     activeSessionId,

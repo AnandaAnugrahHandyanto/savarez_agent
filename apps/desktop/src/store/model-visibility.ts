@@ -84,13 +84,22 @@ export function setModelVisibilityOpen(open: boolean): void {
 
 /** The default-visible key set: the curated top-N per provider. Used both as
  *  the dropdown fallback and to seed the Edit Models dialog. */
+function preferredDesktopProvider(provider: ModelOptionProvider): boolean {
+  const label = `${provider.slug} ${provider.name}`.toLowerCase()
+
+  return /(^|[^a-z])(apollo|omega)([^a-z]|$)/.test(label)
+}
+
 export function defaultVisibleKeys(providers: readonly ModelOptionProvider[]): Set<string> {
   const keys = new Set<string>()
+  const preferred = providers.filter(preferredDesktopProvider)
+  const source = preferred.length > 0 ? preferred : providers
 
-  for (const provider of providers) {
+  for (const provider of source) {
     const families = collapseModelFamilies(provider.models ?? [])
+    const limit = preferred.length > 0 ? 1 : DEFAULT_VISIBLE_PER_PROVIDER
 
-    for (const family of families.slice(0, DEFAULT_VISIBLE_PER_PROVIDER)) {
+    for (const family of families.slice(0, limit)) {
       keys.add(modelVisibilityKey(provider.slug, family.id))
     }
   }

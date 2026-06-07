@@ -687,6 +687,41 @@ def init_agent(
             _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
             print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
     else:
+        # Desktop/model picker may pass named custom-provider slugs such as
+        # custom:apollo or custom:omega.  The OpenAI-compatible runtime itself
+        # expects provider=custom plus endpoint credentials, so resolve the
+        # named custom_providers entry here before client construction.
+        try:
+            _agent_provider_norm = str(getattr(agent, "provider", "") or "").strip().lower()
+            if _agent_provider_norm.startswith("custom:"):
+                _custom_slug = _agent_provider_norm.split(":", 1)[1].strip()
+                _cfg_for_named_custom = None
+                try:
+                    from hermes_cli.config import load_config as _load_cfg_named_custom, get_compatible_custom_providers as _gcp_named_custom
+                    _cfg_for_named_custom = _load_cfg_named_custom()
+                    _named_custom_entries = _gcp_named_custom(_cfg_for_named_custom)
+                except Exception:
+                    _named_custom_entries = []
+                    if isinstance(_cfg_for_named_custom, dict):
+                        _named_custom_entries = _cfg_for_named_custom.get("custom_providers") or []
+                import re as _re_named_custom
+                def _norm_named_custom(_value):
+                    return _re_named_custom.sub(r"[^a-z0-9]+", "-", str(_value or "").lower()).strip("-")
+                for _entry in _named_custom_entries or []:
+                    if not isinstance(_entry, dict):
+                        continue
+                    _entry_name_norm = _norm_named_custom(_entry.get("name"))
+                    _entry_model_norm = _norm_named_custom(_entry.get("model"))
+                    if (_custom_slug and (_custom_slug == _entry_name_norm or _custom_slug in _entry_name_norm or _custom_slug in _entry_model_norm)):
+                        base_url = base_url or _entry.get("base_url") or ""
+                        api_key = api_key or _entry.get("api_key") or ""
+                        if _entry.get("model"):
+                            agent.model = _entry.get("model")
+                        agent.provider = "custom"
+                        break
+        except Exception:
+            pass
+
         if api_key and base_url:
             # Explicit credentials from CLI/gateway — construct directly.
             # The runtime provider resolver already handled auth for us.
@@ -834,6 +869,54 @@ def init_agent(
                         "configuration."
                     )
         
+        # Merge per-profile custom provider headers (for OpenAI-compatible
+        # endpoints that need caller-supplied headers such as Hermes API
+        # session continuity).  Config shape supported:
+        #   model.headers: {Header-Name: value}
+        #   custom_providers[].headers: {Header-Name: value}
+        # The latter is matched by base_url and/or model so custom providers
+        # can carry headers without a proxy process.
+        try:
+            from hermes_cli.config import load_config as _load_config_for_headers
+
+            _cfg_headers = _load_config_for_headers()
+            _header_candidates = []
+            if isinstance(_cfg_headers, dict):
+                _model_cfg = _cfg_headers.get("model")
+                if isinstance(_model_cfg, dict) and isinstance(_model_cfg.get("headers"), dict):
+                    _header_candidates.append(_model_cfg.get("headers"))
+
+                _custom_entries = _cfg_headers.get("custom_providers")
+                _effective_base_norm = str(client_kwargs.get("base_url", "") or "").rstrip("/")
+                _agent_model_norm = str(getattr(agent, "model", "") or "").strip()
+                if isinstance(_custom_entries, list):
+                    for _entry in _custom_entries:
+                        if not isinstance(_entry, dict) or not isinstance(_entry.get("headers"), dict):
+                            continue
+                        _entry_base = str(_entry.get("base_url", "") or "").rstrip("/")
+                        _entry_model = str(_entry.get("model", "") or "").strip()
+                        if (_entry_base and _entry_base == _effective_base_norm) or (_entry_model and _entry_model == _agent_model_norm):
+                            _header_candidates.append(_entry.get("headers"))
+
+            _merged_headers = {}
+            for _headers in _header_candidates:
+                for _hk, _hv in dict(_headers or {}).items():
+                    _hk = str(_hk or "").strip()
+                    _hv = str(_hv or "").strip()
+                    if not _hk or not _hv:
+                        continue
+                    if any(_bad in _hk for _bad in ("\r", "\n", "\x00")):
+                        continue
+                    if any(_bad in _hv for _bad in ("\r", "\n", "\x00")):
+                        continue
+                    _merged_headers[_hk] = _hv
+            if _merged_headers:
+                _existing_headers = dict(client_kwargs.get("default_headers") or {})
+                _existing_headers.update(_merged_headers)
+                client_kwargs["default_headers"] = _existing_headers
+        except Exception:
+            logger.debug("Failed to apply custom provider headers", exc_info=True)
+
         agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
         # Enable fine-grained tool streaming for Claude on OpenRouter.

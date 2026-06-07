@@ -3189,6 +3189,46 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
 # below — never look up auth env vars ad-hoc.
 
 
+
+def _merge_custom_provider_headers(extra: dict, base_url: str, model: str | None) -> None:
+    """Merge per-profile custom endpoint headers into OpenAI client kwargs.
+
+    Used for Apollo Desktop -> Teams session continuity (X-Hermes-Session-*).
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        return
+    wanted_url = str(base_url or "").strip().rstrip("/")
+    wanted_model = str(model or "").strip()
+    merged = {}
+    try:
+        model_cfg = cfg.get("model") if isinstance(cfg, dict) else {}
+        if isinstance(model_cfg, dict):
+            h = model_cfg.get("headers")
+            if isinstance(h, dict):
+                merged.update({str(k): str(v) for k, v in h.items() if str(k).strip() and str(v).strip()})
+    except Exception:
+        pass
+    try:
+        for entry in cfg.get("custom_providers", []) if isinstance(cfg, dict) else []:
+            if not isinstance(entry, dict):
+                continue
+            entry_url = str(entry.get("base_url") or "").strip().rstrip("/")
+            entry_model = str(entry.get("model") or "").strip()
+            if (wanted_url and entry_url == wanted_url) or (wanted_model and entry_model == wanted_model):
+                h = entry.get("headers")
+                if isinstance(h, dict):
+                    merged.update({str(k): str(v) for k, v in h.items() if str(k).strip() and str(v).strip()})
+    except Exception:
+        pass
+    if merged:
+        current = extra.get("default_headers")
+        if isinstance(current, dict):
+            merged = {**current, **merged}
+        extra["default_headers"] = merged
+
 def _to_async_client(sync_client, model: str, is_vision: bool = False):
     """Convert a sync client to its async counterpart, preserving Codex routing.
 
@@ -3222,6 +3262,12 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         "base_url": str(sync_client.base_url),
     }
     sync_base_url = str(sync_client.base_url)
+    try:
+        _sync_headers = getattr(sync_client, "default_headers", None)
+        if isinstance(_sync_headers, dict):
+            async_kwargs["default_headers"] = dict(_sync_headers)
+    except Exception:
+        pass
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         async_kwargs["default_headers"] = build_or_headers()
     elif base_url_host_matches(sync_base_url, "api.githubcopilot.com"):
@@ -3495,6 +3541,17 @@ def resolve_provider_client(
 
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
+        if not explicit_base_url:
+            try:
+                _rt_base, _rt_key, _rt_model = _resolve_custom_runtime()
+                if _rt_base:
+                    explicit_base_url = _rt_base
+                    if not explicit_api_key and _rt_key:
+                        explicit_api_key = _rt_key
+                    if not model and _rt_model:
+                        model = _rt_model
+            except Exception:
+                pass
         if explicit_base_url:
             custom_base = _to_openai_base_url(explicit_base_url).strip()
             custom_key = (
@@ -3535,6 +3592,7 @@ def resolve_provider_client(
                         extra["default_headers"] = dict(_ph_custom.default_headers)
                 except Exception:
                     pass
+            _merge_custom_provider_headers(extra, custom_base, final_model)
             client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base, custom_key)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode

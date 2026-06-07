@@ -126,10 +126,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
         </DropdownMenuItem>
       ) : (
         <div className="max-h-80 overflow-y-auto py-0.5">
-          {groups.map(group => (
-            <DropdownMenuGroup className="py-0.5" key={group.provider.slug}>
-              <DropdownMenuLabel className={dropdownMenuSectionLabel}>{group.provider.name}</DropdownMenuLabel>
-              {group.families.map(family => {
+          {groups.map(group => {
+            return (
+              <DropdownMenuGroup className="py-0.5" key={group.provider.slug}>
+                {group.families.map(family => {
                 // The active id may be the base or its -fast sibling; either
                 // way this one family row represents both.
                 const activeId =
@@ -206,9 +206,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                     />
                   </DropdownMenuSub>
                 )
-              })}
-            </DropdownMenuGroup>
-          ))}
+                })}
+              </DropdownMenuGroup>
+            )
+          })}
         </div>
       )}
 
@@ -236,13 +237,20 @@ function groupModels(
 ): ProviderGroup[] {
   const q = search.trim().toLowerCase()
   const groups: ProviderGroup[] = []
+  const isPreferredAgentProvider = (provider: ModelOptionProvider) =>
+    /(^|[^a-z])(apollo|omega)([^a-z]|$)/.test(`${provider.slug} ${provider.name}`.toLowerCase())
 
-  for (const provider of providers) {
+  const preferredProviders = providers.filter(isPreferredAgentProvider)
+  const sourceProviders = preferredProviders.length > 0 ? preferredProviders : providers
+
+  for (const provider of sourceProviders) {
     const allFamilies = collapseModelFamilies(provider.models ?? [])
 
     if (allFamilies.length === 0) {
       continue
     }
+
+    const preferredAgentProvider = isPreferredAgentProvider(provider)
 
     const matches = (family: ModelFamily) =>
       `${family.id} ${family.fastId ?? ''} ${provider.name} ${provider.slug} ${displayModelName(family.id)}`
@@ -255,13 +263,17 @@ function groupModels(
     if (q) {
       // Search spans every family, regardless of visibility.
       shown = new Set(allFamilies.filter(matches).map(family => family.id))
-    } else if (visible) {
+    } else if (visible && !preferredAgentProvider) {
       // User has customized which models show — honor their selection exactly.
+      // Apollo/Omega are Scott's baseline peer-agent switchers, so keep their
+      // single configured model visible even if older local visibility state
+      // only had one of the two checked.
       shown = new Set(
         allFamilies.filter(family => visible.has(modelVisibilityKey(provider.slug, family.id))).map(family => family.id)
       )
     } else {
-      // Default: curated top-N families per provider.
+      // Default: curated top-N families per provider. For Apollo/Omega this
+      // keeps both agent rows selectable regardless of stale visibility prefs.
       shown = new Set(allFamilies.slice(0, DEFAULT_VISIBLE_PER_PROVIDER).map(family => family.id))
     }
 

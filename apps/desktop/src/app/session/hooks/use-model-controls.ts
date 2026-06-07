@@ -53,6 +53,12 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
   // on the right active model — bail rather than write to the previous one).
   const selectModel = useCallback(
     async (selection: ModelSelection): Promise<boolean> => {
+      // Hermes backend currently resolves named custom providers from the
+      // model/custom_providers config when the provider is "custom".  The
+      // picker UI uses slugs such as custom:apollo/custom:omega to keep rows
+      // distinct, but sending that slug to /model causes "Unknown provider".
+      // Normalize only the backend command while preserving the UI row slug.
+      const backendProvider = selection.provider.startsWith('custom:') ? 'custom' : selection.provider
       const includeGlobal = selection.persistGlobal || !activeSessionId
       // Snapshot for rollback: the switch is applied optimistically, so a
       // failure must restore the prior model/provider (store + query cache)
@@ -82,7 +88,7 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
           return true
         }
 
-        await setGlobalModel(selection.provider, selection.model)
+        await setGlobalModel(backendProvider, selection.model)
         void refreshCurrentModel()
         void queryClient.invalidateQueries({ queryKey: ['model-options'] })
 

@@ -64,6 +64,7 @@ import {
   normalizeProfileKey
 } from '@/store/profile'
 import {
+  $currentModel,
   $selectedStoredSessionId,
   $sessionProfileTotals,
   $sessions,
@@ -264,6 +265,8 @@ export function ChatSidebar({
   const [newSessionKbdFlash, setNewSessionKbdFlash] = useState(false)
   const [profileLoadMorePending, setProfileLoadMorePending] = useState<Record<string, boolean>>({})
   const trimmedQuery = searchQuery.trim()
+  const currentModel = useStore($currentModel)
+  const modelFilter = currentModel.trim()
 
   // Flash the ⌘N hint full-opacity (no transition) for the press, so hitting
   // the shortcut visibly pings its affordance in the sidebar.
@@ -296,8 +299,11 @@ export function ChatSidebar({
   // profile in, grouped by profile below. Single-profile users land here with
   // scope === their only profile, so nothing is filtered out.
   const visibleSessions = useMemo(
-    () => (showAllProfiles ? sessions : sessions.filter(s => normalizeProfileKey(s.profile) === profileScope)),
-    [sessions, showAllProfiles, profileScope]
+    () =>
+      (showAllProfiles ? sessions : sessions.filter(s => normalizeProfileKey(s.profile) === profileScope)).filter(
+        s => !modelFilter || !s.model || s.model === modelFilter
+      ),
+    [sessions, showAllProfiles, profileScope, modelFilter]
   )
 
   const sortedSessions = useMemo(
@@ -383,6 +389,10 @@ export function ChatSidebar({
     }
 
     for (const match of serverMatches) {
+      if (modelFilter && match.model && match.model !== modelFilter) {
+        continue
+      }
+
       if (out.has(match.session_id)) {
         continue
       }
@@ -392,7 +402,7 @@ export function ChatSidebar({
     }
 
     return [...out.values()]
-  }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId])
+  }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId, modelFilter])
 
   const unpinnedAgentSessions = useMemo(
     () => sortedSessions.filter(s => !pinnedRealIdSet.has(s.id)),
