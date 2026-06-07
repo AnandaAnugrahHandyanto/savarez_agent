@@ -5744,6 +5744,63 @@ class GatewayRunner:
                     path, exc,
                 )
 
+    def _write_dispatcher_heartbeat(
+        self,
+        *,
+        heartbeat_path: Path,
+        interval: float,
+        cycles_since_start: int,
+        cycle_started_at: float,
+        any_spawned: bool,
+        spawned_total: int,
+        ready_pending: bool,
+        bad_ticks: int,
+        cycle_error: str | None,
+    ) -> None:
+        """Write a one-shot heartbeat snapshot to disk for external observers.
+
+        Called at the end of every dispatcher cycle (success OR failure).
+        External tools (`hermes gateway status`, monitoring scripts) read
+        this to detect silent stalls — the gateway PID may stay alive but
+        the dispatch loop can stop cycling (hermes-agent#6, #7).
+
+        Write is atomic (temp + rename) and never raises — the caller wraps
+        in try/except so heartbeat-write failures cannot kill the dispatcher.
+
+        Schema (stable; tools may grow tolerant of new fields):
+            schema_version: int (currently 1)
+            last_cycle_ts: float (unix seconds, end of cycle)
+            last_cycle_iso: str (UTC ISO 8601)
+            cycle_started_at: float (unix seconds, start of cycle)
+            cycle_duration_seconds: float
+            interval_seconds: float (configured cadence)
+            cycles_since_start: int (monotonic counter)
+            any_spawned_this_cycle: bool
+            spawned_total_this_cycle: int (count across all boards)
+            ready_pending: bool (whether the ready queue had work this cycle)
+            consecutive_bad_ticks: int
+            gateway_pid: int
+            cycle_error: str | null (exception text if the cycle errored)
+        """
+        from datetime import timezone as _tz
+        now = time.time()
+        payload = {
+            "schema_version": 1,
+            "last_cycle_ts": now,
+            "last_cycle_iso": datetime.fromtimestamp(now, tz=_tz.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "cycle_started_at": cycle_started_at,
+            "cycle_duration_seconds": max(0.0, now - cycle_started_at),
+            "interval_seconds": float(interval),
+            "cycles_since_start": cycles_since_start,
+            "any_spawned_this_cycle": any_spawned,
+            "spawned_total_this_cycle": spawned_total,
+            "ready_pending": ready_pending,
+            "consecutive_bad_ticks": bad_ticks,
+            "gateway_pid": os.getpid(),
+            "cycle_error": cycle_error,
+        }
+        atomic_json_write(heartbeat_path, payload)
+
     async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.
 
@@ -5918,6 +5975,13 @@ class GatewayRunner:
         HEALTH_WINDOW = 6
         bad_ticks = 0
         last_warn_at = 0
+        # Dispatcher heartbeat — written to disk every cycle so external
+        # observers can detect silent stalls (the gateway PID stays alive
+        # but the dispatch loop has stopped cycling). See `hermes gateway
+        # status`. Path is HERMES_HOME/state/dispatcher_health.json.
+        cycles_since_start = 0
+        last_cycle_started_at = 0.0
+        _heartbeat_path = _hermes_home / "state" / "dispatcher_health.json"
         # Avoid hot-looping corrupt-looking board DBs, but do not suppress
         # same-fingerprint retries forever: transient WAL/open races can
         # surface as "database disk image is malformed" for one tick.
@@ -6187,6 +6251,12 @@ class GatewayRunner:
             "kanban dispatcher: embedded in gateway (interval=%.1fs)", interval
         )
         while self._running:
+            cycles_since_start += 1
+            last_cycle_started_at = time.time()
+            cycle_error: str | None = None
+            any_spawned = False
+            ready_pending = False
+            spawned_total = 0
             try:
                 # Reap zombie children before per-board work so a board DB
                 # failure cannot block cleanup of unrelated workers.
@@ -6204,10 +6274,10 @@ class GatewayRunner:
                 if auto_decompose_enabled:
                     await asyncio.to_thread(_auto_decompose_tick)
                 results = await asyncio.to_thread(_tick_once)
-                any_spawned = False
                 for slug, res in (results or []):
                     if res is not None and getattr(res, "spawned", None):
                         any_spawned = True
+                        spawned_total += len(res.spawned)
                         # Quiet by default — only log when something actually
                         # happened, so an idle gateway stays silent.
                         logger.info(
@@ -6240,9 +6310,42 @@ class GatewayRunner:
                         last_warn_at = now
             except asyncio.CancelledError:
                 logger.debug("kanban dispatcher: cancelled")
+                # Write a final heartbeat noting the cancellation, then re-raise.
+                self._write_dispatcher_heartbeat(
+                    heartbeat_path=_heartbeat_path,
+                    interval=interval,
+                    cycles_since_start=cycles_since_start,
+                    cycle_started_at=last_cycle_started_at,
+                    any_spawned=any_spawned,
+                    spawned_total=spawned_total,
+                    ready_pending=ready_pending,
+                    bad_ticks=bad_ticks,
+                    cycle_error="cancelled",
+                )
                 raise
-            except Exception:
+            except Exception as e:
                 logger.exception("kanban dispatcher: unexpected watcher error")
+                cycle_error = f"{type(e).__name__}: {e}"
+
+            # Write heartbeat every cycle — success OR exception.
+            # External observers (hermes gateway status / monitoring) read this
+            # to detect silent stalls where the gateway PID is alive but the
+            # dispatcher has stopped cycling.
+            try:
+                self._write_dispatcher_heartbeat(
+                    heartbeat_path=_heartbeat_path,
+                    interval=interval,
+                    cycles_since_start=cycles_since_start,
+                    cycle_started_at=last_cycle_started_at,
+                    any_spawned=any_spawned,
+                    spawned_total=spawned_total,
+                    ready_pending=ready_pending,
+                    bad_ticks=bad_ticks,
+                    cycle_error=cycle_error,
+                )
+            except Exception:
+                # Heartbeat-write failure must NEVER kill the dispatcher.
+                logger.exception("kanban dispatcher: heartbeat write failed (non-fatal)")
 
             # Sleep in 1s slices so shutdown is snappy — otherwise a stop()
             # waits up to `interval` seconds for the current sleep to finish.
