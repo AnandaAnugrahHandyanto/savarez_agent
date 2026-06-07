@@ -105,6 +105,16 @@ from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
+def _safe_float_env(name: str, default: float) -> float:
+    """Read an env var as float, returning *default* if missing or non-numeric."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return default
+
 
 
 def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
@@ -1276,7 +1286,7 @@ def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[
         from hermes_cli.auth import resolve_nous_runtime_credentials
 
         creds = resolve_nous_runtime_credentials(
-            timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+            timeout_seconds=_safe_float_env("HERMES_NOUS_TIMEOUT_SECONDS", 15.0),
             force_refresh=force_refresh,
         )
     except Exception as exc:
@@ -2837,7 +2847,7 @@ def _refresh_provider_credentials(provider: str) -> bool:
             from hermes_cli.auth import resolve_nous_runtime_credentials
 
             creds = resolve_nous_runtime_credentials(
-                timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+                timeout_seconds=_safe_float_env("HERMES_NOUS_TIMEOUT_SECONDS", 15.0),
                 force_refresh=True,
             )
             if not str(creds.get("api_key", "") or "").strip():
