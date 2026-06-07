@@ -2282,8 +2282,9 @@ def terminal_tool(
 
             # Strip ANSI escape sequences so the model never sees terminal
             # formatting — prevents it from copying escapes into file writes.
+            # Preserve OSC 1337 (iTerm2 inline images) for compatible terminals.
             from tools.ansi_strip import strip_ansi
-            output = strip_ansi(output)
+            output = strip_ansi(output, preserve_osc1337=True)
 
             # Redact secrets from command output (catches env/printenv leaking keys)
             from agent.redact import redact_sensitive_text
