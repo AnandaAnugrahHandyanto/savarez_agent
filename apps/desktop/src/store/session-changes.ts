@@ -23,11 +23,11 @@ export const $sessionChangeSummary = computed($sessionChanges, changes => {
   let totalDeletions = 0
   for (const c of changes) {
     totalAdditions += c.additions
-    for (const line of c.diff.split('\n')) {
+    for (const line of stripAnsi(c.diff).split('\n')) {
       if (line.startsWith('-') && !line.startsWith('---')) totalDeletions++
     }
   }
-  return { files: changes.length, totalAdditions, totalDeletions }
+  return { files: changes.filter(c => c.diff.trim().length > 0).length, totalAdditions, totalDeletions }
 })
 
 export const $toolCallSummary = computed($sessionChanges, changes => {
@@ -61,19 +61,30 @@ export function clearSessionChanges() {
   $sessionChanges.set([])
 }
 
+export function stripAnsi(str: string): string {
+  return str.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '')
+}
+
 export function parseDiffStats(diff: string): { additions: number; deletions: number } {
+  const clean = stripAnsi(diff)
   let additions = 0
   let deletions = 0
-  for (const line of diff.split('\n')) {
+  for (const line of clean.split('\n')) {
     if (line.startsWith('+') && !line.startsWith('+++')) additions++
-    else if (line.startsWith('-') && !line.startsWith('---')) deletions++
+    if (line.startsWith('-') && !line.startsWith('---')) deletions++
   }
   return { additions, deletions }
 }
 
 export function extractFilePath(diff: string): string {
-  const match = diff.match(/\+\+\+ b\/(.+)/)
+  const clean = stripAnsi(diff)
+  // Standard unified diff header: +++ b/path
+  const match = clean.match(/\+\+\+ b\/(.+)/)
   if (match) return match[1]
-  const match2 = diff.match(/@@.*@@\s+(.+)/)
-  return match2 ? match2[1] : 'unknown file'
+  // Gateway ANSI-rendered format: "a/path → b/path"
+  const match2 = clean.match(/a\/(.+?)\s*→\s*b\/(.+)/)
+  if (match2) return match2[2]
+  // Hunk header fallback
+  const match3 = clean.match(/@@.*@@\s+(.+)/)
+  return match3 ? match3[1] : 'unknown file'
 }

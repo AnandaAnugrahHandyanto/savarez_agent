@@ -11,6 +11,7 @@ import {
   Wrench
 } from '@/lib/icons'
 import { $sessionChanges, $sessionChangeSummary, $toolCallSummary } from '@/store/session-changes'
+import { $currentUsage } from '@/store/session'
 
 const TOOL_ICONS: Record<string, typeof Monitor> = {
   edit_file: Wrench,
@@ -23,6 +24,7 @@ export function SessionOverview() {
   const changes = useStore($sessionChanges)
   const summary = useStore($sessionChangeSummary)
   const toolSummary = useStore($toolCallSummary)
+  const usage = useStore($currentUsage)
 
   // Only show files with actual diffs in "Files Changed"
   const fileChanges = changes.filter(c => c.diff.trim().length > 0)
@@ -87,6 +89,14 @@ export function SessionOverview() {
           </div>
         )}
       </Section>
+
+      {/* Footer: Token Usage */}
+      <div className="flex items-center gap-3 border-t border-border pt-2 text-[0.6rem] text-muted-foreground">
+        <span>In: {formatTokens(usage.input)}</span>
+        <span>Out: {formatTokens(usage.output)}</span>
+        <span>Total: {formatTokens(usage.total)}</span>
+        {usage.calls > 0 && <span>Calls: {usage.calls}</span>}
+      </div>
     </div>
   )
 }
@@ -132,6 +142,12 @@ function EmptyState({ message }: { message: string }) {
 function shortPath(path: string): string {
   const parts = path.replace(/\\/g, '/').split('/')
   return parts.length > 2 ? `.../${parts.slice(-2).join('/')}` : path
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return String(n)
 }
 
 function countDeletions(diff: string): number {

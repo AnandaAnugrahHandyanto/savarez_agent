@@ -239,7 +239,12 @@ function ToolEntry({ part }: ToolEntryProps) {
     return { body: rest.join('\n\n').trim(), summary }
   }, [view.detail, view.status, view.subtitle])
 
-  const detailMatchesSubtitle = looksRedundant(view.subtitle, view.detail)
+  // Terminal/execute_code tools derive subtitle from detail (first line),
+  // so the redundancy check would suppress ALL single-line output.
+  const detailMatchesSubtitle =
+    part.toolName !== 'terminal' &&
+    part.toolName !== 'execute_code' &&
+    looksRedundant(view.subtitle, view.detail)
 
   const showDetail =
     (view.status === 'error' && Boolean(detailSections.summary || detailSections.body)) ||
