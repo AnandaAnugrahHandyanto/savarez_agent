@@ -8513,10 +8513,12 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
                                     # and searchable via session_search.
                                     _hyg_new_sid = _hyg_agent.session_id
                                     if _hyg_new_sid != session_entry.session_id:
-                                        session_entry.session_id = _hyg_new_sid
-                                        self.session_store._save()
-                                        self._sync_telegram_topic_binding(
-                                            source, session_entry,
+                                        session_entry = self._handle_compression_session_switch(
+                                            session_key=session_key,
+                                            session_entry=session_entry,
+                                            old_session_id=session_entry.session_id,
+                                            new_session_id=_hyg_new_sid,
+                                            source=source,
                                             reason="hygiene-compression",
                                         )
 
@@ -10328,6 +10330,7 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
                 )
             except Exception:
                 pass
+
 
 
 
