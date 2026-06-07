@@ -946,6 +946,264 @@ class TestCompressionStageStatusCallback:
         assert "extractive_fallback_started" in stages
 
 
+class TestCompressionWallClockCap:
+    def _make_msgs(self, n=10):
+        return [
+            {"role": "system", "content": "sys"},
+            *[
+                {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+                for i in range(n)
+            ],
+        ]
+
+    def _mock_summary_response(self, text="wall clock summary"):
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = text
+        return response
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (None, 0.0),
+            (0, 0.0),
+            (False, 0.0),
+            (-1, 0.0),
+            (float("nan"), 0.0),
+            (float("inf"), 0.0),
+            ({"bad": "value"}, 0.0),
+            ("420", 420.0),
+            ("3.5", 3.5),
+            ("420 seconds", 0.0),
+            (12, 12.0),
+            (2.5, 2.5),
+        ],
+    )
+    def test_constructor_normalizes_wall_clock_cap_seconds(self, raw, expected):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                wall_clock_cap_seconds=raw,
+            )
+
+        assert c.wall_clock_cap_seconds == expected
+
+    def test_cap_enabled_passes_remaining_wall_clock_as_effective_timeout(self):
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                wall_clock_cap_seconds=10,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.time.monotonic", return_value=1000.0), \
+             patch("agent.context_compressor._get_task_timeout", return_value=120.0), \
+             patch("agent.context_compressor.call_llm", return_value=self._mock_summary_response()) as mock_call:
+            result = c.compress(self._make_msgs(), current_tokens=90_000)
+
+        assert result is not None
+        assert mock_call.call_args.kwargs["timeout"] == 10.0
+        stages = [stage for stage, _payload in events]
+        assert stages == ["normal_summary_started", "compression_done"]
+        done_payload = events[-1][1]
+        for key in ("messages_before", "messages_after", "tokens_before", "tokens_after", "tokens_saved", "recovery_stage"):
+            assert key in done_payload
+        assert done_payload["recovery_stage"] == "normal"
+
+    def test_deadline_expired_before_first_llm_uses_successful_extractive_fallback(self):
+        events = []
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                wall_clock_cap_seconds=1,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        times = [1000.0, 1002.0]
+
+        def fake_monotonic():
+            return times.pop(0) if times else 1002.0
+
+        with patch("agent.context_compressor.time.monotonic", side_effect=fake_monotonic), \
+             patch("agent.context_compressor.call_llm") as mock_call:
+            result = c.compress(self._make_msgs(), current_tokens=90_000)
+
+        assert mock_call.call_count == 0
+        assert len(result) < len(self._make_msgs())
+        assert c._last_summary_recovery_stage == "extractive_fallback"
+        assert c._last_summary_error == "compression wall-clock cap exceeded"
+        stages = [stage for stage, _payload in events]
+        assert stages == ["extractive_fallback_started", "compression_done"]
+        assert events[-1][1]["recovery_stage"] == "extractive_fallback"
+
+    def test_compress_clears_deadline_when_message_count_is_too_small(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                wall_clock_cap_seconds=10,
+            )
+
+        msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+        result = c.compress(msgs, current_tokens=90_000)
+
+        assert result == msgs
+        assert c._compression_deadline is None
+
+    def test_compress_clears_deadline_when_no_middle_window_can_be_compressed(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                wall_clock_cap_seconds=10,
+            )
+
+        with patch.object(c, "_find_tail_cut_by_tokens", return_value=0), \
+             patch("agent.context_compressor.call_llm") as mock_call:
+            result = c.compress(self._make_msgs(), current_tokens=90_000)
+
+        assert result == self._make_msgs()
+        assert mock_call.call_count == 0
+        assert c._compression_deadline is None
+
+    def test_compress_clears_deadline_when_summary_generation_raises(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                wall_clock_cap_seconds=10,
+            )
+
+        with patch.object(c, "_generate_summary", side_effect=RuntimeError("unexpected summary crash")):
+            with pytest.raises(RuntimeError, match="unexpected summary crash"):
+                c.compress(self._make_msgs(), current_tokens=90_000)
+
+        assert c._compression_deadline is None
+
+    def test_call_timeout_after_deadline_expires_goes_to_wall_clock_fallback(self):
+        events = []
+        clock = {"now": 1000.0}
+
+        def fake_monotonic():
+            return clock["now"]
+
+        def fake_call_llm(**kwargs):
+            assert kwargs["timeout"] == pytest.approx(1.0)
+            clock["now"] = 1002.0
+            raise TimeoutError("timed out")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                wall_clock_cap_seconds=1,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.time.monotonic", side_effect=fake_monotonic), \
+             patch("agent.context_compressor._get_task_timeout", return_value=120.0), \
+             patch("agent.context_compressor.call_llm", side_effect=fake_call_llm) as mock_call:
+            result = c.compress(self._make_msgs(), current_tokens=90_000)
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 1
+        assert result is not None
+        assert c._last_summary_recovery_stage == "extractive_fallback"
+        assert c._last_summary_error == "compression wall-clock cap exceeded"
+        assert "safe_retry_started" not in stages
+        assert "chunked_summary_started" not in stages
+        assert stages == ["normal_summary_started", "extractive_fallback_started", "compression_done"]
+
+    @pytest.mark.parametrize(
+        "err",
+        [
+            TimeoutError("timed out"),
+            Exception("response ended prematurely with unexpected eof"),
+        ],
+    )
+    def test_timeout_and_stream_close_with_remaining_time_route_directly_to_chunked(self, err):
+        events = []
+        responses = [
+            err,
+            *[
+                self._mock_summary_response(f"partial {idx}")
+                for idx in range(8)
+            ],
+            self._mock_summary_response("merged chunked summary"),
+        ]
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                wall_clock_cap_seconds=30,
+                chunk_summary_messages=2,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.time.monotonic", return_value=1000.0), \
+             patch("agent.context_compressor._get_task_timeout", return_value=120.0), \
+             patch("agent.context_compressor.call_llm", side_effect=responses) as mock_call:
+            result = c._generate_summary(self._make_msgs())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count > 2
+        assert "safe_retry_started" not in stages
+        assert stages.index("normal_summary_started") < stages.index("chunked_summary_started")
+        assert result is not None
+        assert c._last_summary_recovery_stage == "chunked"
+        assert "extractive_fallback_started" not in stages
+
+    def test_5xx_failure_with_remaining_time_still_routes_directly_to_chunked(self):
+        class ProviderError(Exception):
+            status_code = 502
+
+        return self.test_timeout_and_stream_close_with_remaining_time_route_directly_to_chunked(
+            ProviderError("bad gateway timeout")
+        )
+
+    @pytest.mark.parametrize(
+        "err",
+        [
+            Exception("content_filter safety blocked by policy"),
+            Exception("provider error: dirty content in summary response"),
+        ],
+    )
+    def test_safety_and_dirty_failures_with_remaining_time_still_route_to_safe_retry(self, err):
+        events = []
+        responses = [err, self._mock_summary_response("safe retry summary")]
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                quiet_mode=True,
+                wall_clock_cap_seconds=30,
+                status_callback=lambda stage, payload: events.append((stage, payload)),
+            )
+
+        with patch("agent.context_compressor.time.monotonic", return_value=1000.0), \
+             patch("agent.context_compressor._get_task_timeout", return_value=120.0), \
+             patch("agent.context_compressor.call_llm", side_effect=responses) as mock_call:
+            result = c._generate_summary(self._make_msgs())
+
+        stages = [stage for stage, _payload in events]
+        assert mock_call.call_count == 2
+        assert stages == ["normal_summary_started", "safe_retry_started"]
+        assert "chunked_summary_started" not in stages
+        assert result is not None
+        assert c._last_summary_recovery_stage == "safe_retry"
+
+
 class TestSummaryFailureTrackingForGatewayWarning:
     """Default behavior: failed LLM summary uses a structured local fallback
     and records fallback state so gateway hygiene & /compress can warn."""

@@ -894,6 +894,9 @@ DEFAULT_CONFIG = {
                                       # Default False matches historical behavior; set to
                                       # True if you'd rather pause than silently lose
                                       # context turns when your aux model is flaky.
+        "wall_clock_cap_seconds": 0,  # Optional end-to-end compression LLM cap.
+                                      # 0/false/missing/invalid disables. When enabled,
+                                      # each compression LLM call gets timeout=min(aux timeout, remaining cap).
         "safe_retry": {
             "enabled": True,         # on provider safety/content-filter blocks,
                                       # retry once with high-risk raw tool output

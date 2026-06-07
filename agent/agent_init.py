@@ -1264,6 +1264,9 @@ def init_agent(
     compression_abort_on_summary_failure = str(
         _compression_cfg.get("abort_on_summary_failure", False)
     ).lower() in {"true", "1", "yes"}
+    compression_wall_clock_cap_seconds = ContextCompressor._normalize_wall_clock_cap_seconds(
+        _compression_cfg.get("wall_clock_cap_seconds", 0)
+    )
 
     def _cfg_bool(section: Any, key: str, default: bool) -> bool:
         if isinstance(section, dict):
@@ -1522,6 +1525,7 @@ def init_agent(
             chunk_summary_messages=compression_chunk_messages,
             chunk_summary_serialized_chars=compression_chunk_serialized_chars,
             extractive_fallback_enabled=compression_extractive_fallback_enabled,
+            wall_clock_cap_seconds=compression_wall_clock_cap_seconds,
         )
     agent.compression_enabled = compression_enabled
     agent.compression_soft_request_limit = compression_soft_request_limit

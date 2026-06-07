@@ -19,11 +19,12 @@ Improvements over v2:
 import hashlib
 import json
 import logging
+import math
 import re
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.auxiliary_client import call_llm, _is_connection_error
+from agent.auxiliary_client import call_llm, _get_task_timeout, _is_connection_error
 from agent.context_engine import ContextEngine
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
@@ -746,6 +747,7 @@ class ContextCompressor(ContextEngine):
         chunk_summary_messages: int = 40,
         chunk_summary_serialized_chars: int | None = None,
         extractive_fallback_enabled: bool = True,
+        wall_clock_cap_seconds: Any = 0,
         status_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ):
         self.model = model
@@ -784,6 +786,10 @@ class ContextCompressor(ContextEngine):
         except (TypeError, ValueError):
             self.chunk_summary_serialized_chars = self._CHUNK_SUMMARY_SERIALIZED_CHARS
         self.extractive_fallback_enabled = bool(extractive_fallback_enabled)
+        self.wall_clock_cap_seconds = self._normalize_wall_clock_cap_seconds(
+            wall_clock_cap_seconds
+        )
+        self._compression_deadline: Optional[float] = None
         self.status_callback = status_callback
 
         self.context_length = get_model_context_length(
@@ -875,6 +881,79 @@ class ContextCompressor(ContextEngine):
             return True
         midpoint = (chunk_total + 1) // 2
         return chunk_index in {1, midpoint, chunk_total}
+
+    @staticmethod
+    def _normalize_wall_clock_cap_seconds(value: Any) -> float:
+        """Normalize optional compression wall-clock cap seconds.
+
+        ``0``/missing/false/negative/non-finite/invalid values disable the cap.
+        Simple numeric strings are accepted so YAML/env-ish config such as
+        ``"420"`` works, but mixed strings like ``"420 seconds"`` are rejected.
+        """
+        if value is None or isinstance(value, bool):
+            return 0.0
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return 0.0
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(seconds) or seconds <= 0:
+            return 0.0
+        return seconds
+
+    def _begin_wall_clock_deadline(self) -> None:
+        if self.wall_clock_cap_seconds > 0:
+            self._compression_deadline = time.monotonic() + self.wall_clock_cap_seconds
+        else:
+            self._compression_deadline = None
+
+    def _ensure_wall_clock_deadline(self) -> None:
+        if self.wall_clock_cap_seconds > 0 and self._compression_deadline is None:
+            self._begin_wall_clock_deadline()
+
+    def _remaining_wall_clock_seconds(self) -> Optional[float]:
+        if self.wall_clock_cap_seconds <= 0:
+            return None
+        self._ensure_wall_clock_deadline()
+        if self._compression_deadline is None:
+            return None
+        return self._compression_deadline - time.monotonic()
+
+    def _wall_clock_cap_exceeded(self) -> bool:
+        remaining = self._remaining_wall_clock_seconds()
+        return remaining is not None and remaining <= 0
+
+    def _extractive_fallback_for_wall_clock_cap(self, turns: List[Dict[str, Any]]) -> str:
+        self._last_summary_recovery_stage = "extractive_fallback"
+        self._last_summary_error = "compression wall-clock cap exceeded"
+        return self._generate_extractive_fallback_summary(
+            turns,
+            error="compression wall-clock cap exceeded",
+        )
+
+    def _effective_summary_timeout(self) -> Optional[float]:
+        """Return an explicit timeout only when wall-clock cap is active.
+
+        With no cap, omit the timeout kwarg so ``call_llm`` keeps its existing
+        auxiliary.compression.timeout resolution behavior. With a cap, bound the
+        call by the smaller of configured aux timeout and remaining wall-clock.
+        """
+        remaining = self._remaining_wall_clock_seconds()
+        if remaining is None:
+            return None
+        if remaining <= 0:
+            raise TimeoutError("compression wall-clock cap exceeded")
+
+        try:
+            base_timeout = self._normalize_wall_clock_cap_seconds(
+                _get_task_timeout("compression")
+            )
+        except Exception:
+            base_timeout = 0.0
+        return min(base_timeout, remaining) if base_timeout > 0 else remaining
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -1232,8 +1311,12 @@ class ContextCompressor(ContextEngine):
             },
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": int(summary_budget * 1.3),
-            # timeout resolved from auxiliary.compression.timeout config by call_llm
+            # When no wall-clock cap is active, omit timeout so call_llm keeps
+            # resolving auxiliary.compression.timeout exactly as before.
         }
+        effective_timeout = self._effective_summary_timeout()
+        if effective_timeout is not None:
+            call_kwargs["timeout"] = effective_timeout
         if self.summary_model:
             call_kwargs["model"] = self.summary_model
         response = call_llm(**call_kwargs)
@@ -1470,6 +1553,10 @@ This fallback is lossy but preserves recent asks, tool actions, errors, and file
         blocked.  Any chunk failure falls back to the local extractive summary;
         partial chunk summaries are not trusted as a complete checkpoint.
         """
+        self._ensure_wall_clock_deadline()
+        if self._wall_clock_cap_exceeded():
+            return self._extractive_fallback_for_wall_clock_cap(turns_to_summarize)
+
         chunk_size = max(1, int(getattr(self, "chunk_summary_messages", self._CHUNK_SUMMARY_MESSAGES)))
         try:
             chunk_char_limit = max(
@@ -1514,6 +1601,8 @@ This fallback is lossy but preserves recent asks, tool actions, errors, and file
         per_chunk_budget = max(_MIN_SUMMARY_TOKENS, min(self.max_summary_tokens, 3000))
         self._emit_stage_status("chunked_summary_started", chunk_total=len(chunks))
         for idx, chunk in enumerate(chunks, 1):
+            if self._wall_clock_cap_exceeded():
+                return self._extractive_fallback_for_wall_clock_cap(turns_to_summarize)
             if self._should_emit_chunk_progress(idx, len(chunks)):
                 self._emit_stage_status(
                     "chunk_progress",
@@ -1556,6 +1645,8 @@ Use this structure:
 
         merge_budget = self._compute_summary_budget(turns_to_summarize)
         merged_input = "\n\n--- PARTIAL SUMMARY ---\n\n".join(chunk_summaries)
+        if self._wall_clock_cap_exceeded():
+            return self._extractive_fallback_for_wall_clock_cap(turns_to_summarize)
         self._emit_stage_status("chunk_merge_started", chunk_total=len(chunks))
         merge_prompt = f"""You are merging partial context checkpoint summaries into one final checkpoint.
 Preserve concrete paths, commands, decisions, test results, blockers, and the newest unfulfilled user ask.
@@ -1669,6 +1760,10 @@ Use this exact structure:
                     error="summary retry cooldown active",
                 )
             return None
+
+        self._ensure_wall_clock_deadline()
+        if self._wall_clock_cap_exceeded():
+            return self._extractive_fallback_for_wall_clock_cap(turns_to_summarize)
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         self._emit_stage_status(
@@ -1940,6 +2035,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             err_text = str(e).strip() or e.__class__.__name__
             if len(err_text) > 220:
                 err_text = err_text[:217].rstrip() + "..."
+
+            if self._wall_clock_cap_exceeded():
+                return self._extractive_fallback_for_wall_clock_cap(turns_to_summarize)
 
             if _should_direct_chunked_recovery:
                 if getattr(self, "chunked_summary_enabled", True):
@@ -2400,6 +2498,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
+        self._compression_deadline = None
+        self._begin_wall_clock_deadline()
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
@@ -2415,6 +2515,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     "Cannot compress: only %d messages (need > %d)",
                     n_messages, _min_for_compress,
                 )
+            self._compression_deadline = None
             return messages
 
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
@@ -2435,6 +2536,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
 
         if compress_start >= compress_end:
+            self._compression_deadline = None
             return messages
 
         turns_to_summarize = messages[compress_start:compress_end]
@@ -2479,7 +2581,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             )
 
         # Phase 3: Generate structured summary
-        summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+        try:
+            summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+        finally:
+            self._compression_deadline = None
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):
