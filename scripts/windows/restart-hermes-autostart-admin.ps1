@@ -80,11 +80,13 @@ try {
 
     $CurrentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     $GatewayScript = Join-Path $ScriptDir "start-hermes-gateway.ps1"
+    $DesktopScript = Join-Path $ScriptDir "start-hermes-desktop.ps1"
+    $DashboardScript = Join-Path $ScriptDir "start-hermes-dashboard.ps1"
     $LineNgrokScript = "C:\Users\downl\AppData\Local\HermesWebUI\Start-HermesLineNgrok.ps1"
     $WebUiScript = "C:\Users\downl\AppData\Local\HermesWebUI\Start-HermesWebUI.ps1"
     $TailscaleScript = "C:\Users\downl\AppData\Local\HermesWebUI\Update-HermesTailscaleServe.ps1"
 
-    foreach ($path in @($GatewayScript, $LineNgrokScript, $WebUiScript, $TailscaleScript)) {
+    foreach ($path in @($GatewayScript, $DesktopScript, $DashboardScript, $LineNgrokScript, $WebUiScript, $TailscaleScript)) {
         if (-not (Test-Path -LiteralPath $path)) {
             throw "Required script not found: $path"
         }
@@ -141,6 +143,36 @@ try {
         Write-Step "Registered boot task: $TaskName"
     }
 
+    function Register-HermesLogonTask {
+        param(
+            [Parameter(Mandatory = $true)][string]$TaskName,
+            [Parameter(Mandatory = $true)][string]$Description,
+            [Parameter(Mandatory = $true)][string]$PowerShellCommand,
+            [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+            [int]$DelaySeconds = 30
+        )
+
+        $actionArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command $PowerShellCommand"
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $actionArgs -WorkingDirectory $WorkingDirectory
+        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $CurrentUser
+        if ($DelaySeconds -gt 0) {
+            $trigger.Delay = "PT${DelaySeconds}S"
+        }
+        $principal = New-ScheduledTaskPrincipal -UserId $CurrentUser -LogonType Interactive -RunLevel Limited
+        $settings = New-HermesTaskSettings
+
+        Register-ScheduledTask `
+            -TaskName $TaskName `
+            -Action $action `
+            -Trigger $trigger `
+            -Principal $principal `
+            -Settings $settings `
+            -Description $Description `
+            -Force | Out-Null
+
+        Write-Step "Registered logon task: $TaskName"
+    }
+
     $envPrefix = Join-EnvPrefix @{
         HERMES_HOME = $HermesHome
     }
@@ -148,6 +180,11 @@ try {
         HERMES_HOME = $HermesHome
         HERMES_STARTUP_DELAY_SECONDS = "20"
         HERMES_GATEWAY_WINDOW_STYLE = "Hidden"
+    }
+    $desktopEnvPrefix = Join-EnvPrefix @{
+        HERMES_HOME = $HermesHome
+        HERMES_DESKTOP_HERMES_ROOT = $RepoRoot
+        HERMES_DESKTOP_CWD = $RepoRoot
     }
 
     Register-HermesBootTask `
@@ -179,11 +216,32 @@ try {
         -DelaySeconds 60
 
     Register-HermesBootTask `
+        -TaskName "HermesDashboardBootAutoStart" `
+        -Description "Boot auto-start Hermes Dashboard from the canonical checkout" `
+        -PowerShellCommand "$envPrefix& '$DashboardScript' -HermesRoot '$RepoRoot' -HermesHome '$HermesHome' -HostName '127.0.0.1' -Port 9120" `
+        -WorkingDirectory $RepoRoot `
+        -DelaySeconds 70
+
+    Register-HermesBootTask `
         -TaskName "HermesTailscaleServeBootUpdate" `
         -Description "Boot update Tailscale Serve routes for Hermes WebUI and LINE webhook" `
         -PowerShellCommand "$envPrefix& '$TailscaleScript'" `
         -WorkingDirectory (Split-Path -Parent $TailscaleScript) `
         -DelaySeconds 80
+
+    Register-HermesLogonTask `
+        -TaskName "HermesDesktopAutoStart" `
+        -Description "Logon auto-start Hermes Desktop from the canonical checkout" `
+        -PowerShellCommand "$desktopEnvPrefix& '$DesktopScript' -HermesRoot '$RepoRoot' -Cwd '$RepoRoot' -HermesHome '$HermesHome'" `
+        -WorkingDirectory $RepoRoot `
+        -DelaySeconds 90
+
+    Register-HermesLogonTask `
+        -TaskName "HermesDashboardAutoStart" `
+        -Description "Logon auto-start Hermes Dashboard from the canonical checkout" `
+        -PowerShellCommand "$envPrefix& '$DashboardScript' -HermesRoot '$RepoRoot' -HermesHome '$HermesHome' -HostName '127.0.0.1' -Port 9120" `
+        -WorkingDirectory $RepoRoot `
+        -DelaySeconds 75
 
     Write-Step "Stopping current Hermes gateway..."
     try {
@@ -239,6 +297,8 @@ try {
     Start-HermesTask -TaskName "HermesHypuraHarnessAutoStart" -WaitSeconds 6
     Start-HermesTask -TaskName "HermesLineNgrokAutoStart" -WaitSeconds 4
     Start-HermesTask -TaskName "HermesWebUINativeAutoStart" -WaitSeconds 12
+    Start-HermesTask -TaskName "HermesDashboardAutoStart" -WaitSeconds 8
+    Start-HermesTask -TaskName "HermesDesktopAutoStart" -WaitSeconds 8
     Start-HermesTask -TaskName "HermesTailscaleServeUpdate" -WaitSeconds 4
 
     Write-Step "Verification: gateway status"
@@ -255,6 +315,14 @@ try {
         Write-Warning "WebUI health check failed: $($_.Exception.Message)"
     }
 
+    Write-Step "Verification: Dashboard health"
+    try {
+        $dashboard = Invoke-WebRequest -Uri "http://127.0.0.1:9120/" -UseBasicParsing -TimeoutSec 8
+        "Dashboard HTTP status: $($dashboard.StatusCode)"
+    } catch {
+        Write-Warning "Dashboard health check failed: $($_.Exception.Message)"
+    }
+
     Write-Step "Verification: gateway runtime state"
     $statePath = Join-Path $HermesHome "gateway_state.json"
     if (Test-Path -LiteralPath $statePath) {
@@ -267,7 +335,10 @@ try {
         "HermesHypuraHarnessBootAutoStart",
         "HermesLineNgrokBootAutoStart",
         "HermesWebUIBootAutoStart",
-        "HermesTailscaleServeBootUpdate"
+        "HermesDashboardBootAutoStart",
+        "HermesTailscaleServeBootUpdate",
+        "HermesDashboardAutoStart",
+        "HermesDesktopAutoStart"
     )) {
         $task = Get-ScheduledTask -TaskName $name -ErrorAction Stop
         $triggers = ($task.Triggers | ForEach-Object { $_.CimClass.CimClassName }) -join ","

@@ -28,7 +28,9 @@ $ErrorActionPreference = "Stop"
 
 # Basenames we own (root + subfolder cleanup).
 $HermesShortcutNames = @(
+    "Hermes.lnk",
     "Hermes Agent CLI.lnk",
+    "Hermes Desktop.lnk",
     "Hermes Gateway.lnk",
     "Hermes Llama Fallback (RTX3060).lnk",
     "Hermes Llama Fallback (RTX3080).lnk",
@@ -244,6 +246,32 @@ function New-HermesPowerShellScriptShortcut {
         -IconLocation "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe,0"
 }
 
+function New-HermesDesktopShortcut {
+    param(
+        [string]$LinkPath,
+        [string]$RepoRoot,
+        [string]$HermesHome,
+        [string]$StartScript
+    )
+
+    $hermesIcon = Join-Path $RepoRoot ".venv\Scripts\hermes.exe"
+    $icon = if (Test-Path -LiteralPath $hermesIcon) {
+        "$hermesIcon,0"
+    }
+    else {
+        "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe,0"
+    }
+
+    return New-HermesShortcut `
+        -LinkPath $LinkPath `
+        -TargetPath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -Arguments "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$StartScript`" -HermesRoot `"$RepoRoot`" -Cwd `"$RepoRoot`" -HermesHome `"$HermesHome`"" `
+        -WorkingDirectory $RepoRoot `
+        -Description "Hermes Desktop connected to the canonical source checkout" `
+        -IconLocation $icon `
+        -WindowStyle 7
+}
+
 function New-HermesStackShortcut {
     param(
         [string]$LinkPath,
@@ -434,6 +462,7 @@ if (-not (Test-Path -LiteralPath $hermesHome)) {
 }
 
 $startStackScript = Join-Path $RepoRoot "scripts\windows\start-hermes-stack.ps1"
+$startDesktopScript = Join-Path $RepoRoot "scripts\windows\start-hermes-desktop.ps1"
 
 $results = @()
 if ($removed.Count -gt 0) {
@@ -504,6 +533,34 @@ catch {
         Path   = $cfgLnk
         Status = "error"
         Error  = $_.Exception.Message
+    }
+}
+
+if (Test-Path -LiteralPath $startDesktopScript) {
+    $desktopLnk = Join-Path $shortcutDir "Hermes Desktop.lnk"
+    try {
+        $row = New-HermesDesktopShortcut -LinkPath $desktopLnk -RepoRoot $RepoRoot -HermesHome $hermesHome -StartScript $startDesktopScript
+        $results += [PSCustomObject]@{
+            Path             = $row.Path
+            Status           = "created"
+            TargetPath       = $row.TargetPath
+            Arguments        = $row.Arguments
+            WorkingDirectory = $row.WorkingDirectory
+            LauncherSource   = "desktop-source-canonical"
+        }
+    }
+    catch {
+        $results += [PSCustomObject]@{
+            Path   = $desktopLnk
+            Status = "error"
+            Error  = $_.Exception.Message
+        }
+    }
+}
+else {
+    $results += [PSCustomObject]@{
+        Path   = $startDesktopScript
+        Status = "skipped-missing-desktop-script"
     }
 }
 
@@ -617,6 +674,34 @@ foreach ($psDef in $psShortcutDefs) {
 }
 
 if ($DesktopRoot) {
+    $desktopRootHermesLnk = Join-Path $userDesktop "Hermes.lnk"
+    try {
+        if (Test-Path -LiteralPath $startDesktopScript) {
+            $row = New-HermesDesktopShortcut -LinkPath $desktopRootHermesLnk -RepoRoot $RepoRoot -HermesHome $hermesHome -StartScript $startDesktopScript
+            $results += [PSCustomObject]@{
+                Path             = $row.Path
+                Status           = "created-desktop-root"
+                TargetPath       = $row.TargetPath
+                Arguments        = $row.Arguments
+                WorkingDirectory = $row.WorkingDirectory
+                LauncherSource   = "desktop-source-canonical"
+            }
+        }
+        else {
+            $results += [PSCustomObject]@{
+                Path   = $desktopRootHermesLnk
+                Status = "skipped-missing-desktop-script"
+            }
+        }
+    }
+    catch {
+        $results += [PSCustomObject]@{
+            Path   = $desktopRootHermesLnk
+            Status = "error"
+            Error  = $_.Exception.Message
+        }
+    }
+
     $folderOpenerName = "Hermes Agent (open folder).lnk"
     $desktopHermesDir = Join-Path $userDesktop "01_Hermes_Discord_Setup"
     New-Item -ItemType Directory -Force -Path $desktopHermesDir | Out-Null

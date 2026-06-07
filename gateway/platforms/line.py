@@ -44,7 +44,7 @@ class LineAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 5000
 
     def __init__(self, config: PlatformConfig):
-        super().__init__(config, Platform.LINE)
+        super().__init__(config, Platform("line"))
         self._host = str(config.extra.get("host", DEFAULT_HOST))
         self._port = int(config.extra.get("port", DEFAULT_PORT))
         self._channel_secret = str(config.extra.get("channel_secret", ""))
