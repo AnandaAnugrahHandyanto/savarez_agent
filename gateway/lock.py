@@ -12,7 +12,7 @@ class FileLock:
         self._fh = None
 
     def __enter__(self) -> "FileLock":
-        self._fh = open(self._path, "w")
+        self._fh = open(self._path, "w", encoding="utf-8")
         portalocker.lock(self._fh, portalocker.LOCK_EX | portalocker.LOCK_NB)
         return self
 
@@ -21,3 +21,4 @@ class FileLock:
             portalocker.unlock(self._fh)
             self._fh.close()
             self._fh = None
+
