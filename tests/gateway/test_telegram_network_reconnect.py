@@ -177,13 +177,17 @@ async def test_reconnect_triggers_fatal_after_max_retries():
 # ---------------------------------------------------------------------------
 
 def _make_mock_app():
-    """Build a mock Application with an explicit polling request object."""
+    """Build a mock Application with explicit PTB request objects."""
     mock_polling_req = AsyncMock()
     mock_polling_req.shutdown = AsyncMock()
     mock_polling_req.initialize = AsyncMock()
 
+    mock_general_req = AsyncMock()
+    mock_general_req.shutdown = AsyncMock()
+    mock_general_req.initialize = AsyncMock()
+
     mock_bot = MagicMock()
-    mock_bot._request = (mock_polling_req, MagicMock())  # (getUpdates, general)
+    mock_bot._request = (mock_polling_req, mock_general_req)  # (getUpdates, general)
 
     mock_updater = MagicMock()
     mock_updater.running = True
@@ -193,37 +197,49 @@ def _make_mock_app():
     mock_app = MagicMock()
     mock_app.updater = mock_updater
     mock_app.bot = mock_bot
-    return mock_app, mock_polling_req
+    return mock_app, mock_polling_req, mock_general_req
 
 
 @pytest.mark.asyncio
 async def test_reconnect_drains_polling_request_only():
-    """During reconnect, only the polling request (_request[0]) must be cycled.
+    """The polling drain helper only cycles the polling request (_request[0]).
 
-    The general request (_request[1]) must NOT be touched — doing so would
-    break concurrent send_message / edit_message calls.
+    The general pool is drained separately after successful network reconnects,
+    not as part of the ordinary polling-pool helper.
     """
     adapter = _make_adapter()
-    adapter._polling_network_error_count = 1
 
-    mock_app, mock_polling_req = _make_mock_app()
+    mock_app, mock_polling_req, mock_general_req = _make_mock_app()
     adapter._app = mock_app
 
-    general_req = mock_app.bot._request[1]
-
-    with patch("asyncio.sleep", new_callable=AsyncMock):
-        await adapter._handle_polling_network_error(Exception("Bad Gateway"))
+    await adapter._drain_polling_connections()
 
     # Polling request must be shut down and re-initialized
     mock_polling_req.shutdown.assert_called_once()
     mock_polling_req.initialize.assert_called_once()
 
-    # General request must NOT be touched
-    general_req.shutdown.assert_not_called()
-    general_req.initialize.assert_not_called()
+    # General request must not be touched by the polling-only helper.
+    mock_general_req.shutdown.assert_not_called()
+    mock_general_req.initialize.assert_not_called()
 
-    # Reconnect must still succeed
+
+@pytest.mark.asyncio
+async def test_reconnect_success_drains_general_request_after_polling_resumes():
+    """After a successful network reconnect, cycle the general Bot API pool too."""
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 1
+
+    mock_app, mock_polling_req, mock_general_req = _make_mock_app()
+    adapter._app = mock_app
+
+    with patch("asyncio.sleep", new_callable=AsyncMock):
+        await adapter._handle_polling_network_error(Exception("Bad Gateway"))
+
     mock_app.updater.start_polling.assert_called_once()
+    mock_polling_req.shutdown.assert_called_once()
+    mock_polling_req.initialize.assert_called_once()
+    mock_general_req.shutdown.assert_called_once()
+    mock_general_req.initialize.assert_called_once()
     assert adapter._polling_network_error_count == 0
 
 
@@ -233,7 +249,7 @@ async def test_reconnect_continues_if_drain_fails():
     adapter = _make_adapter()
     adapter._polling_network_error_count = 1
 
-    mock_app, mock_polling_req = _make_mock_app()
+    mock_app, mock_polling_req, _mock_general_req = _make_mock_app()
     # Both shutdown and initialize fail
     mock_polling_req.shutdown = AsyncMock(side_effect=Exception("shutdown boom"))
     mock_polling_req.initialize = AsyncMock(side_effect=Exception("init boom"))
@@ -257,7 +273,7 @@ async def test_initialize_still_runs_when_shutdown_fails():
     adapter = _make_adapter()
     adapter._polling_network_error_count = 1
 
-    mock_app, mock_polling_req = _make_mock_app()
+    mock_app, mock_polling_req, _mock_general_req = _make_mock_app()
     mock_polling_req.shutdown = AsyncMock(side_effect=Exception("shutdown boom"))
     adapter._app = mock_app
 
@@ -275,7 +291,7 @@ async def test_conflict_retry_also_drains_polling_connections():
     adapter = _make_adapter()
     adapter._polling_conflict_count = 0
 
-    mock_app, mock_polling_req = _make_mock_app()
+    mock_app, mock_polling_req, _mock_general_req = _make_mock_app()
     adapter._app = mock_app
 
     with patch("asyncio.sleep", new_callable=AsyncMock):

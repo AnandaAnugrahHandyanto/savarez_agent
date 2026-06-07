@@ -48,6 +48,128 @@ def _no_auto_discovery(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_connect_bounds_httpx_request_pools_with_shared_limits(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+    monkeypatch.delenv("HERMES_TELEGRAM_HTTP_POOL_SIZE", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", raising=False)
+
+    captured_requests = []
+
+    def fake_httpx_request(**kwargs):
+        captured_requests.append(kwargs)
+        return MagicMock()
+
+    monkeypatch.setattr("gateway.platforms.telegram.HTTPXRequest", fake_httpx_request)
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(
+        delete_webhook=AsyncMock(),
+        set_my_commands=AsyncMock(),
+    )
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr(
+        "gateway.platforms.telegram.Application",
+        SimpleNamespace(builder=MagicMock(return_value=builder)),
+    )
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    assert len(captured_requests) == 2
+    for request_kwargs in captured_requests:
+        assert request_kwargs["connection_pool_size"] == 20
+        limits = request_kwargs["httpx_kwargs"]["limits"]
+        assert limits.max_connections == 20
+        assert limits.max_keepalive_connections == 10
+        assert limits.keepalive_expiry == 2.0
+
+
+@pytest.mark.asyncio
+async def test_connect_keeps_telegram_pool_size_env_override(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+    monkeypatch.setenv("HERMES_TELEGRAM_HTTP_POOL_SIZE", "37")
+    monkeypatch.delenv("HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", raising=False)
+
+    captured_requests = []
+
+    def fake_httpx_request(**kwargs):
+        captured_requests.append(kwargs)
+        return MagicMock()
+
+    monkeypatch.setattr("gateway.platforms.telegram.HTTPXRequest", fake_httpx_request)
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(
+        delete_webhook=AsyncMock(),
+        set_my_commands=AsyncMock(),
+    )
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr(
+        "gateway.platforms.telegram.Application",
+        SimpleNamespace(builder=MagicMock(return_value=builder)),
+    )
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    assert [kwargs["connection_pool_size"] for kwargs in captured_requests] == [37, 37]
+    assert [
+        kwargs["httpx_kwargs"]["limits"].max_connections
+        for kwargs in captured_requests
+    ] == [37, 37]
+
+
+@pytest.mark.asyncio
 async def test_connect_rejects_same_host_token_lock(monkeypatch):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="secret-token"))
 
