@@ -7949,6 +7949,8 @@ class GatewayRunner:
                     return await self._handle_help_command(event)
                 if _cmd_def_inner.name == "commands":
                     return await self._handle_commands_command(event)
+                if _cmd_def_inner.name == "fetch":
+                    return await self._handle_fetch_command(event)
                 if _cmd_def_inner.name == "profile":
                     return await self._handle_profile_command(event)
                 if _cmd_def_inner.name == "update":
@@ -8215,6 +8217,9 @@ class GatewayRunner:
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "fetch":
+            return await self._handle_fetch_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
@@ -10509,6 +10514,12 @@ class GatewayRunner:
         ])
 
         return "\n".join(lines)
+
+    async def _handle_fetch_command(self, event: MessageEvent) -> str:
+        """Handle /fetch — show fastfetch-style Hermes runtime overview."""
+        from hermes_cli.fetch import render_fetch_slash_args
+
+        return render_fetch_slash_args(event.get_command_args().strip())
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
