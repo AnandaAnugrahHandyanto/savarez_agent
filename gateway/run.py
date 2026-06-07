@@ -8352,6 +8352,9 @@ class GatewayRunner:
         if canonical == "resume":
             return await self._handle_resume_command(event)
 
+        if canonical == "sessions":
+            return await self._handle_sessions_command(event)
+
         if canonical == "branch":
             return await self._handle_branch_command(event)
 
@@ -14041,6 +14044,31 @@ class GatewayRunner:
         if msg_count == 1:
             return t("gateway.resume.resumed_one", title=title, count=msg_count)
         return t("gateway.resume.resumed_many", title=title, count=msg_count)
+
+    async def _handle_sessions_command(self, event: MessageEvent) -> str:
+        """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.
+
+        Without arguments (or with ``list``/``ls``/``browse``), lists recent
+        sessions — identical to ``/resume`` without a target.  With an
+        explicit target, delegates to the resume flow so ``/sessions <id>``
+        and ``/resume <id>`` behave identically.
+
+        This prevents ``/sessions`` from falling through to the LLM as a
+        normal user message (which wastes a model call for a deterministic
+        operation).  See #41238.
+        """
+        raw = event.get_command_args().strip()
+        sub = raw.lower()
+        if not raw or sub in ("list", "ls", "browse"):
+            # List mode — rewrite event text so _handle_resume_command
+            # sees no argument and lists sessions.
+            try:
+                event.text = "/sessions"
+            except Exception:
+                pass
+        # Delegate to the existing resume handler for both listing and
+        # actual session switching.
+        return await self._handle_resume_command(event)
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:
         """Handle /branch [name] — fork the current session into a new independent copy.

@@ -358,3 +358,77 @@ class TestHandleResumeCommand:
             f"session-id lookup failed: {result!r}"
         )
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# _handle_sessions_command
+# ---------------------------------------------------------------------------
+
+
+class TestHandleSessionsCommand:
+    """Tests for GatewayRunner._handle_sessions_command (#41238)."""
+
+    @pytest.mark.asyncio
+    async def test_bare_sessions_lists(self, tmp_path):
+        """/sessions with no argument lists recent titled sessions."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", "telegram")
+        db.set_session_title("s1", "Alpha Project")
+
+        event = _make_event(text="/sessions")
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_sessions_command(event)
+
+        assert "alpha project" in result.lower()
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_list_subcommand(self, tmp_path):
+        """/sessions list behaves the same as bare /sessions."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", "telegram")
+        db.set_session_title("s1", "Beta Project")
+
+        event = _make_event(text="/sessions list")
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_sessions_command(event)
+
+        assert "beta project" in result.lower()
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_with_target_delegates_to_resume(self, tmp_path):
+        """/sessions <title> switches to the named session."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("current", "telegram")
+        db.set_session_title("current", "Current")
+        db.create_session("target", "telegram")
+        db.set_session_title("target", "Old Project")
+
+        event = _make_event(text="/sessions Old Project")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current",
+            event=event,
+        )
+        # Mock _release_running_agent_state and _evict_cached_agent
+        runner._release_running_agent_state = MagicMock()
+        runner._evict_cached_agent = MagicMock()
+        runner._clear_session_boundary_security_state = MagicMock()
+
+        result = await runner._handle_sessions_command(event)
+
+        assert "old project" in result.lower()
+        runner.session_store.switch_session.assert_called_once()
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_sessions_no_session_db(self):
+        """Returns error when session database is unavailable."""
+        runner = _make_runner(session_db=None)
+        event = _make_event(text="/sessions")
+        result = await runner._handle_sessions_command(event)
+        assert "not available" in result.lower()
