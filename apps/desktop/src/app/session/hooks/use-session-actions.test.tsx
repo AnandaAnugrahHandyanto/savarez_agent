@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import type * as HermesApi from '@/hermes'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { assistantTextPart, chatMessageText, toChatMessages } from '@/lib/chat-messages'
+import { assistantTextPart, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ProfileStore from '@/store/profile'
 import { $forkOriginNotices, setSessions } from '@/store/session'
@@ -18,11 +18,11 @@ import { useSessionActions } from './use-session-actions'
 
 const mocks = vi.hoisted(() => ({
   ensureGatewayProfile: vi.fn(async () => undefined),
-    forkSession: vi.fn(),
-    getProfiles: vi.fn(async () => ({ profiles: [] })),
-    getSessionMessages: vi.fn<(...args: unknown[]) => Promise<SessionMessagesResponse>>(),
-    setApiRequestProfile: vi.fn()
-  }))
+  forkSession: vi.fn(),
+  getProfiles: vi.fn(async () => ({ profiles: [] })),
+  getSessionMessages: vi.fn<(...args: unknown[]) => Promise<SessionMessagesResponse>>(),
+  setApiRequestProfile: vi.fn()
+}))
 
 vi.mock('@/hermes', async importOriginal => {
   const actual = await importOriginal<typeof HermesApi>()
@@ -144,7 +144,8 @@ function Harness({
     },
     updateSessionState: (sessionId, updater) => {
       const current =
-        sessionStateByRuntimeIdRef.current.get(sessionId) ?? createClientSessionState(selectedStoredSessionIdRef.current)
+        sessionStateByRuntimeIdRef.current.get(sessionId) ??
+        createClientSessionState(selectedStoredSessionIdRef.current)
 
       const next = updater(current)
       sessionStateByRuntimeIdRef.current.set(sessionId, next)
@@ -339,7 +340,9 @@ describe('useSessionActions resumeSession', () => {
       />
     )
 
-    const assistantMessageId = toChatMessages(sourceTranscript.messages).find(message => message.role === 'assistant')!.id
+    const assistantMessageId = toChatMessages(sourceTranscript.messages).find(
+      message => message.role === 'assistant'
+    )!.id
 
     await act(async () => {
       expect(await handle!.branchCurrentSession(assistantMessageId)).toBe(true)
@@ -360,6 +363,265 @@ describe('useSessionActions resumeSession', () => {
       parentSessionId: 'stored-session-1'
     })
     expect(chatMessageText(syncs.at(-1)!.messages.at(-1)!)).toBe('Found the entrypoint.')
+  })
+
+  it('falls back to visible message order when the current thread ids differ from stored transcript ids', async () => {
+    // Narrow repro: a brand-new Desktop session can still be rendering
+    // runtime/optimistic message ids even after the stored transcript has
+    // normalized into rebuilt ids. This test only locks that mismatch fallback
+    // path; other fork behaviors are covered by the neighboring tests.
+    const sourceTranscript: SessionMessagesResponse = {
+      messages: [
+        { id: 1, content: 'check this repo', role: 'user', timestamp: 1 },
+        {
+          id: 2,
+          content: 'Let me inspect that.',
+          role: 'assistant',
+          timestamp: 2,
+          tool_calls: [{ id: 'tc-1', function: { name: 'search_files', arguments: '{"path":"src"}' } }]
+        },
+        {
+          id: 3,
+          content: '{"output":"src/app.ts"}',
+          role: 'tool',
+          tool_call_id: 'tc-1',
+          tool_name: 'search_files',
+          timestamp: 3
+        },
+        { id: 4, content: 'Found the entrypoint.', role: 'assistant', timestamp: 4 }
+      ],
+      session_id: 'stored-session-1'
+    }
+
+    const forkedTranscript: SessionMessagesResponse = {
+      messages: [
+        { id: 11, content: 'check this repo', role: 'user', timestamp: 11 },
+        { id: 12, content: 'Found the entrypoint.', role: 'assistant', timestamp: 12 }
+      ],
+      session_id: 'forked-session-1'
+    }
+
+    const forkedSession: SessionInfo = {
+      cwd: '/repo/fork',
+      ended_at: null,
+      id: 'forked-session-1',
+      input_tokens: 0,
+      is_active: true,
+      last_active: 20,
+      message_count: 4,
+      model: 'gpt-5.4',
+      output_tokens: 0,
+      preview: 'Found the entrypoint.',
+      profile: 'builder',
+      source: 'cli',
+      started_at: 20,
+      title: 'Session 1 #2',
+      tool_call_count: 1
+    }
+
+    mocks.getSessionMessages.mockImplementation(async sessionId => {
+      if (sessionId === 'stored-session-1') {
+        return sourceTranscript
+      }
+
+      if (sessionId === 'forked-session-1') {
+        return forkedTranscript
+      }
+
+      throw new Error(`unexpected session: ${String(sessionId)}`)
+    })
+    mocks.forkSession.mockResolvedValue(forkedSession)
+
+    const requestGateway = requestGatewayMock({ calls: 2, input: 3, output: 5, total: 8 })
+    const navigate = vi.fn() as unknown as NavigateFunction
+    const runtimeMessages: ChatMessage[] = [
+      {
+        id: 'runtime-user-1',
+        parts: [textPart('check this repo')],
+        role: 'user'
+      },
+      {
+        id: 'runtime-assistant-1',
+        parts: [assistantTextPart('Found the entrypoint.')],
+        role: 'assistant'
+      }
+    ]
+    let handle: HarnessHandle | null = null
+
+    render(
+      <Harness
+        initialSessionStates={[
+          [
+            'runtime-session-1',
+            {
+              ...createClientSessionState('stored-session-1', runtimeMessages),
+              storedSessionId: 'stored-session-1'
+            }
+          ]
+        ]}
+        navigate={navigate}
+        onReady={next => {
+          handle = next
+        }}
+        onSync={() => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await act(async () => {
+      expect(await handle!.branchCurrentSession('runtime-assistant-1')).toBe(true)
+    })
+
+    expect(mocks.forkSession).toHaveBeenCalledWith('stored-session-1', { until_message_id: 4 }, 'builder')
+    expect(navigate).toHaveBeenCalledWith(sessionRoute('forked-session-1'))
+  })
+
+  it('maps a visible user bubble back to the stored user boundary when tool calls follow it', async () => {
+    const sourceTranscript: SessionMessagesResponse = {
+      messages: [
+        { id: 1, content: 'check this repo', role: 'user', timestamp: 1 },
+        {
+          id: 2,
+          content: 'Let me inspect that.',
+          role: 'assistant',
+          timestamp: 2,
+          tool_calls: [{ id: 'tc-1', function: { name: 'search_files', arguments: '{"path":"src"}' } }]
+        },
+        {
+          id: 3,
+          content: '{"output":"src/app.ts"}',
+          role: 'tool',
+          tool_call_id: 'tc-1',
+          tool_name: 'search_files',
+          timestamp: 3
+        },
+        { id: 4, content: 'Found the entrypoint.', role: 'assistant', timestamp: 4 }
+      ],
+      session_id: 'stored-session-1'
+    }
+
+    const forkedTranscript: SessionMessagesResponse = {
+      messages: [{ id: 21, content: 'check this repo', role: 'user', timestamp: 21 }],
+      session_id: 'forked-session-1'
+    }
+
+    const forkedSession: SessionInfo = {
+      cwd: '/repo/fork',
+      ended_at: null,
+      id: 'forked-session-1',
+      input_tokens: 0,
+      is_active: true,
+      last_active: 20,
+      message_count: 1,
+      model: 'gpt-5.4',
+      output_tokens: 0,
+      preview: 'check this repo',
+      profile: 'builder',
+      source: 'cli',
+      started_at: 20,
+      title: 'Session 1 #2',
+      tool_call_count: 0
+    }
+
+    mocks.getSessionMessages.mockImplementation(async sessionId => {
+      if (sessionId === 'stored-session-1') {
+        return sourceTranscript
+      }
+
+      if (sessionId === 'forked-session-1') {
+        return forkedTranscript
+      }
+
+      throw new Error(`unexpected session: ${String(sessionId)}`)
+    })
+    mocks.forkSession.mockResolvedValue(forkedSession)
+
+    const requestGateway = requestGatewayMock({ calls: 1, input: 1, output: 0, total: 1 })
+    const navigate = vi.fn() as unknown as NavigateFunction
+    let handle: HarnessHandle | null = null
+
+    render(
+      <Harness
+        navigate={navigate}
+        onReady={next => {
+          handle = next
+        }}
+        onSync={() => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const userMessageId = toChatMessages(sourceTranscript.messages).find(message => message.role === 'user')!.id
+
+    await act(async () => {
+      expect(await handle!.branchCurrentSession(userMessageId)).toBe(true)
+    })
+
+    expect(mocks.forkSession).toHaveBeenCalledWith('stored-session-1', { until_message_id: 1 }, 'builder')
+    expect($forkOriginNotices.get()['forked-session-1']).toMatchObject({
+      branchMessageOrdinal: 0,
+      parentSessionId: 'stored-session-1'
+    })
+  })
+
+  it('fails closed when runtime visible order no longer matches stored branchable order', async () => {
+    const sourceTranscript: SessionMessagesResponse = {
+      messages: [
+        { id: 1, content: 'check this repo', role: 'user', timestamp: 1 },
+        { id: 2, content: 'Found the entrypoint.', role: 'assistant', timestamp: 2 }
+      ],
+      session_id: 'stored-session-1'
+    }
+
+    mocks.getSessionMessages.mockResolvedValue(sourceTranscript)
+
+    const requestGateway = requestGatewayMock({ calls: 0, input: 0, output: 0, total: 0 })
+
+    const runtimeMessages: ChatMessage[] = [
+      {
+        id: 'runtime-user-1',
+        parts: [textPart('check this repo')],
+        role: 'user'
+      },
+      {
+        id: 'runtime-assistant-1',
+        parts: [assistantTextPart('Found the entrypoint.')],
+        role: 'assistant'
+      },
+      {
+        id: 'runtime-assistant-2',
+        parts: [assistantTextPart('Extra local bubble')],
+        role: 'assistant'
+      }
+    ]
+
+    let handle: HarnessHandle | null = null
+
+    render(
+      <Harness
+        initialSessionStates={[
+          [
+            'runtime-session-1',
+            {
+              ...createClientSessionState('stored-session-1', runtimeMessages),
+              storedSessionId: 'stored-session-1'
+            }
+          ]
+        ]}
+        navigate={vi.fn() as unknown as NavigateFunction}
+        onReady={next => {
+          handle = next
+        }}
+        onSync={() => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await act(async () => {
+      expect(await handle!.branchCurrentSession('runtime-assistant-2')).toBe(false)
+    })
+
+    expect(mocks.forkSession).not.toHaveBeenCalled()
   })
 
   it('waits for an in-flight startup resume before branching the routed session', async () => {
@@ -466,7 +728,9 @@ describe('useSessionActions resumeSession', () => {
       />
     )
 
-    const assistantMessageId = toChatMessages(sourceTranscript.messages).find(message => message.role === 'assistant')!.id
+    const assistantMessageId = toChatMessages(sourceTranscript.messages).find(
+      message => message.role === 'assistant'
+    )!.id
 
     act(() => {
       void handle!.resumeSession('stored-session-1')
