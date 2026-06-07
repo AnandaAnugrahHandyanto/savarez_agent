@@ -641,6 +641,11 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     file itself is always excluded. Patterns cannot un-ignore the
     skill's own `SKILL.md`, which is always scanned.
 
+    Because the ignore file ships inside the (untrusted) bundle, it may
+    only suppress benign docs/data artifacts: executable scripts, source
+    code, binaries, extensionless files, and escaping symlinks are scanned
+    regardless of any ignore pattern. See ``_NEVER_IGNORABLE_EXTENSIONS``.
+
     Args:
         skill_path: Path to the skill directory (must contain SKILL.md)
         source: Source identifier for trust level resolution (e.g. "openai/skills")
@@ -822,12 +827,12 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
             continue
 
         rel = str(f.relative_to(skill_dir))
-        if ignore(rel):
-            continue
-        file_count += 1
 
-        # Symlink check — must resolve within the skill directory
+        # Symlink check — must resolve within the skill directory. This runs
+        # BEFORE the ignore gate: a bundle-shipped `.skillignore` must never be
+        # able to hide a symlink that escapes the skill directory.
         if f.is_symlink():
+            file_count += 1
             try:
                 resolved = f.resolve()
                 if not resolved.is_relative_to(skill_dir.resolve()):
@@ -851,6 +856,10 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
                     description="broken or circular symlink",
                 ))
             continue
+
+        if ignore(rel):
+            continue
+        file_count += 1
 
         # Size tracking
         try:
@@ -962,6 +971,25 @@ _SKILL_IGNORE_FILENAMES = (".skillignore", ".clawhubignore")
 _ALWAYS_IGNORED_NAMES = set(_SKILL_IGNORE_FILENAMES)
 _NEVER_IGNORABLE = {"SKILL.md"}
 
+# A bundle ships its own `.skillignore`, so the ignore file is fully
+# attacker-controlled. It is meant to silence false positives from dev/docs
+# artifacts (plans, release notes, fixtures) — NOT to hide the very files a
+# threat would live in. Executable scripts, code, and binaries can therefore
+# never be suppressed by the ignore file, no matter what patterns it ships.
+# Without this guard a malicious skill could ship `.skillignore` containing
+# `*` and reach a "safe" verdict with a reverse shell in scripts/setup.sh,
+# a total bypass of the scanner. Extensionless files are also never ignorable
+# (they may be shebang scripts the per-file scanner already skips by suffix).
+_NEVER_IGNORABLE_EXTENSIONS = {
+    # Executable scripts / source code.
+    ".sh", ".bash", ".zsh", ".fish", ".ksh", ".py", ".pyw", ".pyc",
+    ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl", ".pm", ".php", ".ps1",
+    ".psm1", ".bat", ".cmd", ".vbs", ".lua", ".r", ".jl",
+    # Compiled / packaged binaries (mirror SUSPICIOUS_BINARY_EXTENSIONS).
+    ".exe", ".dll", ".so", ".dylib", ".bin", ".dat", ".com",
+    ".msi", ".dmg", ".app", ".deb", ".rpm",
+}
+
 
 def _load_skill_ignore(skill_dir: Path):
     """Build a matcher from a skill's `.skillignore` / `.clawhubignore`.
@@ -995,6 +1023,13 @@ def _load_skill_ignore(skill_dir: Path):
             return False
         if base in _ALWAYS_IGNORED_NAMES:
             return True
+
+        # Scripts, code, binaries, and extensionless files are scanned no
+        # matter what the bundle's ignore patterns say — only benign
+        # docs/data artifacts may be suppressed.
+        suffix = Path(base).suffix.lower()
+        if not suffix or suffix in _NEVER_IGNORABLE_EXTENSIONS:
+            return False
 
         for pat in patterns:
             anchored = pat.startswith("/")
