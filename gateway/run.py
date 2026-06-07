@@ -684,6 +684,27 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
     return None
 
 
+def _voice_transcription_note(result: dict) -> str:
+    """Build the enrichment note for a successful STT transcription result.
+
+    Speech-to-text can return ``success=True`` with an empty or whitespace-only
+    transcript on silence, cut-off, or inaudible audio.  Emitting empty quotes
+    (``Here's what they said: ""``) makes the agent reply to nothing and can
+    loop, so that case gets a clear sentinel note instead.
+    """
+    transcript = result.get("transcript") or ""
+    if transcript.strip():
+        return (
+            f'[The user sent a voice message~ '
+            f'Here\'s what they said: "{transcript}"]'
+        )
+    return (
+        "[The user sent a voice message but it came through empty or "
+        "inaudible — speech-to-text returned no words. Do not guess at "
+        "the content; ask the user to resend or type it out.]"
+    )
+
+
 # Tool results can contain literal MEDIA: examples in docs, logs, or other
 # ordinary outputs. Only tools that intentionally create deliverable media
 # artifacts should be eligible for automatic append when the model omits them
@@ -15927,11 +15948,7 @@ class GatewayRunner:
                 logger.debug("Transcribing user voice: %s", path)
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
-                    transcript = result["transcript"]
-                    enriched_parts.append(
-                        f'[The user sent a voice message~ '
-                        f'Here\'s what they said: "{transcript}"]'
-                    )
+                    enriched_parts.append(_voice_transcription_note(result))
                 else:
                     error = result.get("error", "unknown error")
                     if (
