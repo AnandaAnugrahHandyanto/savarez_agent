@@ -4411,6 +4411,7 @@ class GatewayRunner:
             "WECOM_CALLBACK_ALLOWED_USERS",
             "WEIXIN_ALLOWED_USERS",
             "BLUEBUBBLES_ALLOWED_USERS",
+            "SENDBLUE_ALLOWED_USERS",
             "QQ_ALLOWED_USERS",
             "YUANBAO_ALLOWED_USERS",
             "GATEWAY_ALLOWED_USERS",
@@ -4426,6 +4427,7 @@ class GatewayRunner:
             "WECOM_CALLBACK_ALLOW_ALL_USERS",
             "WEIXIN_ALLOW_ALL_USERS",
             "BLUEBUBBLES_ALLOW_ALL_USERS",
+            "SENDBLUE_ALLOW_ALL_USERS",
             "QQ_ALLOW_ALL_USERS",
             "YUANBAO_ALLOW_ALL_USERS",
         )
@@ -6992,6 +6994,13 @@ class GatewayRunner:
                 return None
             return BlueBubblesAdapter(config)
 
+        elif platform == Platform.SENDBLUE:
+            from gateway.platforms.sendblue import SendblueAdapter, check_sendblue_requirements
+            if not check_sendblue_requirements():
+                logger.warning("Sendblue: aiohttp/httpx missing")
+                return None
+            return SendblueAdapter(config)
+
         elif platform == Platform.QQBOT:
             from gateway.platforms.qqbot import QQAdapter, check_qq_requirements
             if not check_qq_requirements():
@@ -7130,6 +7139,7 @@ class GatewayRunner:
             Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
             Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
+            Platform.SENDBLUE: "SENDBLUE_ALLOWED_USERS",
             Platform.QQBOT: "QQ_ALLOWED_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOWED_USERS",
         }
@@ -7156,6 +7166,7 @@ class GatewayRunner:
             Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOW_ALL_USERS",
             Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
+            Platform.SENDBLUE: "SENDBLUE_ALLOW_ALL_USERS",
             Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
             Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
         }
@@ -7366,6 +7377,7 @@ class GatewayRunner:
                 Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
                 Platform.WEIXIN:   "WEIXIN_ALLOWED_USERS",
                 Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
+                Platform.SENDBLUE: "SENDBLUE_ALLOWED_USERS",
                 Platform.QQBOT:    "QQ_ALLOWED_USERS",
             }
             platform_group_env_map = {
@@ -14977,7 +14989,7 @@ class GatewayRunner:
         Platform.TELEGRAM, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
-        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
+        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.SENDBLUE, Platform.QQBOT, Platform.LOCAL,
     })
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
