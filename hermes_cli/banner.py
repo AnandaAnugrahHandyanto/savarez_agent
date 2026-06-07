@@ -144,6 +144,31 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
 
+def _local_head_sha() -> Optional[str]:
+    """Return the active checkout's HEAD SHA, or None for non-git installs.
+
+    Used as part of the update-check cache key so an in-place ``git pull`` /
+    rebase that moves HEAD without changing ``VERSION`` or ``HERMES_REVISION``
+    (the common case for source installs tracking a fork) self-invalidates the
+    cached "commits behind" count instead of serving a stale value for the full
+    6-hour TTL. See #34491 for the version-bump variant of the same staleness.
+    """
+    repo_dir = _resolve_repo_dir()
+    if repo_dir is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            return (result.stdout or "").strip() or None
+    except Exception:
+        pass
+    return None
+
+
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind origin/main in a local checkout."""
     try:
@@ -244,6 +269,12 @@ def check_for_updates() -> Optional[int]:
     except Exception:
         pass
 
+    # HEAD SHA participates in the cache key so an in-place `git pull` / rebase
+    # that moves HEAD without changing VERSION or HERMES_REVISION self-invalidates
+    # the cached count. Computed AFTER the docker short-circuit so containers
+    # (no .git) never shell out to git here.
+    head_sha = _local_head_sha()
+
     # Read cache — invalidate if the embedded rev OR installed version has
     # changed since the last check. The version guard matters for pip installs:
     # `check_via_pypi()` compares against VERSION, so a `pip install --upgrade`
@@ -257,6 +288,7 @@ def check_for_updates() -> Optional[int]:
                 now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS
                 and cached.get("rev") == embedded_rev
                 and cached.get("ver") == VERSION
+                and cached.get("head") == head_sha
             ):
                 return cached.get("behind")
     except Exception:
@@ -278,7 +310,7 @@ def check_for_updates() -> Optional[int]:
 
     try:
         cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION})
+            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION, "head": head_sha})
         )
     except Exception:
         pass
