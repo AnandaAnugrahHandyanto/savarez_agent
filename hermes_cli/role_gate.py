@@ -32,7 +32,17 @@ ROLE_GATE_POLICIES: dict[str, dict[str, str]] = {
     "news-curator": {"kind": "read-only", "deliverable": "note.md"},
     "invest-watcher": {"kind": "read-only", "deliverable": "note.md"},
     "ops-monitor": {"kind": "read-only", "deliverable": "note.md"},
+    # write-role (M2). The lane stays closed in R1 — dispatch is refused at
+    # ``kanban_db._default_spawn`` while ``kanban.implementer_enabled`` is off.
+    # Registering the policy here only makes the deterministic completion
+    # gate (6 checks) attach automatically should the lane ever arm (R4+).
+    "implementer": {"kind": "write", "deliverable": "proposal/MERGE_PROPOSAL.json"},
 }
+
+# write-role(implementer) 계획의 [write:대상] 태그가 가리켜도 되는 영역.
+# m2_manifest_validate.ALLOWED_SUBDIRS 와 동기(단일 출처). plan 텍스트 사전
+# 점검용 — 실제 강제는 implementer.sbpl literal + phase2 writes_match_manifest.
+WRITE_SCOPE_ALLOWLIST = ("source_staging", "reviews", "output", "proposal")
 
 
 def gate_recipe_for_assignee(
@@ -50,6 +60,14 @@ def gate_recipe_for_assignee(
         return None
     if policy.get("kind") == "read-only":
         return build_readonly_gate_recipe(deliverable or policy.get("deliverable") or "note.md")
+    if policy.get("kind") == "write":
+        # write-role(implementer) — 6 checks(M1 3종 + M2 3종). 단일 출처는
+        # m2_implementer_policy.implementer_gate_recipe. lazy import 로 m2
+        # 의존(gate_checks→manifest_validate)을 role_gate 로드 비용에서 분리.
+        from hermes_cli import m2_implementer_policy as _ip
+        return _ip.implementer_gate_recipe(
+            deliverable or policy.get("deliverable")
+        )
     return None
 
 # 계획에 kill switch / 중단 조건이 선언됐는지 판정하는 키워드(한/영).
@@ -64,9 +82,13 @@ def check_plan(plan_text: str, policy: str = "read-only") -> dict[str, Any]:
     """worker 계획 텍스트를 결정적으로 검사한다(사전 ② 게이트).
 
     Returns ``{"passed": bool, "findings": [ {type, ok, reason}, ... ]}``.
-    ``policy`` 은 현재 ``"read-only"`` 만 지원(첫 역할 news-curator).
+    ``policy`` ∈ ``{"read-only", "write"}``. read-only(news-curator 등)는
+    write 대상을 조사노트 1개로 제한하고, write(implementer)는 [write:대상]
+    태그가 manifest 허용영역(source_staging·reviews·output·proposal) 안인지
+    검사한다. **plan 텍스트 사전 점검일 뿐, 실제 강제는 완료 시 gate_recipe
+    재실행 + sbpl + phase2 writes_match_manifest 가 한다.**
     """
-    if policy != "read-only":
+    if policy not in ("read-only", "write"):
         return {
             "passed": False,
             "findings": [{"type": "policy", "ok": False, "reason": f"unsupported policy: {policy}"}],
@@ -75,7 +97,7 @@ def check_plan(plan_text: str, policy: str = "read-only") -> dict[str, Any]:
     text = plan_text or ""
     findings: list[dict[str, Any]] = []
 
-    # 1) kill switch / 중단 조건
+    # 1) kill switch / 중단 조건 (정책 공통)
     has_kill = bool(_KILL_SWITCH_RE.search(text))
     findings.append({
         "type": "kill_switch",
@@ -83,23 +105,43 @@ def check_plan(plan_text: str, policy: str = "read-only") -> dict[str, Any]:
         "reason": None if has_kill else "계획에 kill switch/중단 조건 선언 없음",
     })
 
-    # 2) 범위 선언 — 단계 태그 ≥1, write 대상은 allowlist(조사노트)뿐
+    # 2) 범위 선언 — 정책별 분기
     tags = _SCOPE_TAG_RE.findall(text)
     write_targets = [(t or "").strip() for kind, t in tags if kind.lower() == "write"]
-    illegal_writes = [
-        t for t in write_targets
-        if not any(allow in t for allow in READONLY_WRITE_ALLOWLIST)
-    ]
-    scope_ok = bool(tags) and not illegal_writes
-    if not tags:
-        scope_reason = "단계 범위 태그([read]/[write:...]) 없음"
-    elif illegal_writes:
-        scope_reason = f"허용되지 않은 write 대상: {illegal_writes} (read-only 산출물=조사노트 1개만)"
-    else:
-        scope_reason = None
-    findings.append({"type": "scope_readonly", "ok": scope_ok, "reason": scope_reason})
+    if policy == "read-only":
+        # read-only: write 대상은 allowlist(조사노트)뿐
+        illegal_writes = [
+            t for t in write_targets
+            if not any(allow in t for allow in READONLY_WRITE_ALLOWLIST)
+        ]
+        scope_ok = bool(tags) and not illegal_writes
+        if not tags:
+            scope_reason = "단계 범위 태그([read]/[write:...]) 없음"
+        elif illegal_writes:
+            scope_reason = f"허용되지 않은 write 대상: {illegal_writes} (read-only 산출물=조사노트 1개만)"
+        else:
+            scope_reason = None
+        findings.append({"type": "scope_readonly", "ok": scope_ok, "reason": scope_reason})
+    else:  # policy == "write"
+        # write(implementer): [write:대상] ≥1 + 모든 write 대상이 manifest
+        # 허용영역 안. 허용영역 밖 write 선언이 있으면 거부(fail-closed).
+        illegal_writes = [
+            t for t in write_targets
+            if not any(allow in t for allow in WRITE_SCOPE_ALLOWLIST)
+        ]
+        scope_ok = bool(write_targets) and not illegal_writes
+        if not write_targets:
+            scope_reason = "write 역할 계획에 [write:대상] 태그 없음"
+        elif illegal_writes:
+            scope_reason = (
+                f"manifest 허용영역 밖 write 대상: {illegal_writes} "
+                f"(허용={list(WRITE_SCOPE_ALLOWLIST)})"
+            )
+        else:
+            scope_reason = None
+        findings.append({"type": "scope_write", "ok": scope_ok, "reason": scope_reason})
 
-    # 3) 의존성/입력·산출물 경로 선언
+    # 3) 의존성/입력·산출물 경로 선언 (정책 공통)
     has_deps = bool(_DEPS_RE.search(text))
     findings.append({
         "type": "dependencies",

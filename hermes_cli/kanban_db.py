@@ -2971,6 +2971,27 @@ class VerificationFailedError(ValueError):
         )
 
 
+class SpawnRefused(RuntimeError):
+    """Raised inside ``_default_spawn`` when a write-role (implementer)
+    dispatch must be refused at the armed-lane entrance.
+
+    R1 default: ``kanban.implementer_enabled`` flag is off → every
+    implementer card is refused here (fail-closed). When the flag is on
+    (R4+), the supervisor pre-flight (PROXY_SOCK / sbpl / capture_dir)
+    raises this on any missing precondition so a write-role worker never
+    spawns without its full sandbox + capture chain in place.
+
+    Subclass of ``RuntimeError`` (not ``ValueError``) so it flows through
+    ``dispatch_once``'s existing generic ``except`` → ``_record_spawn_failure``
+    without any change to the dispatch loop body.
+    """
+
+    def __init__(self, task_id: str, reason: str):
+        self.task_id = task_id
+        self.reason = reason
+        super().__init__(f"spawn refused for {task_id}: {reason}")
+
+
 def _normalise_gate_recipe_for_storage(recipe: Optional[dict | str]) -> Optional[str]:
     if recipe is None:
         return None
@@ -3051,6 +3072,53 @@ def _json_field(data: Any, key: str) -> Any:
     return cur
 
 
+def _load_m2_capture(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    run_id: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    """Supervisor-recorded M2 capture payload for a write-role task's run.
+
+    The write-role (implementer) supervisor records ``phase2_result`` /
+    ``codex_verdict`` / ``staged_files`` (parent-only capture-dir abs paths)
+    as an ``m2_supervisor_capture`` event AFTER reaping the worker. The M2
+    gate checks consume this — they NEVER trust worker-written data. A
+    missing/corrupt capture → ``None`` → every M2 check **fail-closed**.
+
+    **Run binding (Codex M2-R1 #1)**: when a ``run_id`` is given (the active
+    supervised run), the capture event MUST carry the same ``run_id``. This
+    refuses a *stale passing capture from a previous run* satisfying a later
+    completion. ``run_id=None`` (manual/runless contexts where no supervisor
+    capture exists anyway) falls back to latest — still fail-closed because a
+    real supervised completion always runs inside a claimed run.
+
+    Trust boundary: this event is written by the trusted supervisor process,
+    not the sandboxed worker (which has no DB access). Reading it here is the
+    same pattern as ``plan_gate`` reading ``plan_submitted``.
+    """
+    if run_id is not None:
+        row = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? "
+            "AND kind = 'm2_supervisor_capture' AND run_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id, run_id),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? "
+            "AND kind = 'm2_supervisor_capture' ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+    if not row or not row["payload"]:
+        return None
+    try:
+        data = json.loads(row["payload"])
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _evaluate_gate_recipe(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3115,6 +3183,31 @@ def _evaluate_gate_recipe(
                     findings.append({"type": ctype, "ok": res["passed"], "policy": policy,
                                      "reason": None if res["passed"] else f"plan gate failed: {bad}",
                                      "plan_findings": res["findings"]})
+            elif ctype in ("writes_match_manifest", "codex_review_passed", "proposal_inert"):
+                # M2 write-role 게이트. 입력은 **부모(supervisor)가 기록한**
+                # capture(phase2_result/codex_verdict/staged_files)뿐 — 워커
+                # 산출물 신뢰 0. capture 미존재 → fail-closed.
+                from hermes_cli import m2_gate_checks as _gc
+                # 현재 run에 바인딩된 capture만 신뢰(stale capture 재사용 차단).
+                capture = _load_m2_capture(
+                    conn, task_id, run_id=_current_run_id(conn, task_id))
+                if capture is None:
+                    findings.append({"type": ctype, "ok": False,
+                                     "reason": "no supervisor capture recorded → fail-closed "
+                                               "(write-role completion requires m2_supervisor_capture event)"})
+                elif ctype == "writes_match_manifest":
+                    ok, detail = _gc.writes_match_manifest(capture.get("phase2_result"))
+                    findings.append({"type": ctype, "ok": bool(ok), "reason": None if ok else detail})
+                elif ctype == "codex_review_passed":
+                    # advisory 계약: 게이트 차원에서는 pass/fail로 평가(fail이면 block).
+                    ok, detail = _gc.codex_review_passed(capture.get("codex_verdict"))
+                    findings.append({"type": ctype, "ok": bool(ok), "reason": None if ok else detail})
+                else:  # proposal_inert
+                    pi = _gc.proposal_inert(capture.get("staged_files"))
+                    ok = bool(pi.get("ok"))
+                    findings.append({"type": ctype, "ok": ok,
+                                     "reason": None if ok else f"hard violations: {pi.get('hard_violations')}",
+                                     "review_flags": pi.get("review_flags") or []})
             else:
                 findings.append({"type": ctype or "unknown", "ok": False, "reason": "unknown check type"})
         except Exception as exc:
@@ -6268,6 +6361,28 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
+def _implementer_enabled(kanban_cfg: Optional[dict] = None) -> bool:
+    """Return whether the write-role (implementer) lane is armed.
+
+    Reads ``kanban.implementer_enabled`` from config.yaml. **Default is
+    ``False``**: an unset/missing/invalid flag means the lane is OFF
+    (fail-closed). R1 keeps this off — every implementer dispatch is
+    refused at ``_default_spawn``. Only an explicit ``true`` (R4+ ARM,
+    behind separate human approval) opens the lane.
+
+    Accepts an optional ``kanban_cfg`` dict for testing without the live
+    config (mirrors :func:`worker_log_rotation_config`).
+    """
+    if kanban_cfg is None:
+        try:
+            from hermes_cli.config import load_config
+
+            kanban_cfg = (load_config().get("kanban") or {})
+        except Exception:
+            kanban_cfg = {}
+    return (kanban_cfg or {}).get("implementer_enabled") is True
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -6289,6 +6404,48 @@ def _default_spawn(
     import subprocess
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
+
+    # ---- write-role(implementer) armed-lane 입구 ----
+    # implementer 워커는 untrusted → 일반 spawn 경로로 보내지 않는다. 대신 별도
+    # 감독 프로세스(m2_supervisor)가 spawn→reap→capture→gate→complete를 자기
+    # DB 연결로 수행한다. R1: flag off → 여기서 SpawnRefused(입구거부). flag on
+    # (R4+, 별도 승인) → supervisor를 비블로킹 Popen하고 그 PID를 반환한다.
+    # dispatch_once 본체는 무수정 — SpawnRefused는 기존 generic except가 잡아
+    # _record_spawn_failure로 흘려보낸다(claim 해제·fail-closed).
+    if (task.assignee or "").strip() == "implementer":
+        if not _implementer_enabled():
+            raise SpawnRefused(task.id, "implementer lane disabled "
+                               "(kanban.implementer_enabled off)")
+        # flag on: spawn 전 sbpl 존재 fail-closed precheck.
+        sbpl = Path(__file__).resolve().parent / "sbpl" / "implementer.sbpl"
+        if not sbpl.is_file():
+            raise SpawnRefused(task.id, f"implementer.sbpl missing: {sbpl}")
+        sup_env = dict(os.environ)
+        _prepend_pythonpath(sup_env, _source_root())
+        sup_env["HERMES_KANBAN_DB"] = str(kanban_db_path(board=board))
+        sup_env["HERMES_KANBAN_BOARD"] = _normalize_board_slug(board) or get_current_board()
+        sup_cmd = [sys.executable, "-m", "hermes_cli.m2_supervisor", "--task", task.id]
+        if board:
+            sup_cmd += ["--board", board]
+        log_dir = worker_logs_dir(board=board)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        sup_log = open(log_dir / f"{task.id}.supervisor.log", "ab")
+        try:
+            proc = subprocess.Popen(  # noqa: S603 -- fixed argv
+                sup_cmd,
+                cwd=workspace if os.path.isdir(workspace) else None,
+                stdin=subprocess.DEVNULL,
+                stdout=sup_log,
+                stderr=subprocess.STDOUT,
+                env=sup_env,
+                start_new_session=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            )
+        except FileNotFoundError as exc:
+            sup_log.close()
+            raise SpawnRefused(task.id, f"supervisor spawn failed: {exc}")
+        # 비블로킹: supervisor PID 반환. 디스패처 루프는 즉시 다음 역할로.
+        return proc.pid
 
     from hermes_cli.profiles import normalize_profile_name
 

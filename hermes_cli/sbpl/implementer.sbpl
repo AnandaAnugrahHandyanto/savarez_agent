@@ -1,0 +1,73 @@
+;; implementer.sbpl v1 (M2-1a) — write-role 워커 프로필 (worker.sbpl 파생)
+;;
+;; 마일스톤1 worker.sbpl과 **network 정책만 다름**. 나머지(실홈 read deny + synth/runtime
+;; allow-back, write=manifest leaf, exec=ENTRY_BIN, final_deny block)는 동일 = M1 자물쇠 그대로 상속.
+;;
+;; 차이(DESIGN_v4 §5-B 부모 완전중개):
+;;   network = 전면 deny + **부모 소유 Unix domain socket(PROXY_SOCK) outbound 단일 예외**.
+;;   → 공개443·loopback(127.0.0.1)·사설(192.168.x)·타 unix-socket 전부 도달 불가.
+;;   유일 egress = 부모 LLM 프록시 소켓. 부모가 provider allowlist·credential 격리·redaction·로깅 중개.
+;;
+;; ⚠️ 실측(M2-1a 검증): macOS seatbelt는 AF_UNIX connect를 network-outbound로 취급하고,
+;;   `(remote unix-socket (path-literal ...))` 필터는 **커널이 canonical(realpath) 경로로 매칭**한다.
+;;   따라서 부모는 PROXY_SOCK을 **canonical 절대경로**(예: /tmp 아닌 /private/tmp, 또는 realpath된 빌드경로)로
+;;   생성·전달해야 한다. /tmp 심볼릭 경로를 그대로 주면 매칭 실패→연결 거부(실측 확인).
+;;
+;; 파라미터: SYNTH_ROOT R2 MW_0 PF_LEAF ENTRY_BIN **PROXY_SOCK**(canonical)
+(version 1)
+(deny default)
+
+;; --- base ---
+(allow process-fork)
+(allow signal (target self))
+(allow sysctl-read)
+(allow mach-lookup)
+(allow process-info* (target same-sandbox))
+
+;; --- read: 전역(dyld hard-abort 회피) + map ---
+(allow file-read*)
+(allow file-map-executable)
+
+;; --- write: manifest leaf + preflight 전용 leaf(분리) ---
+(allow file-write* (literal (param "MW_0")))
+(allow file-write* (literal (param "PF_LEAF")))
+
+;; --- exec: 엔트리 인터프리터만 ---
+(allow process-exec (literal (param "ENTRY_BIN")))
+
+;; --- final_deny block (last-match-wins, 맨 끝) ---
+;; ① 사용자 데이터·temp·cache·타사용자·서드파티 read 차단 (M1과 동일)
+(deny file-read*
+    (subpath "/Users")
+    (subpath "/private/tmp")
+    (subpath "/private/var/folders")
+    (subpath "/private/var/tmp")
+    (subpath "/private/var/db")
+    (subpath "/var/db")
+    (subpath "/System/Volumes/Data/private/var/db")
+    (subpath "/System/Volumes/Data/Users")
+    (subpath "/cores")
+    (subpath "/Network")
+    (subpath "/net")
+    (subpath "/home")
+    (subpath "/Library")
+    (subpath "/opt")
+    (subpath "/usr/local")
+    (subpath "/Volumes")
+    (subpath "/private/etc")
+    (subpath "/System/Volumes/Data/private/etc")
+    (subpath "/private/var/log")
+    (subpath "/System/Volumes/Data/private/var/log")
+    (subpath "/Applications")
+    (subpath "/System/Volumes/Data/Applications")
+    (subpath "/System/Volumes/Data/Library"))
+;; ② synthetic 자료 + python 런타임만 allow-back (deny보다 뒤=우선)
+(allow file-read* file-map-executable (subpath (param "SYNTH_ROOT")))
+(allow file-read* file-map-executable (subpath (param "R2")))
+;; workspace 복사 바이너리 exec 금지 (synth 안)
+(deny process-exec* (subpath (param "SYNTH_ROOT")))
+;; scratch write 봉쇄
+(deny file-write* (subpath "/tmp") (subpath "/private/tmp") (subpath "/var/tmp"))
+;; --- network: 전면 deny + 부모 프록시 Unix socket outbound 단일 예외 (M2 차이점) ---
+(deny network*)
+(allow network-outbound (remote unix-socket (path-literal (param "PROXY_SOCK"))))
