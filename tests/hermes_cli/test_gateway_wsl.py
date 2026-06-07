@@ -57,6 +57,38 @@ class TestIsWsl:
             assert hermes_constants.is_wsl() is True
 
 
+class TestWindowsPathToWsl:
+    """Test shared Windows drive path translation helpers."""
+
+    def test_windows_backslash_path_to_wsl(self):
+        assert (
+            hermes_constants.windows_path_to_wsl(r"E:\Projects\AI\paperclip")
+            == "/mnt/e/Projects/AI/paperclip"
+        )
+
+    def test_windows_forward_slash_path_to_wsl(self):
+        assert (
+            hermes_constants.windows_path_to_wsl("D:/work/project")
+            == "/mnt/d/work/project"
+        )
+
+    def test_non_windows_path_returns_none(self):
+        assert hermes_constants.windows_path_to_wsl("/home/don/project") is None
+
+    def test_translate_only_when_running_in_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        assert (
+            hermes_constants.translate_windows_path_for_wsl(r"C:\Users\Don\repo")
+            == "/mnt/c/Users/Don/repo"
+        )
+
+        monkeypatch.setattr("hermes_constants._wsl_detected", False)
+        assert (
+            hermes_constants.translate_windows_path_for_wsl(r"C:\Users\Don\repo")
+            == r"C:\Users\Don\repo"
+        )
+
+
 # =============================================================================
 # _wsl_systemd_operational() in gateway
 # =============================================================================

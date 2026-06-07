@@ -5,6 +5,7 @@ without risk of circular imports.
 """
 
 import os
+import re
 import sys
 import sysconfig
 from contextvars import ContextVar, Token
@@ -340,6 +341,7 @@ def is_termux() -> bool:
 
 
 _wsl_detected: bool | None = None
+_WINDOWS_DRIVE_PATH_RE = re.compile(r"^([A-Za-z]):[\\/](.*)$")
 
 
 def is_wsl() -> bool:
@@ -358,6 +360,27 @@ def is_wsl() -> bool:
     except Exception:
         _wsl_detected = False
     return _wsl_detected
+
+
+def windows_path_to_wsl(path: str) -> str | None:
+    """Convert a Windows drive path to a WSL mount path.
+
+    Returns ``None`` when ``path`` is not an absolute Windows drive path.
+    """
+    match = _WINDOWS_DRIVE_PATH_RE.match(str(path))
+    if not match:
+        return None
+    drive = match.group(1).lower()
+    tail = match.group(2).replace("\\", "/")
+    return f"/mnt/{drive}/{tail}"
+
+
+def translate_windows_path_for_wsl(path: str) -> str:
+    """Translate Windows drive paths when this process is running in WSL."""
+    if not is_wsl():
+        return path
+    translated = windows_path_to_wsl(str(path))
+    return translated if translated is not None else path
 
 
 _container_detected: bool | None = None
