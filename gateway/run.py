@@ -13190,6 +13190,12 @@ class GatewayRunner:
         if not guild_id:
             return "This command only works in a Discord server."
 
+        if str(os.getenv("HERMES_DISCORD_LIVE_VOICE_EXPERIMENT", "")).strip().lower() == "parked":
+            return (
+                "Discord live voice is parked. This voice-channel path is too noisy for production; "
+                "use the LiveKit/WebRTC or phone-call path instead."
+            )
+
         voice_channel = await adapter.get_user_voice_channel(
             guild_id, event.source.user_id
         )

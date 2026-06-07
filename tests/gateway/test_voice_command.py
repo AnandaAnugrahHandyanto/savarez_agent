@@ -1036,6 +1036,22 @@ class TestVoiceChannelCommands:
         assert "discord server" in result.lower()
 
     @pytest.mark.asyncio
+    async def test_join_refuses_when_discord_live_voice_parked(self, runner, monkeypatch):
+        """Parked Discord VC experiment must not rejoin accidentally."""
+        monkeypatch.setenv("HERMES_DISCORD_LIVE_VOICE_EXPERIMENT", "parked")
+        mock_adapter = AsyncMock()
+        mock_adapter.join_voice_channel = AsyncMock()
+        mock_adapter.get_user_voice_channel = AsyncMock()
+        event = self._make_discord_event()
+        runner.adapters[event.source.platform] = mock_adapter
+
+        result = await runner._handle_voice_channel_join(event)
+
+        assert "parked" in result.lower()
+        mock_adapter.get_user_voice_channel.assert_not_called()
+        mock_adapter.join_voice_channel.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_join_user_not_in_vc(self, runner):
         """User not in any voice channel."""
         mock_adapter = AsyncMock()
