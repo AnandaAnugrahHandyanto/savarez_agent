@@ -70,6 +70,13 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_VOICE_PERSONA_PREFIX_RE = re.compile(
+    r"^\s*(?:leo\s+(?:here|aici)|leo|guardian)\s*(?:[-:–—.]|\bis\b)?\s*",
+    re.IGNORECASE,
+)
+_VOICE_OPERATIONAL_LINE_RE = re.compile(
+    r"(?im)^\s*(?:operational for the current session|opera[țt]ional pentru sesiunea curent[aă])\.?\s*$"
+)
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -9543,6 +9550,8 @@ class GatewayRunner:
                     "results. This can happen with some models — try again or "
                     "rephrase your question."
                 )
+            if voice_reply_note:
+                response = self._sanitize_voice_reply_response(response)
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
@@ -12467,6 +12476,24 @@ class GatewayRunner:
             "provided in the user message or verified by an allowed tool.]"
         )
 
+    def _sanitize_voice_reply_response(self, response: str) -> str:
+        """Remove persona/status leakage before voice bench, TTS, and send."""
+        text = str(response or "")
+        if not text:
+            return ""
+
+        text = _VOICE_OPERATIONAL_LINE_RE.sub("", text)
+        lines = [line.rstrip() for line in text.splitlines()]
+        text = "\n".join(line for line in lines if line.strip()).strip()
+        if not text:
+            return ""
+
+        previous = None
+        while previous != text:
+            previous = text
+            text = _VOICE_PERSONA_PREFIX_RE.sub("", text, count=1).lstrip()
+        return text.strip()
+
     def _is_voice_reply_turn(self, event: MessageEvent) -> bool:
         """Return True when this inbound turn should optimize for voice reply latency."""
         if event.message_type != MessageType.VOICE:
@@ -12519,15 +12546,15 @@ class GatewayRunner:
             "credential_pool": runtime.get("credential_pool"),
         }
         try:
-            max_tokens = int(fast_cfg.get("max_tokens", 180) or 180)
+            max_tokens = int(fast_cfg.get("max_tokens", 96) or 96)
         except (TypeError, ValueError):
-            max_tokens = 180
-        if max_tokens > 220:
+            max_tokens = 96
+        if max_tokens > 120:
             logger.warning(
-                "voice.fast_reply max_tokens=%s exceeds latency-safe cap; clamping to 220",
+                "voice.fast_reply max_tokens=%s exceeds latency-safe cap; clamping to 120",
                 max_tokens,
             )
-            max_tokens = 220
+            max_tokens = 120
         if max_tokens > 0:
             runtime_kwargs["max_tokens"] = max_tokens
 
@@ -12540,15 +12567,15 @@ class GatewayRunner:
             disabled_toolsets = []
 
         try:
-            max_iterations = int(fast_cfg.get("max_turns", 4) or 4)
+            max_iterations = int(fast_cfg.get("max_turns", 1) or 1)
         except (TypeError, ValueError):
-            max_iterations = 4
-        if max_iterations > 3:
+            max_iterations = 1
+        if max_iterations > 1:
             logger.warning(
-                "voice.fast_reply max_turns=%s exceeds latency-safe cap; clamping to 3",
+                "voice.fast_reply max_turns=%s exceeds latency-safe cap; clamping to 1",
                 max_iterations,
             )
-            max_iterations = 3
+            max_iterations = 1
 
         reasoning_config = fast_cfg.get("reasoning")
         if not isinstance(reasoning_config, dict):
