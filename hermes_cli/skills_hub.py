@@ -945,7 +945,7 @@ def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> N
 
 def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> None:
     """Update hub-installed skills with upstream changes."""
-    from tools.skills_hub import HubLockFile, check_for_skill_updates
+    from tools.skills_hub import HubLockFile, check_for_skill_updates, bundle_content_hash
 
     c = console or _console
     lock = HubLockFile()
@@ -959,6 +959,27 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
         category = _derive_category_from_install_path(installed.get("install_path", "")) if installed else ""
         c.print(f"[bold]Updating:[/] {entry['name']}")
         do_install(entry["identifier"], category=category, force=True, console=c)
+
+        # Re-record the lock entry's content_hash using the same
+        # bundle_content_hash() function that check_for_skill_updates()
+        # uses, so the two are guaranteed to match after an update.
+        # Without this, content_hash(install_dir) (disk hash) and
+        # bundle_content_hash(bundle) (bundle hash) can disagree,
+        # causing a permanent false 'update_available' (#41176).
+        bundle = entry.get("bundle")
+        if bundle is not None:
+            fresh_hash = bundle_content_hash(bundle)
+            lock.record_install(
+                name=entry["name"],
+                source=bundle.source,
+                identifier=bundle.identifier,
+                trust_level=bundle.trust_level,
+                scan_verdict=installed.get("scan_verdict", "clean") if installed else "clean",
+                skill_hash=fresh_hash,
+                install_path=installed.get("install_path", "") if installed else "",
+                files=list(bundle.files.keys()),
+                metadata=bundle.metadata,
+            )
 
     c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
 

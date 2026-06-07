@@ -1,3 +1,4 @@
+import json
 from io import StringIO
 from unittest.mock import patch
 
@@ -742,4 +743,219 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     assert payload[0]["source"] == "browse-sh"
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# do_update content_hash refresh (issue #41176)
+# ---------------------------------------------------------------------------
+
+
+class TestDoUpdateContentHashRefresh:
+    """After do_update installs a skill, the lock's content_hash must match
+    what bundle_content_hash produces, so a subsequent do_check reports
+    up_to_date instead of perpetually showing update_available."""
+
+    def test_update_refreshes_content_hash(self, monkeypatch, hub_env):
+        """do_update should re-record content_hash using bundle_content_hash."""
+        import tools.skills_hub as hub
+        from hermes_cli.skills_hub import do_update
+        from tools.skills_hub import SkillBundle, HubLockFile, bundle_content_hash
+
+        # Create a fake skill bundle
+        bundle = SkillBundle(
+            name="test-skill",
+            source="github",
+            identifier="owner/repo/skill-name",
+            trust_level="community",
+            files={"SKILL.md": "# Test Skill\n", "references/api.md": "# API\n"},
+            metadata={"name": "test-skill"},
+        )
+        expected_hash = bundle_content_hash(bundle)
+
+        # Pre-populate lock with a stale hash
+        lock_data = {
+            "installed": {
+                "test-skill": {
+                    "name": "test-skill",
+                    "source": "github",
+                    "identifier": "owner/repo/skill-name",
+                    "trust_level": "community",
+                    "content_hash": "sha256:stalehash1234567",
+                    "install_path": "test-skill",
+                    "scan_verdict": "clean",
+                    "files": ["SKILL.md", "references/api.md"],
+                    "metadata": {},
+                }
+            }
+        }
+        hub.LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        hub.LOCK_FILE.write_text(json.dumps(lock_data))
+
+        # Mock HubLockFile to use the monkeypatched LOCK_FILE path
+        original_init = HubLockFile.__init__
+        def patched_init(self, path=None):
+            original_init(self, path=hub.LOCK_FILE)
+        monkeypatch.setattr(HubLockFile, "__init__", patched_init)
+
+        # Mock check_for_skill_updates to return our entry with the bundle
+        def mock_check(*, name=None, lock=None, sources=None, auth=None):
+            return [{
+                "name": "test-skill",
+                "identifier": "owner/repo/skill-name",
+                "source": "github",
+                "status": "update_available",
+                "current_hash": "sha256:stalehash1234567",
+                "latest_hash": expected_hash,
+                "bundle": bundle,
+            }]
+
+        # Mock do_install to succeed (we don't need actual install for this test)
+        def mock_do_install(identifier, *, category="", force=False, console=None):
+            pass
+
+        monkeypatch.setattr(hub, "check_for_skill_updates", mock_check)
+        monkeypatch.setattr("hermes_cli.skills_hub.do_install", mock_do_install)
+
+        sink = StringIO()
+        console = Console(file=sink, force_terminal=False, color_system=None, width=80)
+
+        do_update("test-skill", console=console)
+
+        # Verify the lock was updated with the bundle_content_hash
+        updated_lock = json.loads(hub.LOCK_FILE.read_text())
+        assert updated_lock["installed"]["test-skill"]["content_hash"] == expected_hash
+
+    def test_update_then_check_reports_up_to_date(self, monkeypatch, hub_env):
+        """After do_update, do_check should report up_to_date (not update_available)."""
+        import tools.skills_hub as hub
+        from hermes_cli.skills_hub import do_update, do_check
+        from tools.skills_hub import SkillBundle, HubLockFile, bundle_content_hash
+
+        bundle = SkillBundle(
+            name="my-skill",
+            source="github",
+            identifier="owner/repo/my-skill",
+            trust_level="community",
+            files={"SKILL.md": "# My Skill\n"},
+            metadata={"name": "my-skill"},
+        )
+        expected_hash = bundle_content_hash(bundle)
+
+        lock_data = {
+            "installed": {
+                "my-skill": {
+                    "name": "my-skill",
+                    "source": "github",
+                    "identifier": "owner/repo/my-skill",
+                    "trust_level": "community",
+                    "content_hash": "sha256:oldhash12345678",
+                    "install_path": "my-skill",
+                    "scan_verdict": "clean",
+                    "files": ["SKILL.md"],
+                    "metadata": {},
+                }
+            }
+        }
+        hub.LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        hub.LOCK_FILE.write_text(json.dumps(lock_data))
+
+        # Mock HubLockFile to use the monkeypatched LOCK_FILE path
+        original_init = HubLockFile.__init__
+        def patched_init(self, path=None):
+            original_init(self, path=hub.LOCK_FILE)
+        monkeypatch.setattr(HubLockFile, "__init__", patched_init)
+
+        # Dynamic mock: reads lock file to determine status
+        def mock_check(*, name=None, lock=None, sources=None, auth=None):
+            current_lock = json.loads(hub.LOCK_FILE.read_text())
+            entry = current_lock["installed"].get("my-skill", {})
+            stored_hash = entry.get("content_hash", "")
+            status = "up_to_date" if stored_hash == expected_hash else "update_available"
+            return [{
+                "name": "my-skill",
+                "identifier": "owner/repo/my-skill",
+                "source": "github",
+                "status": status,
+                "current_hash": stored_hash,
+                "latest_hash": expected_hash,
+                "bundle": bundle,
+            }]
+
+        def mock_do_install(identifier, *, category="", force=False, console=None):
+            pass
+
+        monkeypatch.setattr(hub, "check_for_skill_updates", mock_check)
+        monkeypatch.setattr("hermes_cli.skills_hub.do_install", mock_do_install)
+
+        sink = StringIO()
+        console = Console(file=sink, force_terminal=False, color_system=None, width=80)
+
+        # Run update
+        do_update("my-skill", console=console)
+
+        # Now run check — should report up_to_date
+        check_sink = StringIO()
+        check_console = Console(file=check_sink, force_terminal=False, color_system=None, width=80)
+        do_check("my-skill", console=check_console)
+
+        # The check output should NOT contain update_available
+        assert "update_available" not in check_sink.getvalue()
+        assert "up_to_date" in check_sink.getvalue()
+
+    def test_update_no_bundle_skips_hash_refresh(self, monkeypatch, hub_env):
+        """If check_for_skill_updates returns no bundle, do_update should not crash."""
+        import tools.skills_hub as hub
+        from hermes_cli.skills_hub import do_update
+        from tools.skills_hub import HubLockFile
+
+        lock_data = {
+            "installed": {
+                "orphan-skill": {
+                    "name": "orphan-skill",
+                    "source": "github",
+                    "identifier": "owner/repo/orphan",
+                    "trust_level": "community",
+                    "content_hash": "sha256:old",
+                    "install_path": "orphan-skill",
+                    "scan_verdict": "clean",
+                    "files": ["SKILL.md"],
+                    "metadata": {},
+                }
+            }
+        }
+        hub.LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        hub.LOCK_FILE.write_text(json.dumps(lock_data))
+
+        # Mock HubLockFile to use the monkeypatched LOCK_FILE path
+        original_init = HubLockFile.__init__
+        def patched_init(self, path=None):
+            original_init(self, path=hub.LOCK_FILE)
+        monkeypatch.setattr(HubLockFile, "__init__", patched_init)
+
+        # Return entry without bundle key
+        def mock_check(*, name=None, lock=None, sources=None, auth=None):
+            return [{
+                "name": "orphan-skill",
+                "identifier": "owner/repo/orphan",
+                "source": "github",
+                "status": "update_available",
+                "current_hash": "sha256:old",
+                "latest_hash": "sha256:new",
+            }]
+
+        def mock_do_install(identifier, *, category="", force=False, console=None):
+            pass
+
+        monkeypatch.setattr(hub, "check_for_skill_updates", mock_check)
+        monkeypatch.setattr("hermes_cli.skills_hub.do_install", mock_do_install)
+
+        sink = StringIO()
+        console = Console(file=sink, force_terminal=False, color_system=None, width=80)
+
+        # Should not crash
+        do_update("orphan-skill", console=console)
+
+        # Lock should be unchanged (no bundle to compute hash from)
+        updated_lock = json.loads(hub.LOCK_FILE.read_text())
+        assert updated_lock["installed"]["orphan-skill"]["content_hash"] == "sha256:old"
 
