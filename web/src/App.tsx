@@ -23,6 +23,7 @@ import {
   Cpu,
   Database,
   Download,
+  GitCompareArrows,
   Eye,
   FileText,
   Globe,
@@ -67,6 +68,7 @@ import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import ChatPage from "@/pages/ChatPage";
+import ContextControlPage from "@/pages/ContextControlPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -108,6 +110,7 @@ const CHAT_NAV_ITEM: NavItem = {
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
+  "/context-control": ContextControlPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
@@ -129,6 +132,11 @@ function ChatRouteSink() {
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
+  {
+    path: "/context-control",
+    label: "CONTEXT CONTROL",
+    icon: GitCompareArrows,
+  },
   {
     path: "/sessions",
     labelKey: "sessions",
