@@ -1168,6 +1168,64 @@ class TestParseContextLimitFromError:
         assert parse_context_limit_from_error(msg) is None
 
 
+class TestParseAvailableOutputTokensFromError:
+    """Tests for parse_available_output_tokens_from_error() — detects "output cap
+    too large" errors and returns how many output tokens would fit."""
+
+    # ── Anthropic format ──────────────────────────────────────────────
+
+    def test_anthropic_available_tokens(self):
+        msg = (
+            "max_tokens: 32768 > context_window: 200000 - input_tokens: 190000"
+            " = available_tokens: 10000"
+        )
+        assert parse_available_output_tokens_from_error(msg) == 10000
+
+    def test_anthropic_available_tokens_with_space(self):
+        msg = "max_tokens: 50000 exceeds available tokens: 30000"
+        assert parse_available_output_tokens_from_error(msg) == 30000
+
+    # ── OpenRouter / Nous Research format ─────────────────────────────
+
+    def test_openrouter_format_returns_calculated_available(self):
+        """Real Nous Research error — compute available = context - text - tool."""
+        msg = (
+            "This endpoint's maximum context length is 256000 tokens."
+            " However, you requested about 281093 tokens"
+            " (5683 of text input, 13410 of tool input, 262000 in the output)."
+            " Please reduce the length of either one, or use the"
+            " context-compression plugin to compress your prompt automatically."
+        )
+        # available = 256000 - 5683 - 13410 = 236907
+        assert parse_available_output_tokens_from_error(msg) == 236907
+
+    def test_openrouter_large_tool_input(self):
+        """Scenario with 50K tool schemas."""
+        msg = (
+            "maximum context length is 131072 tokens."
+            " However, you requested about 200000 tokens"
+            " (10000 of text input, 50000 of tool input, 140000 in the output)."
+        )
+        # available = 131072 - 10000 - 50000 = 71072
+        assert parse_available_output_tokens_from_error(msg) == 71072
+
+    # ── Negative cases ────────────────────────────────────────────────
+
+    def test_plain_context_overflow_not_output_cap(self):
+        """A prompt-too-long error without max_tokens mention."""
+        msg = (
+            "This model's maximum context length is 32768 tokens."
+            " However, your messages resulted in 45000 tokens."
+        )
+        assert parse_available_output_tokens_from_error(msg) is None
+
+    def test_completely_unrelated_error(self):
+        assert parse_available_output_tokens_from_error("Invalid API key") is None
+
+    def test_empty_string(self):
+        assert parse_available_output_tokens_from_error("") is None
+
+
 # =========================================================================
 # Persistent context length cache
 # =========================================================================
