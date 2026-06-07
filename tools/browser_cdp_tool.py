@@ -17,7 +17,6 @@ Method reference: https://chromedevtools.github.io/devtools-protocol/
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from typing import Any, Dict, Optional
@@ -27,6 +26,12 @@ from tools.registry import registry, tool_error
 logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
+
+
+def _load_asyncio():
+    import asyncio
+
+    return asyncio
 
 
 def _load_websockets():
@@ -46,6 +51,7 @@ def _load_websockets():
 
 def _run_async(coro):
     """Run an async coroutine from a sync handler, safe inside or outside a loop."""
+    asyncio = _load_asyncio()
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -104,6 +110,7 @@ async def _cdp_call(
     works for ``Target.*``, ``Browser.*``, ``Storage.*`` and a few other
     globally-scoped domains.
     """
+    asyncio = _load_asyncio()
     websockets, _, _ = _load_websockets()
     assert websockets is not None
 
@@ -199,6 +206,7 @@ def _browser_cdp_via_supervisor(
     the supervisor's already-connected WebSocket (using
     ``asyncio.run_coroutine_threadsafe`` onto the supervisor loop).
     """
+    asyncio = _load_asyncio()
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
     except Exception as exc:  # pragma: no cover — defensive
@@ -382,6 +390,7 @@ def browser_cdp(
         safe_timeout = 30.0
     safe_timeout = max(1.0, min(safe_timeout, 300.0))
 
+    asyncio = _load_asyncio()
     try:
         result = _run_async(
             _cdp_call(endpoint, method, call_params, target_id, safe_timeout)

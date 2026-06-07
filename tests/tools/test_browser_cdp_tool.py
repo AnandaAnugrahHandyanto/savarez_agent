@@ -413,3 +413,26 @@ def test_check_fn_false_when_browser_requirements_fail(monkeypatch):
         bt, "_get_cdp_override", lambda: "ws://localhost:9222/devtools/browser/x"
     )
     assert browser_cdp_tool._browser_cdp_check() is False
+
+
+def test_browser_cdp_import_does_not_load_websockets_module():
+    """Importing browser_cdp_tool should not eagerly import websockets."""
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "import tools.browser_cdp_tool; "
+                "print(any(m == 'websockets' or m.startswith('websockets.') for m in sys.modules))"
+            ),
+        ],
+        cwd="/usr/local/lib/hermes-agent",
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert proc.stdout.strip() == "False"
