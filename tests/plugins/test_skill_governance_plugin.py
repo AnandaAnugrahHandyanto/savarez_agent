@@ -1,6 +1,6 @@
 """Tests for the skill-governance plugin.
 
-Covers the bundled plugin at ``plugins/skill-governance/``:
+Covers the bundled plugin at ``plugins/skill_governance/``:
 
 * candidate catalog integrity for Vladimir-approved skill-to-plugin roadmap;
 * tool handlers returning JSON-only results with filters and detailed plans;
@@ -31,7 +31,7 @@ def _repo_root() -> Path:
 
 
 def _load_plugin_module(module_file: str):
-    plugin_dir = _repo_root() / "plugins" / "skill-governance"
+    plugin_dir = _repo_root() / "plugins" / "skill_governance"
     module_name = "hermes_plugins.skill_governance_under_test"
     if "hermes_plugins" not in sys.modules:
         ns = types.ModuleType("hermes_plugins")
@@ -57,7 +57,7 @@ def _load_catalog():
 
 
 def _load_tools():
-    plugin_dir = _repo_root() / "plugins" / "skill-governance"
+    plugin_dir = _repo_root() / "plugins" / "skill_governance"
     module_name = "hermes_plugins.skill_governance_under_test"
     if "hermes_plugins" not in sys.modules:
         ns = types.ModuleType("hermes_plugins")
