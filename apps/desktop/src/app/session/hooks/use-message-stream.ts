@@ -35,6 +35,7 @@ import {
 } from '@/store/session'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { recordToolDiff } from '@/store/tool-diffs'
+import { addSessionChange, parseDiffStats, extractFilePath } from '@/store/session-changes'
 import type { RpcEvent } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../types'
@@ -792,8 +793,32 @@ export function useMessageStream({
           updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
         }
 
-        if (typeof payload?.inline_diff === 'string' && payload.inline_diff.trim()) {
-          recordToolDiff(payload.tool_id || payload.name || '', payload.inline_diff)
+        // Track ALL tool calls in session-changes store for Overview panel
+        if (payload?.name) {
+          const inlineDiff = typeof payload?.inline_diff === 'string' ? payload.inline_diff : ''
+          if (inlineDiff.trim()) {
+            recordToolDiff(payload.tool_id || payload.name || '', inlineDiff)
+            const { additions } = parseDiffStats(inlineDiff)
+            addSessionChange({
+              additions,
+              diff: inlineDiff,
+              path: extractFilePath(inlineDiff),
+              timestamp: Date.now(),
+              toolCallId: payload.tool_id || payload.name || '',
+              toolName: payload.name || 'unknown'
+            })
+          } else {
+            // Non-diff tool calls (terminal, read_file, etc.) — track for tool activity
+            const args = (payload.args ?? {}) as Record<string, unknown>
+            addSessionChange({
+              additions: 0,
+              diff: '',
+              path: String(args.path ?? args.command ?? payload.name),
+              timestamp: Date.now(),
+              toolCallId: payload.tool_id || payload.name || '',
+              toolName: payload.name
+            })
+          }
         }
       } else if (SUBAGENT_EVENT_TYPES.has(event.type)) {
         if (sessionId && payload) {

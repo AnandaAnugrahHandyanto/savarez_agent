@@ -24,15 +24,20 @@ export function SessionOverview() {
   const summary = useStore($sessionChangeSummary)
   const toolSummary = useStore($toolCallSummary)
 
+  // Only show files with actual diffs in "Files Changed"
+  const fileChanges = changes.filter(c => c.diff.trim().length > 0)
+  // All entries for tool activity
+  const allTools = changes
+
   return (
     <div className="flex flex-col gap-4 p-3 text-xs">
       {/* Files Changed */}
-      <Section title={`Files Changed (${summary.files})`} icon={FileText}>
-        {changes.length === 0 ? (
+      <Section title={`Files Changed (${fileChanges.length})`} icon={FileText}>
+        {fileChanges.length === 0 ? (
           <EmptyState message="No files changed yet" />
         ) : (
           <div className="flex flex-col gap-1">
-            {changes.map((c, i) => (
+            {fileChanges.map((c, i) => (
               <div key={i} className="flex items-center gap-2 truncate py-0.5">
                 <FileText size={12} className="shrink-0 text-muted-foreground" />
                 <span className="truncate text-foreground">{shortPath(c.path)}</span>

@@ -1229,8 +1229,8 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   // messages (npm progress, git hints), so we deliberately don't paint
   // stderr destructively even though it's tagged.
   const rendersAnsi = part.toolName === 'terminal' || part.toolName === 'execute_code'
-  const stdout = rendersAnsi ? firstStringField(resultRecord, ['stdout']) : ''
-  const stderrRaw = rendersAnsi ? firstStringField(resultRecord, ['stderr']) : ''
+  const stdout = rendersAnsi ? firstStringField(resultRecord, ['output', 'stdout']) : ''
+  const stderrRaw = rendersAnsi ? firstStringField(resultRecord, ['stderr', 'stderr_output']) : ''
   // Only attach stderr when the backend actually returned it as its own
   // field — otherwise the merged `detail` already covers it and double-
   // rendering would duplicate output.

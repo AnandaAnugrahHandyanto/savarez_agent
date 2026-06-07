@@ -10,6 +10,9 @@ export function SessionReview() {
   const changes = useStore($sessionChanges)
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
 
+  // Only show entries with actual diffs
+  const diffChanges = changes.filter(c => c.diff.trim().length > 0)
+
   const toggle = (index: number) => {
     setExpanded(prev => {
       const next = new Set(prev)
@@ -19,7 +22,7 @@ export function SessionReview() {
     })
   }
 
-  if (changes.length === 0) {
+  if (diffChanges.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-8 text-center text-xs text-muted-foreground">
         <Codicon name="diff" size={24} className="mb-2 opacity-40" />
@@ -34,11 +37,11 @@ export function SessionReview() {
       <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border bg-background px-3 py-2">
         <Codicon name="diff" size={14} className="text-muted-foreground" />
         <span className="font-medium text-foreground">Review Changes</span>
-        <span className="ml-auto text-muted-foreground">{changes.length} files</span>
+        <span className="ml-auto text-muted-foreground">{diffChanges.length} files</span>
       </div>
 
       {/* File list */}
-      {changes.map((change, index) => {
+      {diffChanges.map((change, index) => {
         const isExpanded = expanded.has(index)
         const deletions = countDeletions(change.diff)
 
