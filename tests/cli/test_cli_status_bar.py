@@ -104,6 +104,65 @@ class TestCLIStatusBar:
         assert "-1" not in text
         assert "0/200K" in text
 
+    def test_account_usage_statusbar_label_maps_provider_windows(self):
+        snapshot = SimpleNamespace(
+            unavailable_reason=None,
+            windows=(
+                SimpleNamespace(label="Session", used_percent=7),
+                SimpleNamespace(label="Weekly", used_percent=13),
+                SimpleNamespace(label="Opus week", used_percent=25),
+                SimpleNamespace(label="Sonnet week", used_percent=40),
+                SimpleNamespace(label="API key quota", used_percent=58),
+            ),
+        )
+
+        label = HermesCLI._format_account_usage_statusbar_label(snapshot)
+
+        # The badge is intentionally compact; /usage keeps full reset details.
+        assert label == "5h 93% · Week 87% · Opus 75%"
+
+    def test_account_usage_statusbar_label_supports_openrouter_quota(self):
+        snapshot = SimpleNamespace(
+            unavailable_reason=None,
+            windows=(SimpleNamespace(label="API key quota", used_percent=58),),
+        )
+
+        assert HermesCLI._format_account_usage_statusbar_label(snapshot) == "API quota 42%"
+
+    def test_account_usage_statusbar_appends_to_existing_wide_text(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        with patch.object(cli_obj, "_get_account_usage_statusbar_label", return_value="5h 93% · Week 87%"):
+            text = cli_obj._build_status_bar_text(width=120)
+
+        assert "claude-sonnet-4-20250514" in text
+        assert "12.4K/200K" in text
+        assert "5h 93% · Week 87%" in text
+
+    def test_account_usage_statusbar_appends_to_fragments(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj._status_bar_visible = True
+
+        with patch.object(cli_obj, "_get_account_usage_statusbar_label", return_value="API quota 42%"):
+            frags = cli_obj._get_status_bar_fragments()
+
+        assert "API quota 42%" in "".join(text for _, text in frags)
+
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()
 
