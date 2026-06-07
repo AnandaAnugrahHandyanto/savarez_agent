@@ -2938,11 +2938,20 @@ class TelegramAdapter(BasePlatformAdapter):
 
         by_slug = {p.get("slug"): p for p in providers}
 
+        # Hardcoded provider auth badges — verified against hermes auth list.
+        # Default is 🔑API for anything not listed.
+        _AUTH_BADGE = {
+            "google-gemini-cli": "🔐OAuth",
+            "minimax-oauth": "🔐OAuth",
+            "openai-codex": "🔐OAuth",
+            "opencode-go": "🔐Sub",
+            "opencode-zen": "🔐Sub",
+        }
+
         def _provider_button(p):
             count = p.get("total_models", len(p.get("models", [])))
-            badge = p.get("auth_badge")
-            label = f"{badge} " if badge else ""
-            label += f"{p['name']} ({count})"
+            badge = _AUTH_BADGE.get(p["slug"], "🔑API")
+            label = f"{badge} {p['name']} ({count})"
             if p.get("is_current"):
                 label = f"✓ {label}"
             return InlineKeyboardButton(label, callback_data=f"mp:{p['slug']}")
@@ -3166,12 +3175,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 await query.answer(text="Group not found.")
                 return
 
+            _AUTH_BADGE = {
+                "google-gemini-cli": "🔐OAuth",
+                "minimax-oauth": "🔐OAuth",
+                "openai-codex": "🔐OAuth",
+                "opencode-go": "🔐Sub",
+                "opencode-zen": "🔐Sub",
+            }
             buttons = []
             for p in members:
                 count = p.get("total_models", len(p.get("models", [])))
-                badge = p.get("auth_badge")
-                label = f"{badge} " if badge else ""
-                label += f"{p['name']} ({count})"
+                badge = _AUTH_BADGE.get(p["slug"], "🔑API")
+                label = f"{badge} {p['name']} ({count})"
                 if p.get("is_current"):
                     label = f"✓ {label}"
                 buttons.append(
