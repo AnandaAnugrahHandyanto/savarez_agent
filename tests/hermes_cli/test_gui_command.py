@@ -109,6 +109,70 @@ def test_gui_forwards_desktop_environment_overrides(tmp_path, monkeypatch):
     assert launch_env["HERMES_DESKTOP_CWD"] == str(cwd)
 
 
+def test_gui_packaged_build_disables_macos_signing_auto_discovery_by_default(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="darwin")
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("CSC_NAME", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    monkeypatch.delenv("CSC_IDENTITY_AUTO_DISCOVERY", raising=False)
+
+    ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns())
+
+    build_env = mock_run.call_args_list[0].kwargs["env"]
+    launch_env = mock_run.call_args_list[1].kwargs["env"]
+    assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
+    assert mock_run.call_args_list[0].kwargs["cwd"] == desktop_dir
+    assert build_env["CSC_IDENTITY_AUTO_DISCOVERY"] == "false"
+    assert "CSC_IDENTITY_AUTO_DISCOVERY" not in launch_env
+
+
+def test_gui_packaged_build_preserves_explicit_macos_signing(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="darwin")
+    monkeypatch.setenv("CSC_NAME", "Developer ID Application: Example")
+    monkeypatch.delenv("CSC_IDENTITY_AUTO_DISCOVERY", raising=False)
+
+    ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns())
+
+    build_env = mock_run.call_args_list[0].kwargs["env"]
+    assert build_env["CSC_NAME"] == "Developer ID Application: Example"
+    assert "CSC_IDENTITY_AUTO_DISCOVERY" not in build_env
+
+
+def test_macos_relaunch_fixup_skips_explicit_csc_name(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    _make_packaged_executable(root, monkeypatch, platform="darwin")
+    monkeypatch.setenv("CSC_NAME", "Developer ID Application: Example")
+
+    with patch("hermes_cli.main.subprocess.run") as mock_run:
+        cli_main._desktop_macos_relaunchable_fixup(desktop_dir)
+
+    mock_run.assert_not_called()
+
+
 def test_gui_exits_when_npm_missing(tmp_path, monkeypatch, capsys):
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
