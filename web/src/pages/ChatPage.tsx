@@ -26,7 +26,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, X } from "lucide-react";
+import { Copy, PanelRight, PanelRightClose, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
@@ -158,6 +158,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ? window.matchMedia("(max-width: 1023px)").matches
       : false,
   );
+  const [sidebarVisible, setSidebarVisible] = useState(true);
 
   const { theme } = useTheme();
   const terminalBg = theme.terminalBackground ?? "#000000";
@@ -238,30 +239,49 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setEnd(null);
       return;
     }
-    if (!narrow) {
-      setEnd(null);
-      return;
-    }
     setEnd(
-      <Button
-        ghost
-        onClick={() => setMobilePanelOpenRaw(true)}
-        aria-expanded={mobilePanelOpen}
-        aria-controls="chat-side-panel"
-        className={cn(
-          "shrink-0 rounded border border-current/20",
-          "px-2 py-1 text-xs font-medium tracking-wide",
-          "text-text-secondary hover:text-midground hover:bg-midground/5",
-        )}
-      >
-        <span className="inline-flex items-center gap-1.5">
-          <PanelRight className="h-3 w-3 shrink-0" />
-          {modelToolsLabel}
-        </span>
-      </Button>,
+      !narrow ? (
+        <Button
+          ghost
+          onClick={() => setSidebarVisible((v) => !v)}
+          aria-label={sidebarVisible ? t.app.hideSidebar : t.app.showSidebar}
+          title={sidebarVisible ? t.app.hideSidebar : t.app.showSidebar}
+          className={cn(
+            "shrink-0 rounded border border-current/20",
+            "px-2 py-1 text-xs font-medium tracking-wide",
+            "text-text-secondary hover:text-midground hover:bg-midground/5",
+          )}
+        >
+          <span className="inline-flex items-center gap-1.5">
+            {sidebarVisible ? (
+              <PanelRightClose className="h-3 w-3 shrink-0" />
+            ) : (
+              <PanelRight className="h-3 w-3 shrink-0" />
+            )}
+            {sidebarVisible ? t.app.hideSidebar : t.app.showSidebar}
+          </span>
+        </Button>
+      ) : (
+        <Button
+          ghost
+          onClick={() => setMobilePanelOpenRaw(true)}
+          aria-expanded={mobilePanelOpen}
+          aria-controls="chat-side-panel"
+          className={cn(
+            "shrink-0 rounded border border-current/20",
+            "px-2 py-1 text-xs font-medium tracking-wide",
+            "text-text-secondary hover:text-midground hover:bg-midground/5",
+          )}
+        >
+          <span className="inline-flex items-center gap-1.5">
+            <PanelRight className="h-3 w-3 shrink-0" />
+            {modelToolsLabel}
+          </span>
+        </Button>
+      ),
     );
     return () => setEnd(null);
-  }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
+  }, [isActive, narrow, mobilePanelOpen, modelToolsLabel, setEnd, sidebarVisible]);
 
   const handleCopyLast = () => {
     const ws = wsRef.current;
@@ -911,7 +931,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           </Button>
         </div>
 
-        {!narrow && (
+        {!narrow && sidebarVisible && (
           <div
             id="chat-side-panel"
             role="complementary"
