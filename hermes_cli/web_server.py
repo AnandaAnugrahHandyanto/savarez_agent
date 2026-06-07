@@ -714,6 +714,16 @@ def _apply_main_model_assignment(
     return model_cfg
 
 
+def _clear_stale_auxiliary_endpoint_overrides(slot_cfg: Dict[str, Any], provider: str) -> None:
+    """Clear direct-endpoint fields when a task switches to a built-in provider."""
+    normalized = provider.strip().lower()
+    if normalized in {"", "auto", "custom"}:
+        return
+    for key in ("base_url", "api_key", "api_mode"):
+        if slot_cfg.get(key):
+            slot_cfg[key] = ""
+
+
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
 try:
     _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
@@ -2397,6 +2407,7 @@ async def set_model_assignment(body: ModelAssignment):
             slot_cfg = aux.get(slot)
             if not isinstance(slot_cfg, dict):
                 slot_cfg = {}
+            _clear_stale_auxiliary_endpoint_overrides(slot_cfg, provider)
             slot_cfg["provider"] = provider
             slot_cfg["model"] = model
             aux[slot] = slot_cfg
