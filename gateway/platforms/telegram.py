@@ -6036,7 +6036,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _reaction_event_ids(self, event: MessageEvent):
         """Extract chat_id and message_id from a reaction event."""
         chat_id = getattr(event.source, "chat_id", None)
-        message_id = getattr(event, "message_id", None)
+        message_id = getattr(event.source, "message_id", None)
         return chat_id, message_id
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
@@ -6045,10 +6045,15 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         try:
             from telegram._reaction import ReactionTypeEmoji
+            reaction = ReactionTypeEmoji(emoji=emoji)
+        except (ImportError, ModuleNotFoundError):
+            # Fallback: pass plain string (works with real PTB, not with mocks)
+            reaction = emoji
+        try:
             await self._bot.set_message_reaction(
                 chat_id=int(chat_id),
                 message_id=int(message_id),
-                reaction=ReactionTypeEmoji(emoji=emoji),
+                reaction=reaction,
             )
             return True
         except Exception as e:
@@ -6085,12 +6090,12 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._set_reaction(chat_id, message_id, "\U0001f440")  # 👀
 
     async def on_response_ready(self, event: MessageEvent) -> None:
-        """Swap to writing reaction after the agent finishes thinking."""
+        """Swap to brain reaction after the agent finishes thinking."""
         if not self._reactions_enabled():
             return
         chat_id, message_id = self._reaction_event_ids(event)
         if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\u270d")  # ✍
+            await self._set_reaction(chat_id, message_id, "\U0001f9e0")  # 🧠
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Set final success/failure reaction."""

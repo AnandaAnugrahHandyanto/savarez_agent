@@ -31,9 +31,24 @@ def _make_event(chat_id: str = "123", message_id: str = "456") -> MessageEvent:
             chat_type="private",
             user_id="42",
             user_name="TestUser",
+            message_id=message_id,
         ),
         message_id=message_id,
     )
+
+
+def _assert_reaction_called(mock, expected_emoji):
+    """Helper: assert set_message_reaction was called with expected_emoji."""
+    mock.assert_awaited_once()
+    call_kwargs = mock.await_args.kwargs
+    assert call_kwargs["chat_id"] == 123
+    assert call_kwargs["message_id"] == 456
+    reaction = call_kwargs["reaction"]
+    # Reaction may be a ReactionTypeEmoji wrapper or a plain string
+    if hasattr(reaction, "emoji"):
+        assert reaction.emoji == expected_emoji
+    else:
+        assert reaction == expected_emoji
 
 
 # ── _reactions_enabled ───────────────────────────────────────────────
@@ -94,11 +109,7 @@ async def test_set_reaction_calls_bot_api(monkeypatch):
     result = await adapter._set_reaction("123", "456", "\U0001f440")
 
     assert result is True
-    adapter._bot.set_message_reaction.assert_awaited_once_with(
-        chat_id=123,
-        message_id=456,
-        reaction="\U0001f440",
-    )
+    _assert_reaction_called(adapter._bot.set_message_reaction, "\U0001f440")
 
 
 @pytest.mark.asyncio
@@ -135,11 +146,7 @@ async def test_on_processing_start_adds_eyes_reaction(monkeypatch):
 
     await adapter.on_processing_start(event)
 
-    adapter._bot.set_message_reaction.assert_awaited_once_with(
-        chat_id=123,
-        message_id=456,
-        reaction="\U0001f440",
-    )
+    _assert_reaction_called(adapter._bot.set_message_reaction, "\U0001f440")
 
 
 @pytest.mark.asyncio
@@ -176,19 +183,24 @@ async def test_on_processing_start_handles_missing_ids(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_on_response_ready_sets_writing_reaction(monkeypatch):
-    """Response ready should set writing reaction when enabled."""
+async def test_on_response_ready_sets_brain_reaction(monkeypatch):
+    """Response ready should set brain reaction when enabled."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     adapter = _make_adapter()
     event = _make_event()
 
     await adapter.on_response_ready(event)
 
-    adapter._bot.set_message_reaction.assert_awaited_once_with(
-        chat_id=123,
-        message_id=456,
-        reaction="\u270d\ufe0f",
-    )
+    adapter._bot.set_message_reaction.assert_awaited_once()
+    call_kwargs = adapter._bot.set_message_reaction.await_args.kwargs
+    assert call_kwargs["chat_id"] == 123
+    assert call_kwargs["message_id"] == 456
+    # Reaction should wrap 🧠 (may be ReactionTypeEmoji or plain string in mock env)
+    reaction = call_kwargs["reaction"]
+    if hasattr(reaction, "emoji"):
+        assert reaction.emoji == "\U0001f9e0"
+    else:
+        assert reaction == "\U0001f9e0"
 
 
 @pytest.mark.asyncio
@@ -216,11 +228,7 @@ async def test_on_processing_complete_success(monkeypatch):
 
     await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
 
-    adapter._bot.set_message_reaction.assert_awaited_once_with(
-        chat_id=123,
-        message_id=456,
-        reaction="\u2705",
-    )
+    _assert_reaction_called(adapter._bot.set_message_reaction, "\u2705")
 
 
 @pytest.mark.asyncio
@@ -232,11 +240,7 @@ async def test_on_processing_complete_failure(monkeypatch):
 
     await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
 
-    adapter._bot.set_message_reaction.assert_awaited_once_with(
-        chat_id=123,
-        message_id=456,
-        reaction="\u274c",
-    )
+    _assert_reaction_called(adapter._bot.set_message_reaction, "\u274c")
 
 
 @pytest.mark.asyncio
