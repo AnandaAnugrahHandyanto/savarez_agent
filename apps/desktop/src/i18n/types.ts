@@ -219,6 +219,8 @@ export interface Translations {
       technicalDesc: string
       themeTitle: string
       themeDesc: string
+      fontScaleTitle: string
+      fontScaleDesc: string
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>

@@ -6,6 +6,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Palette } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $fontScale, setFontScale } from '@/store/font-scale'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { useTheme } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
@@ -57,6 +58,7 @@ export function AppearanceSettings() {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
+  const fontScale = useStore($fontScale)
   const a = t.settings.appearance
 
   const modeOptions = MODE_OPTIONS.map(({ id, icon }) => ({ icon, id, label: t.settings.modeOptions[id].label }))
@@ -139,6 +141,30 @@ export function AppearanceSettings() {
             description={a.themeDesc}
             title={a.themeTitle}
             wide
+          />
+
+          <ListRow
+            action={
+              <div className="flex items-center gap-3">
+                <span className="w-12 text-right text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                  {Math.round(fontScale * 100)}%
+                </span>
+                <input
+                  className="h-1.5 w-32 cursor-pointer appearance-none rounded-full bg-(--ui-stroke-tertiary) accent-primary"
+                  max={200}
+                  min={80}
+                  onChange={e => {
+                    triggerHaptic('selection')
+                    setFontScale(Number(e.target.value) / 100)
+                  }}
+                  step={5}
+                  type="range"
+                  value={Math.round(fontScale * 100)}
+                />
+              </div>
+            }
+            description={a.fontScaleDesc}
+            title={a.fontScaleTitle}
           />
 
           <ListRow

@@ -52,6 +52,12 @@ export interface DesktopThemeTypography {
   fontMono: string
   /** Google/Bunny/self-hosted font stylesheet URL. */
   fontUrl?: string
+  /**
+   * Global font-size multiplier (1.0 = default, 1.25 = 125%, etc.).
+   * Applied via `--dt-font-scale` CSS variable so all conversation text,
+   * tool output, and caption text scale proportionally.
+   */
+  fontScale?: number
 }
 
 export interface DesktopTheme {

@@ -287,7 +287,9 @@ export const zh: Translations = {
       technical: '技术',
       technicalDesc: '包含原始工具参数/结果及底层细节。',
       themeTitle: '主题',
-      themeDesc: '仅桌面端调色板。所选模式叠加其上。'
+      themeDesc: '仅桌面端调色板。所选模式叠加其上。',
+      fontScaleTitle: '字体大小',
+      fontScaleDesc: '按比例缩放所有对话文字。默认 100%。'
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',

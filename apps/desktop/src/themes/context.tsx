@@ -209,6 +209,7 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     '--dt-user-bubble-border': c.userBubbleBorder ?? c.border,
     '--dt-font-sans': typo.fontSans,
     '--dt-font-mono': typo.fontMono,
+    ...(typo.fontScale && typo.fontScale !== 1 ? { '--dt-font-scale': String(typo.fontScale) } : {}),
     '--noise-opacity-mul': isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)'
   }
 
@@ -237,6 +238,9 @@ if (typeof window !== 'undefined') {
   const mode = (window.localStorage.getItem(MODE_KEY) as ThemeMode) ?? 'light'
   const resolved = resolveMode(mode)
   applyTheme(deriveTheme(skin, resolved), resolved)
+
+  // Apply persisted font-scale preference (overrides theme-level fontScale).
+  void import('@/store/font-scale').then(m => m.applyFontScaleBoot())
 }
 
 // ─── Context ────────────────────────────────────────────────────────────────
