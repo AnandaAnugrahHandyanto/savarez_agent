@@ -12,7 +12,10 @@ _project_root = str(Path(__file__).resolve().parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+from config.default_thresholds import DEFAULT_THRESHOLDS
 from scripts.base_checker import BaseChecker, CheckResult, ExitCode, InspectionReport
+
+_ELK_DEFAULTS = DEFAULT_THRESHOLDS.get("elk", {})
 
 
 class ELKChecker(BaseChecker):
@@ -23,7 +26,7 @@ class ELKChecker(BaseChecker):
 
     def _es_request(self, path: str) -> dict:
         """发送 Elasticsearch API 请求。"""
-        base_url = self.config.get("elasticsearch_url", "http://localhost:9200")
+        base_url = self.config.get("elasticsearch_url") or _ELK_DEFAULTS.get("elasticsearch_url", "")
         url = f"{base_url}{path}"
         req = urllib.request.Request(url, headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as resp:

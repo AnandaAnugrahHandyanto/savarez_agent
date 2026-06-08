@@ -10,8 +10,11 @@ _project_root = str(Path(__file__).resolve().parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+from config.default_thresholds import DEFAULT_THRESHOLDS
 from scripts.base_checker import BaseChecker, CheckResult, ExitCode, InspectionReport
 from scripts.ssh_executor import create_executor, SSHExecutor, LocalExecutor
+
+_NGINX_DEFAULTS = DEFAULT_THRESHOLDS.get("nginx", {})
 
 
 class NginxChecker(BaseChecker):
@@ -118,9 +121,7 @@ class NginxChecker(BaseChecker):
     def _check_active_connections(self, target: Dict[str, Any], executor) -> CheckResult:
         """从 stub_status 页面解析活跃连接数。"""
         warn = self.config.get("active_connections_warn", 10000)
-        status_url = target.get("status_url") or self.config.get(
-            "status_url", "http://localhost/nginx_status"
-        )
+        status_url = target.get("status_url") or self.config.get("status_url") or _NGINX_DEFAULTS.get("status_url", "")
         try:
             result = executor.run(f"curl -s {status_url}", timeout=10)
             match = re.search(r"Active connections:\s*(\d+)", result.stdout)
@@ -148,9 +149,7 @@ class NginxChecker(BaseChecker):
 
     def _check_upstream(self, target: Dict[str, Any], executor) -> CheckResult:
         """检查上游服务可达性。"""
-        health_url = target.get("health_check_url") or self.config.get(
-            "health_check_url", "http://localhost:8080/health"
-        )
+        health_url = target.get("health_check_url") or self.config.get("health_check_url") or _NGINX_DEFAULTS.get("health_check_url", "")
         try:
             cmd = f'curl -s -o /dev/null -w "%{{http_code}}" {health_url}'
             result = executor.run(cmd, timeout=10)
@@ -183,9 +182,7 @@ class NginxChecker(BaseChecker):
         """测量上游平均响应时间。"""
         warn = self.config.get("response_time_warn", 2.0)
         crit = self.config.get("response_time_critical", 5.0)
-        health_url = target.get("health_check_url") or self.config.get(
-            "health_check_url", "http://localhost:8080/health"
-        )
+        health_url = target.get("health_check_url") or self.config.get("health_check_url") or _NGINX_DEFAULTS.get("health_check_url", "")
         try:
             cmd = f'curl -s -o /dev/null -w "%{{time_total}}" {health_url}'
             result = executor.run(cmd, timeout=30)

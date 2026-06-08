@@ -11,8 +11,11 @@ _project_root = str(Path(__file__).resolve().parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+from config.default_thresholds import DEFAULT_THRESHOLDS
 from scripts.base_checker import BaseChecker, CheckResult, ExitCode, InspectionReport
 from scripts.ssh_executor import create_executor
+
+_SKYWALKING_DEFAULTS = DEFAULT_THRESHOLDS.get("skywalking", {})
 
 RESP_TIME_QUERY = '''
 query {{
@@ -71,7 +74,7 @@ class SkyWalkingChecker(BaseChecker):
     def _sw_graphql(self, query: str, target: Dict[str, Any] = None) -> dict:
         """发送 SkyWalking GraphQL 请求。"""
         target = target or {}
-        base_url = target.get("oap_url", self.config.get("oap_url", "http://localhost:12800"))
+        base_url = target.get("oap_url") or self.config.get("oap_url") or _SKYWALKING_DEFAULTS.get("oap_url", "")
         url = f"{base_url}/graphql"
         payload = json.dumps({"query": query}).encode("utf-8")
         req = urllib.request.Request(
@@ -83,7 +86,7 @@ class SkyWalkingChecker(BaseChecker):
     def _check_oap_health(self, target: Dict[str, Any] = None) -> CheckResult:
         """检查 OAP 服务存活。"""
         target = target or {}
-        base_url = target.get("oap_url", self.config.get("oap_url", "http://localhost:12800"))
+        base_url = target.get("oap_url") or self.config.get("oap_url") or _SKYWALKING_DEFAULTS.get("oap_url", "")
         url = f"{base_url}/healthcheck"
         try:
             req = urllib.request.Request(url)

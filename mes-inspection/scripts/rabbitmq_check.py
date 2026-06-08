@@ -6,9 +6,12 @@ import re
 import sys
 from typing import Any, Dict, List, Tuple
 
+from config.default_thresholds import DEFAULT_THRESHOLDS
 from scripts.base_checker import BaseChecker, CheckResult, ExitCode, InspectionReport
 from scripts.ssh_executor import create_executor, SSHExecutor, LocalExecutor
 from datetime import datetime, timezone
+
+_RABBITMQ_DEFAULTS = DEFAULT_THRESHOLDS.get("rabbitmq", {})
 
 
 class RabbitMQChecker(BaseChecker):
@@ -74,13 +77,13 @@ class RabbitMQChecker(BaseChecker):
 
     def _api_available(self, target: Dict[str, Any]) -> bool:
         """检查 Management API 是否可用。"""
-        url = target.get("management_url") or self.config.get("management_url", "http://localhost:15672")
+        url = target.get("management_url") or self.config.get("management_url") or _RABBITMQ_DEFAULTS.get("management_url", "")
         r = self.run_command(f"curl -s -o /dev/null -w '%{{http_code}}' {url}/api/overview", timeout=5)
         return r.returncode == 0 and "200" in r.stdout
 
     def _api_overview(self, target: Dict[str, Any]) -> dict:
         """获取 Management API overview 数据。"""
-        url = target.get("management_url") or self.config.get("management_url", "http://localhost:15672")
+        url = target.get("management_url") or self.config.get("management_url") or _RABBITMQ_DEFAULTS.get("management_url", "")
         user = target.get("management_user") or self.config.get("management_user", "guest")
         pw = target.get("management_password") or self.config.get("management_password", "guest")
         r = self.run_command(f'curl -s -u {user}:{pw} {url}/api/overview', timeout=10)
@@ -93,7 +96,7 @@ class RabbitMQChecker(BaseChecker):
 
     def _api_queue_list(self, target: Dict[str, Any]) -> list:
         """获取队列列表。"""
-        url = target.get("management_url") or self.config.get("management_url", "http://localhost:15672")
+        url = target.get("management_url") or self.config.get("management_url") or _RABBITMQ_DEFAULTS.get("management_url", "")
         user = target.get("management_user") or self.config.get("management_user", "guest")
         pw = target.get("management_password") or self.config.get("management_password", "guest")
         r = self.run_command(f'curl -s -u {user}:{pw} {url}/api/queues', timeout=15)
@@ -145,7 +148,7 @@ class RabbitMQChecker(BaseChecker):
     def _check_memory_api(self, target: Dict[str, Any], overview: dict) -> CheckResult:
         """通过 API 检查内存使用。"""
         mem_used = overview.get("object_totals", {}).get("channels", 0)
-        url = target.get("management_url") or self.config.get("management_url", "http://localhost:15672")
+        url = target.get("management_url") or self.config.get("management_url") or _RABBITMQ_DEFAULTS.get("management_url", "")
         user = target.get("management_user") or self.config.get("management_user", "guest")
         pw = target.get("management_password") or self.config.get("management_password", "guest")
         r = self.run_command(f'curl -s -u {user}:{pw} {url}/api/nodes', timeout=10)
@@ -164,7 +167,7 @@ class RabbitMQChecker(BaseChecker):
 
     def _check_disk_api(self, target: Dict[str, Any], overview: dict) -> CheckResult:
         """通过 API 检查磁盘空间。"""
-        url = target.get("management_url") or self.config.get("management_url", "http://localhost:15672")
+        url = target.get("management_url") or self.config.get("management_url") or _RABBITMQ_DEFAULTS.get("management_url", "")
         user = target.get("management_user") or self.config.get("management_user", "guest")
         pw = target.get("management_password") or self.config.get("management_password", "guest")
         r = self.run_command(f'curl -s -u {user}:{pw} {url}/api/nodes', timeout=10)
