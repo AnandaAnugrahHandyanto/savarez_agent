@@ -157,8 +157,8 @@ def test_cmd_enable_accepts_legacy_nested_name(monkeypatch, capsys):
 
     plugins_cmd.cmd_enable("nemo_relay")
 
-    assert "nemo_relay" in enabled
-    assert "nemo_relay" not in disabled
+    assert enabled == {"observability/nemo_relay"}
+    assert disabled == set()
     assert "enabled" in capsys.readouterr().out
 
 
@@ -184,9 +184,150 @@ def test_cmd_disable_accepts_legacy_nested_name(monkeypatch, capsys):
 
     plugins_cmd.cmd_disable("nemo_relay")
 
-    assert "nemo_relay" not in enabled
-    assert "nemo_relay" in disabled
+    assert enabled == set()
+    assert disabled == {"observability/nemo_relay"}
     assert "disabled" in capsys.readouterr().out
+
+
+def test_cmd_enable_clears_mixed_nested_alias_disable_state(monkeypatch, capsys):
+    entries = [
+        (
+            "observability/nemo_relay",
+            "nemo_relay",
+            "0.1.0",
+            "Relay observability",
+            "bundled",
+            None,
+        )
+    ]
+    enabled = set()
+    disabled = {"observability/nemo_relay"}
+
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set(enabled))
+    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set(disabled))
+    monkeypatch.setattr(plugins_cmd, "_save_enabled_set", lambda value: enabled.clear() or enabled.update(value))
+    monkeypatch.setattr(plugins_cmd, "_save_disabled_set", lambda value: disabled.clear() or disabled.update(value))
+
+    plugins_cmd.cmd_enable("nemo_relay")
+
+    assert enabled == {"observability/nemo_relay"}
+    assert disabled == set()
+    assert "enabled" in capsys.readouterr().out
+
+
+def test_cmd_enable_resolves_split_nested_alias_state(monkeypatch, capsys):
+    entries = [
+        (
+            "observability/nemo_relay",
+            "nemo_relay",
+            "0.1.0",
+            "Relay observability",
+            "bundled",
+            None,
+        )
+    ]
+    enabled = {"observability/nemo_relay"}
+    disabled = {"nemo_relay"}
+
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set(enabled))
+    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set(disabled))
+    monkeypatch.setattr(plugins_cmd, "_save_enabled_set", lambda value: enabled.clear() or enabled.update(value))
+    monkeypatch.setattr(plugins_cmd, "_save_disabled_set", lambda value: disabled.clear() or disabled.update(value))
+
+    plugins_cmd.cmd_enable("observability/nemo_relay")
+
+    assert enabled == {"observability/nemo_relay"}
+    assert disabled == set()
+    assert "enabled" in capsys.readouterr().out
+
+
+def test_cmd_disable_resolves_split_nested_alias_state(monkeypatch, capsys):
+    entries = [
+        (
+            "observability/nemo_relay",
+            "nemo_relay",
+            "0.1.0",
+            "Relay observability",
+            "bundled",
+            None,
+        )
+    ]
+    enabled = {"nemo_relay"}
+    disabled = {"observability/nemo_relay"}
+
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set(enabled))
+    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set(disabled))
+    monkeypatch.setattr(plugins_cmd, "_save_enabled_set", lambda value: enabled.clear() or enabled.update(value))
+    monkeypatch.setattr(plugins_cmd, "_save_disabled_set", lambda value: disabled.clear() or disabled.update(value))
+
+    plugins_cmd.cmd_disable("observability/nemo_relay")
+
+    assert enabled == set()
+    assert disabled == {"observability/nemo_relay"}
+    assert "disabled" in capsys.readouterr().out
+
+
+def test_dashboard_enable_resolves_split_nested_alias_state(monkeypatch):
+    entries = [
+        (
+            "observability/nemo_relay",
+            "nemo_relay",
+            "0.1.0",
+            "Relay observability",
+            "bundled",
+            None,
+        )
+    ]
+    enabled = {"observability/nemo_relay"}
+    disabled = {"nemo_relay"}
+    toggled: list[tuple[str, bool]] = []
+
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set(enabled))
+    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set(disabled))
+    monkeypatch.setattr(plugins_cmd, "_save_enabled_set", lambda value: enabled.clear() or enabled.update(value))
+    monkeypatch.setattr(plugins_cmd, "_save_disabled_set", lambda value: disabled.clear() or disabled.update(value))
+    monkeypatch.setattr(plugins_cmd, "_toggle_plugin_toolset", lambda name, enable: toggled.append((name, enable)))
+
+    result = plugins_cmd.dashboard_set_agent_plugin_enabled("observability/nemo_relay", enabled=True)
+
+    assert result == {"ok": True, "name": "observability/nemo_relay", "unchanged": False}
+    assert enabled == {"observability/nemo_relay"}
+    assert disabled == set()
+    assert toggled == [("observability/nemo_relay", True)]
+
+
+def test_dashboard_disable_resolves_split_nested_alias_state(monkeypatch):
+    entries = [
+        (
+            "observability/nemo_relay",
+            "nemo_relay",
+            "0.1.0",
+            "Relay observability",
+            "bundled",
+            None,
+        )
+    ]
+    enabled = {"nemo_relay"}
+    disabled = {"observability/nemo_relay"}
+    toggled: list[tuple[str, bool]] = []
+
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set(enabled))
+    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set(disabled))
+    monkeypatch.setattr(plugins_cmd, "_save_enabled_set", lambda value: enabled.clear() or enabled.update(value))
+    monkeypatch.setattr(plugins_cmd, "_save_disabled_set", lambda value: disabled.clear() or disabled.update(value))
+    monkeypatch.setattr(plugins_cmd, "_toggle_plugin_toolset", lambda name, enable: toggled.append((name, enable)))
+
+    result = plugins_cmd.dashboard_set_agent_plugin_enabled("nemo_relay", enabled=False)
+
+    assert result == {"ok": True, "name": "observability/nemo_relay", "unchanged": False}
+    assert enabled == set()
+    assert disabled == {"observability/nemo_relay"}
+    assert toggled == [("observability/nemo_relay", False)]
 
 
 def test_discover_all_plugins_includes_nested_bundled_keys(monkeypatch, tmp_path: Path):

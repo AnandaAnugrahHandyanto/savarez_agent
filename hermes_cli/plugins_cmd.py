@@ -654,24 +654,26 @@ def cmd_enable(name: str) -> None:
     from rich.console import Console
 
     console = Console()
-    # Discover the plugin — check installed (user) AND bundled.
-    if not _plugin_exists(name):
+    plugin_ref = _resolve_plugin_reference(name)
+    if plugin_ref is None:
         console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
+    canonical_name, aliases = plugin_ref
 
-    if name in enabled and name not in disabled:
-        console.print(f"[dim]Plugin '{name}' is already enabled.[/dim]")
+    if aliases & enabled and not aliases & disabled:
+        console.print(f"[dim]Plugin '{canonical_name}' is already enabled.[/dim]")
         return
 
-    enabled.add(name)
-    disabled.discard(name)
+    enabled.difference_update(aliases)
+    disabled.difference_update(aliases)
+    enabled.add(canonical_name)
     _save_enabled_set(enabled)
     _save_disabled_set(disabled)
     console.print(
-        f"[green]✓[/green] Plugin [bold]{name}[/bold] enabled. "
+        f"[green]✓[/green] Plugin [bold]{canonical_name}[/bold] enabled. "
         "Takes effect on next session."
     )
 
@@ -681,33 +683,44 @@ def cmd_disable(name: str) -> None:
     from rich.console import Console
 
     console = Console()
-    if not _plugin_exists(name):
+    plugin_ref = _resolve_plugin_reference(name)
+    if plugin_ref is None:
         console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
         sys.exit(1)
 
     enabled = _get_enabled_set()
     disabled = _get_disabled_set()
+    canonical_name, aliases = plugin_ref
 
-    if name not in enabled and name in disabled:
-        console.print(f"[dim]Plugin '{name}' is already disabled.[/dim]")
+    if not aliases & enabled and aliases & disabled:
+        console.print(f"[dim]Plugin '{canonical_name}' is already disabled.[/dim]")
         return
 
-    enabled.discard(name)
-    disabled.add(name)
+    enabled.difference_update(aliases)
+    disabled.difference_update(aliases)
+    disabled.add(canonical_name)
     _save_enabled_set(enabled)
     _save_disabled_set(disabled)
     console.print(
-        f"[yellow]\u2298[/yellow] Plugin [bold]{name}[/bold] disabled. "
+        f"[yellow]\u2298[/yellow] Plugin [bold]{canonical_name}[/bold] disabled. "
         "Takes effect on next session."
     )
 
 
 def _plugin_exists(name: str) -> bool:
     """Return True if *name* matches a discovered plugin key or legacy alias."""
+    return _resolve_plugin_reference(name) is not None
+
+
+def _resolve_plugin_reference(name: str) -> tuple[str, set[str]] | None:
+    """Resolve *name* to a canonical plugin key and all supported aliases."""
     for key, legacy_name, _version, _description, _source, _dir in _discover_all_plugins():
-        if name == key or name == legacy_name:
-            return True
-    return False
+        aliases = {key}
+        if legacy_name:
+            aliases.add(legacy_name)
+        if name in aliases:
+            return key, aliases
+    return None
 
 
 def _discover_all_plugins() -> list:
@@ -1548,31 +1561,35 @@ def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str,
     For plugins that provide tools (toolsets), also toggles the toolset in
     ``platform_toolsets`` so the agent actually sees the tools in sessions.
     """
-    if not _plugin_exists(name):
+    plugin_ref = _resolve_plugin_reference(name)
+    if plugin_ref is None:
         return {"ok": False, "error": f"Plugin '{name}' is not installed or bundled."}
 
     en = _get_enabled_set()
     dis = _get_disabled_set()
+    canonical_name, aliases = plugin_ref
 
     if enabled:
-        if name in en and name not in dis:
-            return {"ok": True, "name": name, "unchanged": True}
-        en.add(name)
-        dis.discard(name)
+        if aliases & en and not aliases & dis:
+            return {"ok": True, "name": canonical_name, "unchanged": True}
+        en.difference_update(aliases)
+        dis.difference_update(aliases)
+        en.add(canonical_name)
         _save_enabled_set(en)
         _save_disabled_set(dis)
-        _toggle_plugin_toolset(name, enable=True)
-        return {"ok": True, "name": name, "unchanged": False}
+        _toggle_plugin_toolset(canonical_name, enable=True)
+        return {"ok": True, "name": canonical_name, "unchanged": False}
 
-    if name not in en and name in dis:
-        return {"ok": True, "name": name, "unchanged": True}
+    if not aliases & en and aliases & dis:
+        return {"ok": True, "name": canonical_name, "unchanged": True}
 
-    en.discard(name)
-    dis.add(name)
+    en.difference_update(aliases)
+    dis.difference_update(aliases)
+    dis.add(canonical_name)
     _save_enabled_set(en)
     _save_disabled_set(dis)
-    _toggle_plugin_toolset(name, enable=False)
-    return {"ok": True, "name": name, "unchanged": False}
+    _toggle_plugin_toolset(canonical_name, enable=False)
+    return {"ok": True, "name": canonical_name, "unchanged": False}
 
 
 def _user_installed_plugin_dir(name: str) -> Optional[Path]:
