@@ -456,6 +456,40 @@
 3. 第 5 批落 live 后，当前会话工具 schema 仍不一定立刻暴露 `codex_staged_implement` / `codex_workflow_run`；需要 gateway/WebUI reload/restart 或新运行进程加载后才生效。
 4. 第 5 批 checkpoint 后，建议单独考虑 5B：`8b5118fae` 更强 raw implementation block。
 
+## 第 5B 批执行记录：guarded workflow 后续 raw implementation block
+
+状态：**5B 已应用到 live 工作区并完成 focused 验证；本地 checkpoint commit 在本批收尾创建；未 push，未重启**。
+
+范围：恢复更强的 raw `codex-yuna exec` / `codex exec` implementation block：即使 background/PTY 也阻断裸实现调用，引导到 `codex_staged_implement` / `codex_stage_runner.py` / `codex_impl_guard.py` / `codex_review_guard.py`。
+
+- 隔离 worktree：`/workspace/.hermes-worktrees/hermes-agent-runtime-codex-guarded-5b-20260608133358`
+- 隔离分支：`recover/guarded-5b-20260608133358`
+- 基线 HEAD：`ee777a7c5 fix(codex): restore guarded workflow tools`
+- 候选来源：
+  - `8b5118fae fix: block unguarded codex implementation launches`
+- 冲突处理：
+  - `tests/tools/test_terminal_tool.py`：合并第 4 批 raw Codex launch policy tests 与 5B 新 block/review tests；删除/调整 4 个与 5B 新策略冲突的旧 background/escape-hatch 期望。
+  - `tools/terminal_tool.py`：保留第 4 批 executable-position detection，同时补入 `8b5118fae` 依赖的 `_shell_tokens` / `_codex_review_launch_error` / review-output-control helper，并加入 stronger raw implementation block。
+- 隔离 worktree touched files：
+  - `tools/terminal_tool.py`
+  - `tools/process_registry.py`
+  - `tests/tools/test_terminal_tool.py`
+  - `tests/tools/test_process_registry.py`
+- 隔离验证命令与结果（live 复跑同组命令结果一致）：
+  - `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/terminal_tool.py tools/process_registry.py tests/tools/test_terminal_tool.py tests/tools/test_process_registry.py` ✅
+  - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider tests/tools/test_terminal_tool.py -q -o addopts=''` ✅ `29 passed in 1.42s`
+  - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider tests/tools/test_process_registry.py -q -o addopts='' -k 'codex_unguarded or unguarded_codex or codex_staged or trusted_completion or timeout_metadata'` ✅ `1 passed, 97 deselected in 1.03s`
+  - `git diff --check HEAD` ✅
+  - `*.pyc` 缓存清理与复查 ✅ `deleted_pyc=4`，最终 `0`
+- 当前隔离 worktree 状态：保留 staged candidate diff 作为来源证据。
+- live 状态：已应用 5B 代码并完成 focused 验证；未 push，未重启。live 仍有非本轮未跟踪文档 `docs/codex-workflow-local-capability-and-external-recommendations-2026-06-08.md`，本批未触碰。
+- 审批记录：5B 解冲突/测试调整期间，多次写入仅限隔离 worktree，并在用户通过审批后继续；未绕过审批改 live。
+
+下一步选择：
+
+1. 本批收尾创建本地 checkpoint commit，作为 5B stable point。
+2. 当前未重启 gateway/WebUI；如果需要运行态加载 5B，必须另行确认 restart/reload。
+
 ## 当前待办
 
 - [x] 第 0 批：初版恢复清单。
@@ -464,4 +498,5 @@
 - [x] 第 3 批：process / Codex output governance（已落 live 并完成 focused 验证；未 push/未重启）。
 - [x] 第 4 批：terminal raw Codex policy（已落 live 并完成 focused 验证；未 push/未重启）。
 - [x] 第 5 批：guarded Codex workflow tools（已落 live 并完成 focused 验证；未 push/未重启）。
+- [x] 第 5B 批：strong raw Codex implementation block（已落 live 并完成 focused 验证；未 push/未重启）。
 - [ ] 第 6 批：browser / image / custom provider 增强。
