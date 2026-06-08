@@ -126,6 +126,34 @@ def _permission_denied(message_id: Any) -> dict[str, Any]:
     }
 
 
+def _extract_image_parts(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Extract base64 image data from OpenAI-format image_url content blocks.
+
+    Returns a list of dicts like ``{"type": "image", "mimeType": "...", "data": "..."}``
+    suitable for inclusion in an ACP session/prompt array.
+    """
+    import base64
+
+    parts: list[dict[str, Any]] = []
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "image_url":
+                continue
+            url = (block.get("image_url") or {}).get("url", "")
+            if not url.startswith("data:"):
+                continue
+            # Parse data:image/<mime>;base64,<data>
+            meta, _, b64data = url.partition(",")
+            mime = "image/png"  # default
+            if ";" in meta:
+                mime = meta.split(":")[1].split(";")[0]
+            parts.append({"type": "image", "mimeType": mime, "data": b64data})
+    return parts
+
+
 def _format_messages_as_prompt(
     messages: list[dict[str, Any]],
     model: str | None = None,
@@ -392,6 +420,7 @@ class CopilotACPClient:
             tools=tools,
             tool_choice=tool_choice,
         )
+        image_parts = _extract_image_parts(messages or [])
         # Normalise timeout: run_agent.py may pass an httpx.Timeout object
         # (used natively by the OpenAI SDK) rather than a plain float.
         if timeout is None:
@@ -411,6 +440,7 @@ class CopilotACPClient:
         response_text, reasoning_text = self._run_prompt(
             prompt_text,
             timeout_seconds=_effective_timeout,
+            image_parts=image_parts if image_parts else None,
         )
 
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
@@ -436,7 +466,8 @@ class CopilotACPClient:
             model=model or "copilot-acp",
         )
 
-    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+    def _run_prompt(self, prompt_text: str, *, timeout_seconds: float,
+                     image_parts: list[dict[str, Any]] | None = None) -> tuple[str, str]:
         try:
             proc = subprocess.Popen(
                 [self._acp_command] + self._acp_args,
@@ -578,16 +609,19 @@ class CopilotACPClient:
 
             text_parts: list[str] = []
             reasoning_parts: list[str] = []
+            prompt_parts: list[dict[str, Any]] = [
+                {
+                    "type": "text",
+                    "text": prompt_text,
+                }
+            ]
+            if image_parts:
+                prompt_parts.extend(image_parts)
             _request(
                 "session/prompt",
                 {
                     "sessionId": session_id,
-                    "prompt": [
-                        {
-                            "type": "text",
-                            "text": prompt_text,
-                        }
-                    ],
+                    "prompt": prompt_parts,
                 },
                 text_parts=text_parts,
                 reasoning_parts=reasoning_parts,
