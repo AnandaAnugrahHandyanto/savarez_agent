@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from agent.usage_pricing import (
     CanonicalUsage,
     estimate_usage_cost,
@@ -224,3 +226,68 @@ def test_deepseek_v4_pro_estimate_usage_cost():
     assert result.amount_usd is not None
     # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
     assert float(result.amount_usd) == 3.48
+
+
+def test_xiaomi_mimo_v2_5_pro_pricing_entry_exists():
+    """Regression test: mimo-v2.5-pro must have a pricing entry.
+
+    Before this fix, xiaomi/mimo-v2.5-pro sessions showed as unknown cost
+    because _OFFICIAL_DOCS_PRICING had no xiaomi entries.  See #41731.
+    """
+    entry = get_pricing_entry("mimo-v2.5-pro", provider="xiaomi")
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 0.435
+    assert float(entry.output_cost_per_million) == 0.87
+    assert float(entry.cache_read_cost_per_million) == 0.0036
+
+
+def test_xiaomi_mimo_v2_5_pricing_entry_exists():
+    """Regression test: mimo-v2.5 must have a pricing entry."""
+    entry = get_pricing_entry("mimo-v2.5", provider="xiaomi")
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 0.14
+    assert float(entry.output_cost_per_million) == 0.28
+    assert float(entry.cache_read_cost_per_million) == 0.0028
+
+
+def test_xiaomi_mimo_v2_pro_pricing_entry_exists():
+    """Regression test: mimo-v2-pro (alias for v2.5-pro) must have a pricing entry."""
+    entry = get_pricing_entry("mimo-v2-pro", provider="xiaomi")
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 0.435
+    assert float(entry.output_cost_per_million) == 0.87
+
+
+def test_xiaomi_mimo_v2_5_pro_estimate_cost():
+    """Full cost estimation for mimo-v2.5-pro with mixed token usage."""
+    result = estimate_usage_cost(
+        "mimo-v2.5-pro",
+        CanonicalUsage(input_tokens=1000, output_tokens=500, cache_read_tokens=2000),
+        provider="xiaomi",
+    )
+
+    assert result.status == "estimated"
+    # input: 1000 * 0.435 / 1M = 0.000435
+    # output: 500 * 0.87 / 1M = 0.000435
+    # cache_read: 2000 * 0.0036 / 1M = 0.0000072
+    # total = 0.0008772
+    assert float(result.amount_usd) == pytest.approx(0.0008772, abs=1e-6)
+
+
+def test_xiaomi_mimo_v2_5_estimate_cost():
+    """Full cost estimation for mimo-v2.5 with mixed token usage."""
+    result = estimate_usage_cost(
+        "mimo-v2.5",
+        CanonicalUsage(input_tokens=1000, output_tokens=500, cache_read_tokens=2000),
+        provider="xiaomi",
+    )
+
+    assert result.status == "estimated"
+    # input: 1000 * 0.14 / 1M = 0.00014
+    # output: 500 * 0.28 / 1M = 0.00014
+    # cache_read: 2000 * 0.0028 / 1M = 0.0000056
+    # total = 0.0002856
+    assert float(result.amount_usd) == pytest.approx(0.0002856, abs=1e-6)

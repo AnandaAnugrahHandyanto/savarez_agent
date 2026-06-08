@@ -533,6 +533,44 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source="official_docs_snapshot",
         pricing_version="minimax-pricing-2026-04",
     ),
+    # ── Xiaomi MiMo ───────────────────────────────────────────────────
+    # Source: https://platform.xiaomimimo.com/docs/en-US/news/v2.5-price-update
+    # Permanent price reduction effective May 27, 2026 (global sync).
+    # mimo-v2-pro auto-routes to mimo-v2.5-pro pricing (deprecated alias).
+    # Cache write is temporarily free — omitted.
+    (
+        "xiaomi",
+        "mimo-v2.5-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.435"),
+        output_cost_per_million=Decimal("0.87"),
+        cache_read_cost_per_million=Decimal("0.0036"),
+        source="official_docs_snapshot",
+        source_url="https://platform.xiaomimimo.com/docs/en-US/news/v2.5-price-update",
+        pricing_version="xiaomi-pricing-2026-05-27",
+    ),
+    (
+        "xiaomi",
+        "mimo-v2-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.435"),
+        output_cost_per_million=Decimal("0.87"),
+        cache_read_cost_per_million=Decimal("0.0036"),
+        source="official_docs_snapshot",
+        source_url="https://platform.xiaomimimo.com/docs/en-US/news/v2.5-price-update",
+        pricing_version="xiaomi-pricing-2026-05-27",
+    ),
+    (
+        "xiaomi",
+        "mimo-v2.5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("0.28"),
+        cache_read_cost_per_million=Decimal("0.0028"),
+        source="official_docs_snapshot",
+        source_url="https://platform.xiaomimimo.com/docs/en-US/news/v2.5-price-update",
+        pricing_version="xiaomi-pricing-2026-05-27",
+    ),
 }
 
 
