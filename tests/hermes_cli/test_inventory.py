@@ -235,6 +235,27 @@ def test_list_authenticated_providers_force_fresh_is_keyword_only():
     assert param.default is False
 
 
+def test_build_models_payload_default_max_models_is_200():
+    # Regression: default max_models must be high enough for providers
+    # with large catalogs (e.g. NVIDIA NIM with 100+ models).
+    # Issue #42270 -- the previous default of 50 truncated the model list.
+    import inspect
+
+    sig = inspect.signature(build_models_payload)
+    assert sig.parameters["max_models"].default == 200
+
+
+def test_list_authenticated_providers_default_max_models_is_200():
+    # Regression: default max_models must match build_models_payload.
+    # Issue #42270 -- the previous default of 8 was too low.
+    import inspect
+
+    from hermes_cli.model_switch import list_authenticated_providers
+
+    sig = inspect.signature(list_authenticated_providers)
+    assert sig.parameters["max_models"].default == 200
+
+
 def test_pricing_uses_cached_nous_tier_by_default():
     rows = [_nous_row()]
     ctx = _empty_ctx(provider="nous", model="openai/gpt-5.5")
