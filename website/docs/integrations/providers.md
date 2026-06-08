@@ -320,7 +320,7 @@ Get your API key at [novita.ai/settings/key-management](https://novita.ai/settin
 
 ### Cloud Temple LLMaaS
 
-[Cloud Temple LLMaaS](https://docs.cloud-temple.com/llmaas) provides sovereign OpenAI-compatible inference with API-key authentication. The default Hermes model is `qwen3.6:35b`, and Hermes uses Cloud Temple's documented `/v1/chat/completions` and `/v1/models` endpoints.
+[Cloud Temple LLMaaS](https://docs.cloud-temple.com/llmaas) provides sovereign OpenAI-compatible inference with API-key authentication. The default Hermes model is `qwen3.6:35b`, and Hermes uses Cloud Temple's documented `/v1/chat/completions` and `/v1/models` endpoints. Cloud Temple also maintains a public [LLMaaS how-to repository](https://github.com/Cloud-Temple/product-llmaas-how-to) with runnable examples for chat, streaming, model listing, RAG, tool calling, vision, transcription, translation, and other use cases.
 
 ```bash
 hermes chat --provider cloud-temple --model qwen3.6:35b
