@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import sys
 import threading
 import time
@@ -316,7 +317,7 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session_db=None: object())
-    monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80: None)
+    monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80, **kw: None)
     monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
 
     resp = server.handle_request(
@@ -367,7 +368,7 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
     monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session_db=None: object())
-    monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80: None)
+    monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80, **kw: None)
     monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
 
     resp = server.handle_request(
@@ -1182,3 +1183,160 @@ def test_dispatch_unknown_long_method_still_goes_inline(server):
     resp = server.dispatch({"id": "r4", "method": "some.method", "params": {}})
 
     assert resp["result"] == {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# _SlashWorker profile propagation
+# ---------------------------------------------------------------------------
+
+class TestSlashWorkerProfilePropagation:
+    """Verify _SlashWorker passes profile info to its subprocess."""
+
+    @staticmethod
+    def _make_fake_proc():
+        """Create a FakeProc that captures ALL Popen calls."""
+        all_calls = []
+
+        class FakeProc:
+            def __init__(self, cmd, **kwargs):
+                all_calls.append({"cmd": list(cmd), "env": kwargs.get("env", {})})
+                self.stdin = None
+                self.stdout = []
+                self.stderr = []
+                self.pid = 1
+                self.returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                pass
+
+        return FakeProc, all_calls
+
+    @staticmethod
+    def _find_worker_call(all_calls):
+        """Find the _SlashWorker Popen call by --session-key in argv."""
+        for call in all_calls:
+            if "--session-key" in call["cmd"]:
+                return call
+        return None
+
+    def test_argv_includes_profile_when_provided(self):
+        """--profile <name> appears in argv when profile is set."""
+        from tui_gateway.server import _SlashWorker
+
+        FakeProc, all_calls = self._make_fake_proc()
+
+        with patch("subprocess.Popen", FakeProc):
+            _SlashWorker("test-key", "test-model", profile="myprofile")
+
+        worker_call = self._find_worker_call(all_calls)
+        assert worker_call is not None, f"No --session-key call found in: {[c['cmd'] for c in all_calls]}"
+        cmd = worker_call["cmd"]
+        assert "--profile" in cmd
+        idx = cmd.index("--profile")
+        assert cmd[idx + 1] == "myprofile"
+
+    def test_env_sets_hermes_home_when_profile_home_provided(self):
+        """HERMES_HOME is set to profile_home in the worker's env."""
+        from tui_gateway.server import _SlashWorker
+
+        FakeProc, all_calls = self._make_fake_proc()
+
+        with patch("subprocess.Popen", FakeProc):
+            _SlashWorker(
+                "test-key", "test-model",
+                profile="myprofile",
+                profile_home="/home/user/.hermes/profiles/myprofile",
+            )
+
+        worker_call = self._find_worker_call(all_calls)
+        assert worker_call is not None, f"No --session-key call found in: {[c['cmd'] for c in all_calls]}"
+        env = worker_call["env"]
+        assert env["HERMES_HOME"] == "/home/user/.hermes/profiles/myprofile"
+        assert env["HERMES_PROFILE"] == "myprofile"
+
+    def test_no_profile_args_when_none(self):
+        """No --profile or HERMES_HOME/HERMES_PROFILE when profile is None."""
+        from tui_gateway.server import _SlashWorker
+
+        FakeProc, all_calls = self._make_fake_proc()
+
+        with patch("subprocess.Popen", FakeProc):
+            _SlashWorker("test-key", "test-model")
+
+        worker_call = self._find_worker_call(all_calls)
+        assert worker_call is not None, f"No --session-key call found in: {[c['cmd'] for c in all_calls]}"
+        cmd = worker_call["cmd"]
+        assert "--profile" not in cmd
+        env = worker_call["env"]
+        assert "HERMES_PROFILE" not in env or env.get("HERMES_PROFILE") == os.environ.get("HERMES_PROFILE")
+        # HERMES_HOME should not be overridden by the worker
+        assert env.get("HERMES_HOME") == os.environ.get("HERMES_HOME")
+
+
+# ---------------------------------------------------------------------------
+# _init_session stores profile info on session dict
+# ---------------------------------------------------------------------------
+
+class TestInitSessionProfileStorage:
+    """_init_session stores profile_name and profile_home on the session dict."""
+
+    def test_init_session_stores_profile_info(self):
+        from tui_gateway.server import _sessions, _init_session
+
+        class FakeAgent:
+            model = "test-model"
+
+        class FakeWorker:
+            def __init__(self, *a, **kw):
+                pass
+
+            def close(self):
+                pass
+
+        with patch("tui_gateway.server._SlashWorker", FakeWorker):
+            sid = "test-init-profile"
+            _init_session(
+                sid, "session-key", FakeAgent(), [],
+                profile_name="myprofile",
+                profile_home="/home/user/.hermes/profiles/myprofile",
+            )
+
+        assert sid in _sessions
+        assert _sessions[sid]["profile_name"] == "myprofile"
+        assert _sessions[sid]["profile_home"] == "/home/user/.hermes/profiles/myprofile"
+
+        # Cleanup
+        _sessions.pop(sid, None)
+
+    def test_init_session_defaults_profile_to_none(self):
+        from tui_gateway.server import _sessions, _init_session
+
+        class FakeAgent:
+            model = "test-model"
+
+        class FakeWorker:
+            def __init__(self, *a, **kw):
+                pass
+
+            def close(self):
+                pass
+
+        with patch("tui_gateway.server._SlashWorker", FakeWorker):
+            sid = "test-init-default"
+            _init_session(sid, "session-key", FakeAgent(), [])
+
+        assert _sessions[sid]["profile_name"] is None
+        assert _sessions[sid]["profile_home"] is None
+
+        # Cleanup
+        _sessions.pop(sid, None)
+
