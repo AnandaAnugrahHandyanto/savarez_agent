@@ -10,6 +10,7 @@ from gateway.livekit_realtime_agent import (
 from gateway.livekit_voice import (
     DEFAULT_GEMINI_REALTIME_MODEL,
     DEFAULT_REALTIME_MODEL,
+    DEFAULT_XAI_REALTIME_MODEL,
     build_dispatch_rule_payload,
     build_inbound_trunk_payload,
     build_livekit_preflight,
@@ -64,6 +65,7 @@ def test_preflight_redacts_secret_values():
     assert report["config"]["livekit_api_secret"] == "set"
     assert report["config"]["openai_api_key"] == "set"
     assert report["config"]["google_api_key"] == "missing"
+    assert report["config"]["xai_api_key"] == "missing"
 
 
 def test_realtime_preflight_reports_missing_openai_key():
@@ -108,6 +110,37 @@ def test_gemini_realtime_preflight_reports_missing_google_key():
     assert any(issue["code"] == "missing_google_api_key" for issue in report["issues"])
 
 
+def test_xai_realtime_preflight_accepts_xai_api_key():
+    env = {
+        "LIVEKIT_URL": "wss://pafi-livekit.example.com",
+        "LIVEKIT_API_KEY": "livekit-key",
+        "LIVEKIT_API_SECRET": "livekit-secret",
+        "HERMES_LIVEKIT_REALTIME_PROVIDER": "xai",
+        "XAI_API_KEY": "xai-secret-value",
+    }
+    report = build_livekit_preflight(env, include_realtime=True)
+    rendered = json.dumps(report, sort_keys=True)
+    assert report["ok"] is True
+    assert report["ready"]["realtime_agent"] is True
+    assert report["config"]["xai_api_key"] == "set"
+    assert "xai-secret-value" not in rendered
+    assert report["worker"]["model"] == DEFAULT_XAI_REALTIME_MODEL
+    assert report["worker"]["voice"] == "ara"
+
+
+def test_xai_realtime_preflight_reports_missing_xai_key():
+    env = {
+        "LIVEKIT_URL": "wss://pafi-livekit.example.com",
+        "LIVEKIT_API_KEY": "livekit-key",
+        "LIVEKIT_API_SECRET": "livekit-secret",
+        "HERMES_LIVEKIT_REALTIME_PROVIDER": "xai",
+    }
+    report = build_livekit_preflight(env, include_realtime=True)
+    assert report["ok"] is False
+    assert report["ready"]["realtime_agent"] is False
+    assert any(issue["code"] == "missing_xai_api_key" for issue in report["issues"])
+
+
 def test_realtime_config_defaults_and_status_are_operator_safe():
     env = {
         "LIVEKIT_URL": "wss://pafi-livekit.example.com",
@@ -140,6 +173,9 @@ def test_realtime_room_metadata_uses_configured_provider():
     cfg = load_livekit_config({"HERMES_LIVEKIT_REALTIME_PROVIDER": "gemini"})
     assert build_realtime_room_metadata(mode="sip", config=cfg)["realtime_provider"] == "gemini"
 
+    cfg = load_livekit_config({"HERMES_LIVEKIT_REALTIME_PROVIDER": "xai"})
+    assert build_realtime_room_metadata(mode="sip", config=cfg)["realtime_provider"] == "xai"
+
 
 def test_assistant_instructions_are_short_and_language_aware():
     cfg = load_livekit_config({"HERMES_LIVEKIT_REALTIME_INSTRUCTIONS": "Be concise."})
@@ -162,7 +198,7 @@ def test_realtime_worker_start_guard_requires_explicit_enable():
 
 def test_create_realtime_model_rejects_unknown_provider():
     cfg = load_livekit_config({"HERMES_LIVEKIT_REALTIME_PROVIDER": "bogus"})
-    with pytest.raises(RuntimeError, match="openai.*gemini"):
+    with pytest.raises(RuntimeError, match="openai.*gemini.*xai"):
         create_realtime_model(cfg)
 
 

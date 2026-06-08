@@ -29,6 +29,8 @@ DEFAULT_REALTIME_MODEL = "gpt-realtime"
 DEFAULT_REALTIME_VOICE = "coral"
 DEFAULT_GEMINI_REALTIME_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 DEFAULT_GEMINI_REALTIME_VOICE = "Puck"
+DEFAULT_XAI_REALTIME_MODEL = "grok-voice-think-fast-1.0"
+DEFAULT_XAI_REALTIME_VOICE = "ara"
 DEFAULT_REALTIME_VERSION = "v02"
 DEFAULT_REALTIME_INSTRUCTIONS = (
     "You are Hermes live voice for Pafi. Keep replies brief, useful, and natural. "
@@ -60,6 +62,7 @@ class LiveKitVoiceConfig:
     realtime_instructions: str = DEFAULT_REALTIME_INSTRUCTIONS
     openai_api_key: str = ""
     google_api_key: str = ""
+    xai_api_key: str = ""
 
     @property
     def has_credentials(self) -> bool:
@@ -77,6 +80,8 @@ class LiveKitVoiceConfig:
             return bool(self.openai_api_key)
         if self.realtime_provider == "gemini":
             return bool(self.google_api_key)
+        if self.realtime_provider == "xai":
+            return bool(self.xai_api_key)
         return False
 
     def public_dict(self) -> dict[str, str]:
@@ -96,6 +101,7 @@ class LiveKitVoiceConfig:
             "realtime_voice": self.realtime_voice,
             "openai_api_key": "set" if self.openai_api_key else "missing",
             "google_api_key": "set" if self.google_api_key else "missing",
+            "xai_api_key": "set" if self.xai_api_key else "missing",
         }
 
 
@@ -138,6 +144,7 @@ def load_livekit_config(env: Mapping[str, str] | None = None) -> LiveKitVoiceCon
         openai_api_key=_env_get(source, "OPENAI_API_KEY"),
         google_api_key=_env_get(source, "GOOGLE_API_KEY")
         or _env_get(source, "GEMINI_API_KEY"),
+        xai_api_key=_env_get(source, "XAI_API_KEY"),
     )
 
 
@@ -151,6 +158,12 @@ def _load_realtime_model(source: Mapping[str, str]) -> str:
             "HERMES_GEMINI_REALTIME_MODEL",
             DEFAULT_GEMINI_REALTIME_MODEL,
         )
+    if provider == "xai":
+        return _env_get(
+            source,
+            "HERMES_XAI_REALTIME_MODEL",
+            DEFAULT_XAI_REALTIME_MODEL,
+        )
     return _env_get(source, "HERMES_OPENAI_REALTIME_MODEL", DEFAULT_REALTIME_MODEL)
 
 
@@ -163,6 +176,12 @@ def _load_realtime_voice(source: Mapping[str, str]) -> str:
             source,
             "HERMES_GEMINI_REALTIME_VOICE",
             DEFAULT_GEMINI_REALTIME_VOICE,
+        )
+    if provider == "xai":
+        return _env_get(
+            source,
+            "HERMES_XAI_REALTIME_VOICE",
+            DEFAULT_XAI_REALTIME_VOICE,
         )
     return _env_get(source, "HERMES_OPENAI_REALTIME_VOICE", DEFAULT_REALTIME_VOICE)
 
@@ -223,11 +242,11 @@ def build_livekit_preflight(
         })
 
     if include_realtime:
-        if cfg.realtime_provider not in {"openai", "gemini"}:
+        if cfg.realtime_provider not in {"openai", "gemini", "xai"}:
             issues.append({
                 "severity": "error",
                 "code": "unsupported_realtime_provider",
-                "message": "Voice v02 supports HERMES_LIVEKIT_REALTIME_PROVIDER=openai or gemini.",
+                "message": "Voice v02 supports HERMES_LIVEKIT_REALTIME_PROVIDER=openai, gemini, or xai.",
             })
         if cfg.realtime_provider == "openai" and not cfg.openai_api_key:
             issues.append({
@@ -240,6 +259,12 @@ def build_livekit_preflight(
                 "severity": "error",
                 "code": "missing_google_api_key",
                 "message": "Set GOOGLE_API_KEY or GEMINI_API_KEY before starting the Gemini Live worker.",
+            })
+        if cfg.realtime_provider == "xai" and not cfg.xai_api_key:
+            issues.append({
+                "severity": "error",
+                "code": "missing_xai_api_key",
+                "message": "Set XAI_API_KEY before starting the Grok Voice worker.",
             })
         if not cfg.realtime_enabled:
             issues.append({

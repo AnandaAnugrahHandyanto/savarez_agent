@@ -1620,7 +1620,7 @@ honcho = [
 ]
 livekit = [
     { name = "livekit" },
-    { name = "livekit-agents", extra = ["google", "openai"] },
+    { name = "livekit-agents", extra = ["google", "openai", "xai"] },
     { name = "livekit-api" },
 ]
 matrix = [
@@ -1767,7 +1767,7 @@ requires-dist = [
     { name = "jinja2", specifier = "==3.1.6" },
     { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.5.3" },
     { name = "livekit", marker = "extra == 'livekit'", specifier = "==1.1.8" },
-    { name = "livekit-agents", extras = ["google", "openai"], marker = "extra == 'livekit'", specifier = "==1.5.17" },
+    { name = "livekit-agents", extras = ["google", "openai", "xai"], marker = "extra == 'livekit'", specifier = "==1.5.17" },
     { name = "livekit-api", marker = "extra == 'livekit'", specifier = "==1.1.0" },
     { name = "markdown", specifier = "==3.10.2" },
     { name = "mautrix", extras = ["encryption"], marker = "extra == 'matrix'", specifier = "==0.21.0" },
@@ -2242,6 +2242,9 @@ images = [
 openai = [
     { name = "livekit-plugins-openai" },
 ]
+xai = [
+    { name = "livekit-plugins-xai" },
+]
 
 [[package]]
 name = "livekit-api"
@@ -2308,6 +2311,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/53/cd/9f5237f37d7a4d56d96c3f2a919c2db16fb3fbe29269a386a81297d2aa6d/livekit_plugins_openai-1.5.17.tar.gz", hash = "sha256:bc223b16522a7f1f1759c35b08bd64ad74194d7aaa88dd9d1ba600daf5c634a7", size = 44836, upload-time = "2026-06-03T01:38:05.385Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9c/cc/578bd8a4a181375dec86fb6e3665a851e5d2b935cb3ee22ec8cfd7011ca5/livekit_plugins_openai-1.5.17-py3-none-any.whl", hash = "sha256:1d4b1ab26b6b83b5b248a9ab46dd009b97561da2d8b0446583169f15e927bf35", size = 51638, upload-time = "2026-06-03T01:38:03.959Z" },
+]
+
+[[package]]
+name = "livekit-plugins-xai"
+version = "1.5.17"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "livekit-agents", extra = ["openai"] },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/43/35/cce180d34004a9de348ec0bd9af35d5399409a3592d707e50b04d8a25098/livekit_plugins_xai-1.5.17.tar.gz", hash = "sha256:8e3dcba094fbc56dc4ec0bcfb3eb9546ae15f27130bef79955f38c872a61c857", size = 12425, upload-time = "2026-06-03T01:38:51.555Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1f/ee/d90c331fef1c8c6f1e1111c62bcf9e1bc734e9ee0ee1e38cf8807767296e/livekit_plugins_xai-1.5.17-py3-none-any.whl", hash = "sha256:38dc89c59ccc9fa2c534b6513b34da48231973995d0f1bfb54b2d9a78dcdd2a4", size = 16419, upload-time = "2026-06-03T01:38:50.561Z" },
 ]
 
 [[package]]
