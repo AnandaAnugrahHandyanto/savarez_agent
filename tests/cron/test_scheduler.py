@@ -2203,6 +2203,51 @@ class TestRunJobWakeGate:
         script_fn.assert_not_called()
         agent_cls.assert_called_once()
 
+    def test_wake_false_still_bumps_declared_skills(self):
+        """Gap 1: skills declared on a script-gated cron job MUST bump
+        usage even when the gate returns ``wakeAgent=false``. Otherwise
+        the curator sees these skills as stale and prunes them."""
+        import cron.scheduler as scheduler
+
+        job = self._make_job()
+        job["skills"] = ["drive-planner"]
+        with patch.object(scheduler, "_run_job_script",
+                          return_value=(True, '{"wakeAgent": false}')), \
+             patch("tools.skill_usage.bump_use") as mock_bump, \
+             patch("run_agent.AIAgent") as agent_cls:
+            success, _doc, _final, _err = scheduler.run_job(job)
+
+        # Gate short-circuited (agent not woken) but bump fired anyway.
+        agent_cls.assert_not_called()
+        mock_bump.assert_called_once_with("drive-planner")
+        assert success is True
+
+    def test_wake_true_bumps_each_skill_exactly_once(self):
+        """Regression: no double-counting now that bump is hoisted out of
+        _build_job_prompt — wake-true path bumps each skill exactly once."""
+        import cron.scheduler as scheduler
+
+        job = self._make_job()
+        job["skills"] = ["alpha", "beta"]
+        agent = MagicMock()
+        agent.run_conversation = MagicMock(return_value={
+            "final_response": "ok", "messages": []
+        })
+
+        def _skill_view(name: str) -> str:
+            return json.dumps({"success": True, "content": f"Content for {name}."})
+
+        with patch.object(scheduler, "_run_job_script",
+                          return_value=(True, '{"wakeAgent": true}')), \
+             patch("tools.skills_tool.skill_view", side_effect=_skill_view), \
+             patch("tools.skill_usage.bump_use") as mock_bump, \
+             patch("run_agent.AIAgent", return_value=agent):
+            scheduler.run_job(job)
+
+        assert mock_bump.call_count == 2
+        names = [c[0][0] for c in mock_bump.call_args_list]
+        assert sorted(names) == ["alpha", "beta"]
+
 
 class TestBuildJobPromptMissingSkill:
     """Verify that a missing skill logs a warning and does not crash the job."""
@@ -2245,52 +2290,76 @@ class TestBuildJobPromptMissingSkill:
         assert "go" in result
 
 
-class TestBuildJobPromptBumpUse:
-    """Verify that cron jobs bump skill usage counters so the curator sees them as active."""
+class TestBumpCronJobSkillUsage:
+    """Verify that cron jobs bump skill usage counters so the curator sees them as active.
 
-    def test_bump_use_called_for_loaded_skill(self):
-        """bump_use is called for each successfully loaded skill."""
+    Bumping is hoisted to the top of _run_job_impl (before the wake-gate)
+    so script-gated jobs that don't wake the agent still record activity.
+    The helper itself is provenance-agnostic — declaration is the signal.
+    """
+
+    def test_helper_bumps_every_declared_skill(self):
+        """The helper iterates over ``skills:`` and bumps each, regardless of load."""
+        from cron.scheduler import _bump_cron_job_skill_usage
+
+        with patch("tools.skill_usage.bump_use") as mock_bump:
+            _bump_cron_job_skill_usage({"skills": ["alpha", "beta"]})
+
+        assert mock_bump.call_count == 2
+        names = [c[0][0] for c in mock_bump.call_args_list]
+        assert names == ["alpha", "beta"]
+
+    def test_helper_supports_legacy_singular_skill_field(self):
+        """Older cron jobs used ``skill:`` (singular) — must still bump."""
+        from cron.scheduler import _bump_cron_job_skill_usage
+
+        with patch("tools.skill_usage.bump_use") as mock_bump:
+            _bump_cron_job_skill_usage({"skill": "legacy-name"})
+
+        mock_bump.assert_called_once_with("legacy-name")
+
+    def test_helper_bumps_even_if_skill_will_fail_to_load(self):
+        """A missing-from-disk skill still bumps — declaration is the signal."""
+        from cron.scheduler import _bump_cron_job_skill_usage
+
+        with patch("tools.skill_usage.bump_use") as mock_bump:
+            _bump_cron_job_skill_usage({"skills": ["ghost"]})
+
+        mock_bump.assert_called_once_with("ghost")
+
+    def test_helper_handles_empty_and_blank(self):
+        """No skills declared → no bump; blank strings are skipped."""
+        from cron.scheduler import _bump_cron_job_skill_usage
+
+        with patch("tools.skill_usage.bump_use") as mock_bump:
+            _bump_cron_job_skill_usage({"skills": []})
+            _bump_cron_job_skill_usage({"skills": ["", "   "]})
+            _bump_cron_job_skill_usage({})
+
+        mock_bump.assert_not_called()
+
+    def test_helper_bump_failure_is_swallowed(self, caplog):
+        """bump_use raising must not block the cron run."""
+        from cron.scheduler import _bump_cron_job_skill_usage
+
+        with patch("tools.skill_usage.bump_use", side_effect=RuntimeError("boom")), \
+             caplog.at_level(logging.DEBUG, logger="cron.scheduler"):
+            _bump_cron_job_skill_usage({"skills": ["good-skill"]})
+
+        assert any("bump_use(good-skill) failed" in r.message for r in caplog.records)
+
+    def test_build_job_prompt_no_longer_bumps(self):
+        """Regression: bump was hoisted OUT of _build_job_prompt to avoid
+        double-counting now that _run_job_impl bumps once per tick."""
 
         def _skill_view(name: str) -> str:
             return json.dumps({"success": True, "content": f"Content for {name}."})
 
         with patch("tools.skills_tool.skill_view", side_effect=_skill_view), \
              patch("tools.skill_usage.bump_use") as mock_bump:
-            _build_job_prompt({"skills": ["alpha", "beta"], "prompt": "go"})
+            _build_job_prompt({"skills": ["alpha"], "prompt": "go"})
 
-        assert mock_bump.call_count == 2
-        calls = [c[0][0] for c in mock_bump.call_args_list]
-        assert "alpha" in calls
-        assert "beta" in calls
-
-    def test_bump_use_not_called_for_missing_skill(self):
-        """bump_use is NOT called when a skill fails to load."""
-
-        def _missing_view(name: str) -> str:
-            return json.dumps({"success": False, "error": "not found"})
-
-        with patch("tools.skills_tool.skill_view", side_effect=_missing_view), \
-             patch("tools.skill_usage.bump_use") as mock_bump:
-            _build_job_prompt({"skills": ["ghost"], "prompt": "go"})
-
-        assert mock_bump.call_count == 0
-
-    def test_bump_failure_does_not_break_prompt(self, caplog):
-        """If bump_use raises, the prompt still builds — error is logged at DEBUG."""
-
-        def _skill_view(name: str) -> str:
-            return json.dumps({"success": True, "content": "Works."})
-
-        with patch("tools.skills_tool.skill_view", side_effect=_skill_view), \
-             patch("tools.skill_usage.bump_use", side_effect=RuntimeError("boom")), \
-             caplog.at_level(logging.DEBUG, logger="cron.scheduler"):
-            result = _build_job_prompt({"skills": ["good-skill"], "prompt": "go"})
-
-        # Prompt should still contain the skill content and original instruction
-        assert "Works." in result
-        assert "go" in result
-        # The error should be logged at DEBUG level, not crash
-        assert any("failed to bump" in r.message for r in caplog.records)
+        mock_bump.assert_not_called()
 
 
 class TestSendMediaViaAdapter:

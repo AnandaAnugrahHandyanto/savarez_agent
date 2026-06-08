@@ -1220,7 +1220,6 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         return _scan_assembled_cron_prompt(prompt, job, has_skills=False)
 
     from tools.skills_tool import skill_view
-    from tools.skill_usage import bump_use
     from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
 
     parts = []
@@ -1263,11 +1262,10 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             skipped.append(skill_name)
             continue
 
-        # Bump usage so the curator sees this skill as actively used.
-        try:
-            bump_use(skill_name)
-        except Exception:
-            logger.debug("Cron job: failed to bump skill usage for '%s'", skill_name, exc_info=True)
+        # Usage bumping happens in _bump_cron_job_skill_usage, called from
+        # _run_job_impl BEFORE the wake-gate so script-gated jobs that don't
+        # wake the agent still record activity. Skill loading here is the
+        # prompt-injection step only.
 
         content = str(loaded.get("content") or "").strip()
         if parts:
@@ -1341,6 +1339,43 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool =
     return assembled
 
 
+def _bump_cron_job_skill_usage(job: dict) -> None:
+    """Bump skill usage counters for every skill declared on *job*.
+
+    Called once per tick from ``_run_job_impl`` BEFORE the wake-gate or any
+    other short-circuit. The fact that a skill is declared on a scheduled
+    job (via ``skills:`` / legacy ``skill:``) is the usage signal — whether
+    this particular tick actually wakes the agent is incidental. Without
+    this, script-gated jobs (which usually return ``wakeAgent=false``) leave
+    their skills with no telemetry, and the curator eventually prunes them
+    as stale.
+
+    Best-effort: errors are logged at DEBUG so a usage-tracker hiccup never
+    blocks a real cron run.
+    """
+    raw = job.get("skills")
+    if raw is None:
+        legacy = job.get("skill")
+        raw = [legacy] if legacy else []
+    elif isinstance(raw, str):
+        raw = [raw]
+    skill_names = [str(n).strip() for n in raw if str(n).strip()]
+    if not skill_names:
+        return
+    try:
+        from tools.skill_usage import bump_use
+    except Exception:
+        logger.debug("bump_cron_job_skill_usage: bump_use import failed", exc_info=True)
+        return
+    for name in skill_names:
+        try:
+            bump_use(name)
+        except Exception:
+            logger.debug(
+                "bump_cron_job_skill_usage: bump_use(%s) failed", name, exc_info=True
+            )
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """Execute a single cron job, applying any per-job profile override."""
     job_id = job["id"]
@@ -1351,12 +1386,18 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
-    
+
     Returns:
         Tuple of (success, full_output_doc, final_response, error_message)
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
+
+    # Record skill usage up-front so script-gated jobs (which may return
+    # wakeAgent=false on quiet ticks) and no_agent jobs still produce a
+    # usage signal for every tick. The declaration on the job is the
+    # signal; the agent waking is incidental.
+    _bump_cron_job_skill_usage(job)
 
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.
