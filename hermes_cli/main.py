@@ -1,61 +1,61 @@
 #!/usr/bin/env python3
 """
-Savarez CLI - Main entry point.
+Hermes CLI - Main entry point.
 
 Usage:
-    savarez                     # Interactive chat (default)
-    savarez chat                # Interactive chat
-    savarez gateway             # Run gateway in foreground
-    savarez gateway start       # Start gateway as service
-    savarez gateway stop        # Stop gateway service
-    savarez gateway status      # Show gateway status
-    savarez gateway install     # Install gateway service
-    savarez gateway uninstall   # Uninstall gateway service
-    savarez setup               # Interactive setup wizard
-    savarez logout              # Clear stored authentication
-    savarez status              # Show status of all components
-    savarez cron                # Manage cron jobs
-    savarez cron list           # List cron jobs
-    savarez cron status         # Check if cron scheduler is running
-    savarez doctor              # Check configuration and dependencies
-    savarez honcho setup                    # Configure Honcho AI memory integration
-    savarez honcho status                   # Show Honcho config and connection status
-    savarez honcho sessions                 # List directory → session name mappings
-    savarez honcho map <name>               # Map current directory to a session name
-    savarez honcho peer                     # Show peer names and dialectic settings
-    savarez honcho peer --user NAME         # Set user peer name
-    savarez honcho peer --ai NAME           # Set AI peer name
-    savarez honcho peer --reasoning LEVEL   # Set dialectic reasoning level
-    savarez honcho mode                     # Show current memory mode
-    savarez honcho mode [hybrid|honcho|local]  # Set memory mode
-    savarez honcho tokens                   # Show token budget settings
-    savarez honcho tokens --context N       # Set session.context() token cap
-    savarez honcho tokens --dialectic N     # Set dialectic result char cap
-    savarez honcho identity                 # Show AI peer identity representation
-    savarez honcho identity <file>          # Seed AI peer identity from a file (SOUL.md etc.)
-    savarez honcho migrate                  # Step-by-step migration guide: OpenClaw native → Savarez + Honcho
-    savarez version             Show version
-    savarez update              Update to latest version
-    savarez uninstall           Uninstall Savarez AI Agent
-    savarez acp                 Run as an ACP server for editor integration
-    savarez sessions browse     Interactive session picker with search
+    hermes                     # Interactive chat (default)
+    hermes chat                # Interactive chat
+    hermes gateway             # Run gateway in foreground
+    hermes gateway start       # Start gateway as service
+    hermes gateway stop        # Stop gateway service
+    hermes gateway status      # Show gateway status
+    hermes gateway install     # Install gateway service
+    hermes gateway uninstall   # Uninstall gateway service
+    hermes setup               # Interactive setup wizard
+    hermes logout              # Clear stored authentication
+    hermes status              # Show status of all components
+    hermes cron                # Manage cron jobs
+    hermes cron list           # List cron jobs
+    hermes cron status         # Check if cron scheduler is running
+    hermes doctor              # Check configuration and dependencies
+    hermes honcho setup                    # Configure Honcho AI memory integration
+    hermes honcho status                   # Show Honcho config and connection status
+    hermes honcho sessions                 # List directory → session name mappings
+    hermes honcho map <name>               # Map current directory to a session name
+    hermes honcho peer                     # Show peer names and dialectic settings
+    hermes honcho peer --user NAME         # Set user peer name
+    hermes honcho peer --ai NAME           # Set AI peer name
+    hermes honcho peer --reasoning LEVEL   # Set dialectic reasoning level
+    hermes honcho mode                     # Show current memory mode
+    hermes honcho mode [hybrid|honcho|local]  # Set memory mode
+    hermes honcho tokens                   # Show token budget settings
+    hermes honcho tokens --context N       # Set session.context() token cap
+    hermes honcho tokens --dialectic N     # Set dialectic result char cap
+    hermes honcho identity                 # Show AI peer identity representation
+    hermes honcho identity <file>          # Seed AI peer identity from a file (SOUL.md etc.)
+    hermes honcho migrate                  # Step-by-step migration guide: OpenClaw native → Hermes + Honcho
+    hermes version             Show version
+    hermes update              Update to latest version
+    hermes uninstall           Uninstall Hermes Agent
+    hermes acp                 Run as an ACP server for editor integration
+    hermes sessions browse     Interactive session picker with search
 
-    savarez claw migrate --dry-run  # Preview migration without changes
+    hermes claw migrate --dry-run  # Preview migration without changes
 """
 
-# IMPORTANT: hermes_bootstrap must be the very first import - it sets up
+# IMPORTANT: hermes_bootstrap must be the very first import — it sets up
 # UTF-8 stdio on Windows so print()/subprocess children don't hit
 # UnicodeEncodeError with non-ASCII characters.  No-op on POSIX.
 #
 # Guarded against ModuleNotFoundError because ``hermes_bootstrap`` is a
 # top-level module registered via pyproject.toml's ``py-modules`` list.
-# When the user upgrades code via ``git pull`` (or ``savarez update``
+# When the user upgrades code via ``git pull`` (or ``hermes update``
 # crashes between ``git reset --hard`` and ``uv pip install -e .``), the
 # new code references ``hermes_bootstrap`` but the editable install's
 # ``.pth`` file still points at the old set of top-level modules.  Without
-# this guard, savarez crashes on import and the user can't run
-# ``savarez update`` to recover.  Missing the bootstrap means UTF-8 stdio
-# setup is skipped on Windows - degraded, not broken.  POSIX is unaffected.
+# this guard, hermes crashes on import and the user can't run
+# ``hermes update`` to recover.  Missing the bootstrap means UTF-8 stdio
+# setup is skipped on Windows — degraded, not broken.  POSIX is unaffected.
 try:
     import hermes_bootstrap  # noqa: F401
 except ModuleNotFoundError:
@@ -66,24 +66,24 @@ import sys
 
 
 def _set_process_title() -> None:
-    """Set the process title to 'savarez' so tools like 'ps', 'top', and
+    """Set the process title to 'hermes' so tools like 'ps', 'top', and
     'htop' show the app name instead of 'python3.xx'.
 
-    Purely cosmetic - non-fatal on any platform.
+    Purely cosmetic — non-fatal on any platform.
 
     Strategy (try in order):
-      1. ``setproctitle`` (opt-in dep - installed via ``savarez tools`` or
+      1. ``setproctitle`` (opt-in dep — installed via ``hermes tools`` or
          ``pip install setproctitle``, or bundled in a future release).
       2. ctypes ``prctl(PR_SET_NAME)`` (Linux only, 15-char limit).
-      3. ctypes ``pthread_setname_np`` (macOS only, kernel thread name -
+      3. ctypes ``pthread_setname_np`` (macOS only, kernel thread name —
          changes lldb/top but not ``ps aux``).
-      4. No-op on Windows (the .exe name is already ``savarez.exe``).
+      4. No-op on Windows (the .exe name is already ``hermes.exe``).
     """
-    # Strategy 1: setproctitle (best - works on macOS, Linux, BSD)
+    # Strategy 1: setproctitle (best — works on macOS, Linux, BSD)
     try:
         import setproctitle  # type: ignore[import-untyped]
 
-        setproctitle.setproctitle("savarez")
+        setproctitle.setproctitle("hermes")
         return
     except ImportError:
         pass
@@ -96,11 +96,11 @@ def _set_process_title() -> None:
         system = platform.system()
         if system == "Linux":
             libc = ctypes.CDLL("libc.so.6", use_errno=True)
-            libc.prctl(15, b"savarez", 0, 0, 0)  # PR_SET_NAME = 15
+            libc.prctl(15, b"hermes", 0, 0, 0)  # PR_SET_NAME = 15
         elif system == "Darwin":
             libc = ctypes.CDLL("libc.dylib", use_errno=True)
-            libc.pthread_setname_np(b"savarez")
-        # Windows: the .exe name is already ``savarez.exe`` - nothing to do.
+            libc.pthread_setname_np(b"hermes")
+        # Windows: the .exe name is already ``hermes.exe`` — nothing to do.
     except Exception:
         pass
 
@@ -121,11 +121,11 @@ def _config_default_interface_early() -> str:
         return _EARLY_INTERFACE_CACHE[0]
     value = "cli"
     try:
-        home = os.environ.get("SAVAREZ_HOME")
+        home = os.environ.get("HERMES_HOME")
         if home:
             cfg_path = os.path.join(home, "config.yaml")
         else:
-            cfg_path = os.path.join(os.path.expanduser("~"), ".savarez", "config.yaml")
+            cfg_path = os.path.join(os.path.expanduser("~"), ".hermes", "config.yaml")
         if os.path.exists(cfg_path):
             import yaml as _yaml_iface
 
@@ -137,7 +137,7 @@ def _config_default_interface_early() -> str:
                 if isinstance(iface, str) and iface.strip().lower() == "tui":
                     value = "tui"
     except Exception:
-        value = "cli"  # best-effort - default to classic REPL on any error
+        value = "cli"  # best-effort — default to classic REPL on any error
     _EARLY_INTERFACE_CACHE = [value]
     return value
 
@@ -157,7 +157,7 @@ def _wants_tui_early(argv: "list[str] | None" = None) -> bool:
     return _config_default_interface_early() == "tui"
 
 
-# Mouse-tracking residue suppression - runs BEFORE every other import on the
+# Mouse-tracking residue suppression — runs BEFORE every other import on the
 # TUI hot path so the terminal stops emitting SGR/X10 mouse reports while the
 # Python launcher is still doing imports (≈100–300ms in cooked + echo mode,
 # before the Node TUI takes stdin into raw mode). During that window any
@@ -171,7 +171,7 @@ def _suppress_mouse_residue_early() -> None:
     if not _wants_tui_early():
         return
     try:
-        # Skip when stdout is redirected (`savarez --tui … >log`, CI capture):
+        # Skip when stdout is redirected (`hermes --tui … >log`, CI capture):
         # the bytes can't reach the terminal anyway and would just pollute
         # the log with raw CSI.
         if not os.isatty(1):
@@ -228,7 +228,7 @@ def _print_fast_version_info() -> None:
     from hermes_cli import __release_date__, __version__
 
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-    print(f"Savarez AI Agent v{__version__} ({__release_date__})")
+    print(f"Hermes Agent v{__version__} ({__release_date__})")
     print(f"Project: {project_root}")
     print(f"Python: {sys.version.split()[0]}")
 
@@ -237,7 +237,7 @@ def _print_fast_version_info() -> None:
 
 
 def _try_termux_ultrafast_version() -> bool:
-    """Handle ``savarez --version`` before config/logging imports on Termux."""
+    """Handle ``hermes --version`` before config/logging imports on Termux."""
     if os.environ.get("HERMES_TERMUX_DISABLE_FAST_CLI") == "1":
         return False
     if not _is_termux_startup_environment_fast():
@@ -262,30 +262,56 @@ from pathlib import Path
 from typing import Optional
 
 
-def _add_accept_hooks_flag(parser) -> None:
-    """Attach the ``--accept-hooks`` flag.  Shared across every agent
-    subparser so the flag works regardless of CLI position."""
-    parser.add_argument(
-        "--accept-hooks",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help=(
-            "Auto-approve unseen shell hooks without a TTY prompt "
-            "(equivalent to HERMES_ACCEPT_HOOKS=1 / hooks_auto_accept: true)."
-        ),
-    )
+from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
+from hermes_cli.subcommands.cron import build_cron_parser
+from hermes_cli.subcommands.gateway import build_gateway_parser
+from hermes_cli.subcommands.profile import build_profile_parser
+from hermes_cli.subcommands.model import build_model_parser
+from hermes_cli.subcommands.setup import build_setup_parser
+from hermes_cli.subcommands.postinstall import build_postinstall_parser
+from hermes_cli.subcommands.whatsapp import build_whatsapp_parser
+from hermes_cli.subcommands.slack import build_slack_parser
+from hermes_cli.subcommands.login import build_login_parser
+from hermes_cli.subcommands.logout import build_logout_parser
+from hermes_cli.subcommands.auth import build_auth_parser
+from hermes_cli.subcommands.status import build_status_parser
+from hermes_cli.subcommands.webhook import build_webhook_parser
+from hermes_cli.subcommands.hooks import build_hooks_parser
+from hermes_cli.subcommands.doctor import build_doctor_parser
+from hermes_cli.subcommands.security import build_security_parser
+from hermes_cli.subcommands.dump import build_dump_parser
+from hermes_cli.subcommands.debug import build_debug_parser
+from hermes_cli.subcommands.backup import build_backup_parser
+from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
+from hermes_cli.subcommands.config import build_config_parser
+from hermes_cli.subcommands.version import build_version_parser
+from hermes_cli.subcommands.update import build_update_parser
+from hermes_cli.subcommands.uninstall import build_uninstall_parser
+from hermes_cli.subcommands.dashboard import build_dashboard_parser
+from hermes_cli.subcommands.gui import build_gui_parser
+from hermes_cli.subcommands.logs import build_logs_parser
+from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
+from hermes_cli.subcommands.memory import build_memory_parser
+from hermes_cli.subcommands.acp import build_acp_parser
+from hermes_cli.subcommands.tools import build_tools_parser
+from hermes_cli.subcommands.insights import build_insights_parser
+from hermes_cli.subcommands.skills import build_skills_parser
+from hermes_cli.subcommands.pairing import build_pairing_parser
+from hermes_cli.subcommands.plugins import build_plugins_parser
+from hermes_cli.subcommands.mcp import build_mcp_parser
+from hermes_cli.subcommands.claw import build_claw_parser
 
 
 def _require_tty(command_name: str) -> None:
     """Exit with a clear error if stdin is not a terminal.
 
-    Interactive TUI commands (savarez tools, savarez setup, savarez model) use
+    Interactive TUI commands (hermes tools, hermes setup, hermes model) use
     curses or input() prompts that spin at 100% CPU when stdin is a pipe.
     This guard prevents accidental non-interactive invocation.
     """
     if not sys.stdin.isatty():
         print(
-            f"Error: 'savarez {command_name}' requires an interactive terminal.\n"
+            f"Error: 'hermes {command_name}' requires an interactive terminal.\n"
             f"It cannot be run through a pipe or non-interactive subprocess.\n"
             f"Run it directly in your terminal instead.",
             file=sys.stderr,
@@ -299,16 +325,16 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 
 # ---------------------------------------------------------------------------
-# Profile override - MUST happen before any savarez module import.
+# Profile override — MUST happen before any hermes module import.
 #
-# Many modules cache SAVAREZ_HOME at import time (module-level constants).
+# Many modules cache HERMES_HOME at import time (module-level constants).
 # We intercept --profile/-p from sys.argv here and set the env var so that
-# every subsequent ``os.getenv("SAVAREZ_HOME", ...)`` resolves correctly.
+# every subsequent ``os.getenv("HERMES_HOME", ...)`` resolves correctly.
 # The flag is stripped from sys.argv so argparse never sees it.
-# Falls back to ~/.savarez/active_profile for sticky default.
+# Falls back to ~/.hermes/active_profile for sticky default.
 # ---------------------------------------------------------------------------
 def _apply_profile_override() -> None:
-    """Pre-parse --profile/-p and set SAVAREZ_HOME before module imports."""
+    """Pre-parse --profile/-p and set HERMES_HOME before module imports."""
     argv = sys.argv[1:]
     profile_name = None
     consume = 0
@@ -335,21 +361,21 @@ def _apply_profile_override() -> None:
             profile_name = None
             consume = 0
 
-    # 1.5 If SAVAREZ_HOME is already set and no explicit flag was given, trust it
+    # 1.5 If HERMES_HOME is already set and no explicit flag was given, trust it
     # only when it already points to a specific profile directory.  The
     # distinguishing heuristic: a profile path has "profiles" as its immediate
-    # parent directory name (e.g. ~/.savarez/profiles/coder or
-    # /opt/data/profiles/coder).  If SAVAREZ_HOME points to the savarez root
-    # instead (e.g. systemd hardcodes SAVAREZ_HOME=/root/.savarez), we must
-    # still read active_profile - the user may have switched profiles via
-    # `savarez profile use` and the gateway should honour that choice.
+    # parent directory name (e.g. ~/.hermes/profiles/coder or
+    # /opt/data/profiles/coder).  If HERMES_HOME points to the hermes root
+    # instead (e.g. systemd hardcodes HERMES_HOME=/root/.hermes), we must
+    # still read active_profile — the user may have switched profiles via
+    # `hermes profile use` and the gateway should honour that choice.
     # See issue #22502.
-    hermes_home_env = os.environ.get("SAVAREZ_HOME", "")
+    hermes_home_env = os.environ.get("HERMES_HOME", "")
     if profile_name is None and hermes_home_env:
         if Path(hermes_home_env).parent.name == "profiles":
             return
 
-    # 2. If no flag, check active_profile in the savarez root
+    # 2. If no flag, check active_profile in the hermes root
     if profile_name is None:
         try:
             from hermes_constants import get_default_hermes_root
@@ -363,7 +389,7 @@ def _apply_profile_override() -> None:
         except (UnicodeDecodeError, OSError):
             pass  # corrupted file, skip
 
-    # 3. If we found a profile, resolve and set SAVAREZ_HOME
+    # 3. If we found a profile, resolve and set HERMES_HOME
     if profile_name is not None:
         try:
             from hermes_cli.profiles import resolve_profile_env
@@ -373,13 +399,13 @@ def _apply_profile_override() -> None:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
         except Exception as exc:
-            # A bug in profiles.py must NEVER prevent savarez from starting
+            # A bug in profiles.py must NEVER prevent hermes from starting
             print(
                 f"Warning: profile override failed ({exc}), using default",
                 file=sys.stderr,
             )
             return
-        os.environ["SAVAREZ_HOME"] = hermes_home
+        os.environ["HERMES_HOME"] = hermes_home
         # Strip the flag from argv so argparse doesn't choke
         if consume > 0:
             for i, arg in enumerate(argv):
@@ -395,7 +421,7 @@ def _apply_profile_override() -> None:
 
 _apply_profile_override()
 
-# Load .env from ~/.savarez/.env first, then project root as dev fallback.
+# Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.config import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -406,10 +432,10 @@ load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 # var BEFORE hermes_logging imports agent.redact (which snapshots the flag at
 # module-import time). Without this, config.yaml's toggle is ignored because
 # the setup_logging() call below imports agent.redact, which reads the env var
-# exactly once. Env var in .env still wins - this is config.yaml fallback only.
+# exactly once. Env var in .env still wins — this is config.yaml fallback only.
 #
 # We also read network.force_ipv4 from the same yaml load to avoid two
-# separate config.yaml reads (saves ~17ms on every CLI startup - the second
+# separate config.yaml reads (saves ~17ms on every CLI startup — the second
 # `load_config()` was doing a full deep-merge for one boolean lookup).
 _FORCE_IPV4_EARLY = False
 try:
@@ -431,9 +457,9 @@ try:
         del _early_cfg_raw
     del _cfg_path
 except Exception:
-    pass  # best-effort - redaction stays at default (enabled) on config errors
+    pass  # best-effort — redaction stays at default (enabled) on config errors
 
-# Initialize centralized file logging early - all `savarez` subcommands
+# Initialize centralized file logging early — all `hermes` subcommands
 # (chat, setup, gateway, config, etc.) write to agent.log + errors.log.
 # Dashboard entrypoints bootstrap with GUI mode so gui.log is always present
 # during GUI testing, including pre-dispatch startup failures.
@@ -449,10 +475,10 @@ try:
         )
     )
 except Exception:
-    pass  # best-effort - don't crash the CLI if logging setup fails
+    pass  # best-effort — don't crash the CLI if logging setup fails
 
 # Apply IPv4 preference early, before any HTTP clients are created.
-# We already determined whether to force IPv4 from the raw yaml read above -
+# We already determined whether to force IPv4 from the raw yaml read above —
 # this just calls the toggle without a redundant load_config() round trip.
 if _FORCE_IPV4_EARLY:
     try:
@@ -460,7 +486,7 @@ if _FORCE_IPV4_EARLY:
 
         _apply_ipv4(force=True)
     except Exception:
-        pass  # best-effort - don't crash if hermes_constants not importable yet
+        pass  # best-effort — don't crash if hermes_constants not importable yet
 
 import logging
 import threading
@@ -537,9 +563,9 @@ def _read_git_revision_fingerprint(repo_root: Path) -> str | None:
             packed_sha = _read_packed_ref(common_dir, ref)
             if packed_sha:
                 return f"git:{ref}:{packed_sha}"
-            # Ref name is known but unresolved - still stable across launches,
+            # Ref name is known but unresolved — still stable across launches,
             # and the version/release fallback in the caller will invalidate
-            # after `savarez update`.
+            # after `hermes update`.
             return f"git:{ref}:unresolved"
         return f"git:HEAD:{head}"
     except OSError:
@@ -632,7 +658,7 @@ def _has_any_provider_configured() -> bool:
     from hermes_cli.config import get_env_path, get_hermes_home, load_config
     from hermes_cli.auth import get_auth_status
 
-    # Determine whether Savarez itself has been explicitly configured (model
+    # Determine whether Hermes itself has been explicitly configured (model
     # in config that isn't the hardcoded default). Used below to gate external
     # tool credentials (Claude Code, Codex CLI) that shouldn't silently skip
     # the setup wizard on a fresh install.
@@ -650,7 +676,7 @@ def _has_any_provider_configured() -> bool:
     _has_hermes_config = _model_name and _model_name != _DEFAULT_MODEL
 
     # Check env vars (may be set by .env or shell).
-    # OPENAI_BASE_URL alone counts - local models (vLLM, llama.cpp, etc.)
+    # OPENAI_BASE_URL alone counts — local models (vLLM, llama.cpp, etc.)
     # often don't require an API key.
     from hermes_cli.auth import PROVIDER_REGISTRY
 
@@ -709,7 +735,7 @@ def _has_any_provider_configured() -> bool:
         except Exception:
             pass
 
-    # Check config.yaml - if model is a dict with an explicit provider set,
+    # Check config.yaml — if model is a dict with an explicit provider set,
     # the user has gone through setup (fresh installs have model as a plain
     # string).  Also covers custom endpoints that store api_key/base_url in
     # config rather than .env.
@@ -721,8 +747,8 @@ def _has_any_provider_configured() -> bool:
             return True
 
     # Check for Claude Code OAuth credentials (~/.claude/.credentials.json)
-    # Only count these if Savarez has been explicitly configured - Claude Code
-    # being installed doesn't mean the user wants Savarez to use their tokens.
+    # Only count these if Hermes has been explicitly configured — Claude Code
+    # being installed doesn't mean the user wants Hermes to use their tokens.
     if _has_hermes_config:
         try:
             from agent.anthropic_adapter import (
@@ -820,12 +846,12 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
 
                 # Header line
                 if search_text:
-                    header = f"  Browse sessions - filter: {search_text}█"
+                    header = f"  Browse sessions — filter: {search_text}█"
                     header_attr = curses.A_BOLD
                     if curses.has_colors():
                         header_attr |= curses.color_pair(3)
                 else:
-                    header = "  Browse sessions - ↑↓ navigate  Enter select  Type to filter  Esc quit"
+                    header = "  Browse sessions — ↑↓ navigate  Enter select  Type to filter  Esc quit"
                     header_attr = curses.A_BOLD
                     if curses.has_colors():
                         header_attr |= curses.color_pair(2)
@@ -1030,7 +1056,7 @@ def _exec_in_container(container_info: dict, cli_args: list):
 
     Args:
         container_info: dict with backend, container_name, exec_user, hermes_bin
-        cli_args: the original CLI arguments (everything after 'savarez')
+        cli_args: the original CLI arguments (everything after 'hermes')
     """
 
     backend = container_info["backend"]
@@ -1047,7 +1073,7 @@ def _exec_in_container(container_info: dict, cli_args: list):
         sys.exit(1)
 
     # Rootful containers (NixOS systemd service) are invisible to unprivileged
-    # users - Podman uses per-user namespaces, Docker needs group access.
+    # users — Podman uses per-user namespaces, Docker needs group access.
     # Probe whether the runtime can see the container; if not, try via sudo.
     sudo_path = None
     probe = _probe_container(
@@ -1068,7 +1094,7 @@ def _exec_in_container(container_info: dict, cli_args: list):
                     f"\n"
                     f"The container is likely running as root. Your user cannot see it\n"
                     f"because {backend} uses per-user namespaces. Grant passwordless\n"
-                    f"sudo for {backend} - the -n (non-interactive) flag is required\n"
+                    f"sudo for {backend} — the -n (non-interactive) flag is required\n"
                     f"because a password prompt would hang or break piped commands.\n"
                     f"\n"
                     f"On NixOS:\n"
@@ -1078,14 +1104,14 @@ def _exec_in_container(container_info: dict, cli_args: list):
                     f'    commands = [{{ command = "{runtime}"; options = [ "NOPASSWD" ]; }}];\n'
                     f"  }}];\n"
                     f"\n"
-                    f"Or run: sudo savarez {' '.join(cli_args)}",
+                    f"Or run: sudo hermes {' '.join(cli_args)}",
                     file=sys.stderr,
                 )
                 sys.exit(1)
         else:
             print(
                 f"Error: container '{container_name}' not found via {backend}.\n"
-                f"The container may be running under root. Try: sudo savarez {' '.join(cli_args)}",
+                f"The container may be running under root. Try: sudo hermes {' '.join(cli_args)}",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -1188,7 +1214,7 @@ def _print_tui_exit_summary(
         title = db.get_session_title(target)
         message_count = int(session.get("message_count") or 0)
         if message_count == 0:
-            return  # No real conversation - don't show resume info
+            return  # No real conversation — don't show resume info
         input_tokens = int(session.get("input_tokens") or 0)
         output_tokens = int(session.get("output_tokens") or 0)
         cache_read_tokens = int(session.get("cache_read_tokens") or 0)
@@ -1209,9 +1235,9 @@ def _print_tui_exit_summary(
 
     print()
     print("Resume this session with:")
-    print(f"  savarez --tui --resume {target}")
+    print(f"  hermes --tui --resume {target}")
     if title:
-        print(f'  savarez --tui -c "{title}"')
+        print(f'  hermes --tui -c "{title}"')
     print()
     print(f"Session:        {target}")
     if title:
@@ -1229,7 +1255,7 @@ _NPM_LOCK_RUNTIME_KEYS = frozenset({"ideallyInert", "peer"})
 
 ``ideallyInert`` is npm's runtime annotation for packages it skipped installing
 (per-platform opt-outs).  ``peer`` is dropped from the hidden ``.package-lock.json``
-on dev-dependencies that are *also* declared as peers - the canonical
+on dev-dependencies that are *also* declared as peers — the canonical
 ``package-lock.json`` records the dual role, but npm 9's actualized tree strips
 it.  Neither key represents a real skew between what was declared and what was
 installed, so we exclude them from the comparison in :func:`_tui_need_npm_install`
@@ -1250,7 +1276,7 @@ def _workspace_root(dir: Path) -> Path:
 
     Used by ``_tui_need_npm_install``, ``_make_tui_argv``, and
     ``_build_web_ui`` so that lockfile/node_modules resolution and
-    ``npm install`` cwd stay consistent - a single helper prevents
+    ``npm install`` cwd stay consistent — a single helper prevents
     the checks from diverging if someone accidentally creates a
     sub-package lockfile (e.g. running ``npm install`` in the wrong
     directory).
@@ -1291,11 +1317,11 @@ def _termux_workspace_install_context(
 
 
 def _tui_need_npm_install(root: Path) -> bool:
-    """True when @savarez/ink is missing or node_modules is behind package-lock.json.
+    """True when @hermes/ink is missing or node_modules is behind package-lock.json.
 
     Prebuilt bundle mode: when ``dist/entry.js`` exists and there is no
     ``package-lock.json`` (nix install layout only ships ``dist/`` +
-    ``package.json``), skip reinstall entirely - the bundle is self-contained
+    ``package.json``), skip reinstall entirely — the bundle is self-contained
     and there is nothing to install.
 
     With npm workspaces the single ``package-lock.json`` and the hoisted
@@ -1316,7 +1342,7 @@ def _tui_need_npm_install(root: Path) -> bool:
       - present but with differing fields (excluding npm-written runtime
         annotations like ``ideallyInert``) → reinstall
 
-    Extra entries that exist only in the hidden lock are ignored - stale
+    Extra entries that exist only in the hidden lock are ignored — stale
     transitives left over from a removed dependency don't break runtime and
     we'd rather not force a reinstall for them. Falls back to mtime
     comparison if either lockfile is unparseable.
@@ -1330,7 +1356,7 @@ def _tui_need_npm_install(root: Path) -> bool:
     if entry.is_file() and not lock.is_file():
         return False
 
-    ink = ws_root / "node_modules" / "@savarez" / "ink" / "package.json"
+    ink = ws_root / "node_modules" / "@hermes" / "ink" / "package.json"
     if not ink.is_file():
         return True
     if not lock.is_file():
@@ -1373,7 +1399,7 @@ def _tui_need_npm_install(root: Path) -> bool:
 
 _TUI_BUILD_INPUT_DIRS = (
     "src",
-    "packages/savarez-ink/src",
+    "packages/hermes-ink/src",
 )
 
 _TUI_BUILD_INPUT_FILES = (
@@ -1383,9 +1409,9 @@ _TUI_BUILD_INPUT_FILES = (
     "tsconfig.build.json",
     "babel.compiler.config.cjs",
     "scripts/build.mjs",
-    "packages/savarez-ink/package.json",
-    "packages/savarez-ink/index.js",
-    "packages/savarez-ink/text-input.js",
+    "packages/hermes-ink/package.json",
+    "packages/hermes-ink/index.js",
+    "packages/hermes-ink/text-input.js",
 )
 
 _TUI_BUILD_INPUT_SUFFIXES = frozenset(
@@ -1443,7 +1469,7 @@ def _ensure_tui_node() -> None:
     it and call `ensure_node` (fnm/nvm/proto/brew/bundled cascade). After
     install, capture the resolved node binary path from the bash subprocess
     and prepend its directory to os.environ["PATH"] so shutil.which finds the
-    new binaries in this Python process - regardless of which version manager
+    new binaries in this Python process — regardless of which version manager
     was used (nvm, fnm, proto, brew, or the bundled fallback).
 
     Idempotent no-op when node+npm are already discoverable. Set
@@ -1458,7 +1484,7 @@ def _ensure_tui_node() -> None:
     if not helper.is_file():
         return
 
-    hermes_home = os.environ.get("SAVAREZ_HOME") or str(Path.home() / ".savarez")
+    hermes_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
     try:
         # Helper writes logs to stderr; we ask bash to print `command -v node`
         # on stdout once ensure_node succeeds. Subshell PATH edits don't leak
@@ -1469,7 +1495,7 @@ def _ensure_tui_node() -> None:
                 "-c",
                 f'source "{helper}" >&2 && ensure_node >&2 && command -v node',
             ],
-            env={**os.environ, "SAVAREZ_HOME": hermes_home},
+            env={**os.environ, "HERMES_HOME": hermes_home},
             capture_output=True,
             text=True,
             check=False,
@@ -1519,7 +1545,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             except Exception:
                 pass
         if not path:
-            print(f"{bin} not found - install Node.js to use the TUI.")
+            print(f"{bin} not found — install Node.js to use the TUI.")
             sys.exit(1)
         return path
 
@@ -1604,13 +1630,13 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         did_install = True
 
     if tui_dev:
-        # Keep the local @savarez/ink package exports in sync with source.
-        # --dev runs src/entry.tsx directly, but @savarez/ink resolves through
-        # packages/savarez-ink/dist/entry-exports.js. If that dist bundle is
+        # Keep the local @hermes/ink package exports in sync with source.
+        # --dev runs src/entry.tsx directly, but @hermes/ink resolves through
+        # packages/hermes-ink/dist/entry-exports.js. If that dist bundle is
         # stale after a pull, newer hooks/components can exist in src while
         # being missing at runtime (e.g. useCursorAdvance). Prebuild it here.
         npm = _node_bin("npm")
-        ink_dir = tui_dir / "packages" / "savarez-ink"
+        ink_dir = tui_dir / "packages" / "hermes-ink"
         result = subprocess.run(
             [npm, "run", "build"],
             cwd=str(ink_dir),
@@ -1687,7 +1713,7 @@ def _read_cgroup_memory_limit() -> Optional[int]:
     Node's V8 heap is NOT cgroup-aware: with a flat ``--max-old-space-size=8192``
     it happily grows the heap toward 8GB regardless of the container's real
     memory limit.  In a Docker/k8s container capped below ~9-10GB, the cgroup
-    OOM-killer SIGKILLs Node before V8's own heap monitor ever fires - which
+    OOM-killer SIGKILLs Node before V8's own heap monitor ever fires — which
     runs no JS handler, writes no ``[tui-parent]`` breadcrumb, and the user
     sees only a bare gateway ``stdin EOF``.  Reading the real cgroup limit lets
     us size the heap cap below it so V8 GCs/exits gracefully instead of being
@@ -1721,7 +1747,7 @@ def _read_cgroup_memory_limit() -> Optional[int]:
             continue
         # cgroup v1 reports "unlimited" as a huge value (often
         # 0x7FFFFFFFFFFFF000 ≈ 9.2 EB, sometimes PAGE_COUNTER_MAX). Anything
-        # at/above ~1 PB is effectively unconstrained - treat as no limit.
+        # at/above ~1 PB is effectively unconstrained — treat as no limit.
         if limit >= (1 << 50):
             return None
         return limit
@@ -1734,7 +1760,7 @@ def _resolve_tui_heap_mb(default_mb: int = 8192) -> int:
     Returns ``default_mb`` (8192) when unconstrained or when the box is large
     enough that 8GB fits.  In a memory-limited container, returns ~75% of the
     cgroup limit so the heap + non-heap RSS stays under the cgroup ceiling,
-    clamped to a sane floor (1536MB - below this V8 GC-thrashes and the TUI
+    clamped to a sane floor (1536MB — below this V8 GC-thrashes and the TUI
     is barely usable).  Never exceeds ``default_mb``.
     """
     limit = _read_cgroup_memory_limit()
@@ -1776,7 +1802,7 @@ def _launch_tui(
 
     env = os.environ.copy()
     active_session_fd, active_session_file = tempfile.mkstemp(
-        prefix="savarez-tui-active-session-", suffix=".json"
+        prefix="hermes-tui-active-session-", suffix=".json"
     )
     os.close(active_session_fd)
     env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
@@ -1852,7 +1878,7 @@ def _launch_tui(
     # transcripts / reasoning blobs. We target 8GB on an unconstrained host,
     # but V8 is NOT cgroup-aware: in a memory-limited Docker/k8s container a
     # flat 8GB heap grows past the container limit and the cgroup OOM-killer
-    # SIGKILLs Node - running no JS handler, writing no breadcrumb, leaving the
+    # SIGKILLs Node — running no JS handler, writing no breadcrumb, leaving the
     # user with only a bare gateway `stdin EOF`. _resolve_tui_heap_mb() reads
     # the real cgroup limit and sizes the cap below it so V8 GCs/exits
     # gracefully (and the memory monitor's onCritical breadcrumb can fire)
@@ -1867,7 +1893,7 @@ def _launch_tui(
     env["NODE_OPTIONS"] = " ".join(_tokens)
     # HERMES_TUI_RESUME is an internal hand-off from the Python wrapper to the
     # Ink app.  Because we start from os.environ.copy(), an exported/stale value
-    # in the user's shell would otherwise make a plain `savarez --tui` try to
+    # in the user's shell would otherwise make a plain `hermes --tui` try to
     # resume a non-existent session and leave the UI at "error: session not
     # found" with no live session.  Only forward a resume id that argparse
     # resolved for this invocation; direct `node ui-tui/dist/entry.js` users can
@@ -1897,7 +1923,7 @@ def _launch_tui(
             except Exception:
                 pass
 
-    # Exit code 42 = TUI requested an update. Relaunch as `savarez update` so
+    # Exit code 42 = TUI requested an update. Relaunch as `hermes update` so
     # the user sees update output directly and gets the new version.
     # preserve_inherited=False ensures --tui and other flags are NOT carried
     # into the update subcommand.
@@ -1916,9 +1942,9 @@ def _pin_kanban_board_env() -> None:
     """Pin the active kanban board into ``HERMES_KANBAN_BOARD`` for the chat session.
 
     Without this, in-process tools (``kanban_*``) and shelled-out CLI calls
-    (``savarez kanban …``) resolve the board on different paths: the env-pin if
+    (``hermes kanban …``) resolve the board on different paths: the env-pin if
     set, otherwise the global ``<root>/kanban/current`` file. A concurrent
-    ``savarez kanban boards switch`` from another session can flip the file
+    ``hermes kanban boards switch`` from another session can flip the file
     mid-turn, so the same chat sees its tool calls hit board A while its shell
     calls hit board B (#20074). Pinning at chat boot mirrors what the
     dispatcher already does for spawned workers.
@@ -1934,15 +1960,15 @@ def _pin_kanban_board_env() -> None:
 
 
 def _sync_bundled_skills_quietly() -> None:
-    """Seed ``~/.savarez/skills/`` with the bundled skill library on first launch.
+    """Seed ``~/.hermes/skills/`` with the bundled skill library on first launch.
 
     Called from any CLI entrypoint that the user might use as their first
-    interaction with Savarez - chat, dashboard (the desktop GUI's backend),
+    interaction with Hermes — chat, dashboard (the desktop GUI's backend),
     and gateway. The skills_sync module is manifest-based and idempotent:
     skipped skills cost ~milliseconds, so calling this repeatedly is fine.
 
     Failures are swallowed because skills are an enhancement, not a hard
-    dependency. Savarez still functions without them; the user just sees an
+    dependency. Hermes still functions without them; the user just sees an
     empty skills library.
     """
     try:
@@ -1986,16 +2012,16 @@ def cmd_chat(args):
     continue_val = getattr(args, "continue_last", None)
     if continue_val and not getattr(args, "resume", None):
         if isinstance(continue_val, str):
-            # -c "session name" - resolve by title or ID
+            # -c "session name" — resolve by title or ID
             resolved = _resolve_session_by_name_or_id(continue_val)
             if resolved:
                 args.resume = resolved
             else:
                 print(f"No session found matching '{continue_val}'.")
-                print("Use 'savarez sessions list' to see available sessions.")
+                print("Use 'hermes sessions list' to see available sessions.")
                 sys.exit(1)
         else:
-            # -c with no argument - continue the most recent session
+            # -c with no argument — continue the most recent session
             source = "tui" if use_tui else "cli"
             last_id = _resolve_last_session(source=source)
             if not last_id and source == "tui":
@@ -2013,10 +2039,10 @@ def cmd_chat(args):
         resolved = _resolve_session_by_name_or_id(resume_val)
         if resolved:
             args.resume = resolved
-        # If resolution fails, keep the original value - _init_agent will
+        # If resolution fails, keep the original value — _init_agent will
         # report "Session not found" with the original input
 
-    # xAI retirement warning - one-shot, non-blocking, never fails startup
+    # xAI retirement warning — one-shot, non-blocking, never fails startup
     try:
         from hermes_cli.xai_retirement import (
             MIGRATION_GUIDE_URL,
@@ -2035,7 +2061,7 @@ def cmd_chat(args):
             for _ref in _retired_xai_refs:
                 sys.stderr.write(f"  \033[33m⚠\033[0m {format_issue(_ref)}\n")
             sys.stderr.write(f"  \033[2mMigration guide: {MIGRATION_GUIDE_URL}\033[0m\n")
-            sys.stderr.write("  \033[2mRun 'savarez doctor' for details.\033[0m\n\n")
+            sys.stderr.write("  \033[2mRun 'hermes doctor' for details.\033[0m\n\n")
     except Exception:
         pass
 
@@ -2043,10 +2069,10 @@ def cmd_chat(args):
     if not _has_any_provider_configured():
         print()
         print(
-            "It looks like Savarez isn't configured yet -- no API keys or providers found."
+            "It looks like Hermes isn't configured yet -- no API keys or providers found."
         )
         print()
-        print("  Run:  savarez setup")
+        print("  Run:  hermes setup")
         print()
 
         from hermes_cli.setup import (
@@ -2068,7 +2094,7 @@ def cmd_chat(args):
             cmd_setup(args)
             return
         print()
-        print("You can run 'savarez setup' at any time to configure.")
+        print("You can run 'hermes setup' at any time to configure.")
         sys.exit(1)
 
     # Start update check in background (runs while other init happens).
@@ -2093,9 +2119,9 @@ def cmd_chat(args):
         os.environ["HERMES_YOLO_MODE"] = "1"
 
     # --ignore-user-config: make load_cli_config() / load_config() skip the
-    # user's ~/.savarez/config.yaml and return built-in defaults. Set BEFORE
+    # user's ~/.hermes/config.yaml and return built-in defaults. Set BEFORE
     # importing cli (which runs `CLI_CONFIG = load_cli_config()` at module
-    # import time). Credentials in .env are still loaded - this flag only
+    # import time). Credentials in .env are still loaded — this flag only
     # ignores behavioral/config settings.
     if getattr(args, "ignore_user_config", False):
         os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
@@ -2174,7 +2200,7 @@ def cmd_gateway(args):
 
 def cmd_proxy(args):
     """Local OpenAI-compatible proxy to OAuth providers."""
-    # Lazy import - pulls in aiohttp, which is gated behind an extras install
+    # Lazy import — pulls in aiohttp, which is gated behind an extras install
     # for users who don't run the proxy or the messaging gateway.
     from hermes_cli.proxy.cli import cmd_proxy as _cmd_proxy
 
@@ -2196,10 +2222,10 @@ def cmd_whatsapp(args):
     current_mode = get_env_value("WHATSAPP_MODE") or ""
     if not current_mode:
         print()
-        print("How will you use WhatsApp with Savarez?")
+        print("How will you use WhatsApp with Hermes?")
         print()
         print("  1. Separate bot number (recommended)")
-        print("     People message the bot's number directly - cleanest experience.")
+        print("     People message the bot's number directly — cleanest experience.")
         print(
             "     Requires a second phone number with WhatsApp installed on a device."
         )
@@ -2229,7 +2255,7 @@ def cmd_whatsapp(args):
             print("  │    • Prepaid SIM: $3-10, verify once            │")
             print("  │                                                 │")
             print("  │  WhatsApp Business runs alongside your personal │")
-            print("  │  WhatsApp - no second phone needed.             │")
+            print("  │  WhatsApp — no second phone needed.             │")
             print("  └─────────────────────────────────────────────────┘")
         else:
             save_env_value("WHATSAPP_MODE", "self-chat")
@@ -2246,11 +2272,11 @@ def cmd_whatsapp(args):
     # We intentionally don't write WHATSAPP_ENABLED=true here.  If the user
     # aborts the wizard later (Ctrl+C, failed npm install, missed QR scan),
     # we'd otherwise leave .env claiming WhatsApp is ready when the bridge
-    # has no creds.json.  Every subsequent `savarez gateway` then paid a 30s
+    # has no creds.json.  Every subsequent `hermes gateway` then paid a 30s
     # bridge-bootstrap timeout and queued WhatsApp for indefinite retries.
     # Now: aborted setup leaves WHATSAPP_ENABLED unset → gateway skips it.
     # Re-runs that already have WHATSAPP_ENABLED=true (from a prior
-    # successful pairing) stay enabled - we just don't write it pre-emptively.
+    # successful pairing) stay enabled — we just don't write it pre-emptively.
     print()
     if (get_env_value("WHATSAPP_ENABLED") or "").lower() == "true":
         print("✓ WhatsApp is already enabled")
@@ -2286,7 +2312,7 @@ def cmd_whatsapp(args):
             save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
             print(f"  ✓ Allowed users set: {phone}")
         else:
-            print("  ⚠ No allowlist - the agent will respond to ALL incoming messages")
+            print("  ⚠ No allowlist — the agent will respond to ALL incoming messages")
 
     # ── Step 4: Install bridge dependencies ──────────────────────────────
     project_root = Path(__file__).resolve().parents[1]
@@ -2303,7 +2329,7 @@ def cmd_whatsapp(args):
         )
         npm = shutil.which("npm")
         if not npm:
-            print("  ✗ npm not found on PATH - install Node.js first")
+            print("  ✗ npm not found on PATH — install Node.js first")
             return
         try:
             result = subprocess.run(
@@ -2343,14 +2369,14 @@ def cmd_whatsapp(args):
             session_dir.mkdir(parents=True, exist_ok=True)
             print("  ✓ Session cleared")
         else:
-            # Existing pairing - ensure WHATSAPP_ENABLED reflects that.
+            # Existing pairing — ensure WHATSAPP_ENABLED reflects that.
             # (Older installs may have lost the env var; covers re-runs
             # where the user picked "no, keep my session" but the var
             # was never set or got removed.)
             if (get_env_value("WHATSAPP_ENABLED") or "").lower() != "true":
                 save_env_value("WHATSAPP_ENABLED", "true")
             print("\n✓ WhatsApp is configured and paired!")
-            print("  Start the gateway with: savarez gateway")
+            print("  Start the gateway with: hermes gateway")
             return
 
     # ── Step 6: QR code pairing ──────────────────────────────────────────
@@ -2379,30 +2405,30 @@ def cmd_whatsapp(args):
     if (session_dir / "creds.json").exists():
         # Only enable WhatsApp now that pairing actually succeeded.  If the
         # user Ctrl+C'd at any earlier step, WHATSAPP_ENABLED stays unset
-        # and `savarez gateway` skips it cleanly instead of paying a 30s
+        # and `hermes gateway` skips it cleanly instead of paying a 30s
         # bridge timeout + queueing the platform for indefinite retries.
         save_env_value("WHATSAPP_ENABLED", "true")
         print("✓ WhatsApp paired successfully!")
         print()
         if wa_mode == "bot":
             print("  Next steps:")
-            print("    1. Start the gateway:  savarez gateway")
+            print("    1. Start the gateway:  hermes gateway")
             print("    2. Send a message to the bot's WhatsApp number")
             print("    3. The agent will reply automatically")
             print()
-            print("  Tip: Agent responses are prefixed with '⚕ Savarez AI Agent'")
+            print("  Tip: Agent responses are prefixed with '⚕ Hermes Agent'")
         else:
             print("  Next steps:")
-            print("    1. Start the gateway:  savarez gateway")
+            print("    1. Start the gateway:  hermes gateway")
             print("    2. Open WhatsApp → Message Yourself")
-            print("    3. Type a message - the agent will reply")
+            print("    3. Type a message — the agent will reply")
             print()
-            print("  Tip: Agent responses are prefixed with '⚕ Savarez AI Agent'")
+            print("  Tip: Agent responses are prefixed with '⚕ Hermes Agent'")
             print("  so you can tell them apart from your own messages.")
         print()
-        print("  Or install as a service: savarez gateway install")
+        print("  Or install as a service: hermes gateway install")
     else:
-        print("⚠ Pairing may not have completed. Run 'savarez whatsapp' to try again.")
+        print("⚠ Pairing may not have completed. Run 'hermes whatsapp' to try again.")
 
 
 def cmd_setup(args):
@@ -2419,7 +2445,7 @@ def cmd_postinstall(args):
 
     stamp_install_method("pip")
 
-    print("⚕ Savarez post-install bootstrap")
+    print("⚕ Hermes post-install bootstrap")
     print()
 
     for dep in ("node", "browser", "ripgrep", "ffmpeg"):
@@ -2434,7 +2460,7 @@ def cmd_postinstall(args):
 
 
 def cmd_model(args):
-    """Select default model - starts with provider selection, then model picker."""
+    """Select default model — starts with provider selection, then model picker."""
     _require_tty("model")
     if getattr(args, "refresh", False):
         try:
@@ -2464,7 +2490,7 @@ def _is_profile_api_key_provider(provider_id: str) -> bool:
 def select_provider_and_model(args=None):
     """Core provider selection + model picking logic.
 
-    Shared by ``cmd_model`` (``savarez model``) and the setup wizard
+    Shared by ``cmd_model`` (``hermes model``) and the setup wizard
     (``setup_model_provider`` in setup.py).  Handles the full flow:
     provider picker, credential prompting, model selection, and config
     persistence.
@@ -2657,8 +2683,8 @@ def select_provider_and_model(args=None):
             active = active_def.id
         else:
             warning = (
-                f"Unknown provider '{effective_provider}'. Check 'savarez model' for "
-                "available providers, or run 'savarez doctor' to diagnose config "
+                f"Unknown provider '{effective_provider}'. Check 'hermes model' for "
+                "available providers, or run 'hermes doctor' to diagnose config "
                 "issues."
             )
             print(f"Warning: {warning} Falling back to auto provider detection.")
@@ -2695,7 +2721,7 @@ def select_provider_and_model(args=None):
 
     # Step 1: Provider selection.
     #
-    # Canonical providers are folded into top-level groups (display only - see
+    # Canonical providers are folded into top-level groups (display only — see
     # PROVIDER_GROUPS in hermes_cli/models.py). A multi-member group shows one
     # row ("Kimi / Moonshot ▸"); picking it opens a member sub-picker that
     # resolves back to a concrete slug, so the dispatch chain below is
@@ -2737,7 +2763,7 @@ def select_provider_and_model(args=None):
         base_url = provider_info["base_url"]
         short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
         saved_model = provider_info.get("model", "")
-        model_hint = f" - {saved_model}" if saved_model else ""
+        model_hint = f" — {saved_model}" if saved_model else ""
         label = f"{name} ({short_url}){model_hint}"
         if active and key == active:
             ordered.append((key, f"{label}  ← currently active", []))
@@ -2858,7 +2884,7 @@ def select_provider_and_model(args=None):
 
     # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
     # When the user switches to a named provider (anything except "custom"),
-    # a leftover OPENAI_BASE_URL in ~/.savarez/.env can poison auxiliary
+    # a leftover OPENAI_BASE_URL in ~/.hermes/.env can poison auxiliary
     # clients that use provider:auto. Clear it proactively.  (#5161)
     if selected_provider not in {
         "custom",
@@ -2869,7 +2895,7 @@ def select_provider_and_model(args=None):
 
 
 def _clear_stale_openai_base_url():
-    """Remove OPENAI_BASE_URL from ~/.savarez/.env if the active provider is not 'custom'.
+    """Remove OPENAI_BASE_URL from ~/.hermes/.env if the active provider is not 'custom'.
 
     After a provider switch, a leftover OPENAI_BASE_URL causes auxiliary
     clients (compression, vision, delegation) with provider:auto to route
@@ -2901,14 +2927,14 @@ def _clear_stale_openai_base_url():
 # ─────────────────────────────────────────────────────────────────────────────
 # Auxiliary model configuration
 #
-# Savarez uses lightweight "auxiliary" models for side tasks (vision analysis,
+# Hermes uses lightweight "auxiliary" models for side tasks (vision analysis,
 # context compression, web extraction, session search, etc.). Each task has
 # its own provider+model pair in config.yaml under `auxiliary.<task>`.
 #
 # The UI lives behind "Configure auxiliary models..." at the bottom of the
-# `savarez model` provider picker. It does NOT re-run credential setup - it
+# `hermes model` provider picker. It does NOT re-run credential setup — it
 # only routes already-authenticated providers to specific aux tasks. Users
-# configure new providers through the normal `savarez model` flow first.
+# configure new providers through the normal `hermes model` flow first.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # (task_key, display_name, short_description)
@@ -2975,7 +3001,7 @@ def _save_aux_choice(
 ) -> None:
     """Persist an auxiliary task's provider/model to config.yaml.
 
-    Only writes the four routing fields - timeout, download_timeout, and any
+    Only writes the four routing fields — timeout, download_timeout, and any
     other task-specific settings are preserved untouched. The main model
     config (``model.default``/``model.provider``) is never modified.
     """
@@ -3024,7 +3050,7 @@ def _reset_aux_to_auto() -> int:
             if entry.get(field):
                 entry[field] = ""
                 changed = True
-        # Preserve timeout/download_timeout - those are user-tuned, not routing
+        # Preserve timeout/download_timeout — those are user-tuned, not routing
         if changed:
             count += 1
     save_config(cfg)
@@ -3032,7 +3058,7 @@ def _reset_aux_to_auto() -> int:
 
 
 def _aux_config_menu() -> None:
-    """Top-level auxiliary-model picker - choose a task to configure.
+    """Top-level auxiliary-model picker — choose a task to configure.
 
     Loops until the user picks "Back" so multiple tasks can be configured
     without returning to the main provider menu.
@@ -3044,11 +3070,11 @@ def _aux_config_menu() -> None:
         aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
 
         print()
-        print("  Auxiliary models - side-task routing")
+        print("  Auxiliary models — side-task routing")
         print()
         print("  Side tasks (vision, compression, web extraction, etc.) default")
-        print('  to your main chat model.  "auto" means "use my main model" -')
-        print("  Savarez only falls back to a lightweight backend (OpenRouter,")
+        print('  to your main chat model.  "auto" means "use my main model" —')
+        print("  Hermes only falls back to a lightweight backend (OpenRouter,")
         print("  Nous Portal) if the main model is unavailable.  Override a")
         print("  task below if you want it pinned to a specific provider/model.")
         print()
@@ -3096,8 +3122,8 @@ def _aux_select_for_task(task: str) -> None:
 
     Uses ``list_authenticated_providers()`` to only show providers the user
     has already configured. This avoids re-running OAuth/credential flows
-    inside the aux picker - users set up new providers through the normal
-    ``savarez model`` flow, then route aux tasks to them here.
+    inside the aux picker — users set up new providers through the normal
+    ``hermes model`` flow, then route aux tasks to them here.
     """
     from hermes_cli.config import load_config
     from hermes_cli.model_switch import list_authenticated_providers
@@ -3134,7 +3160,7 @@ def _aux_select_for_task(task: str) -> None:
         name = p.get("name") or slug
         total = p.get("total_models", 0)
         models = p.get("models") or []
-        model_hint = f" - {total} models" if total else ""
+        model_hint = f" — {total} models" if total else ""
         marker = (
             "  ← current" if slug == current_provider and not current_base_url else ""
         )
@@ -3146,7 +3172,7 @@ def _aux_select_for_task(task: str) -> None:
     entries.append(("__back__", "Back", []))
 
     print()
-    print(f"  Configure {display_name} - current: {_format_aux_current(task_cfg)}")
+    print(f"  Configure {display_name} — current: {_format_aux_current(task_cfg)}")
     print()
 
     idx = _prompt_provider_choice([label for _, label, _ in entries], default=0)
@@ -3166,7 +3192,7 @@ def _aux_select_for_task(task: str) -> None:
         _aux_flow_custom_endpoint(task, task_cfg)
         return
 
-    # Regular provider - pick a model from its curated list
+    # Regular provider — pick a model from its curated list
     _aux_flow_provider_model(task, slug, models, current_model)
 
 
@@ -3327,9 +3353,9 @@ def _model_flow_openrouter(config, current_model=""):
     from hermes_cli.config import get_env_value
 
     # Route through _prompt_api_key so users can replace a stale/broken key
-    # in-flow (K/R/C) instead of having to edit ~/.savarez/.env by hand. The
+    # in-flow (K/R/C) instead of having to edit ~/.hermes/.env by hand. The
     # previous bypass-when-key-exists branch left no way to recover from a
-    # bad paste short of re-running `savarez setup` from scratch. OpenRouter
+    # bad paste short of re-running `hermes setup` from scratch. OpenRouter
     # isn't in PROVIDER_REGISTRY so we synthesize a minimal pconfig.
     pconfig = ProviderConfig(
         id="openrouter",
@@ -3349,7 +3375,7 @@ def _model_flow_openrouter(config, current_model=""):
 
     openrouter_models = model_ids(force_refresh=True)
 
-    # Fetch live pricing (non-blocking - returns empty dict on failure)
+    # Fetch live pricing (non-blocking — returns empty dict on failure)
     pricing = get_pricing_for_provider("openrouter", force_refresh=True)
 
     selected = _prompt_model_selection(
@@ -3428,7 +3454,7 @@ def _model_flow_nous(config, current_model="", args=None):
         # login_nous already handles model selection + config update
         return
 
-    # Already logged in - use curated model list (same as OpenRouter defaults).
+    # Already logged in — use curated model list (same as OpenRouter defaults).
     # The live /models endpoint returns hundreds of models; the curated list
     # shows only agentic models users recognize from OpenRouter.
     from hermes_cli.models import (
@@ -3472,7 +3498,7 @@ def _model_flow_nous(config, current_model="", args=None):
         print(f"Could not verify credentials: {msg}")
         return
 
-    # Fetch live pricing (non-blocking - returns empty dict on failure)
+    # Fetch live pricing (non-blocking — returns empty dict on failure)
     pricing = get_pricing_for_provider("nous")
 
     # Force fresh account data for model selection so recent credit purchases
@@ -3490,7 +3516,7 @@ def _model_flow_nous(config, current_model="", args=None):
             # not block model selection if this opportunistic refresh fails.
             pass
 
-    # Resolve portal URL early - needed both for upgrade links and for the
+    # Resolve portal URL early — needed both for upgrade links and for the
     # freeRecommendedModels endpoint below.
     _nous_portal_url = ""
     try:
@@ -3507,7 +3533,7 @@ def _model_flow_nous(config, current_model="", args=None):
     # docs-hosted manifest haven't caught up yet.
     #
     # For paid users: mirror the same idea with paidRecommendedModels so
-    # newly-launched paid models surface in the picker too - independent
+    # newly-launched paid models surface in the picker too — independent
     # of CLI release cadence.
     unavailable_models: list[str] = []
     unavailable_message = ""
@@ -3553,7 +3579,7 @@ def _model_flow_nous(config, current_model="", args=None):
         return
 
     print(
-        f'Showing {len(model_ids)} curated models - use "Enter custom model name" for others.'
+        f'Showing {len(model_ids)} curated models — use "Enter custom model name" for others.'
     )
 
     selected = _prompt_model_selection(
@@ -3657,7 +3683,7 @@ def _model_flow_openai_codex(config, current_model=""):
             return
 
     _codex_token = None
-    # Prefer credential pool (where `savarez auth` stores device_code tokens),
+    # Prefer credential pool (where `hermes auth` stores device_code tokens),
     # fall back to legacy provider state.
     try:
         _codex_status = get_codex_auth_status()
@@ -3716,10 +3742,10 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
             print("Starting a fresh xAI OAuth login...")
             print()
             try:
-                # Forward CLI flags from ``savarez model --manual-paste``
+                # Forward CLI flags from ``hermes model --manual-paste``
                 # / ``--no-browser`` / ``--timeout`` into the loopback
                 # login. Without this, browser-only remotes (#26923)
-                # can't reach the manual-paste path via ``savarez model``.
+                # can't reach the manual-paste path via ``hermes model``.
                 mock_args = argparse.Namespace(
                     manual_paste=bool(getattr(args, "manual_paste", False)),
                     no_browser=bool(getattr(args, "no_browser", False)),
@@ -3756,8 +3782,8 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
             return
 
     # Resolve a usable base URL.  ``resolve_xai_oauth_runtime_credentials``
-    # only reads from the auth.json singleton - but credentials may legitimately
-    # live only in the pool (e.g. after ``savarez auth add xai-oauth``).  Fall
+    # only reads from the auth.json singleton — but credentials may legitimately
+    # live only in the pool (e.g. after ``hermes auth add xai-oauth``).  Fall
     # back to the default base URL in that case so the model picker still
     # completes successfully instead of bailing out with
     # ``Could not resolve xAI OAuth credentials``.
@@ -3773,7 +3799,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("xai-oauth", base_url)
-        print(f"Default model set to: {selected} (via xAI Grok OAuth - SuperGrok / Premium+)")
+        print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
     else:
         print("No change.")
 
@@ -3877,14 +3903,14 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
 
 
 def _model_flow_google_gemini_cli(_config, current_model=""):
-    """Google Gemini OAuth (PKCE) via Cloud Code Assist - supports free AND paid tiers.
+    """Google Gemini OAuth (PKCE) via Cloud Code Assist — supports free AND paid tiers.
 
     Flow:
       1. Show upfront warning about Google's ToS stance (per opencode-gemini-auth).
       2. If creds missing, run PKCE browser OAuth via agent.google_oauth.
       3. Resolve project context (env -> config -> auto-discover -> free tier).
       4. Prompt user to pick a model.
-      5. Save to ~/.savarez/config.yaml.
+      5. Save to ~/.hermes/config.yaml.
     """
     from hermes_cli.auth import (
         DEFAULT_GEMINI_CLOUDCODE_BASE_URL,
@@ -3930,7 +3956,7 @@ def _model_flow_google_gemini_cli(_config, current_model=""):
             print(f"  Using GCP project: {project_id}")
         else:
             print(
-                "  No GCP project configured - free tier will be auto-provisioned on first request."
+                "  No GCP project configured — free tier will be auto-provisioned on first request."
             )
     except Exception as exc:
         print(f"Failed to resolve Gemini credentials: {exc}")
@@ -4037,7 +4063,7 @@ def _model_flow_custom(config):
     else:
         print(
             f"Warning: could not verify this endpoint via {probe.get('probed_url')}. "
-            f"Savarez will still save it."
+            f"Hermes will still save it."
         )
         if probe.get("suggested_base_url"):
             suggested = probe["suggested_base_url"]
@@ -4063,7 +4089,7 @@ def _model_flow_custom(config):
     else:
         print("  API mode: auto-detect")
 
-    # Select model - use probe results when available, fall back to manual input
+    # Select model — use probe results when available, fall back to manual input
     model_name = ""
     detected_models = probe.get("models") or []
     try:
@@ -4092,7 +4118,7 @@ def _model_flow_custom(config):
             "Context length in tokens [leave blank for auto-detect]: "
         ).strip()
 
-        # Prompt for a display name - shown in the provider menu on future runs
+        # Prompt for a display name — shown in the provider menu on future runs
         default_name = _auto_provider_name(effective_url)
         display_name = input(f"Display name [{default_name}]: ").strip() or default_name
     except (KeyboardInterrupt, EOFError):
@@ -4110,7 +4136,7 @@ def _model_flow_custom(config):
             if context_length <= 0:
                 context_length = None
         except ValueError:
-            print(f"Invalid context length: {context_length_str} - will auto-detect.")
+            print(f"Invalid context length: {context_length_str} — will auto-detect.")
             context_length = None
 
     if model_name:
@@ -4157,7 +4183,7 @@ def _model_flow_custom(config):
         else:
             _caller_model.pop("api_mode", None)
         config["model"] = _caller_model
-        print("Endpoint saved. Use `/model` in chat or `savarez model` to set a model.")
+        print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
 
     # Auto-save to custom_providers so it appears in the menu next time
     _save_custom_provider(
@@ -4185,7 +4211,7 @@ def _prompt_custom_api_mode_selection(base_url: str, current_api_mode: str = "")
         (
             "",
             "Auto-detect",
-            "Use Savarez URL heuristics; best for standard OpenAI-compatible endpoints.",
+            "Use Hermes URL heuristics; best for standard OpenAI-compatible endpoints.",
         ),
         (
             "chat_completions",
@@ -4287,7 +4313,7 @@ def _save_custom_provider(
 ):
     """Save a custom endpoint to custom_providers in config.yaml.
 
-    Deduplicates by base_url - if the URL already exists, updates the
+    Deduplicates by base_url — if the URL already exists, updates the
     model name, context_length, and api_mode but doesn't add a duplicate entry.
     Uses *name* when provided, otherwise auto-generates from the URL.
     """
@@ -4298,7 +4324,7 @@ def _save_custom_provider(
     if not isinstance(providers, list):
         providers = []
 
-    # Check if this URL is already saved - update model/context_length if so
+    # Check if this URL is already saved — update model/context_length if so
     for entry in providers:
         if isinstance(entry, dict) and entry.get("base_url", "").rstrip(
             "/"
@@ -4353,11 +4379,11 @@ def _model_flow_azure_foundry(config, current_model=""):
     Anthropic-style (``/v1/messages``) endpoints, and two authentication
     modes:
 
-    * **API key** (default) - uses ``AZURE_FOUNDRY_API_KEY`` from .env.
-    * **Microsoft Entra ID** - keyless, RBAC-based auth via the
+    * **API key** (default) — uses ``AZURE_FOUNDRY_API_KEY`` from .env.
+    * **Microsoft Entra ID** — keyless, RBAC-based auth via the
       ``azure-identity`` SDK (Managed Identity / Workload Identity / az
       login / VS Code / azd / service principal env vars). Works on both
-      OpenAI-style and Anthropic-style endpoints - Microsoft RBAC is
+      OpenAI-style and Anthropic-style endpoints — Microsoft RBAC is
       per-resource and the same ``Azure AI User`` role grants
       both. For OpenAI-style the OpenAI SDK's native callable
       ``api_key=`` contract is used; for Anthropic-style an
@@ -4409,7 +4435,7 @@ def _model_flow_azure_foundry(config, current_model=""):
     print("=" * 50)
     print()
     print("Azure Foundry can host models with either OpenAI-style or")
-    print("Anthropic-style API endpoints.  Savarez will probe your")
+    print("Anthropic-style API endpoints.  Hermes will probe your")
     print("endpoint to auto-detect the transport and the deployed")
     print("models when possible.")
     print()
@@ -4497,7 +4523,7 @@ def _model_flow_azure_foundry(config, current_model=""):
         if not has_azure_identity_installed():
             print("◐ The 'azure-identity' package is not installed yet.")
             print(
-                "  Savarez will install it now (the preflight below "
+                "  Hermes will install it now (the preflight below "
                 "triggers the lazy-install). To skip lazy installs, "
                 "run:  pip install azure-identity"
             )
@@ -4539,7 +4565,7 @@ def _model_flow_azure_foundry(config, current_model=""):
                 print("Cancelled.")
                 return
 
-        # Build the token provider for the detection probe (best-effort -
+        # Build the token provider for the detection probe (best-effort —
         # if the credential chain failed above, this will silently return
         # None inside azure_detect and the probe falls back to manual).
         try:
@@ -4936,7 +4962,7 @@ def _model_flow_named_custom(config, provider_info):
                 # Only persist an inline api_key when the user originally had
                 # one (either a literal secret or a ``${VAR}`` template). When
                 # the entry relies on ``key_env``, do not synthesize a
-                # ``${key_env}`` api_key - the runtime already resolves the
+                # ``${key_env}`` api_key — the runtime already resolves the
                 # key from ``key_env`` directly, and writing the resolved
                 # secret (or even a synthesized template) would silently
                 # downgrade credential hygiene on entries that intentionally
@@ -4967,8 +4993,8 @@ def _model_flow_named_custom(config, provider_info):
 # Lazy-export the model catalog at module level. Tests and a handful of
 # downstream call sites read `hermes_cli.main._PROVIDER_MODELS` directly,
 # so the symbol needs to be reachable as a module attribute. But importing
-# the catalog eagerly costs ~55ms on every `savarez` invocation - including
-# fast paths like `savarez --version` and slash-command dispatch that never
+# the catalog eagerly costs ~55ms on every `hermes` invocation — including
+# fast paths like `hermes --version` and slash-command dispatch that never
 # touch the catalog. PEP 562 module-level __getattr__ defers the import
 # until first attribute access, so the cost is only paid by callers that
 # actually look up the catalog. Termux already defers via the same
@@ -5210,7 +5236,7 @@ def _model_flow_copilot(config, current_model=""):
         model_list = _PROVIDER_MODELS.get(provider_id, [])
         if model_list:
             print(
-                "  ⚠ Could not auto-detect models from GitHub Copilot - showing defaults."
+                "  ⚠ Could not auto-detect models from GitHub Copilot — showing defaults."
             )
             print('    Use "Enter custom model name" if you do not see your model.')
 
@@ -5305,9 +5331,9 @@ def _model_flow_copilot_acp(config, current_model=""):
     )
     effective_base = status.get("base_url") or pconfig.inference_base_url
 
-    print("  GitHub Copilot ACP delegates Savarez turns to `copilot --acp`.")
-    print("  Savarez currently starts its own ACP subprocess for each request.")
-    print("  Savarez uses your selected model as a hint for the Copilot ACP session.")
+    print("  GitHub Copilot ACP delegates Hermes turns to `copilot --acp`.")
+    print("  Hermes currently starts its own ACP subprocess for each request.")
+    print("  Hermes uses your selected model as a hint for the Copilot ACP session.")
     print(f"  Command: {resolved_command}")
     print(f"  Backend marker: {effective_base}")
     print()
@@ -5347,7 +5373,7 @@ def _model_flow_copilot_acp(config, current_model=""):
         model_list = _PROVIDER_MODELS.get("copilot", [])
         if model_list:
             print(
-                "  ⚠ Could not auto-detect models from GitHub Copilot - showing defaults."
+                "  ⚠ Could not auto-detect models from GitHub Copilot — showing defaults."
             )
             print('    Use "Enter custom model name" if you do not see your model.')
 
@@ -5391,14 +5417,14 @@ def _model_flow_copilot_acp(config, current_model=""):
 
 
 def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
-    """Shared API-key entry point for ``savarez setup`` / ``savarez model``.
+    """Shared API-key entry point for ``hermes setup`` / ``hermes model``.
 
     Handles both first-time entry and the already-configured case.  When a key
     is already present, offers [K]eep / [R]eplace / [C]lear so the user can
-    recover from a malformed paste without editing ``~/.savarez/.env`` by hand.
+    recover from a malformed paste without editing ``~/.hermes/.env`` by hand.
 
     Returns ``(resolved_key, abort)``.  ``abort=True`` means the caller should
-    ``return`` immediately - the user cancelled entry, declined to replace, or
+    ``return`` immediately — the user cancelled entry, declined to replace, or
     cleared the key and is now unconfigured.
     """
     from hermes_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER
@@ -5435,7 +5461,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
         print()
         return new_key, False
 
-    # Already configured - offer K / R / C ────────────────────────────────
+    # Already configured — offer K / R / C ────────────────────────────────
     from hermes_cli.env_loader import format_secret_source_suffix
 
     source_suffix = format_secret_source_suffix(key_env) if key_env else ""
@@ -5464,7 +5490,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
     if choice.startswith("c"):
         save_env_value(key_env, "")
         print(
-            f"  API key cleared.  Re-run `savarez setup` to configure {pconfig.name} again."
+            f"  API key cleared.  Re-run `hermes setup` to configure {pconfig.name} again."
         )
         return "", True
 
@@ -5479,7 +5505,7 @@ def _model_flow_kimi(config, current_model=""):
     - sk-kimi-* keys   → api.kimi.com/coding/v1  (Kimi Coding Plan)
     - Other keys        → api.moonshot.ai/v1      (legacy Moonshot)
 
-    No manual base URL prompt - endpoint is determined by key prefix.
+    No manual base URL prompt — endpoint is determined by key prefix.
     """
     from hermes_cli.auth import (
         PROVIDER_REGISTRY,
@@ -5527,7 +5553,7 @@ def _model_flow_kimi(config, current_model=""):
         save_env_value(base_url_env, "")
     print()
 
-    # Step 3: Model selection - show appropriate models for the endpoint
+    # Step 3: Model selection — show appropriate models for the endpoint
     if is_coding_plan:
         # Coding Plan models (kimi-k2.6 first)
         model_list = [
@@ -5666,7 +5692,7 @@ def _model_flow_stepfun(config, current_model=""):
         model_list = _PROVIDER_MODELS.get(provider_id, [])
         if model_list:
             print(
-                f"  Could not auto-detect models from {pconfig.name} API - "
+                f"  Could not auto-detect models from {pconfig.name} API — "
                 "showing Step Plan fallback catalog."
             )
 
@@ -5699,7 +5725,7 @@ def _model_flow_stepfun(config, current_model=""):
 
 
 def _model_flow_bedrock_api_key(config, region, current_model=""):
-    """Bedrock API Key mode - uses the OpenAI-compatible bedrock-mantle endpoint.
+    """Bedrock API Key mode — uses the OpenAI-compatible bedrock-mantle endpoint.
 
     For developers who don't have an AWS account but received a Bedrock API Key
     from their AWS admin. Works like any OpenAI-compatible endpoint.
@@ -5743,7 +5769,7 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         print("  ✓ API key saved.")
     print()
 
-    # Model selection - use static list (mantle doesn't need boto3 for discovery)
+    # Model selection — use static list (mantle doesn't need boto3 for discovery)
     model_list = _PROVIDER_MODELS.get("bedrock", [])
     print(f"  Showing {len(model_list)} curated models")
 
@@ -5775,7 +5801,7 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         bedrock_cfg["region"] = region
         cfg["bedrock"] = bedrock_cfg
 
-        # Save the API key env var name so savarez knows where to find it
+        # Save the API key env var name so hermes knows where to find it
         save_env_value("OPENAI_API_KEY", existing_key)
         save_env_value("OPENAI_BASE_URL", mantle_base_url)
 
@@ -5791,7 +5817,7 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
 def _model_flow_bedrock(config, current_model=""):
     """AWS Bedrock provider: verify credentials, pick region, discover models.
 
-    Uses the native Converse API via boto3 - not the OpenAI-compatible endpoint.
+    Uses the native Converse API via boto3 — not the OpenAI-compatible endpoint.
     Auth is handled by the AWS SDK default credential chain (env vars, profile,
     instance role), so no API key prompt is needed.
     """
@@ -5844,7 +5870,7 @@ def _model_flow_bedrock(config, current_model=""):
     print("    1. IAM credential chain (recommended)")
     print("       Works with EC2 instance roles, SSO, env vars, aws configure")
     print("    2. Bedrock API Key")
-    print("       Enter your Bedrock API Key directly - also supports")
+    print("       Enter your Bedrock API Key directly — also supports")
     print("       team scenarios where an admin distributes keys")
     print()
     try:
@@ -5857,7 +5883,7 @@ def _model_flow_bedrock(config, current_model=""):
         _model_flow_bedrock_api_key(config, region, current_model)
         return
 
-    # 3. Model discovery - try live API first, fall back to static list
+    # 3. Model discovery — try live API first, fall back to static list
     print(f"  Discovering models in {region}...")
     live_models = discover_bedrock_models(region)
 
@@ -6033,7 +6059,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                     "(<= 250 requests/day for gemini-2.5-flash)."
                 )
                 print(
-                    "   Savarez typically makes 3-10 API calls per user turn "
+                    "   Hermes typically makes 3-10 API calls per user turn "
                     "(tool iterations + auxiliary tasks),"
                 )
                 print(
@@ -6043,7 +6069,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                 print("   an agent session.")
                 print()
                 print(
-                    "   To use Gemini with Savarez, enable billing on your "
+                    "   To use Gemini with Hermes, enable billing on your "
                     "Google Cloud project and regenerate"
                 )
                 print(
@@ -6092,13 +6118,13 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     if override and base_url_env:
         if not override.startswith(("http://", "https://")):
             print(
-                "  Invalid URL - must start with http:// or https://. Keeping current value."
+                "  Invalid URL — must start with http:// or https://. Keeping current value."
             )
         else:
             save_env_value(base_url_env, override)
             effective_base = override
 
-    # Model selection - resolution order:
+    # Model selection — resolution order:
     #   1. models.dev registry (cached, filtered for agentic/tool-capable models)
     #   2. Curated static fallback list (offline insurance)
     #   3. Live /models endpoint probe (small providers without models.dev data)
@@ -6126,7 +6152,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
         # During setup, force a live refresh so the picker reflects newly
         # released models (e.g. deepseek v4 flash, kimi k2.6) the moment
-        # the user enters their key - not an hour later when the disk
+        # the user enters their key — not an hour later when the disk
         # cache TTL expires.
         model_list = fetch_ollama_cloud_models(
             api_key=api_key_for_probe,
@@ -6164,12 +6190,12 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                 model_list = curated
                 if model_list:
                     print(
-                        f'  Showing {len(model_list)} curated models - use "Enter custom model name" for others.'
+                        f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
                     )
     else:
         curated = _PROVIDER_MODELS.get(provider_id, [])
 
-        # Try models.dev first - returns tool-capable models, filtered for noise
+        # Try models.dev first — returns tool-capable models, filtered for noise
         mdev_models: list = []
         try:
             from agent.models_dev import list_agentic_models
@@ -6193,10 +6219,10 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                 model_list = mdev_models
             print(f"  Found {len(model_list)} model(s) from models.dev registry")
         elif curated and len(curated) >= 8:
-            # Curated list is substantial - use it directly, skip live probe
+            # Curated list is substantial — use it directly, skip live probe
             model_list = curated
             print(
-                f'  Showing {len(model_list)} curated models - use "Enter custom model name" for others.'
+                f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
             )
         else:
             api_key_for_probe = existing_key or (
@@ -6210,7 +6236,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                 model_list = curated
                 if model_list:
                     print(
-                        f'  Showing {len(model_list)} curated models - use "Enter custom model name" for others.'
+                        f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
                     )
             # else: no defaults either, will fall through to raw input
 
@@ -6280,14 +6306,14 @@ def _run_anthropic_oauth_flow(save_env_value):
             from hermes_constants import display_hermes_home as _dhh_fn
 
             print(
-                f"    Savarez will use Claude's credential store directly instead of copying a setup-token into {_dhh_fn()}/.env."
+                f"    Hermes will use Claude's credential store directly instead of copying a setup-token into {_dhh_fn()}/.env."
             )
             return True
         return False
 
     try:
         print()
-        print("  Running 'claude setup-token' - follow the prompts below.")
+        print("  Running 'claude setup-token' — follow the prompts below.")
         print("  A browser window will open for you to authorize access.")
         print()
         token = run_oauth_setup_token()
@@ -6298,7 +6324,7 @@ def _run_anthropic_oauth_flow(save_env_value):
             print("  ✓ OAuth credentials saved.")
             return True
 
-        # Subprocess completed but no token auto-detected - ask user to paste
+        # Subprocess completed but no token auto-detected — ask user to paste
         print()
         print("  If the setup-token was displayed above, paste it here:")
         print()
@@ -6320,7 +6346,7 @@ def _run_anthropic_oauth_flow(save_env_value):
         return False
 
     except FileNotFoundError:
-        # Claude CLI not installed - guide user through manual setup
+        # Claude CLI not installed — guide user through manual setup
         print()
         print("  The 'claude' CLI is required for OAuth login.")
         print()
@@ -6329,7 +6355,7 @@ def _run_anthropic_oauth_flow(save_env_value):
         print("    1. Install Claude Code:  npm install -g @anthropic-ai/claude-code")
         print("    2. Run:                  claude setup-token")
         print("    3. Follow the browser prompts to authorize")
-        print("    4. Re-run:               savarez model")
+        print("    4. Re-run:               hermes model")
         print()
         print("  Or paste an existing setup-token now (sk-ant-oat-...):")
         print()
@@ -6344,12 +6370,12 @@ def _run_anthropic_oauth_flow(save_env_value):
             save_anthropic_oauth_token(token, save_fn=save_env_value)
             print("  ✓ Setup-token saved.")
             return True
-        print("  Cancelled - install Claude Code and try again.")
+        print("  Cancelled — install Claude Code and try again.")
         return False
 
 
 def _model_flow_anthropic(config, current_model=""):
-    """Flow for Anthropic provider - OAuth subscription, API key, or Claude Code creds."""
+    """Flow for Anthropic provider — OAuth subscription, API key, or Claude Code creds."""
     from hermes_cli.auth import (
         _prompt_model_selection,
         _save_model_choice,
@@ -6398,7 +6424,7 @@ def _model_flow_anthropic(config, current_model=""):
             from hermes_cli.auth import PROVIDER_REGISTRY
 
             # Surface which env var supplied the key so users with
-            # Bitwarden see "(from Bitwarden)" - without this, a detected
+            # Bitwarden see "(from Bitwarden)" — without this, a detected
             # BSM key looks identical to a key in .env and users assume
             # nothing is wired up.
             source_suffix = ""
@@ -6482,10 +6508,10 @@ def _model_flow_anthropic(config, current_model=""):
     if selected:
         _save_model_choice(selected)
 
-        # Update config with provider - clear base_url since
+        # Update config with provider — clear base_url since
         # resolve_runtime_provider() always hardcodes Anthropic's URL.
         # Leaving a stale base_url in config can contaminate other
-        # providers if the user switches without running 'savarez model'.
+        # providers if the user switches without running 'hermes model'.
         cfg = load_config()
         model = cfg.get("model")
         if not isinstance(model, dict):
@@ -6502,7 +6528,7 @@ def _model_flow_anthropic(config, current_model=""):
 
 
 def cmd_login(args):
-    """Authenticate Savarez CLI with a provider."""
+    """Authenticate Hermes CLI with a provider."""
     from hermes_cli.auth import login_command
 
     login_command(args)
@@ -6546,21 +6572,21 @@ def cmd_webhook(args):
 def cmd_slack(args):
     """Slack integration helpers.
 
-    Dispatches ``savarez slack <subcommand>``. Currently supports:
-      manifest - print or write a Slack app manifest with every gateway
+    Dispatches ``hermes slack <subcommand>``. Currently supports:
+      manifest — print or write a Slack app manifest with every gateway
                  command registered as a first-class slash.
     """
     sub = getattr(args, "slack_command", None)
     if sub in {None, ""}:
-        # No subcommand - print usage hint.
+        # No subcommand — print usage hint.
         print(
-            "usage: savarez slack <subcommand>\n"
+            "usage: hermes slack <subcommand>\n"
             "\n"
             "subcommands:\n"
             "  manifest   Generate a Slack app manifest with every gateway\n"
             "             command registered as a native slash\n"
             "\n"
-            "Run `savarez slack manifest -h` for details.",
+            "Run `hermes slack manifest -h` for details.",
             file=sys.stderr,
         )
         return 1
@@ -6596,7 +6622,7 @@ def cmd_doctor(args):
 
 
 def cmd_security(args):
-    """Dispatch `savarez security <subcmd>`."""
+    """Dispatch `hermes security <subcmd>`."""
     sub = getattr(args, "security_command", None)
     if sub in ("audit", None):
         from hermes_cli.security_audit import cmd_security_audit
@@ -6630,7 +6656,7 @@ def cmd_config(args):
 
 
 def cmd_backup(args):
-    """Back up Savarez home directory to a zip file."""
+    """Back up Hermes home directory to a zip file."""
     if getattr(args, "quick", False):
         from hermes_cli.backup import run_quick_backup
 
@@ -6642,7 +6668,7 @@ def cmd_backup(args):
 
 
 def cmd_import(args):
-    """Restore a Savarez backup from a zip file."""
+    """Restore a Hermes backup from a zip file."""
     from hermes_cli.backup import run_import
 
     run_import(args)
@@ -6658,7 +6684,7 @@ def _print_version_info(*, check_updates: bool = True) -> None:
     print(f"Python: {sys.version.split()[0]}")
 
     # Check for key dependencies.  Use importlib.metadata rather than
-    # ``import openai`` - the SDK drags in ~800ms of pydantic-backed type
+    # ``import openai`` — the SDK drags in ~800ms of pydantic-backed type
     # modules just to expose ``__version__``.  Metadata lookup is ~2ms.
     try:
         from importlib.metadata import version as _pkg_version, PackageNotFoundError
@@ -6673,7 +6699,7 @@ def _print_version_info(*, check_updates: bool = True) -> None:
     if not check_updates:
         return
 
-    # Show update status (synchronous - acceptable since user asked for version info)
+    # Show update status (synchronous — acceptable since user asked for version info)
     try:
         from hermes_cli.banner import check_for_updates
         from hermes_cli.config import recommended_update_command
@@ -6682,7 +6708,7 @@ def _print_version_info(*, check_updates: bool = True) -> None:
         if behind and behind > 0:
             commits_word = "commit" if behind == 1 else "commits"
             print(
-                f"Update available: {behind} {commits_word} behind - "
+                f"Update available: {behind} {commits_word} behind — "
                 f"run '{recommended_update_command()}'"
             )
         elif behind == 0:
@@ -6697,8 +6723,30 @@ def cmd_version(args):
 
 
 def cmd_uninstall(args):
-    """Uninstall Savarez AI Agent."""
-    _require_tty("uninstall")
+    """Uninstall Hermes Agent (or just the Chat GUI with --gui)."""
+    # Machine-readable install snapshot for the desktop app's uninstall UI.
+    # Must run before any TTY gate — it's called from a non-interactive child.
+    if getattr(args, "gui_summary", False):
+        from hermes_cli.gui_uninstall import gui_install_summary
+
+        print(json.dumps(gui_install_summary()))
+        return
+
+    # GUI-only uninstall. The desktop app shells out to this non-interactively
+    # with --yes, so only gate on a TTY when we actually need to prompt.
+    if getattr(args, "gui", False):
+        if not getattr(args, "yes", False):
+            _require_tty("uninstall --gui")
+        from hermes_cli.uninstall import run_gui_uninstall
+
+        run_gui_uninstall(args)
+        return
+
+    # Full/keep-data uninstall. ``--yes`` runs non-interactively (the desktop
+    # app's lite/full modes drive this from a detached cleanup script), so only
+    # gate on a TTY when we actually need to prompt for the option + confirm.
+    if not getattr(args, "yes", False):
+        _require_tty("uninstall")
     from hermes_cli.uninstall import run_uninstall
 
     run_uninstall(args)
@@ -6732,9 +6780,9 @@ def _clear_bytecode_cache(root: Path) -> int:
     return removed
 
 
-# Critical files that every ``savarez`` invocation imports at startup. If any
-# of these fail to parse after a pull, the CLI is bricked - the user can't
-# even run ``savarez update`` again to roll forward. The post-pull syntax
+# Critical files that every ``hermes`` invocation imports at startup. If any
+# of these fail to parse after a pull, the CLI is bricked — the user can't
+# even run ``hermes update`` again to roll forward. The post-pull syntax
 # guard validates these and auto-rolls-back on failure.
 _UPDATE_CRITICAL_FILES = (
     "hermes_cli/main.py",
@@ -6766,7 +6814,7 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
 def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]:
     """Compile each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
 
-    These are the files imported on every ``savarez`` startup; if any of them
+    These are the files imported on every ``hermes`` startup; if any of them
     has a syntax error (orphan merge-conflict markers, bad ref to a name
     that no longer exists, etc.) the CLI can't bootstrap at all. We validate
     them after a successful ``git pull`` so we can auto-roll-back instead of
@@ -6776,7 +6824,7 @@ def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]
     source tree's ``__pycache__/`` so we don't race with concurrent test
     workers that walk the same dir, and so we don't leave a stale pyc
     behind in production if the next interpreter run picks a different
-    Python version. The pyc is discarded on function return either way -
+    Python version. The pyc is discarded on function return either way —
     we only care about the compile-or-not signal.
 
     Returns ``(ok, failing_path, error_message)``. ``ok=True`` means every
@@ -6786,11 +6834,11 @@ def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]
     import tempfile
 
     root = Path(root)
-    with tempfile.TemporaryDirectory(prefix="savarez-syntax-check-") as tmpdir:
+    with tempfile.TemporaryDirectory(prefix="hermes-syntax-check-") as tmpdir:
         for relpath in _UPDATE_CRITICAL_FILES:
             path = root / relpath
             if not path.exists():
-                # Missing file is suspicious but not necessarily fatal - a future
+                # Missing file is suspicious but not necessarily fatal — a future
                 # refactor may legitimately remove one of these. Skip and move on.
                 continue
             # Mirror the relative path under the tmpdir so two different
@@ -6811,7 +6859,7 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     Writes a prompt marker file so the gateway can forward the question to the
     user, then polls for a response file.  Falls back to *default* on timeout.
 
-    Used by ``savarez update --gateway`` so interactive prompts (stash restore,
+    Used by ``hermes update --gateway`` so interactive prompts (stash restore,
     config migration) are forwarded to the messenger instead of being silently
     skipped.
     """
@@ -6848,7 +6896,7 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
                 pass
         _time.sleep(0.5)
 
-    # Timeout - clean up and use default
+    # Timeout — clean up and use default
     prompt_path.unlink(missing_ok=True)
     response_path.unlink(missing_ok=True)
     print(f"  (no response after {int(timeout)}s, using default: {default!r})")
@@ -6911,8 +6959,8 @@ def _run_with_idle_timeout(
     ``capture_output=True`` and no timeout. On low-memory hosts (notably
     WSL2 with the default 4 GB cap) the build can stall or sit silent for
     minutes; users see a frozen terminal, assume the update is hung, and
-    reboot - leaving the editable install in a half-state with the
-    ``savarez`` launcher present but ``hermes_cli`` not importable.
+    reboot — leaving the editable install in a half-state with the
+    ``hermes`` launcher present but ``hermes_cli`` not importable.
 
     This helper fixes both halves: stdout is streamed (so the user sees
     progress), and if no bytes have appeared on stdout/stderr for
@@ -6921,7 +6969,7 @@ def _run_with_idle_timeout(
     stale-dist fallback (#23817) takes over from there.
 
     Returns a ``CompletedProcess`` with merged stdout (text), empty
-    stderr, and an integer returncode. Never raises on idle timeout -
+    stderr, and an integer returncode. Never raises on idle timeout —
     propagation of failure is via the returncode.
     """
     merged_chunks: list[str] = []
@@ -6950,7 +6998,7 @@ def _run_with_idle_timeout(
             try:
                 print(f"{indent}{line.rstrip()}", flush=True)
             except UnicodeEncodeError:
-                # Windows cp1252 fallback - same pattern as _say().
+                # Windows cp1252 fallback — same pattern as _say().
                 enc = getattr(sys.stdout, "encoding", None) or "ascii"
                 safe = line.rstrip().encode(enc, errors="replace").decode(enc, errors="replace")
                 print(f"{indent}{safe}", flush=True)
@@ -6985,7 +7033,7 @@ def _run_with_idle_timeout(
     combined = "".join(merged_chunks)
     if idle_killed:
         msg = (
-            f"\n  ⚠ Build produced no output for {idle_timeout_seconds}s - terminated.\n"
+            f"\n  ⚠ Build produced no output for {idle_timeout_seconds}s — terminated.\n"
             "    Common causes: out-of-memory on a low-RAM host (WSL/container),\n"
             "    a stuck Node process, or an antivirus scan stalling I/O.\n"
         )
@@ -6996,12 +7044,66 @@ def _run_with_idle_timeout(
     return subprocess.CompletedProcess(cmd, rc, stdout=combined, stderr="")
 
 
+def _nixos_build_env() -> dict[str, str] | None:
+    """Return extra env vars for native module builds on NixOS.
+
+    On NixOS, python3 is typically not on the system PATH (it lives in
+    the Nix store and only enters PATH inside a nix-shell or when
+    explicitly installed as a system package).  node-gyp uses Python to
+    compile native addons like ``node-pty`` and its ``find-python.js``
+    does a bare ``PATH`` lookup — which fails on NixOS.
+
+    Two-tier resolution:
+    1. Fast path — the hermes venv's python3 (present in managed installs)
+    2. Fallback — resolves the absolute python3 path via ``nix-shell``
+
+    Returns an env dict suitable for ``subprocess.run(env=...)`` or
+    ``None`` when we are not on NixOS or python3 is already on PATH.
+    """
+    import re
+
+    try:
+        os_release = Path("/etc/os-release").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not re.search(r"^ID=nixos$", os_release, re.M):
+        return None
+
+    # python3 already on PATH — nothing to do
+    if shutil.which("python3"):
+        return None
+
+    # Tier 1: fast path — hermes venv python3, no nix-shell overhead
+    for venv_name in ("venv", ".venv"):
+        venv_python = PROJECT_ROOT / venv_name / "bin" / "python3"
+        if venv_python.exists():
+            return {**os.environ, "PYTHON": str(venv_python)}
+
+    # Tier 2: nix-shell fallback — resolves the absolute python3 path once.
+    # Slower (~2–5 s for the nix-shell eval) but always works, even without
+    # a hermes venv (pip / non-managed / bare-git installs).  The resolved
+    # path is a self-contained Nix store binary (all deps via RPATH) so it
+    # stays valid even after the nix-shell exits.
+    try:
+        result = subprocess.run(
+            ["nix-shell", "-p", "python3", "--run", "which python3"],
+            capture_output=True, text=True, check=False, timeout=15,
+        )
+        if result.returncode == 0:
+            python3_path = result.stdout.strip()
+            if python3_path and Path(python3_path).exists():
+                return {**os.environ, "PYTHON": python3_path}
+    except Exception:
+        pass  # nix-shell not available — caller will get None
+
+    return None
 def _run_npm_install_deterministic(
     npm: str,
     cwd: Path,
     *,
     extra_args: tuple[str, ...] = (),
     capture_output: bool = True,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     """Run a deterministic npm install that does not mutate ``package-lock.json``.
 
@@ -7009,8 +7111,8 @@ def _run_npm_install_deterministic(
     falls back to ``npm install`` only if ``npm ci`` fails (e.g. lockfile out of
     sync on a WIP checkout).  Without this, ``npm install`` on npm ≥ 10 silently
     rewrites committed lockfiles (stripping ``"peer": true`` etc.), which leaves
-    the working tree dirty and causes the next ``savarez update`` to stash the
-    lockfile - repeatedly.
+    the working tree dirty and causes the next ``hermes update`` to stash the
+    lockfile — repeatedly.
     """
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
@@ -7018,6 +7120,7 @@ def _run_npm_install_deterministic(
         ci_result = subprocess.run(
             ci_cmd,
             cwd=cwd,
+            env=env,
             capture_output=capture_output,
             text=True,
             encoding="utf-8",
@@ -7026,12 +7129,13 @@ def _run_npm_install_deterministic(
         )
         if ci_result.returncode == 0:
             return ci_result
-        # Fall through to `npm install` - lockfile may be out of sync on a
+        # Fall through to `npm install` — lockfile may be out of sync on a
         # WIP fork/branch, or `npm ci` may not be available on very old npm.
     install_cmd = [npm, "install", *extra_args]
     return subprocess.run(
         install_cmd,
         cwd=cwd,
+        env=env,
         capture_output=capture_output,
         text=True,
         encoding="utf-8",
@@ -7046,7 +7150,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     Args:
         web_dir: Path to the dashboard frontend source directory.
         fatal: If True, print error guidance and return False on failure
-               instead of a soft warning (used by ``savarez web``).
+               instead of a soft warning (used by ``hermes web``).
 
     Returns True if the build succeeded or was skipped (no package.json).
     """
@@ -7107,20 +7211,20 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     if r1.returncode != 0:
         _say(
             f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
-            + ("" if fatal else " (savarez web will not be available)")
+            + ("" if fatal else " (hermes web will not be available)")
         )
         _relay(r1)
         if fatal:
             _say("  Run manually:  npm install --workspace web && npm run build -w web")
         return False
-    # First attempt - stream output via idle-timeout helper (issue #33788).
+    # First attempt — stream output via idle-timeout helper (issue #33788).
     # capture_output=True on a long Vite build looks identical to a hang;
     # users react by rebooting, which leaves the editable install in a
     # half-state. Streaming + idle-kill makes failures observable AND
     # recoverable (the stale-dist fallback below handles the kill path).
     r2 = _run_with_idle_timeout([npm, "run", "build"], cwd=web_dir)
     if r2.returncode != 0:
-        # Retry once after a short delay - covers boot-time races on Windows
+        # Retry once after a short delay — covers boot-time races on Windows
         # (antivirus scanning Node.js binaries, npm cache not ready, transient
         # I/O when launched via Scheduled Task at logon). See issue #23817.
         _time.sleep(3)
@@ -7140,16 +7244,16 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
 
         # If a stale dist exists, serve it as a fallback instead of failing.
         # A stale UI is far better than no UI for non-interactive callers
-        # (Windows Scheduled Tasks, CI) - issue #23817.
+        # (Windows Scheduled Tasks, CI) — issue #23817.
         if dist_index.exists():
-            _say("  ⚠ Web UI build failed - serving stale dist as fallback")
+            _say("  ⚠ Web UI build failed — serving stale dist as fallback")
             if stderr_tail:
                 _say(f"  Build error:\n  {stderr_tail}")
             return True
 
         _say(
             f"  {'✗' if fatal else '⚠'} Web UI build failed"
-            + ("" if fatal else " (savarez web will not be available)")
+            + ("" if fatal else " (hermes web will not be available)")
         )
         _relay(r2)
         if fatal:
@@ -7165,19 +7269,19 @@ def _desktop_dist_exists(desktop_dir: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Desktop build stamp - content-hash based skip logic
+# Desktop build stamp — content-hash based skip logic
 # ---------------------------------------------------------------------------
 # The desktop Electron build is expensive.
 # Unlike the web UI (which uses mtime comparison), the desktop uses a
 # SHA-256 content hash of the source tree so that:
 #   - ``git checkout`` / ``git pull`` that touch mtimes but not content
 #     don't trigger a rebuild
-#   - ``savarez update`` can unconditionally call ``savarez desktop --build-only``
+#   - ``hermes update`` can unconditionally call ``hermes desktop --build-only``
 #     and it will skip if nothing actually changed
-#   - ``savarez desktop`` (interactive launch) skips the build when the
+#   - ``hermes desktop`` (interactive launch) skips the build when the
 #     stamp matches, making repeated launches fast
 #
-# Stamp file: $SAVAREZ_HOME/desktop-build-stamp.json
+# Stamp file: $HERMES_HOME/desktop-build-stamp.json
 # Schema:
 #   {
 #     "contentHash": "<sha256 hex of source files>",
@@ -7227,7 +7331,7 @@ def _compute_desktop_content_hash(project_root: Path) -> str:
             if not spec.match_file(rel):
                 _hash_file(p)
 
-    # Walk apps/desktop/ - prune ignored directories in-place
+    # Walk apps/desktop/ — prune ignored directories in-place
     desktop_dir = project_root / "apps" / "desktop"
     for dirpath, dirnames, filenames in os.walk(desktop_dir, topdown=True):
         # Prune ignored directories so we never descend into them
@@ -7246,7 +7350,7 @@ def _compute_desktop_content_hash(project_root: Path) -> str:
 
 
 def _desktop_stamp_path() -> Path:
-    """Return the path to the desktop build stamp file under $SAVAREZ_HOME."""
+    """Return the path to the desktop build stamp file under $HERMES_HOME."""
     from hermes_constants import get_hermes_home
     return get_hermes_home() / "desktop-build-stamp.json"
 
@@ -7256,7 +7360,7 @@ def _desktop_build_needed(desktop_dir: Path, project_root: Path, *, source_mode:
 
     Compares the current content hash against the saved stamp. Also returns
     True if the expected build artifact doesn't exist (e.g. first run after
-    ``savarez update`` that pulled new source but hasn't built yet).
+    ``hermes update`` that pulled new source but hasn't built yet).
     """
     # If there's no build output at all, we definitely need to build
     if source_mode:
@@ -7309,17 +7413,19 @@ def _desktop_packaged_executable(desktop_dir: Path) -> Optional[Path]:
     """Return the current platform's unpacked Electron app executable."""
     release_dir = desktop_dir / "release"
     if sys.platform == "darwin":
-        candidates = list(release_dir.glob("mac*/Savarez.app/Contents/MacOS/Savarez"))
+        candidates = list(release_dir.glob("mac*/Hermes.app/Contents/MacOS/Hermes"))
     elif sys.platform == "win32":
         candidates = [
-            release_dir / "win-unpacked" / "Savarez.exe",
-            release_dir / "win-ia32-unpacked" / "Savarez.exe",
-            release_dir / "win-arm64-unpacked" / "Savarez.exe",
+            release_dir / "win-unpacked" / "Hermes.exe",
+            release_dir / "win-ia32-unpacked" / "Hermes.exe",
+            release_dir / "win-arm64-unpacked" / "Hermes.exe",
         ]
     else:
         candidates = [
-            release_dir / "linux-unpacked" / "savarez",
-            release_dir / "linux-unpacked" / "Savarez",
+            release_dir / "linux-unpacked" / "hermes",
+            release_dir / "linux-unpacked" / "Hermes",
+            release_dir / "linux-arm64-unpacked" / "hermes",
+            release_dir / "linux-arm64-unpacked" / "Hermes",
         ]
 
     existing = [p for p in candidates if p.exists()]
@@ -7370,7 +7476,7 @@ def _purge_electron_build_cache(desktop_dir: Path) -> list[Path]:
     next ``pack`` re-downloads and re-stages from scratch.
 
     Root cause of the ``ENOENT … rename '…/linux-unpacked/electron' ->
-    '…/linux-unpacked/Savarez'`` desktop build failure: a corrupt zip in the
+    '…/linux-unpacked/Hermes'`` desktop build failure: a corrupt zip in the
     per-user Electron download cache (a partial download resumed into the same
     file leaves prepended/concatenated junk, or an interrupted write truncates
     it). electron-builder's ``app-builder unpack-electron`` extracts the
@@ -7430,7 +7536,7 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     An ad-hoc-signed .app has no stable Designated Requirement (no Team ID), so
     when the self-updater rebuilds the bundle in place with a fresh build (a new,
     different cdhash) Gatekeeper/LaunchServices treats the changed code as
-    tampering and macOS reports "Savarez is damaged and can't be opened." The
+    tampering and macOS reports "Hermes is damaged and can't be opened." The
     bundle also inherits the com.apple.quarantine flag from the downloaded
     installer process chain. Both make the relaunch fail.
 
@@ -7447,7 +7553,7 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     exe = _desktop_packaged_executable(desktop_dir)
     if exe is None:
         return
-    # exe = .../Savarez.app/Contents/MacOS/Savarez  ->  app bundle = .../Savarez.app
+    # exe = .../Hermes.app/Contents/MacOS/Hermes  ->  app bundle = .../Hermes.app
     app = exe.parents[2]
     if not str(app).endswith(".app") or not app.is_dir():
         return
@@ -7468,10 +7574,10 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
 
     sandbox = packaged_executable.parent / "chrome-sandbox"
     if not sandbox.exists():
-        print(f"✗ Savarez Desktop is missing Electron's Linux sandbox helper: {sandbox}")
+        print(f"✗ Hermes Desktop is missing Electron's Linux sandbox helper: {sandbox}")
         return False
 
-    # Reject symlinks - chown/chmod must not follow an attacker-controlled
+    # Reject symlinks — chown/chmod must not follow an attacker-controlled
     # link to an arbitrary path.  Use lstat() so we inspect the link itself
     # rather than the target, and require a regular file.
     try:
@@ -7488,7 +7594,7 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
 
     sudo = shutil.which("sudo")
     if not sudo:
-        print("✗ Savarez Desktop requires sudo to configure Electron's Linux sandbox helper.")
+        print("✗ Hermes Desktop requires sudo to configure Electron's Linux sandbox helper.")
         return False
 
     print("→ Configuring Electron Linux sandbox helper (sudo required)...")
@@ -7532,7 +7638,7 @@ def cmd_gui(args: argparse.Namespace):
         npm = shutil.which("npm")
         if not npm:
             print("Desktop GUI requires Node.js/npm, but npm was not found on PATH.")
-            print("Install Node.js, then run:  savarez gui")
+            print("Install Node.js, then run:  hermes gui")
             sys.exit(1)
     else:
         npm = None
@@ -7570,7 +7676,8 @@ def cmd_gui(args: argparse.Namespace):
             print(f"✓ Desktop {build_label} is up to date (content stamp matches)")
         else:
             print("→ Installing desktop workspace dependencies...")
-            install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False)
+            nixos_env = _nixos_build_env()
+            install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
             if install_result.returncode != 0:
                 print("✗ Desktop dependency install failed")
                 print(f"  Run manually:  cd {PROJECT_ROOT} && npm ci")
@@ -7582,7 +7689,7 @@ def cmd_gui(args: argparse.Namespace):
             build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if build_result.returncode != 0 and not source_mode:
                 # A corrupt cached Electron zip makes `pack` fail with an ENOENT
-                # on the final `electron` -> `Savarez` rename: unpack-electron
+                # on the final `electron` -> `Hermes` rename: unpack-electron
                 # extracted a partial tree (missing the 193 MB binary) from the
                 # bad zip. We do NOT try to prove the zip is corrupt ourselves —
                 # stdlib zipfile silently tolerates the prepended/concatenated
@@ -7607,17 +7714,17 @@ def cmd_gui(args: argparse.Namespace):
             packaged_executable = _desktop_packaged_executable(desktop_dir)
             if not source_mode:
                 # Locally-built apps are ad-hoc signed; make them relaunchable after
-                # an in-place self-update (otherwise macOS reports "Savarez is
+                # an in-place self-update (otherwise macOS reports "Hermes is
                 # damaged"). No-op on non-macOS and on real-identity builds.
                 _desktop_macos_relaunchable_fixup(desktop_dir)
 
-            # Build succeeded - write the stamp so next run can skip
+            # Build succeeded — write the stamp so next run can skip
             _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)
 
     # --build-only: produce the artifact but do NOT launch. The installer's
     # --update flow drives the rebuild headlessly and then launches the desktop
     # itself (detached, after the old exe has exited), so the launch must NOT
-    # happen here - it would block the installer and, on Windows, the old exe
+    # happen here — it would block the installer and, on Windows, the old exe
     # is still being replaced. Verify the expected artifact exists so a silent
     # "built nothing" can't slip past, then return success.
     if getattr(args, "build_only", False):
@@ -7635,7 +7742,7 @@ def cmd_gui(args: argparse.Namespace):
         return
 
     if source_mode:
-        print("→ Launching Savarez Desktop from source build...")
+        print("→ Launching Hermes Desktop from source build...")
         launch_result = subprocess.run([npm, "exec", "--", "electron", "."], cwd=desktop_dir, env=env, check=False)
         sys.exit(launch_result.returncode)
 
@@ -7647,7 +7754,7 @@ def cmd_gui(args: argparse.Namespace):
     if not _desktop_linux_sandbox_fixup(packaged_executable):
         sys.exit(1)
 
-    print(f"→ Launching packaged Savarez Desktop: {packaged_executable}")
+    print(f"→ Launching packaged Hermes Desktop: {packaged_executable}")
     launch_result = subprocess.run([str(packaged_executable)], cwd=desktop_dir, env=env, check=False)
     sys.exit(launch_result.returncode)
 
@@ -7656,23 +7763,23 @@ def _find_stale_dashboard_pids(
     *,
     exclude_pids: set[int] | None = None,
 ) -> list[int]:
-    """Return PIDs of ``savarez dashboard`` processes other than ourselves.
+    """Return PIDs of ``hermes dashboard`` processes other than ourselves.
 
-    ``savarez dashboard`` is a long-lived server process commonly started and
-    forgotten.  When ``savarez update`` replaces files on disk, the running
+    ``hermes dashboard`` is a long-lived server process commonly started and
+    forgotten.  When ``hermes update`` replaces files on disk, the running
     process keeps the old Python backend in memory while the JS bundle on
     disk is updated, causing a silent frontend/backend mismatch (e.g. new
     auth headers the old backend doesn't recognise → every API call 401s).
 
     The dashboard has no service manager (systemd / launchd), no PID file,
-    and we can't know the original launch args - so the only sane action
+    and we can't know the original launch args — so the only sane action
     after an update is to kill the stale process and let the user restart
     it.  This helper is just the detection step; see
     ``_kill_stale_dashboard_processes`` for the kill.
 
     *exclude_pids* is an optional set of PIDs that must never be returned.
-    This is used by the Savarez Desktop Electron app to protect its own
-    backend child process: when the desktop spawns ``savarez dashboard`` as
+    This is used by the Hermes Desktop Electron app to protect its own
+    backend child process: when the desktop spawns ``hermes dashboard`` as
     a backend and triggers an auto-update, the update must not kill the
     dashboard that the desktop itself manages.  The desktop sets the
     environment variable ``HERMES_DESKTOP_CHILD_PID`` on the spawned
@@ -7682,7 +7789,7 @@ def _find_stale_dashboard_pids(
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
     """
     patterns = [
-        "savarez dashboard",
+        "hermes dashboard",
         "hermes_cli.main dashboard",
         "hermes_cli/main.py dashboard",
     ]
@@ -7726,7 +7833,7 @@ def _find_stale_dashboard_pids(
         else:
             # Linux / macOS: scan the process table via ps and match against
             # the same explicit patterns list used on Windows.  Using ps
-            # (rather than `pgrep -f "savarez.*dashboard"`) keeps us consistent
+            # (rather than `pgrep -f "hermes.*dashboard"`) keeps us consistent
             # with `hermes_cli.gateway._scan_gateway_pids` and avoids the
             # greedy regex matching unrelated cmdlines that merely contain
             # both words (e.g. a chat session discussing "dashboard").
@@ -7760,7 +7867,7 @@ def _find_stale_dashboard_pids(
 
 
 def _print_curator_first_run_notice() -> None:
-    """Print a short heads-up about the skill curator after `savarez update`.
+    """Print a short heads-up about the skill curator after `hermes update`.
 
     Only fires when the curator is enabled AND has no recorded run yet, which
     is exactly the window where the gateway ticker used to fire Curator
@@ -7779,7 +7886,7 @@ def _print_curator_first_run_notice() -> None:
     except Exception:
         return
     if state.get("last_run_at"):
-        # Curator has run before (real or already seeded) - no notice needed.
+        # Curator has run before (real or already seeded) — no notice needed.
         return
     try:
         hours = curator.get_interval_hours()
@@ -7793,10 +7900,10 @@ def _print_curator_first_run_notice() -> None:
         f"~{days}d after installation; only agent-created skills are in "
         f"scope and nothing is ever auto-deleted (archive is recoverable)."
     )
-    print("  Preview now:  savarez curator run --dry-run")
-    print("  Pause it:     savarez curator pause")
+    print("  Preview now:  hermes curator run --dry-run")
+    print("  Pause it:     hermes curator pause")
     print(
-        "  Docs:         https://savarez-agent.nousresearch.com/docs/user-guide/features/curator"
+        "  Docs:         https://hermes-agent.nousresearch.com/docs/user-guide/features/curator"
     )
 
 
@@ -7805,11 +7912,11 @@ def _print_curator_recent_run_notice() -> None:
 
     The curator runs in the background (gateway tick + CLI session start),
     so users learn about skill consolidations only by stumbling into a
-    rename. ``savarez update`` is a high-attention surface - surface the
+    rename. ``hermes update`` is a high-attention surface — surface the
     most recent run's rename map here, once.
 
     Show-once: state stamps ``last_run_summary_shown_at`` after printing.
-    Subsequent ``savarez update`` invocations skip the block until a newer
+    Subsequent ``hermes update`` invocations skip the block until a newer
     curator run lands. Silent when the curator has never run, when the
     most recent summary has already been shown, or when the summary has
     no rename information to display (no archives).
@@ -7825,7 +7932,7 @@ def _print_curator_recent_run_notice() -> None:
 
     last_run_at = state.get("last_run_at")
     if not last_run_at:
-        return  # no curator run yet - first-run notice handles this case
+        return  # no curator run yet — first-run notice handles this case
 
     if state.get("last_run_summary_shown_at") == last_run_at:
         return  # already shown for this run
@@ -7834,7 +7941,7 @@ def _print_curator_recent_run_notice() -> None:
     if not summary:
         return
 
-    # Only print when there's something interesting to show - i.e. the
+    # Only print when there's something interesting to show — i.e. the
     # rename map block was appended (multi-line summary). A bare "auto:
     # no changes; llm: no change" doesn't warrant interrupting the
     # update flow.
@@ -7850,12 +7957,12 @@ def _print_curator_recent_run_notice() -> None:
     # Format the timestamp as "Xh ago" for readability.
     when = _format_time_ago(last_run_at)
     print()
-    print(f"ℹ Skill curator - last run {when}")
+    print(f"ℹ Skill curator — last run {when}")
     for line in summary.splitlines():
         print(f"  {line}")
     print(
         "  (This message shows once per curator run. "
-        "View anytime: savarez curator status)"
+        "View anytime: hermes curator status)"
     )
 
     # Stamp shown so we don't repeat on the next update.
@@ -7889,10 +7996,10 @@ def _format_time_ago(iso_ts: str) -> str:
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend",
 ) -> None:
-    """Kill running ``savarez dashboard`` processes.
+    """Kill running ``hermes dashboard`` processes.
 
-    Called at the end of ``savarez update`` (default ``reason``) and also
-    from ``savarez dashboard --stop`` (which overrides ``reason``).  The
+    Called at the end of ``hermes update`` (default ``reason``) and also
+    from ``hermes dashboard --stop`` (which overrides ``reason``).  The
     dashboard has no service manager, so after a code update the running
     process is guaranteed to be serving stale Python against a
     freshly-updated JS bundle.  Leaving it alive produces silent
@@ -7907,7 +8014,7 @@ def _kill_stale_dashboard_processes(
     launch args (--host, --port, --insecure, --tui, --no-open).  The user
     restarts it manually; a hint is printed.
     """
-    # When the Savarez Desktop Electron app spawns this dashboard as a
+    # When the Hermes Desktop Electron app spawns this dashboard as a
     # backend child, it sets HERMES_DESKTOP_CHILD_PID so that the update
     # path can skip killing the desktop-managed process.  (#37532)
     exclude: set[int] | None = None
@@ -7956,13 +8063,13 @@ def _kill_stale_dashboard_processes(
         import signal as _signal
         import time as _time
 
-        # SIGTERM first - give each process a chance to shut down cleanly
+        # SIGTERM first — give each process a chance to shut down cleanly
         # (uvicorn closes its socket, flushes logs, etc.).
         for pid in pids:
             try:
                 os.kill(pid, _signal.SIGTERM)
             except ProcessLookupError:
-                # Already gone - count as killed.
+                # Already gone — count as killed.
                 killed.append(pid)
             except (PermissionError, OSError) as e:
                 failed.append((pid, str(e)))
@@ -8002,7 +8109,7 @@ def _kill_stale_dashboard_processes(
 
     if killed:
         print("  Restart the dashboard when you're ready:")
-        print("    savarez dashboard --port <port>")
+        print("    hermes dashboard --port <port>")
 
 
 # Back-compat alias: some tests and any external callers may import the old
@@ -8011,7 +8118,7 @@ _warn_stale_dashboard_processes = _kill_stale_dashboard_processes
 
 
 def _update_via_zip(args):
-    """Update Savarez AI Agent by downloading a ZIP archive.
+    """Update Hermes Agent by downloading a ZIP archive.
 
     Used on Windows when git file I/O is broken (antivirus, NTFS filter
     drivers causing 'Invalid argument' errors on file creation).
@@ -8023,7 +8130,7 @@ def _update_via_zip(args):
     # The ZIP fallback exists for Windows git-file-I/O breakage. It pulls a
     # static archive from GitHub, which is fine for the default "main"
     # channel but would silently ignore --branch and update from main even
-    # if the user asked for something else - exactly the silent-divergence
+    # if the user asked for something else — exactly the silent-divergence
     # bug --branch was added to prevent. Refuse to proceed in that case
     # rather than lie.
     branch = _resolve_update_branch(args)
@@ -8035,26 +8142,26 @@ def _update_via_zip(args):
         print(
             "  This path runs when git file I/O is broken on the system. "
             "Either resolve the git-side breakage (typically an antivirus "
-            "or NTFS filter holding files open) and rerun `savarez update "
-            f"--branch {branch}`, or update against main with `savarez update`."
+            "or NTFS filter holding files open) and rerun `hermes update "
+            f"--branch {branch}`, or update against main with `hermes update`."
         )
         sys.exit(1)
     zip_url = (
-        f"https://github.com/AnandaAnugrahHandyanto/savarez_agent/archive/refs/heads/{branch}.zip"
+        f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
     )
 
     print("→ Downloading latest version...")
-    tmp_dir = tempfile.mkdtemp(prefix="savarez-update-")
+    tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
     try:
-        zip_path = os.path.join(tmp_dir, f"savarez-agent-{branch}.zip")
+        zip_path = os.path.join(tmp_dir, f"hermes-agent-{branch}.zip")
         urlretrieve(zip_url, zip_path)
 
         print("→ Extracting...")
         import stat as _stat
         with zipfile.ZipFile(zip_path, "r") as zf:
             # Validate paths to prevent zip-slip (path traversal) AND reject
-            # symlink members. A GitHub source ZIP for savarez-agent itself
-            # should never contain symlinks - they'd point outside the
+            # symlink members. A GitHub source ZIP for hermes-agent itself
+            # should never contain symlinks — they'd point outside the
             # extracted tree and let an attacker who can compromise the
             # update mirror plant arbitrary files via the update path.
             tmp_dir_real = os.path.realpath(tmp_dir)
@@ -8076,8 +8183,8 @@ def _update_via_zip(args):
                     )
             zf.extractall(tmp_dir)
 
-        # GitHub ZIPs extract to savarez-agent-<branch>/
-        extracted = os.path.join(tmp_dir, f"savarez-agent-{branch}")
+        # GitHub ZIPs extract to hermes-agent-<branch>/
+        extracted = os.path.join(tmp_dir, f"hermes-agent-{branch}")
         if not os.path.isdir(extracted):
             # Try to find it
             for d in os.listdir(tmp_dir):
@@ -8124,7 +8231,7 @@ def _update_via_zip(args):
 
     from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
-    # Keep managed uv current - runs `uv self update` if we already have one.
+    # Keep managed uv current — runs `uv self update` if we already have one.
     update_managed_uv()
 
     uv_bin = ensure_uv()
@@ -8223,9 +8330,9 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
     from datetime import datetime, timezone
 
     stash_name = datetime.now(timezone.utc).strftime(
-        "savarez-update-autostash-%Y%m%d-%H%M%S"
+        "hermes-update-autostash-%Y%m%d-%H%M%S"
     )
-    print("→ Local changes detected - stashing before update...")
+    print("→ Local changes detected — stashing before update...")
     subprocess.run(
         git_cmd + ["stash", "push", "--include-untracked", "-m", stash_name],
         cwd=cwd,
@@ -8286,7 +8393,7 @@ def _restore_stashed_changes(
         print(
             "  Restoring them may reapply local customizations onto the updated codebase."
         )
-        print("  Review the result afterward if Savarez behaves unexpectedly.")
+        print("  Review the result afterward if Hermes behaves unexpectedly.")
         print("Restore local changes now? [Y/n]")
         if input_fn is not None:
             response = input_fn("Restore local changes now? [Y/n]", "y")
@@ -8306,7 +8413,7 @@ def _restore_stashed_changes(
         text=True,
     )
 
-    # Check for unmerged (conflicted) files - can happen even when returncode is 0
+    # Check for unmerged (conflicted) files — can happen even when returncode is 0
     unmerged = subprocess.run(
         git_cmd + ["diff", "--name-only", "--diff-filter=U"],
         cwd=cwd,
@@ -8329,11 +8436,11 @@ def _restore_stashed_changes(
             for f in conflicted_files.splitlines():
                 print(f"  • {f}")
 
-        print("\nYour stashed changes are preserved - nothing is lost.")
+        print("\nYour stashed changes are preserved — nothing is lost.")
         print(f"  Stash ref: {stash_ref}")
 
-        # Always reset to clean state - leaving conflict markers in source
-        # files makes savarez completely unrunnable (SyntaxError on import).
+        # Always reset to clean state — leaving conflict markers in source
+        # files makes hermes completely unrunnable (SyntaxError on import).
         # The user's changes are safe in the stash for manual recovery.
         subprocess.run(
             git_cmd + ["reset", "--hard", "HEAD"],
@@ -8342,7 +8449,7 @@ def _restore_stashed_changes(
         )
         print("Working tree reset to clean state.")
         print(f"Restore your changes later with: git stash apply {stash_ref}")
-        # Don't sys.exit - the code update itself succeeded, only the stash
+        # Don't sys.exit — the code update itself succeeded, only the stash
         # restore had conflicts.  Let cmd_update continue with pip install,
         # skill sync, and gateway restart.
         return False
@@ -8350,7 +8457,7 @@ def _restore_stashed_changes(
     stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
     if stash_selector is None:
         print(
-            "⚠ Local changes were restored, but Savarez couldn't find the stash entry to drop."
+            "⚠ Local changes were restored, but Hermes couldn't find the stash entry to drop."
         )
         print(
             "  The stash was left in place. You can remove it manually after checking the result."
@@ -8365,7 +8472,7 @@ def _restore_stashed_changes(
         )
         if drop.returncode != 0:
             print(
-                "⚠ Local changes were restored, but Savarez couldn't drop the saved stash entry."
+                "⚠ Local changes were restored, but Hermes couldn't drop the saved stash entry."
             )
             if drop.stdout.strip():
                 print(drop.stdout.strip())
@@ -8377,7 +8484,7 @@ def _restore_stashed_changes(
             _print_stash_cleanup_guidance(stash_ref, stash_selector)
 
     print("⚠ Local changes were restored on top of the updated codebase.")
-    print("  Review `git diff` / `git status` if Savarez behaves unexpectedly.")
+    print("  Review `git diff` / `git status` if Hermes behaves unexpectedly.")
     return True
 
 
@@ -8404,7 +8511,7 @@ def _discard_stashed_changes(
     if stash_selector is None:
         print(
             "⚠ Configured to discard local changes on non-interactive update, "
-            "but Savarez couldn't find the stash entry to drop."
+            "but Hermes couldn't find the stash entry to drop."
         )
         _print_stash_cleanup_guidance(stash_ref)
         return False
@@ -8417,55 +8524,7 @@ def _discard_stashed_changes(
     )
     if drop.returncode != 0:
         print(
-            "⚠ Configured to discard local changes, but Savarez couldn't drop "
-            "the saved stash entry."
-        )
-        if drop.stderr.strip():
-            print(f"  {drop.stderr.strip().splitlines()[0]}")
-        _print_stash_cleanup_guidance(stash_ref, stash_selector)
-        return False
-
-    print("→ Discarded local source changes (updates.non_interactive_local_changes=discard).")
-    return True
-
-
-def _discard_stashed_changes(
-    git_cmd: list[str],
-    cwd: Path,
-    stash_ref: str,
-) -> bool:
-    """Throw away a stash created before an update, without applying it.
-
-    Used only on a NON-interactive update when the user has set
-    ``updates.non_interactive_local_changes: discard`` — i.e. they've opted out
-    of keeping local source edits on this machine. Drops the stash entry
-    instead of re-applying it, so the working tree stays clean at the freshly
-    pulled HEAD. Unlike ``git reset --hard`` + ``git clean -fd``, this only
-    affects what was stashed (tracked changes + the untracked files we
-    explicitly captured) — ignored paths like node_modules/venv/build outputs
-    are never touched, since they were never stashed.
-
-    Returns True if the stash was dropped, False on a git failure (in which
-    case the stash is left in place for safety).
-    """
-    stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
-    if stash_selector is None:
-        print(
-            "⚠ Configured to discard local changes on non-interactive update, "
-            "but Savarez couldn't find the stash entry to drop."
-        )
-        _print_stash_cleanup_guidance(stash_ref)
-        return False
-
-    drop = subprocess.run(
-        git_cmd + ["stash", "drop", stash_selector],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-    )
-    if drop.returncode != 0:
-        print(
-            "⚠ Configured to discard local changes, but Savarez couldn't drop "
+            "⚠ Configured to discard local changes, but Hermes couldn't drop "
             "the saved stash entry."
         )
         if drop.stderr.strip():
@@ -8478,16 +8537,16 @@ def _discard_stashed_changes(
 
 
 # =========================================================================
-# Fork detection and upstream management for `savarez update`
+# Fork detection and upstream management for `hermes update`
 # =========================================================================
 
 OFFICIAL_REPO_URLS = {
-    "https://github.com/AnandaAnugrahHandyanto/savarez_agent.git",
-    "git@github.com:AnandaAnugrahHandyanto/savarez_agent.git",
-    "https://github.com/AnandaAnugrahHandyanto/savarez_agent",
-    "git@github.com:AnandaAnugrahHandyanto/savarez_agent",
+    "https://github.com/NousResearch/hermes-agent.git",
+    "git@github.com:NousResearch/hermes-agent.git",
+    "https://github.com/NousResearch/hermes-agent",
+    "git@github.com:NousResearch/hermes-agent",
 }
-OFFICIAL_REPO_URL = "https://github.com/AnandaAnugrahHandyanto/savarez_agent.git"
+OFFICIAL_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
 
 
@@ -8620,8 +8679,8 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
 
         # Ask user if they want to add upstream
         print()
-        print("ℹ Your fork is not tracking the official Savarez repository.")
-        print("  This means you may miss updates from AnandaAnugrahHandyanto/savarez-agent.")
+        print("ℹ Your fork is not tracking the official Hermes repository.")
+        print("  This means you may miss updates from NousResearch/hermes-agent.")
         print()
         try:
             response = (
@@ -8635,7 +8694,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             print("→ Adding upstream remote...")
             if _add_upstream_remote(git_cmd, cwd):
                 print(
-                    "  ✓ Added upstream: https://github.com/AnandaAnugrahHandyanto/savarez_agent.git"
+                    "  ✓ Added upstream: https://github.com/NousResearch/hermes-agent.git"
                 )
                 has_upstream = True
             else:
@@ -8643,7 +8702,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
                 return
         else:
             print(
-                "  Skipped. Run 'git remote add upstream https://github.com/AnandaAnugrahHandyanto/savarez_agent.git' to add later."
+                "  Skipped. Run 'git remote add upstream https://github.com/NousResearch/hermes-agent.git' to add later."
             )
             _mark_skip_upstream_prompt()
             return
@@ -8720,11 +8779,11 @@ def _invalidate_update_cache():
     """Delete the update-check cache for ALL profiles so no banner
     reports a stale "commits behind" count after a successful update.
 
-    The git repo is shared across profiles - when one profile runs
-    ``savarez update``, every profile is now current.
+    The git repo is shared across profiles — when one profile runs
+    ``hermes update``, every profile is now current.
     """
     homes = []
-    # Default profile home (Docker-aware - uses /opt/data in Docker)
+    # Default profile home (Docker-aware — uses /opt/data in Docker)
     from hermes_constants import get_default_hermes_root
 
     default_home = get_default_hermes_root()
@@ -8783,7 +8842,7 @@ def _run_install_with_heartbeat(
 
     Some resolvers/build backends (especially when compiling Rust/C extensions)
     can stay quiet for minutes. Emit a simple elapsed-time heartbeat so users
-    know ``savarez update`` is still progressing even if pip/uv itself is silent.
+    know ``hermes update`` is still progressing even if pip/uv itself is silent.
     """
     done = threading.Event()
     start = _time.time()
@@ -8794,7 +8853,7 @@ def _run_install_with_heartbeat(
             elapsed = int(_time.time() - start)
             print(
                 f"  … still installing dependencies ({elapsed}s elapsed)"
-                " - compiling Rust/C extensions can take several minutes",
+                " — compiling Rust/C extensions can take several minutes",
                 flush=True,
             )
 
@@ -8829,14 +8888,14 @@ def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
     """Entry-point shims that uv may try to rewrite during ``pip install -e .``.
 
     On Windows these are .exe launchers generated by setuptools/uv. On POSIX
-    they're regular Python scripts which can be replaced atomically - no
+    they're regular Python scripts which can be replaced atomically — no
     self-replacement hazard exists outside Windows.
     """
     if not _is_windows():
         return []
     return [
-        scripts_dir / "savarez.exe",
-        scripts_dir / "savarez-gateway.exe",
+        scripts_dir / "hermes.exe",
+        scripts_dir / "hermes-gateway.exe",
     ]
 
 
@@ -8845,23 +8904,23 @@ def _detect_concurrent_hermes_instances(
 ) -> list[tuple[int, str]]:
     """Find other live processes whose .exe is one of our entry-point shims.
 
-    Windows blocks DELETE/REPLACE on a running .exe - and even RENAME on the
+    Windows blocks DELETE/REPLACE on a running .exe — and even RENAME on the
     same .exe when another process opened it without ``FILE_SHARE_DELETE``.
-    The Savarez Desktop Electron app spawns ``savarez.EXE`` as a backend child,
-    so during ``savarez update`` the user-invoked process and the desktop's
+    The Hermes Desktop Electron app spawns ``hermes.EXE`` as a backend child,
+    so during ``hermes update`` the user-invoked process and the desktop's
     child both hold the same file. The quarantine rename then fails with
     ``[WinError 32]`` and uv inherits the lock.
 
     This helper enumerates processes whose ``exe`` matches one of the venv's
-    shims (``savarez.exe`` / ``savarez-gateway.exe``) and returns ``(pid,
+    shims (``hermes.exe`` / ``hermes-gateway.exe``) and returns ``(pid,
     process_name)`` pairs. The caller's own PID and its entire ancestor
-    chain are excluded so the running ``savarez update`` invocation never
-    reports itself - this matters on Windows where the setuptools .exe
-    launcher (``savarez.exe``) is a separate process from the Python
+    chain are excluded so the running ``hermes update`` invocation never
+    reports itself — this matters on Windows where the setuptools .exe
+    launcher (``hermes.exe``) is a separate process from the Python
     interpreter it loads (``python.exe``).
 
     Returns an empty list off-Windows, on missing psutil, or when no other
-    instances exist. Never raises - process enumeration is best-effort.
+    instances exist. Never raises — process enumeration is best-effort.
     """
     if not _is_windows():
         return []
@@ -8883,21 +8942,21 @@ def _detect_concurrent_hermes_instances(
 
     # Build a set of PIDs to exclude: the Python process itself plus every
     # ancestor whose executable is one of our shims. On Windows the
-    # setuptools-generated savarez.exe launcher is a separate native process
+    # setuptools-generated hermes.exe launcher is a separate native process
     # that spawns python.exe (the interpreter that runs our code).
     # os.getpid() returns the Python PID, but the launcher (which holds the
-    # file lock) is the parent. Without excluding it, every ``savarez update``
-    # reports its own launcher as a concurrent instance - a false positive
+    # file lock) is the parent. Without excluding it, every ``hermes update``
+    # reports its own launcher as a concurrent instance — a false positive
     # (issues #29341, #34795).
     #
     # Two robustness points learned from the field:
-    #   1. Use ``proc.parents()`` - it returns the WHOLE ancestor list in one
+    #   1. Use ``proc.parents()`` — it returns the WHOLE ancestor list in one
     #      call. The earlier per-hop ``current.parent()`` loop bailed on the
     #      first psutil error (AccessDenied/NoSuchProcess is common on Windows
     #      across session/elevation boundaries), leaving the launcher shim in
     #      the candidate set and re-triggering the false positive.
     #   2. Only exclude ancestors whose exe is itself a shim. A genuine second
-    #      savarez.exe sitting *under* a non-Savarez parent (e.g. a Savarez
+    #      hermes.exe sitting *under* a non-Hermes parent (e.g. a Hermes
     #      Desktop backend child) must still be flagged, so we don't blanket-
     #      exclude unrelated ancestors like the shell or terminal.
     # Broad ``except Exception`` guards against partially-stubbed psutil in
@@ -8961,16 +9020,16 @@ def _format_concurrent_instances_message(
     matches: list[tuple[int, str]], scripts_dir: Path
 ) -> str:
     """Build a human-readable explanation + remediation hint for the user."""
-    shim = scripts_dir / "savarez.exe"
-    lines = ["✗ Another savarez.exe is running:"]
+    shim = scripts_dir / "hermes.exe"
+    lines = ["✗ Another hermes.exe is running:"]
     for pid, name in matches:
         lines.append(f"    PID {pid}  {name}")
     lines.append("")
     lines.append(f"  Updating now would fail to overwrite {shim} because")
     lines.append("  Windows blocks REPLACE on a running executable.")
     lines.append("")
-    lines.append("  Close Savarez Desktop, exit any open `savarez` REPLs, and")
-    lines.append("  stop the gateway (`savarez gateway stop`) before retrying.")
+    lines.append("  Close Hermes Desktop, exit any open `hermes` REPLs, and")
+    lines.append("  stop the gateway (`hermes gateway stop`) before retrying.")
     lines.append("")
     if matches:
         pid_args = " ".join(f"/PID {pid}" for pid, _ in matches)
@@ -8978,7 +9037,7 @@ def _format_concurrent_instances_message(
         lines.append("  stale, terminate them directly, then retry the update:")
         lines.append(f"      taskkill {pid_args} /F")
         lines.append("")
-    lines.append("  Override with `savarez update --force` if you've already")
+    lines.append("  Override with `hermes update --force` if you've already")
     lines.append("  confirmed those processes will not write to the venv.")
     return "\n".join(lines)
 
@@ -8986,21 +9045,21 @@ def _format_concurrent_instances_message(
 def _quarantine_running_hermes_exe(
     scripts_dir: Path, *, max_attempts: int = 4
 ) -> list[tuple[Path, Path]]:
-    """Pre-empt Windows file lock on the running ``savarez.exe``.
+    """Pre-empt Windows file lock on the running ``hermes.exe``.
 
     Windows allows RENAMING a mapped/running executable (the kernel tracks the
     file by handle, not path), but blocks DELETE/REPLACE while it's loaded. uv
     needs to overwrite the entry-point shims during ``pip install -e .``;
-    when ``savarez update`` runs, ``savarez.exe`` IS the live process, and uv
+    when ``hermes update`` runs, ``hermes.exe`` IS the live process, and uv
     fails with ``Access is denied. (os error 5)``.
 
-    We rename live shims to ``savarez.exe.old.<unix-ms>`` first. uv then writes
+    We rename live shims to ``hermes.exe.old.<unix-ms>`` first. uv then writes
     fresh shims at the original paths. The ``.old`` files are cleaned up on
-    the next savarez invocation by ``_cleanup_quarantined_exes``.
+    the next hermes invocation by ``_cleanup_quarantined_exes``.
 
     Rename can still fail when *another* process has opened the .exe without
-    ``FILE_SHARE_DELETE`` - typically AV real-time scanners with transient
-    handles (recovers in <1s), or the Savarez Desktop backend child process
+    ``FILE_SHARE_DELETE`` — typically AV real-time scanners with transient
+    handles (recovers in <1s), or the Hermes Desktop backend child process
     (won't recover until the user closes it). We mitigate:
 
     1. Retry up to ``max_attempts`` times with exponential backoff
@@ -9012,11 +9071,11 @@ def _quarantine_running_hermes_exe(
        update can complete; the user just needs to reboot to fully unload
        the stale image.
     3. Print a clear warning naming the most likely culprit (running
-       Savarez Desktop / gateway / REPL) and pointing to ``--force``.
+       Hermes Desktop / gateway / REPL) and pointing to ``--force``.
 
     Returns the list of (original, quarantined) pairs so the caller can roll
     back if the install itself fails before uv writes a replacement. Pairs
-    where we used ``MOVEFILE_DELAY_UNTIL_REBOOT`` are NOT returned - they
+    where we used ``MOVEFILE_DELAY_UNTIL_REBOOT`` are NOT returned — they
     are already deferred and roll-back is meaningless.
     """
     moved: list[tuple[Path, Path]] = []
@@ -9073,14 +9132,14 @@ def _quarantine_running_hermes_exe(
             continue
 
         # Truly couldn't budge the .exe. Print an actionable warning and let
-        # uv try its luck - sometimes uv's own retry handling pulls through.
+        # uv try its luck — sometimes uv's own retry handling pulls through.
         print(
             f"  ⚠ Could not quarantine {shim.name} ({last_exc.__class__.__name__}: "
             f"another process is holding it open)."
         )
         print(
-            "    Close Savarez Desktop, exit other `savarez` REPLs, stop the "
-            "gateway, or pause AV scanning, then re-run `savarez update`."
+            "    Close Hermes Desktop, exit other `hermes` REPLs, stop the "
+            "gateway, or pause AV scanning, then re-run `hermes update`."
         )
 
     return moved
@@ -9093,7 +9152,7 @@ def _schedule_replace_on_reboot(shim: Path, quarantine_target: Path) -> bool:
     MOVEFILE_DELAY_UNTIL_REBOOT``. The OS persists the rename in
     ``HKLM\\System\\CurrentControlSet\\Control\\Session Manager\\
     PendingFileRenameOperations`` and applies it before any user-mode code
-    runs on next boot - at which point no process can hold the .exe.
+    runs on next boot — at which point no process can hold the .exe.
 
     Returns ``True`` if the schedule call succeeded, ``False`` otherwise
     (non-Windows, ctypes failure, lack of privilege, etc.). Never raises.
@@ -9166,9 +9225,9 @@ def _run_quarantined_install(
 
 
 def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
-    """Sweep ``savarez.exe.old.*`` left by prior updates.
+    """Sweep ``hermes.exe.old.*`` left by prior updates.
 
-    Called early on every savarez invocation. The .old files are unlocked once
+    Called early on every hermes invocation. The .old files are unlocked once
     their owning process exited, so deletion succeeds the next run. Silent
     no-op when nothing's there or on file-locked / permission errors.
     """
@@ -9183,7 +9242,7 @@ def _cleanup_quarantined_exes(scripts_dir: Path | None = None) -> None:
             try:
                 stale.unlink()
             except OSError:
-                pass  # still locked or in use - try again next run
+                pass  # still locked or in use — try again next run
     except OSError:
         pass
 
@@ -9193,14 +9252,14 @@ def _refresh_active_lazy_features() -> None:
 
     When pyproject.toml's ``[all]`` extra was slimmed down (May 2026), most
     optional backends moved to ``tools/lazy_deps.py`` and only install on
-    first use. ``savarez update`` runs ``uv pip install -e .[all]`` which
-    leaves those packages untouched - so if we bump a pin in
+    first use. ``hermes update`` runs ``uv pip install -e .[all]`` which
+    leaves those packages untouched — so if we bump a pin in
     :data:`LAZY_DEPS` (CVE response, transitive bug fix), users who already
     activated the backend keep the stale version forever.
 
     This function asks lazy_deps which features the user has previously
     activated and reinstalls them under the current pins. Features the
-    user never enabled stay quiet - no churn for cold backends.
+    user never enabled stay quiet — no churn for cold backends.
 
     Never raises. A failure here must not block the rest of the update.
     """
@@ -9253,7 +9312,7 @@ def _refresh_active_lazy_features() -> None:
                 reason = reason[:200] + "..."
             print(f"  ⚠ {feature} failed to refresh: {reason}")
         print("  Backends keep their previously-installed version; rerun")
-        print("  `savarez update` once the upstream issue is resolved.")
+        print("  `hermes update` once the upstream issue is resolved.")
 
 
 def _install_python_dependencies_with_optional_fallback(
@@ -9267,7 +9326,7 @@ def _install_python_dependencies_with_optional_fallback(
     By default this targets ``.[all]``; Termux callers can pass
     ``group='termux-all'`` to use the curated Android-compatible profile.
 
-    On Windows, pre-renames live ``savarez.exe`` / ``savarez-gateway.exe`` shims
+    On Windows, pre-renames live ``hermes.exe`` / ``hermes-gateway.exe`` shims
     in the venv Scripts dir before each install attempt so uv can write fresh
     copies (Windows blocks REPLACE on a running .exe but allows RENAME). See
     ``_quarantine_running_hermes_exe`` for the rationale.
@@ -9309,11 +9368,11 @@ def _install_python_dependencies_with_optional_fallback(
 
     # Belt-and-suspenders: verify every declared core dependency from
     # pyproject.toml's [project.dependencies] is actually importable in the
-    # target venv. uv's incremental resolver has - in the wild - produced
+    # target venv. uv's incremental resolver has — in the wild — produced
     # partial installs where a newly added base dep (e.g. ``pathspec``)
     # silently fails to land on top of a half-stale venv, and the only
     # symptom is a downstream subprocess crashing with ModuleNotFoundError
-    # hours later inside ``savarez update``'s desktop-rebuild or skill-sync
+    # hours later inside ``hermes update``'s desktop-rebuild or skill-sync
     # stage. Reinstall with --reinstall to force resolution if anything is
     # missing, then re-verify so the failure surfaces here instead of
     # downstream.
@@ -9335,12 +9394,12 @@ def _verify_core_dependencies_installed(
     base group with ``--reinstall`` to force uv to re-resolve, then check
     again. We treat the final state as a warning rather than a hard failure
     so a single broken-on-PyPI dep can't block an otherwise-successful
-    update - but the warning makes the partial install visible at the spot
+    update — but the warning makes the partial install visible at the spot
     that caused it, instead of hours later in a downstream subprocess.
     """
     try:
         import tomllib  # Python 3.11+
-    except ImportError:  # pragma: no cover - Python < 3.11 unsupported but be safe
+    except ImportError:  # pragma: no cover — Python < 3.11 unsupported but be safe
         return
 
     pyproject = PROJECT_ROOT / "pyproject.toml"
@@ -9397,8 +9456,8 @@ def _verify_core_dependencies_installed(
     if not applicable:
         return
 
-    # Run the check inside the venv Python - sys.executable here may be the
-    # outer Python that drove ``savarez update``, not the venv we just wrote
+    # Run the check inside the venv Python — sys.executable here may be the
+    # outer Python that drove ``hermes update``, not the venv we just wrote
     # to. The uv install_cmd_prefix encodes which environment we targeted
     # (either ``[uv, pip]`` with VIRTUAL_ENV in env, or
     # ``[sys.executable, -m, pip]`` for the in-process Python); resolve the
@@ -9441,7 +9500,7 @@ def _verify_core_dependencies_installed(
 
     # Reinstall base group with --reinstall so uv re-resolves from scratch
     # against the current pyproject. We don't pass ``[{group}]`` here on
-    # purpose - the missing dep is in *base* deps; rerunning the full all-
+    # purpose — the missing dep is in *base* deps; rerunning the full all-
     # extras install can cost minutes and trips on whatever optional extra
     # was already broken upstream. Base is fast and is what's actually wrong.
     #
@@ -9456,7 +9515,7 @@ def _verify_core_dependencies_installed(
         )
     except subprocess.CalledProcessError as e:
         logger.warning("dep verification: repair install failed: %s", e)
-        print("  ⚠ Repair install failed; check `savarez update` output above.")
+        print("  ⚠ Repair install failed; check `hermes update` output above.")
         return
 
     still_missing = _missing_deps()
@@ -9489,7 +9548,7 @@ def _verify_core_dependencies_installed(
         logger.warning("dep verification: per-package repair failed: %s", e)
         print(
             f"  ⚠ Could not install: {', '.join(still_missing)}. "
-            "Run `savarez update --force` after closing other savarez processes."
+            "Run `hermes update --force` after closing other hermes processes."
         )
         return
 
@@ -9497,7 +9556,7 @@ def _verify_core_dependencies_installed(
     if final_missing:
         print(
             f"  ⚠ Still missing after repair: {', '.join(final_missing)}. "
-            "Run `savarez update --force` after closing other savarez processes."
+            "Run `hermes update --force` after closing other hermes processes."
         )
     else:
         print("  ✓ All declared core dependencies now installed")
@@ -9579,7 +9638,7 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
     """Best-effort uv bootstrap on Termux for faster update installs.
 
     The normal path (``ensure_uv()`` in managed_uv) installs the managed
-    standalone uv into ``$SAVAREZ_HOME/bin/uv``, but on Termux the official
+    standalone uv into ``$HERMES_HOME/bin/uv``, but on Termux the official
     installer may not work (glibc vs bionic).  Fall back to ``pip install uv``
     which gets a Termux-compatible binary.
     """
@@ -9608,14 +9667,16 @@ def _update_node_dependencies() -> None:
         return
 
     # With a single workspace lockfile the root install would cover ALL
-    # workspaces - but apps/desktop pulls in Electron as a devDependency,
+    # workspaces — but apps/desktop pulls in Electron as a devDependency,
     # and its postinstall downloads a ~200MB binary.  Most users don't
-    # need desktop during `savarez update`, so we install root-only first
+    # need desktop during `hermes update`, so we install root-only first
     # then add just the workspaces the CLI/TUI/web build actually requires.
     # Desktop deps are installed on demand by the desktop launcher
     # (see _desktop_build_needed).
     print("→ Updating Node.js dependencies...")
     extra_args = ["--no-fund", "--no-audit", "--progress=false"]
+
+    nixos_env = _nixos_build_env()
 
     # Step 1: root install (no workspace recursion).
     root_args = [*extra_args, "--workspaces=false"]
@@ -9624,6 +9685,7 @@ def _update_node_dependencies() -> None:
         PROJECT_ROOT,
         extra_args=tuple(root_args),
         capture_output=False,
+        env=nixos_env,
     )
     if root_result.returncode != 0:
         print("  ⚠ npm install failed in repo root")
@@ -9640,6 +9702,7 @@ def _update_node_dependencies() -> None:
         PROJECT_ROOT,
         extra_args=tuple(ws_args),
         capture_output=False,
+        env=nixos_env,
     )
     if ws_result.returncode == 0:
         print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
@@ -9651,20 +9714,20 @@ def _update_node_dependencies() -> None:
 
 
 class _UpdateOutputStream:
-    """Stream wrapper used during ``savarez update`` to survive terminal loss.
+    """Stream wrapper used during ``hermes update`` to survive terminal loss.
 
     Wraps the process's original stdout/stderr so that:
 
     * Every write is also mirrored to an append-only log file
-      (``~/.savarez/logs/update.log``) that users can inspect after the
+      (``~/.hermes/logs/update.log``) that users can inspect after the
       terminal disconnects.
     * Writes to the original stream that fail with ``BrokenPipeError`` /
       ``OSError`` / ``ValueError`` (closed file) no longer cascade into
-      process exit - the update keeps going, only the on-screen output
+      process exit — the update keeps going, only the on-screen output
       stops.
 
     Combined with ``SIGHUP -> SIG_IGN`` installed by
-    ``_install_hangup_protection``, this makes ``savarez update`` safe to
+    ``_install_hangup_protection``, this makes ``hermes update`` safe to
     run in a plain SSH session that might disconnect mid-install.
     """
 
@@ -9674,7 +9737,7 @@ class _UpdateOutputStream:
         self._original_broken = False
 
     def write(self, data):
-        # Mirror to the log file first - it's the most reliable destination.
+        # Mirror to the log file first — it's the most reliable destination.
         if self._log is not None:
             try:
                 self._log.write(data)
@@ -9726,7 +9789,7 @@ class _UpdateOutputStream:
 def _install_hangup_protection(gateway_mode: bool = False):
     """Protect ``cmd_update`` from SIGHUP and broken terminal pipes.
 
-    Users commonly run ``savarez update`` in an SSH session or a terminal
+    Users commonly run ``hermes update`` in an SSH session or a terminal
     that may close mid-install.  Without protection, ``SIGHUP`` from the
     terminal kills the Python process during ``pip install`` and leaves
     the venv half-installed; the documented workaround ("use screen /
@@ -9738,14 +9801,14 @@ def _install_hangup_protection(gateway_mode: bool = False):
        across ``exec()``, so pip and git subprocesses also stop dying on
        hangup.
     2. ``sys.stdout`` / ``sys.stderr`` are wrapped to mirror output to
-       ``~/.savarez/logs/update.log`` and to silently absorb
+       ``~/.hermes/logs/update.log`` and to silently absorb
        ``BrokenPipeError`` when the terminal vanishes.
 
     ``SIGINT`` (Ctrl-C) and ``SIGTERM`` (systemd shutdown) are
-    **intentionally left alone** - those are legitimate cancellation
+    **intentionally left alone** — those are legitimate cancellation
     signals the user or OS sent on purpose.
 
-    In gateway mode (``savarez update --gateway``) the update is already
+    In gateway mode (``hermes update --gateway``) the update is already
     spawned detached from a terminal, so this function is a no-op.
 
     Returns a dict that ``cmd_update`` can pass to
@@ -9769,7 +9832,7 @@ def _install_hangup_protection(gateway_mode: bool = False):
         try:
             _signal.signal(_signal.SIGHUP, _signal.SIG_IGN)
         except (ValueError, OSError):
-            # Called from a non-main thread - not fatal.  The update still
+            # Called from a non-main thread — not fatal.  The update still
             # runs, just without hangup protection.
             pass
 
@@ -9788,7 +9851,7 @@ def _install_hangup_protection(gateway_mode: bool = False):
         import datetime as _dt
 
         log_file.write(
-            f"\n=== savarez update started "
+            f"\n=== hermes update started "
             f"{_dt.datetime.now().isoformat(timespec='seconds')} ===\n"
         )
 
@@ -9838,7 +9901,7 @@ def _resolve_update_branch(args) -> str:
 
 
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
-    """Implement ``savarez update --check``: fetch and report without installing.
+    """Implement ``hermes update --check``: fetch and report without installing.
 
     ``branch`` selects which branch the check compares against. Default is
     "main"; callers can pass another branch to ask "are there new commits
@@ -9853,8 +9916,8 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     method = detect_install_method(PROJECT_ROOT)
     if method == "docker":
         # Docker can't ``git fetch`` from within the container.  Surface the
-        # same long-form ``docker pull`` guidance ``savarez update`` (apply
-        # path) uses - telling the user to "reinstall via curl" or that
+        # same long-form ``docker pull`` guidance ``hermes update`` (apply
+        # path) uses — telling the user to "reinstall via curl" or that
         # ".git is missing" would point them at the wrong remediation.
         from hermes_cli.config import format_docker_update_message
         print(format_docker_update_message())
@@ -9877,7 +9940,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
 
     git_dir = PROJECT_ROOT / ".git"
     if not git_dir.exists():
-        print("✗ Not a git repository - cannot check for updates.")
+        print("✗ Not a git repository — cannot check for updates.")
         sys.exit(1)
 
     git_cmd = ["git"]
@@ -9925,9 +9988,9 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     if fetch_result.returncode != 0:
         stderr = fetch_result.stderr.strip()
         if "Could not resolve host" in stderr or "unable to access" in stderr:
-            print("✗ Network error - cannot reach the remote repository.")
+            print("✗ Network error — cannot reach the remote repository.")
         elif "Authentication failed" in stderr or "could not read Username" in stderr:
-            print("✗ Authentication failed - check your git credentials or SSH key.")
+            print("✗ Authentication failed — check your git credentials or SSH key.")
         else:
             print("✗ Failed to fetch.")
             if stderr:
@@ -9972,27 +10035,27 @@ def _ensure_fhs_path_guard() -> None:
 
     Mirrors the post-symlink probe added to ``scripts/install.sh`` so that
     existing FHS-layout root installs on RHEL/CentOS/Rocky/Alma 8+ get
-    repaired on ``savarez update`` without requiring a reinstall.  The
+    repaired on ``hermes update`` without requiring a reinstall.  The
     installer's assumption that ``/usr/local/bin`` is on PATH for every
     standard shell breaks on those distros in non-login interactive shells
     (su, sudo -s, tmux panes, some web terminals): /etc/bashrc doesn't
     add /usr/local/bin and /root/.bash_profile doesn't either.  Symptom:
-    ``savarez`` prints ``command not found`` even though the symlink lives
-    at /usr/local/bin/savarez.
+    ``hermes`` prints ``command not found`` even though the symlink lives
+    at /usr/local/bin/hermes.
 
     Silent no-op on: non-Linux, non-root, non-FHS installs, and any system
-    where ``bash -i -c 'command -v savarez'`` already resolves.  Idempotent.
+    where ``bash -i -c 'command -v hermes'`` already resolves.  Idempotent.
     """
     if sys.platform != "linux":
         return
     try:
-        if os.geteuid() != 0:  # windows-footgun: ok - Linux FHS helper, guarded by sys.platform == "linux" above + AttributeError catch
+        if os.geteuid() != 0:  # windows-footgun: ok — Linux FHS helper, guarded by sys.platform == "linux" above + AttributeError catch
             return
     except AttributeError:
         return
     # Only act when this is actually an FHS-layout install (command link at
-    # /usr/local/bin/savarez, code at /usr/local/lib/savarez-agent).
-    fhs_link = Path("/usr/local/bin/savarez")
+    # /usr/local/bin/hermes, code at /usr/local/lib/hermes-agent).
+    fhs_link = Path("/usr/local/bin/hermes")
     if not fhs_link.is_symlink() and not fhs_link.exists():
         return
 
@@ -10010,20 +10073,20 @@ def _ensure_fhs_path_guard() -> None:
                 "bash",
                 "-i",
                 "-c",
-                "command -v savarez",
+                "command -v hermes",
             ],
             capture_output=True,
             text=True,
             timeout=10,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return  # no bash or probe hung - don't block update on this
+        return  # no bash or probe hung — don't block update on this
     if probe.returncode == 0:
         return  # already on PATH, nothing to do
 
     path_line = 'export PATH="/usr/local/bin:$PATH"'
     path_comment = (
-        "# Savarez AI Agent - ensure /usr/local/bin is on PATH " "(RHEL non-login shells)"
+        "# Hermes Agent — ensure /usr/local/bin is on PATH " "(RHEL non-login shells)"
     )
     wrote_any = False
     for candidate in (".bashrc", ".bash_profile"):
@@ -10057,13 +10120,13 @@ def _ensure_fhs_path_guard() -> None:
 
 
 def _run_pre_update_backup(args) -> None:
-    """Create a full zip backup of SAVAREZ_HOME before running the update.
+    """Create a full zip backup of HERMES_HOME before running the update.
 
     Gated on ``updates.pre_update_backup`` in config (default false).  Off
     by default because the zip can add minutes to every update on large
-    SAVAREZ_HOME directories.  The ``--backup`` flag on ``savarez update``
+    HERMES_HOME directories.  The ``--backup`` flag on ``hermes update``
     opts in for a single run; ``--no-backup`` forces it off when config
-    has it enabled.  Never raises - a backup failure should not block the
+    has it enabled.  Never raises — a backup failure should not block the
     update itself.
     """
     # CLI flags win over config.  --no-backup beats --backup if both are set.
@@ -10089,7 +10152,7 @@ def _run_pre_update_backup(args) -> None:
     keep = updates_cfg.get("backup_keep", 5)
 
     if not enabled and not force_backup:
-        # Silent by default - the backup is off, most users don't need to
+        # Silent by default — the backup is off, most users don't need to
         # hear about it on every update.  They can opt in via --backup
         # or by flipping the config knob.
         return
@@ -10107,7 +10170,7 @@ def _run_pre_update_backup(args) -> None:
     t0 = _time.monotonic()
     try:
         out_path = create_pre_update_backup(keep=int(keep))
-    except Exception as exc:  # defensive - helper already swallows, but just in case
+    except Exception as exc:  # defensive — helper already swallows, but just in case
         print(f"  ⚠ Backup failed: {exc}")
         print("  Continuing with update.")
         print()
@@ -10133,7 +10196,7 @@ def _run_pre_update_backup(args) -> None:
         size_bytes /= 1024
         size_str = f"{size_bytes:.1f} {unit}"
 
-    # Render path using display_hermes_home so the user sees ~/.savarez/...
+    # Render path using display_hermes_home so the user sees ~/.hermes/...
     try:
         from hermes_constants import get_hermes_home, display_hermes_home
 
@@ -10146,7 +10209,7 @@ def _run_pre_update_backup(args) -> None:
         display_path = str(out_path)
 
     print(f"  Saved:    {display_path} ({size_str}, {elapsed:.1f}s)")
-    print(f"  Restore:  savarez import {out_path}")
+    print(f"  Restore:  hermes import {out_path}")
     print(f"  Disable:  omit --backup (backups are off by default)")
     print(f"            set updates.pre_update_backup: false in config.yaml")
     print()
@@ -10157,7 +10220,7 @@ def _discard_lockfile_churn(git_cmd, repo_root):
 
     npm rewrites lockfiles non-deterministically at install/build time. On a
     managed install those diffs are never intentional, so we discard them so
-    ``savarez update`` sees a clean tree instead of autostashing every run.
+    ``hermes update`` sees a clean tree instead of autostashing every run.
     Best-effort; only ever touches files named ``package-lock.json``.
     """
     try:
@@ -10190,7 +10253,7 @@ def _discard_lockfile_churn(git_cmd, repo_root):
 
 
 def cmd_update(args):
-    """Update Savarez AI Agent to the latest version.
+    """Update Hermes Agent to the latest version.
 
     Thin wrapper around ``_cmd_update_impl``: installs hangup protection,
     runs the update, then restores stdio on the way out (even on
@@ -10204,10 +10267,10 @@ def cmd_update(args):
     )
 
     if is_managed():
-        managed_error("update Savarez AI Agent")
+        managed_error("update Hermes Agent")
         return
 
-    # Docker users can't ``git pull`` - the image excludes ``.git`` from
+    # Docker users can't ``git pull`` — the image excludes ``.git`` from
     # the build context.  Bail with a friendly explanation pointing at
     # ``docker pull`` BEFORE any of the apply-path / check-path branches
     # below get a chance to error out with misleading "Not a git
@@ -10219,7 +10282,7 @@ def cmd_update(args):
 
     if getattr(args, "check", False):
         # --check honors --branch so the "any new commits?" answer matches
-        # what a subsequent `savarez update --branch=<x>` would actually pull.
+        # what a subsequent `hermes update --branch=<x>` would actually pull.
         branch = _resolve_update_branch(args)
         _cmd_update_check(
             branch=branch,
@@ -10240,7 +10303,7 @@ def cmd_update(args):
 
 
 def _cmd_update_pip(args):
-    """Update Savarez via pip (for PyPI installs)."""
+    """Update Hermes via pip (for PyPI installs)."""
     from hermes_cli import __version__
     from hermes_cli.config import is_uv_tool_install
 
@@ -10270,13 +10333,13 @@ def _cmd_update_pip(args):
             print("✗ Detected a uv-tool install but managed uv install failed.")
             print("  Install uv manually: https://docs.astral.sh/uv/getting-started/installation/")
             sys.exit(1)
-        cmd = [uv, "tool", "upgrade", "savarez-agent"]
+        cmd = [uv, "tool", "upgrade", "hermes-agent"]
     elif pipx_managed and pipx:
         # pipx owns its own venv; ``pipx upgrade`` is the only correct path.
         # Matches scripts/auto-update.sh, which already uses pipx upgrade.
-        cmd = [pipx, "upgrade", "savarez-agent"]
+        cmd = [pipx, "upgrade", "hermes-agent"]
     elif uv:
-        cmd = [uv, "pip", "install", "--upgrade", "savarez-agent"]
+        cmd = [uv, "pip", "install", "--upgrade", "hermes-agent"]
         if in_venv:
             # Launcher shim runs the venv interpreter but doesn't export
             # VIRTUAL_ENV; without it uv errors "No virtual environment found".
@@ -10286,7 +10349,7 @@ def _cmd_update_pip(args):
             # interpreter, matching pip's default behaviour.
             cmd.insert(3, "--system")
     else:
-        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "savarez-agent"]
+        cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "hermes-agent"]
 
     print(f"→ Running: {' '.join(cmd)}")
     run_kwargs = {}
@@ -10297,11 +10360,11 @@ def _cmd_update_pip(args):
         print("✗ Update failed")
         sys.exit(1)
 
-    print("✓ Update complete! Restart savarez to use the new version.")
+    print("✓ Update complete! Restart hermes to use the new version.")
 
 
 def _cmd_update_impl(args, gateway_mode: bool):
-    """Body of ``cmd_update`` - kept separate so the wrapper can always
+    """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
     # In gateway mode, use file-based IPC for prompts instead of stdin
     gw_input_fn = (
@@ -10335,10 +10398,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("Could not read updates.non_interactive_local_changes: %s", exc)
             discard_local_changes = False
 
-    print("⚕ Updating Savarez Agent...")
+    print("⚕ Updating Hermes Agent...")
     print()
 
-    # On Windows, abort early if another savarez.exe is holding the venv shim
+    # On Windows, abort early if another hermes.exe is holding the venv shim
     # open. Continuing would result in a string of WinError 32 warnings and
     # then either a deferred-rename leftover or a failed git-pull fast path
     # that silently falls back to the slower ZIP route. See issue #26670.
@@ -10350,7 +10413,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print(_format_concurrent_instances_message(concurrent, scripts_dir))
                 sys.exit(2)
 
-    # Pre-update backup - runs before any git/file mutation so users can
+    # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.
     _run_pre_update_backup(args)
 
@@ -10370,7 +10433,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 return
             print("✗ Not a git repository. Please reinstall:")
             print(
-                "  curl -fsSL https://raw.githubusercontent.com/AnandaAnugrahHandyanto/savarez_agent/main/scripts/install.sh | bash"
+                "  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
             )
             sys.exit(1)
 
@@ -10391,7 +10454,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             capture_output=True,
         )
 
-    # Build git command once - reused for fork detection and the update itself.
+    # Build git command once — reused for fork detection and the update itself.
     git_cmd = ["git"]
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
@@ -10400,7 +10463,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # tracked package-lock.json files non-deterministically at install/build
     # time (platform-specific optional deps, ideallyInert annotations, etc.),
     # which is never an intentional edit on a managed install but leaves the
-    # tree dirty - forcing an autostash on every update and making branch
+    # tree dirty — forcing an autostash on every update and making branch
     # switches fragile. Restoring them first lets the common case (only
     # lockfile churn) update with a clean tree.
     _discard_lockfile_churn(git_cmd, PROJECT_ROOT)
@@ -10432,13 +10495,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if fetch_result.returncode != 0:
             stderr = fetch_result.stderr.strip()
             if "Could not resolve host" in stderr or "unable to access" in stderr:
-                print("✗ Network error - cannot reach the remote repository.")
+                print("✗ Network error — cannot reach the remote repository.")
                 print(f"  {stderr.splitlines()[0]}" if stderr else "")
             elif (
                 "Authentication failed" in stderr or "could not read Username" in stderr
             ):
                 print(
-                    "✗ Authentication failed - check your git credentials or SSH key."
+                    "✗ Authentication failed — check your git credentials or SSH key."
                 )
             else:
                 print(f"✗ Failed to fetch updates from origin.")
@@ -10464,7 +10527,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # If user is on a different branch than the update target, switch
         # to the target. When the target is "main" this is the historical
         # "always update against main" behavior; for any other target it's
-        # the same thing - get HEAD onto the requested branch first, then
+        # the same thing — get HEAD onto the requested branch first, then
         # fast-forward.
         if current_branch != branch:
             label = (
@@ -10558,7 +10621,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Snapshot critical state (state.db, config, pairing JSONs, etc.)
         # before pulling so a user can recover if something goes wrong.
         # Issue #15733 reported missing pairing data after an update; even
-        # though `git pull` can't touch $SAVAREZ_HOME, this is cheap
+        # though `git pull` can't touch $HERMES_HOME, this is cheap
         # belt-and-suspenders insurance and gives the user something to
         # restore from via `/snapshot list` / `/snapshot restore <id>`.
         pre_update_snapshot_id = None
@@ -10577,7 +10640,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Capture the pre-pull SHA so we can auto-roll-back if the new code
         # has a syntax error in a critical-path file (PR #28452 incident:
         # orphan merge-conflict markers in hermes_cli/config.py bricked
-        # every user who ran ``savarez update`` for the 7 minutes between
+        # every user who ran ``hermes update`` for the 7 minutes between
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
         try:
@@ -10588,7 +10651,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 text=True,
             )
             if pull_result.returncode != 0:
-                # ff-only failed - local and remote have diverged (e.g. upstream
+                # ff-only failed — local and remote have diverged (e.g. upstream
                 # force-pushed or rebase).  Since local changes are already
                 # stashed, reset to match the remote exactly.
                 print(
@@ -10613,7 +10676,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # parse before declaring the update successful. If a bad commit
             # made it through CI (e.g. admin-merge bypass of a failing
             # ruff check), this catches it on the user side and rolls back
-            # so the CLI stays bootable. The user can then retry ``savarez
+            # so the CLI stays bootable. The user can then retry ``hermes
             # update`` later once a fix lands upstream.
             syntax_ok, failing_path, syntax_error = _validate_critical_files_syntax(
                 PROJECT_ROOT
@@ -10637,8 +10700,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         text=True,
                     )
                     if rollback_result.returncode == 0:
-                        print("  ✓ Rollback complete - your install is unchanged.")
-                        print("  Try ``savarez update`` again later once a fix lands.")
+                        print("  ✓ Rollback complete — your install is unchanged.")
+                        print("  Try ``hermes update`` again later once a fix lands.")
                     else:
                         print("  ✗ Rollback failed. Recover manually with:")
                         print(f"    cd {PROJECT_ROOT} && git reset --hard {pre_pull_sha}")
@@ -10646,14 +10709,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             print(f"    ({rollback_result.stderr.strip().splitlines()[0]})")
                 else:
                     print()
-                    print("  Could not capture pre-pull SHA - recover manually with:")
+                    print("  Could not capture pre-pull SHA — recover manually with:")
                     print(f"    cd {PROJECT_ROOT} && git reflog && git reset --hard <prev-sha>")
                 sys.exit(1)
 
             update_succeeded = True
         finally:
             if auto_stash_ref is not None:
-                # Don't attempt stash restore if the code update itself failed -
+                # Don't attempt stash restore if the code update itself failed —
                 # working tree is in an unknown state.
                 if not update_succeeded:
                     print(
@@ -10680,7 +10743,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         _invalidate_update_cache()
 
-        # Clear stale .pyc bytecode cache - prevents ImportError on gateway
+        # Clear stale .pyc bytecode cache — prevents ImportError on gateway
         # restart when updated source references names that didn't exist in
         # the old bytecode (e.g. get_hermes_home added to hermes_constants).
         removed = _clear_bytecode_cache(PROJECT_ROOT)
@@ -10699,7 +10762,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print("→ Updating Python dependencies...")
         from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
-        # Keep managed uv current - runs `uv self update` if we already have one.
+        # Keep managed uv current — runs `uv self update` if we already have one.
         update_managed_uv()
 
         uv_bin = ensure_uv()
@@ -10755,12 +10818,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _build_web_ui(PROJECT_ROOT / "web")
 
         # Rebuild the desktop app if the source tree changed since the last
-        # build.  ``savarez desktop --build-only`` uses the content-hash stamp
+        # build.  ``hermes desktop --build-only`` uses the content-hash stamp
         # internally, so this is effectively a no-op when nothing changed.
         # Only bother if the user has a desktop app installed (indicated by
         # an existing packaged executable or desktop dist); people who have
-        # never run ``savarez desktop`` shouldn't be forced into a full
-        # Electron build by ``savarez update``.
+        # never run ``hermes desktop`` shouldn't be forced into a full
+        # Electron build by ``hermes update``.
         desktop_dir = PROJECT_ROOT / "apps" / "desktop"
         has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
         if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
@@ -10768,13 +10831,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
             # Stream the build output live (long Electron builds otherwise
             # look hung). On the rare nonzero exit, retry once after waiting
-            # again for the venv - this covers a still-settling rebuild window
+            # again for the venv — this covers a still-settling rebuild window
             # the first wait didn't fully catch.
             build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
             if build_result.returncode != 0:
                 build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
             if build_result.returncode != 0:
-                print("  ⚠ Desktop build failed (non-fatal; run `savarez desktop` to retry)")
+                print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
 
         print()
         print("✓ Code updated!")
@@ -10789,7 +10852,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             importlib.reload(_hc)
         except Exception:
-            pass  # non-fatal - worst case a lazy import fails gracefully
+            pass  # non-fatal — worst case a lazy import fails gracefully
 
         # Sync bundled skills (copies new, updates changed, respects user deletions)
         try:
@@ -10814,10 +10877,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("Skills sync during update failed: %s", e)
 
         # Sync bundled skills to all profiles (including the active one).
-        # seed_profile_skills() uses subprocess with an explicit SAVAREZ_HOME so
-        # it is not affected by sync_skills()'s module-level SAVAREZ_HOME cache,
+        # seed_profile_skills() uses subprocess with an explicit HERMES_HOME so
+        # it is not affected by sync_skills()'s module-level HERMES_HOME cache,
         # which means the active profile is reliably synced regardless of whether
-        # the caller's SAVAREZ_HOME env var points at the default or a named profile.
+        # the caller's HERMES_HOME env var points at the default or a named profile.
         try:
             from hermes_cli.profiles import (
                 list_profiles,
@@ -10885,7 +10948,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         needs_migration = has_new_options or current_ver < latest_ver
 
         if version_bump_only:
-            # Nothing for the user to fill in - only the config format version
+            # Nothing for the user to fill in — only the config format version
             # changed (new defaults already merge in transparently). Asking
             # "configure new options now?" here is misleading: saying yes just
             # bumps the version and looks like a no-op (issue: ScottFive /
@@ -10899,7 +10962,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("  ✓ Config format updated (no new settings to configure)")
             except Exception as _mig_err:
                 print(f"  ⚠️  Config format update failed: {_mig_err}")
-                print("     Run 'savarez config migrate' to retry.")
+                print("     Run 'hermes config migrate' to retry.")
         elif needs_migration:
             print()
             # Show WHAT changed, not just a count, so the user can make an
@@ -10918,7 +10981,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         name = str(it)
                         desc = ""
                     if desc:
-                        print(f"      • {name} - {desc}")
+                        print(f"      • {name} — {desc}")
                     else:
                         print(f"      • {name}")
                 extra = len(items) - len(shown)
@@ -10949,7 +11012,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     .lower()
                 )
             elif not (sys.stdin.isatty() and sys.stdout.isatty()):
-                print("  ℹ Non-interactive session - applying safe config migrations.")
+                print("  ℹ Non-interactive session — applying safe config migrations.")
                 response = "auto"
             else:
                 try:
@@ -10977,10 +11040,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print()
                     print("✓ Configuration updated!")
                 if (gateway_mode or assume_yes or response == "auto") and missing_env:
-                    print("  ℹ API keys require manual entry: savarez config migrate")
+                    print("  ℹ API keys require manual entry: hermes config migrate")
             else:
                 print()
-                print("Skipped. Run 'savarez config migrate' later to configure.")
+                print("Skipped. Run 'hermes config migrate' later to configure.")
         else:
             print("  ✓ Configuration is up to date")
 
@@ -10995,7 +11058,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if cron_restore:
                 print()
                 print(
-                    "  ⚠️  cron/jobs.json was emptied during this update - "
+                    "  ⚠️  cron/jobs.json was emptied during this update — "
                     f"restored {cron_restore['job_count']} job(s) from "
                     f"pre-update snapshot {cron_restore['snapshot_id']}."
                 )
@@ -11007,7 +11070,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print("✓ Update complete!")
 
         # Curator first-run heads-up. Only prints when curator is enabled AND
-        # has never run - i.e. the window where the ticker would otherwise
+        # has never run — i.e. the window where the ticker would otherwise
         # have fired against a fresh skill library. Kept silent on steady
         # state so we don't nag.
         try:
@@ -11015,10 +11078,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("Curator first-run notice failed: %s", e)
 
-        # Most-recent curator run notice - show-once per run. Surfaces the
+        # Most-recent curator run notice — show-once per run. Surfaces the
         # rename map (`old-name → umbrella`) on the high-attention update
         # surface so users learn about consolidations without having to
-        # check `savarez curator status`. Self-stamps after printing so it
+        # check `hermes curator status`. Self-stamps after printing so it
         # never repeats for the same run.
         try:
             _print_curator_recent_run_notice()
@@ -11035,7 +11098,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Refresh the cua-driver binary used by the Computer Use toolset.
         # The upstream installer is gated on macOS and on the binary already
         # being on PATH, so this is a no-op for users who don't have it.
-        # Tying the refresh to ``savarez update`` gives users a predictable
+        # Tying the refresh to ``hermes update`` gives users a predictable
         # cadence (matches when they pull new agent code) without adding
         # startup latency or a per-launch GitHub API call.
         try:
@@ -11049,7 +11112,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("cua-driver refresh failed: %s", e)
 
         # Write exit code *before* the gateway restart attempt.
-        # When running as ``savarez update --gateway`` (spawned by the gateway's
+        # When running as ``hermes update --gateway`` (spawned by the gateway's
         # /update command), this process lives inside the gateway's systemd
         # cgroup.  A graceful SIGUSR1 restart keeps the drain loop alive long
         # enough for the exit-code marker to be written below, but the
@@ -11061,8 +11124,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # update watcher would then poll for 30 minutes and send a spurious
         # timeout message.
         #
-        # Writing the marker here - after git pull + pip install succeed but
-        # before we attempt the restart - ensures the new gateway sees it
+        # Writing the marker here — after git pull + pip install succeed but
+        # before we attempt the restart — ensures the new gateway sees it
         # regardless of how we die.
         if gateway_mode:
             _exit_code_path = get_hermes_home() / ".update_exit_code"
@@ -11205,7 +11268,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             relaunched_profiles = []
 
             # --- Systemd services (Linux) ---
-            # Discover all savarez-gateway* units (default + profiles)
+            # Discover all hermes-gateway* units (default + profiles)
             if supports_systemd_services():
                 try:
                     _ensure_user_systemd_env()
@@ -11221,7 +11284,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             scope_cmd
                             + [
                                 "list-units",
-                                "savarez-gateway*",
+                                "hermes-gateway*",
                                 "--plain",
                                 "--no-legend",
                                 "--no-pager",
@@ -11236,7 +11299,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 continue
                             unit = parts[
                                 0
-                            ]  # e.g. savarez-gateway.service or savarez-gateway-coder.service
+                            ]  # e.g. hermes-gateway.service or hermes-gateway-coder.service
                             if not unit.endswith(".service"):
                                 continue
                             svc_name = unit.removesuffix(".service")
@@ -11290,7 +11353,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             if _graceful_ok:
                                 # Gateway exited after a planned restart.
                                 # ``Restart=always`` means systemd WILL respawn
-                                # the unit - but only after
+                                # the unit — but only after
                                 # ``RestartSec`` (default 60s on our unit
                                 # file). That 60s wait is a crash-loop guard,
                                 # and is the right default when the gateway
@@ -11359,7 +11422,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 # RestartForceExitStatus=75).  Fall through
                                 # to systemctl start/restart.
                                 print(
-                                    f"  ⚠ {svc_name} drained but didn't relaunch - forcing restart"
+                                    f"  ⚠ {svc_name} drained but didn't relaunch — forcing restart"
                                 )
 
                             # Fallback: blunt systemctl restart.  This is
@@ -11376,7 +11439,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             # the RestartSec backoff and leave the unit
                             # dead.  Clearing the failed state first makes
                             # the restart idempotent.  Mirrors the recovery
-                            # path in `savarez gateway restart`
+                            # path in `hermes gateway restart`
                             # (`systemd_restart()`) as of PR #20949.
                             subprocess.run(
                                 scope_cmd + ["reset-failed", svc_name],
@@ -11401,7 +11464,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 ):
                                     restarted_services.append(svc_name)
                                 else:
-                                    # Retry once - transient startup failures
+                                    # Retry once — transient startup failures
                                     # (stale module cache, import race) often
                                     # resolve on the second attempt.  Again
                                     # clear any failed state first so the
@@ -11491,7 +11554,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # Prefer a graceful SIGUSR1 drain so in-flight agent runs
                 # finish before the watcher respawns the gateway.  If the
                 # gateway doesn't support SIGUSR1 or doesn't exit within
-                # the drain budget, fall back to SIGTERM - the watcher
+                # the drain budget, fall back to SIGTERM — the watcher
                 # still sees the exit and relaunches either way.
                 drained = _graceful_restart_via_sigusr1(
                     pid,
@@ -11508,7 +11571,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # ~30s after the client disconnects.  If the new gateway
                 # connects before that window expires it receives a 409
                 # Conflict, which _handle_polling_conflict() recovers from
-                # via back-off retries - but a brief wait here reduces the
+                # via back-off retries — but a brief wait here reduces the
                 # chance of hitting that path at all, especially on fast
                 # machines where the watcher loop restarts in < 1s.
                 # We wait up to 5s for the process to exit (the OS-level
@@ -11539,20 +11602,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 unmapped_count = len(killed_pids) - len(relaunched_profiles)
                 if unmapped_count:
                     print(f"  → Stopped {unmapped_count} manual gateway process(es)")
-                    print("    Restart manually: savarez gateway run")
+                    print("    Restart manually: hermes gateway run")
                     if unmapped_count > 1:
                         print(
-                            "    (or: savarez -p <profile> gateway run  for each profile)"
+                            "    (or: hermes -p <profile> gateway run  for each profile)"
                         )
 
             if not restarted_services and not killed_pids:
-                # No gateways were running - nothing to do
+                # No gateways were running — nothing to do
                 pass
 
             # --- Post-restart survivor sweep -----------------------------
             # Issue #17648: some gateways ignore SIGTERM (stuck drain,
             # blocked I/O, PID dead but zombie).  The detached profile
-            # watchers wait 120s for the old PID to exit - if it never
+            # watchers wait 120s for the old PID to exit — if it never
             # does, no respawn happens and the user keeps hitting
             # ImportError against a stale sys.modules.  Give the
             # graceful paths a brief window to complete, then SIGKILL
@@ -11567,19 +11630,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
                 # Scope to PIDs we already tried to kill during this
                 # update (killed_pids).  Anything new is a gateway that
-                # started AFTER our restart attempt - respecting user
+                # started AFTER our restart attempt — respecting user
                 # intent, we don't kill those.
                 _stuck = [pid for pid in _surviving if pid in killed_pids]
                 if _stuck:
                     print()
                     print(
-                        f"  ⚠ {len(_stuck)} gateway process(es) ignored SIGTERM - force-killing"
+                        f"  ⚠ {len(_stuck)} gateway process(es) ignored SIGTERM — force-killing"
                     )
                     from gateway.status import terminate_pid as _terminate_pid
                     for pid in _stuck:
                         try:
                             # Routes through taskkill /T /F on Windows,
-                            # SIGKILL on POSIX - _signal.SIGKILL doesn't
+                            # SIGKILL on POSIX — _signal.SIGKILL doesn't
                             # exist on Windows so the old raw os.kill call
                             # used to crash the entire update path.
                             _terminate_pid(pid, force=True)
@@ -11594,11 +11657,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("Gateway restart during update failed: %s", e)
 
-        # Warn if legacy Savarez gateway unit files are still installed.
-        # When both savarez.service (from a pre-rename install) and the
-        # current savarez-gateway.service are enabled, they SIGTERM-fight
+        # Warn if legacy Hermes gateway unit files are still installed.
+        # When both hermes.service (from a pre-rename install) and the
+        # current hermes-gateway.service are enabled, they SIGTERM-fight
         # for the same bot token (see PR #11909). Flagging here means
-        # every `savarez update` surfaces the issue until the user migrates.
+        # every `hermes update` surfaces the issue until the user migrates.
         try:
             from hermes_cli.gateway import (
                 has_legacy_hermes_units,
@@ -11608,22 +11671,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
             if supports_systemd_services() and has_legacy_hermes_units():
                 print()
-                print("⚠ Legacy Savarez gateway unit(s) detected:")
+                print("⚠ Legacy Hermes gateway unit(s) detected:")
                 for name, path, is_sys in _find_legacy_hermes_units():
                     scope = "system" if is_sys else "user"
                     print(f"    {path}  ({scope} scope)")
                 print()
-                print("  These pre-rename units (savarez.service) fight the current")
-                print("  savarez-gateway.service for the bot token and cause SIGTERM")
+                print("  These pre-rename units (hermes.service) fight the current")
+                print("  hermes-gateway.service for the bot token and cause SIGTERM")
                 print("  flap loops. Remove them with:")
                 print()
-                print("    savarez gateway migrate-legacy")
+                print("    hermes gateway migrate-legacy")
                 print()
                 print("  (add `sudo` if any are in system scope)")
         except Exception as e:
             logger.debug("Legacy unit check during update failed: %s", e)
 
-        # Kill stale dashboard processes - the dashboard has no service
+        # Kill stale dashboard processes — the dashboard has no service
         # manager, so leaving it alive after a code update produces a
         # silent frontend/backend mismatch.  We can't auto-restart it
         # (no saved launch args) but we can stop it, and a hint is
@@ -11632,7 +11695,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print()
         print("Tip: You can now select a provider and model:")
-        print("  savarez model              # Select provider and model")
+        print("  hermes model              # Select provider and model")
 
     except subprocess.CalledProcessError as e:
         if sys.platform == "win32":
@@ -11648,7 +11711,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 def _coalesce_session_name_args(argv: list) -> list:
     """Join unquoted multi-word session names after -c/--continue and -r/--resume.
 
-    When a user types ``savarez -c Pokemon Agent Dev`` without quoting the
+    When a user types ``hermes -c Pokemon Agent Dev`` without quoting the
     session name, argparse sees three separate tokens.  This function merges
     them into a single argument so argparse receives
     ``['-c', 'Pokemon Agent Dev']`` instead.
@@ -11723,7 +11786,7 @@ def _coalesce_session_name_args(argv: list) -> list:
 
 
 def cmd_profile(args):
-    """Profile management - create, delete, list, switch, alias."""
+    """Profile management — create, delete, list, switch, alias."""
     from hermes_cli.profiles import (
         list_profiles,
         create_profile,
@@ -11742,7 +11805,7 @@ def cmd_profile(args):
     action = getattr(args, "profile_action", None)
 
     if action is None:
-        # Bare `savarez profile` - show current profile status
+        # Bare `hermes profile` — show current profile status
         profile_name = get_active_profile_name()
         dhh = display_hermes_home()
         print(f"\nActive profile: {profile_name}")
@@ -11792,16 +11855,16 @@ def cmd_profile(args):
                 else "  "
             )
             name = p.name
-            model = (p.model or "-")[:26]
+            model = (p.model or "—")[:26]
             gw = "running" if p.gateway_running else "stopped"
             alias = (p.alias_name or p.name) if p.alias_path else "—"
             if p.is_default:
-                alias = "-"
+                alias = "—"
             if p.distribution_name:
                 dist = f"{p.distribution_name}@{p.distribution_version or '?'}"
                 dist = dist[:30]
             else:
-                dist = "-"
+                dist = "—"
             print(f"{marker}{name:<15} {model:<28} {gw:<12} {alias:<12} {dist}")
         print()
 
@@ -11810,7 +11873,7 @@ def cmd_profile(args):
         try:
             set_active_profile(name)
             if name == "default":
-                print(f"Switched to: default (~/.savarez)")
+                print(f"Switched to: default (~/.hermes)")
             else:
                 print(f"Switched to: {name}")
         except (ValueError, FileNotFoundError) as e:
@@ -11860,7 +11923,7 @@ def cmd_profile(args):
                     pass  # Honcho plugin not installed or not configured
 
             # Seed bundled skills (skip if --clone-all already copied them, or
-            # if --no-skills was passed - in which case seed_profile_skills()
+            # if --no-skills was passed — in which case seed_profile_skills()
             # honors the marker file and returns skipped_opt_out=True).
             if not clone_all:
                 result = seed_profile_skills(profile_dir)
@@ -11883,11 +11946,11 @@ def cmd_profile(args):
             if not no_alias:
                 collision = check_alias_collision(name)
                 if collision:
-                    print(f"\n⚠ Cannot create alias '{name}' - {collision}")
+                    print(f"\n⚠ Cannot create alias '{name}' — {collision}")
                     print(
-                        f"  Choose a custom alias:  savarez profile alias {name} --name <custom>"
+                        f"  Choose a custom alias:  hermes profile alias {name} --name <custom>"
                     )
-                    print(f"  Or access via flag:     savarez -p {name} chat")
+                    print(f"  Or access via flag:     hermes -p {name} chat")
                 else:
                     wrapper_path = create_wrapper_script(name)
                     if wrapper_path:
@@ -12201,9 +12264,9 @@ def cmd_profile(args):
             if plan.has_cron:
                 print(
                     "  Cron jobs were included but are NOT scheduled automatically.\n"
-                    f"  Review them with:  savarez -p {plan.manifest.name} cron list"
+                    f"  Review them with:  hermes -p {plan.manifest.name} cron list"
                 )
-            print(f"\n  Use with:      savarez -p {plan.manifest.name} chat")
+            print(f"\n  Use with:      hermes -p {plan.manifest.name} chat")
         except (DistributionError, ValueError) as e:
             print(f"Error: {e}")
             sys.exit(1)
@@ -12223,7 +12286,7 @@ def cmd_profile(args):
             if current is None:
                 print(
                     f"Error: Profile '{canon}' is not a distribution (no distribution.yaml). "
-                    "Only profiles installed via `savarez profile install` can be updated."
+                    "Only profiles installed via `hermes profile install` can be updated."
                 )
                 sys.exit(1)
 
@@ -12249,7 +12312,7 @@ def cmd_profile(args):
             if plan.has_cron:
                 print(
                     "  Cron files were refreshed.  Review with:  "
-                    f"savarez -p {plan.manifest.name} cron list"
+                    f"hermes -p {plan.manifest.name} cron list"
                 )
         except (DistributionError, ValueError) as e:
             print(f"Error: {e}")
@@ -12278,7 +12341,7 @@ def cmd_profile(args):
         if data.get("license"):
             print(f"License:      {data['license']}")
         if data.get("hermes_requires"):
-            print(f"Requires:     Savarez {data['hermes_requires']}")
+            print(f"Requires:     Hermes {data['hermes_requires']}")
         if data.get("source"):
             print(f"Source:       {data['source']}")
         if data.get("installed_at"):
@@ -12290,7 +12353,7 @@ def cmd_profile(args):
                 tag = "required" if er.get("required", True) else "optional"
                 line = f"  {er['name']} ({tag})"
                 if er.get("description"):
-                    line += f" - {er['description']}"
+                    line += f" — {er['description']}"
                 print(line)
                 if er.get("default") is not None:
                     print(f"      default: {er['default']}")
@@ -12307,18 +12370,18 @@ def _render_distribution_plan(plan) -> None:
     if mf.author:
         print(f"  Author:   {mf.author}")
     if mf.hermes_requires:
-        print(f"  Requires: Savarez {mf.hermes_requires}")
+        print(f"  Requires: Hermes {mf.hermes_requires}")
     print(f"  Source:   {plan.provenance}")
     print(f"  Target:   {plan.target_dir}")
     if plan.existing:
         # Distinguish "updating an existing distribution" (well-understood
-        # semantics - dist-owned overwritten, config preserved, user data
+        # semantics — dist-owned overwritten, config preserved, user data
         # untouched) from "overwriting a hand-built plain profile" (same
         # mechanics but the user didn't sign up for this when they created
         # the profile manually).
         existing_is_distribution = (plan.target_dir / MANIFEST_FILENAME).is_file()
         if existing_is_distribution:
-            print("  (profile exists - will overwrite distribution-owned files only)")
+            print("  (profile exists — will overwrite distribution-owned files only)")
         else:
             print(
                 "  ⚠ Profile exists but is NOT a distribution.  Installing here will\n"
@@ -12347,32 +12410,32 @@ def _render_distribution_plan(plan) -> None:
                                 break
                     except OSError:
                         pass
-            status = "✓ set" if already else ("needs setting" if er.required else "-")
+            status = "✓ set" if already else ("needs setting" if er.required else "—")
             line = f"    • {er.name} ({tag}, {status})"
             if er.description:
-                line += f" - {er.description}"
+                line += f" — {er.description}"
             print(line)
     if plan.has_cron:
         print(
             "\n  ⚠ This distribution ships cron jobs.  They will NOT run "
-            "automatically - review and enable manually."
+            "automatically — review and enable manually."
         )
 
 
 def _report_dashboard_status() -> int:
-    """Print ``savarez dashboard`` PIDs and return the count.
+    """Print ``hermes dashboard`` PIDs and return the count.
 
     Uses the same detection logic as ``_find_stale_dashboard_pids`` (the
-    current process is excluded, but since ``savarez dashboard --status``
+    current process is excluded, but since ``hermes dashboard --status``
     runs in a short-lived CLI process that never matches the pattern,
     the exclusion is irrelevant here).
     """
     pids = _find_stale_dashboard_pids()
     if not pids:
-        print("No savarez dashboard processes running.")
+        print("No hermes dashboard processes running.")
         return 0
 
-    print(f"{len(pids)} savarez dashboard process(es) running:")
+    print(f"{len(pids)} hermes dashboard process(es) running:")
     for pid in pids:
         # Best-effort: show the full cmdline so users can tell profiles apart.
         cmdline = ""
@@ -12407,9 +12470,9 @@ def cmd_dashboard(args):
     if getattr(args, "stop", False):
         pids = _find_stale_dashboard_pids()
         if not pids:
-            print("No savarez dashboard processes running.")
+            print("No hermes dashboard processes running.")
             sys.exit(0)
-        # Reuse the same SIGTERM-grace-SIGKILL path used after `savarez update`.
+        # Reuse the same SIGTERM-grace-SIGKILL path used after `hermes update`.
         _kill_stale_dashboard_processes(reason="requested via --stop")
         # _kill_stale_dashboard_processes prints outcomes itself.  Exit 0 if
         # we killed at least one, 1 if they were all unkillable.
@@ -12417,7 +12480,7 @@ def cmd_dashboard(args):
         sys.exit(1 if remaining else 0)
 
     # Attach gui.log early so dashboard startup/build failures are captured in
-    # the same logs directory as every other Savarez surface.
+    # the same logs directory as every other Hermes surface.
     try:
         from hermes_logging import setup_logging as _setup_logging_gui
         _setup_logging_gui(mode="gui")
@@ -12474,7 +12537,7 @@ def cmd_dashboard(args):
         from hermes_cli.plugins import discover_plugins
         discover_plugins()
     except Exception as exc:
-        # Discovery failures must not block dashboard startup outright -
+        # Discovery failures must not block dashboard startup outright —
         # log and proceed; the gate's fail-closed branch will surface
         # the missing-provider state if it matters.
         print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
@@ -12482,7 +12545,7 @@ def cmd_dashboard(args):
     from hermes_cli.web_server import start_server
 
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
-    # available - the desktop app and the dashboard's own Chat tab both rely on
+    # available — the desktop app and the dashboard's own Chat tab both rely on
     # the `/api/ws` + `/api/pty` sockets, so there is no reason to gate them.
     start_server(
         host=args.host,
@@ -12520,7 +12583,7 @@ def cmd_prompt_size(args):
 
 
 def cmd_logs(args):
-    """View and filter Savarez log files."""
+    """View and filter Hermes log files."""
     from hermes_cli.logs import tail_log, list_logs
 
     log_name = getattr(args, "log_name", "agent") or "agent"
@@ -12559,7 +12622,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat", "secrets", "security",
-        # Help-ish invocations - plugin commands not being listed in
+        # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
         "help",
@@ -12568,7 +12631,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
 
 
 # Top-level flags that take a value. Needed by ``_first_positional_argv``
-# so that in ``savarez -m gpt5 chat``, ``gpt5`` is correctly skipped as a
+# so that in ``hermes -m gpt5 chat``, ``gpt5`` is correctly skipped as a
 # flag value rather than misclassified as a subcommand. Kept in sync with
 # the top-level flags declared in ``hermes_cli/_parser.py``.
 #
@@ -12597,10 +12660,10 @@ def _first_positional_argv() -> str | None:
 
     Used by ``main()`` to decide whether plugin discovery has to run at
     argparse-setup time. Handles common invocations like
-    ``savarez -m gpt5 --provider openai chat "msg"`` by skipping the
+    ``hermes -m gpt5 --provider openai chat "msg"`` by skipping the
     values attached to known top-level flags.
 
-    Does NOT fully simulate argparse - unknown ``--foo=bar`` / ``--foo
+    Does NOT fully simulate argparse — unknown ``--foo=bar`` / ``--foo
     bar`` flags degrade gracefully (``bar`` may be wrongly classified as
     a positional, which at worst forces a one-time plugin discovery).
     """
@@ -12614,7 +12677,7 @@ def _first_positional_argv() -> str | None:
                 return argv[i + 1]
             return None
         if tok.startswith("-"):
-            # ``--flag=value`` carries its value inline - single token.
+            # ``--flag=value`` carries its value inline — single token.
             if "=" in tok:
                 i += 1
                 continue
@@ -12636,11 +12699,11 @@ def _plugin_cli_discovery_needed() -> bool:
     """
     first = _first_positional_argv()
     if first is None:
-        # Bare ``savarez`` or only flags → defaults to ``chat``.
+        # Bare ``hermes`` or only flags → defaults to ``chat``.
         return False
     if first in _BUILTIN_SUBCOMMANDS:
         return False
-    # Unknown token - could be a plugin subcommand, OR a chat prompt
+    # Unknown token — could be a plugin subcommand, OR a chat prompt
     # starting with a non-flag word. Either way we need discovery: if it
     # IS a plugin command, argparse needs the subparser; if it's a chat
     # prompt, argparse will route it via positional handling and the
@@ -12769,7 +12832,7 @@ def _try_termux_fast_cli_launch() -> bool:
     if "-h" in argv or "--help" in argv:
         return False
     # Let the TUI fast path (or full dispatch) handle anything that resolves to
-    # the TUI - explicit --tui/env or display.interface=tui. `--cli` forces this
+    # the TUI — explicit --tui/env or display.interface=tui. `--cli` forces this
     # to stay False so the classic fast path still runs.
     if _wants_tui_early(argv):
         return False
@@ -12834,7 +12897,7 @@ def _try_termux_fast_cli_launch() -> bool:
 def _try_termux_fast_tui_launch() -> bool:
     """Launch obvious Termux TUI invocations before building every subparser.
 
-    `savarez --tui` is the hot path on phones. The full parser setup imports
+    `hermes --tui` is the hot path on phones. The full parser setup imports
     command modules for model, fallback, migrate, kanban, bundles, plugins,
     etc. even though the TUI immediately execs Node. On Termux only, parse the
     lightweight top-level/chat parser and hand off to ``cmd_chat`` when the
@@ -12872,10 +12935,164 @@ def _try_termux_fast_tui_launch() -> bool:
     return True
 
 
+def cmd_memory(args):
+    sub = getattr(args, "memory_command", None)
+    if sub == "off":
+        from hermes_cli.config import load_config, save_config
+
+        config = load_config()
+        if not isinstance(config.get("memory"), dict):
+            config["memory"] = {}
+        config["memory"]["provider"] = ""
+        save_config(config)
+        print("\n  ✓ Memory provider: built-in only")
+        print("  Saved to config.yaml\n")
+    elif sub == "reset":
+        from hermes_constants import get_hermes_home, display_hermes_home
+
+        mem_dir = get_hermes_home() / "memories"
+        target = getattr(args, "target", "all")
+        files_to_reset = []
+        if target in {"all", "memory"}:
+            files_to_reset.append(("MEMORY.md", "agent notes"))
+        if target in {"all", "user"}:
+            files_to_reset.append(("USER.md", "user profile"))
+
+        # Check what exists
+        existing = [
+            (f, desc) for f, desc in files_to_reset if (mem_dir / f).exists()
+        ]
+        if not existing:
+            print(
+                f"\n  Nothing to reset — no memory files found in {display_hermes_home()}/memories/\n"
+            )
+            return
+
+        print(f"\n  This will permanently erase the following memory files:")
+        for f, desc in existing:
+            path = mem_dir / f
+            size = path.stat().st_size
+            print(f"    ◆ {f} ({desc}) — {size:,} bytes")
+
+        if not getattr(args, "yes", False):
+            try:
+                answer = input("\n  Type 'yes' to confirm: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\n  Cancelled.\n")
+                return
+            if answer != "yes":
+                print("  Cancelled.\n")
+                return
+
+        for f, desc in existing:
+            (mem_dir / f).unlink()
+            print(f"  ✓ Deleted {f} ({desc})")
+
+        print(
+            f"\n  Memory reset complete. New sessions will start with a blank slate."
+        )
+        print(f"  Files were in: {display_hermes_home()}/memories/\n")
+    else:
+        from hermes_cli.memory_setup import memory_command
+
+        memory_command(args)
+
+
+def cmd_acp(args):
+    """Launch Hermes Agent as an ACP server."""
+    try:
+        from acp_adapter.entry import main as acp_main
+
+        acp_argv = []
+        if getattr(args, "acp_version", False):
+            acp_argv.append("--version")
+        if getattr(args, "check", False):
+            acp_argv.append("--check")
+        if getattr(args, "setup", False):
+            acp_argv.append("--setup")
+        if getattr(args, "setup_browser", False):
+            acp_argv.append("--setup-browser")
+        if getattr(args, "assume_yes", False):
+            acp_argv.append("--yes")
+        acp_main(acp_argv)
+    except ImportError:
+        print("ACP dependencies not installed.", file=sys.stderr)
+        print("Install them with:  pip install -e '.[acp]'", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_tools(args):
+    action = getattr(args, "tools_action", None)
+    if action in {"list", "disable", "enable"}:
+        from hermes_cli.tools_config import tools_disable_enable_command
+
+        tools_disable_enable_command(args)
+    elif action == "post-setup":
+        from hermes_cli.tools_config import run_post_setup_command
+
+        sys.exit(run_post_setup_command(args))
+    else:
+        _require_tty("tools")
+        from hermes_cli.tools_config import tools_command
+
+        tools_command(args)
+
+
+def cmd_insights(args):
+    try:
+        from hermes_state import SessionDB
+        from agent.insights import InsightsEngine
+
+        db = SessionDB()
+        engine = InsightsEngine(db)
+        report = engine.generate(days=args.days, source=args.source)
+        print(engine.format_terminal(report))
+        db.close()
+    except Exception as e:
+        print(f"Error generating insights: {e}")
+
+
+def cmd_skills(args):
+    # Route 'config' action to skills_config module
+    if getattr(args, "skills_action", None) == "config":
+        _require_tty("skills config")
+        from hermes_cli.skills_config import skills_command as skills_config_command
+
+        skills_config_command(args)
+    else:
+        from hermes_cli.skills_hub import skills_command
+
+        skills_command(args)
+
+
+def cmd_pairing(args):
+    from hermes_cli.pairing import pairing_command
+
+    pairing_command(args)
+
+
+def cmd_plugins(args):
+    from hermes_cli.plugins_cmd import plugins_command
+
+    plugins_command(args)
+
+
+def cmd_mcp(args):
+    from hermes_cli.mcp_config import mcp_command
+
+    mcp_command(args)
+
+
+def cmd_claw(args):
+    from hermes_cli.claw import claw_command
+
+    claw_command(args)
+
+
 def main():
-    """Main entry point for savarez CLI."""
-    # Cosmetic: make the process show up as 'savarez' instead of 'python3.11'
-    # in ps/top/htop.  Non-fatal - just a nicer UX.
+    """Main entry point for hermes CLI."""
+    # Cosmetic: make the process show up as 'hermes' instead of 'python3.11'
+    # in ps/top/htop.  Non-fatal — just a nicer UX.
     _set_process_title()
 
     # Force UTF-8 stdio on Windows before anything prints.  No-op elsewhere.
@@ -12885,8 +13102,8 @@ def main():
     except Exception:
         pass
 
-    # Sweep stale ``savarez.exe.old.*`` quarantine files left by previous
-    # ``savarez update`` runs on Windows. Silent no-op on non-Windows or when
+    # Sweep stale ``hermes.exe.old.*`` quarantine files left by previous
+    # ``hermes update`` runs on Windows. Silent no-op on non-Windows or when
     # there's nothing to clean. See ``_quarantine_running_hermes_exe``.
     try:
         _cleanup_quarantined_exes()
@@ -12904,67 +13121,12 @@ def main():
     chat_parser.set_defaults(func=cmd_chat)
 
     # =========================================================================
-    # model command
+    # model command  (parser built in hermes_cli/subcommands/model.py)
     # =========================================================================
-    model_parser = subparsers.add_parser(
-        "model",
-        help="Select default model and provider",
-        description="Interactively select your inference provider and default model",
-    )
-    model_parser.add_argument(
-        "--refresh",
-        action="store_true",
-        help="Wipe the model picker disk cache and re-fetch every provider's live /v1/models list.",
-    )
-    model_parser.add_argument(
-        "--portal-url",
-        help="Portal base URL for Nous login (default: production portal)",
-    )
-    model_parser.add_argument(
-        "--inference-url",
-        help="Inference API base URL for Nous login (default: production inference API)",
-    )
-    model_parser.add_argument(
-        "--client-id",
-        default=None,
-        help="OAuth client id to use for Nous login (default: savarez-cli)",
-    )
-    model_parser.add_argument(
-        "--scope", default=None, help="OAuth scope to request for Nous login"
-    )
-    model_parser.add_argument(
-        "--no-browser",
-        action="store_true",
-        help="Do not attempt to open the browser automatically during Nous login",
-    )
-    model_parser.add_argument(
-        "--manual-paste",
-        action="store_true",
-        help=(
-            "For loopback OAuth providers (xai-oauth, ...): skip the local "
-            "callback listener and paste the failed callback URL from your "
-            "browser instead. Use on browser-only remotes (Cloud Shell, "
-            "Codespaces, EC2 Instance Connect, ...). See #26923."
-        ),
-    )
-    model_parser.add_argument(
-        "--timeout",
-        type=float,
-        default=15.0,
-        help="HTTP request timeout in seconds for Nous login (default: 15)",
-    )
-    model_parser.add_argument(
-        "--ca-bundle", help="Path to CA bundle PEM file for Nous TLS verification"
-    )
-    model_parser.add_argument(
-        "--insecure",
-        action="store_true",
-        help="Disable TLS verification for Nous login (testing only)",
-    )
-    model_parser.set_defaults(func=cmd_model)
+    build_model_parser(subparsers, cmd_model=cmd_model)
 
     # =========================================================================
-    # fallback command - manage the fallback provider chain
+    # fallback command — manage the fallback provider chain
     # =========================================================================
     from hermes_cli.fallback_cmd import cmd_fallback
 
@@ -12975,7 +13137,7 @@ def main():
             "Manage the fallback provider chain.  Fallback providers are tried "
             "in order when the primary model fails with rate-limit, overload, or "
             "connection errors.  See: "
-            "https://savarez-agent.nousresearch.com/docs/user-guide/features/fallback-providers"
+            "https://hermes-agent.nousresearch.com/docs/user-guide/features/fallback-providers"
         ),
     )
     fallback_subparsers = fallback_parser.add_subparsers(dest="fallback_command")
@@ -12986,7 +13148,7 @@ def main():
     )
     fallback_subparsers.add_parser(
         "add",
-        help="Pick a provider + model (same picker as `savarez model`) and append to the chain",
+        help="Pick a provider + model (same picker as `hermes model`) and append to the chain",
     )
     fallback_subparsers.add_parser(
         "remove",
@@ -13000,16 +13162,16 @@ def main():
     fallback_parser.set_defaults(func=cmd_fallback)
 
     # =========================================================================
-    # secrets command - external secret managers (currently: Bitwarden)
+    # secrets command — external secret managers (currently: Bitwarden)
     # =========================================================================
     secrets_parser = subparsers.add_parser(
         "secrets",
         help="Manage external secret sources (Bitwarden Secrets Manager)",
         description=(
             "Pull API keys from an external secret manager at process startup "
-            "instead of storing them in ~/.savarez/.env.  Currently supports "
+            "instead of storing them in ~/.hermes/.env.  Currently supports "
             "Bitwarden Secrets Manager.  See: "
-            "https://savarez-agent.nousresearch.com/docs/user-guide/secrets/bitwarden"
+            "https://hermes-agent.nousresearch.com/docs/user-guide/secrets/bitwarden"
         ),
     )
     secrets_subparsers = secrets_parser.add_subparsers(dest="secrets_command")
@@ -13020,7 +13182,7 @@ def main():
         help="Bitwarden Secrets Manager integration",
     )
 
-    # Lazy import - only pays for itself when this subcommand is actually used.
+    # Lazy import — only pays for itself when this subcommand is actually used.
     from hermes_cli import secrets_cli as _secrets_cli
 
     _secrets_cli.register_cli(secrets_bw)
@@ -13074,243 +13236,9 @@ def main():
     migrate_parser.set_defaults(func=cmd_migrate)
 
     # =========================================================================
-    # gateway command
+    # gateway + proxy commands  (parsers built in hermes_cli/subcommands/gateway.py)
     # =========================================================================
-    gateway_parser = subparsers.add_parser(
-        "gateway",
-        help="Messaging gateway management",
-        description="Manage the messaging gateway (Telegram, Discord, WhatsApp, Weixin, and more)",
-    )
-    gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
-
-    # gateway run (default)
-    gateway_run = gateway_subparsers.add_parser(
-        "run", help="Run gateway in foreground (recommended for WSL, Docker, Termux)"
-    )
-    gateway_run.add_argument(
-        "-v",
-        "--verbose",
-        action="count",
-        default=0,
-        help="Increase stderr log verbosity (-v=INFO, -vv=DEBUG)",
-    )
-    gateway_run.add_argument(
-        "-q", "--quiet", action="store_true", help="Suppress all stderr log output"
-    )
-    gateway_run.add_argument(
-        "--replace",
-        action="store_true",
-        help="Replace any existing gateway instance (useful for systemd)",
-    )
-    gateway_run.add_argument(
-        "--no-supervise",
-        action="store_true",
-        help=(
-            "Inside the s6-overlay Docker image, normally `gateway run` is "
-            "automatically redirected to the supervised s6 service (so the "
-            "gateway gets auto-restart on crash, plus a supervised dashboard "
-            "if HERMES_DASHBOARD is set). Pass --no-supervise to opt out and "
-            "get the historical pre-s6 foreground behavior: the gateway is "
-            "the container's main process and the container exits with the "
-            "gateway's exit code. No effect outside an s6 container."
-        ),
-    )
-    _add_accept_hooks_flag(gateway_run)
-    _add_accept_hooks_flag(gateway_parser)
-
-    # gateway start
-    gateway_start = gateway_subparsers.add_parser(
-        "start", help="Start the installed systemd/launchd background service"
-    )
-    gateway_start.add_argument(
-        "--system",
-        action="store_true",
-        help="Target the Linux system-level gateway service",
-    )
-    gateway_start.add_argument(
-        "--all",
-        action="store_true",
-        help="Kill ALL stale gateway processes across all profiles before starting",
-    )
-
-    # gateway stop
-    gateway_stop = gateway_subparsers.add_parser("stop", help="Stop gateway service")
-    gateway_stop.add_argument(
-        "--system",
-        action="store_true",
-        help="Target the Linux system-level gateway service",
-    )
-    gateway_stop.add_argument(
-        "--all",
-        action="store_true",
-        help="Stop ALL gateway processes across all profiles",
-    )
-
-    # gateway restart
-    gateway_restart = gateway_subparsers.add_parser(
-        "restart", help="Restart gateway service"
-    )
-    gateway_restart.add_argument(
-        "--system",
-        action="store_true",
-        help="Target the Linux system-level gateway service",
-    )
-    gateway_restart.add_argument(
-        "--all",
-        action="store_true",
-        help="Kill ALL gateway processes across all profiles before restarting",
-    )
-
-    # gateway status
-    gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
-    gateway_status.add_argument("--deep", action="store_true", help="Deep status check")
-    gateway_status.add_argument(
-        "-l",
-        "--full",
-        action="store_true",
-        help="Show full, untruncated service/log output where supported",
-    )
-    gateway_status.add_argument(
-        "--system",
-        action="store_true",
-        help="Target the Linux system-level gateway service",
-    )
-
-    # gateway install
-    gateway_install = gateway_subparsers.add_parser(
-        "install", help="Install gateway as a systemd/launchd background service"
-    )
-    gateway_install.add_argument("--force", action="store_true", help="Force reinstall")
-    gateway_install.add_argument(
-        "--system",
-        action="store_true",
-        help="Install as a Linux system-level service (starts at boot)",
-    )
-    gateway_install.add_argument(
-        "--run-as-user",
-        dest="run_as_user",
-        help="User account the Linux system service should run as",
-    )
-    gateway_install.add_argument(
-        "--start-now",
-        dest="start_now",
-        action="store_true",
-        default=None,
-        help=argparse.SUPPRESS,
-    )
-    gateway_install.add_argument(
-        "--no-start-now",
-        dest="start_now",
-        action="store_false",
-        help=argparse.SUPPRESS,
-    )
-    gateway_install.add_argument(
-        "--start-on-login",
-        dest="start_on_login",
-        action="store_true",
-        default=None,
-        help=argparse.SUPPRESS,
-    )
-    gateway_install.add_argument(
-        "--no-start-on-login",
-        dest="start_on_login",
-        action="store_false",
-        help=argparse.SUPPRESS,
-    )
-    gateway_install.add_argument(
-        "--elevated-handoff",
-        dest="elevated_handoff",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
-
-    # gateway uninstall
-    gateway_uninstall = gateway_subparsers.add_parser(
-        "uninstall", help="Uninstall gateway service"
-    )
-    gateway_uninstall.add_argument(
-        "--system",
-        action="store_true",
-        help="Target the Linux system-level gateway service",
-    )
-
-    # gateway list
-    gateway_subparsers.add_parser("list", help="List all profiles and their gateway status")
-
-    # gateway setup
-    gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
-
-    # gateway migrate-legacy
-    gateway_migrate_legacy = gateway_subparsers.add_parser(
-        "migrate-legacy",
-        help="Remove legacy savarez.service units from pre-rename installs",
-        description=(
-            "Stop, disable, and remove legacy Savarez gateway unit files "
-            "(e.g. savarez.service) left over from older installs. Profile "
-            "units (savarez-gateway-<profile>.service) and unrelated "
-            "third-party services are never touched."
-        ),
-    )
-    gateway_migrate_legacy.add_argument(
-        "--dry-run",
-        dest="dry_run",
-        action="store_true",
-        help="List what would be removed without doing it",
-    )
-    gateway_migrate_legacy.add_argument(
-        "-y",
-        "--yes",
-        dest="yes",
-        action="store_true",
-        help="Skip the confirmation prompt",
-    )
-
-    # =========================================================================
-    # proxy command - local OpenAI-compatible proxy that attaches the user's
-    # OAuth-authenticated provider credentials to outbound requests. Lets
-    # external apps (OpenViking, Karakeep, Open WebUI, ...) ride a logged-in
-    # subscription without copy-pasting static API keys.
-    # =========================================================================
-    proxy_parser = subparsers.add_parser(
-        "proxy",
-        help="Local OpenAI-compatible proxy to OAuth providers",
-        description=(
-            "Run a local HTTP server that forwards OpenAI-compatible requests "
-            "to an OAuth-authenticated provider (e.g. Nous Portal). External "
-            "apps can point at the proxy with any bearer token; the proxy "
-            "attaches your real credentials."
-        ),
-    )
-    proxy_subparsers = proxy_parser.add_subparsers(dest="proxy_command")
-
-    proxy_start = proxy_subparsers.add_parser(
-        "start", help="Run the proxy in the foreground"
-    )
-    proxy_start.add_argument(
-        "--provider",
-        default="nous",
-        help="Upstream provider: nous or xai (default: nous). See `savarez proxy providers`.",
-    )
-    proxy_start.add_argument(
-        "--host",
-        default=None,
-        help="Bind address (default: 127.0.0.1). Use 0.0.0.0 to expose on LAN.",
-    )
-    proxy_start.add_argument(
-        "--port",
-        type=int,
-        default=None,
-        help="Bind port (default: 8645)",
-    )
-
-    proxy_subparsers.add_parser(
-        "status", help="Show which proxy upstreams are ready"
-    )
-    proxy_subparsers.add_parser(
-        "providers", help="List available proxy upstream providers"
-    )
-    proxy_parser.set_defaults(func=cmd_proxy)
-    gateway_parser.set_defaults(func=cmd_gateway)
+    build_gateway_parser(subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy)
 
     # =========================================================================
     # lsp command
@@ -13319,537 +13247,74 @@ def main():
         from agent.lsp.cli import register_subparser as _lsp_register
         _lsp_register(subparsers)
     except Exception as _lsp_err:  # noqa: BLE001
-        # LSP is optional infrastructure - never let a registration
+        # LSP is optional infrastructure — never let a registration
         # failure break the CLI overall.
         logger.debug("LSP CLI registration failed: %s", _lsp_err)
 
     # =========================================================================
-    # setup command
+    # setup command  (parser built in hermes_cli/subcommands/setup.py)
     # =========================================================================
-    setup_parser = subparsers.add_parser(
-        "setup",
-        help="Interactive setup wizard",
-        description="Configure Savarez AI Agent with an interactive wizard. "
-        "Run a specific section: savarez setup model|tts|terminal|gateway|tools|agent",
-    )
-    setup_parser.add_argument(
-        "section",
-        nargs="?",
-        choices=["model", "tts", "terminal", "gateway", "tools", "agent"],
-        default=None,
-        help="Run a specific setup section instead of the full wizard",
-    )
-    setup_parser.add_argument(
-        "--non-interactive",
-        action="store_true",
-        help="Non-interactive mode (use defaults/env vars)",
-    )
-    setup_parser.add_argument(
-        "--reset", action="store_true", help="Reset configuration to defaults"
-    )
-    setup_parser.add_argument(
-        "--reconfigure",
-        action="store_true",
-        help="(Default on existing installs.) Re-run the full wizard, "
-        "showing current values as defaults. Kept for backwards "
-        "compatibility - a bare 'savarez setup' now does this.",
-    )
-    setup_parser.add_argument(
-        "--quick",
-        action="store_true",
-        help="On existing installs: only prompt for items that are missing "
-        "or unset, instead of running the full reconfigure wizard.",
-    )
-    setup_parser.add_argument(
-        "--portal",
-        action="store_true",
-        help="One-shot Nous Portal setup: log in via OAuth, pick a Nous "
-        "model, set Nous as the inference provider, and opt into the Tool "
-        "Gateway. Skips the rest of the wizard.",
-    )
-    setup_parser.set_defaults(func=cmd_setup)
+    build_setup_parser(subparsers, cmd_setup=cmd_setup)
 
     # =========================================================================
-    # postinstall command
+    # postinstall command  (parser built in hermes_cli/subcommands/postinstall.py)
     # =========================================================================
-    postinstall_parser = subparsers.add_parser(
-        "postinstall",
-        help="Bootstrap non-Python deps for pip installs (node, browser, ripgrep, ffmpeg)",
-        description="One-shot post-install for pip users. Installs system "
-        "dependencies that pip cannot provide, then runs setup if needed.",
-    )
-    postinstall_parser.set_defaults(func=cmd_postinstall)
+    build_postinstall_parser(subparsers, cmd_postinstall=cmd_postinstall)
 
     # =========================================================================
-    # whatsapp command
+    # whatsapp command  (parser built in hermes_cli/subcommands/whatsapp.py)
     # =========================================================================
-    whatsapp_parser = subparsers.add_parser(
-        "whatsapp",
-        help="Set up WhatsApp integration",
-        description="Configure WhatsApp and pair via QR code",
-    )
-    whatsapp_parser.set_defaults(func=cmd_whatsapp)
+    build_whatsapp_parser(subparsers, cmd_whatsapp=cmd_whatsapp)
 
     # =========================================================================
-    # slack command
+    # slack command  (parser built in hermes_cli/subcommands/slack.py)
     # =========================================================================
-    slack_parser = subparsers.add_parser(
-        "slack",
-        help="Slack integration helpers (manifest generation, etc.)",
-        description="Slack integration helpers for Savarez.",
-    )
-    slack_sub = slack_parser.add_subparsers(dest="slack_command")
-    slack_manifest = slack_sub.add_parser(
-        "manifest",
-        help="Print or write a Slack app manifest with every gateway command "
-        "registered as a native slash (/btw, /stop, /model, ...)",
-        description=(
-            "Generate a Slack app manifest that registers every gateway "
-            "command in COMMAND_REGISTRY as a first-class Slack slash "
-            "command (matching Discord and Telegram parity). Paste the "
-            "output into Slack app config → Features → App Manifest → "
-            "Edit, then Save. Reinstall the app if Slack prompts for it."
-        ),
-    )
-    slack_manifest.add_argument(
-        "--write",
-        nargs="?",
-        const=True,
-        default=None,
-        metavar="PATH",
-        help="Write manifest to a file instead of stdout. With no PATH "
-        "writes to $SAVAREZ_HOME/slack-manifest.json.",
-    )
-    slack_manifest.add_argument(
-        "--name",
-        default=None,
-        help='Bot display name (default: "Savarez")',
-    )
-    slack_manifest.add_argument(
-        "--description",
-        default=None,
-        help="Bot description shown in Slack's app directory.",
-    )
-    slack_manifest.add_argument(
-        "--slashes-only",
-        action="store_true",
-        help="Emit only the features.slash_commands array (for merging "
-        "into an existing manifest manually).",
-    )
-    slack_parser.set_defaults(func=cmd_slack)
+    build_slack_parser(subparsers, cmd_slack=cmd_slack)
 
     # =========================================================================
-    # send command - pipe shell-script output to any configured platform
+    # send command — pipe shell-script output to any configured platform
     # =========================================================================
     from hermes_cli.send_cmd import register_send_subparser
     register_send_subparser(subparsers)
 
     # =========================================================================
-    # login command
+    # login command  (parser built in hermes_cli/subcommands/login.py)
     # =========================================================================
-    login_parser = subparsers.add_parser(
-        "login",
-        help="Authenticate with an inference provider",
-        description="Run OAuth device authorization flow for Savarez CLI",
-    )
-    login_parser.add_argument(
-        "--provider",
-        choices=["nous", "openai-codex", "xai-oauth"],
-        default=None,
-        help="Provider to authenticate with (default: nous)",
-    )
-    login_parser.add_argument(
-        "--portal-url", help="Portal base URL (default: production portal)"
-    )
-    login_parser.add_argument(
-        "--inference-url",
-        help="Inference API base URL (default: production inference API)",
-    )
-    login_parser.add_argument(
-        "--client-id", default=None, help="OAuth client id to use (default: savarez-cli)"
-    )
-    login_parser.add_argument("--scope", default=None, help="OAuth scope to request")
-    login_parser.add_argument(
-        "--no-browser",
-        action="store_true",
-        help="Do not attempt to open the browser automatically",
-    )
-    login_parser.add_argument(
-        "--timeout",
-        type=float,
-        default=15.0,
-        help="HTTP request timeout in seconds (default: 15)",
-    )
-    login_parser.add_argument(
-        "--ca-bundle", help="Path to CA bundle PEM file for TLS verification"
-    )
-    login_parser.add_argument(
-        "--insecure",
-        action="store_true",
-        help="Disable TLS verification (testing only)",
-    )
-    login_parser.set_defaults(func=cmd_login)
+    build_login_parser(subparsers, cmd_login=cmd_login)
 
     # =========================================================================
-    # logout command
+    # logout command  (parser built in hermes_cli/subcommands/logout.py)
     # =========================================================================
-    logout_parser = subparsers.add_parser(
-        "logout",
-        help="Clear authentication for an inference provider",
-        description="Remove stored credentials and reset provider config",
-    )
-    logout_parser.add_argument(
-        "--provider",
-        choices=["nous", "openai-codex", "xai-oauth", "spotify"],
-        default=None,
-        help="Provider to log out from (default: active provider)",
-    )
-    logout_parser.set_defaults(func=cmd_logout)
-
-    auth_parser = subparsers.add_parser(
-        "auth",
-        help="Manage pooled provider credentials",
-    )
-    auth_subparsers = auth_parser.add_subparsers(dest="auth_action")
-    auth_add = auth_subparsers.add_parser("add", help="Add a pooled credential")
-    auth_add.add_argument(
-        "provider",
-        help="Provider id (for example: anthropic, openai-codex, openrouter)",
-    )
-    auth_add.add_argument(
-        "--type",
-        dest="auth_type",
-        choices=["oauth", "api-key", "api_key"],
-        help="Credential type to add",
-    )
-    auth_add.add_argument("--label", help="Optional display label")
-    auth_add.add_argument(
-        "--api-key", help="API key value (otherwise prompted securely)"
-    )
-    auth_add.add_argument("--portal-url", help="Nous portal base URL")
-    auth_add.add_argument("--inference-url", help="Nous inference base URL")
-    auth_add.add_argument("--client-id", help="OAuth client id")
-    auth_add.add_argument("--scope", help="OAuth scope override")
-    auth_add.add_argument(
-        "--no-browser",
-        action="store_true",
-        help="Do not auto-open a browser for OAuth login",
-    )
-    auth_add.add_argument(
-        "--manual-paste",
-        action="store_true",
-        help=(
-            "Skip the loopback callback listener and paste the failed "
-            "callback URL from your browser instead. Use this on "
-            "browser-only remotes (GCP Cloud Shell, GitHub Codespaces, "
-            "EC2 Instance Connect, ...) where 127.0.0.1 on the remote "
-            "isn't reachable from your laptop. See #26923."
-        ),
-    )
-    auth_add.add_argument(
-        "--timeout", type=float, help="OAuth/network timeout in seconds"
-    )
-    auth_add.add_argument(
-        "--insecure",
-        action="store_true",
-        help="Disable TLS verification for OAuth login",
-    )
-    auth_add.add_argument("--ca-bundle", help="Custom CA bundle for OAuth login")
-    auth_list = auth_subparsers.add_parser("list", help="List pooled credentials")
-    auth_list.add_argument("provider", nargs="?", help="Optional provider filter")
-    auth_remove = auth_subparsers.add_parser(
-        "remove", help="Remove a pooled credential by index, id, or label"
-    )
-    auth_remove.add_argument("provider", help="Provider id")
-    auth_remove.add_argument(
-        "target", help="Credential index, entry id, or exact label"
-    )
-    auth_reset = auth_subparsers.add_parser(
-        "reset", help="Clear exhaustion status for all credentials for a provider"
-    )
-    auth_reset.add_argument("provider", help="Provider id")
-    auth_status = auth_subparsers.add_parser(
-        "status", help="Show auth status for a provider"
-    )
-    auth_status.add_argument("provider", help="Provider id")
-    auth_logout = auth_subparsers.add_parser(
-        "logout", help="Log out a provider and clear stored auth state"
-    )
-    auth_logout.add_argument("provider", help="Provider id")
-    auth_spotify = auth_subparsers.add_parser(
-        "spotify", help="Authenticate Savarez with Spotify via PKCE"
-    )
-    auth_spotify.add_argument(
-        "spotify_action",
-        nargs="?",
-        choices=["login", "status", "logout"],
-        default="login",
-    )
-    auth_spotify.add_argument(
-        "--client-id", help="Spotify app client_id (or set HERMES_SPOTIFY_CLIENT_ID)"
-    )
-    auth_spotify.add_argument(
-        "--redirect-uri",
-        help="Allow-listed localhost redirect URI for your Spotify app",
-    )
-    auth_spotify.add_argument("--scope", help="Override requested Spotify scopes")
-    auth_spotify.add_argument(
-        "--no-browser",
-        action="store_true",
-        help="Do not attempt to open the browser automatically",
-    )
-    auth_spotify.add_argument(
-        "--timeout", type=float, help="Callback/token exchange timeout in seconds"
-    )
-    auth_parser.set_defaults(func=cmd_auth)
+    build_logout_parser(subparsers, cmd_logout=cmd_logout)
 
     # =========================================================================
-    # status command
+    # auth command  (parser built in hermes_cli/subcommands/auth.py)
     # =========================================================================
-    status_parser = subparsers.add_parser(
-        "status",
-        help="Show status of all components",
-        description="Display status of Savarez AI Agent components",
-    )
-    status_parser.add_argument(
-        "--all", action="store_true", help="Show all details (redacted for sharing)"
-    )
-    status_parser.add_argument(
-        "--deep", action="store_true", help="Run deep checks (may take longer)"
-    )
-    status_parser.set_defaults(func=cmd_status)
+    build_auth_parser(subparsers, cmd_auth=cmd_auth)
 
     # =========================================================================
-    # cron command
+    # status command  (parser built in hermes_cli/subcommands/status.py)
     # =========================================================================
-    cron_parser = subparsers.add_parser(
-        "cron", help="Cron job management", description="Manage scheduled tasks"
-    )
-    cron_subparsers = cron_parser.add_subparsers(dest="cron_command")
-
-    # cron list
-    cron_list = cron_subparsers.add_parser("list", help="List scheduled jobs")
-    cron_list.add_argument("--all", action="store_true", help="Include disabled jobs")
-
-    # cron create/add
-    cron_create = cron_subparsers.add_parser(
-        "create", aliases=["add"], help="Create a scheduled job"
-    )
-    cron_create.add_argument(
-        "schedule", help="Schedule like '30m', 'every 2h', or '0 9 * * *'"
-    )
-    cron_create.add_argument(
-        "prompt", nargs="?", help="Optional self-contained prompt or task instruction"
-    )
-    cron_create.add_argument("--name", help="Optional human-friendly job name")
-    cron_create.add_argument(
-        "--deliver",
-        help="Delivery target: origin, local, telegram, discord, signal, or platform:chat_id",
-    )
-    cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
-    cron_create.add_argument(
-        "--skill",
-        dest="skills",
-        action="append",
-        help="Attach a skill. Repeat to add multiple skills.",
-    )
-    cron_create.add_argument(
-        "--script",
-        help=(
-            "Path to a script under ~/.savarez/scripts/. Default mode: "
-            "script stdout is injected into the agent's prompt each run. "
-            "With --no-agent: the script IS the job and its stdout is "
-            "delivered verbatim. .sh/.bash files run via bash, everything "
-            "else via Python."
-        ),
-    )
-    cron_create.add_argument(
-        "--no-agent",
-        dest="no_agent",
-        action="store_true",
-        default=False,
-        help=(
-            "Skip the LLM entirely - run --script on schedule and deliver "
-            "its stdout directly. Empty stdout = silent. Classic watchdog "
-            "pattern (memory alerts, disk alerts, CI pings)."
-        ),
-    )
-    cron_create.add_argument(
-        "--workdir",
-        help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
-    )
-    cron_create.add_argument(
-        "--profile",
-        help="Savarez profile name to run the job under. Use 'default' for the root profile. Named profiles must already exist. Omit to preserve the scheduler's existing profile.",
-    )
-
-    # cron edit
-    cron_edit = cron_subparsers.add_parser(
-        "edit", help="Edit an existing scheduled job"
-    )
-    cron_edit.add_argument("job_id", help="Job ID to edit")
-    cron_edit.add_argument("--schedule", help="New schedule")
-    cron_edit.add_argument("--prompt", help="New prompt/task instruction")
-    cron_edit.add_argument("--name", help="New job name")
-    cron_edit.add_argument("--deliver", help="New delivery target")
-    cron_edit.add_argument("--repeat", type=int, help="New repeat count")
-    cron_edit.add_argument(
-        "--skill",
-        dest="skills",
-        action="append",
-        help="Replace the job's skills with this set. Repeat to attach multiple skills.",
-    )
-    cron_edit.add_argument(
-        "--add-skill",
-        dest="add_skills",
-        action="append",
-        help="Append a skill without replacing the existing list. Repeatable.",
-    )
-    cron_edit.add_argument(
-        "--remove-skill",
-        dest="remove_skills",
-        action="append",
-        help="Remove a specific attached skill. Repeatable.",
-    )
-    cron_edit.add_argument(
-        "--clear-skills",
-        action="store_true",
-        help="Remove all attached skills from the job",
-    )
-    cron_edit.add_argument(
-        "--script",
-        help=(
-            "Path to a script under ~/.savarez/scripts/. Pass empty string to clear. "
-            "With --no-agent the script IS the job; otherwise its stdout is "
-            "injected into the agent's prompt each run."
-        ),
-    )
-    cron_edit.add_argument(
-        "--no-agent",
-        dest="no_agent",
-        action="store_const",
-        const=True,
-        default=None,
-        help=(
-            "Enable no-agent mode on this job (requires --script or an "
-            "existing script on the job)."
-        ),
-    )
-    cron_edit.add_argument(
-        "--agent",
-        dest="no_agent",
-        action="store_const",
-        const=False,
-        help="Disable no-agent mode on this job (reverts to LLM-driven execution).",
-    )
-    cron_edit.add_argument(
-        "--workdir",
-        help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Pass empty string to clear.",
-    )
-    cron_edit.add_argument(
-        "--profile",
-        help="Savarez profile name to run the job under. Use 'default' for the root profile. Pass empty string to clear.",
-    )
-
-    # lifecycle actions
-    cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")
-    cron_pause.add_argument("job_id", help="Job ID to pause")
-
-    cron_resume = cron_subparsers.add_parser("resume", help="Resume a paused job")
-    cron_resume.add_argument("job_id", help="Job ID to resume")
-
-    cron_run = cron_subparsers.add_parser(
-        "run", help="Run a job on the next scheduler tick"
-    )
-    cron_run.add_argument("job_id", help="Job ID to trigger")
-    _add_accept_hooks_flag(cron_run)
-
-    cron_remove = cron_subparsers.add_parser(
-        "remove", aliases=["rm", "delete"], help="Remove a scheduled job"
-    )
-    cron_remove.add_argument("job_id", help="Job ID to remove")
-
-    # cron status
-    cron_subparsers.add_parser("status", help="Check if cron scheduler is running")
-
-    # cron tick (mostly for debugging)
-    cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
-    _add_accept_hooks_flag(cron_tick)
-    _add_accept_hooks_flag(cron_parser)
-    cron_parser.set_defaults(func=cmd_cron)
+    build_status_parser(subparsers, cmd_status=cmd_status)
 
     # =========================================================================
-    # webhook command
+    # cron command  (parser built in hermes_cli/subcommands/cron.py)
     # =========================================================================
-    webhook_parser = subparsers.add_parser(
-        "webhook",
-        help="Manage dynamic webhook subscriptions",
-        description="Create, list, and remove webhook subscriptions for event-driven agent activation",
-    )
-    webhook_subparsers = webhook_parser.add_subparsers(dest="webhook_action")
-
-    wh_sub = webhook_subparsers.add_parser(
-        "subscribe", aliases=["add"], help="Create a webhook subscription"
-    )
-    wh_sub.add_argument("name", help="Route name (used in URL: /webhooks/<name>)")
-    wh_sub.add_argument(
-        "--prompt", default="", help="Prompt template with {dot.notation} payload refs"
-    )
-    wh_sub.add_argument(
-        "--events", default="", help="Comma-separated event types to accept"
-    )
-    wh_sub.add_argument("--description", default="", help="What this subscription does")
-    wh_sub.add_argument(
-        "--skills", default="", help="Comma-separated skill names to load"
-    )
-    wh_sub.add_argument(
-        "--deliver",
-        default="log",
-        help="Delivery target: log, telegram, discord, slack, etc.",
-    )
-    wh_sub.add_argument(
-        "--deliver-chat-id",
-        default="",
-        help="Target chat ID for cross-platform delivery",
-    )
-    wh_sub.add_argument(
-        "--secret", default="", help="HMAC secret (auto-generated if omitted)"
-    )
-    wh_sub.add_argument(
-        "--deliver-only",
-        action="store_true",
-        help="Skip the agent - deliver the rendered prompt directly as the "
-        "message. Zero LLM cost. Requires --deliver to be a real target "
-        "(not 'log').",
-    )
-
-    webhook_subparsers.add_parser(
-        "list", aliases=["ls"], help="List all dynamic subscriptions"
-    )
-
-    wh_rm = webhook_subparsers.add_parser(
-        "remove", aliases=["rm"], help="Remove a subscription"
-    )
-    wh_rm.add_argument("name", help="Subscription name to remove")
-
-    wh_test = webhook_subparsers.add_parser(
-        "test", help="Send a test POST to a webhook route"
-    )
-    wh_test.add_argument("name", help="Subscription name to test")
-    wh_test.add_argument(
-        "--payload", default="", help="JSON payload to send (default: test payload)"
-    )
-
-    webhook_parser.set_defaults(func=cmd_webhook)
+    build_cron_parser(subparsers, cmd_cron=cmd_cron)
 
     # =========================================================================
-    # portal command - Nous Portal status + Tool Gateway routing
+    # webhook command  (parser built in hermes_cli/subcommands/webhook.py)
+    # =========================================================================
+    build_webhook_parser(subparsers, cmd_webhook=cmd_webhook)
+
+    # =========================================================================
+    # portal command — Nous Portal status + Tool Gateway routing
     # =========================================================================
     from hermes_cli.portal_cli import add_parser as _add_portal_parser
     _add_portal_parser(subparsers)
 
     # =========================================================================
-    # kanban command - multi-profile collaboration board
+    # kanban command — multi-profile collaboration board
     # =========================================================================
     from hermes_cli.kanban import build_parser as _build_kanban_parser
 
@@ -13857,261 +13322,47 @@ def main():
     kanban_parser.set_defaults(func=cmd_kanban)
 
     # =========================================================================
-    # hooks command - shell-hook inspection and management
+    # hooks command — shell-hook inspection and management
     # =========================================================================
-    hooks_parser = subparsers.add_parser(
-        "hooks",
-        help="Inspect and manage shell-script hooks",
-        description=(
-            "Inspect shell-script hooks declared in ~/.savarez/config.yaml, "
-            "test them against synthetic payloads, and manage the first-use "
-            "consent allowlist at ~/.savarez/shell-hooks-allowlist.json."
-        ),
-    )
-    hooks_subparsers = hooks_parser.add_subparsers(dest="hooks_action")
-
-    hooks_subparsers.add_parser(
-        "list",
-        aliases=["ls"],
-        help="List configured hooks with matcher, timeout, and consent status",
-    )
-
-    _hk_test = hooks_subparsers.add_parser(
-        "test",
-        help="Fire every hook matching <event> against a synthetic payload",
-    )
-    _hk_test.add_argument(
-        "event",
-        help="Hook event name (e.g. pre_tool_call, pre_llm_call, subagent_stop)",
-    )
-    _hk_test.add_argument(
-        "--for-tool",
-        dest="for_tool",
-        default=None,
-        help=(
-            "Only fire hooks whose matcher matches this tool name "
-            "(used for pre_tool_call / post_tool_call)"
-        ),
-    )
-    _hk_test.add_argument(
-        "--payload-file",
-        dest="payload_file",
-        default=None,
-        help=(
-            "Path to a JSON file whose contents are merged into the "
-            "synthetic payload before execution"
-        ),
-    )
-
-    _hk_revoke = hooks_subparsers.add_parser(
-        "revoke",
-        aliases=["remove", "rm"],
-        help="Remove a command's allowlist entries (takes effect on next restart)",
-    )
-    _hk_revoke.add_argument(
-        "command",
-        help="The exact command string to revoke (as declared in config.yaml)",
-    )
-
-    hooks_subparsers.add_parser(
-        "doctor",
-        help=(
-            "Check each configured hook: exec bit, allowlist, mtime drift, "
-            "JSON validity, and synthetic run timing"
-        ),
-    )
-
-    hooks_parser.set_defaults(func=cmd_hooks)
+    # hooks command  (parser built in hermes_cli/subcommands/hooks.py)
+    # =========================================================================
+    build_hooks_parser(subparsers, cmd_hooks=cmd_hooks)
 
     # =========================================================================
-    # doctor command
+    # doctor command  (parser built in hermes_cli/subcommands/doctor.py)
     # =========================================================================
-    doctor_parser = subparsers.add_parser(
-        "doctor",
-        help="Check configuration and dependencies",
-        description="Diagnose issues with Savarez AI Agent setup",
-    )
-    doctor_parser.add_argument(
-        "--fix", action="store_true", help="Attempt to fix issues automatically"
-    )
-    doctor_parser.add_argument(
-        "--ack",
-        metavar="ADVISORY_ID",
-        default=None,
-        help=(
-            "Acknowledge a security advisory by ID and exit. After ack, the "
-            "advisory will no longer trigger startup banners. Run `savarez "
-            "doctor` first to see active advisories and their IDs."
-        ),
-    )
-    doctor_parser.set_defaults(func=cmd_doctor)
+    build_doctor_parser(subparsers, cmd_doctor=cmd_doctor)
 
     # =========================================================================
-    # security command - on-demand supply-chain audit
+    # security command — on-demand supply-chain audit
     # =========================================================================
-    security_parser = subparsers.add_parser(
-        "security",
-        help="Supply-chain audit (OSV.dev) for venv, plugins, and MCP servers",
-        description=(
-            "On-demand vulnerability scan against OSV.dev. Covers the Savarez "
-            "venv (installed PyPI dists), Python deps declared by plugins under "
-            "~/.savarez/plugins/, and pinned npx/uvx MCP servers in config.yaml. "
-            "Does NOT scan globally-installed packages or editor/browser extensions."
-        ),
-    )
-    security_subparsers = security_parser.add_subparsers(
-        dest="security_command",
-        metavar="<subcommand>",
-    )
-
-    audit_parser = security_subparsers.add_parser(
-        "audit",
-        help="Run a one-shot supply-chain audit",
-        description="Query OSV.dev for known vulnerabilities in installed components.",
-    )
-    audit_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit machine-readable JSON instead of human-readable text",
-    )
-    audit_parser.add_argument(
-        "--fail-on",
-        default="critical",
-        choices=["low", "moderate", "high", "critical"],
-        help="Exit non-zero when any finding meets this severity (default: critical)",
-    )
-    audit_parser.add_argument(
-        "--skip-venv",
-        action="store_true",
-        help="Skip scanning the Savarez Python venv",
-    )
-    audit_parser.add_argument(
-        "--skip-plugins",
-        action="store_true",
-        help="Skip scanning plugin requirements files",
-    )
-    audit_parser.add_argument(
-        "--skip-mcp",
-        action="store_true",
-        help="Skip scanning pinned MCP servers in config.yaml",
-    )
-    audit_parser.set_defaults(func=cmd_security)
-    security_parser.set_defaults(func=cmd_security)
+    # security command  (parser built in hermes_cli/subcommands/security.py)
+    # =========================================================================
+    build_security_parser(subparsers, cmd_security=cmd_security)
 
     # =========================================================================
-    # dump command
+    # dump command  (parser built in hermes_cli/subcommands/dump.py)
     # =========================================================================
-    dump_parser = subparsers.add_parser(
-        "dump",
-        help="Dump setup summary for support/debugging",
-        description="Output a compact, plain-text summary of your Savarez setup "
-        "that can be copy-pasted into Discord/GitHub for support context",
-    )
-    dump_parser.add_argument(
-        "--show-keys",
-        action="store_true",
-        help="Show redacted API key prefixes (first/last 4 chars) instead of just set/not set",
-    )
-    dump_parser.set_defaults(func=cmd_dump)
+    build_dump_parser(subparsers, cmd_dump=cmd_dump)
 
     # =========================================================================
-    # debug command
+    # debug command  (parser built in hermes_cli/subcommands/debug.py)
     # =========================================================================
-    debug_parser = subparsers.add_parser(
-        "debug",
-        help="Debug tools - upload logs and system info for support",
-        description="Debug utilities for Savarez AI Agent. Use 'savarez debug share' to "
-        "upload a debug report (system info + recent logs) to a paste "
-        "service and get a shareable URL.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""\
-Examples:
-    savarez debug share              Upload debug report and print URL
-    savarez debug share --lines 500  Include more log lines
-    savarez debug share --expire 30  Keep paste for 30 days
-    savarez debug share --local      Print report locally (no upload)
-    savarez debug share --no-redact  Disable upload-time secret redaction
-    savarez debug delete <url>       Delete a previously uploaded paste
-""",
-    )
-    debug_sub = debug_parser.add_subparsers(dest="debug_command")
-    share_parser = debug_sub.add_parser(
-        "share",
-        help="Upload debug report to a paste service and print a shareable URL",
-    )
-    share_parser.add_argument(
-        "--lines",
-        type=int,
-        default=200,
-        help="Number of log lines to include per log file (default: 200)",
-    )
-    share_parser.add_argument(
-        "--expire",
-        type=int,
-        default=7,
-        help="Paste expiry in days (default: 7)",
-    )
-    share_parser.add_argument(
-        "--local",
-        action="store_true",
-        help="Print the report locally instead of uploading",
-    )
-    share_parser.add_argument(
-        "--no-redact",
-        action="store_true",
-        help=(
-            "Disable upload-time secret redaction (default: redact). Logs "
-            "are normally run through agent.redact.redact_sensitive_text "
-            "with force=True before upload so credentials are not leaked "
-            "into the public paste service."
-        ),
-    )
-    delete_parser = debug_sub.add_parser(
-        "delete",
-        help="Delete a paste uploaded by 'savarez debug share'",
-    )
-    delete_parser.add_argument(
-        "urls",
-        nargs="*",
-        default=[],
-        help="One or more paste URLs to delete (e.g. https://paste.rs/abc123)",
-    )
-    debug_parser.set_defaults(func=cmd_debug)
+    build_debug_parser(subparsers, cmd_debug=cmd_debug)
 
     # =========================================================================
-    # backup command
+    # backup command  (parser built in hermes_cli/subcommands/backup.py)
     # =========================================================================
-    backup_parser = subparsers.add_parser(
-        "backup",
-        help="Back up Savarez home directory to a zip file",
-        description="Create a zip archive of your entire Savarez configuration, "
-        "skills, sessions, and data (excludes the savarez-agent codebase). "
-        "Use --quick for a fast snapshot of just critical state files.",
-    )
-    backup_parser.add_argument(
-        "-o",
-        "--output",
-        help="Output path for the zip file (default: ~/savarez-backup-<timestamp>.zip)",
-    )
-    backup_parser.add_argument(
-        "-q",
-        "--quick",
-        action="store_true",
-        help="Quick snapshot: only critical state files (config, state.db, .env, auth, cron)",
-    )
-    backup_parser.add_argument(
-        "-l", "--label", help="Label for the snapshot (only used with --quick)"
-    )
-    backup_parser.set_defaults(func=cmd_backup)
+    build_backup_parser(subparsers, cmd_backup=cmd_backup)
 
     # =========================================================================
     # checkpoints command
     # =========================================================================
     checkpoints_parser = subparsers.add_parser(
         "checkpoints",
-        help="Inspect / prune / clear ~/.savarez/checkpoints/",
-        description="Manage the filesystem checkpoint store - the shadow git "
-        "repo savarez uses to snapshot working directories before "
+        help="Inspect / prune / clear ~/.hermes/checkpoints/",
+        description="Manage the filesystem checkpoint store — the shadow git "
+        "repo hermes uses to snapshot working directories before "
         "write_file/patch/terminal calls. Lets you see how much "
         "space checkpoints occupy, force a prune, or wipe the base.",
     )
@@ -14119,369 +13370,27 @@ Examples:
     _register_checkpoints_cli(checkpoints_parser)
 
     # =========================================================================
-    # import command
+    # import command  (parser built in hermes_cli/subcommands/import_cmd.py)
     # =========================================================================
-    import_parser = subparsers.add_parser(
-        "import",
-        help="Restore a Savarez backup from a zip file",
-        description="Extract a previously created Savarez backup into your "
-        "Savarez home directory, restoring configuration, skills, "
-        "sessions, and data",
-    )
-    import_parser.add_argument("zipfile", help="Path to the backup zip file")
-    import_parser.add_argument(
-        "--force",
-        "-f",
-        action="store_true",
-        help="Overwrite existing files without confirmation",
-    )
-    import_parser.set_defaults(func=cmd_import)
+    build_import_cmd_parser(subparsers, cmd_import=cmd_import)
 
     # =========================================================================
-    # config command
+    # config command  (parser built in hermes_cli/subcommands/config.py)
     # =========================================================================
-    config_parser = subparsers.add_parser(
-        "config",
-        help="View and edit configuration",
-        description="Manage Savarez AI Agent configuration",
-    )
-    config_subparsers = config_parser.add_subparsers(dest="config_command")
-
-    # config show (default)
-    config_subparsers.add_parser("show", help="Show current configuration")
-
-    # config edit
-    config_subparsers.add_parser("edit", help="Open config file in editor")
-
-    # config set
-    config_set = config_subparsers.add_parser("set", help="Set a configuration value")
-    config_set.add_argument(
-        "key", nargs="?", help="Configuration key (e.g., model, terminal.backend)"
-    )
-    config_set.add_argument("value", nargs="?", help="Value to set")
-
-    # config path
-    config_subparsers.add_parser("path", help="Print config file path")
-
-    # config env-path
-    config_subparsers.add_parser("env-path", help="Print .env file path")
-
-    # config check
-    config_subparsers.add_parser("check", help="Check for missing/outdated config")
-
-    # config migrate
-    config_subparsers.add_parser("migrate", help="Update config with new options")
-
-    config_parser.set_defaults(func=cmd_config)
+    build_config_parser(subparsers, cmd_config=cmd_config)
 
     # =========================================================================
-    # pairing command
+    # pairing command  (parser built in hermes_cli/subcommands/pairing.py)
     # =========================================================================
-    pairing_parser = subparsers.add_parser(
-        "pairing",
-        help="Manage DM pairing codes for user authorization",
-        description="Approve or revoke user access via pairing codes",
-    )
-    pairing_sub = pairing_parser.add_subparsers(dest="pairing_action")
-
-    pairing_sub.add_parser("list", help="Show pending + approved users")
-
-    pairing_approve_parser = pairing_sub.add_parser(
-        "approve", help="Approve a pairing code"
-    )
-    pairing_approve_parser.add_argument(
-        "platform", help="Platform name (telegram, discord, slack, whatsapp)"
-    )
-    pairing_approve_parser.add_argument("code", help="Pairing code to approve")
-
-    pairing_revoke_parser = pairing_sub.add_parser("revoke", help="Revoke user access")
-    pairing_revoke_parser.add_argument("platform", help="Platform name")
-    pairing_revoke_parser.add_argument("user_id", help="User ID to revoke")
-
-    pairing_sub.add_parser("clear-pending", help="Clear all pending codes")
-
-    def cmd_pairing(args):
-        from hermes_cli.pairing import pairing_command
-
-        pairing_command(args)
-
-    pairing_parser.set_defaults(func=cmd_pairing)
+    build_pairing_parser(subparsers, cmd_pairing=cmd_pairing)
 
     # =========================================================================
-    # skills command
+    # skills command  (parser built in hermes_cli/subcommands/skills.py)
     # =========================================================================
-    skills_parser = subparsers.add_parser(
-        "skills",
-        help="Search, install, configure, and manage skills",
-        description="Search, install, inspect, audit, configure, and manage skills from skills.sh, well-known agent skill endpoints, GitHub, ClawHub, and other registries.",
-    )
-    skills_subparsers = skills_parser.add_subparsers(dest="skills_action")
-
-    skills_browse = skills_subparsers.add_parser(
-        "browse", help="Browse all available skills (paginated)"
-    )
-    skills_browse.add_argument(
-        "--page", type=int, default=1, help="Page number (default: 1)"
-    )
-    skills_browse.add_argument(
-        "--size", type=int, default=20, help="Results per page (default: 20)"
-    )
-    skills_browse.add_argument(
-        "--source",
-        default="all",
-        choices=[
-            "all",
-            "official",
-            "skills-sh",
-            "well-known",
-            "github",
-            "clawhub",
-            "lobehub",
-            "browse-sh",
-        ],
-        help="Filter by source (default: all)",
-    )
-
-    skills_search = skills_subparsers.add_parser(
-        "search", help="Search skill registries"
-    )
-    skills_search.add_argument("query", help="Search query")
-    skills_search.add_argument(
-        "--source",
-        default="all",
-        choices=[
-            "all",
-            "official",
-            "skills-sh",
-            "well-known",
-            "github",
-            "clawhub",
-            "lobehub",
-            "browse-sh",
-        ],
-    )
-    skills_search.add_argument("--limit", type=int, default=10, help="Max results")
-    skills_search.add_argument(
-        "--json",
-        action="store_true",
-        help="Output JSON instead of a table (full identifiers, scripting-friendly)",
-    )
-
-    skills_install = skills_subparsers.add_parser("install", help="Install a skill")
-    skills_install.add_argument(
-        "identifier",
-        help="Skill identifier (e.g. openai/skills/skill-creator) or a direct HTTP(S) URL to a SKILL.md file",
-    )
-    skills_install.add_argument(
-        "--category", default="", help="Category folder to install into"
-    )
-    skills_install.add_argument(
-        "--name",
-        default="",
-        help="Override the skill name (useful when installing from a URL whose SKILL.md has no `name:` frontmatter)",
-    )
-    skills_install.add_argument(
-        "--force", action="store_true", help="Install despite blocked scan verdict"
-    )
-    skills_install.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Skip confirmation prompt (needed in TUI mode)",
-    )
-
-    skills_inspect = skills_subparsers.add_parser(
-        "inspect", help="Preview a skill without installing"
-    )
-    skills_inspect.add_argument("identifier", help="Skill identifier")
-
-    skills_list = skills_subparsers.add_parser("list", help="List installed skills")
-    skills_list.add_argument(
-        "--source", default="all", choices=["all", "hub", "builtin", "local"]
-    )
-    skills_list.add_argument(
-        "--enabled-only",
-        action="store_true",
-        help="Hide disabled skills. Use with -p <profile> to see exactly "
-        "which skills will load for that profile.",
-    )
-
-    skills_check = skills_subparsers.add_parser(
-        "check", help="Check installed hub skills for updates"
-    )
-    skills_check.add_argument(
-        "name", nargs="?", help="Specific skill to check (default: all)"
-    )
-
-    skills_update = skills_subparsers.add_parser(
-        "update", help="Update installed hub skills"
-    )
-    skills_update.add_argument(
-        "name",
-        nargs="?",
-        help="Specific skill to update (default: all outdated skills)",
-    )
-
-    skills_audit = skills_subparsers.add_parser(
-        "audit", help="Re-scan installed hub skills"
-    )
-    skills_audit.add_argument(
-        "name", nargs="?", help="Specific skill to audit (default: all)"
-    )
-    skills_audit.add_argument(
-        "--deep",
-        action="store_true",
-        help="Run AST-level analysis on Python files (opt-in diagnostic)",
-    )
-
-    skills_uninstall = skills_subparsers.add_parser(
-        "uninstall", help="Remove a hub-installed skill"
-    )
-    skills_uninstall.add_argument("name", help="Skill name to remove")
-
-    skills_reset = skills_subparsers.add_parser(
-        "reset",
-        help="Reset a bundled skill - clears 'user-modified' tracking so updates work again",
-        description=(
-            "Clear a bundled skill's entry from the sync manifest (~/.savarez/skills/.bundled_manifest) "
-            "so future 'savarez update' runs stop marking it as user-modified. Pass --restore to also "
-            "replace the current copy with the bundled version."
-        ),
-    )
-    skills_reset.add_argument(
-        "name", help="Skill name to reset (e.g. google-workspace)"
-    )
-    skills_reset.add_argument(
-        "--restore",
-        action="store_true",
-        help="Also delete the current copy and re-copy the bundled version",
-    )
-    skills_reset.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Skip confirmation prompt when using --restore",
-    )
-
-    skills_opt_out = skills_subparsers.add_parser(
-        "opt-out",
-        help="Stop bundled skills from being seeded into this profile",
-        description=(
-            "Write the .no-bundled-skills marker so the installer, "
-            "`savarez update`, and any direct sync stop seeding bundled skills "
-            "into the active profile. By default nothing already on disk is "
-            "touched. Pass --remove to ALSO delete bundled skills that are "
-            "unmodified (user-edited and hub/local skills are never removed)."
-        ),
-    )
-    skills_opt_out.add_argument(
-        "--remove",
-        action="store_true",
-        help="Also delete already-present unmodified bundled skills",
-    )
-    skills_opt_out.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Skip confirmation prompt when using --remove",
-    )
-
-    skills_opt_in = skills_subparsers.add_parser(
-        "opt-in",
-        help="Re-enable bundled-skill seeding (undo opt-out)",
-        description=(
-            "Remove the .no-bundled-skills marker so bundled skills are seeded "
-            "again on the next `savarez update`. Pass --sync to re-seed now."
-        ),
-    )
-    skills_opt_in.add_argument(
-        "--sync",
-        action="store_true",
-        help="Re-seed bundled skills immediately instead of waiting for update",
-    )
-
-    skills_repair_official = skills_subparsers.add_parser(
-        "repair-official",
-        help="Backfill or restore official optional skills from repo source",
-        description=(
-            "Repair official optional skill provenance. By default, only backfills "
-            "hub metadata for exact matches. Pass --restore to replace missing or "
-            "mutated active copies from optional-skills/, moving existing copies to "
-            "a restore backup first. Use name 'all' to repair every optional skill."
-        ),
-    )
-    skills_repair_official.add_argument(
-        "name", help="Official optional skill folder/frontmatter name, or 'all'"
-    )
-    skills_repair_official.add_argument(
-        "--restore",
-        action="store_true",
-        help="Restore from official optional source, backing up existing matching copies",
-    )
-    skills_repair_official.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Skip confirmation prompt when using --restore",
-    )
-
-    skills_publish = skills_subparsers.add_parser(
-        "publish", help="Publish a skill to a registry"
-    )
-    skills_publish.add_argument("skill_path", help="Path to skill directory")
-    skills_publish.add_argument(
-        "--to", default="github", choices=["github", "clawhub"], help="Target registry"
-    )
-    skills_publish.add_argument(
-        "--repo", default="", help="Target GitHub repo (e.g. openai/skills)"
-    )
-
-    skills_snapshot = skills_subparsers.add_parser(
-        "snapshot", help="Export/import skill configurations"
-    )
-    snapshot_subparsers = skills_snapshot.add_subparsers(dest="snapshot_action")
-    snap_export = snapshot_subparsers.add_parser(
-        "export", help="Export installed skills to a file"
-    )
-    snap_export.add_argument("output", help="Output JSON file path (use - for stdout)")
-    snap_import = snapshot_subparsers.add_parser(
-        "import", help="Import and install skills from a file"
-    )
-    snap_import.add_argument("input", help="Input JSON file path")
-    snap_import.add_argument(
-        "--force", action="store_true", help="Force install despite caution verdict"
-    )
-
-    skills_tap = skills_subparsers.add_parser("tap", help="Manage skill sources")
-    tap_subparsers = skills_tap.add_subparsers(dest="tap_action")
-    tap_subparsers.add_parser("list", help="List configured taps")
-    tap_add = tap_subparsers.add_parser("add", help="Add a GitHub repo as skill source")
-    tap_add.add_argument("repo", help="GitHub repo (e.g. owner/repo)")
-    tap_rm = tap_subparsers.add_parser("remove", help="Remove a tap")
-    tap_rm.add_argument("name", help="Tap name to remove")
-
-    # config sub-action: interactive enable/disable
-    skills_subparsers.add_parser(
-        "config",
-        help="Interactive skill configuration - enable/disable individual skills",
-    )
-
-    def cmd_skills(args):
-        # Route 'config' action to skills_config module
-        if getattr(args, "skills_action", None) == "config":
-            _require_tty("skills config")
-            from hermes_cli.skills_config import skills_command as skills_config_command
-
-            skills_config_command(args)
-        else:
-            from hermes_cli.skills_hub import skills_command
-
-            skills_command(args)
-
-    skills_parser.set_defaults(func=cmd_skills)
+    build_skills_parser(subparsers, cmd_skills=cmd_skills)
 
     # =========================================================================
-    # bundles command - skill bundles (alias /<name> for multiple skills)
+    # bundles command — skill bundles (alias /<name> for multiple skills)
     # =========================================================================
     bundles_parser = subparsers.add_parser(
         "bundles",
@@ -14497,103 +13406,17 @@ Examples:
     bundles_parser.set_defaults(func=bundles_command)
 
     # =========================================================================
-    # plugins command
+    # plugins command  (parser built in hermes_cli/subcommands/plugins.py)
     # =========================================================================
-    plugins_parser = subparsers.add_parser(
-        "plugins",
-        help="Manage plugins - install, update, remove, list",
-        description="Install plugins from Git repositories, update, remove, or list them.",
-    )
-    plugins_subparsers = plugins_parser.add_subparsers(dest="plugins_action")
-
-    plugins_install = plugins_subparsers.add_parser(
-        "install", help="Install a plugin from a Git URL or owner/repo"
-    )
-    plugins_install.add_argument(
-        "identifier",
-        help="Git URL or owner/repo shorthand (e.g. anpicasso/savarez-plugin-chrome-profiles)",
-    )
-    plugins_install.add_argument(
-        "--force",
-        "-f",
-        action="store_true",
-        help="Remove existing plugin and reinstall",
-    )
-    _install_enable_group = plugins_install.add_mutually_exclusive_group()
-    _install_enable_group.add_argument(
-        "--enable",
-        action="store_true",
-        help="Auto-enable the plugin after install (skip confirmation prompt)",
-    )
-    _install_enable_group.add_argument(
-        "--no-enable",
-        action="store_true",
-        help="Install disabled (skip confirmation prompt); enable later with `savarez plugins enable <name>`",
-    )
-
-    plugins_update = plugins_subparsers.add_parser(
-        "update", help="Pull latest changes for an installed plugin"
-    )
-    plugins_update.add_argument("name", help="Plugin name to update")
-
-    plugins_remove = plugins_subparsers.add_parser(
-        "remove", aliases=["rm", "uninstall"], help="Remove an installed plugin"
-    )
-    plugins_remove.add_argument("name", help="Plugin directory name to remove")
-
-    plugins_list = plugins_subparsers.add_parser(
-        "list", aliases=["ls"], help="List installed plugins"
-    )
-    plugins_list.add_argument(
-        "--enabled",
-        action="store_true",
-        help="Show only enabled plugins",
-    )
-    plugins_list.add_argument(
-        "--user",
-        action="store_true",
-        help="Show only user-installed plugins (including git plugins)",
-    )
-    plugins_list.add_argument(
-        "--no-bundled",
-        action="store_true",
-        help="Hide bundled plugins",
-    )
-    plugins_list.add_argument(
-        "--plain",
-        action="store_true",
-        help="Print compact plain-text output instead of a Rich table",
-    )
-    plugins_list.add_argument(
-        "--json",
-        action="store_true",
-        help="Print machine-readable JSON",
-    )
-
-    plugins_enable = plugins_subparsers.add_parser(
-        "enable", help="Enable a disabled plugin"
-    )
-    plugins_enable.add_argument("name", help="Plugin name to enable")
-
-    plugins_disable = plugins_subparsers.add_parser(
-        "disable", help="Disable a plugin without removing it"
-    )
-    plugins_disable.add_argument("name", help="Plugin name to disable")
-
-    def cmd_plugins(args):
-        from hermes_cli.plugins_cmd import plugins_command
-
-        plugins_command(args)
-
-    plugins_parser.set_defaults(func=cmd_plugins)
+    build_plugins_parser(subparsers, cmd_plugins=cmd_plugins)
 
     # =========================================================================
-    # Plugin CLI commands - dynamically registered by memory/general plugins.
+    # Plugin CLI commands — dynamically registered by memory/general plugins.
     # Plugins provide a register_cli(subparser) function that builds their
     # own argparse tree.  No hardcoded plugin commands in main.py.
     #
     # Skipped when the invocation is already targeting a known built-in
-    # subcommand - ``savarez --help``, ``savarez version``, ``savarez logs``,
+    # subcommand — ``hermes --help``, ``hermes version``, ``hermes logs``,
     # etc.  This avoids eagerly importing every bundled plugin module
     # (google.cloud.pubsub_v1, aiohttp, grpc, PIL …) which costs
     # 500-650ms on typical installs.
@@ -14633,11 +13456,11 @@ Examples:
             logging.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
 
     # =========================================================================
-    # curator command - background skill maintenance
+    # curator command — background skill maintenance
     # =========================================================================
     curator_parser = subparsers.add_parser(
         "curator",
-        help="Background skill maintenance (curator) - status, run, pause, pin",
+        help="Background skill maintenance (curator) — status, run, pause, pin",
         description=(
             "The curator is an auxiliary-model background task that "
             "periodically reviews agent-created skills, prunes stale ones, "
@@ -14654,217 +13477,17 @@ Examples:
         logging.getLogger(__name__).debug("curator CLI wiring failed: %s", _exc)
 
     # =========================================================================
-    # memory command
+    # memory command  (parser built in hermes_cli/subcommands/memory.py)
     # =========================================================================
-    memory_parser = subparsers.add_parser(
-        "memory",
-        help="Configure external memory provider",
-        description=(
-            "Set up and manage external memory provider plugins.\n\n"
-            "Available providers: honcho, openviking, mem0, hindsight,\n"
-            "holographic, retaindb, byterover.\n\n"
-            "Only one external provider can be active at a time.\n"
-            "Built-in memory (MEMORY.md/USER.md) is always active."
-        ),
-    )
-    memory_sub = memory_parser.add_subparsers(dest="memory_command")
-    _setup_parser = memory_sub.add_parser(
-        "setup", help="Interactive provider selection and configuration"
-    )
-    _setup_parser.add_argument(
-        "provider",
-        nargs="?",
-        default=None,
-        help="Provider to configure directly (e.g. honcho), skipping the picker",
-    )
-    memory_sub.add_parser("status", help="Show current memory provider config")
-    memory_sub.add_parser("off", help="Disable external provider (built-in only)")
-    _reset_parser = memory_sub.add_parser(
-        "reset",
-        help="Erase all built-in memory (MEMORY.md and USER.md)",
-    )
-    _reset_parser.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        help="Skip confirmation prompt",
-    )
-    _reset_parser.add_argument(
-        "--target",
-        choices=["all", "memory", "user"],
-        default="all",
-        help="Which store to reset: 'all' (default), 'memory', or 'user'",
-    )
-
-    def cmd_memory(args):
-        sub = getattr(args, "memory_command", None)
-        if sub == "off":
-            from hermes_cli.config import load_config, save_config
-
-            config = load_config()
-            if not isinstance(config.get("memory"), dict):
-                config["memory"] = {}
-            config["memory"]["provider"] = ""
-            save_config(config)
-            print("\n  ✓ Memory provider: built-in only")
-            print("  Saved to config.yaml\n")
-        elif sub == "reset":
-            from hermes_constants import get_hermes_home, display_hermes_home
-
-            mem_dir = get_hermes_home() / "memories"
-            target = getattr(args, "target", "all")
-            files_to_reset = []
-            if target in {"all", "memory"}:
-                files_to_reset.append(("MEMORY.md", "agent notes"))
-            if target in {"all", "user"}:
-                files_to_reset.append(("USER.md", "user profile"))
-
-            # Check what exists
-            existing = [
-                (f, desc) for f, desc in files_to_reset if (mem_dir / f).exists()
-            ]
-            if not existing:
-                print(
-                    f"\n  Nothing to reset - no memory files found in {display_hermes_home()}/memories/\n"
-                )
-                return
-
-            print(f"\n  This will permanently erase the following memory files:")
-            for f, desc in existing:
-                path = mem_dir / f
-                size = path.stat().st_size
-                print(f"    ◆ {f} ({desc}) - {size:,} bytes")
-
-            if not getattr(args, "yes", False):
-                try:
-                    answer = input("\n  Type 'yes' to confirm: ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    print("\n  Cancelled.\n")
-                    return
-                if answer != "yes":
-                    print("  Cancelled.\n")
-                    return
-
-            for f, desc in existing:
-                (mem_dir / f).unlink()
-                print(f"  ✓ Deleted {f} ({desc})")
-
-            print(
-                f"\n  Memory reset complete. New sessions will start with a blank slate."
-            )
-            print(f"  Files were in: {display_hermes_home()}/memories/\n")
-        else:
-            from hermes_cli.memory_setup import memory_command
-
-            memory_command(args)
-
-    memory_parser.set_defaults(func=cmd_memory)
+    build_memory_parser(subparsers, cmd_memory=cmd_memory)
 
     # =========================================================================
-    # tools command
+    # tools command  (parser built in hermes_cli/subcommands/tools.py)
     # =========================================================================
-    tools_parser = subparsers.add_parser(
-        "tools",
-        help="Configure which tools are enabled per platform",
-        description=(
-            "Enable, disable, or list tools for CLI, Telegram, Discord, etc.\n\n"
-            "Built-in toolsets use plain names (e.g. web, memory).\n"
-            "MCP tools use server:tool notation (e.g. github:create_issue).\n\n"
-            "Run 'savarez tools' with no subcommand for the interactive configuration UI."
-        ),
-    )
-    tools_parser.add_argument(
-        "--summary",
-        action="store_true",
-        help="Print a summary of enabled tools per platform and exit",
-    )
-    tools_sub = tools_parser.add_subparsers(dest="tools_action")
-
-    # savarez tools list [--platform cli]
-    tools_list_p = tools_sub.add_parser(
-        "list",
-        help="Show all tools and their enabled/disabled status",
-    )
-    tools_list_p.add_argument(
-        "--platform",
-        default="cli",
-        help="Platform to show (default: cli)",
-    )
-
-    # savarez tools disable <name...> [--platform cli]
-    tools_disable_p = tools_sub.add_parser(
-        "disable",
-        help="Disable toolsets or MCP tools",
-    )
-    tools_disable_p.add_argument(
-        "names",
-        nargs="+",
-        metavar="NAME",
-        help="Toolset name (e.g. web) or MCP tool in server:tool form",
-    )
-    tools_disable_p.add_argument(
-        "--platform",
-        default="cli",
-        help="Platform to apply to (default: cli)",
-    )
-
-    # savarez tools enable <name...> [--platform cli]
-    tools_enable_p = tools_sub.add_parser(
-        "enable",
-        help="Enable toolsets or MCP tools",
-    )
-    tools_enable_p.add_argument(
-        "names",
-        nargs="+",
-        metavar="NAME",
-        help="Toolset name or MCP tool in server:tool form",
-    )
-    tools_enable_p.add_argument(
-        "--platform",
-        default="cli",
-        help="Platform to apply to (default: cli)",
-    )
-
-    # hermes tools post-setup <key>
-    tools_postsetup_p = tools_sub.add_parser(
-        "post-setup",
-        help="Run a provider's post-setup install hook (npm/pip/binary)",
-        description=(
-            "Run the install/bootstrap hook a tool backend declares — the\n"
-            "same step `hermes tools` runs after you pick a provider that\n"
-            "needs extra dependencies (browser Chromium, Camofox, cua-driver,\n"
-            "KittenTTS/Piper, ddgs, Spotify, Langfuse, xAI). Stable,\n"
-            "non-interactive target the dashboard spawns to drive backend\n"
-            "setup. Keys: agent_browser, camofox, cua_driver, kittentts,\n"
-            "piper, ddgs, spotify, langfuse, xai_grok."
-        ),
-    )
-    tools_postsetup_p.add_argument(
-        "post_setup_key",
-        metavar="KEY",
-        help="Post-setup hook key (e.g. agent_browser, camofox, kittentts)",
-    )
-
-    def cmd_tools(args):
-        action = getattr(args, "tools_action", None)
-        if action in {"list", "disable", "enable"}:
-            from hermes_cli.tools_config import tools_disable_enable_command
-
-            tools_disable_enable_command(args)
-        elif action == "post-setup":
-            from hermes_cli.tools_config import run_post_setup_command
-
-            sys.exit(run_post_setup_command(args))
-        else:
-            _require_tty("tools")
-            from hermes_cli.tools_config import tools_command
-
-            tools_command(args)
-
-    tools_parser.set_defaults(func=cmd_tools)
+    build_tools_parser(subparsers, cmd_tools=cmd_tools)
 
     # =========================================================================
-    # computer-use command - manage Computer Use (cua-driver) on macOS
+    # computer-use command — manage Computer Use (cua-driver) on macOS
     # =========================================================================
     computer_use_parser = subparsers.add_parser(
         "computer-use",
@@ -14872,9 +13495,9 @@ Examples:
         description=(
             "Install or check the cua-driver binary used by the\n"
             "`computer_use` toolset. macOS-only.\n\n"
-            "Use `savarez computer-use install` to fetch and run the\n"
+            "Use `hermes computer-use install` to fetch and run the\n"
             "upstream cua-driver installer. This is equivalent to the\n"
-            "post-setup hook that `savarez tools` runs when you first\n"
+            "post-setup hook that `hermes tools` runs when you first\n"
             "enable the Computer Use toolset, and is a stable target\n"
             "for re-running the install if it didn't fire (e.g. when\n"
             "toggling the toolset on a returning-user setup)."
@@ -14923,113 +13546,19 @@ Examples:
                     print(f"cua-driver: installed at {path} ({version})")
                 else:
                     print(f"cua-driver: installed at {path}")
-                print("  Refresh to latest: savarez computer-use install --upgrade")
+                print("  Refresh to latest: hermes computer-use install --upgrade")
                 return
             print("cua-driver: not installed")
-            print("  Run: savarez computer-use install")
+            print("  Run: hermes computer-use install")
             return
         # No subcommand → show help
         computer_use_parser.print_help()
 
     computer_use_parser.set_defaults(func=cmd_computer_use)
     # =========================================================================
-    # mcp command - manage MCP server connections
+    # mcp command  (parser built in hermes_cli/subcommands/mcp.py)
     # =========================================================================
-    mcp_parser = subparsers.add_parser(
-        "mcp",
-        help="Manage MCP servers and run Savarez as an MCP server",
-        description=(
-            "Manage MCP server connections and run Savarez as an MCP server.\n\n"
-            "MCP servers provide additional tools via the Model Context Protocol.\n"
-            "Use 'savarez mcp add' to connect to a new server, or\n"
-            "'savarez mcp serve' to expose Savarez conversations over MCP."
-        ),
-    )
-    mcp_sub = mcp_parser.add_subparsers(dest="mcp_action")
-
-    mcp_serve_p = mcp_sub.add_parser(
-        "serve",
-        help="Run Savarez as an MCP server (expose conversations to other agents)",
-    )
-    mcp_serve_p.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Enable verbose logging on stderr",
-    )
-    _add_accept_hooks_flag(mcp_serve_p)
-
-    mcp_add_p = mcp_sub.add_parser(
-        "add", help="Add an MCP server (discovery-first install)"
-    )
-    mcp_add_p.add_argument("name", help="Server name (used as config key)")
-    mcp_add_p.add_argument("--url", help="HTTP/SSE endpoint URL")
-    # dest="mcp_command" so this flag does not clobber the top-level
-    # subparser's args.command attribute, which the dispatcher reads to
-    # route to cmd_mcp.  Without an explicit dest, argparse derives
-    # dest="command" from the flag name and sets it to None when the
-    # flag is omitted, causing `savarez mcp add ...` to fall through to
-    # interactive chat.
-    mcp_add_p.add_argument(
-        "--command", dest="mcp_command", help="Stdio command (e.g. npx)"
-    )
-    mcp_add_p.add_argument(
-        "--args", nargs="*", default=[], help="Arguments for stdio command"
-    )
-    mcp_add_p.add_argument("--auth", choices=["oauth", "header"], help="Auth method")
-    mcp_add_p.add_argument("--preset", help="Known MCP preset name")
-    mcp_add_p.add_argument(
-        "--env",
-        nargs="*",
-        default=[],
-        help="Environment variables for stdio servers (KEY=VALUE)",
-    )
-
-    mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="Remove an MCP server")
-    mcp_rm_p.add_argument("name", help="Server name to remove")
-
-    mcp_sub.add_parser("list", aliases=["ls"], help="List configured MCP servers")
-
-    mcp_test_p = mcp_sub.add_parser("test", help="Test MCP server connection")
-    mcp_test_p.add_argument("name", help="Server name to test")
-
-    mcp_cfg_p = mcp_sub.add_parser(
-        "configure", aliases=["config"], help="Toggle tool selection"
-    )
-    mcp_cfg_p.add_argument("name", help="Server name to configure")
-
-    mcp_login_p = mcp_sub.add_parser(
-        "login",
-        help="Force re-authentication for an OAuth-based MCP server",
-    )
-    mcp_login_p.add_argument("name", help="Server name to re-authenticate")
-
-    # ── Catalog (Nous-approved MCPs shipped with the repo) ─────────────────
-    mcp_sub.add_parser(
-        "picker",
-        help="Interactive catalog picker (also the default for `savarez mcp`)",
-    )
-    mcp_sub.add_parser(
-        "catalog",
-        help="List Nous-approved MCPs available for one-click install",
-    )
-    mcp_install_p = mcp_sub.add_parser(
-        "install",
-        help="Install a catalog MCP by name (e.g. `savarez mcp install n8n`)",
-    )
-    mcp_install_p.add_argument(
-        "identifier",
-        help="Catalog entry name (or `official/<name>`)",
-    )
-
-    _add_accept_hooks_flag(mcp_parser)
-
-    def cmd_mcp(args):
-        from hermes_cli.mcp_config import mcp_command
-
-        mcp_command(args)
-
-    mcp_parser.set_defaults(func=cmd_mcp)
+    build_mcp_parser(subparsers, cmd_mcp=cmd_mcp)
 
     # =========================================================================
     # sessions command
@@ -15093,7 +13622,7 @@ Examples:
 
     sessions_browse = sessions_subparsers.add_parser(
         "browse",
-        help="Interactive session picker - browse, search, and resume sessions",
+        help="Interactive session picker — browse, search, and resume sessions",
     )
     sessions_browse.add_argument(
         "--source", help="Filter by source (cli, telegram, discord, etc.)"
@@ -15148,7 +13677,7 @@ Examples:
                     else s.get("preview", "")[:48]
                 )
                 if has_titles:
-                    title = (s.get("title") or "-")[:30]
+                    title = (s.get("title") or "—")[:30]
                     sid = s["id"]
                     print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
                 else:
@@ -15248,7 +13777,7 @@ Examples:
                 print("Cancelled.")
                 return
 
-            # Launch savarez --resume <id> by replacing the current process
+            # Launch hermes --resume <id> by replacing the current process
             print(f"Resuming session: {selected_id}")
             from hermes_cli.relaunch import relaunch
 
@@ -15305,471 +13834,39 @@ Examples:
     sessions_parser.set_defaults(func=cmd_sessions)
 
     # =========================================================================
-    # insights command
+    # insights command  (parser built in hermes_cli/subcommands/insights.py)
     # =========================================================================
-    insights_parser = subparsers.add_parser(
-        "insights",
-        help="Show usage insights and analytics",
-        description="Analyze session history to show token usage, costs, tool patterns, and activity trends",
-    )
-    insights_parser.add_argument(
-        "--days", type=int, default=30, help="Number of days to analyze (default: 30)"
-    )
-    insights_parser.add_argument(
-        "--source", help="Filter by platform (cli, telegram, discord, etc.)"
-    )
-
-    def cmd_insights(args):
-        try:
-            from hermes_state import SessionDB
-            from agent.insights import InsightsEngine
-
-            db = SessionDB()
-            engine = InsightsEngine(db)
-            report = engine.generate(days=args.days, source=args.source)
-            print(engine.format_terminal(report))
-            db.close()
-        except Exception as e:
-            print(f"Error generating insights: {e}")
-
-    insights_parser.set_defaults(func=cmd_insights)
+    build_insights_parser(subparsers, cmd_insights=cmd_insights)
 
     # =========================================================================
-    # claw command (OpenClaw migration)
+    # claw command  (parser built in hermes_cli/subcommands/claw.py)
     # =========================================================================
-    claw_parser = subparsers.add_parser(
-        "claw",
-        help="OpenClaw migration tools",
-        description="Migrate settings, memories, skills, and API keys from OpenClaw to Savarez",
-    )
-    claw_subparsers = claw_parser.add_subparsers(dest="claw_action")
-
-    # claw migrate
-    claw_migrate = claw_subparsers.add_parser(
-        "migrate",
-        help="Migrate from OpenClaw to Savarez",
-        description="Import settings, memories, skills, and API keys from an OpenClaw installation. "
-        "Always shows a preview before making changes.",
-    )
-    claw_migrate.add_argument(
-        "--source", help="Path to OpenClaw directory (default: ~/.openclaw)"
-    )
-    claw_migrate.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview only - stop after showing what would be migrated",
-    )
-    claw_migrate.add_argument(
-        "--preset",
-        choices=["user-data", "full"],
-        default="full",
-        help="Migration preset (default: full). Neither preset imports secrets - "
-        "pass --migrate-secrets to include API keys.",
-    )
-    claw_migrate.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Overwrite existing files (default: refuse to apply when the plan has conflicts)",
-    )
-    claw_migrate.add_argument(
-        "--migrate-secrets",
-        action="store_true",
-        help="Include allowlisted secrets (TELEGRAM_BOT_TOKEN, API keys, etc.). "
-        "Required even under --preset full.",
-    )
-    claw_migrate.add_argument(
-        "--no-backup",
-        action="store_true",
-        help="Skip the pre-migration zip snapshot of ~/.savarez/ (by default a "
-        "single restore-point archive is written to ~/.savarez/backups/ "
-        "before apply; restorable with 'savarez import').",
-    )
-    claw_migrate.add_argument(
-        "--workspace-target", help="Absolute path to copy workspace instructions into"
-    )
-    claw_migrate.add_argument(
-        "--skill-conflict",
-        choices=["skip", "overwrite", "rename"],
-        default="skip",
-        help="How to handle skill name conflicts (default: skip)",
-    )
-    claw_migrate.add_argument(
-        "--yes", "-y", action="store_true", help="Skip confirmation prompts"
-    )
-
-    # claw cleanup
-    claw_cleanup = claw_subparsers.add_parser(
-        "cleanup",
-        aliases=["clean"],
-        help="Archive leftover OpenClaw directories after migration",
-        description="Scan for and archive leftover OpenClaw directories to prevent state fragmentation",
-    )
-    claw_cleanup.add_argument(
-        "--source", help="Path to a specific OpenClaw directory to clean up"
-    )
-    claw_cleanup.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview what would be archived without making changes",
-    )
-    claw_cleanup.add_argument(
-        "--yes", "-y", action="store_true", help="Skip confirmation prompts"
-    )
-
-    def cmd_claw(args):
-        from hermes_cli.claw import claw_command
-
-        claw_command(args)
-
-    claw_parser.set_defaults(func=cmd_claw)
+    build_claw_parser(subparsers, cmd_claw=cmd_claw)
 
     # =========================================================================
-    # version command
+    # version command  (parser built in hermes_cli/subcommands/version.py)
     # =========================================================================
-    version_parser = subparsers.add_parser("version", help="Show version information")
-    version_parser.set_defaults(func=cmd_version)
-
-    # =========================================================================
-    # update command
-    # =========================================================================
-    update_parser = subparsers.add_parser(
-        "update",
-        help="Update Savarez AI Agent to the latest version",
-        description="Pull the latest changes from git and reinstall dependencies",
-    )
-    update_parser.add_argument(
-        "--gateway",
-        action="store_true",
-        default=False,
-        help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)",
-    )
-    update_parser.add_argument(
-        "--check",
-        action="store_true",
-        default=False,
-        help="Check whether an update is available without installing anything",
-    )
-    update_parser.add_argument(
-        "--no-backup",
-        action="store_true",
-        default=False,
-        help="Skip the pre-update backup for this run (overrides updates.pre_update_backup)",
-    )
-    update_parser.add_argument(
-        "--backup",
-        action="store_true",
-        default=False,
-        help="Force a pre-update backup for this run (off by default; overrides updates.pre_update_backup)",
-    )
-    update_parser.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        default=False,
-        help="Assume yes for interactive prompts (config migration, stash restore). API-key entry is skipped; run 'savarez config migrate' separately for those.",
-    )
-    update_parser.add_argument(
-        "--branch",
-        default=None,
-        metavar="NAME",
-        help=(
-            "Update against this branch instead of the default (main). "
-            "If the local checkout is on a different branch, savarez will "
-            "switch to the requested branch first (auto-stashing any "
-            "uncommitted changes)."
-        ),
-    )
-    update_parser.add_argument(
-        "--force",
-        action="store_true",
-        default=False,
-        help="Windows: proceed with the update even when another savarez.exe is detected. The concurrent process will likely cause WinError 32 warnings and may leave a reboot-deferred .exe replacement.",
-    )
-    update_parser.set_defaults(func=cmd_update)
+    build_version_parser(subparsers, cmd_version=cmd_version)
 
     # =========================================================================
-    # uninstall command
+    # update command  (parser built in hermes_cli/subcommands/update.py)
     # =========================================================================
-    uninstall_parser = subparsers.add_parser(
-        "uninstall",
-        help="Uninstall Savarez AI Agent",
-        description="Remove Savarez AI Agent from your system. Can keep configs/data for reinstall.",
-    )
-    uninstall_parser.add_argument(
-        "--full",
-        action="store_true",
-        help="Full uninstall - remove everything including configs and data",
-    )
-    uninstall_parser.add_argument(
-        "--gui",
-        action="store_true",
-        help="Uninstall only the desktop Chat GUI, leaving the agent intact",
-    )
-    uninstall_parser.add_argument(
-        "--gui-summary",
-        action="store_true",
-        help="Print a JSON summary of installed GUI/agent artifacts and exit "
-        "(used by the desktop app to gate uninstall options)",
-    )
-    uninstall_parser.add_argument(
-        "--yes", "-y", action="store_true", help="Skip confirmation prompts"
-    )
-    uninstall_parser.set_defaults(func=cmd_uninstall)
+    build_update_parser(subparsers, cmd_update=cmd_update)
 
     # =========================================================================
-    # acp command
+    # uninstall command  (parser built in hermes_cli/subcommands/uninstall.py)
     # =========================================================================
-    acp_parser = subparsers.add_parser(
-        "acp",
-        help="Run Savarez AI Agent as an ACP (Agent Client Protocol) server",
-        description="Start Savarez AI Agent in ACP mode for editor integration (VS Code, Zed, JetBrains)",
-    )
-    _add_accept_hooks_flag(acp_parser)
-    acp_parser.add_argument(
-        "--version",
-        action="store_true",
-        dest="acp_version",
-        help="Print Savarez ACP version and exit",
-    )
-    acp_parser.add_argument(
-        "--check",
-        action="store_true",
-        help="Verify ACP dependencies and adapter imports, then exit",
-    )
-    acp_parser.add_argument(
-        "--setup",
-        action="store_true",
-        help="Run interactive Savarez provider/model setup for ACP terminal auth",
-    )
-    acp_parser.add_argument(
-        "--setup-browser",
-        action="store_true",
-        help="Install agent-browser + Playwright Chromium into ~/.savarez/node/ "
-             "for browser tool support (idempotent).",
-    )
-    acp_parser.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        dest="assume_yes",
-        help="Accept all prompts (used by --setup-browser to skip the "
-             "~400 MB Chromium download confirmation).",
-    )
-
-    def cmd_acp(args):
-        """Launch Savarez AI Agent as an ACP server."""
-        try:
-            from acp_adapter.entry import main as acp_main
-
-            acp_argv = []
-            if getattr(args, "acp_version", False):
-                acp_argv.append("--version")
-            if getattr(args, "check", False):
-                acp_argv.append("--check")
-            if getattr(args, "setup", False):
-                acp_argv.append("--setup")
-            if getattr(args, "setup_browser", False):
-                acp_argv.append("--setup-browser")
-            if getattr(args, "assume_yes", False):
-                acp_argv.append("--yes")
-            acp_main(acp_argv)
-        except ImportError:
-            print("ACP dependencies not installed.", file=sys.stderr)
-            print("Install them with:  pip install -e '.[acp]'", file=sys.stderr)
-            sys.exit(1)
-
-    acp_parser.set_defaults(func=cmd_acp)
+    build_uninstall_parser(subparsers, cmd_uninstall=cmd_uninstall)
 
     # =========================================================================
-    # profile command
+    # acp command  (parser built in hermes_cli/subcommands/acp.py)
     # =========================================================================
-    profile_parser = subparsers.add_parser(
-        "profile",
-        help="Manage profiles - multiple isolated Savarez instances",
-    )
-    profile_subparsers = profile_parser.add_subparsers(dest="profile_action")
+    build_acp_parser(subparsers, cmd_acp=cmd_acp)
 
-    profile_subparsers.add_parser("list", help="List all profiles")
-    profile_use = profile_subparsers.add_parser(
-        "use", help="Set sticky default profile"
-    )
-    profile_use.add_argument("profile_name", help="Profile name (or 'default')")
-
-    profile_create = profile_subparsers.add_parser(
-        "create", help="Create a new profile"
-    )
-    profile_create.add_argument(
-        "profile_name", help="Profile name (lowercase, alphanumeric)"
-    )
-    profile_create.add_argument(
-        "--clone",
-        action="store_true",
-        help="Copy config.yaml, .env, SOUL.md from active profile",
-    )
-    profile_create.add_argument(
-        "--clone-all",
-        action="store_true",
-        help="Full copy of active profile (all state)",
-    )
-    profile_create.add_argument(
-        "--clone-from",
-        metavar="SOURCE",
-        help="Source profile to clone from (default: active)",
-    )
-    profile_create.add_argument(
-        "--no-alias", action="store_true", help="Skip wrapper script creation"
-    )
-    profile_create.add_argument(
-        "--no-skills",
-        action="store_true",
-        help="Create an empty profile with no bundled skills (opts out of `savarez update` skill sync)",
-    )
-    profile_create.add_argument(
-        "--description",
-        default=None,
-        help="One- or two-sentence description of what this profile is good at. "
-             "Used by the kanban decomposer to route tasks based on role instead "
-             "of profile name alone. Skip and add later via `savarez profile describe`.",
-    )
-
-    profile_delete = profile_subparsers.add_parser("delete", help="Delete a profile")
-    profile_delete.add_argument("profile_name", help="Profile to delete")
-    profile_delete.add_argument(
-        "-y", "--yes", action="store_true", help="Skip confirmation prompt"
-    )
-
-    profile_describe = profile_subparsers.add_parser(
-        "describe",
-        help="Read or set a profile's description (used by the kanban orchestrator)",
-    )
-    profile_describe.add_argument(
-        "profile_name",
-        nargs="?",
-        default=None,
-        help="Profile to describe (omit + use --all --auto to sweep)",
-    )
-    profile_describe.add_argument(
-        "--text",
-        default=None,
-        help="Set description to this exact text (overwrites any existing description)",
-    )
-    profile_describe.add_argument(
-        "--auto",
-        action="store_true",
-        help="Auto-generate description via the auxiliary LLM "
-             "(uses auxiliary.profile_describer)",
-    )
-    profile_describe.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="With --auto, replace user-authored descriptions too (default: only "
-             "fill in missing or previously-auto descriptions)",
-    )
-    profile_describe.add_argument(
-        "--all",
-        dest="all_missing",
-        action="store_true",
-        help="With --auto, run on every profile missing a description",
-    )
-
-    profile_show = profile_subparsers.add_parser("show", help="Show profile details")
-    profile_show.add_argument("profile_name", help="Profile to show")
-
-    profile_alias = profile_subparsers.add_parser(
-        "alias", help="Manage wrapper scripts"
-    )
-    profile_alias.add_argument("profile_name", help="Profile name")
-    profile_alias.add_argument(
-        "--remove", action="store_true", help="Remove the wrapper script"
-    )
-    profile_alias.add_argument(
-        "--name",
-        dest="alias_name",
-        metavar="NAME",
-        help="Custom alias name (default: profile name)",
-    )
-
-    profile_rename = profile_subparsers.add_parser("rename", help="Rename a profile")
-    profile_rename.add_argument("old_name", help="Current profile name")
-    profile_rename.add_argument("new_name", help="New profile name")
-
-    profile_export = profile_subparsers.add_parser(
-        "export", help="Export a profile to archive"
-    )
-    profile_export.add_argument("profile_name", help="Profile to export")
-    profile_export.add_argument(
-        "-o", "--output", default=None, help="Output file (default: <name>.tar.gz)"
-    )
-
-    profile_import = profile_subparsers.add_parser(
-        "import", help="Import a profile from archive"
-    )
-    profile_import.add_argument("archive", help="Path to .tar.gz archive")
-    profile_import.add_argument(
-        "--name",
-        dest="import_name",
-        metavar="NAME",
-        help="Profile name (default: inferred from archive)",
-    )
-
-    # ---------- Distribution subcommands (issue #20456) ----------
-    profile_install = profile_subparsers.add_parser(
-        "install",
-        help="Install a profile distribution from a git URL or local directory",
-        description=(
-            "Install a Savarez profile distribution. SOURCE can be a git URL "
-            "(github.com/user/repo, https://..., git@...) or a local "
-            "directory containing distribution.yaml at its root."
-        ),
-    )
-    profile_install.add_argument(
-        "source",
-        help="Distribution source (git URL or local directory)",
-    )
-    profile_install.add_argument(
-        "--name", dest="install_name", metavar="NAME",
-        help="Override profile name (default: read from manifest)",
-    )
-    profile_install.add_argument(
-        "--alias", action="store_true",
-        help="Create a shell wrapper alias for the installed profile",
-    )
-    profile_install.add_argument(
-        "--force", action="store_true",
-        help="Overwrite an existing profile of the same name (user data preserved)",
-    )
-    profile_install.add_argument(
-        "-y", "--yes", action="store_true",
-        help="Skip manifest preview confirmation",
-    )
-
-    profile_update = profile_subparsers.add_parser(
-        "update",
-        help="Re-pull a distribution and apply updates (user data preserved)",
-        description=(
-            "Fetch the distribution from its recorded source and overwrite "
-            "distribution-owned files (SOUL.md, skills/, cron/, mcp.json). "
-            "User data (memories, sessions, auth, .env) is never touched. "
-            "config.yaml is preserved unless --force-config is passed."
-        ),
-    )
-    profile_update.add_argument("profile_name", help="Profile to update")
-    profile_update.add_argument(
-        "--force-config", action="store_true",
-        help="Also overwrite config.yaml (normally preserved to keep user overrides)",
-    )
-    profile_update.add_argument(
-        "-y", "--yes", action="store_true",
-        help="Skip confirmation",
-    )
-
-    profile_info = profile_subparsers.add_parser(
-        "info",
-        help="Show a profile's distribution manifest (version, requirements, source)",
-    )
-    profile_info.add_argument("profile_name", help="Profile to inspect")
-
-    profile_parser.set_defaults(func=cmd_profile)
+    # =========================================================================
+    # profile command  (parser built in hermes_cli/subcommands/profile.py)
+    # =========================================================================
+    build_profile_parser(subparsers, cmd_profile=cmd_profile)
 
     # =========================================================================
     # completion command
@@ -15788,267 +13885,44 @@ Examples:
     completion_parser.set_defaults(func=lambda args: cmd_completion(args, parser))
 
     # =========================================================================
-    # dashboard command
+    # dashboard command  (parser built in hermes_cli/subcommands/dashboard.py)
     # =========================================================================
-    dashboard_parser = subparsers.add_parser(
-        "dashboard",
-        help="Start the web UI dashboard",
-        description="Launch the Savarez AI Agent web dashboard for managing config, API keys, and sessions",
+    build_dashboard_parser(
+        subparsers,
+        cmd_dashboard=cmd_dashboard,
+        cmd_dashboard_register=cmd_dashboard_register,
     )
-    dashboard_parser.add_argument(
-        "--port", type=int, default=9119, help="Port (default 9119)"
-    )
-    dashboard_parser.add_argument(
-        "--host", default="127.0.0.1", help="Host (default 127.0.0.1)"
-    )
-    dashboard_parser.add_argument(
-        "--no-open", action="store_true", help="Don't open browser automatically"
-    )
-    dashboard_parser.add_argument(
-        "--insecure",
-        action="store_true",
-        help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",
-    )
-    dashboard_parser.add_argument(
-        "--skip-build",
-        action="store_true",
-        help=(
-            "Skip the web UI build step and serve the existing dist directly. "
-            "Useful for non-interactive contexts (Windows Scheduled Tasks, CI) "
-            "where npm may not be available. Pre-build with: cd web && npm run build"
-        ),
-    )
-    # Lifecycle flags - mutually exclusive with each other and with the
-    # start-a-server flags above (if both are passed, --stop / --status win
-    # because they exit before the server is started).  The dashboard has
-    # no service manager and no PID file, so these scan the process table
-    # for `savarez dashboard` cmdlines and SIGTERM them directly - the same
-    # path `savarez update` uses to clean up stale dashboards.
-    dashboard_parser.add_argument(
-        "--stop",
-        action="store_true",
-        help="Stop all running savarez dashboard processes and exit",
-    )
-    dashboard_parser.add_argument(
-        "--status",
-        action="store_true",
-        help="List running savarez dashboard processes and exit",
-    )
-    # Backward-compat shim: older Savarez desktop app shells (<= 0.15.x) spawn the
-    # backend as `hermes dashboard --no-open --tui --host ... --port ...`. The
-    # `--tui` flag was removed from this subcommand in cae6b5486 (embedded chat is
-    # always on now). When a user's CLI updates past that commit but their desktop
-    # app binary has not, argparse used to hard-error with "unrecognized arguments:
-    # --tui" and exit(2) — the backend died before becoming ready and the GUI just
-    # showed "Savarez couldn't start" with no actionable cause. Accept and silently
-    # ignore the flag so an old app + new CLI degrades gracefully instead of
-    # bricking. Hidden from --help; safe to delete once the floor app version is
-    # well past 0.16.0.
-    dashboard_parser.add_argument(
-        "--tui",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
-    dashboard_parser.set_defaults(func=cmd_dashboard)
 
-    # `savarez dashboard register` - register a self-hosted dashboard OAuth
-    # client with Nous Portal and write the client_id into ~/.savarez/.env.
-    # Nested subparser so bare `savarez dashboard` keeps launching the server
-    # (set_defaults(func=cmd_dashboard) above remains the default).
-    dashboard_subparsers = dashboard_parser.add_subparsers(
-        dest="dashboard_subcommand"
-    )
-    dashboard_register_parser = dashboard_subparsers.add_parser(
-        "register",
-        help="Register a self-hosted dashboard with Nous Portal (writes the OAuth client ID to .env)",
-        description=(
-            "Register this install as a self-hosted dashboard with your Nous "
-            "Portal account. Creates an OAuth client, writes "
-            "HERMES_DASHBOARD_OAUTH_CLIENT_ID into ~/.savarez/.env, and prints "
-            "how to engage the login gate. Requires being logged in (savarez setup)."
-        ),
-    )
-    dashboard_register_parser.add_argument(
-        "--name",
-        default=None,
-        help="Human-readable label for the dashboard (default: an auto-generated name)",
-    )
-    dashboard_register_parser.add_argument(
-        "--redirect-uri",
-        dest="redirect_uri",
-        default=None,
-        help=(
-            "Optional public HTTPS OAuth redirect URI for the dashboard, e.g. "
-            "https:/.savarez.example.com/auth/callback. Omit for localhost-only use."
-        ),
-    )
-    dashboard_register_parser.add_argument(
-        "--portal-url",
-        dest="portal_url",
-        default=None,
-        help=(
-            "Override the Nous Portal base URL for registration (default: the "
-            "portal you logged into). The access token must be valid at this "
-            "portal. Also settable via HERMES_DASHBOARD_PORTAL_URL. Mainly for "
-            "testing against a staging/preview portal."
-        ),
-    )
-    dashboard_register_parser.set_defaults(func=cmd_dashboard_register)
 
     # =========================================================================
     # desktop (a.k.a. gui) command
     #
     # The canonical name is "desktop"; "gui" is kept as a deprecated alias
-    # for one release. The Savarez-Setup.exe success screen tells users to
-    # run `savarez desktop` from a terminal, so the canonical name needs
+    # for one release. The Hermes-Setup.exe success screen tells users to
+    # run `hermes desktop` from a terminal, so the canonical name needs
     # to be the one that appears in --help (argparse promotes the primary
     # name; aliases stay hidden).
     # =========================================================================
-    gui_parser = subparsers.add_parser(
-        "desktop",
-        aliases=["gui"],
-        help="Build and launch the native desktop app",
-        description=(
-            "Launch the Savarez Electron desktop app. By default this installs "
-            "workspace Node dependencies, builds the current OS's unpacked "
-            "Electron app, then launches that packaged artifact."
-        ),
-    )
-    gui_parser.add_argument(
-        "--source",
-        action="store_true",
-        help="Launch via `electron .` against apps/desktop/dist instead of the packaged app",
-    )
-    gui_parser.add_argument(
-        "--build-only",
-        action="store_true",
-        help="Build the desktop app but do not launch it (used by the installer's --update flow)",
-    )
-    gui_parser.add_argument(
-        "--fake-boot",
-        action="store_true",
-        help="Enable deterministic desktop boot delays for validating startup UI",
-    )
-    gui_parser.add_argument(
-        "--ignore-existing",
-        action="store_true",
-        help="Force Desktop to ignore any savarez CLI already on PATH during backend resolution",
-    )
-    gui_parser.add_argument(
-        "--savarez-root",
-        help="Override the Savarez source root used by Desktop (sets HERMES_DESKTOP_HERMES_ROOT)",
-    )
-    gui_parser.add_argument(
-        "--cwd",
-        help="Initial project directory for Desktop chat sessions (sets HERMES_DESKTOP_CWD)",
-    )
-    gui_parser.add_argument(
-        "--skip-build",
-        action="store_true",
-        help="Skip npm install/package and launch the existing unpacked app from apps/desktop/release",
-    )
-    gui_parser.add_argument(
-        "--force-build",
-        action="store_true",
-        help="Force a full rebuild even if the content stamp matches",
-    )
-    gui_parser.set_defaults(func=cmd_gui)
+    # gui command  (parser built in hermes_cli/subcommands/gui.py)
+    # =========================================================================
+    build_gui_parser(subparsers, cmd_gui=cmd_gui)
 
     # =========================================================================
-    # logs command
+    # logs command  (parser built in hermes_cli/subcommands/logs.py)
     # =========================================================================
-    logs_parser = subparsers.add_parser(
-        "logs",
-        help="View and filter Savarez log files",
-        description="View, tail, and filter agent.log / errors.log / gateway.log / gui.log / desktop.log",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""\
-Examples:
-    savarez logs                    Show last 50 lines of agent.log
-    savarez logs -f                 Follow agent.log in real time
-    savarez logs errors             Show last 50 lines of errors.log
-    savarez logs gateway -n 100     Show last 100 lines of gateway.log
-    savarez logs gui -f             Follow gui.log in real time
-    savarez logs desktop -f         Follow desktop.log (Electron app boot/backend)
-    savarez logs --level WARNING    Only show WARNING and above
-    savarez logs --session abc123   Filter by session ID
-    savarez logs --component tools  Only show tool-related lines
-    savarez logs --since 1h         Lines from the last hour
-    savarez logs --since 30m -f     Follow, starting from 30 min ago
-    savarez logs list               List available log files with sizes
-""",
-    )
-    logs_parser.add_argument(
-        "log_name",
-        nargs="?",
-        default="agent",
-        help="Log to view: agent (default), errors, gateway, gui, or 'list' to show available files",
-    )
-    logs_parser.add_argument(
-        "-n",
-        "--lines",
-        type=int,
-        default=50,
-        help="Number of lines to show (default: 50)",
-    )
-    logs_parser.add_argument(
-        "-f",
-        "--follow",
-        action="store_true",
-        help="Follow the log in real time (like tail -f)",
-    )
-    logs_parser.add_argument(
-        "--level",
-        metavar="LEVEL",
-        help="Minimum log level to show (DEBUG, INFO, WARNING, ERROR)",
-    )
-    logs_parser.add_argument(
-        "--session",
-        metavar="ID",
-        help="Filter lines containing this session ID substring",
-    )
-    logs_parser.add_argument(
-        "--since",
-        metavar="TIME",
-        help="Show lines since TIME ago (e.g. 1h, 30m, 2d)",
-    )
-    logs_parser.add_argument(
-        "--component",
-        metavar="NAME",
-        help="Filter by component: gateway, agent, tools, cli, cron, gui",
-    )
-    logs_parser.set_defaults(func=cmd_logs)
+    build_logs_parser(subparsers, cmd_logs=cmd_logs)
 
     # =========================================================================
-    # prompt-size command
+    # prompt-size command  (parser built in hermes_cli/subcommands/prompt_size.py)
     # =========================================================================
-    prompt_size_parser = subparsers.add_parser(
-        "prompt-size",
-        help="Show a byte breakdown of the system prompt + tool schemas",
-        description=(
-            "Report the fixed prompt budget for a fresh session: system "
-            "prompt total, skills index, memory, user profile, and tool-schema "
-            "JSON. Runs offline (no API call)."
-        ),
-    )
-    prompt_size_parser.add_argument(
-        "--platform",
-        default="cli",
-        help="Platform to simulate (cli, telegram, discord, ...). Default: cli",
-    )
-    prompt_size_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit the breakdown as JSON",
-    )
-    prompt_size_parser.set_defaults(func=cmd_prompt_size)
+    build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
 
     # =========================================================================
     # Parse and execute
     # =========================================================================
     # Pre-process argv so unquoted multi-word session names after -c / -r
     # are merged into a single token before argparse sees them.
-    # e.g. ``savarez -c Pokemon Agent Dev`` → ``savarez -c 'Pokemon Agent Dev'``
+    # e.g. ``hermes -c Pokemon Agent Dev`` → ``hermes -c 'Pokemon Agent Dev'``
     # ── Container-aware routing ────────────────────────────────────────
     # When NixOS container mode is active, route ALL subcommands into
     # the managed container.  This MUST run before parse_args() so that
@@ -16073,7 +13947,7 @@ Examples:
     #
     # Fix: when argv contains a token matching a known subcommand, set
     # subparsers.required=True to force deterministic routing.  If that
-    # fails (e.g. 'savarez -c model' where 'model' is consumed as the
+    # fails (e.g. 'hermes -c model' where 'model' is consumed as the
     # session name for --continue), fall back to the default behaviour.
     import io as _io
 
@@ -16093,7 +13967,7 @@ Examples:
             sys.stderr = _saved_stderr
         except SystemExit as exc:
             sys.stderr = _saved_stderr
-            # Help/version flags (exit code 0) already printed output -
+            # Help/version flags (exit code 0) already printed output —
             # re-raise immediately to avoid a second parse_args printing
             # the same help text again (#10230).
             if exc.code == 0:
@@ -16113,7 +13987,7 @@ Examples:
 
     # Discover Python plugins and register shell hooks once, before any
     # command that can fire lifecycle hooks.  Both are idempotent; gated
-    # so introspection/management commands (savarez hooks list, cron
+    # so introspection/management commands (hermes hooks list, cron
     # list, gateway status, mcp add, ...) don't pay discovery cost or
     # trigger consent prompts for hooks the user is still inspecting.
     _prepare_agent_startup(args)
