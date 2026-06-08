@@ -8942,7 +8942,13 @@ class GatewayRunner:
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
-            _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            _agent_result = await self._handle_message_with_agent(
+                event,
+                source,
+                _quick_key,
+                _run_generation,
+                message_mode=_gateway_message_mode,
+            )
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -9261,8 +9267,18 @@ class GatewayRunner:
                 pass
         return source
 
-    async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
+    async def _handle_message_with_agent(
+        self,
+        event,
+        source,
+        _quick_key: str,
+        run_generation: int,
+        *,
+        message_mode: Optional[GatewayMessageMode] = None,
+    ):
         """Inner handler that runs under the _running_agents sentinel guard."""
+        if message_mode is None:
+            message_mode = GatewayMessageMode(name="dev", message=event.text or "")
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
@@ -9940,7 +9956,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
-                message_mode=_gateway_message_mode,
+                message_mode=message_mode,
             )
 
             # Stop persistent typing indicator now that the agent is done

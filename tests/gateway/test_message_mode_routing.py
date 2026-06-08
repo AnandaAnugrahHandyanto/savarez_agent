@@ -1,5 +1,6 @@
 """Gateway prefix-based message mode routing tests."""
 
+import dis
 import inspect
 import json
 
@@ -16,6 +17,21 @@ def test_run_agent_closure_marks_rebound_toolsets_nonlocal():
     source = inspect.getsource(GatewayRunner._run_agent)
 
     assert "nonlocal message, enabled_toolsets, disabled_toolsets" in source
+
+
+def test_handle_message_with_agent_receives_routed_message_mode():
+    signature = inspect.signature(GatewayRunner._handle_message_with_agent)
+    assert "message_mode" in signature.parameters
+
+    instructions = list(dis.get_instructions(GatewayRunner._handle_message_with_agent))
+    assert not [
+        instruction
+        for instruction in instructions
+        if instruction.opname == "LOAD_GLOBAL" and instruction.argval == "_gateway_message_mode"
+    ]
+
+    outer_source = inspect.getsource(GatewayRunner._handle_message)
+    assert "message_mode=_gateway_message_mode" in outer_source
 
 
 def test_default_message_stays_dev_mode():
