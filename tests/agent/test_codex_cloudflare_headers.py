@@ -16,7 +16,7 @@ all emit the same headers.
 These tests pin:
 - the originator value (must be ``codex_cli_rs`` — the whitelisted one)
 - the User-Agent shape (codex_cli_rs-prefixed)
-- ``ChatGPT-Account-ID`` extraction from the OAuth JWT (canonical casing,
+- ``ChatGPT-Account-Id`` extraction from the OAuth JWT (canonical casing,
   from codex-rs ``auth.rs``)
 - graceful handling of malformed tokens (drop the account-ID header, don't
   raise)
@@ -73,16 +73,16 @@ class TestCodexCloudflareHeaders:
         from agent.auxiliary_client import _codex_cloudflare_headers
         headers = _codex_cloudflare_headers(_make_codex_jwt("acct-abc-999"))
         # Canonical casing — matches codex-rs auth.rs
-        assert headers["ChatGPT-Account-ID"] == "acct-abc-999"
+        assert headers["ChatGPT-Account-Id"] == "acct-abc-999"
 
     def test_canonical_header_casing(self):
-        """Upstream codex-rs uses PascalCase with trailing -ID. Match exactly."""
+        """Upstream codex-rs uses PascalCase with trailing -Id. Match exactly."""
         from agent.auxiliary_client import _codex_cloudflare_headers
         headers = _codex_cloudflare_headers(_make_codex_jwt())
-        assert "ChatGPT-Account-ID" in headers
+        assert "ChatGPT-Account-Id" in headers
         # The lowercase/titlecase variants MUST NOT be used — pin to be explicit
         assert "chatgpt-account-id" not in headers
-        assert "ChatGPT-Account-Id" not in headers
+        assert "ChatGPT-Account-ID" not in headers
 
     def test_malformed_token_drops_account_id_without_raising(self):
         from agent.auxiliary_client import _codex_cloudflare_headers
@@ -90,13 +90,13 @@ class TestCodexCloudflareHeaders:
             headers = _codex_cloudflare_headers(bad)
             # Still returns base headers — never raises
             assert headers["originator"] == "codex_cli_rs"
-            assert "ChatGPT-Account-ID" not in headers
+            assert "ChatGPT-Account-Id" not in headers
 
     def test_non_string_token_handled(self):
         from agent.auxiliary_client import _codex_cloudflare_headers
         headers = _codex_cloudflare_headers(None)  # type: ignore[arg-type]
         assert headers["originator"] == "codex_cli_rs"
-        assert "ChatGPT-Account-ID" not in headers
+        assert "ChatGPT-Account-Id" not in headers
 
     def test_jwt_without_chatgpt_account_id_claim(self):
         """A valid JWT that lacks the account_id claim should still return headers."""
@@ -109,7 +109,7 @@ class TestCodexCloudflareHeaders:
         token = f"{b64url(b'{}')}.{payload}.{b64url(b'sig')}"
         headers = _codex_cloudflare_headers(token)
         assert headers["originator"] == "codex_cli_rs"
-        assert "ChatGPT-Account-ID" not in headers
+        assert "ChatGPT-Account-Id" not in headers
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ class TestPrimaryClientWiring:
             )
             headers = mock_openai.call_args.kwargs.get("default_headers") or {}
             assert headers.get("originator") == "codex_cli_rs"
-            assert headers.get("ChatGPT-Account-ID") == "acct-primary-init"
+            assert headers.get("ChatGPT-Account-Id") == "acct-primary-init"
             assert headers.get("User-Agent", "").startswith("codex_cli_rs/")
 
     def test_apply_client_headers_on_base_url_change(self):
@@ -158,7 +158,7 @@ class TestPrimaryClientWiring:
             )
             headers = agent._client_kwargs.get("default_headers") or {}
             assert headers.get("originator") == "codex_cli_rs"
-            assert headers.get("ChatGPT-Account-ID") == "acct-rotation"
+            assert headers.get("ChatGPT-Account-Id") == "acct-rotation"
             assert headers.get("User-Agent", "").startswith("codex_cli_rs/")
 
     def test_apply_client_headers_clears_codex_headers_off_chatgpt(self):
@@ -229,7 +229,7 @@ class TestAuxiliaryClientWiring:
             assert client is not None
             headers = mock_openai.call_args.kwargs.get("default_headers") or {}
             assert headers.get("originator") == "codex_cli_rs"
-            assert headers.get("ChatGPT-Account-ID") == "acct-aux-try-codex"
+            assert headers.get("ChatGPT-Account-Id") == "acct-aux-try-codex"
             assert headers.get("User-Agent", "").startswith("codex_cli_rs/")
 
     def test_resolve_provider_client_raw_codex_passes_codex_headers(self, monkeypatch):
@@ -249,5 +249,5 @@ class TestAuxiliaryClientWiring:
             assert client is not None
             headers = mock_openai.call_args.kwargs.get("default_headers") or {}
             assert headers.get("originator") == "codex_cli_rs"
-            assert headers.get("ChatGPT-Account-ID") == "acct-aux-raw-codex"
+            assert headers.get("ChatGPT-Account-Id") == "acct-aux-raw-codex"
             assert headers.get("User-Agent", "").startswith("codex_cli_rs/")

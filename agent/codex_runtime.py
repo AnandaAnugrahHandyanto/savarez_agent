@@ -17,12 +17,20 @@ compatibility.
 from __future__ import annotations
 
 import logging
+import json
 import os
 import time
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
+
+
+def _env_enabled(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def run_codex_app_server_turn(
@@ -419,6 +427,103 @@ def _consume_codex_event_stream(
     return final
 
 
+def _iter_httpx_sse_events(response: Any):
+    """Yield raw SSE data frames from an httpx streaming response."""
+    data_lines: list[str] = []
+
+    def _flush():
+        if not data_lines:
+            return None
+        payload = "\n".join(data_lines).strip()
+        data_lines.clear()
+        if not payload or payload == "[DONE]":
+            return None
+        return json.loads(payload)
+
+    for line in response.iter_lines():
+        if isinstance(line, bytes):
+            line = line.decode("utf-8", errors="replace")
+        line = str(line)
+        if line == "":
+            event = _flush()
+            if event is not None:
+                yield event
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+
+    event = _flush()
+    if event is not None:
+        yield event
+
+
+def _should_use_raw_codex_httpx(agent) -> bool:
+    """Bypass the OpenAI SDK stream wrapper for ChatGPT Codex backend."""
+    if _env_enabled("HERMES_CODEX_DISABLE_RAW_HTTPX", default=False):
+        return False
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    base_url = str(getattr(agent, "base_url", "") or "").strip().lower()
+    return provider == "openai-codex" and "chatgpt.com/backend-api/codex" in base_url
+
+
+def _run_codex_raw_httpx_stream(agent, api_kwargs: dict, *, on_first_delta=None):
+    import httpx as _httpx
+
+    body = dict(api_kwargs)
+    extra_headers = body.pop("extra_headers", None)
+    timeout_value = body.pop("timeout", None)
+    body["stream"] = True
+    body = {key: value for key, value in body.items() if value is not None}
+
+    api_key = str(
+        getattr(agent, "api_key", "")
+        or getattr(agent, "_client_kwargs", {}).get("api_key", "")
+        or ""
+    ).strip()
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+    default_headers = getattr(agent, "_client_kwargs", {}).get("default_headers")
+    if isinstance(default_headers, dict):
+        headers.update({str(k): str(v) for k, v in default_headers.items() if v is not None})
+    if isinstance(extra_headers, dict):
+        headers.update({str(k): str(v) for k, v in extra_headers.items() if v is not None})
+
+    read_timeout = os.getenv("HERMES_CODEX_RAW_READ_TIMEOUT_SECONDS")
+    if read_timeout is not None:
+        read_timeout_s = max(1.0, float(read_timeout))
+    elif isinstance(timeout_value, (int, float)) and not isinstance(timeout_value, bool):
+        read_timeout_s = max(10.0, float(timeout_value))
+    else:
+        read_timeout_s = 120.0
+
+    timeout = _httpx.Timeout(connect=20.0, read=read_timeout_s, write=30.0, pool=20.0)
+    url = f"{str(getattr(agent, 'base_url', '')).rstrip('/')}/responses"
+
+    def _on_text_delta(text: str) -> None:
+        agent._codex_streamed_text_parts.append(text)
+        agent._fire_stream_delta(text)
+
+    def _on_event(_event: Any) -> None:
+        agent._codex_stream_last_event_ts = time.time()
+        agent._touch_activity("receiving stream response")
+
+    with _httpx.Client(timeout=timeout) as http_client:
+        with http_client.stream("POST", url, headers=headers, json=body) as response:
+            response.raise_for_status()
+            return _consume_codex_event_stream(
+                _iter_httpx_sse_events(response),
+                model=api_kwargs.get("model"),
+                on_text_delta=_on_text_delta,
+                on_reasoning_delta=agent._fire_reasoning_delta,
+                on_first_delta=on_first_delta,
+                on_event=_on_event,
+                interrupt_check=lambda: bool(agent._interrupt_requested),
+            )
+
+
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """Execute one streaming Responses API request and return the final response.
 
@@ -458,6 +563,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         stream_kwargs["stream"] = True
 
         try:
+            if _should_use_raw_codex_httpx(agent):
+                return _run_codex_raw_httpx_stream(
+                    agent, stream_kwargs, on_first_delta=on_first_delta
+                )
             event_stream = active_client.responses.create(**stream_kwargs)
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
