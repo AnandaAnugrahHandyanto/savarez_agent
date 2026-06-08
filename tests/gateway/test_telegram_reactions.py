@@ -342,17 +342,80 @@ def test_reaction_added_removed_detects_added_and_removed():
     assert TelegramAdapter._reaction_added_removed([_reaction("💯")], []) == ("💯", True)
 
 
-def test_reaction_commands_config_map_filters_blank_values():
+def test_reaction_commands_config_map_filters_blank_and_unavailable_values():
     adapter = _make_adapter()
     adapter.config.extra = {
         "reaction_commands": {
             "enabled": "true",
-            "map": {"💯": "approve scoped action", "🤓": ""},
+            "map": {"💯": "approve scoped action", "🤓": "", "🧹": "clean up", "🔁": "retry"},
         }
     }
 
     assert adapter._reaction_commands_enabled() is True
     assert adapter._reaction_command_map() == {"💯": "approve scoped action"}
+
+
+def test_reaction_setup_status_reports_ignored_unavailable_values(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    adapter = _make_adapter()
+    adapter.config.extra = {
+        "reaction_commands": {
+            "enabled": True,
+            "map": {"💯": "approve scoped action", "🧹": "clean up"},
+        }
+    }
+
+    text = adapter._reaction_setup_status_text()
+
+    assert "Command shortcuts: enabled" in text
+    assert "💯 — approve scoped action" in text
+    assert "Ignored unavailable reactions" in text
+    assert "🧹" in text
+
+
+def test_reaction_setup_command_persists_safe_defaults(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+    adapter = _make_adapter()
+    adapter.config.extra = {}
+
+    text = adapter._handle_reaction_setup_command("setup")
+
+    import yaml
+    saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+    mapping = saved["telegram"]["reaction_commands"]["map"]
+    assert saved["telegram"]["reactions"] is True
+    assert saved["telegram"]["reaction_commands"]["enabled"] is True
+    assert "🧹" not in mapping
+    assert "🔁" not in mapping
+    assert {"💯", "🤓", "👀", "✍️", "💅", "🤔", "👨‍💻"}.issubset(mapping)
+    assert adapter.config.extra["reaction_commands"]["enabled"] is True
+    assert "Telegram-available defaults" in text
+
+
+@pytest.mark.asyncio
+async def test_maybe_handle_reaction_slash_command_replies_without_agent(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = _make_adapter()
+    adapter.config.extra = {}
+    msg = SimpleNamespace(text="/reaction@HermesBot setup", reply_text=AsyncMock())
+
+    handled = await adapter._maybe_handle_reaction_slash_command(msg)
+
+    assert handled is True
+    msg.reply_text.assert_awaited_once()
+    assert "Reaction shortcuts enabled" in msg.reply_text.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_maybe_handle_reaction_slash_command_ignores_other_commands():
+    adapter = _make_adapter()
+    msg = SimpleNamespace(text="/status", reply_text=AsyncMock())
+
+    handled = await adapter._maybe_handle_reaction_slash_command(msg)
+
+    assert handled is False
+    msg.reply_text.assert_not_awaited()
 
 
 @pytest.mark.asyncio

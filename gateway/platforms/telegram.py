@@ -20,6 +20,24 @@ from typing import Dict, List, Optional, Set, Any
 
 logger = logging.getLogger(__name__)
 
+TELEGRAM_REACTION_COMMAND_DEFAULT_MAP: dict[str, str] = {
+    "💯": (
+        "Approve/proceed only if the reacted assistant message has an active pending "
+        "action attached to that exact message. Do not grant global permission."
+    ),
+    "🤓": "Research the topic or claim in the reacted assistant message and return a practical, source-grounded summary.",
+    "👀": "Verify/check current status of the reacted assistant message using tools where possible.",
+    "✍️": "Rewrite or clean up the reacted assistant message into a clearer, shorter version without changing meaning.",
+    "💅": "Polish the reacted assistant message: improve wording, structure, and presentation.",
+    "🤔": "Critique the reacted assistant message: check assumptions, risks, missing details, or weak logic.",
+    "👨‍💻": "Treat the reacted assistant message as code/dev related and inspect or improve the implementation.",
+}
+
+# Known-unavailable in Telegram's standard message reaction panel. Keep these
+# out of defaults and ignore them when users accidentally leave stale mappings
+# in config; mapping them would create shortcuts that can never be triggered.
+TELEGRAM_REACTION_COMMAND_UNAVAILABLE_EMOJIS: set[str] = {"🔁", "🧹"}
+
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
     try:
@@ -5224,6 +5242,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         await self._ensure_forum_commands(msg)
 
+        if await self._maybe_handle_reaction_slash_command(msg):
+            return
+
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         event = self._apply_telegram_group_observe_attribution(event)
@@ -6015,6 +6036,148 @@ class TelegramAdapter(BasePlatformAdapter):
             timestamp=message.date,
         )
 
+    # ── User reaction command setup UX ─────────────────────────────────────
+
+    @staticmethod
+    def _strip_bot_suffix(command_text: str) -> str:
+        """Return Telegram command without slash, bot suffix, or arguments."""
+        first = (command_text or "").strip().split(maxsplit=1)[0]
+        if first.startswith("/"):
+            first = first[1:]
+        return first.split("@", 1)[0].replace("_", "-").lower()
+
+    async def _maybe_handle_reaction_slash_command(self, msg: Message) -> bool:
+        """Handle /reaction setup/status/delete/help directly in Telegram.
+
+        This is intentionally platform-local: reaction commands depend on
+        Telegram's MessageReaction updates and should be configurable by testers
+        without manually editing config.yaml.
+        """
+        command = self._strip_bot_suffix(getattr(msg, "text", ""))
+        if command not in {"reaction", "reactions"}:
+            return False
+        args = ""
+        parts = (getattr(msg, "text", "") or "").strip().split(maxsplit=1)
+        if len(parts) > 1:
+            args = parts[1].strip()
+        response = self._handle_reaction_setup_command(args)
+        try:
+            await msg.reply_text(response, disable_web_page_preview=True)
+        except TypeError:
+            await msg.reply_text(response)
+        return True
+
+    def _reaction_setup_current_mapping(self) -> dict[str, str]:
+        """Return configured mapping, excluding known-unavailable emojis."""
+        return self._reaction_command_map()
+
+    @staticmethod
+    def _reaction_setup_default_map() -> dict[str, str]:
+        return dict(TELEGRAM_REACTION_COMMAND_DEFAULT_MAP)
+
+    @staticmethod
+    def _reaction_setup_mapping_lines(mapping: dict[str, str]) -> list[str]:
+        if not mapping:
+            return ["No active reaction shortcuts configured."]
+        return [f"{emoji} — {instruction}" for emoji, instruction in mapping.items()]
+
+    def _reaction_setup_status_text(self) -> str:
+        enabled = self._reaction_commands_enabled()
+        lifecycle = self._reactions_enabled()
+        raw_map = self._reaction_commands_config().get("map", {})
+        ignored = []
+        if isinstance(raw_map, dict):
+            ignored = [emoji for emoji in raw_map if str(emoji) in TELEGRAM_REACTION_COMMAND_UNAVAILABLE_EMOJIS]
+        lines = [
+            "Telegram reaction shortcuts",
+            f"Command shortcuts: {'enabled' if enabled else 'disabled'}",
+            f"Bot status reactions: {'enabled' if lifecycle else 'disabled'} (👀 working, 👍 done, 👎 failed)",
+            "",
+            "Active shortcuts:",
+            *self._reaction_setup_mapping_lines(self._reaction_setup_current_mapping()),
+        ]
+        if ignored:
+            lines.extend([
+                "",
+                "Ignored unavailable reactions:",
+                " ".join(str(emoji) for emoji in ignored),
+            ])
+        lines.extend([
+            "",
+            "Commands:",
+            "/reaction setup — install safe defaults",
+            "/reaction status — show current mapping",
+            "/reaction delete — disable shortcuts",
+            "/reaction help — show usage",
+        ])
+        return "\n".join(lines)
+
+    def _write_reaction_setup_config(self, *, enabled: bool, mapping: Optional[dict[str, str]] = None) -> None:
+        """Persist reaction command config to config.yaml and update live adapter state."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        telegram_cfg = cfg.setdefault("telegram", {})
+        if not isinstance(telegram_cfg, dict):
+            telegram_cfg = {}
+            cfg["telegram"] = telegram_cfg
+        # Status lifecycle reactions are separate from command shortcuts, but
+        # setup enables both because users need visible feedback while testing.
+        telegram_cfg["reactions"] = True
+        reaction_cfg = telegram_cfg.setdefault("reaction_commands", {})
+        if not isinstance(reaction_cfg, dict):
+            reaction_cfg = {}
+            telegram_cfg["reaction_commands"] = reaction_cfg
+        reaction_cfg["enabled"] = bool(enabled)
+        if mapping is not None:
+            reaction_cfg["map"] = dict(mapping)
+        save_config(cfg)
+
+        os.environ["TELEGRAM_REACTIONS"] = "true"
+        if self.config is not None:
+            self.config.extra.setdefault("reaction_commands", {})
+            if not isinstance(self.config.extra["reaction_commands"], dict):
+                self.config.extra["reaction_commands"] = {}
+            self.config.extra["reaction_commands"]["enabled"] = bool(enabled)
+            if mapping is not None:
+                self.config.extra["reaction_commands"]["map"] = dict(mapping)
+
+    def _handle_reaction_setup_command(self, args: str) -> str:
+        """Return response for /reaction subcommands; may persist config."""
+        sub = (args or "").strip().split(maxsplit=1)[0].lower() if args else "help"
+        if sub in {"setup", "on", "enable"}:
+            mapping = self._reaction_setup_default_map()
+            self._write_reaction_setup_config(enabled=True, mapping=mapping)
+            return (
+                "Reaction shortcuts enabled with Telegram-available defaults.\n\n"
+                + "\n".join(self._reaction_setup_mapping_lines(mapping))
+                + "\n\nReact to a Hermes assistant message with one of these emojis to run the shortcut. "
+                "💯 is scoped: it only approves an active pending action attached to that exact reacted message."
+            )
+        if sub in {"status", "list", "ls"}:
+            return self._reaction_setup_status_text()
+        if sub in {"delete", "disable", "off", "remove"}:
+            self._write_reaction_setup_config(enabled=False)
+            return (
+                "Reaction shortcuts disabled. Bot lifecycle/status reactions stay enabled if telegram.reactions is true.\n"
+                "Run /reaction setup to enable the safe defaults again."
+            )
+        if sub == "uninstall":
+            self._write_reaction_setup_config(enabled=False)
+            return (
+                "Reaction shortcuts disabled. To fully remove the config, delete telegram.reaction_commands from config.yaml "
+                "and restart the gateway."
+            )
+        return (
+            "Telegram reaction shortcuts let you react to Hermes assistant messages to trigger scoped commands.\n\n"
+            "Use:\n"
+            "/reaction setup — enable safe Telegram-available defaults\n"
+            "/reaction status — show active shortcuts\n"
+            "/reaction delete — disable shortcuts\n"
+            "/reaction uninstall — disable and show manual cleanup\n\n"
+            "Defaults avoid unavailable reactions like 🔁 and 🧹."
+        )
+
     # ── User reaction commands ────────────────────────────────────────────
 
     def _reaction_commands_config(self) -> dict:
@@ -6037,7 +6200,9 @@ class TelegramAdapter(BasePlatformAdapter):
         return {
             str(emoji): str(instruction).strip()
             for emoji, instruction in mapping.items()
-            if str(emoji) and str(instruction).strip()
+            if str(emoji)
+            and str(emoji) not in TELEGRAM_REACTION_COMMAND_UNAVAILABLE_EMOJIS
+            and str(instruction).strip()
         }
 
     @staticmethod
