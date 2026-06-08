@@ -4654,11 +4654,23 @@ def run_conversation(
                     exc_info=True,
                 )
 
-    # Determine if conversation completed successfully
+    # Determine if conversation completed successfully.
+    #
+    # ``api_call_count`` is incremented *before* every API call (see the top
+    # of the loop), and the loop runs while ``api_call_count <
+    # max_iterations``.  A model that emits its genuine final text answer on
+    # the last allowed iteration therefore exits with ``api_call_count ==
+    # max_iterations``.  Gating completion on ``api_call_count <
+    # max_iterations`` mislabeled that perfectly good turn as not-completed,
+    # corrupting the ``completed`` flag written into the saved trajectory.
+    # The only turn that should be marked incomplete on hitting the cap is
+    # the budget-exhausted path that forces a summary via
+    # ``_handle_max_iterations`` — identified by the ``max_iterations_reached``
+    # exit reason — not a real answer delivered on the final call.
     completed = (
         final_response is not None
-        and api_call_count < agent.max_iterations
         and not failed
+        and not str(_turn_exit_reason).startswith("max_iterations_reached")
     )
 
     # Save trajectory if enabled.  ``user_message`` may be a multimodal
