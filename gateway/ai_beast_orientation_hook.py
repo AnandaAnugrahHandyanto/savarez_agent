@@ -179,26 +179,36 @@ def _beast_command_text(context: Mapping[str, Any]) -> str:
     return f"/beast {raw_args}".strip()
 
 
+def _safe_beast_command_label(
+    subcommand: Any,
+    args: tuple[Any, ...],
+    *,
+    subcommand_is_approved: bool,
+) -> str:
+    """Build a fail-closed label without echoing arbitrary user text."""
+    if subcommand and subcommand_is_approved:
+        return f"/beast {subcommand} argument_count={len(args)}"
+    return f"/beast unapproved_or_unknown_subcommand argument_count={len(args)}"
+
+
 def _format_beast_namespace_result(parse: Any) -> dict[str, str]:
     status = str(_parse_value(parse, "status", "unknown"))
     command_class = str(_parse_value(parse, "command_class", "unknown"))
     subcommand = _parse_value(parse, "subcommand")
     args = tuple(_parse_value(parse, "args", ()) or ())
-    raw_text = str(_parse_value(parse, "raw_text", "") or "").strip()
-    args_text = " ".join(str(arg) for arg in args)
-    if raw_text:
-        command_label = raw_text
-    elif subcommand:
-        command_label = f"/beast {subcommand} {args_text}".strip()
-    else:
-        command_label = "/beast"
+    subcommand_is_approved = str(subcommand) in APPROVED_BEAST_NAMESPACE_SUBCOMMANDS if subcommand else False
+    command_label = _safe_beast_command_label(
+        subcommand,
+        args,
+        subcommand_is_approved=subcommand_is_approved,
+    )
 
-    if subcommand and str(subcommand) not in APPROVED_BEAST_NAMESPACE_SUBCOMMANDS:
+    if subcommand and not subcommand_is_approved:
         return {
             "decision": "deny",
             "message": (
                 f"AI Beast /beast command fail-closed: {command_label} "
-                f"subcommand={subcommand} is not approved for this disabled fixture path. "
+                "subcommand=unapproved_or_unknown is not approved for this disabled fixture path. "
                 "No command behaviour executed."
             ),
         }
@@ -212,12 +222,12 @@ def _format_beast_namespace_result(parse: Any) -> dict[str, str]:
             ),
         }
 
-    target = f" {args_text}" if args_text else ""
+    argument_count = len(args)
     if bool(_parse_value(parse, "is_read_only", False)):
         detail = "read-only metadata" if subcommand == "sessions" else "read-only classification"
         message = (
             f"AI Beast /beast classification: {command_label}\n"
-            f"subcommand={subcommand}{target}\n"
+            f"subcommand={subcommand} argument_count={argument_count}\n"
             f"class={command_class}\n"
             f"safety={detail}; no routing, binding, inbox, audit, memory, Kanban, durable continuation, Telegram, or service side effects."
         )
@@ -226,7 +236,7 @@ def _format_beast_namespace_result(parse: Any) -> dict[str, str]:
     if bool(_parse_value(parse, "is_proposal_only", False)):
         message = (
             f"AI Beast /beast classification: {command_label}\n"
-            f"subcommand={subcommand}{target}\n"
+            f"subcommand={subcommand} argument_count={argument_count}\n"
             f"class={command_class}\n"
             "safety=proposal/approval-gated only; no binding was created and no command behaviour executed."
         )
@@ -235,7 +245,7 @@ def _format_beast_namespace_result(parse: Any) -> dict[str, str]:
     if bool(_parse_value(parse, "is_state_changing", False)):
         message = (
             f"AI Beast /beast classification: {command_label}\n"
-            f"subcommand={subcommand}{target}\n"
+            f"subcommand={subcommand} argument_count={argument_count}\n"
             f"class={command_class}\n"
             "safety=state-changing/approval-gated only; not executed."
         )

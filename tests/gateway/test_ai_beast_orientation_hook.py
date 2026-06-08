@@ -412,11 +412,11 @@ async def test_ai_beast_beast_namespace_is_disabled_by_default(tmp_path):
         ("projects", ("/beast projects", "read_only_orientation", "read-only")),
         (
             "sessions interaction-routing-layer",
-            ("/beast sessions interaction-routing-layer", "read_only_orientation", "read-only metadata"),
+            ("/beast sessions", "argument_count=1", "read_only_orientation", "read-only metadata"),
         ),
         (
             "bindtopic interaction-routing-layer",
-            ("/beast bindtopic interaction-routing-layer", "proposal_approval_gated", "approval-gated only"),
+            ("/beast bindtopic", "argument_count=1", "proposal_approval_gated", "approval-gated only"),
         ),
         (
             'task interaction-routing-layer "test task"',
@@ -529,6 +529,110 @@ async def test_ai_beast_beast_namespace_enabled_fixture_fails_closed_for_bad_inp
 
     assert result["decision"] == "deny"
     assert "fail-closed" in result["message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_args",
+    [
+        "sessions SECRET_TOKEN_123",
+        "bindtopic SECRET_TOKEN_123",
+        'task interaction-routing-layer "SECRET_TOKEN_123"',
+    ],
+)
+async def test_ai_beast_beast_namespace_recognised_input_does_not_echo_raw_args(tmp_path, monkeypatch, raw_args):
+    hook = _load_hook_module()
+    _write_fake_ai_beast_adapter(tmp_path)
+    _write_fake_registry(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _clear_fake_ai_beast_modules()
+
+    result = await hook.handle(
+        "command:beast",
+        _context(
+            "beast",
+            project_root=tmp_path,
+            raw_args=raw_args,
+            beast_namespace_enabled=True,
+        ),
+    )
+
+    assert result["decision"] == "handled"
+    assert "SECRET_TOKEN_123" not in result["message"]
+    assert "secret_token_123" not in result["message"].lower()
+    assert "argument_count=" in result["message"]
+
+
+def test_ai_beast_beast_namespace_formatter_final_deny_uses_safe_label():
+    hook = _load_hook_module()
+
+    result = hook._format_beast_namespace_result(
+        SimpleNamespace(
+            status="recognised",
+            command_class="read_only_orientation",
+            subcommand="sessions",
+            args=("SECRET_TOKEN_123",),
+            is_read_only=False,
+            is_proposal_only=False,
+            is_state_changing=False,
+        )
+    )
+
+    assert result["decision"] == "deny"
+    assert "fail-closed" in result["message"]
+    assert "SECRET_TOKEN_123" not in result["message"]
+    assert "argument_count=1" in result["message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_args", ["", "task"])
+async def test_ai_beast_beast_namespace_final_deny_fails_closed_without_crash(tmp_path, monkeypatch, raw_args):
+    hook = _load_hook_module()
+    _write_fake_ai_beast_adapter(tmp_path)
+    _write_fake_registry(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _clear_fake_ai_beast_modules()
+
+    result = await hook.handle(
+        "command:beast",
+        _context(
+            "beast",
+            project_root=tmp_path,
+            raw_args=raw_args,
+            beast_namespace_enabled=True,
+        ),
+    )
+
+    assert result["decision"] == "deny"
+    assert "fail-closed" in result["message"]
+    assert "No command behaviour executed" in result["message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_args", ["unknown SECRET_TOKEN_123", "SECRET_TOKEN_123"])
+async def test_ai_beast_beast_namespace_unknown_input_does_not_echo_raw_text(tmp_path, monkeypatch, raw_args):
+    hook = _load_hook_module()
+    _write_fake_ai_beast_adapter(tmp_path)
+    _write_fake_registry(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _clear_fake_ai_beast_modules()
+
+    result = await hook.handle(
+        "command:beast",
+        _context(
+            "beast",
+            project_root=tmp_path,
+            raw_args=raw_args,
+            beast_namespace_enabled=True,
+        ),
+    )
+
+    assert result["decision"] == "deny"
+    assert "fail-closed" in result["message"]
+    assert "SECRET_TOKEN_123" not in result["message"]
+    assert "secret_token_123" not in result["message"].lower()
+    assert "/beast unknown SECRET_TOKEN_123" not in result["message"]
+    assert "argument_count=" in result["message"]
 
 
 def _make_gateway_source() -> SessionSource:
