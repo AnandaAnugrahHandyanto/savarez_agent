@@ -584,6 +584,74 @@ class TestMarkJobRun:
         assert updated["enabled"] is False
         assert updated["state"] == "completed"
 
+    def test_repeat_limited_job_not_removed_when_delivery_fails(self, tmp_cron_dir):
+        """Agent succeeded but delivery to the platform failed (transient
+        outage): the run must NOT consume the repeat slot, so a repeat-limited
+        job is preserved instead of being popped and silently losing its output.
+        """
+        # Recurring interval with a finite repeat limit — the failed run must
+        # not advance ``completed`` toward that limit.
+        job = create_job(prompt="Report", schedule="every 30m", repeat=1)
+        assert job["schedule"]["kind"] == "interval"
+        mark_job_run(job["id"], success=True,
+                     delivery_error="platform 'telegram' not configured")
+        updated = get_job(job["id"])
+        assert updated is not None, "job was deleted despite a failed delivery"
+        # The failed run does not count toward the repeat limit.
+        assert updated["repeat"]["completed"] == 0
+        assert updated["last_delivery_error"] == "platform 'telegram' not configured"
+        # Interval schedule re-computes a next run, so the job stays scheduled
+        # and will retry delivery on the next occurrence.
+        assert updated["next_run_at"] is not None
+        assert updated["state"] == "scheduled"
+
+    def test_repeat_limit_consumed_only_after_successful_delivery(self, tmp_cron_dir):
+        """A failed delivery followed by a successful one: only the delivered
+        run advances the counter, and the job is removed exactly once the
+        limit is reached with output the user actually received.
+        """
+        job = create_job(prompt="Report", schedule="every 30m", repeat=1)
+        # First fire fails delivery → preserved, counter untouched.
+        mark_job_run(job["id"], success=True, delivery_error="network timeout")
+        assert get_job(job["id"]) is not None
+        assert get_job(job["id"])["repeat"]["completed"] == 0
+        # Second fire delivers → counter hits the limit → removed.
+        mark_job_run(job["id"], success=True, delivery_error=None)
+        assert get_job(job["id"]) is None
+
+    def test_oneshot_kept_in_error_state_when_delivery_fails(self, tmp_cron_dir):
+        """A true 'once' job whose delivery fails must not flip to
+        enabled=false/state=completed (which hides an undelivered report and
+        disables the job). It stays as state=error with the delivery error
+        recorded so the operator can retrigger it once the platform recovers.
+        """
+        jobs = [{
+            "id": "oneshot-deliver-fail",
+            "prompt": "Once",
+            "schedule": {"kind": "once", "run_at": "2020-01-01T00:00:00+00:00", "display": "once"},
+            "repeat": {"times": 1, "completed": 0},
+            "enabled": True,
+            "state": "scheduled",
+            "next_run_at": "2020-01-01T00:00:00+00:00",
+            "last_run_at": None,
+            "last_status": None,
+            "last_error": None,
+            "last_delivery_error": None,
+            "created_at": "2020-01-01T00:00:00+00:00",
+        }]
+        save_jobs(jobs)
+
+        mark_job_run("oneshot-deliver-fail", success=True,
+                     delivery_error="platform 'discord' not enabled")
+
+        updated = get_job("oneshot-deliver-fail")
+        assert updated is not None, "one-shot was deleted despite a failed delivery"
+        assert updated["repeat"]["completed"] == 0
+        assert updated["next_run_at"] is None
+        assert updated["state"] == "error"
+        assert updated["state"] != "completed"
+        assert updated["last_delivery_error"] == "platform 'discord' not enabled"
+
 
 class TestAdvanceNextRun:
     """Tests for advance_next_run() — crash-safety for recurring jobs."""
