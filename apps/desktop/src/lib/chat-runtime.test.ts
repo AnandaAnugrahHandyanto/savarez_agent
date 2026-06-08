@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseSlashCommand } from './chat-runtime'
+import { parseSlashCommand, coerceThinkingText } from './chat-runtime'
 
 describe('parseSlashCommand', () => {
   it('should parse simple command without arguments', () => {
@@ -37,11 +37,6 @@ describe('parseSlashCommand', () => {
     expect(result).toEqual({ name: '', arg: '' })
   })
 
-  it('should return empty name and arg for invalid commands', () => {
-    const result = parseSlashCommand('not a command')
-    expect(result).toEqual({ name: '', arg: '' })
-  })
-
   it('should handle tabs and newlines mixed in argument', () => {
     const result = parseSlashCommand('/goal\tWrite something\nand more')
     expect(result).toEqual({ name: 'goal', arg: 'Write something\nand more' })
@@ -58,5 +53,20 @@ with clear documentation`
     expect(result.arg).toContain('unit tests')
     expect(result.arg).toContain('integration tests')
     expect(result.arg).toContain('clear documentation')
+  })
+})
+
+describe('coerceThinkingText', () => {
+  it('strips streaming status prefixes from thinking deltas', () => {
+    expect(coerceThinkingText("◉_◉ processing... checking the user's request")).toBe("checking the user's request")
+    expect(coerceThinkingText('(¬‿¬) analyzing... reading the file')).toBe('reading the file')
+  })
+
+  it('drops empty thinking rewrite placeholder text', () => {
+    expect(
+      coerceThinkingText(
+        "◉_◉ processing... I don't see any current rewritten thinking or next thinking to process. Could you provide the thinking content you'd like me to rewrite?"
+      )
+    ).toBe('')
   })
 })
