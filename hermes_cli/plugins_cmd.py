@@ -712,15 +712,45 @@ def _plugin_exists(name: str) -> bool:
     return _resolve_plugin_reference(name) is not None
 
 
-def _resolve_plugin_reference(name: str) -> tuple[str, set[str]] | None:
-    """Resolve *name* to a canonical plugin key and all supported aliases."""
-    for key, legacy_name, _version, _description, _source, _dir in _discover_all_plugins():
+def _resolve_plugin_entry(name: str) -> tuple[str, str, str, str, str, Path | None] | None:
+    """Resolve *name* to the discovered plugin entry."""
+    for entry in _discover_all_plugins():
+        key, legacy_name, _version, _description, _source, _dir = entry
         aliases = {key}
         if legacy_name:
             aliases.add(legacy_name)
         if name in aliases:
-            return key, aliases
+            return entry
     return None
+
+
+def _resolve_plugin_reference(name: str) -> tuple[str, set[str]] | None:
+    """Resolve *name* to a canonical plugin key and all supported aliases."""
+    entry = _resolve_plugin_entry(name)
+    if entry is None:
+        return None
+    key, legacy_name, _version, _description, _source, _dir = entry
+    aliases = {key}
+    if legacy_name:
+        aliases.add(legacy_name)
+    return key, aliases
+
+
+def _normalize_plugin_selection(
+    plugin_refs: list[tuple[str, set[str]]],
+    chosen: set[int],
+    disabled: set[str],
+) -> tuple[set[str], set[str]]:
+    """Return canonical enabled/disabled sets for a composite plugin selection."""
+    new_enabled: set[str] = set()
+    new_disabled: set[str] = set(disabled)
+    for i, (canonical_name, aliases) in enumerate(plugin_refs):
+        new_disabled.difference_update(aliases)
+        if i in chosen:
+            new_enabled.add(canonical_name)
+        else:
+            new_disabled.add(canonical_name)
+    return new_enabled, new_disabled
 
 
 def _discover_all_plugins() -> list:
@@ -1058,16 +1088,17 @@ def cmd_toggle() -> None:
 
     plugin_names = []
     plugin_labels = []
+    plugin_refs = []
     plugin_selected = set()
 
-    for i, (name, _version, description, source, _d) in enumerate(entries):
+    for i, (name, legacy_name, _version, description, source, _d) in enumerate(entries):
         label = f"{name} \u2014 {description}" if description else name
         if source == "bundled":
             label = f"{label} [bundled]"
         plugin_names.append(name)
         plugin_labels.append(label)
-        # Selected (enabled) when in enabled-set AND not in disabled-set
-        if name in enabled_set and name not in disabled_set:
+        plugin_refs.append((name, {name, legacy_name} if legacy_name else {name}))
+        if _plugin_status(name, enabled_set, disabled_set, legacy_name) == "enabled":
             plugin_selected.add(i)
 
     # -- Provider categories --
@@ -1095,14 +1126,14 @@ def cmd_toggle() -> None:
     try:
         import curses
         _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
-                          disabled_set, categories, console)
+                          plugin_refs, disabled_set, categories, console)
     except ImportError:
         _run_composite_fallback(plugin_names, plugin_labels, plugin_selected,
-                                disabled_set, categories, console)
+                                plugin_refs, disabled_set, categories, console)
 
 
 def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
-                      disabled, categories, console):
+                      plugin_refs, disabled, categories, console):
     """Custom curses screen with checkboxes + category action rows."""
     from hermes_cli.curses_ui import flush_stdin
 
@@ -1326,14 +1357,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
     # plugin names that were checked; anything not checked is explicitly
     # disabled (written to disabled-list) so it remains off even if the
     # plugin code does something clever like auto-enable in the future.
-    new_enabled: set = set()
-    new_disabled: set = set(disabled)  # preserve existing disabled state for unseen plugins
-    for i, name in enumerate(plugin_names):
-        if i in chosen:
-            new_enabled.add(name)
-            new_disabled.discard(name)
-        else:
-            new_disabled.add(name)
+    new_enabled, new_disabled = _normalize_plugin_selection(plugin_refs, chosen, disabled)
 
     prev_enabled = _get_enabled_set()
     enabled_changed = new_enabled != prev_enabled
@@ -1363,7 +1387,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
 
 
 def _run_composite_fallback(plugin_names, plugin_labels, plugin_selected,
-                            disabled, categories, console):
+                            plugin_refs, disabled, categories, console):
     """Text-based fallback for the composite plugins UI."""
     from hermes_cli.colors import Colors, color
 
@@ -1391,14 +1415,7 @@ def _run_composite_fallback(plugin_names, plugin_labels, plugin_selected,
                 return
             print()
 
-        new_enabled: set = set()
-        new_disabled: set = set(disabled)
-        for i, name in enumerate(plugin_names):
-            if i in chosen:
-                new_enabled.add(name)
-                new_disabled.discard(name)
-            else:
-                new_disabled.add(name)
+        new_enabled, new_disabled = _normalize_plugin_selection(plugin_refs, chosen, disabled)
         prev_enabled = _get_enabled_set()
         if new_enabled != prev_enabled or new_disabled != disabled:
             _save_enabled_set(new_enabled)
@@ -1654,9 +1671,12 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
 def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
     """Delete a plugin tree under ``~/.hermes/plugins/`` only."""
     plugins_dir = _plugins_dir()
-    for n, _ver, _d, src, _path in _discover_all_plugins():
-        if n == name and src == "bundled":
+    entry = _resolve_plugin_entry(name)
+    if entry is not None:
+        canonical_name, _legacy_name, _ver, _d, src, _path = entry
+        if src == "bundled":
             return {"ok": False, "error": "Bundled plugins cannot be removed from the dashboard."}
+        name = canonical_name
 
     target = _user_installed_plugin_dir(name)
     if target is None:

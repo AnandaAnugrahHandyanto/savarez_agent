@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from hermes_cli import plugins_cmd
 
@@ -328,6 +329,93 @@ def test_dashboard_disable_resolves_split_nested_alias_state(monkeypatch):
     assert enabled == set()
     assert disabled == {"observability/nemo_relay"}
     assert toggled == [("observability/nemo_relay", False)]
+
+
+def test_cmd_toggle_does_not_crash_on_nested_plugin_entry_shape(monkeypatch, capsys):
+    entries = [
+        (
+            "observability/nemo_relay",
+            "nemo_relay",
+            "0.1.0",
+            "Relay observability",
+            "bundled",
+            None,
+        )
+    ]
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set())
+    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
+    monkeypatch.setattr(plugins_cmd.sys, "stdin", SimpleNamespace(isatty=lambda: False))
+
+    plugins_cmd.cmd_toggle()
+
+    assert "Interactive mode requires a terminal." in capsys.readouterr().out
+
+
+def test_cmd_toggle_marks_nested_plugin_selected_via_legacy_alias(monkeypatch):
+    entries = [
+        (
+            "observability/nemo_relay",
+            "nemo_relay",
+            "0.1.0",
+            "Relay observability",
+            "bundled",
+            None,
+        )
+    ]
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: {"nemo_relay"})
+    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
+    monkeypatch.setattr(plugins_cmd.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+
+    def _fake_ui(_curses, plugin_names, _plugin_labels, plugin_selected, plugin_refs, disabled, _categories, _console):
+        captured["plugin_names"] = plugin_names
+        captured["plugin_selected"] = plugin_selected
+        captured["plugin_refs"] = plugin_refs
+        captured["disabled"] = disabled
+
+    monkeypatch.setattr(plugins_cmd, "_run_composite_ui", _fake_ui)
+
+    plugins_cmd.cmd_toggle()
+
+    assert captured["plugin_names"] == ["observability/nemo_relay"]
+    assert captured["plugin_selected"] == {0}
+    assert captured["plugin_refs"] == [("observability/nemo_relay", {"observability/nemo_relay", "nemo_relay"})]
+    assert captured["disabled"] == set()
+
+
+def test_normalize_plugin_selection_cleans_mixed_nested_alias_state():
+    plugin_refs = [("observability/nemo_relay", {"observability/nemo_relay", "nemo_relay"})]
+
+    new_enabled, new_disabled = plugins_cmd._normalize_plugin_selection(
+        plugin_refs,
+        {0},
+        {"nemo_relay"},
+    )
+
+    assert new_enabled == {"observability/nemo_relay"}
+    assert new_disabled == set()
+
+
+def test_dashboard_remove_user_plugin_rejects_bundled_nested_alias_without_crash(monkeypatch, tmp_path: Path):
+    entries = [
+        (
+            "observability/nemo_relay",
+            "nemo_relay",
+            "0.1.0",
+            "Relay observability",
+            "bundled",
+            None,
+        )
+    ]
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
+    monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: tmp_path)
+
+    result = plugins_cmd.dashboard_remove_user_plugin("nemo_relay")
+
+    assert result == {"ok": False, "error": "Bundled plugins cannot be removed from the dashboard."}
 
 
 def test_discover_all_plugins_includes_nested_bundled_keys(monkeypatch, tmp_path: Path):
