@@ -6,7 +6,7 @@ Repository: `/opt/hermes-agent`
 
 ## Summary
 
-Implemented and verified regression coverage for profile-scoped skill loading, Coder dashboard base-path routing, dashboard readiness checks, stale dashboard detection, and steer import-graph safety. Documented the autonomous-agent worktree/branch/PR workflow and cleaned generated Node core dumps out of the repository without deleting them.
+Implemented and verified regression coverage for profile-scoped skill loading, Coder dashboard base-path routing, dashboard readiness checks, stale dashboard detection, and steer import-graph safety. Documented the autonomous-agent worktree/branch/PR workflow, cleaned generated Node core dumps out of the repository without deleting them, and preserved the desktop image-attachment fallback work that was present in the checkout.
 
 ## Changed files
 
@@ -36,6 +36,10 @@ Implemented and verified regression coverage for profile-scoped skill loading, C
   - Documents the default autonomous-agent workflow: one worktree, one branch, draft PR, CI/review gate, merge only through PR.
 - `package-lock.json`
   - Existing npm lockfile metadata changes were preserved and included because the operator asked to commit everything accordingly.
+- `apps/desktop/src/app/session/hooks/use-prompt-actions.ts`
+  - Falls back from `image.attach` to `image.attach_bytes` when a localhost/tunnel gateway cannot resolve a local screenshot path.
+- `apps/desktop/src/app/session/hooks/use-prompt-actions.test.tsx`
+  - Adds regression coverage for the local-tunnel image byte-upload fallback.
 
 ## Cleanup performed
 
@@ -70,6 +74,20 @@ Independent pre-commit review initially found a blocking base-path auth-ordering
 - `tests/hermes_cli/test_web_server.py::TestWebServerEndpoints::test_runtime_readiness_redacts_import_exception_details`
 
 Static added-line scans for hardcoded secrets, shell injection, eval/exec, pickle, and simple SQL string formatting returned no matches.
+
+Desktop verification for the preserved image-attachment fallback:
+
+```bash
+npm run type-check --workspace apps/desktop
+npm run test:ui --workspace apps/desktop -- use-prompt-actions
+```
+
+Observed result:
+
+```text
+tsc -b passed
+src/app/session/hooks/use-prompt-actions.test.tsx: 12 tests passed
+```
 
 Additional direct runtime/profile check:
 
