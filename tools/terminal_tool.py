@@ -1066,13 +1066,27 @@ def _get_env_config() -> Dict[str, Any]:
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
-    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    # Try job-specific TERMINAL_CWD first (for parallel cron execution)
+    job_id = os.environ.get("HERMES_CRON_JOB_ID")
+    if job_id:
+        cwd = os.getenv(f"CRONID_{job_id}_TERMINAL_CWD", "")
+        if cwd:
+            pass  # Use job-specific CWD
+        else:
+            cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    else:
+        cwd = os.getenv("TERMINAL_CWD", default_cwd)
     if cwd:
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
     if env_type == "docker" and mount_docker_cwd:
-        docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
+        # Try job-specific TERMINAL_CWD first (for parallel cron execution)
+        _job_id = os.environ.get("HERMES_CRON_JOB_ID")
+        if _job_id:
+            docker_cwd_source = os.getenv(f"CRONID_{_job_id}_TERMINAL_CWD") or os.getenv("TERMINAL_CWD") or _safe_getcwd()
+        else:
+            docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
             any(candidate.startswith(p) for p in host_prefixes)

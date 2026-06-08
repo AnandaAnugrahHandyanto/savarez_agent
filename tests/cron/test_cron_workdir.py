@@ -204,10 +204,10 @@ class TestTickWorkdirPartition:
     pieces tick() calls.
     """
 
-    def test_workdir_jobs_run_sequentially(self, tmp_path, monkeypatch):
+    def test_workdir_jobs_run_in_parallel(self, tmp_path, monkeypatch):
         import cron.scheduler as sched
 
-        # Two workdir jobs (both sequential) + one parallel job.
+        # Two workdir jobs + one parallel job — all should run in parallel pool.
         workdir_a = {"id": "a", "name": "A", "workdir": str(tmp_path)}
         workdir_b = {"id": "b", "name": "B", "workdir": str(tmp_path)}
         parallel_job = {"id": "c", "name": "C", "workdir": None}
@@ -237,19 +237,16 @@ class TestTickWorkdirPartition:
         assert n == 3
 
         ids = [c[0] for c in calls]
-        # Sequential workdir jobs preserve submission order relative to each
-        # other (single-thread pool).
-        assert ids.index("a") < ids.index("b")
+        # All jobs should be submitted (order may vary due to parallel execution)
+        assert set(ids) == {"a", "b", "c"}
 
-        # Workdir jobs run on the persistent single-thread cron-seq pool —
-        # NOT the main thread — so a long workdir job never blocks the ticker.
+        # All jobs run on the parallel pool (not sequential pool)
+        # because workdir jobs now use job-specific env vars
         main_thread_name = threading.current_thread().name
-        for jid in ("a", "b"):
-            workdir_thread_name = next(t for j, t in calls if j == jid)
-            assert workdir_thread_name != main_thread_name
-            assert workdir_thread_name.startswith("cron-seq"), workdir_thread_name
-        par_thread_name = next(t for j, t in calls if j == "c")
-        assert par_thread_name.startswith("cron-parallel"), par_thread_name
+        for jid in ("a", "b", "c"):
+            job_thread_name = next(t for j, t in calls if j == jid)
+            assert job_thread_name != main_thread_name
+            assert job_thread_name.startswith("cron-parallel"), job_thread_name
 
 
 # ---------------------------------------------------------------------------

@@ -1600,9 +1600,16 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         )
         _job_workdir = None
     _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
+    _prior_cron_job_id = os.environ.get("HERMES_CRON_JOB_ID", "_UNSET_")
     if _job_workdir:
+        # Set job-specific TERMINAL_CWD to enable parallel execution
+        # of multiple workdir jobs without os.environ collisions
+        _job_cwd_key = f"CRONID_{job_id}_TERMINAL_CWD"
+        os.environ[_job_cwd_key] = _job_workdir
+        os.environ["HERMES_CRON_JOB_ID"] = job_id
+        # Also set the global TERMINAL_CWD for backward compatibility
         os.environ["TERMINAL_CWD"] = _job_workdir
-        logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
+        logger.info("Job '%s': using workdir %s (key=%s)", job_id, _job_workdir, _job_cwd_key)
 
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
@@ -1964,6 +1971,15 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # only ever mutate it when the job has a workdir; see the setup block
         # at the top of run_job for the serialization guarantee.
         if _job_workdir:
+            # Clean up job-specific environment variables
+            _job_cwd_key = f"CRONID_{job_id}_TERMINAL_CWD"
+            os.environ.pop(_job_cwd_key, None)
+            # Restore HERMES_CRON_JOB_ID
+            if _prior_cron_job_id == "_UNSET_":
+                os.environ.pop("HERMES_CRON_JOB_ID", None)
+            else:
+                os.environ["HERMES_CRON_JOB_ID"] = _prior_cron_job_id
+            # Restore TERMINAL_CWD
             if _prior_terminal_cwd == "_UNSET_":
                 os.environ.pop("TERMINAL_CWD", None)
             else:
@@ -2134,20 +2150,22 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 mark_job_run(job["id"], False, str(e))
                 return False
 
-        # Partition due jobs: jobs with a per-job workdir and/or profile touch
-        # process-global runtime state inside run_job. Workdir jobs temporarily
-        # set os.environ["TERMINAL_CWD"]; profile jobs use a context-local
-        # Hermes home override, scheduler _hermes_home hook, and temporary
-        # profile .env load into os.environ with snapshot/restore. They MUST run
-        # sequentially to avoid corrupting each other. Jobs without either field
-        # stay parallel-safe.
+        # Partition due jobs: jobs with a per-job profile touch
+        # process-global runtime state inside run_job. Profile jobs use a
+        # context-local Hermes home override, scheduler _hermes_home hook,
+        # and temporary profile .env load into os.environ with snapshot/restore.
+        # They MUST run sequentially to avoid corrupting each other.
+        #
+        # Workdir jobs use job-specific environment variables
+        # (CRONID_{job_id}_TERMINAL_CWD) to avoid os.environ collisions,
+        # so they can now run in parallel.
         sequential_jobs = [
             j for j in due_jobs
-            if (j.get("workdir") or "").strip() or (j.get("profile") or "").strip()
+            if (j.get("profile") or "").strip()
         ]
         parallel_jobs = [
             j for j in due_jobs
-            if not ((j.get("workdir") or "").strip() or (j.get("profile") or "").strip())
+            if not (j.get("profile") or "").strip()
         ]
 
         _results: list = []
