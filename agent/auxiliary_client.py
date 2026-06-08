@@ -78,21 +78,44 @@ def _load_openai_cls() -> type:
     return _OPENAI_CLS_CACHE
 
 
-_keepalive_client_cache: "httpx.Client | None" = None
-_keepalive_async_client_cache: "httpx.AsyncClient | None" = None
+# ── TCP keepalive helpers for corporate-proxy resilience ────────────
+#
+# Auxiliary OpenAI calls (title, vision, compression, session_search)
+# were failing with ``SSL: UNEXPECTED_EOF_WHILE_READING`` on corporate
+# proxies / load balancers that drop idle TLS connections.  The main
+# agent loop (``run_agent.py``) avoids this via a custom httpx transport
+# with TCP keepalive socket options.  These helpers bring the same fix
+# to the auxiliary path.
+#
+# Both the sync and async clients are built once and cached at module
+# level so that every OpenAI(...) construction site does not pay the
+# httpx.Client setup cost anew.
+
+_aux_keepalive_client: "httpx.Client | None" = None
+_aux_keepalive_client_built: bool = False
+_aux_keepalive_async_client: "httpx.AsyncClient | None" = None
+_aux_keepalive_async_client_built: bool = False
 
 
-def _build_keepalive_http_client() -> "httpx.Client | None":
-    """Build an ``httpx.Client`` with TCP keepalive socket options.
+def _get_proxy_for_base_url(base_url: str = "") -> str | None:
+    """Best-effort proxy resolution that honours ``NO_PROXY``.
 
-    Returns ``None`` when httpx is not available (e.g. in a minimal venv).
-    The main agent loop (``run_agent.py``) uses an identical pattern;
-    keeping a module-level singleton avoids rebuilding the client on every
-    single auxiliary call.
+    Delegates to ``agent.process_bootstrap._get_proxy_for_base_url``
+    when available so that auxiliary calls use the same proxy env-var
+    logic as the main agent loop.
     """
-    global _keepalive_client_cache
-    if _keepalive_client_cache is not None:
-        return _keepalive_client_cache
+    try:
+        from agent.process_bootstrap import _get_proxy_for_base_url as _gp
+        return _gp(base_url)
+    except Exception:
+        return None
+
+
+def _build_aux_http_client(base_url: str = "") -> "httpx.Client | None":
+    """Build (or return cached) httpx sync Client with TCP keepalive + proxy."""
+    global _aux_keepalive_client, _aux_keepalive_client_built
+    if _aux_keepalive_client_built:
+        return _aux_keepalive_client
 
     try:
         import httpx as _httpx
@@ -106,26 +129,24 @@ def _build_keepalive_http_client() -> "httpx.Client | None":
         elif hasattr(_socket, "TCP_KEEPALIVE"):
             _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
 
-        _keepalive_client_cache = _httpx.Client(
+        _proxy = _get_proxy_for_base_url(base_url)
+        _aux_keepalive_client = _httpx.Client(
             transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+            proxy=_proxy,
         )
     except Exception:
-        _keepalive_client_cache = None
+        _aux_keepalive_client = None
+    finally:
+        _aux_keepalive_client_built = True
 
-    return _keepalive_client_cache
+    return _aux_keepalive_client
 
 
-_async_keepalive_built: bool = False
-
-
-def _build_keepalive_async_client() -> "httpx.AsyncClient | None":
-    """Build an ``httpx.AsyncClient`` with TCP keepalive socket options.
-
-    Mirrors ``_build_keepalive_http_client`` for the async path.
-    """
-    global _keepalive_async_client_cache, _async_keepalive_built
-    if _async_keepalive_built:
-        return _keepalive_async_client_cache
+def _build_aux_async_client(base_url: str = "") -> "httpx.AsyncClient | None":
+    """Build (or return cached) httpx async Client with TCP keepalive + proxy."""
+    global _aux_keepalive_async_client, _aux_keepalive_async_client_built
+    if _aux_keepalive_async_client_built:
+        return _aux_keepalive_async_client
 
     try:
         import httpx as _httpx
@@ -139,15 +160,17 @@ def _build_keepalive_async_client() -> "httpx.AsyncClient | None":
         elif hasattr(_socket, "TCP_KEEPALIVE"):
             _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
 
-        _keepalive_async_client_cache = _httpx.AsyncClient(
+        _proxy = _get_proxy_for_base_url(base_url)
+        _aux_keepalive_async_client = _httpx.AsyncClient(
             transport=_httpx.AsyncHTTPTransport(socket_options=_sock_opts),
+            proxy=_proxy,
         )
     except Exception:
-        _keepalive_async_client_cache = None
+        _aux_keepalive_async_client = None
     finally:
-        _async_keepalive_built = True
+        _aux_keepalive_async_client_built = True
 
-    return _keepalive_async_client_cache
+    return _aux_keepalive_async_client
 
 
 class _OpenAIProxy:
@@ -155,13 +178,21 @@ class _OpenAIProxy:
 
     Forwards ``OpenAI(...)`` calls and ``isinstance(x, OpenAI)`` checks to the
     real SDK class, importing the SDK lazily on first use.
+
+    When the caller does **not** supply an explicit ``http_client``, the
+    proxy automatically injects one with TCP keepalive socket options and
+    proxy-awareness so that auxiliary calls (title, vision, compression,
+    session_search) survive corporate proxies that drop idle TLS connections.
     """
 
     __slots__ = ()
 
     def __call__(self, *args, **kwargs):
-        if "http_client" not in kwargs:
-            kwargs["http_client"] = _build_keepalive_http_client()
+        if "http_client" not in kwargs and not args:
+            base_url = str(kwargs.get("base_url") or "")
+            _hk = _build_aux_http_client(base_url)
+            if _hk is not None:
+                kwargs["http_client"] = _hk
         return _load_openai_cls()(*args, **kwargs)
 
     def __instancecheck__(self, obj):
@@ -3362,9 +3393,11 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         "api_key": sync_client.api_key,
         "base_url": str(sync_client.base_url),
     }
-    if _keepalive_client_cache is not None:
-        async_kwargs["http_client"] = _build_keepalive_async_client()
     sync_base_url = str(sync_client.base_url)
+    if "http_client" not in async_kwargs:
+        _hk = _build_aux_async_client(sync_base_url)
+        if _hk is not None:
+            async_kwargs["http_client"] = _hk
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         async_kwargs["default_headers"] = build_or_headers()
     elif base_url_host_matches(sync_base_url, "api.githubcopilot.com"):

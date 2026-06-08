@@ -3791,3 +3791,130 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+
+class TestKeepaliveHttpClient:
+    """Tests for keepalive HTTP client injection in _OpenAIProxy."""
+
+    def test_proxy_injects_keepalive_client_when_no_http_client_supplied(self):
+        """openai.OpenAI() without explicit http_client gets a keepalive one."""
+        from unittest.mock import patch, MagicMock
+        from agent.auxiliary_client import _OpenAIProxy
+
+        proxy = _OpenAIProxy()
+        real_cls = MagicMock()
+        real_cls.return_value = "client-instance"
+
+        with patch("agent.auxiliary_client._load_openai_cls", return_value=real_cls), \
+             patch("agent.auxiliary_client._build_aux_http_client", return_value="keepalive-client"):
+
+            result = proxy(base_url="https://api.openai.com/v1")
+
+        assert result == "client-instance"
+        # http_client must have been injected
+        _, kwargs = real_cls.call_args
+        assert kwargs.get("http_client") == "keepalive-client"
+
+    def test_explicit_http_client_is_preserved(self):
+        """http_client explicitly passed by caller must not be overridden."""
+        from unittest.mock import patch, MagicMock
+        from agent.auxiliary_client import _OpenAIProxy
+
+        proxy = _OpenAIProxy()
+        real_cls = MagicMock()
+        real_cls.return_value = "client-instance"
+
+        with patch("agent.auxiliary_client._load_openai_cls", return_value=real_cls), \
+             patch("agent.auxiliary_client._build_aux_http_client") as mock_builder:
+
+            result = proxy(
+                base_url="https://api.openai.com/v1",
+                http_client="my-custom-client",
+            )
+
+        assert result == "client-instance"
+        _, kwargs = real_cls.call_args
+        assert kwargs.get("http_client") == "my-custom-client"
+        # The keepalive builder must NOT have been called
+        mock_builder.assert_not_called()
+
+    def test_keepalive_not_injected_when_positional_args_present(self):
+        """OpenAI('api-key', ...) with positional args must not inject http_client."""
+        from unittest.mock import patch, MagicMock
+        from agent.auxiliary_client import _OpenAIProxy
+
+        proxy = _OpenAIProxy()
+        real_cls = MagicMock()
+        real_cls.return_value = "client-instance"
+
+        with patch("agent.auxiliary_client._load_openai_cls", return_value=real_cls), \
+             patch("agent.auxiliary_client._build_aux_http_client") as mock_builder:
+
+            result = proxy("sk-test", "gpt-4")
+
+        assert result == "client-instance"
+        _, kwargs = real_cls.call_args
+        assert "http_client" not in kwargs
+        mock_builder.assert_not_called()
+
+    def test_proxy_uses_proxy_env_var(self):
+        """_build_aux_http_client must resolve proxy from env when set."""
+        import os
+        from agent.auxiliary_client import _build_aux_http_client
+
+        os.environ["HTTPS_PROXY"] = "http://proxy.corp:8080"
+        try:
+            client = _build_aux_http_client("https://api.openai.com/v1")
+            assert client is not None
+            # The proxy should be set on the client's transport
+            assert client._proxy is not None
+            assert "proxy.corp" in str(client._proxy)
+        finally:
+            os.environ.pop("HTTPS_PROXY", None)
+
+    def test_no_proxy_bypasses_injection(self):
+        """NO_PROXY matching the base URL must suppress proxy injection."""
+        import os
+        from agent.auxiliary_client import _build_aux_http_client
+
+        os.environ["HTTPS_PROXY"] = "http://proxy.corp:8080"
+        os.environ["NO_PROXY"] = "localhost,127.0.0.1,.local"
+        try:
+            # localhost should be bypassed
+            client = _build_aux_http_client("http://localhost:11434/v1")
+            assert client is not None
+            assert client._proxy is None
+        finally:
+            os.environ.pop("HTTPS_PROXY", None)
+            os.environ.pop("NO_PROXY", None)
+
+    def test_async_keepalive_injected_in_to_async_client(self):
+        """_to_async_client must inject async keepalive client."""
+        from unittest.mock import patch, MagicMock, PropertyMock
+        from agent.auxiliary_client import _to_async_client
+
+        sync_client = MagicMock()
+        type(sync_client).api_key = PropertyMock(return_value="sk-test")
+        type(sync_client).base_url = PropertyMock(
+            return_value="https://api.openai.com/v1"
+        )
+
+        with patch("agent.auxiliary_client.AsyncOpenAI") as mock_async, \
+             patch("agent.auxiliary_client._build_aux_async_client",
+                   return_value="async-keepalive"):
+
+            _to_async_client(sync_client, "gpt-4")
+
+        _, kwargs = mock_async.call_args
+        assert kwargs.get("http_client") == "async-keepalive"
+
+    def test_no_proxy_env_returns_none(self):
+        """_get_proxy_for_base_url must return None when no proxy env set."""
+        import os
+        from agent.auxiliary_client import _get_proxy_for_base_url
+
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                    "https_proxy", "http_proxy", "all_proxy"):
+            os.environ.pop(key, None)
+
+        assert _get_proxy_for_base_url("https://api.openai.com/v1") is None
