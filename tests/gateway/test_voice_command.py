@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import pytest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -3439,6 +3440,487 @@ class TestVoiceTTSPlayback:
         assert did_route is True
         assert routed.startswith("[Hermes profile-router]")
         assert "Research profile answer with sources." in routed
+        runner._invoke_profile_runtime_child.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_profile_router_wrapper_does_not_re_route_research(self):
+        """Research runtime wrappers are delivery envelopes, not new research requests."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SessionSource
+
+        runner = self._make_runner()
+        runner._invoke_profile_runtime_child = AsyncMock(return_value={
+            "status": "success",
+            "output": "Should not be called.",
+            "truncated": False,
+        })
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", user_id="user1")
+        message = (
+            "[Hermes profile-router]\n"
+            "Original user request:\nrun a deep research with sources\n\n"
+            "Hermes Research profile runtime output (UNTRUSTED DATA):\nresult"
+        )
+
+        routed, did_route = await runner._maybe_route_research_profile_message(
+            message_text=message,
+            source=source,
+            session_key="agent:main:telegram:dm:123",
+            task_id="task-123",
+        )
+
+        assert did_route is False
+        assert routed == message
+        runner._invoke_profile_runtime_child.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_profile_router_topic_mismatch_wrapper_does_not_re_route_research(self):
+        """All profile-router envelopes, including topic-mismatch, are terminal delivery envelopes."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SessionSource
+
+        runner = self._make_runner()
+        runner._invoke_profile_runtime_child = AsyncMock(return_value={
+            "status": "success",
+            "output": "Should not be called.",
+            "truncated": False,
+        })
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", user_id="user1")
+        message = (
+            "[Hermes profile-router topic-mismatch]\n"
+            "The isolated `hermes-research` profile returned output that does not match the requested research topic."
+        )
+
+        routed, did_route = await runner._maybe_route_research_profile_message(
+            message_text=message,
+            source=source,
+            session_key="agent:main:telegram:dm:123",
+            task_id="task-123",
+        )
+
+        assert did_route is False
+        assert routed == message
+        runner._invoke_profile_runtime_child.assert_not_called()
+
+    def test_profile_runtime_prompt_audit_logs_metadata_only(self):
+        """Prompt audit metadata must not carry user text or secret snippets."""
+        from gateway import run as gateway_run
+
+        audit = gateway_run._profile_runtime_prompt_audit(
+            'Original request: {"api_key": "sk-live-secret", "topic": "personal assistant"}'
+        )
+
+        assert set(audit) == {"chars"}
+        assert isinstance(audit["chars"], int)
+
+    def test_research_profile_pdf_writer_creates_pdf(self, tmp_path):
+        """Long research reports can be rendered as a dependency-free PDF."""
+        from gateway import run as gateway_run
+
+        pdf_path = tmp_path / "report.pdf"
+        gateway_run._write_simple_text_pdf(
+            pdf_path,
+            "Hermes Research Report",
+            "Executive Summary\nThis is a source-backed report.\n" * 30,
+        )
+
+        data = pdf_path.read_bytes()
+        assert data.startswith(b"%PDF-1.4")
+        assert b"/Type /Page" in data
+        assert b"Hermes Research Report" in data
+
+    @pytest.mark.asyncio
+    async def test_long_research_profile_output_attaches_pdf_and_routes_summary(self):
+        """Hermes Research reports over 4k chars should be summarized inline and attached as PDF."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SessionSource
+
+        runner = self._make_runner()
+        long_report = (
+            "# Executive Summary\n"
+            "This is the compact finding that should remain inline.\n\n"
+            "# Full Report\n"
+            + ("DETAILED-SOURCE-BACKED-SECTION https://example.invalid/source \n" * 120)
+        )
+        runner._invoke_profile_runtime_child = AsyncMock(return_value={
+            "status": "success",
+            "output": long_report,
+            "truncated": False,
+        })
+        adapter = MagicMock()
+        adapter.send_document = AsyncMock(return_value=SimpleNamespace(success=True, message_id="doc1"))
+        runner.adapters = {Platform.TELEGRAM: adapter}
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", user_id="user1")
+        message = "Run D3 research with sources on market options."
+
+        routed, did_route = await runner._maybe_route_research_profile_message(
+            message_text=message,
+            source=source,
+            session_key="agent:main:telegram:dm:123",
+            task_id="task-long-report",
+        )
+
+        assert did_route is True
+        assert routed.startswith("[Hermes profile-router]")
+        assert "full report was attached as a PDF" in routed
+        assert "This is the compact finding" in routed
+        assert "DETAILED-SOURCE-BACKED-SECTION" not in routed
+        adapter.send_document.assert_awaited_once()
+        kwargs = adapter.send_document.await_args.kwargs
+        assert kwargs["chat_id"] == "123"
+        assert kwargs["file_path"].endswith(".pdf")
+        assert kwargs["file_name"] == "hermes-research-task-long-report.pdf"
+        assert kwargs["caption"] == "Full Hermes Research report"
+        assert Path(kwargs["file_path"]).read_bytes().startswith(b"%PDF-1.4")
+
+    @pytest.mark.asyncio
+    async def test_truncated_research_profile_output_attaches_raw_pdf_report(self):
+        """Gateway truncation must not make the attached PDF lose the raw child report."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SessionSource
+
+        runner = self._make_runner()
+        truncated_inline = (
+            "# Executive Summary\n"
+            "Short finding for chat.\n\n"
+            "...[truncated by Hermes-main gateway after 60000 characters; request the full child runtime artifact if needed]"
+        )
+        raw_report = (
+            "# Executive Summary\n"
+            "Short finding for chat.\n\n"
+            "# Full Report\n"
+            + ("RAW-DETAIL-WITH-SOURCE https://example.invalid/raw \n" * 120)
+        )
+        runner._invoke_profile_runtime_child = AsyncMock(return_value={
+            "status": "success",
+            "output": truncated_inline,
+            "raw_output": raw_report,
+            "truncated": True,
+        })
+        adapter = MagicMock()
+        adapter.send_document = AsyncMock(return_value=SimpleNamespace(success=True, message_id="doc1"))
+        runner.adapters = {Platform.TELEGRAM: adapter}
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", user_id="user1")
+
+        routed, did_route = await runner._maybe_route_research_profile_message(
+            message_text="Run D4 research with sources on a long market topic.",
+            source=source,
+            session_key="agent:main:telegram:dm:123",
+            task_id="task-raw-report",
+        )
+
+        assert did_route is True
+        assert "Short finding for chat." in routed
+        assert "RAW-DETAIL-WITH-SOURCE" not in routed
+        adapter.send_document.assert_awaited_once()
+        kwargs = adapter.send_document.await_args.kwargs
+        assert b"RAW-DETAIL-WITH-SOURCE" in Path(kwargs["file_path"]).read_bytes()
+
+    @pytest.mark.asyncio
+    async def test_long_research_profile_output_does_not_claim_pdf_when_attachment_fails(self):
+        """Failed PDF attachment must be disclosed instead of claiming success."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SessionSource
+
+        runner = self._make_runner()
+        long_report = (
+            "# Executive Summary\n"
+            "This is the compact finding that should remain inline.\n\n"
+            "# Full Report\n"
+            + ("DETAILED-SOURCE-BACKED-SECTION https://example.invalid/source \n" * 120)
+        )
+        runner._invoke_profile_runtime_child = AsyncMock(return_value={
+            "status": "success",
+            "output": long_report,
+            "truncated": False,
+        })
+        adapter = MagicMock()
+        adapter.send_document = AsyncMock(side_effect=RuntimeError("upload failed"))
+        runner.adapters = {Platform.TELEGRAM: adapter}
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", user_id="user1")
+
+        routed, did_route = await runner._maybe_route_research_profile_message(
+            message_text="Run D3 research with sources on market options.",
+            source=source,
+            session_key="agent:main:telegram:dm:123",
+            task_id="task-long-report-fail",
+        )
+
+        assert did_route is True
+        assert routed.startswith("[Hermes profile-router]")
+        assert "full report was not delivered as an attachment" in routed
+        assert "full report was attached as a PDF" not in routed
+        assert "[Full report attached as PDF.]" not in routed
+        assert "PDF attachment failed" in routed
+        assert "artifact_id=" in routed
+        assert "DETAILED-SOURCE-BACKED-SECTION" not in routed
+        adapter.send_document.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_long_research_profile_output_does_not_claim_pdf_when_send_document_returns_failure(self):
+        """A failed SendResult is not a successful attachment delivery."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SessionSource
+
+        runner = self._make_runner()
+        long_report = (
+            "# Executive Summary\n"
+            "This is the compact finding that should remain inline.\n\n"
+            "# Full Report\n"
+            + ("DETAILED-SOURCE-BACKED-SECTION https://example.invalid/source \n" * 120)
+        )
+        runner._invoke_profile_runtime_child = AsyncMock(return_value={
+            "status": "success",
+            "output": long_report,
+            "truncated": False,
+        })
+        adapter = MagicMock()
+        adapter.send_document = AsyncMock(return_value=SimpleNamespace(success=False, error="upload rejected"))
+        runner.adapters = {Platform.TELEGRAM: adapter}
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", user_id="user1")
+
+        routed, did_route = await runner._maybe_route_research_profile_message(
+            message_text="Run D3 research with sources on market options.",
+            source=source,
+            session_key="agent:main:telegram:dm:123",
+            task_id="task-long-report-send-result-fail",
+        )
+
+        assert did_route is True
+        assert "full report was not delivered as an attachment" in routed
+        assert "full report was attached as a PDF" not in routed
+        assert "[Full report attached as PDF.]" not in routed
+        assert "PDF attachment failed" in routed
+        assert "artifact_id=" in routed
+        assert "DETAILED-SOURCE-BACKED-SECTION" not in routed
+        adapter.send_document.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_long_research_profile_output_treats_base_document_fallback_as_unavailable(self):
+        """The base adapter text fallback is not a native document attachment."""
+        from gateway.config import Platform
+        from gateway.platforms.base import BasePlatformAdapter, SendResult, SessionSource
+
+        class TextFallbackAdapter(BasePlatformAdapter):
+            async def connect(self) -> bool:
+                return True
+
+            async def disconnect(self) -> None:
+                return None
+
+            async def send(self, chat_id, content, reply_to=None, metadata=None):
+                return SendResult(success=True, message_id="text-fallback")
+
+            async def get_chat_info(self, chat_id):
+                return {"name": "test", "type": "dm"}
+
+        runner = self._make_runner()
+        long_report = (
+            "# Executive Summary\n"
+            "This is the compact finding that should remain inline.\n\n"
+            "# Full Report\n"
+            + ("DETAILED-SOURCE-BACKED-SECTION https://example.invalid/source \n" * 120)
+        )
+        runner._invoke_profile_runtime_child = AsyncMock(return_value={
+            "status": "success",
+            "output": long_report,
+            "truncated": False,
+        })
+        adapter = TextFallbackAdapter(config=MagicMock(), platform=Platform.TELEGRAM)
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="text-fallback"))
+        runner.adapters = {Platform.TELEGRAM: adapter}
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", user_id="user1")
+
+        routed, did_route = await runner._maybe_route_research_profile_message(
+            message_text="Run D3 research with sources on market options.",
+            source=source,
+            session_key="agent:main:telegram:dm:123",
+            task_id="task-long-report-base-fallback",
+        )
+
+        assert did_route is True
+        assert "full report was not delivered as an attachment" in routed
+        assert "PDF attachment unavailable" in routed
+        assert "artifact_id=" in routed
+        adapter.send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unicode_research_profile_output_attaches_utf8_markdown_copy(self):
+        """Non-Latin report text gets a UTF-8 sidecar because the simple PDF path is Latin-1."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SessionSource
+
+        runner = self._make_runner()
+        long_report = (
+            "# Executive Summary\n"
+            "Rezumat cu diacritice romanesti: ășț si emoji 🙂.\n\n"
+            "# Full Report\n"
+            + ("Titlu sursa cu ășț si emoji 🙂 https://example.invalid/unicode \n" * 120)
+        )
+        runner._invoke_profile_runtime_child = AsyncMock(return_value={
+            "status": "success",
+            "output": long_report,
+            "truncated": False,
+        })
+        adapter = MagicMock()
+        adapter.send_document = AsyncMock(return_value=SimpleNamespace(success=True, message_id="doc1"))
+        runner.adapters = {Platform.TELEGRAM: adapter}
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", user_id="user1")
+
+        routed, did_route = await runner._maybe_route_research_profile_message(
+            message_text="Run D3 research with sources on Unicode market evidence.",
+            source=source,
+            session_key="agent:main:telegram:dm:123",
+            task_id="task-unicode-report",
+        )
+
+        assert did_route is True
+        assert "UTF-8 Markdown copy attached" in routed
+        assert adapter.send_document.await_count == 2
+        pdf_call = adapter.send_document.await_args_list[0]
+        markdown_call = adapter.send_document.await_args_list[1]
+        assert pdf_call.kwargs["file_path"].endswith(".pdf")
+        assert pdf_call.kwargs["file_name"] == "hermes-research-task-unicode-report.pdf"
+        assert markdown_call.kwargs["file_path"].endswith(".md")
+        assert markdown_call.kwargs["file_name"] == "hermes-research-task-unicode-report.md"
+        assert "ășț".encode("utf-8") in Path(markdown_call.kwargs["file_path"]).read_bytes()
+        assert "🙂".encode("utf-8") in Path(markdown_call.kwargs["file_path"]).read_bytes()
+
+    @pytest.mark.asyncio
+    async def test_oversized_research_profile_pdf_artifact_is_capped(self, monkeypatch):
+        """Raw child reports are capped before PDF/cache/send artifact generation."""
+        from gateway import run as gateway_run
+        from gateway.config import Platform
+        from gateway.platforms.base import SessionSource
+
+        monkeypatch.setattr(gateway_run, "_RESEARCH_REPORT_ARTIFACT_CHAR_BUDGET", 600)
+        runner = self._make_runner()
+        long_report = (
+            "# Executive Summary\n"
+            "Short capped artifact finding.\n\n"
+            "# Full Report\n"
+            + ("OVERSIZED-DETAIL https://example.invalid/oversized \n" * 180)
+        )
+        runner._invoke_profile_runtime_child = AsyncMock(return_value={
+            "status": "success",
+            "output": long_report,
+            "raw_output": long_report,
+            "truncated": False,
+        })
+        adapter = MagicMock()
+        adapter.send_document = AsyncMock(return_value=SimpleNamespace(success=True, message_id="doc1"))
+        runner.adapters = {Platform.TELEGRAM: adapter}
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", user_id="user1")
+
+        routed, did_route = await runner._maybe_route_research_profile_message(
+            message_text="Run D3 research with sources on oversized market evidence.",
+            source=source,
+            session_key="agent:main:telegram:dm:123",
+            task_id="task-oversized-report",
+        )
+
+        assert did_route is True
+        assert "Report artifact was capped at 600 characters" in routed
+        adapter.send_document.assert_awaited_once()
+        pdf_path = adapter.send_document.await_args.kwargs["file_path"]
+        assert adapter.send_document.await_args.kwargs["file_name"] == "hermes-research-task-oversized-report.pdf"
+        pdf_bytes = Path(pdf_path).read_bytes()
+        assert b"truncated by Hermes Research report artifact cap" in pdf_bytes
+        assert len(pdf_bytes) < len(long_report.encode("utf-8"))
+
+    @pytest.mark.asyncio
+    async def test_research_profile_topic_mismatch_blocks_wrong_child_output(self):
+        """Wrong-topic child output must be blocked before Hermes-main delivers it."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SessionSource
+
+        runner = self._make_runner()
+        runner._invoke_profile_runtime_child = AsyncMock(return_value={
+            "status": "success",
+            "output": "Use Twilio Media Streams with LiveKit SIP and WebRTC for voice calls.",
+            "truncated": False,
+        })
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", user_id="user1")
+        message = "Run D3 research on what tasks a Hermes profile dedicated to personal assistant can accomplish. Cite sources."
+
+        routed, did_route = await runner._maybe_route_research_profile_message(
+            message_text=message,
+            source=source,
+            session_key="agent:main:telegram:dm:123",
+            task_id="task-pa-scope",
+        )
+
+        assert did_route is True
+        assert routed.startswith("[Hermes profile-router topic-mismatch]")
+        assert "No child research output was delivered" in routed
+        assert "Twilio" not in routed
+        assert runner._invoke_profile_runtime_child.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_research_profile_topic_mismatch_recovers_with_standalone_retry(self):
+        """A wrong first child result should get one standalone retry before failing the request."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SessionSource
+
+        runner = self._make_runner()
+        runner._invoke_profile_runtime_child = AsyncMock(side_effect=[
+            {
+                "status": "success",
+                "output": "Use Twilio Media Streams with LiveKit SIP and WebRTC for voice calls.",
+                "truncated": False,
+            },
+            {
+                "status": "success",
+                "output": "A Hermes personal assistant profile can triage inbox, manage calendar scheduling, prep meetings, and maintain task management workflows with citations.",
+                "truncated": False,
+            },
+        ])
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", user_id="user1")
+        message = "Run D3 research on what tasks a Hermes profile dedicated to personal assistant can accomplish. Cite sources."
+
+        routed, did_route = await runner._maybe_route_research_profile_message(
+            message_text=message,
+            source=source,
+            session_key="agent:main:telegram:dm:123",
+            task_id="task-pa-scope",
+        )
+
+        assert did_route is True
+        assert routed.startswith("[Hermes profile-router]")
+        assert "inbox" in routed
+        assert "Twilio Media Streams" not in routed
+        assert runner._invoke_profile_runtime_child.await_count == 2
+        retry_call = runner._invoke_profile_runtime_child.await_args_list[1]
+        assert retry_call.kwargs["intent"] == "source_backed_research"
+        assert retry_call.kwargs["task_id"] == "task-pa-scope:topic-retry"
+        assert retry_call.kwargs["session_key"] == "agent:main:telegram:dm:123:topic-retry"
+        assert "STANDALONE RETRY" in retry_call.kwargs["user_text"]
+        assert message in retry_call.kwargs["user_text"]
+
+    @pytest.mark.asyncio
+    async def test_research_profile_valid_pa_output_passes_without_retry(self):
+        """Correct PA-profile research output should pass through and not trigger mismatch retry."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SessionSource
+
+        runner = self._make_runner()
+        runner._invoke_profile_runtime_child = AsyncMock(return_value={
+            "status": "success",
+            "output": "Personal assistant profile scope: inbox triage, calendar scheduling, meeting prep, daily planning, and task management. Sources: https://example.invalid",
+            "truncated": False,
+        })
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", user_id="user1")
+        message = "Run D3 research on what tasks a Hermes profile dedicated to personal assistant can accomplish. Cite sources."
+
+        routed, did_route = await runner._maybe_route_research_profile_message(
+            message_text=message,
+            source=source,
+            session_key="agent:main:telegram:dm:123",
+            task_id="task-pa-scope",
+        )
+
+        assert did_route is True
+        assert routed.startswith("[Hermes profile-router]")
+        assert "Personal assistant profile scope" in routed
         runner._invoke_profile_runtime_child.assert_awaited_once()
 
     def test_voice_fast_reply_route_uses_configured_fast_runtime(self, monkeypatch):
