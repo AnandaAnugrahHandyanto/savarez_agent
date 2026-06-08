@@ -17743,18 +17743,16 @@ async def start_gateway(
     loop.set_exception_handler(_gateway_loop_exception_handler)
 
     if threading.current_thread() is threading.main_thread():
+        add_signal_handler = loop.add_signal_handler
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                loop.add_signal_handler(
-                    sig, shutdown_signal_handler, sig
-                )  # windows-footgun: ok — wrapped in try/except NotImplementedError for Windows
+                add_signal_handler(sig, shutdown_signal_handler, sig)
             except NotImplementedError:
                 pass
-        if hasattr(signal, "SIGUSR1"):
+        sigusr1 = getattr(signal, "SIGUSR1", None)
+        if sigusr1 is not None:
             try:
-                loop.add_signal_handler(
-                    signal.SIGUSR1, restart_signal_handler
-                )  # windows-footgun: ok — POSIX signal, guarded by hasattr above + try/except NotImplementedError
+                add_signal_handler(sigusr1, restart_signal_handler)
             except NotImplementedError:
                 pass
     else:

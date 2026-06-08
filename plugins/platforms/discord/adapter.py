@@ -5252,8 +5252,6 @@ def _component_check_auth(
         return True
     if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
         return True
-    if _DISCORD_ALLOWLIST_WILDCARD in user_set:
-        return True
 
     user_set = {str(uid).strip() for uid in (allowed_user_ids or set()) if str(uid).strip()}
     global_allowed = {

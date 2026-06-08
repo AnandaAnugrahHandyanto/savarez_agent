@@ -34,7 +34,11 @@ class _FakeTTSProvider(TTSProvider):
 
 
 @pytest.fixture(autouse=True)
-def _reset_registry():
+def _reset_registry(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.plugins._ensure_plugins_discovered",
+        lambda: None,
+    )
     tts_registry._reset_for_tests()
     yield
     tts_registry._reset_for_tests()

@@ -3083,6 +3083,7 @@ class AIAgent:
         final_response: Any,
         interrupted: bool,
         messages: list | None = None,
+        **_metadata: Any,
     ) -> None:
         """Mirror a completed turn into external memory providers.
 

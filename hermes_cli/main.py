@@ -7708,12 +7708,8 @@ def _ensure_fhs_path_guard() -> None:
     """
     if sys.platform != "linux":
         return
-    try:
-        if (
-            os.geteuid() != 0
-        ):  # windows-footgun: ok — Linux FHS helper, guarded by sys.platform == "linux" above + AttributeError catch
-            return
-    except AttributeError:
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None or geteuid() != 0:
         return
     # Only act when this is actually an FHS-layout install (command link at
     # /usr/local/bin/hermes, code at /usr/local/lib/hermes-agent).
