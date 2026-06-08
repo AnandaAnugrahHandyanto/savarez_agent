@@ -1836,10 +1836,14 @@ class TelegramAdapter(BasePlatformAdapter):
             # so without this the "...typing" bubble disappears mid-response
             # (especially noticeable when the agent sends intermediate progress
             # messages like "Checking:" before running tools).
-            try:
-                await self.send_typing(chat_id, metadata=metadata)
-            except Exception:
-                pass  # Typing failures are non-fatal
+            # Skip when _stop_typing_task has signalled that typing should stop
+            # (the final response was just sent) to avoid a ghost typing
+            # indicator that lingers for ~5s after the agent completes (#42087).
+            if not getattr(self, '_typing_stopping', False):
+                try:
+                    await self.send_typing(chat_id, metadata=metadata)
+                except Exception:
+                    pass  # Typing failures are non-fatal
 
             return SendResult(
                 success=True,
