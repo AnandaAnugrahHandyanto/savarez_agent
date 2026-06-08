@@ -19,6 +19,7 @@ import { setThreadScrolledUp } from '@/store/thread-scroll'
 const ESTIMATED_ITEM_HEIGHT = 220
 const OVERSCAN = 4
 const AT_BOTTOM_THRESHOLD = 4
+const POST_RUN_BOTTOM_LOCK_MS = 1_200
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -387,15 +388,51 @@ function useThreadScrollAnchor({
     }
   }, [scrollerRef, stickyBottomRef])
 
-  // Intentionally NO streaming auto-follow. Earlier builds ran a
-  // ResizeObserver here that re-pinned the viewport to the bottom on every
-  // content growth while a turn was running, so the chat tracked tokens as
-  // they streamed. That behavior is removed by request: once a turn is in
-  // flight the viewport stays exactly where the user left it. The viewport
-  // is still moved to the bottom ONCE per user submit / new turn / session
-  // change (see the layout effect and the session-change effect below) so a
-  // freshly submitted message lands in view — but it does not chase the
-  // stream afterward.
+  // Follow content growth (streaming, item measurements, loading indicator)
+  // while armed. During fast streaming the ResizeObserver can fire many
+  // times per frame as Streamdown re-tokenizes; coalesce to one pin per
+  // animation frame so we don't run the scroll-event/re-pin chain
+  // (~20+ ms self in `Virtualizer.getMaxScrollOffset`) several times per
+  // token.
+  useEffect(() => {
+    if (!enabled || !isRunning) {
+      return undefined
+    }
+
+    const el = scrollerRef.current
+
+    if (!el) {
+      return undefined
+    }
+
+    let pinRafScheduled = false
+
+    const schedulePin = () => {
+      if (pinRafScheduled || !stickyBottomRef.current) {
+        return
+      }
+
+      pinRafScheduled = true
+      requestAnimationFrame(() => {
+        pinRafScheduled = false
+
+        if (stickyBottomRef.current) {
+          pinToBottom()
+        }
+      })
+    }
+
+    const observer = new ResizeObserver(schedulePin)
+
+    // Observe ONLY the content (firstElementChild), not the scroller `el`
+    // itself. Resizes of the viewport/scroller (window resize, devtools
+    // panel toggle) shouldn't trigger a pin — only content growth should.
+    if (el.firstElementChild) {
+      observer.observe(el.firstElementChild)
+    }
+
+    return () => observer.disconnect()
+  }, [enabled, isRunning, pinToBottom, scrollerRef, stickyBottomRef])
 
   // Jump to bottom on session change OR when an empty thread first gets
   // content. Both share the same intent and the same effect.
@@ -449,17 +486,45 @@ function useThreadScrollAnchor({
     prevGroupCountForLayoutRef.current = groupCount
   }, [enabled, groupCount, pinToBottom, stickyBottomRef])
 
-  // Intentionally NO post-run bottom lock. Earlier builds kept pinning to
-  // the bottom for POST_RUN_BOTTOM_LOCK_MS after `isRunning` flipped false to
-  // chase final Shiki re-highlight measurement. With streaming follow gone,
-  // re-pinning at completion would yank the viewport back to the bottom even
-  // though the user is reading earlier content — the opposite of what's
-  // wanted. The one-time submit / new-turn jump already covers landing a
-  // fresh message in view.
+  // Completion swaps streaming placeholders/plain code for final rendered DOM
+  // (notably Shiki-highlighted code). Keep following the bottom briefly after
+  // `isRunning` flips false so that final measurement pass cannot strand the
+  // viewport near the top of a large code block.
   const prevIsRunningForLayoutRef = useRef(isRunning)
   useLayoutEffect(() => {
+    const finishedRun = prevIsRunningForLayoutRef.current && !isRunning
     prevIsRunningForLayoutRef.current = isRunning
-  }, [isRunning])
+
+    if (!enabled || !finishedRun || !stickyBottomRef.current) {
+      return undefined
+    }
+
+    const lockUntil = performance.now() + POST_RUN_BOTTOM_LOCK_MS
+    let lockRaf: number | null = null
+
+    const lockFrame = () => {
+      lockRaf = null
+
+      if (!stickyBottomRef.current) {
+        return
+      }
+
+      pinToBottom()
+
+      if (performance.now() < lockUntil) {
+        lockRaf = requestAnimationFrame(lockFrame)
+      }
+    }
+
+    pinToBottom()
+    lockRaf = requestAnimationFrame(lockFrame)
+
+    return () => {
+      if (lockRaf !== null) {
+        cancelAnimationFrame(lockRaf)
+      }
+    }
+  }, [enabled, isRunning, pinToBottom, stickyBottomRef])
 
   useAuiEvent('thread.runStart', jumpToBottom)
 }

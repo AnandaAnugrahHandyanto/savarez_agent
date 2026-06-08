@@ -3251,7 +3251,7 @@ function buildApplicationMenu() {
         }
       },
       { type: 'separator' },
-      { role: 'togglefullscreen' }
+      { role: 'togglefullscreen', accelerator: 'F11' }
     ]
   })
   template.push({
@@ -6144,11 +6144,7 @@ ipcMain.handle('hermes:vscode-theme:fetch', async (_event, id) => fetchMarketpla
 ipcMain.handle('hermes:vscode-theme:search', async (_event, query) => searchMarketplaceThemes(String(query || ''), 20))
 
 app.whenReady().then(() => {
-  if (IS_MAC) {
-    Menu.setApplicationMenu(buildApplicationMenu())
-  } else {
-    Menu.setApplicationMenu(null)
-  }
+  Menu.setApplicationMenu(buildApplicationMenu())
   installMediaPermissions()
   registerMediaProtocol()
   ensureWslWindowsFonts()
