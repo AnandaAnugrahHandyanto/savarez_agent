@@ -653,3 +653,126 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     # Only the real file was uploaded.
     assert len(documents_uploaded) == 1
     assert "real.pdf" in documents_uploaded[0]
+
+import asyncio
+from unittest.mock import MagicMock, AsyncMock, patch
+import pytest
+
+@pytest.mark.asyncio
+async def test_notifier_fallback_delivers_completed(kanban_home):
+    """
+    If a task completes and has NO subscription, it should deliver a fallback
+    notification to the configured home_channel.
+    """
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform, GatewayConfig
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="test task", assignee="worker1")
+        # NO notify sub!
+        kb.complete_task(conn, tid, result="completed by agent")
+        # Verify no subs initially
+        assert len(kb.list_notify_subs(conn)) == 0
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    # Configure home channel
+    cfg = MagicMock()
+    telegram_cfg = MagicMock()
+    telegram_cfg.home_channel = "home123"
+    cfg.telegram = telegram_cfg
+    runner.config = cfg
+
+    fake_adapter = MagicMock()
+    deliveries = []
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        deliveries.append((chat_id, msg, metadata))
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        try:
+            await asyncio.wait_for(
+                runner._kanban_notifier_watcher(interval=1),
+                timeout=2.0,
+            )
+        except asyncio.TimeoutError:
+            pass
+
+    assert len(deliveries) == 1
+    chat_id, msg, meta = deliveries[0]
+    assert chat_id == "home123"
+    assert "✔ @worker1 Kanban t_" in msg
+    assert "completed by agent" in msg
+
+@pytest.mark.asyncio
+async def test_notifier_fallback_does_not_duplicate(kanban_home):
+    """
+    If a task already has an explicit subscription, no fallback should be added.
+    """
+    import hermes_cli.kanban_db as kb
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="test task", assignee="worker1")
+        # EXPLICIT notify sub
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        kb.complete_task(conn, tid, result="completed by agent")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    # Configure home channel
+    cfg = MagicMock()
+    telegram_cfg = MagicMock()
+    telegram_cfg.home_channel = "home123"
+    cfg.telegram = telegram_cfg
+    runner.config = cfg
+
+    fake_adapter = MagicMock()
+    deliveries = []
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        deliveries.append((chat_id, msg, metadata))
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        try:
+            await asyncio.wait_for(
+                runner._kanban_notifier_watcher(interval=1),
+                timeout=2.0,
+            )
+        except asyncio.TimeoutError:
+            pass
+
+    assert len(deliveries) == 1
+    chat_id, msg, meta = deliveries[0]
+    # Delivered to explicit chat, NOT fallback
+    assert chat_id == "chat1"
