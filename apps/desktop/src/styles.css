@@ -81,6 +81,10 @@
   /* Hairline border paired with --shadow-nous on borderless overlays.
      currentColor resolves per-element, so it adapts to text color/theme. */
   --stroke-nous: color-mix(in srgb, currentColor 3%, transparent);
+  /* Hover-reveal sidebar lift — same falloff as --shadow-nous, but the drop
+     color flips per mode (white on light, black on dark) via --shadow-reveal-raw
+     set in :root / :root.dark below. `inline` resolves it at use-site. */
+  --shadow-reveal: var(--shadow-reveal-raw);
   --shadow-lg:
     inset 0 0.0625rem 0 color-mix(in srgb, #fff 28%, transparent),
     0 0 0 0.0625rem color-mix(in srgb, var(--dt-foreground) 8%, transparent),
@@ -350,10 +354,12 @@
     --noise-opacity-mul: 1;
     --backdrop-invert-mul: 1;
 
-    /* Small soft drop for floating overlays (hover-reveal sidebars). White on
-       light so the panel reads as lifted off a cream/near-white surface. */
-    --nous-shadow: 0 0.125rem 0.5rem color-mix(in srgb, #fff 70%, transparent),
-      0 0.0625rem 0.125rem color-mix(in srgb, #fff 50%, transparent);
+    /* Floated-overlay lift, white on light (see --shadow-reveal). */
+    --shadow-reveal-raw:
+      0 0.125rem 0.25rem -0.125rem color-mix(in srgb, #fff 9%, transparent),
+      0 0.5rem 0.75rem -0.375rem color-mix(in srgb, #fff 8%, transparent),
+      0 1.25rem 1.75rem -0.875rem color-mix(in srgb, #fff 8%, transparent),
+      0 2.25rem 3rem -1.75rem color-mix(in srgb, #fff 0%, transparent);
   }
 
   :root.dark {
@@ -375,9 +381,12 @@
     --composer-ring-strength: 1.3;
     --backdrop-invert-mul: 0;
 
-    /* Black-based drop on dark so the floated panel lifts off the dark surface. */
-    --nous-shadow: 0 0.125rem 0.5rem color-mix(in srgb, #000 55%, transparent),
-      0 0.0625rem 0.125rem color-mix(in srgb, #000 40%, transparent);
+    /* Floated-overlay lift, black on dark (see --shadow-reveal). */
+    --shadow-reveal-raw:
+      0 0.125rem 0.25rem -0.125rem color-mix(in srgb, #000 22%, transparent),
+      0 0.5rem 0.75rem -0.375rem color-mix(in srgb, #000 18%, transparent),
+      0 1.25rem 1.75rem -0.875rem color-mix(in srgb, #000 16%, transparent),
+      0 2.25rem 3rem -1.75rem color-mix(in srgb, #000 0%, transparent);
 
     --ui-inline-code-background: color-mix(in srgb, #ffffff 7%, transparent);
     --ui-inline-code-border: color-mix(in srgb, #ffffff 10%, transparent);
