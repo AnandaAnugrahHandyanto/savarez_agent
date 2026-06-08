@@ -282,24 +282,10 @@ def test_check_requirements_always_true():
 
 
 # ---------------------------------------------------------------------------
-# Live integration (skipped if offline)
+# Live integration (skipped if httpbin.org is down / unreachable)
 # ---------------------------------------------------------------------------
 
-def _httpbin_reachable() -> bool:
-    """Quick probe (1 s) to decide whether httpbin.org is usable."""
-    import socket
-    try:
-        sock = socket.create_connection(("httpbin.org", 443), timeout=1)
-        sock.close()
-        return True
-    except Exception:
-        return False
 
-
-@pytest.mark.skipif(
-    not _httpbin_reachable(),
-    reason="httpbin.org unreachable (network or firewall)"
-)
 def test_live_get_httpbin():
     """Smoke test against httpbin.org /get endpoint.
 
@@ -316,10 +302,6 @@ def test_live_get_httpbin():
         pytest.skip("httpbin.org unreachable")
 
 
-@pytest.mark.skipif(
-    not _httpbin_reachable(),
-    reason="httpbin.org unreachable (network or firewall)"
-)
 def test_live_post_httpbin():
     """Smoke test against httpbin.org /post endpoint.
 
