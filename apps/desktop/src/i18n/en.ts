@@ -292,8 +292,7 @@ export const en: Translations = {
       technical: 'Technical',
       technicalDesc: 'Include raw tool args/results and low-level details.',
       themeTitle: 'Theme',
-      themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
-      themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`
+      themeDesc: 'Desktop palettes only. The selected mode is applied on top.'
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
@@ -312,6 +311,8 @@ export const en: Translations = {
       cantReach: "We couldn't reach the update server.",
       tapCheck: 'Tap "Check now" to look for updates.',
       updateReady: count => `A new update is ready (${count} change${count === 1 ? '' : 's'} included).`,
+      rebuildNeeded: "Source code changed — rebuild to apply local changes.",
+      rebuildNow: "Rebuild now",
       lastChecked: age => `Last checked ${age}`,
       justNowSuffix: ' · just now',
       automaticUpdates: 'Automatic updates',
@@ -1228,13 +1229,11 @@ export const en: Translations = {
     unsupportedMessage: 'This version of Hermes can’t update itself from inside the app.',
     connectionRetry: 'Check your connection and try again.',
     latestBody: 'You’re running the latest version.',
-    latestBodyBackend: 'The backend is running the latest version.',
     allSetTitle: 'You’re all set',
     availableTitle: 'New update available',
     availableBody: 'A new version of Hermes is ready to install.',
-    availableTitleBackend: 'Backend update available',
-    availableBodyBackend: 'A newer version of the connected Hermes backend is ready to install.',
-    availableBodyNoChangelog: 'A newer version is ready. Release notes aren’t available for this install type.',
+    rebuildTitle: 'Source code changed',
+    rebuildBody: 'The Hermes source has changed since the last build. Rebuild to apply local changes.',
     updateNow: 'Update now',
     maybeLater: 'Maybe later',
     moreChanges: count => `+ ${count} more change${count === 1 ? '' : 's'} included.`,
@@ -1245,19 +1244,10 @@ export const en: Translations = {
     copied: 'Copied',
     done: 'Done',
     applyingBody: 'The Hermes updater will take over in its own window and reopen Hermes when it’s done.',
-    applyingBodyBackend: 'The remote backend is applying the update and will restart. Hermes reconnects automatically when it’s back.',
     applyingClose: 'Hermes will close to apply the update.',
     errorTitle: 'Update didn’t finish',
     errorBody: 'No worries — nothing was lost. You can try again now.',
-    notNow: 'Not now',
-    applyStatus: {
-      preparing: 'Updating backend…',
-      pulling: 'Backend updating…',
-      restarting: 'Backend restarting to load the update…',
-      notAvailable: 'Update not available for this backend.',
-      failed: 'Backend update failed.',
-      noReturn: 'Backend didn’t come back online. The update may not have completed — check the backend host.'
-    }
+    notNow: 'Not now'
   },
 
   install: {
@@ -1442,10 +1432,8 @@ export const en: Translations = {
       update: 'update',
       updateInProgress: 'Update in progress',
       commitsBehind: (count, branch) => `${count} commit${count === 1 ? '' : 's'} behind ${branch}`,
+      rebuildNeeded: 'Source code changed — rebuild to apply local changes.',
       desktopVersion: version => `Hermes Desktop v${version}`,
-      backendVersion: version => `Backend v${version}`,
-      clientLabel: version => `client v${version}`,
-      backendLabel: version => `backend v${version}`,
       commit: sha => `commit ${sha}`,
       branch: branch => `branch ${branch}`,
       closeCommandCenter: 'Close Command Center',
