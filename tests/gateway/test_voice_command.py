@@ -3296,6 +3296,48 @@ class TestVoiceTTSPlayback:
             "Audit Hermes research and check why the profile router was not invoked."
         ) is False
 
+    def test_research_pipeline_meta_evaluation_stays_in_hermes_main(self):
+        """Questions about Research pipeline rules are meta-evaluation, not research tasks."""
+        from gateway.run import _should_auto_load_hermes_research
+
+        assert _should_auto_load_hermes_research(
+            "for the research pipeline, are you following the same rules as Delphi agent? "
+            "with sources anchorage, judge at the end, etc?"
+        ) is False
+
+    def test_research_pipeline_clarification_stays_in_hermes_main(self):
+        """Explicit pipeline-evaluation clarification must not be promoted to D2/D3 Research."""
+        from gateway.run import _should_auto_load_hermes_research
+
+        assert _should_auto_load_hermes_research(
+            "This is not a request for research, is a pipeline evaluation"
+        ) is False
+
+    def test_research_pipeline_audit_with_delphi_parity_stays_in_hermes_main(self):
+        """Delphi parity/source-anchorage audits inspect the pipeline instead of invoking it."""
+        from gateway.run import _should_auto_load_hermes_research
+
+        assert _should_auto_load_hermes_research(
+            "Audit the Hermes Research workflow against Delphi rules: source anchorage, "
+            "critic/judge at the end, and final confidence labels."
+        ) is False
+
+    def test_source_backed_topic_research_still_routes_to_research_profile(self):
+        """The meta-evaluation guard must not disable genuine source-backed research requests."""
+        from gateway.run import _should_auto_load_hermes_research
+
+        assert _should_auto_load_hermes_research(
+            "Run D2 source-backed research with sources on LiveKit versus Twilio for phone calls."
+        ) is True
+
+    def test_pipeline_best_practices_with_sources_still_routes_to_research_profile(self):
+        """Pipeline wording alone is not enough to block explicit source-backed comparison requests."""
+        from gateway.run import _should_auto_load_hermes_research
+
+        assert _should_auto_load_hermes_research(
+            "Can you compare research pipeline best practices with sources?"
+        ) is True
+
     def test_research_profile_runtime_prompt_includes_gateway_depth_triage(self):
         """Gateway passes deterministic auto-depth into Hermes Research."""
         runner = self._make_runner()

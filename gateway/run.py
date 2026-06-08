@@ -1587,6 +1587,38 @@ def _should_auto_load_hermes_research(message: Optional[str]) -> bool:
         if not explicit_research_action or negated_use:
             return False
 
+    pipeline_evaluation_markers = (
+        "research pipeline",
+        "delphi agent",
+        "delphi rules",
+        "delphi-style",
+        "source anchorage",
+        "sources anchorage",
+        "judge at the end",
+        "judge block",
+        "final judge",
+        "same rules as delphi",
+        "following the same rules",
+    )
+    if any(marker in lowered for marker in pipeline_evaluation_markers):
+        pipeline_diagnostic_phrases = (
+            "are you following",
+            "following the same rules",
+            "same rules as delphi",
+            "is a pipeline evaluation",
+            "not a request for research",
+            "audit the hermes research workflow",
+        )
+        if any(phrase in lowered for phrase in pipeline_diagnostic_phrases):
+            return False
+        explicit_external_research = re.search(
+            r"\b(run|perform|conduct|start|launch|do|compare|evaluate|find|research)\b.{0,80}"
+            r"\b(d[1-4]|deep[- ]research|source-backed|source backed|external sources|web research|research online|with sources|cite sources)\b",
+            lowered,
+        )
+        if not explicit_external_research:
+            return False
+
     source_signals = (
         "deep research",
         "perplexity",
