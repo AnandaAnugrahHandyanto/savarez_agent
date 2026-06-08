@@ -562,6 +562,37 @@
 2. 当前未重启 gateway/WebUI；cache compat 的运行态验证需要 reload/restart 后用同一 stable thread / endpoint / model 检查 `cached_tokens` / `cache_read_tokens`，另行确认。
 3. 6B checkpoint 后，再处理 6C `custom Responses image providers`。
 
+## 第 6C 批执行记录：custom Responses image providers
+
+状态：**6C 已应用到 live 工作区并完成 focused 验证；本地 checkpoint commit 在本批收尾创建；未 push，未重启**。
+
+范围：恢复 `image_gen.provider: custom:<name>` + custom Responses-style gateway 的图片生成路径，让 registered image generation dispatch 能识别并调用 custom provider 的 Responses image model。第 6 批其余候选已拆分完成，不混入本批。
+
+- 适用参考：`hermes-agent` / `references/custom-image-provider-routes.md`、`references/image-gen-provider-routing.md`
+- 隔离 worktree：`/workspace/.hermes-worktrees/hermes-agent-runtime-codex-image-6c-20260608150913`
+- 隔离分支：`recover/image-6c-20260608150913`
+- 基线 HEAD：`179ab747c fix(codex): restore custom proxy cache compat`
+- 候选来源：
+  - `1110bc4e8 feat(image-gen): support custom Responses image providers`
+- 冲突处理：
+  - 无冲突应用。
+- 隔离 worktree touched files：
+  - `tools/image_generation_tool.py`
+  - `tests/tools/test_image_generation_plugin_dispatch.py`
+- 隔离验证命令与结果（live 复跑同组命令结果一致）：
+  - `PYTHONDONTWRITEBYTECODE=1 python -m py_compile tools/image_generation_tool.py tests/tools/test_image_generation_plugin_dispatch.py` ✅
+  - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider tests/tools/test_image_generation_plugin_dispatch.py -q -o addopts=''` ✅ `6 passed in 0.55s`
+  - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider tests/tools/test_image_generation.py tests/tools/test_image_generation_env.py tests/tools/test_image_generation_artifacts.py -q -o addopts=''` ✅ `66 passed in 1.55s`
+  - `git diff --check HEAD -- tools/image_generation_tool.py tests/tools/test_image_generation_plugin_dispatch.py docs/runtime-recovery-audit-2026-06-08.md` ✅
+  - `*.pyc` 缓存清理与复查 ✅ `deleted_pyc=2`，最终 `0`
+- 当前隔离 worktree 状态：保留 staged candidate diff 作为来源证据。
+- live 状态：已应用 6C 代码并完成 focused 验证；未 push，未重启。live 仍有非本轮未跟踪文档 `docs/codex-workflow-local-capability-and-external-recommendations-2026-06-08.md`，本批未触碰。
+
+下一步选择：
+
+1. 本批收尾创建本地 checkpoint commit，作为 6C stable point。
+2. 当前未重启 gateway/WebUI；custom image provider 的运行态验证需要 reload/restart 或新进程加载代码后，通过 `_handle_image_generate` / 实际 `image_generate` 工具路径验证，另行确认。
+
 ## 当前待办
 
 - [x] 第 0 批：初版恢复清单。
@@ -573,4 +604,4 @@
 - [x] 第 5B 批：strong raw Codex implementation block（已落 live 并完成 focused 验证；未 push/未重启）。
 - [x] 第 6A 批：browser runtime repair script（已落 live 并完成 focused 验证；未 push/未重启）。
 - [x] 第 6B 批：custom Codex proxy cache compat（已落 live 并完成 focused 验证；未 push/未重启）。
-- [ ] 第 6C 批：custom Responses image providers。
+- [x] 第 6C 批：custom Responses image providers（已落 live 并完成 focused 验证；未 push/未重启）。
