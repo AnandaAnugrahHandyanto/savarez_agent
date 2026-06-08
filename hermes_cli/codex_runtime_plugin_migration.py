@@ -17,6 +17,8 @@ module:
      pre-configured.)
   3. Writes a [permissions] default profile so users on this runtime
      don't get an approval prompt on every write attempt.
+  4. Adds a small bridge block to Codex's AGENTS.md so Codex-native
+     sessions know to load Hermes' SOUL.md and built-in MEMORY.md.
 
 What translates (MCP servers):
   Hermes mcp_servers.<n>.command/args/env  → codex stdio transport
@@ -28,10 +30,11 @@ What does NOT translate (warned + skipped):
   Hermes-specific keys (sampling, etc.) — codex's MCP client has no
   equivalent. Listed in the per-server skipped[] field of the report.
 
-What's NOT migrated (intentional):
-  AGENTS.md — codex respects this file natively in its cwd. Hermes' own
-  AGENTS.md (project-level) is already in the worktree, so codex picks
-  it up without translation. No code needed.
+Codex AGENTS.md note:
+  Codex respects AGENTS.md natively, but Hermes' SOUL.md and built-in
+  MEMORY.md live under HERMES_HOME rather than the Codex home. The bridge
+  block keeps Codex-native sessions aligned with Hermes identity and memory
+  after update/setup regenerates Codex config.
 """
 
 from __future__ import annotations
@@ -53,6 +56,8 @@ MIGRATION_MARKER = (
 MIGRATION_END_MARKER = (
     "# end hermes-agent managed section"
 )
+CODEX_AGENTS_BRIDGE_START = "<!-- HERMES:CODEX:CONTEXT-BRIDGE:START -->"
+CODEX_AGENTS_BRIDGE_END = "<!-- HERMES:CODEX:CONTEXT-BRIDGE:END -->"
 
 
 @dataclass
@@ -65,6 +70,7 @@ class MigrationReport:
     migrated_plugins: list[str] = field(default_factory=list)
     plugin_query_error: Optional[str] = None
     wrote_permissions_default: Optional[str] = None
+    wrote_agents_bridge: Optional[str] = None
     errors: list[str] = field(default_factory=list)
     written: bool = False
     dry_run: bool = False
@@ -98,6 +104,9 @@ class MigrationReport:
                 f"Wrote default_permissions = "
                 f"{self.wrote_permissions_default!r}"
             )
+        if self.wrote_agents_bridge:
+            action = "Would ensure" if self.dry_run else "Ensured"
+            lines.append(f"{action} Codex AGENTS.md bridge: {self.wrote_agents_bridge}")
         for err in self.errors:
             lines.append(f"⚠ {err}")
         return "\n".join(lines)
@@ -247,6 +256,7 @@ def render_codex_toml_section(
     servers: dict[str, dict],
     plugins: Optional[list[dict]] = None,
     default_permission_profile: Optional[str] = None,
+    service_tier: Optional[str] = "fast",
 ) -> str:
     """Render the managed [mcp_servers.<n>] / [plugins.<id>] / [permissions]
     block for ~/.codex/config.toml.
@@ -260,10 +270,11 @@ def render_codex_toml_section(
             so the user doesn't get an approval prompt on every write
             attempt. Common values: "workspace-write", "read-only",
             "full-access".
+        service_tier: when set, write Codex's top-level service_tier.
     """
     out = [MIGRATION_MARKER]
-    if not servers and not plugins and not default_permission_profile:
-        out.append("# (no MCP servers, plugins, or permissions configured by Hermes)")
+    if not servers and not plugins and not default_permission_profile and not service_tier:
+        out.append("# (no MCP servers, plugins, permissions, or service tier configured by Hermes)")
         out.append(MIGRATION_END_MARKER)
         return "\n".join(out) + "\n"
 
@@ -280,6 +291,9 @@ def render_codex_toml_section(
         )
         out.append("")
         out.append(f"default_permissions = {_format_toml_value(normalized)}")
+    if service_tier:
+        out.append("")
+        out.append(f"service_tier = {_format_toml_value(service_tier)}")
 
     if servers:
         for name in sorted(servers.keys()):
@@ -447,6 +461,96 @@ def _strip_existing_managed_block(toml_text: str) -> str:
     return "".join(out)
 
 
+def _render_codex_agents_bridge(hermes_home: Path) -> str:
+    """Render the managed Codex AGENTS.md bridge to Hermes identity files."""
+    soul_path = hermes_home / "SOUL.md"
+    memory_path = hermes_home / "memories" / "MEMORY.md"
+    return (
+        f"{CODEX_AGENTS_BRIDGE_START}\n"
+        "## Hermes Profile Context Bridge\n"
+        "\n"
+        "When running in or for Hermes-managed workspaces, read and follow "
+        "these Hermes profile files when they exist:\n"
+        f"- `{soul_path}` — identity, role, tone, and durable behavioral preferences.\n"
+        f"- `{memory_path}` — durable user, project, environment, and workflow facts.\n"
+        "\n"
+        "Treat SOUL.md as the identity/style source and MEMORY.md as persistent "
+        "memory. Incorporate them before answering identity, preference, or "
+        "continuity-sensitive questions.\n"
+        f"{CODEX_AGENTS_BRIDGE_END}\n"
+    )
+
+
+def _strip_existing_codex_agents_bridge(text: str) -> str:
+    """Remove the managed Hermes bridge block from Codex AGENTS.md content."""
+    start = text.find(CODEX_AGENTS_BRIDGE_START)
+    if start == -1:
+        return text
+    end = text.find(CODEX_AGENTS_BRIDGE_END, start)
+    if end == -1:
+        # Broken old block: drop from the start marker to EOF rather than
+        # duplicating competing Hermes bridge instructions.
+        return text[:start].rstrip() + "\n"
+    end += len(CODEX_AGENTS_BRIDGE_END)
+    # Swallow one trailing newline if present.
+    if end < len(text) and text[end] == "\n":
+        end += 1
+    return (text[:start].rstrip() + "\n\n" + text[end:].lstrip()).strip() + "\n"
+
+
+def _insert_codex_agents_bridge(text: str, bridge: str) -> str:
+    """Append the bridge after existing Codex/OMX guidance without disturbing it."""
+    without_bridge = _strip_existing_codex_agents_bridge(text)
+    if not without_bridge.strip():
+        return bridge
+    return without_bridge.rstrip() + "\n\n" + bridge
+
+
+def _sync_codex_agents_bridge(
+    codex_home: Path,
+    hermes_home: Path,
+    *,
+    dry_run: bool = False,
+) -> tuple[Optional[Path], Optional[str]]:
+    """Ensure Codex AGENTS.md contains the Hermes profile context bridge.
+
+    Returns (path, error). The caller records the path on success/dry-run
+    and appends the error to the migration report on failure.
+    """
+    target = codex_home / "AGENTS.md"
+    bridge = _render_codex_agents_bridge(hermes_home)
+    try:
+        existing = target.read_text(encoding="utf-8") if target.exists() else ""
+    except Exception as exc:
+        return target, f"could not read {target}: {exc}"
+    new_text = _insert_codex_agents_bridge(existing, bridge)
+    if new_text == existing:
+        return target, None
+    if dry_run:
+        return target, None
+    try:
+        codex_home.mkdir(parents=True, exist_ok=True)
+        import tempfile
+        tmp_fd, tmp_path_str = tempfile.mkstemp(
+            prefix=".AGENTS.md.", dir=str(codex_home)
+        )
+        tmp_path = Path(tmp_path_str)
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+                fh.write(new_text)
+            tmp_path.replace(target)
+        except Exception:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
+            raise
+    except Exception as exc:
+        return target, f"could not write {target}: {exc}"
+    return target, None
+
+
 def _query_codex_plugins(
     codex_home: Optional[Path] = None,
     timeout: float = 8.0,
@@ -610,10 +714,13 @@ def migrate(
     hermes_config: dict,
     *,
     codex_home: Optional[Path] = None,
+    hermes_home: Optional[Path] = None,
     dry_run: bool = False,
     discover_plugins: bool = True,
-    default_permission_profile: Optional[str] = ":workspace",
+    default_permission_profile: Optional[str] = ":danger-full-access",
+    service_tier: Optional[str] = "fast",
     expose_hermes_tools: bool = True,
+    sync_agents_bridge: bool = True,
 ) -> MigrationReport:
     """Translate Hermes mcp_servers config + Codex curated plugins into
     ~/.codex/config.toml.
@@ -626,23 +733,34 @@ def migrate(
             the live codex CLI to migrate any installed curated plugins
             into [plugins."<name>@<marketplace>"] entries. Set False to
             skip the subprocess spawn (for tests or restricted environments).
-        default_permission_profile: when set (default ":workspace"), write
+        default_permission_profile: when set (default ":danger-full-access"), write
             top-level `default_permissions = "<name>"` so users on this
             runtime don't get an approval prompt on every write attempt.
             Built-in codex profile names are ":workspace", ":read-only",
-            ":danger-no-sandbox" (note the leading ":"). Also accepts a
+            ":danger-full-access" (note the leading ":"). Also accepts a
             user-defined profile name (no leading ":") that the user has
             configured in their own [permissions.<name>] table. Set None
             to leave permissions unset and let codex use its compiled-in
             default (which is read-only).
+        service_tier: when set (default "fast"), write Codex's top-level
+            service_tier in the managed block.
         expose_hermes_tools: when True (default), register Hermes' own
             tool surface (web_search, browser_*, delegate_task, vision,
             memory, skills, etc.) as an MCP server in ~/.codex/config.toml
             so the codex subprocess can call back into Hermes for tools
             codex doesn't have built in. Set False to opt out.
+        sync_agents_bridge: when True (default), add/update a managed block
+            in ~/.codex/AGENTS.md that points Codex-native sessions at
+            Hermes' SOUL.md and built-in MEMORY.md.
     """
     report = MigrationReport(dry_run=dry_run)
     codex_home = codex_home or Path.home() / ".codex"
+    if hermes_home is None:
+        try:
+            from hermes_constants import get_hermes_home
+            hermes_home = get_hermes_home()
+        except Exception:
+            hermes_home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
     target = codex_home / "config.toml"
     report.target_path = target
 
@@ -702,6 +820,7 @@ def migrate(
     managed_block = render_codex_toml_section(
         translated, plugins=plugins,
         default_permission_profile=default_permission_profile,
+        service_tier=service_tier,
     )
 
     # Read existing codex config if any, strip the prior managed block,
@@ -726,6 +845,15 @@ def migrate(
         new_text = managed_block
 
     if dry_run:
+        if sync_agents_bridge:
+            agents_path, agents_err = _sync_codex_agents_bridge(
+                codex_home, hermes_home, dry_run=True
+            )
+            if agents_path:
+                if not agents_err:
+                    report.wrote_agents_bridge = str(agents_path)
+            if agents_err:
+                report.errors.append(agents_err)
         return report
 
     try:
@@ -754,4 +882,13 @@ def migrate(
         report.written = True
     except Exception as exc:
         report.errors.append(f"could not write {target}: {exc}")
+    if sync_agents_bridge:
+        agents_path, agents_err = _sync_codex_agents_bridge(
+            codex_home, hermes_home, dry_run=False
+        )
+        if agents_path:
+            if not agents_err:
+                report.wrote_agents_bridge = str(agents_path)
+        if agents_err:
+            report.errors.append(agents_err)
     return report

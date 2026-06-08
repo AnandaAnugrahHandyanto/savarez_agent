@@ -6,6 +6,8 @@ from __future__ import annotations
 import pytest
 
 from hermes_cli.codex_runtime_plugin_migration import (
+    CODEX_AGENTS_BRIDGE_END,
+    CODEX_AGENTS_BRIDGE_START,
     MIGRATION_MARKER,
     MIGRATION_END_MARKER,
     _build_hermes_tools_mcp_entry,
@@ -231,7 +233,7 @@ class TestRenderToml:
         assert out.startswith(MIGRATION_MARKER)
 
     def test_empty_servers_emits_placeholder(self):
-        out = render_codex_toml_section({})
+        out = render_codex_toml_section({}, service_tier=None)
         assert "no MCP servers" in out
 
     def test_servers_sorted_alphabetically(self):
@@ -312,6 +314,7 @@ class TestMigrate:
     def test_no_servers_no_plugins_no_perms_writes_placeholder(self, tmp_path):
         report = migrate({}, codex_home=tmp_path,
                          discover_plugins=False,
+                         service_tier=None,
                          default_permission_profile=None, expose_hermes_tools=False)
         assert report.written
         text = (tmp_path / "config.toml").read_text()
@@ -328,8 +331,9 @@ class TestMigrate:
         # Codex's schema: top-level `default_permissions` keying a built-in
         # profile name (prefixed with ":"). NOT a [permissions] section
         # (which is for *user-defined* profiles with structured fields).
-        assert 'default_permissions = ":workspace"' in text
-        assert report.wrote_permissions_default == ":workspace"
+        assert 'default_permissions = ":danger-full-access"' in text
+        assert 'service_tier = "fast"' in text
+        assert report.wrote_permissions_default == ":danger-full-access"
 
     def test_explicit_none_permissions_skips_block(self, tmp_path):
         report = migrate({"mcp_servers": {"x": {"command": "y"}}},
@@ -515,6 +519,56 @@ class TestMigrate:
         assert "[mcp_servers.hermes-tools]" not in text
         assert "hermes_tools_mcp_server" not in text
 
+    def test_syncs_codex_agents_bridge_to_hermes_profile_files(self, tmp_path):
+        hermes_home = tmp_path / "hermes-home"
+        report = migrate(
+            {},
+            codex_home=tmp_path / "codex-home",
+            hermes_home=hermes_home,
+            discover_plugins=False,
+            default_permission_profile=None,
+            expose_hermes_tools=False,
+        )
+        agents = tmp_path / "codex-home" / "AGENTS.md"
+        text = agents.read_text()
+
+        assert report.wrote_agents_bridge == str(agents)
+        assert CODEX_AGENTS_BRIDGE_START in text
+        assert CODEX_AGENTS_BRIDGE_END in text
+        assert str(hermes_home / "SOUL.md") in text
+        assert str(hermes_home / "memories" / "MEMORY.md") in text
+
+    def test_sync_codex_agents_bridge_is_idempotent_and_preserves_user_content(self, tmp_path):
+        codex_home = tmp_path / "codex-home"
+        codex_home.mkdir()
+        agents = codex_home / "AGENTS.md"
+        agents.write_text(
+            "# Existing Codex Rules\n\n"
+            "Keep this user-authored guidance.\n\n"
+            f"{CODEX_AGENTS_BRIDGE_START}\n"
+            "old bridge\n"
+            f"{CODEX_AGENTS_BRIDGE_END}\n",
+            encoding="utf-8",
+        )
+
+        new_home = tmp_path / "new-hermes-home"
+        migrate(
+            {},
+            codex_home=codex_home,
+            hermes_home=new_home,
+            discover_plugins=False,
+            default_permission_profile=None,
+            expose_hermes_tools=False,
+        )
+        text = agents.read_text()
+
+        assert "# Existing Codex Rules" in text
+        assert "Keep this user-authored guidance." in text
+        assert "old bridge" not in text
+        assert text.count(CODEX_AGENTS_BRIDGE_START) == 1
+        assert str(new_home / "SOUL.md") in text
+        assert str(new_home / "memories" / "MEMORY.md") in text
+
     def test_dry_run_doesnt_write(self, tmp_path):
         report = migrate({"mcp_servers": {"x": {"command": "y"}}},
                          codex_home=tmp_path, dry_run=True, expose_hermes_tools=False)
@@ -590,8 +644,10 @@ class TestMigrate:
         migrate({}, codex_home=tmp_path, discover_plugins=False, expose_hermes_tools=False)
         new_text = target.read_text()
         parsed = tomllib.loads(new_text)
-        assert parsed["default_permissions"] == ":workspace"
+        assert parsed["default_permissions"] == ":danger-full-access"
+        assert parsed["service_tier"] == "fast"
         assert "default_permissions" not in parsed["features"]
+        assert "service_tier" not in parsed["features"]
         assert new_text.index(MIGRATION_MARKER) < new_text.index("[features]")
 
     def test_preserves_user_mcp_server_outside_managed_block(self, tmp_path):
