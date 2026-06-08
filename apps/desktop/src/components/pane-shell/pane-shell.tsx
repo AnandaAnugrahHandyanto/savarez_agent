@@ -363,14 +363,16 @@ export function Pane({
           className={cn(
             'pointer-events-none absolute inset-y-0 z-30 overflow-hidden transition-transform delay-0',
             offscreen,
-            'group-hover/reveal:pointer-events-auto group-hover/reveal:translate-x-0 group-hover/reveal:delay-[var(--reveal-enter-delay)] group-hover/reveal:shadow-reveal',
-            'group-data-[forced]/reveal:pointer-events-auto group-data-[forced]/reveal:translate-x-0 group-data-[forced]/reveal:delay-0 group-data-[forced]/reveal:shadow-reveal'
+            'group-hover/reveal:pointer-events-auto group-hover/reveal:translate-x-0 group-hover/reveal:delay-[var(--reveal-enter-delay)] group-hover/reveal:shadow-[var(--reveal-shadow)]',
+            'group-data-[forced]/reveal:pointer-events-auto group-data-[forced]/reveal:translate-x-0 group-data-[forced]/reveal:delay-0 group-data-[forced]/reveal:shadow-[var(--reveal-shadow)]'
           )}
           key={edge}
           style={
             {
               [edge]: 0,
               width: overlayWidth,
+              // Inner-edge lift — Brooklyn's tuned value (left); y-offset sign flips for right.
+              '--reveal-shadow': `0px ${side === 'left' ? '-18px' : '18px'} 18px -5px #0000003b`,
               transitionDuration: `${HOVER_REVEAL_SLIDE_MS}ms`,
               transitionTimingFunction: HOVER_REVEAL_EASE,
               '--reveal-enter-delay': `${HOVER_REVEAL_ENTER_DELAY_MS}ms`
