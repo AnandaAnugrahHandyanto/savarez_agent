@@ -77,6 +77,8 @@ const DEFAULT_RESIZE_MIN_WIDTH = 160
 // resize drift, or a pass-through never produces two close samples in a row.
 const HOVER_INTENT_INTERVAL = 90 // ms between position polls
 const HOVER_INTENT_SENSITIVITY = 5 // px; below this between polls === settled
+const HOVER_REVEAL_SLIDE_MS = 260 // panel slide-in duration; inert until elapsed
+const HOVER_REVEAL_GRACE = 24 // px slop around the panel before a revealed pane closes
 
 const widthToCss = (value: WidthValue | undefined, fallback: string) =>
   value === undefined ? fallback : typeof value === 'number' ? `${value}px` : value
@@ -222,14 +224,15 @@ export function Pane({
   const paneStates = useStore($paneStates)
   const registered = useRef(false)
   const paneRef = useRef<HTMLDivElement | null>(null)
+  const panelRef = useRef<HTMLDivElement | null>(null)
   const pointer = useRef({ x: 0, y: 0 }) // live cursor pos (cheap to update)
   const polled = useRef({ x: 0, y: 0 }) // pos at the previous poll
   const pollId = useRef<ReturnType<typeof setTimeout> | null>(null)
   const resizingUntil = useRef(0)
   const [hoverRevealed, setHoverRevealed] = useState(false)
-  // True once the slide-in transition finishes; gates panel contents inert
-  // until then so you can't misclick a row mid-animation.
-  const [settled, setSettled] = useState(false)
+  // True once the slide-in has had time to finish; gates the panel inert until
+  // then so the cursor never flips or lands on a row before it's in view.
+  const [interactive, setInteractive] = useState(false)
 
   const stopPoll = useCallback(() => {
     if (pollId.current !== null) {
@@ -298,6 +301,52 @@ export function Pane({
 
   useEffect(() => stopPoll, [stopPoll])
 
+  // While revealed, drive close off cursor geometry rather than pointer-events
+  // bookkeeping: a panel that slid in under a still cursor never fires
+  // pointerenter/leave, so listen on the document and close once the cursor
+  // leaves the panel rect (plus a grace margin). Robust regardless of what the
+  // panel's contents do with their own transitions/hit-testing.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !hoverRevealed) {
+      return
+    }
+
+    const onMove = (e: PointerEvent) => {
+      const rect = panelRef.current?.getBoundingClientRect()
+
+      if (!rect) {
+        return
+      }
+
+      const out =
+        e.clientX < rect.left - HOVER_REVEAL_GRACE ||
+        e.clientX > rect.right + HOVER_REVEAL_GRACE ||
+        e.clientY < rect.top - HOVER_REVEAL_GRACE ||
+        e.clientY > rect.bottom + HOVER_REVEAL_GRACE
+
+      if (out) {
+        setHoverRevealed(false)
+      }
+    }
+
+    window.addEventListener('pointermove', onMove)
+
+    return () => window.removeEventListener('pointermove', onMove)
+  }, [hoverRevealed])
+
+  // Hold the panel inert for the slide-in duration, then let it take pointers.
+  useEffect(() => {
+    if (!hoverRevealed) {
+      setInteractive(false)
+
+      return
+    }
+
+    const t = setTimeout(() => setInteractive(true), HOVER_REVEAL_SLIDE_MS)
+
+    return () => clearTimeout(t)
+  }, [hoverRevealed])
+
   useEffect(() => {
     if (registered.current) {
       return
@@ -328,14 +377,6 @@ export function Pane({
       setHoverRevealed(false)
     }
   }, [overlayActive])
-
-  // Contents are only interactive once fully revealed; drop the settled flag
-  // the moment the panel starts retracting.
-  useEffect(() => {
-    if (!revealed) {
-      setSettled(false)
-    }
-  }, [revealed])
 
   useEffect(() => {
     onHoverRevealChange?.(revealed)
@@ -430,25 +471,16 @@ export function Pane({
         />
 
         {/* Floating panel — full-height, anchored to the edge, slid off until revealed.
-            Wholly inert (no hit-testing, no cursor) until the slide-in settles, so the
-            cursor never flips or lands on a row before the panel is fully in view. */}
+            Inert (no hit-testing, no cursor) until the slide-in elapses, so the cursor
+            never flips or lands on a row before it's in view. Close is driven by the
+            document pointermove geometry watcher above, not pointerleave. */}
         <div
           className={cn(
             'absolute inset-y-0 z-30 overflow-hidden transition-transform duration-[260ms] ease-[cubic-bezier(0.32,0.72,0,1)]',
-            revealed && settled ? 'pointer-events-auto' : 'pointer-events-none',
+            revealed && interactive ? 'pointer-events-auto' : 'pointer-events-none',
             revealed ? 'translate-x-0' : left ? '-translate-x-[calc(100%+1rem)]' : 'translate-x-[calc(100%+1rem)]'
           )}
-          onPointerEnter={() => setHoverRevealed(true)}
-          onPointerLeave={() => {
-            stopPoll()
-            setHoverRevealed(false)
-            setSettled(false)
-          }}
-          onTransitionEnd={e => {
-            if (e.propertyName === 'transform' && revealed) {
-              setSettled(true)
-            }
-          }}
+          ref={panelRef}
           style={{ [left ? 'left' : 'right']: 0, width: overlayWidth }}
         >
           <div className="flex h-full w-full flex-col">{children}</div>
