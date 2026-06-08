@@ -521,6 +521,47 @@
 2. 当前未重启 gateway/WebUI；该脚本落 live 也不等于运行脚本或修复当前 browser runtime，实际执行 `--check` / `--repair` 需要另行确认。
 3. 6A checkpoint 后，再分别处理 6B `custom Codex proxy cache compat` 与 6C `custom Responses image providers`。
 
+## 第 6B 批执行记录：custom Codex proxy cache compat
+
+状态：**6B 已应用到 live 工作区并完成 focused 验证；本地 checkpoint commit 在本批收尾创建；未 push，未重启**。
+
+范围：恢复 custom `/codex` Responses 网关的 cache compatibility：custom `/codex` 路由识别为 `codex_responses`、Codex request 注入 transport/cache metadata、SessionDB 记录 `prompt_cache_key` / `prompt_cache_supported`。第 6 批其余候选（custom Responses image providers）不混入本批。
+
+- 适用 skill：`codex-proxy-cache-compat`
+- 隔离 worktree：`/workspace/.hermes-worktrees/hermes-agent-runtime-codex-codex-proxy-6b-20260608145311`
+- 隔离分支：`recover/codex-proxy-6b-20260608145311`
+- 基线 HEAD：`b67a0a29b fix(browser): restore WebUI runtime repair script`
+- 候选来源：
+  - `38fc8b285 fix: support custom codex proxy cache compat`
+- 冲突处理：
+  - `hermes_state.py`：保留 live 的 `SCHEMA_VERSION = 15`、QQ scope 字段（`user_id_alt/chat_type/chat_id/thread_id/session_key`）与 `cwd`，同时合入 `prompt_cache_key` / `prompt_cache_supported` 列、insert 参数与 `update_prompt_cache_state` / `get_prompt_cache_state`。
+- 隔离 worktree touched files：
+  - `agent/agent_init.py`
+  - `agent/chat_completion_helpers.py`
+  - `agent/transports/codex.py`
+  - `hermes_cli/runtime_provider.py`
+  - `hermes_state.py`
+  - `tests/agent/transports/test_codex_transport.py`
+  - `tests/hermes_cli/test_runtime_provider_resolution.py`
+  - `tests/run_agent/test_run_agent_codex_responses.py`
+  - `tests/test_hermes_state.py`
+- 隔离验证命令与结果（live 复跑同组命令结果一致）：
+  - `PYTHONDONTWRITEBYTECODE=1 python -m py_compile agent/agent_init.py agent/chat_completion_helpers.py agent/transports/codex.py hermes_cli/runtime_provider.py hermes_state.py tests/agent/transports/test_codex_transport.py tests/hermes_cli/test_runtime_provider_resolution.py tests/run_agent/test_run_agent_codex_responses.py tests/test_hermes_state.py` ✅
+  - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider tests/hermes_cli/test_runtime_provider_resolution.py -q -o addopts=''` ✅ `128 passed in 3.02s`
+  - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider tests/agent/transports/test_codex_transport.py -q -o addopts=''` ✅ `53 passed, 1 warning in 3.98s`
+  - `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/tmp/hermes_test_stubs:${PYTHONPATH:-} python -m pytest -p no:cacheprovider tests/run_agent/test_run_agent_codex_responses.py -q -o addopts=''` ✅ `72 passed, 1 warning in 37.93s`
+  - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider tests/test_hermes_state.py -q -o addopts=''` ✅ `263 passed in 15.08s`
+  - `git diff --check HEAD -- <6B files + recovery audit doc>` ✅
+  - `*.pyc` 缓存清理与复查 ✅ `deleted_pyc=9`，最终 `0`
+- 当前隔离 worktree 状态：保留 staged candidate diff 作为来源证据。
+- live 状态：已应用 6B 代码并完成 focused 验证；未 push，未重启。live 仍有非本轮未跟踪文档 `docs/codex-workflow-local-capability-and-external-recommendations-2026-06-08.md`，本批未触碰。
+
+下一步选择：
+
+1. 本批收尾创建本地 checkpoint commit，作为 6B stable point。
+2. 当前未重启 gateway/WebUI；cache compat 的运行态验证需要 reload/restart 后用同一 stable thread / endpoint / model 检查 `cached_tokens` / `cache_read_tokens`，另行确认。
+3. 6B checkpoint 后，再处理 6C `custom Responses image providers`。
+
 ## 当前待办
 
 - [x] 第 0 批：初版恢复清单。
@@ -531,5 +572,5 @@
 - [x] 第 5 批：guarded Codex workflow tools（已落 live 并完成 focused 验证；未 push/未重启）。
 - [x] 第 5B 批：strong raw Codex implementation block（已落 live 并完成 focused 验证；未 push/未重启）。
 - [x] 第 6A 批：browser runtime repair script（已落 live 并完成 focused 验证；未 push/未重启）。
-- [ ] 第 6B 批：custom Codex proxy cache compat。
+- [x] 第 6B 批：custom Codex proxy cache compat（已落 live 并完成 focused 验证；未 push/未重启）。
 - [ ] 第 6C 批：custom Responses image providers。
