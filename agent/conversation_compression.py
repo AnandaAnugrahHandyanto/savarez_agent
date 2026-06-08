@@ -507,6 +507,15 @@ def compress_context(
             agent._session_db.end_session(agent.session_id, "compression")
             old_session_id = agent.session_id
             agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+            # Reset the flush cursor the instant the id rotates — the new
+            # session starts empty, so the whole compressed transcript must be
+            # re-flushed. This must be tied to the rotation itself, not to the
+            # success of the create_session/title/system-prompt calls below: if
+            # any of those raise (lock contention, disk full, schema drift) the
+            # except clause only logs, and a stale pre-compression cursor would
+            # make flush_from exceed the (shorter) compressed list, silently
+            # dropping the entire transcript from the canonical SQLite store.
+            agent._last_flushed_db_idx = 0
             try:
                 from gateway.session_context import set_current_session_id
 
@@ -530,8 +539,6 @@ def compress_context(
                 except (ValueError, Exception) as e:
                     logger.debug("Could not propagate title on compression: %s", e)
             agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
-            # Reset flush cursor — new session starts with no messages written
-            agent._last_flushed_db_idx = 0
         except Exception as e:
             logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 
