@@ -106,3 +106,29 @@ class TestCumulativeMessageDedup:
         assert result.output_text == "hello world"
         assert len(result.output) == 1
         assert result.output[0].content[0].text == "hello world"
+
+    def test_output_text_not_duplicated_by_cumulative_items(self):
+        """When cumulative message items are deduped, output_text must use
+        the final item's text — not the joined deltas (which contain every
+        prefix-superset, producing quadratic duplication)."""
+        # Simulate Bedrock mantle: 3 cumulative message items + matching deltas
+        msg_a = _make_message_item("Hello")
+        msg_ab = _make_message_item("Hello, world")
+        msg_abc = _make_message_item("Hello, world! How are you?")
+        events = [
+            _make_event("response.output_item.done", item=msg_a),
+            _make_event("response.output_text.delta", delta="Hello"),
+            _make_event("response.output_item.done", item=msg_ab),
+            _make_event("response.output_text.delta", delta=", world"),
+            _make_event("response.output_item.done", item=msg_abc),
+            _make_event("response.output_text.delta", delta="! How are you?"),
+            _make_event("response.completed", response=SimpleNamespace(
+                status="completed", usage=None, id="r1",
+            )),
+        ]
+        result = _consume_codex_event_stream(iter(events), model="test")
+        # output_items: only the last message kept
+        assert len(result.output) == 1
+        assert result.output[0].content[0].text == "Hello, world! How are you?"
+        # output_text: must match the deduped item, NOT "HelloHello, worldHello, world! How are you?"
+        assert result.output_text == "Hello, world! How are you?"
