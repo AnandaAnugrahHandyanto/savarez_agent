@@ -10161,6 +10161,14 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
 
     token = ws.query_params.get("token", "")
     if not token:
+        bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
+        allow_lan_unauth = os.getenv("HERMES_DASHBOARD_ALLOW_LAN_UNAUTH_WS", "").lower() in {"true", "1", "yes"}
+        if allow_lan_unauth and bound_host and bound_host not in _LOOPBACK_HOSTS:
+            # LAN-only compatibility mode for native desktop clients that can
+            # reach /api/status but do not append the injected session token to
+            # /api/ws.  Only applies to explicit non-loopback --insecure binds
+            # and must be enabled by environment variable.
+            return None, "lan-unauth"
         return "no_credential", "none"
     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
         return None, "token"
