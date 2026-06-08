@@ -6046,3 +6046,29 @@ def test_sniff_image_ext_magic_and_filename():
     assert server._sniff_image_ext(b"unknown") == ".png"  # fallback
     # filename hint wins over magic bytes
     assert server._sniff_image_ext(b"\x89PNG", "photo.jpeg") == ".jpeg"
+
+
+def test_tool_ctx_respects_global_preview_length():
+    """_tool_ctx should defer to the global _tool_preview_max_len, not hardcode 80."""
+    from agent.display import set_tool_preview_max_len
+
+    long_cmd = "a" * 200
+
+    # With global set to 0 (unlimited), preview should contain the full command
+    set_tool_preview_max_len(0)
+    result = server._tool_ctx("terminal", {"command": long_cmd})
+    assert long_cmd in result
+
+    # With global set to 50, preview should be truncated
+    set_tool_preview_max_len(50)
+    result = server._tool_ctx("terminal", {"command": long_cmd})
+    assert long_cmd not in result
+    assert "..." in result
+
+    # Cleanup
+    set_tool_preview_max_len(0)
+
+
+def test_tool_ctx_empty_args_returns_empty():
+    """_tool_ctx returns empty string for tools with no args."""
+    assert server._tool_ctx("terminal", {}) == ""
