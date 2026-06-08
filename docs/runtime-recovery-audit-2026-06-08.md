@@ -252,7 +252,7 @@
 
 ## 第 2 批执行记录：compression / gateway recovery 2A
 
-状态：**2A 已落到 live 工作区并完成 focused 验证，未 commit，未 push，未重启**。
+状态：**2A 已落到 live 并创建本地稳定 commit，未 push，未重启**。
 
 范围：2A 只恢复 `provider-error compression retry + recovery halt`；2B（wall-clock cap + session split persistence）未做。
 
@@ -291,18 +291,60 @@
   - `git diff --check HEAD` ✅
   - `*.pyc` 缓存清理与复查 ✅ `deleted_pyc=8`，最终 `0`
 - 当前隔离 worktree 状态：保留 staged candidate diff，未 commit。
-- live 状态：2A 代码已应用到 live 工作区；未 commit，未 push，未重启。另发现一个非本轮未跟踪文档 `docs/codex-workflow-local-capability-and-external-recommendations-2026-06-08.md`，本批未触碰。
+- live 状态：2A 代码已应用到 live 工作区并创建本地 commit `1a85a7009 fix(compression): restore provider-error recovery halt`；未 push，未重启。另发现一个非本轮未跟踪文档 `docs/codex-workflow-local-capability-and-external-recommendations-2026-06-08.md`，本批未触碰。
+
+## 第 2 批执行记录：compression / gateway recovery 2B
+
+状态：**2B 已应用到 live 工作区并完成 focused 验证；本地 checkpoint commit 在本批收尾创建；未 push，未重启**。
+
+范围：2B 恢复 `compression wall-clock cap + gateway session split persistence`。
+
+- 隔离 worktree：`/workspace/.hermes-worktrees/hermes-agent-runtime-codex-compression-2b-20260608115841`
+- 隔离分支：`recover/compression-2b-20260608115841`
+- 基线 HEAD：`1a85a7009 fix(compression): restore provider-error recovery halt`
+- 候选来源：
+  - `502fb91ca fix: cap compression wall-clock latency`
+  - `92d1b7c43 fix: preserve compression session splits on gateway errors`
+- 冲突处理：
+  - `gateway/run.py`：保留当前 live 的 `_dispose_unused_adapter` fd-leak 修复，同时加入 2B 的 `_messages_to_persist_after_agent_run`，没有整文件覆盖旧版本。
+- 隔离 worktree touched files：
+  - `agent/agent_init.py`
+  - `agent/context_compressor.py`
+  - `gateway/run.py`
+  - `hermes_cli/config.py`
+  - `tests/agent/test_context_compressor.py`
+  - `tests/run_agent/test_413_compression.py`
+  - `tests/test_compression_session_split_persistence.py`
+- 隔离验证命令与结果：
+  - `python -m py_compile agent/context_compressor.py agent/agent_init.py gateway/run.py hermes_cli/config.py tests/agent/test_context_compressor.py tests/run_agent/test_413_compression.py tests/test_compression_session_split_persistence.py` ✅
+  - `python -m pytest tests/agent/test_context_compressor.py -q -o addopts=''` ✅ `116 passed, 1 warning in 7.35s`
+  - `python -m pytest tests/run_agent/test_413_compression.py -q -o addopts=''` ✅ `49 passed, 1 warning in 29.84s`
+  - `python -m pytest tests/test_compression_session_split_persistence.py -q -o addopts=''` ✅ `8 passed, 1 warning in 4.22s`
+  - `python -m pytest tests/run_agent/test_compression_persistence.py tests/run_agent/test_compression_feasibility.py -q -o addopts=''` ✅ `22 passed, 1 warning in 33.05s`
+  - `git diff --cached --check` ✅
+  - `*.pyc` 缓存清理与复查 ✅ `deleted_pyc=7`，最终 `0`
+- 当前隔离 worktree 状态：保留 staged candidate diff，未 commit。
+- live 应用方式：从隔离 worktree 生成 staged binary patch `/tmp/hermes-compression-2b-live.patch`，`git apply --check` 通过后应用到 live。
+- live 验证命令与结果：
+  - `python -m py_compile agent/context_compressor.py agent/agent_init.py gateway/run.py hermes_cli/config.py tests/agent/test_context_compressor.py tests/run_agent/test_413_compression.py tests/test_compression_session_split_persistence.py` ✅
+  - `python -m pytest tests/agent/test_context_compressor.py -q -o addopts=''` ✅ `116 passed, 1 warning in 7.72s`
+  - `python -m pytest tests/run_agent/test_413_compression.py -q -o addopts=''` ✅ `49 passed, 1 warning in 26.94s`
+  - `python -m pytest tests/test_compression_session_split_persistence.py -q -o addopts=''` ✅ `8 passed, 1 warning in 4.43s`
+  - `python -m pytest tests/run_agent/test_compression_persistence.py tests/run_agent/test_compression_feasibility.py -q -o addopts=''` ✅ `22 passed, 1 warning in 8.78s`
+  - `git diff --check HEAD -- <2B files + recovery audit doc>` ✅
+  - `*.pyc` 缓存清理与复查 ✅ `deleted_pyc=7`，最终 `0`
+- live 状态：2B 代码已应用到 live 工作区并完成同组 focused verification；未 push，未重启。另有非本轮未跟踪文档 `docs/codex-workflow-local-capability-and-external-recommendations-2026-06-08.md`，本批未触碰。
 
 下一步选择：
 
-1. 建议先为第 2 批 2A live diff 做本地 commit 稳定点，再继续 2B。
-2. 当前未重启 gateway/WebUI；如果需要运行态加载 2A，必须另行确认 restart/reload。
+1. 第 2 批 2B 完成本地 checkpoint commit 后，第 2 批代码恢复线可视为 live 工作区本地稳定点。
+2. 当前未重启 gateway/WebUI；如果需要运行态加载第 2 批，必须另行确认 restart/reload。
 
 ## 当前待办
 
 - [x] 第 0 批：初版恢复清单。
 - [x] 第 1 批：session_search scope handoff（已落 live 并本地 commit，未 push/未重启）。
-- [>] 第 2 批：compression / gateway recovery（2A 已落 live 工作区并通过 focused 验证，未 commit/未重启；2B 未做）。
+- [x] 第 2 批：compression / gateway recovery（2A 已落 live 并本地 commit；2B 已落 live 并完成 focused 验证；未 push/未重启）。
 - [ ] 第 3 批：process / Codex output governance。
 - [ ] 第 4 批：terminal raw Codex policy。
 - [ ] 第 5 批：guarded Codex workflow tools。
