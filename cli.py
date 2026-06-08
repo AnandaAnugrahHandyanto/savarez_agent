@@ -3369,6 +3369,15 @@ class HermesCLI(CLICommandsMixin):
             self._session_db = SessionDB()
         except Exception as e:
             logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
+            # Surface a visible warning so the user knows their session
+            # won't be resumable.  See #41386.
+            import sys as _sys
+            print(
+                "\n⚠ Session store unavailable — this session will NOT be "
+                "saved or resumable.",
+                file=_sys.stderr,
+                flush=True,
+            )
 
         # Opportunistic state.db maintenance — runs at most once per
         # min_interval_hours, tracked via state_meta in state.db itself so
@@ -5156,6 +5165,21 @@ class HermesCLI(CLICommandsMixin):
                 self._session_db = SessionDB()
             except Exception as e:
                 logger.warning("SQLite session store not available — session will NOT be indexed: %s", e)
+                # Surface a visible warning so the user knows their session
+                # won't be resumable.  Without this, the agent appears healthy
+                # but the transcript is only in memory and lost on exit.
+                # See #41386.
+                import sys as _sys
+                print(
+                    "\n⚠ Session store unavailable — this session will NOT be "
+                    "saved or resumable.\n"
+                    f"  Reason: {e}\n"
+                    "  The chat works normally for this run, but /resume and "
+                    "Desktop session history\n"
+                    "  will not show this conversation.\n",
+                    file=_sys.stderr,
+                    flush=True,
+                )
         
         # If resuming, validate the session exists and load its history.
         # _preload_resumed_session() may have already loaded it (called from
