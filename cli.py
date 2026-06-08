@@ -5155,7 +5155,18 @@ class HermesCLI(CLICommandsMixin):
                 from hermes_state import SessionDB
                 self._session_db = SessionDB()
             except Exception as e:
-                logger.warning("SQLite session store not available — session will NOT be indexed: %s", e)
+                logger.error("SQLite session store not available — refusing unindexed session: %s", e)
+                if os.environ.get("HERMES_ALLOW_UNINDEXED_SESSION") == "1":
+                    logger.warning(
+                        "HERMES_ALLOW_UNINDEXED_SESSION=1 set; continuing without session indexing"
+                    )
+                else:
+                    ChatConsole().print(
+                        "[bold red]Session persistence unavailable.[/] "
+                        "Refusing to start because this chat would not be saved. "
+                        f"Fix state.db/hermes_state.py first. Detail: {e}"
+                    )
+                    return False
         
         # If resuming, validate the session exists and load its history.
         # _preload_resumed_session() may have already loaded it (called from

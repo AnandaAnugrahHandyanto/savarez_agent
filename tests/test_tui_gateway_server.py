@@ -894,6 +894,17 @@ def _session(agent=None, **extra):
     }
 
 
+class _NoopSessionDB:
+    def create_session(self, *args, **kwargs):
+        return None
+
+    def replace_messages(self, *args, **kwargs):
+        return None
+
+    def set_session_title(self, *args, **kwargs):
+        return None
+
+
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     calls = {"hooks": []}
 
@@ -1378,7 +1389,7 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
                 "messages": [{"role": "assistant", "content": "ok"}],
             }
 
-    class _FakeDB:
+    class _FakeDB(_NoopSessionDB):
         def set_session_title(self, _key, _title):
             raise ValueError("Title already in use")
 
@@ -1423,6 +1434,75 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
         assert session["pending_title"] is None
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_rejects_when_state_db_unavailable(monkeypatch):
+    """A real prompt must not run as an apparently normal live-only chat.
+
+    session.create may stay lazy without state.db because it has no user data yet,
+    but once the user submits a prompt the gateway must fail loudly instead of
+    letting the agent answer in memory while no transcript can be indexed.
+    """
+    server._sessions["sid"] = _session()
+    calls = {"started": False}
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda *a, **kw: calls.__setitem__("started", True),
+    )
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "prompt.submit", "params": {"session_id": "sid", "text": "hello"}}
+        )
+
+        assert resp["error"]["code"] == 5037
+        assert "state.db unavailable" in resp["error"]["message"]
+        assert "would not be saved" in resp["error"]["message"]
+        assert server._sessions["sid"]["running"] is False
+        assert calls["started"] is False
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_truncate_rejects_when_state_db_unavailable(monkeypatch):
+    """Edit/retry truncation must not mutate live history unless DB rewrite works."""
+    history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "second"},
+    ]
+    server._sessions["sid"] = _session(history=list(history))
+    calls = {"started": False}
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda *a, **kw: calls.__setitem__("started", True),
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": "edited second",
+                    "truncate_before_user_ordinal": 1,
+                },
+            }
+        )
+
+        assert resp["error"]["code"] == 5037
+        assert server._sessions["sid"]["history"] == history
+        assert server._sessions["sid"]["history_version"] == 0
+        assert server._sessions["sid"]["running"] is False
+        assert calls["started"] is False
+    finally:
+        server._sessions.pop("sid", None)
+
 
 
 def test_config_set_yolo_toggles_session_scope():
@@ -3343,7 +3423,7 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
     ]
     server._sessions["sid"] = _session(agent=_Agent(), history=original_history)
 
-    class _StubDb:
+    class _StubDb(_NoopSessionDB):
         def __init__(self):
             self.replaced = []
 
@@ -4233,7 +4313,7 @@ def test_prompt_submit_auto_titles_session_on_complete(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
-    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_get_db", lambda: _NoopSessionDB())
 
     with patch("agent.title_generator.maybe_auto_title") as mock_title:
         server.handle_request(
@@ -4269,7 +4349,7 @@ def test_prompt_submit_skips_auto_title_when_interrupted(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
-    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_get_db", lambda: _NoopSessionDB())
 
     with patch("agent.title_generator.maybe_auto_title") as mock_title:
         server.handle_request(
@@ -4300,7 +4380,7 @@ def test_prompt_submit_skips_auto_title_when_response_empty(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
-    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_get_db", lambda: _NoopSessionDB())
 
     with patch("agent.title_generator.maybe_auto_title") as mock_title:
         server.handle_request(
@@ -4343,7 +4423,7 @@ def test_prompt_submit_surfaces_backend_error_as_visible_text(monkeypatch):
     )
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
-    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_get_db", lambda: _NoopSessionDB())
 
     server.handle_request(
         {
@@ -4388,7 +4468,7 @@ def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
     )
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
-    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_get_db", lambda: _NoopSessionDB())
 
     server.handle_request(
         {
@@ -4500,7 +4580,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
     server._sessions["sid-live"] = _session(agent=_Agent())
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
-    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_get_db", lambda: _NoopSessionDB())
     monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
 
     def _emit(event, sid, payload=None):
