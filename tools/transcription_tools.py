@@ -12,7 +12,7 @@ Provides speech-to-text transcription with six providers:
   - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
     Inverse Text Normalization, diarization, 21 languages.
   - **elevenlabs** — ElevenLabs Scribe API, requires ``ELEVENLABS_API_KEY``.
-  - **mimo** — Xiaomi MiMo ASR API, requires ``MIMO_API_KEY``.
+  - **mimo** — Xiaomi MiMo ASR API, requires ``MIMO_API_KEY`` or ``XIAOMI_API_KEY``.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
