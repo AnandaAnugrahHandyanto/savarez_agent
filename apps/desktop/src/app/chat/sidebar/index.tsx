@@ -288,6 +288,13 @@ function sourceSessionGroupsFor(sessions: SessionInfo[]): {
   }
 }
 
+function nestedSessionGroupsForProfile(sessions: SessionInfo[], noWorkspaceLabel: string): SidebarSessionGroup[] {
+  const { localSessions, sourceGroups } = sourceSessionGroupsFor(sessions)
+  const localGroups = workspaceGroupsFor(localSessions, noWorkspaceLabel, { preserveSessionOrder: sourceGroups.length > 0 })
+
+  return [...sourceGroups, ...localGroups]
+}
+
 function useSortableBindings(id: string) {
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id })
 
@@ -564,8 +571,9 @@ export function ChatSidebar({
     [onLoadMoreProfileSessions]
   )
 
-  // ALL-profiles view: one collapsible group per profile, color on the header
-  // (not on every row). Default profile floats to the top, the rest alpha.
+  // ALL-profiles view: top-level lanes are profiles, then each profile keeps
+  // the usual source/workspace subgroups. That preserves the ownership mental
+  // model without flattening away Discord/cron/local distinctions.
   const profileGroups = useMemo<SidebarSessionGroup[] | undefined>(() => {
     if (!showAllProfiles) {
       return undefined
@@ -613,6 +621,13 @@ export function ChatSidebar({
   const displayAgentSessions = sourceGroups.length ? localAgentSessions : agentSessions
 
   const displayAgentGroups = useMemo(() => {
+    // In ALL-profiles scope, the primary mental model is profile ownership.
+    // Keep Discord/Telegram/etc. source badges on rows, but don't let source
+    // grouping mask the profile lanes the user explicitly asked to browse.
+    if (showAllProfiles) {
+      return profileGroups
+    }
+
     if (orderedSourceGroups.length) {
       const localGroups = agentsGrouped
         ? agentGroups
@@ -631,7 +646,7 @@ export function ChatSidebar({
       return orderByIds([...orderedSourceGroups, ...localGroups], g => g.id, workspaceOrderIds)
     }
 
-    return showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : undefined
+    return agentsGrouped ? agentGroups : undefined
   }, [
     agentGroups,
     agentsGrouped,
@@ -1257,6 +1272,11 @@ function SidebarWorkspaceGroup({
   const hiddenCount = Math.max(0, totalCount - visibleSessions.length)
   const nextCount = Math.min(pageStep, hiddenCount)
 
+  const nestedGroups = useMemo(
+    () => (isProfileGroup ? nestedSessionGroupsForProfile(visibleSessions, s.noWorkspace) : []),
+    [isProfileGroup, s.noWorkspace, visibleSessions]
+  )
+
   // Reveal already-loaded rows first; only hit the backend when the next page
   // crosses what's been fetched for this profile.
   const handleProfileLoadMore = () => {
@@ -1344,7 +1364,15 @@ function SidebarWorkspaceGroup({
       </div>
       {open && (
         <>
-          {renderRows(visibleSessions)}
+          {isProfileGroup ? (
+            <div className="grid gap-px pl-2">
+              {nestedGroups.map(childGroup => (
+                <SidebarWorkspaceGroup group={childGroup} key={childGroup.id} renderRows={renderRows} />
+              ))}
+            </div>
+          ) : (
+            renderRows(visibleSessions)
+          )}
           {hiddenCount > 0 &&
             (isProfileGroup ? (
               <SidebarLoadMoreRow
