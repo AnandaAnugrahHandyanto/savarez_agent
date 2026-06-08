@@ -4377,15 +4377,17 @@ class TelegramAdapter(BasePlatformAdapter):
         text = _wrap_markdown_tables(text)
 
         # 1) Protect fenced code blocks (``` ... ```)
-        #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.
+        #    Per MarkdownV2 spec, these characters must be escaped inside
+        #    pre/code blocks too: \ ` * _ { } [ ] ( ) # + - . ! >
         def _protect_fenced(m):
             raw = m.group(0)
             # Split off opening ``` (with optional language) and closing ```
-            open_end = raw.index('\n') + 1 if '\n' in raw[3:] else 3
+            _m = re.search(r'```[^\n]*\n', raw)
+            open_end = _m.end() if _m else 3
             opening = raw[:open_end]
             body_and_close = raw[open_end:]
             body = body_and_close[:-3]
-            body = body.replace('\\', '\\\\').replace('`', '\\`')
+            body = _escape_mdv2(body)
             return _ph(opening + body + '```')
 
         text = re.sub(
@@ -4395,10 +4397,15 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
         # 2) Protect inline code (`...`)
-        #    Escape \ inside inline code per MarkdownV2 spec.
+        #    Per MarkdownV2 spec, all special chars must be escaped inside code.
+        def _protect_inline(m):
+            inner = m.group(0)[1:-1]  # strip outer backticks
+            escaped = _escape_mdv2(inner)
+            return _ph(f'`{escaped}`')
+
         text = re.sub(
             r'(`[^`]+`)',
-            lambda m: _ph(m.group(0).replace('\\', '\\\\')),
+            _protect_inline,
             text,
         )
 
