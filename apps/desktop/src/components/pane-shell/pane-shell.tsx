@@ -71,15 +71,13 @@ const DEFAULT_WIDTH = '16rem'
 const DEFAULT_RESIZE_MIN_WIDTH = 160
 
 // Hover-reveal slide. The enter delay is a pure-CSS hover-intent gate: a fast
-// pass-through (toward the titlebar/statusbar, or a resize-edge grab) doesn't
-// dwell on the trigger long enough for the delay to elapse, so it never opens.
+// pass-by doesn't dwell on the trigger long enough for the delay to elapse.
 const HOVER_REVEAL_SLIDE_MS = 220
 const HOVER_REVEAL_ENTER_DELAY_MS = 130
 const HOVER_REVEAL_EASE = 'cubic-bezier(0.32,0.72,0,1)'
-// Thin edge strip that arms the reveal on hover, inset past the OS window-resize
-// grab area so dragging the window edge doesn't trigger it.
-const HOVER_REVEAL_TRIGGER_WIDTH = 14 // px
-const HOVER_REVEAL_EDGE_GUTTER = 6 // px
+// Edge trigger strip, inset past the OS window-resize grab area.
+const HOVER_REVEAL_TRIGGER_WIDTH = 14
+const HOVER_REVEAL_EDGE_GUTTER = 6
 
 // Fired (window CustomEvent<{ id }>) to toggle a force-collapsed pane's reveal
 // from the keyboard, since its store-open toggle is a no-op while collapsed.
@@ -229,8 +227,7 @@ export function Pane({
   const paneStates = useStore($paneStates)
   const registered = useRef(false)
   const paneRef = useRef<HTMLDivElement | null>(null)
-  // Keyboard (mod+b / mod+j) pins the reveal open while collapsed, independent
-  // of hover. Hover open/close is pure CSS (see the overlay markup).
+  // Keyboard (mod+b / mod+j) pins the reveal open while collapsed; hover is CSS.
   const [forced, setForced] = useState(false)
 
   const slot = ctx?.paneById.get(id)
@@ -251,8 +248,8 @@ export function Pane({
     ensurePaneRegistered(id, { open: defaultOpen })
   }, [defaultOpen, id])
 
-  // Keyboard toggle while collapsed: pin/unpin the reveal. Clear the pin if the
-  // pane stops being a collapsed overlay (reopened / widened).
+  // Keyboard toggle pins/unpins the reveal while collapsed; clear when no longer
+  // a collapsed overlay (reopened / widened).
   useEffect(() => {
     if (typeof window === 'undefined' || !overlayActive) {
       setForced(false)
@@ -271,8 +268,7 @@ export function Pane({
     return () => window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, onToggle)
   }, [id, overlayActive])
 
-  // Keep contents MOUNTED while collapsed so reveal is a pure CSS transform (no
-  // mount stall on the slide). Visibility is handled by hover/forced in markup.
+  // Keep contents mounted while collapsed so reveal is a pure CSS transform.
   useEffect(() => {
     onHoverRevealChange?.(overlayActive)
   }, [onHoverRevealChange, overlayActive])
@@ -336,17 +332,13 @@ export function Pane({
     return null
   }
 
-  // Collapsed hover-reveal track: the grid cell stays 0px (no reserved space)
-  // and is pointer-transparent. A thin edge trigger + the floating panel live
-  // inside it, escaping the zero box via absolute positioning. Open/close is
-  // pure CSS — group-hover (or data-forced from the keyboard) drives a transform
-  // — with a transition-delay on the way IN as a hover-intent gate: a fast
-  // pass-by (toward the titlebar/statusbar or a resize-edge grab) doesn't dwell
-  // long enough for the delay to elapse, so it never opens. No JS pointer math.
+  // Collapsed hover-reveal track: a 0px, pointer-transparent grid cell holding a
+  // thin edge trigger + the floating panel (both absolute, escaping the zero
+  // box). group-hover (or data-forced from the keyboard) drives the slide; the
+  // enter-delay is the hover-intent gate. No JS pointer math.
   if (overlayActive) {
-    const left = slot.side === 'left'
-    const edge = left ? 'left' : 'right'
-    const offscreen = left ? '-translate-x-[calc(100%+1rem)]' : 'translate-x-[calc(100%+1rem)]'
+    const edge = side === 'left' ? 'left' : 'right'
+    const offscreen = side === 'left' ? '-translate-x-[calc(100%+1rem)]' : 'translate-x-[calc(100%+1rem)]'
 
     return (
       <div
@@ -355,27 +347,21 @@ export function Pane({
         data-pane-hover-reveal={forced ? 'open' : 'closed'}
         data-pane-id={id}
         data-pane-open="false"
-        data-pane-side={slot.side}
+        data-pane-side={side}
         ref={paneRef}
         style={{ gridColumn: `${slot.column} / ${slot.column + 1}` }}
       >
-        {/* Thin edge trigger — hovering it (group-hover) reveals. Inset past the
-            OS window-resize grab strip so dragging the window edge won't open it. */}
         <div
           aria-hidden="true"
           className="pointer-events-auto absolute inset-y-0 z-30 [-webkit-app-region:no-drag]"
           style={{ [edge]: HOVER_REVEAL_EDGE_GUTTER, width: HOVER_REVEAL_TRIGGER_WIDTH }}
         />
 
-        {/* Floating panel — full-height, edge-anchored, slid off until revealed.
-            group-hover (trigger or panel) OR data-forced slides it in; intent
-            delay on enter, instant on leave. Inert + transparent while hidden.
-            Keyed on side so flipping panes remounts it off-screen on the new
-            edge instead of transitioning the transform across the viewport. */}
+        {/* Keyed on side so flipping panes remounts off-screen on the new edge
+            instead of transitioning the transform across the viewport. */}
         <div
           className={cn(
-            'pointer-events-none absolute inset-y-0 z-30 overflow-hidden',
-            'transition-transform delay-0 ease-[var(--reveal-ease)] duration-[var(--reveal-slide)]',
+            'pointer-events-none absolute inset-y-0 z-30 overflow-hidden transition-transform delay-0',
             offscreen,
             'group-hover/reveal:pointer-events-auto group-hover/reveal:translate-x-0 group-hover/reveal:delay-[var(--reveal-enter-delay)]',
             'group-data-[forced]/reveal:pointer-events-auto group-data-[forced]/reveal:translate-x-0 group-data-[forced]/reveal:delay-0'
@@ -385,9 +371,9 @@ export function Pane({
             {
               [edge]: 0,
               width: overlayWidth,
-              '--reveal-slide': `${HOVER_REVEAL_SLIDE_MS}ms`,
-              '--reveal-enter-delay': `${HOVER_REVEAL_ENTER_DELAY_MS}ms`,
-              '--reveal-ease': HOVER_REVEAL_EASE
+              transitionDuration: `${HOVER_REVEAL_SLIDE_MS}ms`,
+              transitionTimingFunction: HOVER_REVEAL_EASE,
+              '--reveal-enter-delay': `${HOVER_REVEAL_ENTER_DELAY_MS}ms`
             } as CSSProperties
           }
         >
