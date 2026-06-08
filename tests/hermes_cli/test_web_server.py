@@ -1617,6 +1617,56 @@ class TestWebServerEndpoints:
         assert data["ok"] is True
         assert data.get("gateway_tools", []) == []
 
+    def test_set_model_auxiliary_clears_stale_base_url_on_provider_switch(self):
+        """Switching an auxiliary task's provider must drop a stale base_url
+        that belonged to the old provider, same as the main-slot contract.
+        Same-provider re-assignment preserves the user's custom endpoint."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["auxiliary"] = {
+            "compression": {
+                "provider": "custom",
+                "model": "llama-3.1-8b",
+                "base_url": "http://127.0.0.1:8000/v1",
+            },
+        }
+        save_config(cfg)
+
+        # Switch provider (custom → openrouter) → stale base_url cleared.
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "auxiliary", "provider": "openrouter", "model": "anthropic/claude-opus-4.8", "task": "compression"},
+        )
+        assert resp.status_code == 200
+        aux = load_config().get("auxiliary", {})
+        assert aux["compression"]["provider"] == "openrouter"
+        assert not aux["compression"].get("base_url")
+
+        # Same provider, no new base_url → existing custom endpoint preserved.
+        cfg["auxiliary"]["compression"] = {
+            "provider": "xiaomi",
+            "model": "mimo-v2.5-pro",
+            "base_url": "https://token-plan-ams.xiaomimimo.com/v1",
+        }
+        save_config(cfg)
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "auxiliary", "provider": "xiaomi", "model": "mimo-v2.5", "task": "compression"},
+        )
+        assert resp.status_code == 200
+        aux = load_config().get("auxiliary", {})
+        assert aux["compression"]["base_url"] == "https://token-plan-ams.xiaomimimo.com/v1"
+
+        # Explicit base_url is honored for any provider.
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "auxiliary", "provider": "openrouter", "model": "gpt-4o", "task": "compression", "base_url": "https://custom.example.com/v1"},
+        )
+        assert resp.status_code == 200
+        aux = load_config().get("auxiliary", {})
+        assert aux["compression"]["base_url"] == "https://custom.example.com/v1"
+
     def test_recommended_default_nous_honors_free_tier(self, monkeypatch):
         """For a free-tier Nous user, the recommended default must be a free
         model (mirroring `hermes model`), not the first curated paid entry."""

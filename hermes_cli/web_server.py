@@ -2487,8 +2487,17 @@ async def set_model_assignment(body: ModelAssignment):
             slot_cfg = aux.get(slot)
             if not isinstance(slot_cfg, dict):
                 slot_cfg = {}
+            prev_provider = str(slot_cfg.get("provider", "") or "").strip().lower()
+            new_provider = provider.strip().lower()
             slot_cfg["provider"] = provider
             slot_cfg["model"] = model
+            if base_url.strip():
+                slot_cfg["base_url"] = base_url.strip()
+            elif slot_cfg.get("base_url") and new_provider != prev_provider:
+                # Switching providers: the old URL belonged to the old provider, drop
+                # it so the new provider's default endpoint is used. Same-provider
+                # re-assignment keeps the user's configured base_url intact.
+                slot_cfg.pop("base_url", None)
             aux[slot] = slot_cfg
 
         cfg["auxiliary"] = aux
