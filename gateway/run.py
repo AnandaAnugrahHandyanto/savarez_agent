@@ -17387,9 +17387,13 @@ class GatewayRunner:
             # "all" / "new" modes: short preview, respects tool_preview_length
             # config (defaults to 40 chars when unset to keep gateway messages
             # compact — unlike CLI spinners, these persist as permanent messages).
-            if _bash_block is not None:
-                msg = _bash_block
-            elif preview:
+            #
+            # NB: ``_bash_block`` (full ```bash fenced block) is intentionally
+            # skipped here — fenced blocks are only shown in ``verbose`` mode.
+            # In compact/all/new modes, a short preview line keeps Discord chats
+            # clean instead of filling them with full terminal command output.
+            # See #41732.
+            if preview:
                 from agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()
                 _cap = _pl if _pl > 0 else 40
