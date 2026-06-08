@@ -663,7 +663,10 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
         for f in skill_path.rglob("*"):
             if f.is_file():
                 rel = str(f.relative_to(skill_path))
-                if ignore(rel):
+                # `.skillignore` can only suppress findings on inert doc/data
+                # files; runnable files are always scanned (see
+                # _is_safely_ignorable) so a hostile bundle can't hide a payload.
+                if ignore(rel) and _is_safely_ignorable(f):
                     continue
                 all_findings.extend(scan_file(f, rel))
     elif skill_path.is_file():
@@ -822,7 +825,10 @@ def _check_structure(skill_dir: Path, ignore=None) -> List[Finding]:
             continue
 
         rel = str(f.relative_to(skill_dir))
-        if ignore(rel):
+        # Only inert doc/data files may be ignored here; runnable files
+        # (scripts, binaries, symlinks, executables) are always counted and
+        # structurally checked even when an ignore pattern matches them.
+        if ignore(rel) and _is_safely_ignorable(f):
             continue
         file_count += 1
 
@@ -961,6 +967,42 @@ _SKILL_IGNORE_FILENAMES = (".skillignore", ".clawhubignore")
 # which can never be un-scanned via the ignore file.
 _ALWAYS_IGNORED_NAMES = set(_SKILL_IGNORE_FILENAMES)
 _NEVER_IGNORABLE = {"SKILL.md"}
+
+# Extensions a `.skillignore` is allowed to exclude from the scan. The whole
+# skill bundle is installed verbatim (install_from_quarantine moves the entire
+# directory), so an ignore pattern that hides a file means the file lands on
+# disk *unscanned* — not absent. To stop a malicious bundle from smuggling a
+# runnable payload past the guard (e.g. `.skillignore: scripts/` + a hostile
+# `scripts/setup.sh`), only clearly inert documentation/data files may be
+# excluded. Anything runnable — scripts, binaries, extensionless files,
+# anything with the executable bit, or a symlink — is ALWAYS scanned even when
+# an ignore pattern matches it.
+_SAFE_IGNORABLE_EXTENSIONS = {
+    ".md", ".markdown", ".rst", ".txt", ".text", ".log",
+    ".json", ".jsonl", ".ndjson", ".csv", ".tsv",
+    ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf",
+    ".html", ".htm", ".css", ".xml",
+}
+
+
+def _is_safely_ignorable(path: Path) -> bool:
+    """Whether a file matched by `.skillignore` may actually be skipped.
+
+    Only inert, non-executable documentation/data files qualify. Returns False
+    for symlinks, executables, binaries, extensionless files, and anything
+    outside ``_SAFE_IGNORABLE_EXTENSIONS`` so those are scanned regardless of
+    the skill author's ignore patterns. Fails closed (scan it) on any OS error.
+    """
+    try:
+        if path.is_symlink():
+            return False
+        if path.suffix.lower() not in _SAFE_IGNORABLE_EXTENSIONS:
+            return False
+        if path.stat().st_mode & 0o111:
+            return False
+    except OSError:
+        return False
+    return True
 
 
 def _load_skill_ignore(skill_dir: Path):
