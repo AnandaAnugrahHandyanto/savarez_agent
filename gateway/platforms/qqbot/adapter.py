@@ -134,6 +134,7 @@ from gateway.platforms.qqbot.keyboards import (
     parse_interaction_event,
     parse_update_prompt_button_data,
 )
+from utils import safe_expanduser
 
 
 def check_qq_requirements() -> bool:
@@ -2985,7 +2986,7 @@ class QQAdapter(BasePlatformAdapter):
         if not self._http_client:
             raise RuntimeError("HTTP client not initialized — not connected?")
 
-        local_path = Path(media_source).expanduser()
+        local_path = safe_expanduser(media_source)
         if not local_path.is_absolute():
             local_path = (Path.cwd() / local_path).resolve()
 
@@ -3028,7 +3029,7 @@ class QQAdapter(BasePlatformAdapter):
 
         # Local file — encode as raw base64 for QQ Bot API file_data field.
         # The QQ API expects plain base64, NOT a data URI.
-        local_path = Path(source).expanduser()
+        local_path = safe_expanduser(source)
         if not local_path.is_absolute():
             local_path = (Path.cwd() / local_path).resolve()
 

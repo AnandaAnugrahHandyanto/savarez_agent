@@ -468,6 +468,7 @@ import time as _time
 from datetime import datetime
 
 from hermes_cli import __version__, __release_date__
+from utils import safe_expanduser
 logger = logging.getLogger(__name__)
 
 
@@ -7382,7 +7383,7 @@ def _electron_download_cache_dirs() -> list[Path]:
     seen: set[Path] = set()
     out: list[Path] = []
     for c in candidates:
-        rc = c.expanduser()
+        rc = safe_expanduser(c)
         if rc not in seen:
             seen.add(rc)
             out.append(rc)
@@ -7542,9 +7543,9 @@ def cmd_gui(args: argparse.Namespace):
     if getattr(args, "ignore_existing", False):
         env["HERMES_DESKTOP_IGNORE_EXISTING"] = "1"
     if getattr(args, "hermes_root", None):
-        env["HERMES_DESKTOP_HERMES_ROOT"] = str(Path(args.hermes_root).expanduser().resolve())
+        env["HERMES_DESKTOP_HERMES_ROOT"] = str(safe_expanduser(args.hermes_root).resolve())
     if getattr(args, "cwd", None):
-        env["HERMES_DESKTOP_CWD"] = str(Path(args.cwd).expanduser().resolve())
+        env["HERMES_DESKTOP_CWD"] = str(safe_expanduser(args.cwd).resolve())
 
     source_mode = getattr(args, "source", False)
     skip_build = getattr(args, "skip_build", False)

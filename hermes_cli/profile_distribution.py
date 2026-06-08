@@ -71,6 +71,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
+from utils import safe_expanduser
 
 
 # ---------------------------------------------------------------------------
@@ -417,7 +418,7 @@ def _stage_source(source: str, workdir: Path) -> Tuple[Path, str]:
         return cloned, src_str
 
     # Local directory
-    path_guess = Path(src_str).expanduser()
+    path_guess = safe_expanduser(src_str)
     if path_guess.is_dir():
         if not (path_guess / MANIFEST_FILENAME).is_file():
             raise DistributionError(

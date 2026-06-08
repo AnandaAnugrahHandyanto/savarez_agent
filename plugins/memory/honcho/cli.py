@@ -1303,7 +1303,8 @@ def cmd_identity(args) -> None:
         return
 
     from pathlib import Path
-    p = Path(file_path).expanduser()
+    from utils import safe_expanduser
+    p = safe_expanduser(file_path)
     if not p.exists():
         print(f"  File not found: {p}\n")
         return

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import os
+from utils import safe_expanduser
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +182,7 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     local cache > hardcoded defaults.
     """
     codex_home_str = os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")
-    codex_home = Path(codex_home_str).expanduser()
+    codex_home = safe_expanduser(codex_home_str)
     ordered: List[str] = []
 
     # Try live API if we have a token

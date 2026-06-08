@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from urllib.parse import urljoin
 
+from utils import safe_expanduser
 from utils import is_truthy_value
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
@@ -647,7 +648,7 @@ def _transcribe_command_stt(
             "error": f"stt.providers.{provider_name}.command is not configured",
         }
 
-    audio = Path(file_path).expanduser()
+    audio = safe_expanduser(file_path)
     if not audio.exists():
         return {
             "success": False,

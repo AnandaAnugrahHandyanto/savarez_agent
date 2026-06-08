@@ -173,6 +173,7 @@ from hermes_cli.browser_connect import (
     try_launch_chrome_debug,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
+from utils import safe_expanduser
 from utils import base_url_host_matches
 
 _hermes_home = get_hermes_home()
@@ -295,7 +296,7 @@ def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
     """
     if not file_path:
         return []
-    path = Path(file_path).expanduser()
+    path = safe_expanduser(file_path)
     if not path.is_absolute():
         path = _hermes_home / path
     if not path.exists():

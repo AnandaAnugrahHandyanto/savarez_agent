@@ -20,6 +20,7 @@ import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from utils import safe_expanduser
 from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
@@ -986,7 +987,7 @@ def _path_under_denied_prefix(resolved: Path) -> bool:
         home = None
     for denied in _media_delivery_denied_paths():
         try:
-            resolved_denied = denied.expanduser().resolve(strict=False)
+            resolved_denied = safe_expanduser(denied).resolve(strict=False)
         except (OSError, RuntimeError, ValueError):
             continue
         if not (_path_is_within(resolved, resolved_denied) or resolved == resolved_denied):
@@ -1074,7 +1075,7 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
     # trusted regardless of mode.
     for root in _media_delivery_allowed_roots():
         try:
-            resolved_root = root.expanduser().resolve(strict=False)
+            resolved_root = safe_expanduser(root).resolve(strict=False)
         except (OSError, RuntimeError, ValueError):
             continue
         if _path_is_within(resolved, resolved_root):

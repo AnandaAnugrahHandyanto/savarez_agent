@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from itertools import count
 from pathlib import Path
 from typing import Any, Callable
+from utils import safe_expanduser
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ def get_edit_approval_requester() -> EditApprovalRequester | None:
 
 
 def _read_text_if_exists(path: str) -> str | None:
-    p = Path(path).expanduser()
+    p = safe_expanduser(path)
     if not p.exists():
         return None
     if not p.is_file():
@@ -138,7 +139,7 @@ def build_edit_proposal(tool_name: str, arguments: dict[str, Any]) -> EditPropos
 
 
 def _is_sensitive_auto_approve_path(path: str) -> bool:
-    parts = Path(path).expanduser().parts
+    parts = safe_expanduser(path).parts
     lowered = {part.lower() for part in parts}
     if ".git" in lowered or ".ssh" in lowered:
         return True
@@ -155,7 +156,7 @@ def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | Non
     policy = str(policy or AUTO_APPROVE_ASK).strip()
     if policy == AUTO_APPROVE_ASK or _is_sensitive_auto_approve_path(proposal.path):
         return False
-    path = Path(proposal.path).expanduser().resolve(strict=False)
+    path = safe_expanduser(proposal.path).resolve(strict=False)
     if policy == AUTO_APPROVE_SESSION:
         return True
     if policy == AUTO_APPROVE_WORKSPACE:
@@ -169,7 +170,7 @@ def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | Non
         except ValueError:
             pass
         if cwd:
-            root = Path(cwd).expanduser().resolve(strict=False)
+            root = safe_expanduser(cwd).resolve(strict=False)
             try:
                 path.relative_to(root)
                 return True

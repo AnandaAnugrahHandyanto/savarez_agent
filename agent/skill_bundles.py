@@ -51,6 +51,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from hermes_constants import get_hermes_home
+from utils import safe_expanduser
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ def _bundles_dir() -> Path:
     """
     override = os.environ.get("HERMES_BUNDLES_DIR")
     if override:
-        return Path(override).expanduser()
+        return safe_expanduser(override)
     return get_hermes_home() / "skill-bundles"
 
 

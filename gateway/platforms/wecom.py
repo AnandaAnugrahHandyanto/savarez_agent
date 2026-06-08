@@ -68,6 +68,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
+from utils import safe_expanduser
 
 logger = logging.getLogger(__name__)
 
@@ -1134,9 +1135,9 @@ class WeComAdapter(BasePlatformAdapter):
             return data, content_type, resolved_name
 
         if parsed.scheme == "file":
-            local_path = Path(unquote(parsed.path)).expanduser()
+            local_path = safe_expanduser(unquote(parsed.path))
         else:
-            local_path = Path(source).expanduser()
+            local_path = safe_expanduser(source)
 
         if not local_path.is_absolute():
             local_path = (Path.cwd() / local_path).resolve()

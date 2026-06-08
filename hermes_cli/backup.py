@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_default_hermes_root, get_hermes_home, display_hermes_home
+from utils import safe_expanduser
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,7 @@ def run_backup(args) -> None:
 
     # Determine output path
     if args.output:
-        out_path = Path(args.output).expanduser().resolve()
+        out_path = safe_expanduser(args.output).resolve()
         # If user gave a directory, put the zip inside it
         if out_path.is_dir():
             stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
@@ -315,7 +316,7 @@ def _detect_prefix(zf: zipfile.ZipFile) -> str:
 
 def run_import(args) -> None:
     """Restore a Hermes backup from a zip file."""
-    zip_path = Path(args.zipfile).expanduser().resolve()
+    zip_path = safe_expanduser(args.zipfile).resolve()
 
     if not zip_path.is_file():
         print(f"Error: File not found: {zip_path}")

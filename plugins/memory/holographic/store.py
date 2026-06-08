@@ -7,6 +7,7 @@ import re
 import sqlite3
 import threading
 from pathlib import Path
+from utils import safe_expanduser
 
 try:
     from . import holographic as hrr
@@ -107,7 +108,7 @@ class MemoryStore:
         if db_path is None:
             from hermes_constants import get_hermes_home
             db_path = str(get_hermes_home() / "memory_store.db")
-        self.db_path = Path(db_path).expanduser()
+        self.db_path = safe_expanduser(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.default_trust = _clamp_trust(default_trust)
         self.hrr_dim = hrr_dim

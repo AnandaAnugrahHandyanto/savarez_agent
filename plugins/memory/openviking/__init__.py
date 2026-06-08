@@ -40,6 +40,7 @@ from urllib.request import url2pathname
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
+from utils import safe_expanduser
 
 logger = logging.getLogger(__name__)
 
@@ -402,7 +403,7 @@ def _path_from_file_uri(uri: str) -> Path | str:
     parsed = urlparse(uri)
     if parsed.netloc not in {"", "localhost"}:
         return f"Unsupported non-local file URI: {uri}"
-    return Path(url2pathname(parsed.path)).expanduser()
+    return safe_expanduser(url2pathname(parsed.path))
 
 
 # ---------------------------------------------------------------------------
@@ -933,7 +934,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         elif parsed_url.scheme and not _is_windows_absolute_path(url):
             source_path = None
         else:
-            source_path = Path(url).expanduser()
+            source_path = safe_expanduser(url)
 
         cleanup_path: Optional[Path] = None
         try:

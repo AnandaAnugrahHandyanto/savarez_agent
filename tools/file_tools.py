@@ -136,10 +136,10 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     """
     live = _get_live_tracking_cwd(task_id)
     if live:
-        base = Path(live).expanduser()
+        base = safe_expanduser(live)
     else:
         raw = os.environ.get("TERMINAL_CWD")
-        base = Path(raw).expanduser() if raw else Path(os.getcwd())
+        base = safe_expanduser(raw) if raw else Path(os.getcwd())
     if not base.is_absolute():
         # A relative base (".", "./sub", "..") is anchored to the process cwd
         # once, here, so the result no longer depends on cwd at resolve() time.
@@ -153,7 +153,7 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
     """
-    p = Path(filepath).expanduser()
+    p = safe_expanduser(filepath)
     if p.is_absolute():
         return p.resolve()
     return (_resolve_base_dir(task_id) / p).resolve()
@@ -170,12 +170,12 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
     or the resolved path is correctly under the workspace root.
     """
     try:
-        if Path(filepath).expanduser().is_absolute():
+        if safe_expanduser(filepath).is_absolute():
             return None
         live = _get_live_tracking_cwd(task_id)
         if not live:
             return None  # No authoritative workspace root to compare against.
-        root = Path(live).expanduser().resolve()
+        root = safe_expanduser(live).resolve()
         # Is `resolved` inside `root`?
         try:
             resolved.relative_to(root)
@@ -253,7 +253,7 @@ def _get_hermes_config_resolved() -> str | None:
         _hermes_config_resolved = str(get_config_path().resolve())
     except Exception:
         try:
-            _hermes_config_resolved = str(Path("~/.hermes/config.yaml").expanduser().resolve())
+            _hermes_config_resolved = str(safe_expanduser("~/.hermes/config.yaml").resolve())
         except Exception:
             _hermes_config_resolved = None
     return _hermes_config_resolved
@@ -1365,6 +1365,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
 # Schemas + Registry
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
+from utils import safe_expanduser
 
 
 def _check_file_reqs():

@@ -21,6 +21,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from utils import safe_expanduser
 
 
 def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
@@ -137,7 +138,7 @@ def slack_manifest_command(args) -> int:
             except Exception:
                 target = Path(os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")) / "slack-manifest.json"
         else:
-            target = Path(write_target).expanduser()
+            target = safe_expanduser(write_target)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(payload, encoding="utf-8")
         print(f"Slack manifest written to: {target}", file=sys.stderr)

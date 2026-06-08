@@ -46,6 +46,7 @@ import httpx
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
+from utils import safe_expanduser
 from utils import atomic_replace, atomic_yaml_write, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -3582,7 +3583,7 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
     codex_home = os.getenv("CODEX_HOME", "").strip()
     if not codex_home:
         codex_home = str(Path.home() / ".codex")
-    auth_path = Path(codex_home).expanduser() / "auth.json"
+    auth_path = safe_expanduser(codex_home) / "auth.json"
     if not auth_path.is_file():
         return None
     try:
@@ -4347,7 +4348,7 @@ def _nous_shared_auth_dir() -> Path:
     """
     override = os.getenv("HERMES_SHARED_AUTH_DIR", "").strip()
     if override:
-        return Path(override).expanduser()
+        return safe_expanduser(override)
     from hermes_constants import get_default_hermes_root
     return get_default_hermes_root() / "shared"
 

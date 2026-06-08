@@ -1306,6 +1306,7 @@ def is_linux() -> bool:
 
 
 from hermes_constants import is_container, is_termux, is_wsl
+from utils import safe_expanduser
 
 
 def _wsl_systemd_operational() -> bool:
@@ -2255,7 +2256,7 @@ def _remap_path_for_user(path: str, target_home_dir: str) -> str:
     its own environment. Lexical expansion only via ``expanduser``.
     """
     current_home = Path.home()
-    p = Path(path).expanduser()
+    p = safe_expanduser(path)
     try:
         relative = p.relative_to(current_home)
         return str(Path(target_home_dir) / relative)

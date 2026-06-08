@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from agent.model_metadata import estimate_tokens_rough
+from utils import safe_expanduser
 
 _QUOTED_REFERENCE_VALUE = r'(?:`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\')'
 REFERENCE_PATTERN = re.compile(
@@ -141,11 +142,11 @@ async def preprocess_context_references_async(
     if not refs:
         return ContextReferenceResult(message=message, original_message=message)
 
-    cwd_path = Path(cwd).expanduser().resolve()
+    cwd_path = safe_expanduser(cwd).resolve()
     # Default to the current working directory so @ references cannot escape
     # the active workspace unless a caller explicitly widens the root.
     allowed_root_path = (
-        Path(allowed_root).expanduser().resolve() if allowed_root is not None else cwd_path
+        safe_expanduser(allowed_root).resolve() if allowed_root is not None else cwd_path
     )
     warnings: list[str] = []
     blocks: list[str] = []

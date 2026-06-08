@@ -870,6 +870,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
+from utils import safe_expanduser
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
 _hermes_home = get_hermes_home()
 
@@ -3099,7 +3100,7 @@ class GatewayRunner:
                 file_path = str(cfg_get(cfg, "agent", "prefill_messages_file", default="") or "")
         if not file_path:
             return []
-        path = Path(file_path).expanduser()
+        path = safe_expanduser(file_path)
         if not path.is_absolute():
             path = _hermes_home / path
         if not path.exists():
@@ -5347,7 +5348,7 @@ class GatewayRunner:
                         slug = board_meta.get("slug") or _kb.DEFAULT_BOARD
                         db_path = board_meta.get("db_path")
                         try:
-                            resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(_kb.kanban_db_path(slug).resolve())
+                            resolved_db_path = str(safe_expanduser(db_path).resolve()) if db_path else str(_kb.kanban_db_path(slug).resolve())
                         except Exception:
                             resolved_db_path = f"slug:{slug}"
                         if resolved_db_path in seen_db_paths:
@@ -5956,7 +5957,7 @@ class GatewayRunner:
         def _board_db_fingerprint(slug: str) -> tuple[str, int | None, int | None]:
             path = _kb.kanban_db_path(slug)
             try:
-                resolved = str(path.expanduser().resolve())
+                resolved = str(safe_expanduser(path).resolve())
             except Exception:
                 resolved = str(path)
             try:

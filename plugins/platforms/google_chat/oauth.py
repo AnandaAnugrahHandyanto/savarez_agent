@@ -91,6 +91,7 @@ except (ModuleNotFoundError, ImportError):
         except ValueError:
             return str(home)
 
+from utils import safe_expanduser
 from utils import atomic_replace
 
 
@@ -413,7 +414,7 @@ def check_auth(email: Optional[str] = None) -> bool:
 
 def store_client_secret(path: str) -> None:
     """Validate and copy the user's OAuth client_secret.json into HERMES_HOME."""
-    src = Path(path).expanduser().resolve()
+    src = safe_expanduser(path).resolve()
     if not src.exists():
         print(f"ERROR: File not found: {src}")
         sys.exit(1)

@@ -89,6 +89,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from toolsets import get_toolset_names
+from utils import safe_expanduser
 
 _log = logging.getLogger(__name__)
 
@@ -279,7 +280,7 @@ def kanban_home() -> Path:
     """
     override = os.environ.get("HERMES_KANBAN_HOME", "").strip()
     if override:
-        return Path(override).expanduser()
+        return safe_expanduser(override)
     from hermes_constants import get_default_hermes_root
     return get_default_hermes_root()
 
@@ -422,7 +423,7 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     """
     override = os.environ.get("HERMES_KANBAN_DB", "").strip()
     if override:
-        return Path(override).expanduser()
+        return safe_expanduser(override)
     slug = _normalize_board_slug(board)
     if slug is None:
         slug = get_current_board()
@@ -444,7 +445,7 @@ def workspaces_root(board: Optional[str] = None) -> Path:
     """
     override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
     if override:
-        return Path(override).expanduser()
+        return safe_expanduser(override)
     slug = _normalize_board_slug(board)
     if slug is None:
         slug = get_current_board()
@@ -474,7 +475,7 @@ def attachments_root(board: Optional[str] = None) -> Path:
     """
     override = os.environ.get("HERMES_KANBAN_ATTACHMENTS_ROOT", "").strip()
     if override:
-        return Path(override).expanduser()
+        return safe_expanduser(override)
     slug = _normalize_board_slug(board)
     if slug is None:
         slug = get_current_board()
@@ -3778,7 +3779,7 @@ def _is_managed_scratch_path(p: Path) -> bool:
     override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
     if override:
         try:
-            roots.append(Path(override).expanduser().resolve(strict=False))
+            roots.append(safe_expanduser(override).resolve(strict=False))
         except OSError:
             pass
     try:
@@ -4710,7 +4711,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
             # Legacy scratch tasks that were set to an explicit path get the
             # same absolute-path guard as dir: — consistent with the
             # threat model.
-            p = Path(task.workspace_path).expanduser()
+            p = safe_expanduser(task.workspace_path)
             if not p.is_absolute():
                 raise ValueError(
                     f"task {task.id} has non-absolute workspace_path "
@@ -4725,7 +4726,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
             raise ValueError(
                 f"task {task.id} has workspace_kind=dir but no workspace_path"
             )
-        p = Path(task.workspace_path).expanduser()
+        p = safe_expanduser(task.workspace_path)
         if not p.is_absolute():
             raise ValueError(
                 f"task {task.id} has non-absolute workspace_path "
@@ -4738,7 +4739,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         if not task.workspace_path:
             # Default: .worktrees/<id>/ under CWD.  Worker skill creates it.
             return Path.cwd() / ".worktrees" / task.id
-        p = Path(task.workspace_path).expanduser()
+        p = safe_expanduser(task.workspace_path)
         if not p.is_absolute():
             raise ValueError(
                 f"task {task.id} has non-absolute worktree path "

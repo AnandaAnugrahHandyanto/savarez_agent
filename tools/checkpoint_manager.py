@@ -60,6 +60,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, List, Optional, Set, Tuple
 
+from utils import safe_expanduser
 from utils import env_int
 
 logger = logging.getLogger(__name__)
@@ -194,7 +195,7 @@ def _validate_file_path(file_path: str, working_dir: str) -> Optional[str]:
 
 def _normalize_path(path_value: str) -> Path:
     """Return a canonical absolute path for checkpoint operations."""
-    return Path(path_value).expanduser().resolve()
+    return safe_expanduser(path_value).resolve()
 
 
 def _project_hash(working_dir: str) -> str:

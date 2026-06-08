@@ -150,6 +150,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
 }
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from utils import safe_expanduser
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -985,7 +986,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
 
-    raw = Path(script_path).expanduser()
+    raw = safe_expanduser(script_path)
     if raw.is_absolute():
         path = raw.resolve()
     else:
@@ -1668,7 +1669,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             or agent_cfg.get("prefill_messages_file", "")
         )
         if prefill_file:
-            pfpath = Path(prefill_file).expanduser()
+            pfpath = safe_expanduser(prefill_file)
             if not pfpath.is_absolute():
                 pfpath = _get_hermes_home() / pfpath
             if pfpath.exists():

@@ -17,6 +17,7 @@ from agent.skill_preprocessing import (
     load_skills_config as _load_skills_config,
     substitute_template_vars as _substitute_template_vars,
 )
+from utils import safe_expanduser
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         from tools.skills_tool import SKILLS_DIR, skill_view
         from agent.skill_utils import get_external_skills_dirs
 
-        identifier_path = Path(raw_identifier).expanduser()
+        identifier_path = safe_expanduser(raw_identifier)
         if identifier_path.is_absolute():
             normalized = None
             trusted_roots = [SKILLS_DIR]

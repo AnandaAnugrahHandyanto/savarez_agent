@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 from . import disk_cleanup as dg
+from utils import safe_expanduser
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ def _drain(task_id: str, session_id: str) -> Set[str]:
 def _attempt_track(path_str: str, task_id: str, session_id: str) -> None:
     """Best-effort auto-track. Never raises."""
     try:
-        p = Path(path_str).expanduser()
+        p = safe_expanduser(path_str)
     except Exception:
         return
     if not p.exists():

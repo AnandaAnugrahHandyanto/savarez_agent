@@ -61,6 +61,7 @@ from hermes_cli.config import (
     redact_key,
 )
 from gateway.status import get_running_pid, read_runtime_status
+from utils import safe_expanduser
 from utils import env_var_enabled
 
 try:
@@ -844,7 +845,7 @@ async def get_media(path: str):
     (resolved, symlink-safe) so it can't be used to read arbitrary files.
     """
     try:
-        target = Path(path).expanduser().resolve()
+        target = safe_expanduser(path).resolve()
     except (OSError, RuntimeError):
         raise HTTPException(status_code=400, detail="Invalid path")
 

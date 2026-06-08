@@ -16,6 +16,7 @@ import argparse
 import struct
 import sys
 from pathlib import Path
+from utils import safe_expanduser
 
 
 def _write_wav(path: str, samples, sample_rate: int = 24000) -> None:
@@ -60,8 +61,8 @@ def main():
     args = parser.parse_args()
 
     # Validate inputs
-    ref_audio = Path(args.ref_audio).expanduser()
-    ref_text_path = Path(args.ref_text).expanduser()
+    ref_audio = safe_expanduser(args.ref_audio)
+    ref_text_path = safe_expanduser(args.ref_text)
     if not ref_audio.exists():
         print(f"Error: reference audio not found: {ref_audio}", file=sys.stderr)
         sys.exit(1)

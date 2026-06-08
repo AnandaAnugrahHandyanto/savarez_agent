@@ -22,6 +22,7 @@ from typing import Optional, Dict, List, Any, Union
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
+from utils import safe_expanduser
 from utils import atomic_replace
 
 try:
@@ -509,7 +510,7 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     raw = str(workdir).strip()
     if not raw:
         return None
-    expanded = Path(raw).expanduser()
+    expanded = safe_expanduser(raw)
     if not expanded.is_absolute():
         raise ValueError(
             f"Cron workdir must be an absolute path (got {raw!r}). "

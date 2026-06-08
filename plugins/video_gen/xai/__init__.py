@@ -36,6 +36,7 @@ from agent.video_gen_provider import (
     error_response,
     success_response,
 )
+from utils import safe_expanduser
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +134,7 @@ def _image_ref_to_xai_url(value: str) -> str:
     if lower.startswith(("http://", "https://", "data:image/")):
         return ref
 
-    path = Path(ref).expanduser()
+    path = safe_expanduser(ref)
     if not path.is_file():
         return ref
 

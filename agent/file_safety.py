@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Optional
+from utils import safe_expanduser
 
 
 def _hermes_home_path() -> Path:
@@ -207,7 +208,7 @@ def get_read_block_error(path: str) -> Optional[str]:
     ``"auth.json"`` would otherwise miss the denylist when the task's
     terminal cwd differs from the process cwd.
     """
-    resolved = Path(path).expanduser().resolve()
+    resolved = safe_expanduser(path).resolve()
 
     # Resolve BOTH the active HERMES_HOME (profile-aware) AND the global
     # Hermes root so credential stores at <root>/auth.json etc. are also

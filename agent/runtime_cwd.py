@@ -14,6 +14,7 @@ import os
 from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Any
+from utils import safe_expanduser
 
 _UNSET: Any = object()
 
@@ -39,12 +40,12 @@ def _session_cwd_override() -> str:
 def resolve_agent_cwd() -> Path:
     override = _session_cwd_override()
     if override:
-        p = Path(override).expanduser()
+        p = safe_expanduser(override)
         if p.is_dir():
             return p
     raw = os.environ.get("TERMINAL_CWD", "").strip()
     if raw:
-        p = Path(raw).expanduser()
+        p = safe_expanduser(raw)
         if p.is_dir():
             return p
     return Path(os.getcwd())
@@ -57,6 +58,6 @@ def resolve_context_cwd() -> Path | None:
     # or, per session, the _SESSION_CWD contextvar above.
     override = _session_cwd_override()
     if override:
-        return Path(override).expanduser()
+        return safe_expanduser(override)
     raw = os.environ.get("TERMINAL_CWD", "").strip()
-    return Path(raw).expanduser() if raw else None
+    return safe_expanduser(raw) if raw else None
