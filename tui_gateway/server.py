@@ -458,6 +458,70 @@ def _get_db():
     return _db
 
 
+def _ensure_runtime_sessions_table(db) -> None:
+    """Create the runtime_sessions mapping table if it doesn't exist.
+
+    Maps runtime_id (short, e.g. 'ab12cd34') to stored_id (long, e.g.
+    '20260608_141705_b1ad02') so that session recovery can translate
+    the runtime_id received from the client into the stored_id used as
+    the primary key in state.db."""
+    try:
+        db._conn.execute(
+            "CREATE TABLE IF NOT EXISTS runtime_sessions ("
+            "  runtime_id TEXT PRIMARY KEY,"
+            "  stored_id TEXT NOT NULL,"
+            "  mapped_at REAL NOT NULL DEFAULT (strftime('%s','now'))"
+            ")"
+        )
+    except Exception:
+        pass
+
+
+def _register_runtime_session(db, runtime_id: str, stored_id: str) -> None:
+    """Register a runtime_id → stored_id mapping so session recovery
+    can find the session by its runtime_id after a gateway restart."""
+    if db is None:
+        return
+    try:
+        _ensure_runtime_sessions_table(db)
+        db._conn.execute(
+            "INSERT OR REPLACE INTO runtime_sessions (runtime_id, stored_id) VALUES (?, ?)",
+            (runtime_id, stored_id),
+        )
+    except Exception:
+        logger.debug("failed to register runtime session mapping", exc_info=True)
+
+
+def _clear_runtime_session(db, runtime_id: str) -> None:
+    """Remove a runtime_id → stored_id mapping (e.g. on session.close)."""
+    if db is None:
+        return
+    try:
+        db._conn.execute(
+            "DELETE FROM runtime_sessions WHERE runtime_id = ?",
+            (runtime_id,),
+        )
+    except Exception:
+        logger.debug("failed to clear runtime session mapping", exc_info=True)
+
+
+def _resolve_stored_id(db, runtime_id: str) -> str | None:
+    """Look up the stored_id for a given runtime_id.
+
+    Returns the stored_id string, or None if no mapping exists."""
+    if db is None:
+        return None
+    try:
+        _ensure_runtime_sessions_table(db)
+        row = db._conn.execute(
+            "SELECT stored_id FROM runtime_sessions WHERE runtime_id = ?",
+            (runtime_id,),
+        ).fetchone()
+        return row["stored_id"] if row else None
+    except Exception:
+        return None
+
+
 def _db_unavailable_error(rid, *, code: int):
     detail = _db_error or "state.db unavailable"
     return _err(rid, code, f"state.db unavailable: {detail}")
@@ -784,11 +848,20 @@ def _recover_session_from_db(sid: str, params: dict) -> dict | None:
     except Exception:
         return None
     if not found:
+        # The sid from the client is a runtime_id (short), but the db uses
+        # stored_id (long) as primary key.  Try the runtime_sessions mapping.
+        stored = _resolve_stored_id(db, sid)
+        if stored:
+            try:
+                found = db.get_session(stored)
+            except Exception:
+                found = None
+    if not found:
         return None
     # Rebuild the session from state.db — same shape as session.create
     key = found.get("id") or sid
     try:
-        history = db.get_messages_as_conversation(sid)
+        history = db.get_messages_as_conversation(key)
     except Exception:
         history = []
     cols = int(params.get("cols", 80))
@@ -3225,6 +3298,9 @@ def _(rid, params: dict) -> dict:
             "transport": current_transport() or _stdio_transport,
         }
         _register_session_cwd(_sessions[sid])
+    # Register runtime_id → stored_id mapping so session recovery works
+    # after a gateway restart.
+    _register_runtime_session(_get_db(), sid, key)
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop
     # launch (and every "New agent" / draft) opens a session here just to paint
     # the composer, so eagerly creating a row left an "Untitled" empty session
@@ -3459,6 +3535,9 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, payload)
         try:
             _init_session(sid, target, agent, history, cols=cols)
+            # Register runtime_id → stored_id mapping so resumed session
+            # can be recovered after a gateway restart.
+            _register_runtime_session(_get_db(), sid, target)
             if sid in _sessions:
                 _sessions[sid]["display_history_prefix"] = display_history_prefix
                 # Remember the profile home so each turn re-binds HERMES_HOME (the
@@ -4074,6 +4153,7 @@ def _(rid, params: dict) -> dict:
         if not session:
             return _ok(rid, {"closed": False})
         _teardown_session(session)
+    _clear_runtime_session(_get_db(), sid)
     return _ok(rid, {"closed": True})
 
 
