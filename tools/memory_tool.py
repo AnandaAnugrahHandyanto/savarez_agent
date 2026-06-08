@@ -333,8 +333,8 @@ class MemoryStore:
                         f"Memory at {current:,}/{limit:,} chars. "
                         f"Adding this entry ({len(content)} chars) would exceed the limit. "
                         f"Consolidate now: use 'replace' to merge overlapping entries into "
-                        f"shorter ones or 'remove' stale entries (see current_entries below), "
-                        f"then retry this add — all in this turn."
+                        f"shorter ones or 'remove' stale or less important entries (see "
+                        f"current_entries below), then retry this add — all in this turn."
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
@@ -397,8 +397,9 @@ class MemoryStore:
                     "success": False,
                     "error": (
                         f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
-                        f"Shorten the new content, or 'remove' other stale entries to make "
-                        f"room (see current_entries below), then retry — all in this turn."
+                        f"Shorten the new content, or 'remove' other stale or less important "
+                        f"entries to make room (see current_entries below), then retry — all "
+                        f"in this turn."
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
