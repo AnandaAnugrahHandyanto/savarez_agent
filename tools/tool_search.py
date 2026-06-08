@@ -160,17 +160,41 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
+def _get_deferrable_allowlist() -> frozenset[str]:
+    """Read ``tools.deferrable`` from config and return as a frozen set.
+
+    Cached for the process lifetime — changing config requires a restart.
+    """
+    try:
+        from hermes_cli.config import load_config as _load
+        cfg = _load() or {}
+        tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
+        if not isinstance(tools_cfg, dict):
+            return frozenset()
+        raw = tools_cfg.get("deferrable", [])
+        if isinstance(raw, (list, tuple, set)):
+            return frozenset(raw)
+        return frozenset()
+    except Exception:
+        return frozenset()
+
+
 def is_deferrable_tool_name(name: str) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
     A tool is deferrable iff it is registered with an MCP toolset prefix
     OR it is not in ``_HERMES_CORE_TOOLS``. Core tools are never deferred
     even when their toolset is technically plugin-provided (this protects
-    against accidental shadowing).
+    against accidental shadowing), unless explicitly listed in
+    ``tools.deferrable`` config.
     """
     if name in BRIDGE_TOOL_NAMES:
         return False
     if name in _core_tool_names():
+        # Check force-defer allowlist from config
+        _allowlist = _get_deferrable_allowlist()
+        if name in _allowlist:
+            return True
         return False
     # Check registry toolset for MCP prefix.
     try:
