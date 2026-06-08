@@ -8,6 +8,7 @@ import {
   type DragEvent as ReactDragEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState
@@ -23,7 +24,7 @@ import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import { $composerAttachments, clearComposerAttachments, type ComposerAttachment } from '@/store/composer'
+import { $composerAttachments, $composerDraft, clearComposerAttachments, type ComposerAttachment } from '@/store/composer'
 import {
   browseBackward,
   browseForward,
@@ -302,6 +303,37 @@ export function ChatBar({
       renderComposerContents(editor, draft)
     }
   }, [draft])
+
+  // Persist unsent draft across route changes that unmount ChatView (e.g.
+  // navigating to Skills, Messaging, or Artifacts).  The assistant-ui composer
+  // state is ephemeral — it dies when the <AssistantRuntimeProvider> tree
+  // unmounts.  Saving to the nanostore lets us restore the text when the user
+  // navigates back to the chat.
+  useEffect(() => {
+    return () => {
+      const text = draftRef.current
+
+      if (text.trim()) {
+        $composerDraft.set(text)
+      }
+    }
+    // Mount/unmount only — draftRef.current is read at cleanup time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Restore a persisted draft on mount (navigated back from a non-overlay
+  // route).  useLayoutEffect prevents a visible flash of empty composer.
+  useLayoutEffect(() => {
+    const saved = $composerDraft.get()
+
+    if (saved.trim()) {
+      aui.composer().setText(saved)
+      draftRef.current = saved
+      $composerDraft.set('')
+    }
+    // Mount-only — read the store once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     if (urlOpen) {
