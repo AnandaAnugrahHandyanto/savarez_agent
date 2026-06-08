@@ -10160,15 +10160,6 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
             return "ticket_invalid", "ticket"
 
     token = ws.query_params.get("token", "")
-    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    allow_lan_unauth = os.getenv("HERMES_DASHBOARD_ALLOW_LAN_UNAUTH_WS", "").lower() in {"true", "1", "yes"}
-    if allow_lan_unauth and bound_host and bound_host not in _LOOPBACK_HOSTS:
-        # LAN-only compatibility mode for native desktop clients. Some Desktop
-        # builds send a stale token while still proving they are on the trusted
-        # LAN dashboard endpoint.  Accept missing or mismatched tokens only when
-        # explicitly enabled and the dashboard is bound to a non-loopback
-        # --insecure host.
-        return None, "lan-compat-token" if token else "lan-unauth"
     if not token:
         return "no_credential", "none"
     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
