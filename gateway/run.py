@@ -19872,6 +19872,15 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         planned_stop = False
         if received_signal == signal.SIGINT:
             planned_stop = True
+        elif (
+            received_signal == signal.SIGTERM
+            and os.environ.get("INVOCATION_ID")
+        ):
+            # Under systemd, SIGTERM is an intentional stop (systemctl stop,
+            # system shutdown, etc.).  Exit 0 so the unit reports "inactive"
+            # instead of "failed".  systemd's Restart=always (which the
+            # installed unit uses) restarts on any exit, so exit 0 is safe.
+            planned_stop = True
         elif not planned_takeover:
             try:
                 from gateway.status import consume_planned_stop_marker_for_self
