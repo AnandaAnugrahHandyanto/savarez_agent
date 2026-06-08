@@ -512,16 +512,36 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
 
     # Create the skill directory
     skill_dir = _resolve_skill_dir(name, category)
+
+    # Refuse to write into a directory that already exists with contents.
+    # `_find_skill` above only catches dirs that *directly* contain a
+    # SKILL.md, so a category folder (e.g. `devops/`, whose SKILL.md files
+    # live one level deeper) slips through the collision check. Without this
+    # guard the SKILL.md would be dropped straight into the live category and
+    # the scan-block rollback below would `rmtree` it — wiping every sibling
+    # skill inside.
+    if skill_dir.exists() and any(skill_dir.iterdir()):
+        return {
+            "success": False,
+            "error": f"Cannot create skill '{name}': {skill_dir} already exists and is not empty.",
+        }
+
+    dir_pre_existed = skill_dir.exists()
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     # Write SKILL.md atomically
     skill_md = skill_dir / "SKILL.md"
     _atomic_write_text(skill_md, content)
 
-    # Security scan — roll back on block
+    # Security scan — roll back on block. Only remove what we created:
+    # rmtree the directory when we made it, otherwise just drop the SKILL.md
+    # we wrote so a pre-existing (empty) directory is never destroyed.
     scan_error = _security_scan_skill(skill_dir)
     if scan_error:
-        shutil.rmtree(skill_dir, ignore_errors=True)
+        if dir_pre_existed:
+            skill_md.unlink(missing_ok=True)
+        else:
+            shutil.rmtree(skill_dir, ignore_errors=True)
         return {"success": False, "error": scan_error}
 
     result = {

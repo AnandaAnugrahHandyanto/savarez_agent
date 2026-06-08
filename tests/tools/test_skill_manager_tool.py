@@ -259,6 +259,41 @@ class TestCreateSkill:
         assert f"Invalid category '{outside}'" in result["error"]
         assert not (outside / "my-skill" / "SKILL.md").exists()
 
+    def test_create_into_existing_category_dir_is_refused(self, tmp_path):
+        # `name` collides with a category folder (e.g. `devops/`) whose
+        # SKILL.md files live one level deeper. `_find_skill` doesn't catch
+        # this, so the create must refuse rather than write into the live
+        # category — and, critically, must NOT rmtree it on rollback.
+        with _skill_dir(tmp_path):
+            _create_skill("kanban", VALID_SKILL_CONTENT, category="devops")
+            assert (tmp_path / "devops" / "kanban" / "SKILL.md").exists()
+
+            result = _create_skill("devops", VALID_SKILL_CONTENT)
+
+        assert result["success"] is False
+        assert "already exists" in result["error"]
+        # The sibling skill inside the category survives untouched.
+        assert (tmp_path / "devops" / "kanban" / "SKILL.md").exists()
+
+    def test_create_rollback_preserves_preexisting_dir(self, tmp_path):
+        # An empty directory already on disk at the target path must survive
+        # a scan-block rollback: only the freshly written SKILL.md is removed.
+        target = tmp_path / "my-skill"
+        target.mkdir()
+
+        with _skill_dir(tmp_path), \
+             patch(
+                 "tools.skill_manager_tool._security_scan_skill",
+                 return_value="Security scan blocked this skill (test).",
+             ):
+            result = _create_skill("my-skill", VALID_SKILL_CONTENT)
+
+        assert result["success"] is False
+        assert "Security scan blocked" in result["error"]
+        # Directory pre-existed, so it is kept; only our SKILL.md is gone.
+        assert target.exists()
+        assert not (target / "SKILL.md").exists()
+
 
 class TestEditSkill:
     def test_edit_existing_skill(self, tmp_path):

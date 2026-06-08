@@ -1488,6 +1488,7 @@ AUTHOR_MAP = {
     "leonard@sellem.me": "leonardsellem",  # PR #37405 (desktop WS origin guard on remote/Tailscale binds)
     "42903577+ohMyJason@users.noreply.github.com": "ohMyJason",  # PR #29810 (discover_models in custom_providers section 4)
     "singhsanidhya741@gmail.com": "sanidhyasin",  # PR #40403 salvage (model.default_headers for custom OpenAI-compatible providers, #40033)
+    "290858493+sasquatch9818@users.noreply.github.com": "sasquatch9818",  # skill_manage create guard against rmtree of an existing category dir
 }
 
 
