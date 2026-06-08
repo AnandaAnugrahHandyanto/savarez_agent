@@ -13,7 +13,7 @@ import { useStore } from '@nanostores/react'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
 import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
-import { persistStringRecord, storedStringRecord } from '@/lib/storage'
+import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
 import { BUILTIN_THEME_LIST, BUILTIN_THEMES, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
@@ -40,91 +40,35 @@ const INJECTED_FONT_URLS = new Set<string>()
 const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-scheme: dark)')): 'light' | 'dark' =>
   mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
 
-const normalizeSkin = (name: string | null | undefined): string =>
+const normalizeSkin = (name: string | null): string =>
   name && BUILTIN_THEMES[name] && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
 
-// ─── Per-profile skin persistence ──────────────────────────────────────────
-
-const readGlobalSkin = (): string | null => {
-  try {
-    return window.localStorage.getItem(SKIN_KEY)
-  } catch {
-    return null
-  }
-}
-
-/** The skin to render for `profileKey`: its own assignment, else the global
- *  default (legacy `SKIN_KEY`), else the built-in default. */
-export function resolveSkinForProfile(profileKey: string): string {
-  const assigned = storedStringRecord(PROFILE_SKINS_KEY)[profileKey]
-
-  return normalizeSkin(assigned ?? readGlobalSkin())
-}
-
-/** Assign `skin` to `profileKey`. The default profile also updates the legacy
- *  global skin so other profiles keep inheriting a sensible fallback and the
- *  boot paint stays consistent for single-profile installs. */
-export function assignSkinToProfile(profileKey: string, skin: string): void {
-  persistStringRecord(PROFILE_SKINS_KEY, { ...storedStringRecord(PROFILE_SKINS_KEY), [profileKey]: skin })
-
-  if (profileKey === 'default') {
-    try {
-      window.localStorage.setItem(SKIN_KEY, skin)
-    } catch {
-      // Storage is best-effort; the per-profile record above is the source of truth.
-    }
-  }
-}
-
-const normalizeMode = (value: string | null | undefined): ThemeMode =>
+const normalizeMode = (value: string | null): ThemeMode =>
   value === 'light' || value === 'dark' || value === 'system' ? value : 'light'
 
-const readGlobalMode = (): string | null => {
-  try {
-    return window.localStorage.getItem(MODE_KEY)
-  } catch {
-    return null
-  }
-}
+// ─── Per-profile appearance persistence ─────────────────────────────────────
+// Skin and mode are each stored per profile, each falling back to a legacy
+// global value the default profile keeps seeded — so unassigned profiles
+// inherit a sane default and pre-per-profile installs are untouched.
+const profilePref = <T extends string>(record: string, legacy: string, normalize: (v: string | null) => T) => ({
+  resolve: (profile: string): T => normalize(storedStringRecord(record)[profile] ?? storedString(legacy)),
+  assign: (profile: string, value: T): void => {
+    persistStringRecord(record, { ...storedStringRecord(record), [profile]: value })
 
-/** The light/dark mode to render for `profileKey`: its own assignment, else the
- *  global default (legacy `MODE_KEY`), else light. */
-export function resolveModeForProfile(profileKey: string): ThemeMode {
-  const assigned = storedStringRecord(PROFILE_MODES_KEY)[profileKey]
-
-  return normalizeMode(assigned ?? readGlobalMode())
-}
-
-/** Assign `mode` to `profileKey`. The default profile also updates the legacy
- *  global mode so other profiles keep inheriting a sensible fallback and the
- *  boot paint stays consistent for single-profile installs. */
-export function assignModeToProfile(profileKey: string, mode: ThemeMode): void {
-  persistStringRecord(PROFILE_MODES_KEY, { ...storedStringRecord(PROFILE_MODES_KEY), [profileKey]: mode })
-
-  if (profileKey === 'default') {
-    try {
-      window.localStorage.setItem(MODE_KEY, mode)
-    } catch {
-      // Storage is best-effort; the per-profile record above is the source of truth.
+    // The default profile keeps the legacy global fresh so others inherit it.
+    if (profile === 'default') {
+      persistString(legacy, value)
     }
   }
-}
+})
 
-const readBootProfileKey = (): string => {
-  try {
-    return normalizeProfileKey(window.localStorage.getItem(LAST_PROFILE_KEY))
-  } catch {
-    return 'default'
-  }
-}
+export const skinPref = profilePref(PROFILE_SKINS_KEY, SKIN_KEY, normalizeSkin)
+export const modePref = profilePref(PROFILE_MODES_KEY, MODE_KEY, normalizeMode)
 
-const rememberActiveProfileKey = (profileKey: string): void => {
-  try {
-    window.localStorage.setItem(LAST_PROFILE_KEY, profileKey)
-  } catch {
-    // Best-effort; a missing value just means the next boot paints the default.
-  }
-}
+// Last active profile — lets the boot paint pick its appearance before the
+// gateway reports which profile actually launched.
+const readBootProfileKey = () => normalizeProfileKey(storedString(LAST_PROFILE_KEY))
+const rememberActiveProfileKey = (profile: string) => persistString(LAST_PROFILE_KEY, profile)
 
 // ─── Color math (for synthesised light variants of dark-only skins) ────────
 
@@ -331,10 +275,9 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
 // active profile's appearance so a non-default profile relaunch paints its own
 // skin + light/dark mode.
 if (typeof window !== 'undefined') {
-  const bootProfile = readBootProfileKey()
-  const skin = resolveSkinForProfile(bootProfile)
-  const resolved = resolveMode(resolveModeForProfile(bootProfile))
-  applyTheme(deriveTheme(skin, resolved), resolved)
+  const profile = readBootProfileKey()
+  const resolved = resolveMode(modePref.resolve(profile))
+  applyTheme(deriveTheme(skinPref.resolve(profile), resolved), resolved)
 }
 
 // ─── Context ────────────────────────────────────────────────────────────────
@@ -368,19 +311,19 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const profileKey = normalizeProfileKey(useStore($activeGatewayProfile))
 
   const [themeName, setThemeNameState] = useState(() =>
-    typeof window === 'undefined' ? DEFAULT_SKIN_NAME : resolveSkinForProfile(readBootProfileKey())
+    typeof window === 'undefined' ? DEFAULT_SKIN_NAME : skinPref.resolve(readBootProfileKey())
   )
 
   const [mode, setModeState] = useState<ThemeMode>(() =>
-    typeof window === 'undefined' ? 'light' : resolveModeForProfile(readBootProfileKey())
+    typeof window === 'undefined' ? 'light' : modePref.resolve(readBootProfileKey())
   )
 
   // Follow profile switches: paint the profile's assigned skin + mode and
   // remember it for the next boot's first paint.
   useEffect(() => {
     rememberActiveProfileKey(profileKey)
-    setThemeNameState(resolveSkinForProfile(profileKey))
-    setModeState(resolveModeForProfile(profileKey))
+    setThemeNameState(skinPref.resolve(profileKey))
+    setModeState(modePref.resolve(profileKey))
   }, [profileKey])
 
   const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
@@ -389,19 +332,19 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => applyTheme(activeTheme, resolvedMode), [activeTheme, resolvedMode])
 
+  // Assign to whichever profile is live right now (read fresh so the callbacks
+  // stay stable across profile switches).
+  const liveProfile = () => normalizeProfileKey($activeGatewayProfile.get())
+
   const setTheme = useCallback((name: string) => {
     const next = normalizeSkin(name)
     setThemeNameState(next)
-    // Assign to whichever profile is live right now (read fresh so the callback
-    // stays stable across profile switches).
-    assignSkinToProfile(normalizeProfileKey($activeGatewayProfile.get()), next)
+    skinPref.assign(liveProfile(), next)
   }, [])
 
   const setMode = useCallback((next: ThemeMode) => {
     setModeState(next)
-    // Assign to whichever profile is live right now (read fresh so the callback
-    // stays stable across profile switches).
-    assignModeToProfile(normalizeProfileKey($activeGatewayProfile.get()), next)
+    modePref.assign(liveProfile(), next)
   }, [])
 
   // The light/dark toggle (Shift+X by default) is owned by the keybind runtime
