@@ -33,6 +33,8 @@ export interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   showSourceBadge?: boolean
   /** If true, show the device name (device_name) on line 2 instead of source. */
   showDeviceBadge?: boolean
+  /** If true, suppress the device nickname in the source line (group header already shows it). */
+  suppressDeviceNickname?: boolean
 }
 
 const AGE_TICKS: ReadonlyArray<[number, 'ageDay' | 'ageHour' | 'ageMin']> = [
@@ -68,6 +70,7 @@ export function SidebarSessionRow({
   dragHandleProps,
   showSourceBadge = false,
   showDeviceBadge = false,
+  suppressDeviceNickname = false,
   className,
   style,
   ref,
@@ -83,8 +86,11 @@ export function SidebarSessionRow({
   // session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
 
-  // Device source badge: resolve hostname → nickname from presence record
-  const deviceNickname = presence?.host ? resolveDeviceNickname(presence.host) : null
+  // Device source badge: resolve hostname → nickname from presence record.
+  // Suppressed when the group header already shows the device name.
+  const deviceNickname = suppressDeviceNickname
+    ? null
+    : presence?.host ? resolveDeviceNickname(presence.host) : null
 
   return (
     <SessionContextMenu

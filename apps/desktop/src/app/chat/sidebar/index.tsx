@@ -1174,8 +1174,7 @@ function SidebarSessionsSection({
     const resolvedShowDeviceBadge = isDeviceGroups ? false : !isSourceGroups && showSourceBadge
     // When grouped by device, the group header already shows the device name,
     // so suppress the device nickname in the source line to avoid redundancy.
-    // Omit presence so SessionSourceLine falls back to showing just the source.
-    const effectivePresence = isDeviceGroups ? undefined : presenceBySession?.get(session.id)
+    const suppressDeviceNickname = isDeviceGroups
     const rowProps = {
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
@@ -1187,7 +1186,8 @@ function SidebarSessionsSection({
       session,
       showSourceBadge: resolvedShowSourceBadge,
       showDeviceBadge: resolvedShowDeviceBadge,
-      presence: effectivePresence,
+      suppressDeviceNickname,
+      presence: presenceBySession?.get(session.id),
     }
 
     return sortable ? (
