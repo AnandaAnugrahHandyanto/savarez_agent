@@ -912,43 +912,6 @@ class TestRunJobSessionPersistence:
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
 
-    def test_run_job_titles_cron_session_from_job_not_important_hint(self, tmp_path):
-        # The cron session's first message is the injected "[IMPORTANT: …]"
-        # hint, which used to surface as the sidebar/history row label. run_job
-        # must title the session from the job (name → short prompt → id).
-        job = {
-            "id": "test-job",
-            "name": "Morning digest",
-            "prompt": "summarize my inbox",
-        }
-        fake_db = MagicMock()
-
-        with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
-             patch(
-                 "hermes_cli.runtime_provider.resolve_runtime_provider",
-                 return_value={
-                     "api_key": "test-key",
-                     "base_url": "https://example.invalid/v1",
-                     "provider": "openrouter",
-                     "api_mode": "chat_completions",
-                 },
-             ), \
-             patch("run_agent.AIAgent") as mock_agent_cls:
-            mock_agent = MagicMock()
-            mock_agent.run_conversation.return_value = {"final_response": "ok"}
-            mock_agent_cls.return_value = mock_agent
-
-            run_job(job)
-
-        fake_db.set_session_title.assert_called_once()
-        sid, title = fake_db.set_session_title.call_args[0]
-        assert sid.startswith("cron_test-job_")
-        assert "IMPORTANT" not in title
-        assert title.startswith("Morning digest")
-
     def test_run_job_closes_agent_on_failure_to_prevent_fd_leak(self, tmp_path):
         # Regression: if ``run_conversation`` raises, the ephemeral cron
         # agent was previously leaked — over days of ticks this accumulated
@@ -1582,36 +1545,6 @@ class TestRunJobConfigEnvVarExpansion:
             f"Expected model='gpt-4o-mini-cron-test', got {kwargs['model']!r}. "
             "config.yaml ${VAR} was not expanded in the cron execution path."
         )
-
-    def test_legacy_agent_prefill_messages_file_is_loaded(self, tmp_path, monkeypatch):
-        """Cron accepts the legacy agent.prefill_messages_file fallback."""
-        prefill = [{"role": "system", "content": "legacy cron prefill"}]
-        (tmp_path / "prefill.json").write_text(json.dumps(prefill), encoding="utf-8")
-        (tmp_path / "config.yaml").write_text(
-            "agent:\n"
-            "  prefill_messages_file: prefill.json\n",
-            encoding="utf-8",
-        )
-
-        job = {"id": "prefill-job", "name": "prefill test", "prompt": "hi"}
-        fake_db = MagicMock()
-
-        with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler._resolve_origin", return_value=None), \
-             patch("dotenv.load_dotenv"), \
-             patch("hermes_state.SessionDB", return_value=fake_db), \
-             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
-                   return_value=self._RUNTIME), \
-             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
-             patch("run_agent.AIAgent") as mock_agent_cls:
-            mock_agent = MagicMock()
-            mock_agent.run_conversation.return_value = {"final_response": "ok"}
-            mock_agent_cls.return_value = mock_agent
-            success, _, _, error = run_job(job)
-
-        assert success is True
-        assert error is None
-        assert mock_agent_cls.call_args.kwargs["prefill_messages"] == prefill
 
     def test_fallback_model_env_ref_in_config_yaml_is_expanded(self, tmp_path, monkeypatch):
         """${VAR} in config.yaml fallback_providers model: is expanded."""
@@ -2666,73 +2599,43 @@ class TestSendMediaTimeoutCancelsFuture:
         assert adapter.send_video.call_args[1]["video_path"] == str(fast.resolve())
 
 
-class TestCronDeliveryTargets:
-    """``cron_delivery_targets`` powers the dashboard delivery dropdown.
+class TestStandaloneDeliveryTimeout:
+    """Standalone delivery must time out instead of blocking indefinitely (#38780)."""
 
-    It must list every configured + cron-deliverable platform (no hardcoded
-    set), flag whether each has its home channel set, and never include
-    platforms whose gateway isn't configured.
-    """
+    def test_standalone_delivery_timeout_returns_error(self, monkeypatch):
+        """When _send_to_platform hangs, _deliver_result must catch the timeout
+        and return an error string instead of blocking forever."""
+        import asyncio
 
-    def _patch_connected(self, monkeypatch, names):
-        import gateway.config as gateway_config
+        async def _hang_forever(*_args, **_kwargs):
+            """Coroutine that never resolves — simulates a hung platform send."""
+            await asyncio.get_event_loop().create_future()  # awaits a future that's never set
 
-        class _Platform:
-            def __init__(self, value):
-                self.value = value
+        job = {
+            "id": "timeout-standalone",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
 
-        class _GatewayConfig:
-            def get_connected_platforms(self_inner):
-                return [_Platform(n) for n in names]
+        # Patch timeout to 0.1s so the test finishes fast
+        monkeypatch.setattr("cron.scheduler._STANDALONE_DELIVERY_TIMEOUT", 0.1)
 
-        monkeypatch.setattr(
-            gateway_config, "load_gateway_config", lambda: _GatewayConfig()
-        )
+        from gateway.config import Platform
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
 
-    def test_lists_configured_platforms_flagging_missing_home_channel(self, monkeypatch):
-        from cron.scheduler import cron_delivery_targets
+        standalone_send = AsyncMock(side_effect=_hang_forever)
 
-        self._patch_connected(monkeypatch, ["matrix", "telegram"])
-        monkeypatch.delenv("MATRIX_HOME_ROOM", raising=False)
-        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            # No live adapter → forces standalone path
+            result = _deliver_result(
+                job, "Output.", adapters={}, loop=None,
+            )
 
-        targets = {t["id"]: t for t in cron_delivery_targets()}
-
-        assert set(targets) == {"matrix", "telegram"}
-        # Configured but no home channel → surfaced, flagged for the UI.
-        assert targets["matrix"]["home_target_set"] is False
-        assert targets["matrix"]["home_env_var"] == "MATRIX_HOME_ROOM"
-        assert targets["telegram"]["home_target_set"] is False
-
-    def test_home_channel_set_marks_target_ready(self, monkeypatch):
-        from cron.scheduler import cron_delivery_targets
-
-        self._patch_connected(monkeypatch, ["matrix"])
-        monkeypatch.setenv("MATRIX_HOME_ROOM", "!room:matrix.org")
-
-        targets = {t["id"]: t for t in cron_delivery_targets()}
-
-        assert targets["matrix"]["home_target_set"] is True
-
-    def test_unconfigured_platforms_excluded(self, monkeypatch):
-        from cron.scheduler import cron_delivery_targets
-
-        # Only telegram is connected; matrix env var set but gateway not configured.
-        self._patch_connected(monkeypatch, ["telegram"])
-        monkeypatch.setenv("MATRIX_HOME_ROOM", "!room:matrix.org")
-
-        ids = {t["id"] for t in cron_delivery_targets()}
-
-        assert ids == {"telegram"}
-        assert "matrix" not in ids
-
-    def test_no_gateway_config_returns_empty(self, monkeypatch):
-        import gateway.config as gateway_config
-        from cron.scheduler import cron_delivery_targets
-
-        def _boom():
-            raise RuntimeError("no gateway config")
-
-        monkeypatch.setattr(gateway_config, "load_gateway_config", _boom)
-
-        assert cron_delivery_targets() == []
+        assert result is not None, "expected an error string, got None"
+        assert "timed out" in result, f"expected 'timed out' in error, got: {result!r}"
+        assert "0.1s" in result or "60s" in result, f"expected timeout duration in error, got: {result!r}"

@@ -887,7 +887,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
             coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
             try:
-                result = asyncio.run(coro)
+                result = asyncio.run(asyncio.wait_for(coro, timeout=_STANDALONE_DELIVERY_TIMEOUT))
             except RuntimeError:
                 # asyncio.run() checks for a running loop before awaiting the coroutine;
                 # when it raises, the original coro was never started — close it to
@@ -897,6 +897,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                     future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
                     result = future.result(timeout=30)
+            except asyncio.TimeoutError:
+                msg = f"delivery to {platform_name}:{chat_id} timed out after {_STANDALONE_DELIVERY_TIMEOUT}s"
+                logger.error("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+                continue
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
                 logger.error("Job '%s': %s", job["id"], msg)
@@ -917,6 +922,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
 
 _DEFAULT_SCRIPT_TIMEOUT = 120  # seconds
+_STANDALONE_DELIVERY_TIMEOUT = 60  # seconds — matches live-adapter timeout
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 
