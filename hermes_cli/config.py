@@ -17,6 +17,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -5978,8 +5979,11 @@ def edit_config():
     subprocess.run([editor, str(config_path)])
 
 
-def set_config_value(key: str, value: str):
+from typing import Union
+
+def set_config_value(key: str, value: Union[str, bool, int, float]):
     """Set a configuration value."""
+    from hermes_cli.env_cleanup import remove_env_vars_for_feature
     if is_managed():
         managed_error("set configuration values")
         return
@@ -5997,7 +6001,7 @@ def set_config_value(key: str, value: str):
     ]
     
     if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):
-        save_env_value(key.upper(), value)
+        save_env_value(key.upper(), str(value))
         print(f"✓ Set {key} in {get_env_path()}")
         return
     
@@ -6018,15 +6022,16 @@ def set_config_value(key: str, value: str):
     # _set_nested which preserves list-typed nodes; before #17876 the
     # inline navigation here silently overwrote lists with dicts.
 
-    # Convert value to appropriate type
-    if value.lower() in {'true', 'yes', 'on'}:
-        value = True
-    elif value.lower() in {'false', 'no', 'off'}:
-        value = False
-    elif value.isdigit():
-        value = int(value)
-    elif value.replace('.', '', 1).isdigit():
-        value = float(value)
+    # Convert value to appropriate type (only if it's a string)
+    if isinstance(value, str):
+        if value.lower() in {'true', 'yes', 'on'}:
+            value = True
+        elif value.lower() in {'false', 'no', 'off'}:
+            value = False
+        elif value.isdigit():
+            value = int(value)
+        elif value.replace('.', '', 1).isdigit():
+            value = float(value)
 
     _set_nested(user_config, key, value)
     
@@ -6034,6 +6039,13 @@ def set_config_value(key: str, value: str):
     ensure_hermes_home()
     from utils import atomic_yaml_write
     atomic_yaml_write(config_path, user_config, sort_keys=False)
+    
+    # Clean up .env vars when a platform is explicitly disabled
+    if key.startswith("platforms.") and key.endswith(".enabled") and isinstance(value, bool) and value is False:
+        platform_name = key.split(".")[1]
+        removed = remove_env_vars_for_feature("platform", platform_name)
+        if removed:
+            logger.info("Removed %s env vars for disabled platform %s", len(removed), platform_name)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
@@ -6349,3 +6361,91 @@ def _inject_platform_plugin_env_vars() -> None:
 
 # Eagerly inject so that platform plugin env vars show up in the setup wizard.
 _inject_platform_plugin_env_vars()
+
+
+# =============================================================================
+# Env command handler
+# =============================================================================
+
+def env_command(args):
+    """Handle env subcommands for ~/.hermes/.env."""
+    subcmd = getattr(args, "env_command", None)
+
+    if subcmd is None or subcmd == "path":
+        print(get_env_path())
+        return
+
+    if subcmd == "list":
+        env_path = get_env_path()
+        if not env_path.exists():
+            print("No .env file found.")
+            return
+        with open(env_path, encoding="utf-8-sig", errors="replace") as f:
+            lines = f.readlines()
+        print(f"\n  Env vars in {env_path}:")
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _ = line.split("=", 1)
+                print(f"    {key}")
+        print()
+        return
+
+    if subcmd == "get":
+        key = getattr(args, "key", None)
+        if not key:
+            print("Usage: hermes env get <KEY>")
+            sys.exit(1)
+        value = get_env_value(key)
+        if value is not None:
+            # Always mask secrets — even short tokens can leak credentials
+            if len(value) <= 4:
+                masked = "*" * len(value)
+            else:
+                masked = value[:2] + "*" * (len(value) - 4) + value[-2:]
+            print(f"{key}={masked}")
+        else:
+            print(f"{key} is not set")
+        return
+
+    if subcmd == "set":
+        key = getattr(args, "key", None)
+        value = getattr(args, "value", None)
+        if not key or value is None:
+            print("Usage: hermes env set <KEY> <VALUE>")
+            sys.exit(1)
+        save_env_value(key, value)
+        print(f"✓ Set {key} in {get_env_path()}")
+        return
+
+    if subcmd == "rm":
+        key = getattr(args, "key", None)
+        if not key:
+            print("Usage: hermes env rm <KEY>")
+            sys.exit(1)
+        if remove_env_value(key):
+            print(f"✓ Removed {key} from {get_env_path()}")
+        else:
+            print(f"{key} not found in {get_env_path()}")
+        return
+
+    if subcmd == "edit":
+        editor = os.environ.get("EDITOR", "nano")
+        env_path = get_env_path()
+        print()
+        print("WARNING: This file contains sensitive credentials.")
+        print("Removing a token here may break the associated platform or tool.")
+        print("Use `hermes config set` to disable features safely; it will clean up")
+        print(".env automatically. Only edit this file directly if you know what")
+        print("you are doing.")
+        print()
+        if not env_path.exists():
+            env_path.write_text("# Hermes environment variables\n", encoding="utf-8")
+        try:
+            editor_cmd = shlex.split(editor)
+        except ValueError:
+            editor_cmd = [editor]
+        subprocess.run(editor_cmd + [str(env_path)])
+        return
