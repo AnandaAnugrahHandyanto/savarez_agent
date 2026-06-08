@@ -1422,14 +1422,14 @@ hermes completion fish > ~/.config/fish/completions/hermes.fish
 ## `hermes update`
 
 ```bash
-hermes update [--gateway] [--check] [--no-backup] [--backup] [--yes]
+hermes update [--gateway] [--check] [--no-backup] [--backup] [--yes] [--branch NAME] [--allow-branch-switch]
 ```
 
 Pulls the latest `hermes-agent` code and reinstalls dependencies in your venv, then re-runs the post-install hooks (MCP servers, skills sync, completion install). Safe to run on a live install.
 
 **pip installs:** `hermes update` detects pip-based installations automatically — it queries PyPI for the latest release and runs `pip install --upgrade hermes-agent` instead of `git pull`. PyPI releases track tagged versions (major/minor releases), not every commit on `main`. Use `--check` to see if a newer PyPI release is available without installing.
 
-**git installs:** `hermes update` pulls the configured update branch (default: `main`). If your checkout is on another branch, Hermes may check out the update branch before pulling. Commit branch work before updating when you want to keep it outside the update autostash flow.
+**git installs:** `hermes update` pulls the configured update branch (default: `main`). If your checkout is on another branch, Hermes refuses to switch branches by default so an update cannot unexpectedly move you away from feature work. Switch to the update branch yourself, pass `--allow-branch-switch`, or name an explicit target with `--branch NAME`.
 
 | Option | Description |
 |--------|-------------|
@@ -1438,11 +1438,14 @@ Pulls the latest `hermes-agent` code and reinstalls dependencies in your venv, t
 | `--no-backup` | Skip the pre-update backup for this run, even if `updates.pre_update_backup` is enabled in `config.yaml`. |
 | `--backup` | Create a labeled pre-update snapshot of `HERMES_HOME` (config, auth, sessions, skills, pairing data) before pulling. Default is **off** — the previous always-backup behavior was adding minutes to every update on large homes. Flip it on permanently via `updates.pre_update_backup: true` in `config.yaml`. |
 | `--yes`, `-y` | Assume yes for interactive prompts such as config migration and stash restore. API-key entry is skipped; run `hermes config migrate` separately for those. |
+| `--branch NAME` | Update against this branch instead of the default (`main`). Naming a branch is an explicit opt-in to switching to that branch if the checkout is currently elsewhere. |
+| `--allow-branch-switch` | Allow Hermes to switch from the current branch to the update branch before pulling. Without this flag, an implicit branch switch is refused. `--yes` and `updates.non_interactive_local_changes: discard` do not imply this permission. |
 
 Additional behavior:
 
 - **Gateway restart.** After a successful update, Hermes attempts to restart all running gateway profiles automatically so they pick up the new code. Use `hermes gateway restart` when you want to restart a gateway without applying an update.
-- **Local source changes.** For git installs, dirty tracked files and untracked files are auto-stashed before branch checkout or pull (`git stash push --include-untracked`). Interactive terminal updates ask before restoring the stash. Non-interactive updates restore it by default; set `updates.non_interactive_local_changes: discard` only on managed installs where local source edits should be thrown away after a successful pull. If stash restore conflicts or the pull fails, the stash is left in place for manual recovery.
+- **Branch switching.** For git installs, Hermes refuses to leave the current branch implicitly. If you want `hermes update` to switch from a feature branch to the update branch, pass `--allow-branch-switch`, or use `--branch NAME` to choose the target explicitly.
+- **Local source changes.** For git installs, dirty tracked files and untracked files are auto-stashed before an explicitly allowed branch checkout or pull (`git stash push --include-untracked`). Interactive terminal updates ask before restoring the stash. Non-interactive updates restore it by default; set `updates.non_interactive_local_changes: discard` only on managed installs where local source edits should be thrown away after a successful pull. If stash restore conflicts or the pull fails, the stash is left in place for manual recovery.
 - **npm lockfile churn.** Before stashing or switching branches, Hermes makes a best-effort cleanup of tracked `package-lock.json` diffs produced by npm install/build steps. Commit or manually stash intentional lockfile edits before running `hermes update`.
 - **Pairing data snapshot.** Even when `--backup` is off, `hermes update` takes a lightweight snapshot of `~/.hermes/pairing/` and the Feishu comment rules before `git pull`. You can roll it back with `hermes backup restore --state pre-update` if a pull rewrites a file you were editing.
 - **Legacy `hermes.service` warning.** If Hermes detects a pre-rename `hermes.service` systemd unit (instead of the current `hermes-gateway.service`), it prints a one-time migration hint so you can avoid flap-loop issues.

@@ -42,7 +42,7 @@ pip install --upgrade hermes-agent    # or: uv pip install --upgrade hermes-agen
 When you run `hermes update`, the following steps occur:
 
 1. **Pairing-data snapshot** — a lightweight pre-update state snapshot is saved (covers `~/.hermes/pairing/`, Feishu comment rules, and other state files that get modified at runtime). Recoverable via the snapshot restore flow described under [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md), or by extracting the most recent quick-snapshot zip Hermes wrote next to your `~/.hermes/` directory.
-2. **Git pull** — pulls the latest code from the `main` branch and updates submodules
+2. **Branch safety + git pull** — pulls the latest code from the update branch (default: `main`) and updates submodules. If your checkout is on another branch, Hermes stops before switching branches unless you explicitly opt in with `--allow-branch-switch` or name the target with `--branch <name>`.
 3. **Post-pull syntax validation + auto-rollback** — after the pull, Hermes compiles the eight critical files every `hermes` invocation imports at startup. If any fails to parse (e.g. an orphan merge-conflict marker, an accidentally truncated file), Hermes runs `git reset --hard <pre-pull-sha>` to roll the install back so your shell stays bootable. Re-run `hermes update` once the upstream fix lands.
 4. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
 5. **Config migration** — detects new config options added since your version and prompts you to set them
@@ -57,7 +57,14 @@ hermes update --branch release-candidate
 hermes update --check --branch experimental   # preview behindness only
 ```
 
-If your local checkout is on a different branch, Hermes auto-stashes any uncommitted work, switches HEAD to the target branch, and then pulls. Branches that don't exist locally are auto-tracked from `origin/<name>` (`git checkout -B <name> origin/<name>`). Branches that don't exist anywhere fail cleanly — your stashed changes are restored before exit so you're never stranded in a weird state. The `main`-only fork-upstream sync logic is automatically skipped on non-`main` branches.
+If your local checkout is already on the requested update branch, Hermes pulls normally. If HEAD is on a different branch, Hermes refuses to switch branches by default so an update cannot unexpectedly move you away from feature work. Switch branches yourself first, or opt in explicitly:
+
+```bash
+hermes update --allow-branch-switch      # allow switching to the default update branch
+hermes update --branch release-candidate # explicit branch target; also opts in to switching
+```
+
+When branch switching is explicitly allowed, Hermes auto-stashes any uncommitted work, switches HEAD to the target branch, and then pulls. Branches that don't exist locally are auto-tracked from `origin/<name>` (`git checkout -B <name> origin/<name>`). Branches that don't exist anywhere fail cleanly — your stashed changes are restored before exit so you're never stranded in a weird state. The `main`-only fork-upstream sync logic is automatically skipped on non-`main` branches. `--yes` and `updates.non_interactive_local_changes: discard` do **not** authorize branch switching; they only answer prompts or decide what happens to stashed source edits after an explicitly allowed update path.
 
 ### Local changes on non-interactive updates
 
