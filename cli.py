@@ -12660,29 +12660,32 @@ class HermesCLI:
             # Auto-generate session title after first exchange (non-blocking)
             if response and result and not result.get("failed") and not result.get("partial"):
                 try:
-                    from agent.title_generator import maybe_auto_title
-                    # Route title-generation failures through the agent's
-                    # user-visible warning channel so a depleted auxiliary
-                    # provider doesn't silently leave sessions untitled
-                    # (issue #15775).
-                    _title_failure_cb = getattr(
-                        self.agent, "_emit_auxiliary_failure", None
-                    ) if self.agent else None
-                    maybe_auto_title(
-                        self._session_db,
-                        self.session_id,
-                        message,
-                        response,
-                        self.conversation_history,
-                        failure_callback=_title_failure_cb,
-                        main_runtime={
-                            "model": self.model,
-                            "provider": self.provider,
-                            "base_url": self.base_url,
-                            "api_key": self.api_key,
-                            "api_mode": self.api_mode,
-                        },
-                    )
+                    from agent.auxiliary_client import _get_auxiliary_task_config
+                    _title_cfg = _get_auxiliary_task_config("title_generation")
+                    if _title_cfg.get("enabled", True):
+                        from agent.title_generator import maybe_auto_title
+                        # Route title-generation failures through the agent's
+                        # user-visible warning channel so a depleted auxiliary
+                        # provider doesn't silently leave sessions untitled
+                        # (issue #15775).
+                        _title_failure_cb = getattr(
+                            self.agent, "_emit_auxiliary_failure", None
+                        ) if self.agent else None
+                        maybe_auto_title(
+                            self._session_db,
+                            self.session_id,
+                            message,
+                            response,
+                            self.conversation_history,
+                            failure_callback=_title_failure_cb,
+                            main_runtime={
+                                "model": self.model,
+                                "provider": self.provider,
+                                "base_url": self.base_url,
+                                "api_key": self.api_key,
+                                "api_mode": self.api_mode,
+                            },
+                        )
                 except Exception:
                     pass
 

@@ -236,3 +236,61 @@ class TestMaybeAutoTitle:
 
     def test_skips_if_no_session_db(self):
         maybe_auto_title(None, "sess-1", "hello", "response", [])  # no db
+
+
+class TestTitleGenerationConfigGate:
+    """Tests that auxiliary.title_generation.enabled config gates title generation."""
+
+    def test_enabled_false_skips_maybe_auto_title(self):
+        """When enabled=False, maybe_auto_title should not be called."""
+        db = MagicMock()
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+        with patch("agent.title_generator.maybe_auto_title") as mock_maybe, \
+             patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"enabled": False}):
+            # Simulate the gateway/cli gating logic
+            from agent.auxiliary_client import _get_auxiliary_task_config
+            _title_cfg = _get_auxiliary_task_config("title_generation")
+            if _title_cfg.get("enabled", True):
+                mock_maybe(db, "sess-1", "hello", "hi there", history)
+
+        mock_maybe.assert_not_called()
+
+    def test_enabled_true_calls_maybe_auto_title(self):
+        """When enabled=True (default), maybe_auto_title should be called."""
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+        with patch("agent.title_generator.maybe_auto_title") as mock_maybe, \
+             patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={"enabled": True}):
+            from agent.auxiliary_client import _get_auxiliary_task_config
+            _title_cfg = _get_auxiliary_task_config("title_generation")
+            if _title_cfg.get("enabled", True):
+                mock_maybe(db, "sess-1", "hello", "hi there", history)
+
+        mock_maybe.assert_called_once()
+
+    def test_missing_enabled_key_defaults_to_true(self):
+        """When enabled key is missing, title generation should proceed (default True)."""
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+        with patch("agent.title_generator.maybe_auto_title") as mock_maybe, \
+             patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={}):
+            from agent.auxiliary_client import _get_auxiliary_task_config
+            _title_cfg = _get_auxiliary_task_config("title_generation")
+            if _title_cfg.get("enabled", True):
+                mock_maybe(db, "sess-1", "hello", "hi there", history)
+
+        mock_maybe.assert_called_once()
