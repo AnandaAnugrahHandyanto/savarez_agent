@@ -1,29 +1,27 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import {
   $federatedApps,
   clearFederatedApps,
-  registerApp,
-  unregisterApp,
-  updateAppState,
-  registerOperator,
-  unregisterOperator,
-  updateOperatorState,
   createWire,
-  removeWire,
-  updateWireState,
-  getAppOperators,
-  getOperatorWires,
-  getTopologyGraph,
-  getAvailableOperators,
-  hasPath,
-  getRoutingPath,
   exportState,
-  importState,
+  type FederatedAppsState,
+  getAppOperators,
+  getAvailableOperators,
+  getOperatorWires,
+  getRoutingPath,
   getStateVersion,
-  type FederatedApp,
-  type OperatorNode,
-  type OperatorWire
+  getTopologyGraph,
+  hasPath,
+  importState,
+  registerApp,
+  registerOperator,
+  removeWire,
+  unregisterApp,
+  unregisterOperator,
+  updateAppState,
+  updateOperatorState,
+  updateWireState
 } from './federated-apps'
 
 describe('federated-apps store', () => {

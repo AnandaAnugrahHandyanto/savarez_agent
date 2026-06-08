@@ -116,7 +116,7 @@ export function getStateVersion(): number {
 }
 
 /** Register a new federated app */
-export function registerApp(app: Omit<FederatedApp, 'registeredAt'>): FederatedApp {
+export function registerApp(app: Omit<FederatedApp, 'registeredAt' | 'lastHeartbeatAt'>): FederatedApp {
   const state = $federatedApps.get()
   const now = Date.now()
 
@@ -145,6 +145,7 @@ export function unregisterApp(appId: string): boolean {
 
   // Remove all operators belonging to this app
   const operators = { ...state.operators }
+
   for (const [id, op] of Object.entries(operators)) {
     if (op.appId === appId) {
       delete operators[id]
@@ -153,6 +154,7 @@ export function unregisterApp(appId: string): boolean {
 
   // Remove all wires connected to this app's operators
   const wires = { ...state.wires }
+
   for (const [id, wire] of Object.entries(wires)) {
     if (wire.sourceAppId === appId || wire.targetAppId === appId) {
       delete wires[id]
@@ -231,6 +233,7 @@ export function unregisterOperator(operatorId: string): boolean {
 
   // Remove all wires connected to this operator
   const wires = { ...state.wires }
+
   for (const [id, wire] of Object.entries(wires)) {
     if (wire.sourceOperatorId === operatorId || wire.targetOperatorId === operatorId) {
       delete wires[id]
@@ -360,12 +363,14 @@ export function updateWireState(
 /** Get operators for a specific app */
 export function getAppOperators(appId: string): OperatorNode[] {
   const state = $federatedApps.get()
+
   return Object.values(state.operators).filter(op => op.appId === appId)
 }
 
 /** Get wires for a specific operator (both source and target) */
 export function getOperatorWires(operatorId: string): OperatorWire[] {
   const state = $federatedApps.get()
+
   return Object.values(state.wires).filter(
     wire => wire.sourceOperatorId === operatorId || wire.targetOperatorId === operatorId
   )
@@ -396,6 +401,7 @@ export function getTopologyGraph(): {
 /** Get available operators (ready to accept work) */
 export function getAvailableOperators(): OperatorNode[] {
   const state = $federatedApps.get()
+
   return Object.values(state.operators).filter(
     op => op.state === 'available' && op.currentLoad < 90
   )
@@ -405,14 +411,15 @@ export function getAvailableOperators(): OperatorNode[] {
 export function hasPath(sourceId: string, targetId: string): boolean {
   const state = $federatedApps.get()
 
-  if (sourceId === targetId) return true
+  if (sourceId === targetId) {return true}
 
   const visited = new Set<string>()
   const queue = [sourceId]
 
   while (queue.length > 0) {
     const current = queue.shift()!
-    if (visited.has(current)) continue
+
+    if (visited.has(current)) {continue}
     visited.add(current)
 
     // Find all wires from current operator
@@ -424,6 +431,7 @@ export function hasPath(sourceId: string, targetId: string): boolean {
       if (wire.targetOperatorId === targetId) {
         return true
       }
+
       if (!visited.has(wire.targetOperatorId)) {
         queue.push(wire.targetOperatorId)
       }
@@ -437,7 +445,7 @@ export function hasPath(sourceId: string, targetId: string): boolean {
 export function getRoutingPath(sourceId: string, targetId: string): string[] | null {
   const state = $federatedApps.get()
 
-  if (sourceId === targetId) return [sourceId]
+  if (sourceId === targetId) {return [sourceId]}
 
   const visited = new Set<string>()
   const parent = new Map<string, string>()
@@ -445,7 +453,8 @@ export function getRoutingPath(sourceId: string, targetId: string): string[] | n
 
   while (queue.length > 0) {
     const current = queue.shift()!
-    if (visited.has(current)) continue
+
+    if (visited.has(current)) {continue}
     visited.add(current)
 
     const wires = Object.values(state.wires).filter(
@@ -461,10 +470,12 @@ export function getRoutingPath(sourceId: string, targetId: string): string[] | n
           // Reconstruct path
           const path: string[] = [targetId]
           let node = targetId
+
           while (parent.has(node)) {
             node = parent.get(node)!
             path.unshift(node)
           }
+
           return path
         }
       }
