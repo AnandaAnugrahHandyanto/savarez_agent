@@ -73,3 +73,26 @@ class TestDefaultThresholds:
         assert isinstance(DEFAULT_THRESHOLDS["nginx"]["error_5xx_threshold_warn"], float)
         assert isinstance(DEFAULT_THRESHOLDS["jvm"]["heap_usage_warn"], float)
         assert isinstance(DEFAULT_THRESHOLDS["rabbitmq"]["queue_depth_warn"], int)
+
+
+class TestDefaultThresholdsCompleteness:
+    """验证 DEFAULT_THRESHOLDS 包含所有脚本需要的键。"""
+
+    def test_ssh_defaults_exist(self):
+        assert "ssh" in DEFAULT_THRESHOLDS
+        assert DEFAULT_THRESHOLDS["ssh"]["default_user"] == "root"
+        assert DEFAULT_THRESHOLDS["ssh"]["default_port"] == 22
+
+    def test_debug_gc_log_path_in_defaults(self):
+        assert "gc_log_path" in DEFAULT_THRESHOLDS["debug"]
+        assert DEFAULT_THRESHOLDS["debug"]["gc_log_path"] != ""
+
+    def test_debug_es_index_prefix_in_defaults(self):
+        assert "es_index_prefix" in DEFAULT_THRESHOLDS["debug"]
+
+    def test_all_component_urls_not_empty(self):
+        """每个组件的 URL 键应存在（值可以为空字符串，由用户配置）。"""
+        assert "status_url" in DEFAULT_THRESHOLDS["nginx"]
+        assert "management_url" in DEFAULT_THRESHOLDS["rabbitmq"]
+        assert "elasticsearch_url" in DEFAULT_THRESHOLDS["elk"]
+        assert "oap_url" in DEFAULT_THRESHOLDS["skywalking"]

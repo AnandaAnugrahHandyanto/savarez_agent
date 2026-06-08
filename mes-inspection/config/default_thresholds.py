@@ -113,6 +113,12 @@ DEFAULT_THRESHOLDS = {
         "model_name": "Qwen3-235B-A22B-w8a8",
         "api_key_env": "QWEN_API_KEY",
     },
+    "ssh": {
+        "default_user": "root",
+        "default_port": 22,
+        "default_key_path": "",
+        "connect_timeout": 10,
+    },
     "debug": {
         "gc_log_path": "/u01/app/mes-app/logs/gc.log",
         "gc_max_lines": 50000,
