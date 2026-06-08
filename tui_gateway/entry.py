@@ -263,6 +263,15 @@ def main():
         global _mcp_discovery_thread
         _mcp_discovery_thread = _mcp_thread
 
+    # Initialize tool preview length from config (mirrors cli.py startup).
+    try:
+        from agent.display import set_tool_preview_max_len
+        from hermes_cli.config import read_raw_config as _read_cfg
+        _tpl = (_read_cfg() or {}).get("display", {}).get("tool_preview_length", 0)
+        set_tool_preview_max_len(int(_tpl) if _tpl else 0)
+    except Exception:
+        pass
+
     if not write_json({
         "jsonrpc": "2.0",
         "method": "event",

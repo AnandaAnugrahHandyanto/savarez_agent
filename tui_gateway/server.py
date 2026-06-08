@@ -1898,7 +1898,7 @@ def _tool_ctx(name: str, args: dict) -> str:
     try:
         from agent.display import build_tool_preview
 
-        return build_tool_preview(name, args, max_len=80) or ""
+        return build_tool_preview(name, args, max_len=None) or ""
     except Exception:
         return ""
 
