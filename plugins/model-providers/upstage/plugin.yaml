@@ -1,0 +1,5 @@
+name: upstage-provider
+kind: model-provider
+version: 1.0.0
+description: Upstage Solar — Solar Pro 3 / Pro 2 / Mini via an OpenAI-compatible API
+author: Nous Research
