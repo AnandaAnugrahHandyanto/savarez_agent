@@ -13,8 +13,8 @@
       "name": "mes-full-check",
       "schedule": "every 5m",
       "script": "full_check.py",
-      "prompt": "MES 全组件巡检发现异常，需要你进行诊断和自愈：\n\n## 异常报告\n{script_output}\n\n## 你的任务\n1. 逐一分析 6 个组件的异常检查项\n2. 优先处理 CRITICAL 级别，其次 WARNING\n3. 使用 DecisionMatrix 评估每个故障的自愈级别\n4. L1：自动执行修复（systemctl restart 等）\n5. L2：推送修复方案，等待确认\n6. L3：推送详细诊断 + AI 分析\n7. 如果多个组件同时异常，分析是否有关联性\n8. 记录到 memory",
-      "skills": ["mes-nginx-check", "mes-jvm-check", "mes-rabbitmq-check", "mes-oracle-check", "mes-elk-check", "mes-skywalking-check"],
+      "prompt": "MES 全组件巡检发现异常，需要你进行诊断和自愈：\n\n## 异常报告\n{script_output}\n\n## 你的任务\n1. 逐一分析 5 个组件的异常检查项\n2. 优先处理 CRITICAL 级别，其次 WARNING\n3. 使用 DecisionMatrix 评估每个故障的自愈级别\n4. L1：自动执行修复（systemctl restart 等）\n5. L2：推送修复方案，等待确认\n6. L3：推送详细诊断 + AI 分析\n7. 如果多个组件同时异常，分析是否有关联性\n8. 记录到 memory",
+      "skills": ["mes-nginx-check", "mes-rabbitmq-check", "mes-oracle-check", "mes-elk-check", "mes-skywalking-check"],
       "enabled_toolsets": ["terminal"],
       "deliver": "feishu"
     },
@@ -39,7 +39,7 @@
       "schedule": "0 9 * * 1",
       "script": "full_check.py",
       "prompt": "生成 MES 周度趋势分析报告：\n\n## 巡检数据\n{script_output}\n\n## 你的任务\n1. 分析本周各组件健康趋势\n2. 识别反复出现的问题模式\n3. 生成容量规划建议\n4. 推送周报到飞书",
-      "skills": ["mes-nginx-check", "mes-jvm-check", "mes-rabbitmq-check", "mes-oracle-check", "mes-elk-check", "mes-skywalking-check"],
+      "skills": ["mes-nginx-check", "mes-rabbitmq-check", "mes-oracle-check", "mes-elk-check", "mes-skywalking-check"],
       "enabled_toolsets": ["terminal"],
       "deliver": "feishu"
     },

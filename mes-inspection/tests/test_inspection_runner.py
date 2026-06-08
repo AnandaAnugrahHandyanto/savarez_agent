@@ -106,8 +106,9 @@ class TestComponentLists:
         assert HEARTBEAT_COMPONENTS == ["upstream"]
         assert "jvm" not in HEARTBEAT_COMPONENTS
 
-    def test_full_check_has_all_6(self):
-        assert len(FULL_CHECK_COMPONENTS) == 6
+    def test_full_check_has_5_components(self):
+        assert len(FULL_CHECK_COMPONENTS) == 5
+        assert "jvm" not in FULL_CHECK_COMPONENTS
 
     def test_deep_analysis_has_oracle_elk(self):
         assert "oracle" in DEEP_ANALYSIS_COMPONENTS
@@ -141,7 +142,6 @@ class TestEndToEnd:
             m = MagicMock()
             status_map = {
                 "nginx": ExitCode.NORMAL,
-                "jvm": ExitCode.WARNING,
                 "rabbitmq": ExitCode.NORMAL,
                 "oracle": ExitCode.CRITICAL,
                 "elk": ExitCode.NORMAL,
@@ -153,6 +153,6 @@ class TestEndToEnd:
         result = run_inspections(FULL_CHECK_COMPONENTS)
         assert result["abnormal"] is True
         assert result["summary"]["normal"] == 3
-        assert result["summary"]["warning"] == 2
+        assert result["summary"]["warning"] == 1
         assert result["summary"]["critical"] == 1
-        assert len(result["reports"]) == 3
+        assert len(result["reports"]) == 2

@@ -118,5 +118,5 @@ def output_gate_result(result: Dict[str, Any]):
 
 
 HEARTBEAT_COMPONENTS = ["upstream"]
-FULL_CHECK_COMPONENTS = ["nginx", "jvm", "rabbitmq", "oracle", "elk", "skywalking"]
+FULL_CHECK_COMPONENTS = ["nginx", "rabbitmq", "oracle", "elk", "skywalking"]
 DEEP_ANALYSIS_COMPONENTS = ["oracle", "elk"]
