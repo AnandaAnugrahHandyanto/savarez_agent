@@ -857,6 +857,31 @@ main conversation's message-role alternation stays intact.
 
 ---
 
+## Alert Remediation Pipeline
+
+Policy-governed alert routing lives in `alert_remediation/`:
+
+- `models.py` defines the `alert.remediation/v1` event contract and route
+  decision dataclasses.
+- `router.py` matches events against YAML policy rules; example policy and
+  schemas live under `docs/alert-remediation/`.
+- `prompts.py` builds read-only triage prompts and must continue to wrap raw
+  alert payloads as **untrusted data**.
+- `status.py` formats concise Telegram-safe operator updates and intentionally
+  does **not** echo raw evidence by default.
+- `kanban.py` formats/creates escalation cards when policy requires durable
+  follow-up.
+- `scripts/alert_remediation_router.py` is the cron/webhook wrapper. Plain
+  output is operator-facing status; `--emit-decision-json` is the machine
+  envelope. `--dry-run` alone must stay plain text; combine it with
+  `--emit-decision-json` when automation needs JSON.
+
+Tests live in `tests/alert_remediation/`. After touching this subsystem run:
+`python -m pytest tests/alert_remediation -q`. When wrapper behavior changes,
+also run the related cron/Kanban regressions.
+
+---
+
 ## Kanban (multi-agent work queue)
 
 Durable SQLite-backed board that lets multiple profiles / workers

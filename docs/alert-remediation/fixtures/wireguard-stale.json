@@ -1,0 +1,34 @@
+{
+  "schema_version": "alert.remediation/v1",
+  "source": "wireguard-watchdog",
+  "event_id": "synthetic-wireguard-stale-001",
+  "dedupe_key": "wireguard:do-wireguard-01:stale-handshake",
+  "severity": "critical",
+  "service": "wireguard",
+  "host": "do-wireguard-01",
+  "tags": ["wireguard", "vpn", "pilot"],
+  "symptom": "peer handshake stale > 15m",
+  "first_seen": "2026-06-08T10:00:00Z",
+  "last_seen": "2026-06-08T10:05:00Z",
+  "count": 2,
+  "evidence": [
+    {
+      "type": "text",
+      "label": "wg show latest-handshakes",
+      "value": "client22-ais peer latest-handshake older than 900 seconds"
+    },
+    {
+      "type": "text",
+      "label": "policy route simulation",
+      "value": "ip route get 8.8.8.8 from 192.168.98.34 iif client22-ais should select table 500 dev exit0"
+    }
+  ],
+  "runbook": "wireguard_stale_handshake",
+  "suggested_action": "auto_remediate",
+  "links": [
+    {
+      "label": "ServerMon WireGuard node",
+      "url": "https://servermon.example/nodes/do-wireguard-01"
+    }
+  ]
+}
