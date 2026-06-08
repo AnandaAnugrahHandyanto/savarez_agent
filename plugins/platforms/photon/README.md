@@ -1,121 +1,199 @@
-# Photon iMessage platform plugin
+# Photon iMessage Platform Plugin
 
-This plugin connects Hermes Agent to iMessage (and WhatsApp Business +
-future Spectrum interfaces) through [Photon][photon] — a managed
-service that handles the iMessage line allocation, delivery, and
-abuse-prevention layer so users don't have to run their own Mac
-relay.
+Photon connects Hermes to iMessage through the Photon Spectrum SDK. Use this
+plugin when you want the Hermes gateway to receive iMessages and send replies
+without exposing a local webhook or Cloudflare tunnel.
 
-The free tier uses Photon's shared iMessage line pool (`type: shared`)
-and is the path we recommend for everyone who doesn't already pay for a
-dedicated number.
+## Setup
 
-## Architecture
-
-```
-┌─────────────────────────┐    HMAC-signed POSTs      ┌──────────────────┐
-│  Photon Spectrum cloud  │ ──────────────────────►   │  Hermes Agent    │
-│  (iMessage line owner)  │                           │  (Python)        │
-└─────────────────────────┘    JSON over loopback     │                  │
-        ▲                  ◄──────────────────────    │  PhotonAdapter   │
-        │                                             │  + aiohttp recv  │
-        │  spectrum-ts                                │                  │
-        │  SDK (Node)                                 │  spawns + super- │
-        ▼                                             │  vises ▼         │
-┌─────────────────────────┐                           ├──────────────────┤
-│  Node sidecar           │   ◄────  X-Hermes-      ─ │  Node sidecar    │
-│  (plugins/.../sidecar)  │       Sidecar-Token       │  child process   │
-└─────────────────────────┘                           └──────────────────┘
-```
-
-Inbound traffic is webhook-only — Hermes runs an aiohttp listener
-that verifies `X-Spectrum-Signature` and dedupes on `message.id`.
-
-Outbound traffic goes through a tiny Node sidecar that runs the
-`spectrum-ts` SDK. Photon does not currently expose an HTTP
-send-message endpoint; their own docs say:
-
-> Pass `space.id` to `Space.send(...)` from a separate `spectrum-ts`
-> SDK instance to reply. **No public HTTP send endpoint exists today.**
-> — https://photon.codes/docs/webhooks/events
-
-When Photon ships an HTTP send endpoint, `_sidecar_send` is the one
-function that swaps and the sidecar disappears. The rest of the
-plugin stays the same.
-
-## First-time setup
+Primary setup command:
 
 ```bash
-# 1. One-shot setup: device login (opens browser) + project + user + sidecar deps
-hermes photon setup --phone +15551234567
-
-# 2. Expose your webhook URL to the public internet
-#    (cloudflared, ngrok, your gateway's public hostname, etc.)
-#    Then register it with Photon:
-hermes photon webhook register https://your-host.example.com/photon/webhook
-
-# 3. Save the signing secret it prints to ~/.hermes/.env
-#    as PHOTON_WEBHOOK_SECRET=...
-#    Photon only returns it ONCE.
-
-# 4. Start the gateway
-hermes gateway start --platform photon
+hermes gateway setup
 ```
 
-`hermes photon setup` runs the RFC 8628 device-code login as its first
-step — it opens `https://app.photon.codes/` for approval, then
-provisions the Spectrum project + iMessage line. There is no separate
-`login` command; like every other Hermes channel, onboarding goes
-through one setup surface. Re-running `setup` reuses an existing token
-and project, so it's safe to run again to finish a partial setup.
+Select `iMessage (via Photon)` from the messaging platform menu. The Photon
+setup step will ask for your real E.164 phone number. Do not put personal phone
+numbers in committed docs, examples, or bug reports.
 
-## Credentials
+Advanced/direct setup command:
 
-Stored in `~/.hermes/auth.json` under `credential_pool`:
-
-```jsonc
-{
-  "credential_pool": {
-    "photon": [
-      { "access_token": "<dashboard-bearer>", "issued_at": ... }
-    ],
-    "photon_project": [
-      { "project_id": "...", "project_secret": "...", "name": "Hermes Agent" }
-    ]
-  }
-}
+```bash
+hermes photon setup '+<country-code><number>'
 ```
 
-The per-URL webhook signing secret is treated like an API key and
-lives in `~/.hermes/.env` as `PHOTON_WEBHOOK_SECRET`.
+Use the direct command when you want to reconcile Photon state without walking
+through the full gateway setup wizard.
 
-## Configuration knobs
+Photon setup always uses the fixed Photon dashboard project name `hermes-agent`.
+Users do not choose a project name on the primary setup path.
 
-All env vars are documented in `plugin.yaml`. The most important are:
+Setup reconciles:
 
-| Env var                  | Default            | Meaning                                 |
-|--------------------------|--------------------|-----------------------------------------|
-| `PHOTON_PROJECT_ID`      | from auth.json     | Spectrum project ID                     |
-| `PHOTON_PROJECT_SECRET`  | from auth.json     | Spectrum project secret (HTTP Basic)    |
-| `PHOTON_WEBHOOK_SECRET`  | (unset)            | Signing secret returned at register     |
-| `PHOTON_WEBHOOK_PORT`    | 8788               | Local port for the aiohttp listener     |
-| `PHOTON_WEBHOOK_PATH`    | /photon/webhook    | Path under which the listener mounts    |
-| `PHOTON_SIDECAR_PORT`    | 8789               | Loopback port for sidecar control      |
-| `PHOTON_HOME_CHANNEL`    | (unset)            | Default space ID for cron delivery     |
-| `PHOTON_ALLOWED_USERS`   | (unset)            | Comma-separated E.164 allowlist        |
+1. Photon dashboard login.
+2. Exact `hermes-agent` project lookup or creation.
+3. Spectrum project credentials for the current Hermes home.
+4. The first phone that can message this Hermes agent.
+5. A default home channel for that operator DM, when unset.
+6. Hermes authorization for that phone unless access is open.
+7. Private sidecar dependencies.
+8. `platforms.photon.enabled=true` in `config.yaml`.
 
-## Limitations (current Photon API)
+The seeded home channel is `PHOTON_HOME_CHANNEL=any;-;+E164` and
+`PHOTON_HOME_CHANNEL_NAME=You (iMessage)`. Setup never overwrites an existing
+home channel, so custom proactive-delivery targets are preserved.
 
-- **Attachments are metadata only.** Inbound webhooks include the
-  filename + MIME type but no download URL. The plugin surfaces a
-  text marker (`[Photon attachment received: …]`) so the agent knows
-  something arrived, but cannot read the bytes.  Photon's docs note
-  an attachment retrieval endpoint is on the roadmap.
-- **Outbound attachments are not supported yet.** Adding them is
-  straightforward once the sidecar wires up `attachment(...)` /
-  `space.send(attachment(...))` from `spectrum-ts`.
-- **Reactions, message effects, polls** — not exposed yet; the
-  `spectrum-ts` SDK supports them, and the sidecar is the natural
-  place to add them when the agent has reason to use them.
+Setup configures Photon and saves Hermes gateway configuration. The Hermes
+gateway process is what brings the agent online: it loads the Photon adapter and
+subscribes to Spectrum events. After setup, start or restart the gateway when
+the setup wizard asks. `hermes photon status` shows whether the adapter is
+online; only text the Photon number when the next step says to send an iMessage.
 
-[photon]: https://photon.codes/
+```bash
+hermes photon status
+```
+
+Photon supports multiple phones on the same `hermes-agent` project. Each phone
+can message the same Hermes agent, and direct-message conversations stay
+isolated by Spectrum conversation space so replies go back to the right phone.
+
+Cron and proactive notifications can use Photon with:
+
+```text
+deliver=photon
+```
+
+When no live gateway adapter is available in the current process, Hermes uses a
+private send-once sidecar to deliver to `PHOTON_HOME_CHANNEL`. This send path
+does not subscribe to the inbound Spectrum stream.
+
+Use explicit phone management to add, list, or remove authorized phones:
+
+```bash
+hermes photon phones list
+hermes photon phones add '+<country-code><number>'
+hermes photon phones remove '+<country-code><number>'
+```
+
+## Runtime Flow
+
+```mermaid
+flowchart LR
+    subgraph inbound["Inbound"]
+        direction TB
+        A["Photon Spectrum SDK stream"] --> B["Private Node SDK sidecar"]
+        B --> C["adapter.py"]
+        C --> D["Hermes gateway MessageEvent"]
+    end
+
+    subgraph outbound["Outbound"]
+        direction TB
+        E["Hermes gateway reply"] --> F["adapter.py"]
+        F --> G["Private Node SDK sidecar"]
+        G --> H["Photon Spectrum SDK send"]
+    end
+
+    D ~~~ E
+```
+
+`plugins/platforms/photon/adapter.py` is the Hermes boundary. It owns Spectrum
+event normalization, `MessageEvent` creation, outbound payload construction,
+`SendResult` mapping, adapter health, and current-home runtime state.
+
+The Spectrum SDK currently runs in Node, so `adapter.py` starts a private sidecar
+process over stdio. The sidecar is an implementation detail; it does not expose
+HTTP endpoints.
+
+The adapter writes runtime state to:
+
+```text
+<HERMES_HOME>/photon/adapter-runtime.json
+```
+
+Only one Hermes gateway process may stream a given Photon Spectrum project at a
+time. If the adapter reports that the Photon Spectrum project is already in use,
+stop the other gateway first, then start this one again. Send-once cron delivery
+does not take this stream lock because it only sends one outbound message.
+
+## Commands
+
+```bash
+# Authenticate with Photon.
+hermes photon login
+
+# Configure the fixed hermes-agent project with your first phone.
+hermes photon setup '+<country-code><number>'
+
+# Show project, credential, adapter, and sender-access state.
+hermes photon status
+
+# List every phone/user on the fixed hermes-agent project.
+hermes photon phones list
+
+# Add a phone as a Photon project user and authorize it in Hermes.
+hermes photon phones add '+<country-code><number>'
+
+# Remove a phone from Photon and deauthorize it in Hermes.
+hermes photon phones remove '+<country-code><number>'
+
+# Clear local Photon project/runtime identity.
+hermes photon reset
+
+# Clear local Photon project/runtime identity and dashboard login token.
+hermes photon reset --all
+
+# List visible Photon dashboard projects.
+hermes photon projects list
+```
+
+## Important Environment
+
+Setup and phone-management commands write these values to the current Hermes
+home:
+
+```text
+PHOTON_PROJECT_ID
+PHOTON_PROJECT_SECRET
+PHOTON_ALLOWED_USERS
+PHOTON_HOME_CHANNEL
+PHOTON_HOME_CHANNEL_NAME
+```
+
+Optional runtime settings:
+
+```text
+PHOTON_NODE_BIN
+PHOTON_API_HOST
+PHOTON_DASHBOARD_HOST
+PHOTON_ALLOW_ALL_USERS
+```
+
+## Debugging Logs
+
+Photon adapter runtime logs are written through the Hermes gateway logger. Use
+the built-in logs command when debugging Photon connect, inbound message, or send
+failures:
+
+```bash
+hermes logs gateway -n 200
+hermes logs gateway -f
+```
+
+The raw log file for the default Hermes home is:
+
+```text
+/Users/raysmacbookair/.hermes/logs/gateway.log
+```
+
+Search this file for `photon`, `photon-adapter`, `Spectrum`, `SDK_SIDECAR`, or
+the relevant project ID when tracing a Photon issue.
+
+## Reset Notes
+
+`hermes photon reset` clears local Photon project/runtime identity for the
+current Hermes home and keeps the dashboard login token.
+
+`hermes photon reset --all` also clears the dashboard login token after
+confirmation.
+
+Neither reset command deletes Photon dashboard projects or users.
