@@ -14,6 +14,14 @@ Also keep issue labels current: add the best existing label for the work
 being done, and create a new label only when the existing taxonomy does not
 fit.
 
+For Linear workspace administration, use the Linear connector first. If the
+connector lacks the required admin surface, the Studio Linear desktop app can
+be used as a UI fallback. If Linear is running with no accessible window, open
+one with `open linear://`, then navigate directly, for example:
+`open -a /Applications/Linear.app 'https://linear.app/agents-n-such/settings/teams'`.
+Stop before final create/save actions that change workspace structure unless
+the user has explicitly approved that specific action.
+
 ## Worktree Hygiene
 
 Use isolated git worktrees for issue/PR work by default when the main checkout
