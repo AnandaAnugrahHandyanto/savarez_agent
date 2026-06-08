@@ -22,6 +22,11 @@ from hermes_cli.auth import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _disable_shared_codex_auth_by_default(monkeypatch):
+    monkeypatch.setenv("HERMES_CODEX_SHARED_AUTH", "0")
+
+
 def _setup_hermes_auth(hermes_home: Path, *, access_token: str = "access", refresh_token: str = "refresh"):
     """Write Codex tokens into the Hermes auth store."""
     hermes_home.mkdir(parents=True, exist_ok=True)
@@ -120,6 +125,63 @@ def test_resolve_codex_runtime_credentials_force_refresh(tmp_path, monkeypatch):
 
     assert called["count"] == 1
     assert resolved["api_key"] == "access-forced"
+
+
+def test_resolve_codex_runtime_credentials_uses_shared_codex_cli_auth(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    access_token = _jwt_with_exp(int(time.time()) + 3600)
+    (codex_home / "auth.json").write_text(json.dumps({
+        "auth_mode": "chatgpt",
+        "tokens": {
+            "access_token": access_token,
+            "refresh_token": "shared-refresh",
+        },
+        "last_refresh": "2026-06-03T00:00:00Z",
+    }))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("HERMES_CODEX_SHARED_AUTH", "1")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    resolved = resolve_codex_runtime_credentials()
+
+    assert resolved["api_key"] == access_token
+    assert resolved["source"] == "codex-cli-shared"
+    assert resolved["auth_mode"] == "codex_cli_shared"
+    assert resolved["auth_path"] == str(codex_home / "auth.json")
+
+
+def test_resolve_codex_runtime_credentials_refreshes_shared_codex_cli_auth(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text(json.dumps({
+        "auth_mode": "chatgpt",
+        "tokens": {
+            "access_token": _jwt_with_exp(int(time.time()) - 60),
+            "refresh_token": "shared-refresh-old",
+        },
+    }))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("HERMES_CODEX_SHARED_AUTH", "1")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    def _fake_refresh(access_token, refresh_token, *, timeout_seconds=20.0):
+        assert refresh_token == "shared-refresh-old"
+        return {
+            "access_token": "shared-access-new",
+            "refresh_token": "shared-refresh-new",
+            "last_refresh": "2026-06-03T01:00:00Z",
+        }
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_codex_oauth_pure", _fake_refresh)
+
+    resolved = resolve_codex_runtime_credentials()
+
+    assert resolved["api_key"] == "shared-access-new"
+    payload = json.loads((codex_home / "auth.json").read_text())
+    assert payload["tokens"]["access_token"] == "shared-access-new"
+    assert payload["tokens"]["refresh_token"] == "shared-refresh-new"
+    assert payload["last_refresh"] == "2026-06-03T01:00:00Z"
 
 
 def test_resolve_codex_runtime_credentials_falls_back_to_pool_when_singleton_empty(tmp_path, monkeypatch):
