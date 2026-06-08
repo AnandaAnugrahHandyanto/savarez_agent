@@ -12380,6 +12380,10 @@ class GatewayRunner:
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
+            skip_context_files = self._resolve_agent_skip_context_files(
+                user_config,
+                platform_key,
+            )
 
             pr = self._provider_routing
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
@@ -12433,6 +12437,7 @@ class GatewayRunner:
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     session_db=self._session_db,
+                    skip_context_files=skip_context_files,
                     fallback_model=self._fallback_model,
                 )
                 try:
@@ -15973,6 +15978,33 @@ class GatewayRunner:
         )
         return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
+    @staticmethod
+    def _resolve_agent_skip_context_files(user_config: dict, platform_key: str) -> bool:
+        """Return whether gateway-created agents should skip cwd context files."""
+        platform_override = cfg_get(
+            user_config,
+            "gateway",
+            "agent",
+            "platforms",
+            platform_key,
+            "skip_context_files",
+            default=None,
+        )
+        if platform_override is not None:
+            return bool(is_truthy_value(platform_override, default=False))
+        return bool(
+            is_truthy_value(
+                cfg_get(
+                    user_config,
+                    "gateway",
+                    "agent",
+                    "skip_context_files",
+                    default=False,
+                ),
+                default=False,
+            )
+        )
+
     def _apply_session_model_override(
         self, session_key: str, model: str, runtime_kwargs: dict
     ) -> tuple:
@@ -16696,6 +16728,10 @@ class GatewayRunner:
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
+        skip_context_files = self._resolve_agent_skip_context_files(
+            user_config,
+            platform_key,
+        )
 
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):
@@ -17561,6 +17597,7 @@ class GatewayRunner:
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
                     session_db=self._session_db,
+                    skip_context_files=skip_context_files,
                     fallback_model=self._fallback_model,
                 )
                 if _cache_lock and _cache is not None:

@@ -1998,6 +1998,13 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        "agent": {
+            # Gateway-created agents normally inherit cwd context files
+            # (AGENTS.md, CLAUDE.md, etc.). Chat platforms can opt out to
+            # keep short message turns from carrying repo-sized prompts.
+            "skip_context_files": False,
+            "platforms": {},
+        },
         # When false (default), any file path the agent emits is delivered
         # as a native attachment as long as it isn't under the credential /
         # system-path denylist (/etc, /proc, ~/.ssh, ~/.aws, ~/.hermes/.env,
