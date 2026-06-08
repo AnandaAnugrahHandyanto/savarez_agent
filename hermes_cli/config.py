@@ -6028,6 +6028,20 @@ def set_config_value(key: str, value: str):
     elif value.replace('.', '', 1).isdigit():
         value = float(value)
 
+    # Map user-friendly key shortcuts to canonical nested config paths.
+    # This lets users write \`hermes config set provider X\` instead of
+    # having to remember \`hermes config set model.provider X\`.
+    _CONFIG_KEY_ALIASES = {
+        "provider": "model.provider",
+    }
+    if key in _CONFIG_KEY_ALIASES:
+        canonical = _CONFIG_KEY_ALIASES[key]
+        print(f"'{key}' is a shortcut for '{canonical}'; redirecting")
+        # Clean up any legacy bare key that might linger from a previous write
+        if key in user_config:
+            del user_config[key]
+        key = canonical
+
     _set_nested(user_config, key, value)
     
     # Write only user config back (not the full merged defaults)
