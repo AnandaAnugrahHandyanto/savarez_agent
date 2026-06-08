@@ -860,7 +860,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 {
                     "success": False,
                     "error": (
-                        f"The configured web search backend '{backend}' "
+                        f"Error: configured web search backend '{backend}' "
                         "is not available. "
                         + (
                             "Install the package with: pip install ddgs"
