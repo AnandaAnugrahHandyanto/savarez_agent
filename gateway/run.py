@@ -4095,23 +4095,20 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
         import shutil
         import subprocess
 
-        hermes_cmd = _resolve_hermes_bin()
-        if not hermes_cmd:
-            logger.error("Could not locate hermes binary for detached /restart")
-            return
-
         current_pid = os.getpid()
 
         # On Windows there's no bash/setsid chain — spawn a tiny Python
         # watcher directly via sys.executable instead.  The watcher polls
-        # current_pid, waits for our exit, then runs `hermes gateway
-        # restart` with detach flags so the respawn survives the CLI
-        # that triggered the /restart command closing its console.
+        # current_pid, waits for our exit, then starts `gateway run` with
+        # detach flags so the respawn survives the CLI that triggered the
+        # /restart command closing its console.  Avoid CREATE_BREAKAWAY_FROM_JOB
+        # for the watcher itself: Hermes can run inside restricted Windows Job
+        # Objects that reject breakaway with WinError 5.
         if sys.platform == "win32":
             import textwrap
-            from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+            from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
 
-            cmd_argv = [*hermes_cmd, "gateway", "restart"]
+            cmd_argv = [sys.executable, "-m", "hermes_cli.main", "gateway", "run"]
             watcher = textwrap.dedent(
                 """
                 import os, subprocess, sys, time
@@ -4165,8 +4162,13 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
                 [sys.executable, "-c", watcher, str(current_pid), *cmd_argv],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                **windows_detach_popen_kwargs(),
+                creationflags=windows_detach_flags_without_breakaway(),
             )
+            return
+
+        hermes_cmd = _resolve_hermes_bin()
+        if not hermes_cmd:
+            logger.error("Could not locate hermes binary for detached /restart")
             return
 
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
