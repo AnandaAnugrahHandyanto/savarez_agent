@@ -9,6 +9,7 @@ import logging
 import os
 import threading
 import tomllib
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -64,6 +65,13 @@ class _Runtime:
         self.settings = settings
         self.sessions: dict[str, _SessionState] = {}
         self.subagent_parents: dict[str, _SubagentParent] = {}
+        # Bounded record of recently-finalized session ids. Used to stop a
+        # stray hook (anything that funnels through ensure_session after the
+        # terminal close_session for an id) from resurrecting the session:
+        # re-pushing an unpopped scope and re-arming plugins.toml that then
+        # never gets cleared. Only an explicit session start (create=True)
+        # clears the marker and allows (re)creation.
+        self._finalized_sessions: "OrderedDict[str, None]" = OrderedDict()
         self.atof_exporter: Any = None
         self._atof_subscriber_name = "hermes.nemo_relay.atof"
         self._plugin_config_initialized = self._configure_plugins_toml()
@@ -93,9 +101,17 @@ class _Runtime:
         clear = getattr(plugin_mod, "clear", None)
         if not callable(clear):
             return
-        _resolve_awaitable(clear())
-        self._plugin_config_initialized = False
-        self._plugin_config_needs_reinit = bool(self.settings.plugins_config)
+        # Treat clear as a completed state transition even if the relay's
+        # clear() raises: flip the flags in finally so a partial/failed clear
+        # still re-arms reinit (or direct fallback) on the next session start.
+        # Otherwise a raising clear() would strand the runtime at
+        # initialized=True / needs_reinit=False, and no later session would
+        # ever reinitialize plugins.toml or activate the direct fallbacks.
+        try:
+            _resolve_awaitable(clear())
+        finally:
+            self._plugin_config_initialized = False
+            self._plugin_config_needs_reinit = bool(self.settings.plugins_config)
 
     def _activate_direct_fallbacks(self) -> None:
         self._plugin_config_needs_reinit = False
@@ -162,9 +178,30 @@ class _Runtime:
                 logger.debug("NeMo Relay ATOF deregister failed", exc_info=True)
         self.atof_exporter = None
 
-    def ensure_session(self, kwargs: dict[str, Any]) -> _SessionState:
-        self._maybe_reinitialize_plugins_toml()
+    _FINALIZED_SESSIONS_MAX = 256
+
+    def _mark_finalized(self, session_id: str) -> None:
+        self._finalized_sessions[session_id] = None
+        self._finalized_sessions.move_to_end(session_id)
+        while len(self._finalized_sessions) > self._FINALIZED_SESSIONS_MAX:
+            self._finalized_sessions.popitem(last=False)
+
+    def ensure_session(self, kwargs: dict[str, Any], *, create: bool = False) -> _SessionState:
         session_id = _session_id(kwargs)
+        if create:
+            # An explicit session start clears any stale finalized marker so a
+            # legitimately restarted id is allowed to (re)create.
+            self._finalized_sessions.pop(session_id, None)
+        else:
+            existing = self.sessions.get(session_id)
+            if existing is not None:
+                return existing
+            if session_id in self._finalized_sessions:
+                # Stray hook for an already-finalized session — do NOT reinit
+                # plugins.toml or push a new scope. Return a detached, unstored
+                # state so callers stay null-safe without resurrecting it.
+                return _SessionState(session_id=session_id)
+        self._maybe_reinitialize_plugins_toml()
         state = self.sessions.get(session_id)
         if state is not None:
             return state
@@ -218,6 +255,7 @@ class _Runtime:
         state = self.sessions.pop(session_id, None)
         if state is None:
             return
+        self._mark_finalized(session_id)
         if state.handle is not None:
             try:
                 self.nemo_relay.scope.pop(state.handle, output=_jsonable(kwargs))
@@ -387,7 +425,7 @@ def register(ctx) -> None:
 def on_session_start(**kwargs: Any) -> None:
     runtime = _get_runtime()
     if runtime is not None:
-        _safe(lambda: runtime.ensure_session(kwargs))
+        _safe(lambda: runtime.ensure_session(kwargs, create=True))
 
 
 def on_session_end(**kwargs: Any) -> None:

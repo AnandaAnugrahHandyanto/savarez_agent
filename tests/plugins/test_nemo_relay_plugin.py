@@ -660,6 +660,104 @@ output_directory = "{(tmp_path / "managed-atof").as_posix()}"
     assert event_names.count("atof.deregister") == 1
 
 
+def _observability_only_plugins_toml(tmp_path: Path) -> Path:
+    plugins_toml = tmp_path / "plugins.toml"
+    plugins_toml.write_text(
+        """
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+""",
+        encoding="utf-8",
+    )
+    return plugins_toml
+
+
+def test_nemo_relay_plugin_recovers_when_plugins_toml_clear_raises(tmp_path, monkeypatch):
+    # Regression: a raising plugin.clear() must still transition lifecycle
+    # state (cleared + re-armed) so the next session reinitializes instead of
+    # stranding the runtime at initialized=True / needs_reinit=False forever.
+    fake = _FakeNemoRelay()
+
+    clear_calls = 0
+
+    async def _flaky_clear():
+        nonlocal clear_calls
+        clear_calls += 1
+        fake.events.append(("plugin.clear.attempt",))
+        if clear_calls == 1:
+            raise RuntimeError("clear boom")
+        fake.events.append(("plugin.clear.ok",))
+
+    fake.plugin.clear = _flaky_clear
+    plugin = _fresh_plugin(monkeypatch, fake)
+    plugins_toml = _observability_only_plugins_toml(tmp_path)
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
+
+    plugin.on_session_start(session_id="s1")
+    plugin.on_session_finalize(session_id="s1", reason="shutdown")  # clear() raises here
+
+    runtime = plugin._get_runtime()
+    assert runtime is not None
+    # State transitioned despite the failure — not stranded.
+    assert runtime._plugin_config_initialized is False
+    assert runtime._plugin_config_needs_reinit is True
+
+    plugin.on_session_start(session_id="s2")  # must reinitialize
+    assert runtime._plugin_config_initialized is True
+    event_names = [event[0] for event in fake.events]
+    assert event_names.count("plugin.initialize") == 2
+
+
+def test_nemo_relay_plugin_does_not_resurrect_after_terminal_finalize(tmp_path, monkeypatch):
+    # Regression: a stray hook that funnels through ensure_session after the
+    # terminal close_session for an id must NOT re-create the session, re-push
+    # a scope, or re-arm plugins.toml. on_session_end is the named example.
+    fake = _FakeNemoRelay()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    plugins_toml = _observability_only_plugins_toml(tmp_path)
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
+
+    plugin.on_session_start(session_id="s1")
+    plugin.on_session_finalize(session_id="s1", reason="shutdown")
+    plugin.on_session_end(session_id="s1")  # stray hook AFTER finalize
+
+    runtime = plugin._get_runtime()
+    assert runtime is not None
+    assert "s1" not in runtime.sessions  # no resurrection
+    event_names = [event[0] for event in fake.events]
+    # Scopes stay balanced (no leaked unpopped scope) and plugins.toml is not
+    # re-initialized a second time.
+    assert event_names.count("scope.push") == event_names.count("scope.pop")
+    assert event_names.count("plugin.initialize") == 1
+
+
+def test_nemo_relay_plugin_allows_legitimate_restart_of_finalized_session(tmp_path, monkeypatch):
+    # The finalized-session guard must not block a genuine restart: an explicit
+    # on_session_start for a previously-finalized id clears the marker and
+    # re-creates the session normally.
+    fake = _FakeNemoRelay()
+    plugin = _fresh_plugin(monkeypatch, fake)
+    plugins_toml = _observability_only_plugins_toml(tmp_path)
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(plugins_toml))
+
+    plugin.on_session_start(session_id="s1")
+    plugin.on_session_finalize(session_id="s1", reason="shutdown")
+    plugin.on_session_start(session_id="s1")  # legitimate restart of same id
+
+    runtime = plugin._get_runtime()
+    assert runtime is not None
+    assert "s1" in runtime.sessions
+    assert runtime._plugin_config_initialized is True
+
+    plugin.on_session_finalize(session_id="s1", reason="shutdown")
+    event_names = [event[0] for event in fake.events]
+    # Both lifecycles fully balanced end to end.
+    assert event_names.count("scope.push") == event_names.count("scope.pop")
+
+
 def test_nemo_relay_adaptive_llm_execution_middleware_preserves_raw_response(tmp_path, monkeypatch):
     fake = _FakeNemoRelay()
     plugin = _fresh_plugin(monkeypatch, fake)
