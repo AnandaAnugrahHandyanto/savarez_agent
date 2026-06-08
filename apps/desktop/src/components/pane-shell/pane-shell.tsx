@@ -247,6 +247,10 @@ export function Pane({
 
   const slot = ctx?.paneById.get(id)
   const open = Boolean(slot?.open && !disabled)
+  const side = slot?.side ?? 'left'
+  // Keep the current side reachable from the (deps-free) poll callback.
+  const sideRef = useRef(side)
+  sideRef.current = side
   // Collapsed + hoverReveal: float the pane contents over the main column on
   // hover/focus instead of hiding them. Honors any persisted resize width.
   const overlayActive = !open && hoverReveal && !disabled
@@ -277,11 +281,20 @@ export function Pane({
     const moved = Math.hypot(pointer.current.x - polled.current.x, pointer.current.y - polled.current.y)
 
     if (moved < HOVER_INTENT_SENSITIVITY) {
-      setHoverRevealed(true)
-    } else {
-      polled.current = { ...pointer.current }
-      pollId.current = setTimeout(poll, HOVER_INTENT_INTERVAL)
+      // Don't arm if the cursor settled within the OS window-resize grab strip
+      // at the very edge — that's a resize reach, not a reveal intent.
+      const edgeDist =
+        sideRef.current === 'left' ? pointer.current.x : window.innerWidth - pointer.current.x
+
+      if (edgeDist >= HOVER_REVEAL_EDGE_GUTTER) {
+        setHoverRevealed(true)
+
+        return
+      }
     }
+
+    polled.current = { ...pointer.current }
+    pollId.current = setTimeout(poll, HOVER_INTENT_INTERVAL)
   }, [])
 
   const onEdgeEnter = useCallback(
@@ -413,7 +426,6 @@ export function Pane({
   const canResize = open && resizable
   const lo = widthToPx(minWidth) ?? DEFAULT_RESIZE_MIN_WIDTH
   const hi = widthToPx(maxWidth) ?? Number.POSITIVE_INFINITY
-  const side = slot?.side ?? 'left'
 
   // Reset stale reveal state when the track reopens/disables, and surface the
   // effective state so consumers can render full content while floated.
@@ -507,13 +519,15 @@ export function Pane({
         <button
           aria-expanded={revealed}
           aria-label={`Reveal ${id}`}
-          className="pointer-events-auto absolute inset-y-0 z-30 w-3 cursor-default [-webkit-app-region:no-drag]"
+          className={cn(
+            'pointer-events-auto absolute inset-y-0 z-30 w-4 cursor-default [-webkit-app-region:no-drag]',
+            left ? 'left-0' : 'right-0'
+          )}
           onFocus={() => setHoverRevealed(true)}
           onPointerDown={stopPoll}
           onPointerEnter={onEdgeEnter}
           onPointerLeave={stopPoll}
           onPointerMove={onEdgeMove}
-          style={{ [left ? 'left' : 'right']: HOVER_REVEAL_EDGE_GUTTER }}
           type="button"
         />
 
