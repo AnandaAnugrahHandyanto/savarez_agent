@@ -254,6 +254,7 @@ export const en: Translations = {
       keysSettings: 'Settings',
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
+      language: 'Language',
       about: 'About'
     },
     sections: {
@@ -271,6 +272,7 @@ export const en: Translations = {
       config: 'Search settings...',
       gateway: 'Gateway connection...',
       keys: 'Search API keys...',
+      language: 'Language settings...',
       mcp: 'Search MCP servers...',
       sessions: 'Search archived sessions...'
     },

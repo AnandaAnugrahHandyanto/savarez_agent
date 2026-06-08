@@ -1,6 +1,5 @@
 import { useStore } from '@nanostores/react'
 
-import { LanguageSwitcher } from '@/components/language-switcher'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -55,7 +54,7 @@ function ThemePreview({ name }: { name: string }) {
 }
 
 export function AppearanceSettings() {
-  const { t, isSavingLocale } = useI18n()
+  const { t } = useI18n()
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
   const profiles = useStore($profiles)
@@ -85,12 +84,6 @@ export function AppearanceSettings() {
         </p>
 
         <div className="mt-2 divide-y divide-(--ui-stroke-tertiary)">
-          <ListRow
-            action={<LanguageSwitcher />}
-            description={isSavingLocale ? t.language.saving : t.language.description}
-            title={t.language.label}
-          />
-
           <ListRow
             action={
               <SegmentedControl
