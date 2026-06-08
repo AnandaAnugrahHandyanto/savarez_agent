@@ -171,10 +171,12 @@ export function ChatBar({
   const canSubmit = busy || hasComposerPayload
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
+
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
   const canSteer =
     busy && !!onSteer && attachments.length === 0 && trimmedDraft.length > 0 && !SLASH_COMMAND_RE.test(trimmedDraft)
+
   const showHelpHint = draft === '?'
 
   const { t } = useI18n()
@@ -1074,11 +1076,13 @@ export function ChatBar({
   }
 
   const queueCurrentDraft = useCallback(() => {
-    if (!activeQueueSessionKey || (!draft.trim() && attachments.length === 0)) {
+    const currentDraft = draftRef.current
+
+    if (!activeQueueSessionKey || (!currentDraft.trim() && attachments.length === 0)) {
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: draft, attachments })) {
+    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: currentDraft, attachments })) {
       return false
     }
 
@@ -1087,7 +1091,7 @@ export function ChatBar({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draft])
+  }, [activeQueueSessionKey, attachments, clearDraft])
 
   // Steer the live turn (nudge without interrupting). Clears the draft up front
   // for snappy feedback; if the gateway rejects (no live tool window) the words
@@ -1212,6 +1216,15 @@ export function ChatBar({
   }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const submitDraft = () => {
+    // Use the ref, not the React render snapshot. contentEditable input updates
+    // draftRef synchronously, while the `draft` state may still be one render
+    // behind if the user presses Enter immediately after typing or selecting a
+    // slash command. Using the stale state is how `/goal ...` could submit as a
+    // bare `/` and surface "empty slash command".
+    const currentDraft = draftRef.current
+    const currentTrimmedDraft = currentDraft.trim()
+    const hasCurrentPayload = currentTrimmedDraft.length > 0 || attachments.length > 0
+
     if (queueEdit) {
       exitQueuedEdit('save')
     } else if (busy) {
@@ -1222,12 +1235,11 @@ export function ChatBar({
       // busy guard for commands that genuinely need an idle session (skill
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
-      if (!attachments.length && SLASH_COMMAND_RE.test(draft.trim())) {
-        const submitted = draft
+      if (!attachments.length && SLASH_COMMAND_RE.test(currentTrimmedDraft)) {
         triggerHaptic('submit')
         clearDraft()
-        void onSubmit(submitted)
-      } else if (hasComposerPayload) {
+        void onSubmit(currentDraft)
+      } else if (hasCurrentPayload) {
         queueCurrentDraft()
       } else {
         // Stop button (the only way to reach here while busy with an empty
@@ -1235,15 +1247,14 @@ export function ChatBar({
         triggerHaptic('cancel')
         void Promise.resolve(onCancel())
       }
-    } else if (!hasComposerPayload && queuedPrompts.length > 0) {
+    } else if (!hasCurrentPayload && queuedPrompts.length > 0) {
       void drainNextQueued()
-    } else if (draft.trim() || attachments.length > 0) {
-      const submitted = draft
+    } else if (hasCurrentPayload) {
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
       clearComposerAttachments()
-      void onSubmit(submitted, { attachments })
+      void onSubmit(currentDraft, { attachments })
     }
 
     focusInput()
