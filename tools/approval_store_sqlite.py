@@ -66,7 +66,16 @@ from tools.approval_store import (
 )
 
 
-SCHEMA_SQL = """
+# Split into table-DDL and index-DDL so we can run schema-column
+# migration BETWEEN them. The partial index on execution_status would
+# otherwise raise "no such column: execution_status" on an upgrade from
+# a pre-execution_* DB, because CREATE INDEX is evaluated against the
+# current table shape — and CREATE TABLE IF NOT EXISTS is a no-op on
+# existing tables. _ensure_schema's ordering:
+#     1. CREATE TABLE IF NOT EXISTS  (new DBs get full shape)
+#     2. _migrate_existing_schema    (old DBs get missing columns)
+#     3. CREATE INDEX IF NOT EXISTS  (all indices are now valid)
+CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS gateway_approvals (
     approval_id            TEXT PRIMARY KEY,
     created_at             REAL NOT NULL,
@@ -82,7 +91,9 @@ CREATE TABLE IF NOT EXISTS gateway_approvals (
     execution_recorded_at  REAL,
     payload_json           TEXT NOT NULL
 );
+"""
 
+INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_gateway_approvals_status
 ON gateway_approvals(status);
 
@@ -92,11 +103,16 @@ ON gateway_approvals(expires_at)
 WHERE status = 'pending';
 
 -- Audit slice: "consumed proposals where execution was blocked" — the
--- exact pattern incident review will look for first.
+-- exact pattern incident review will look for first. Refers to
+-- execution_status which is added by _migrate_existing_schema on
+-- pre-existing DBs, so this index must be created AFTER migration.
 CREATE INDEX IF NOT EXISTS idx_gateway_approvals_blocked_after_consume
 ON gateway_approvals(execution_status)
 WHERE execution_status = 'blocked_after_consume';
 """
+
+# Back-compat alias for any external callers that import SCHEMA_SQL.
+SCHEMA_SQL = CREATE_TABLE_SQL + INDEX_SQL
 
 
 def _migrate_existing_schema(conn: sqlite3.Connection) -> None:
@@ -156,11 +172,21 @@ def _ensure_schema(db_path: Path) -> None:
         conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=30)
         try:
             _apply_wal(conn)
-            conn.executescript(SCHEMA_SQL)
-            # ALTER for execution_* columns on pre-existing DBs that were
-            # created by an earlier schema. Safe to call always — checks
-            # PRAGMA table_info before each ADD COLUMN.
+            # Three-step ordering is required for upgrade-path safety:
+            # 1. CREATE TABLE IF NOT EXISTS — new DBs get full shape;
+            #    no-op on existing DBs (which may lack the
+            #    execution_* columns).
+            # 2. _migrate_existing_schema — PRAGMA-checked ALTER TABLE
+            #    adds any missing execution_* columns to old DBs.
+            # 3. CREATE INDEX IF NOT EXISTS — partial indices reference
+            #    execution_status, which must exist by now.
+            #
+            # Inlining all three in one executescript would fail on old
+            # DBs because the partial index on execution_status is
+            # evaluated before ALTER TABLE adds the column.
+            conn.executescript(CREATE_TABLE_SQL)
             _migrate_existing_schema(conn)
+            conn.executescript(INDEX_SQL)
         finally:
             conn.close()
         _schema_initialised.add(db_path)

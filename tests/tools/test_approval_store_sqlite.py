@@ -85,6 +85,99 @@ class TestSqliteApprovalStoreFailures:
         with pytest.raises(ApprovalStoreError):
             store.get("appr-corrupt")
 
+    def test_upgrade_from_pre_execution_columns_schema(self, tmp_path: Path) -> None:
+        """Regression: SqliteApprovalStore must transparently upgrade an
+        existing state.db that was created by an earlier hermes version
+        which lacked the execution_status / execution_reason /
+        execution_recorded_at columns.
+
+        This is the production-upgrade path. Before the
+        CREATE_TABLE_SQL / INDEX_SQL split + migrate-in-between fix,
+        opening an old DB raised ``no such column: execution_status``
+        because the partial index on execution_status was created
+        BEFORE the ALTER TABLE that added the column.
+        """
+        import sqlite3
+        db_path = tmp_path / "old_state.db"
+
+        # Build the OLD schema (pre-Risk-1-fix) directly with raw SQL.
+        # This is the exact shape an earlier hermes deploy would have
+        # left on disk.
+        OLD_SCHEMA = """
+        CREATE TABLE IF NOT EXISTS gateway_approvals (
+            approval_id  TEXT PRIMARY KEY,
+            created_at   REAL NOT NULL,
+            expires_at   REAL,
+            status       TEXT NOT NULL DEFAULT 'pending',
+            consumed_at  REAL,
+            consumed_by  TEXT,
+            payload_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_gateway_approvals_status
+        ON gateway_approvals(status);
+        CREATE INDEX IF NOT EXISTS idx_gateway_approvals_pending_expires
+        ON gateway_approvals(expires_at)
+        WHERE status = 'pending';
+        """
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.executescript(OLD_SCHEMA)
+            # Seed a pre-existing pending row so we also verify the
+            # migration doesn't drop data.
+            conn.execute(
+                "INSERT INTO gateway_approvals "
+                "(approval_id, created_at, expires_at, status, payload_json) "
+                "VALUES (?, ?, ?, ?, ?)",
+                ("appr-legacy", 1.0, 9999999999.0, "pending",
+                 '{"approval_id":"appr-legacy","created_at":1.0,'
+                 '"session_key":"s","command":"echo legacy",'
+                 '"risk_level":"medium","risk_reason":"legacy-row",'
+                 '"policy_decision":"needs_approval",'
+                 '"default_decision":"deny","requires_explicit_approval":true}'),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Now open via the NEW SqliteApprovalStore. _ensure_schema must
+        # transparently ALTER TABLE to add execution_* columns AND
+        # create the new partial index on the now-existing column.
+        store = SqliteApprovalStore(db_path=db_path)
+
+        # Verify the migration applied: the legacy row is still there
+        # AND now exposes the new execution_* fields (at defaults).
+        proposal = store.get("appr-legacy")
+        assert proposal is not None
+        assert proposal.command == "echo legacy"
+        assert proposal.status == "pending"
+        assert proposal.execution_status == "not_started"
+        assert proposal.execution_reason is None
+        assert proposal.execution_recorded_at is None
+
+        # Verify the new partial index exists (would have failed CREATE
+        # if the column wasn't there yet).
+        conn = sqlite3.connect(str(db_path))
+        try:
+            indexes = {
+                row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                )
+            }
+        finally:
+            conn.close()
+        assert "idx_gateway_approvals_blocked_after_consume" in indexes
+
+        # End-to-end: consume the legacy proposal + record execution
+        # outcome — confirms the new API works against the migrated DB.
+        consumed = store.consume("appr-legacy", consumed_by="@upgrade-test")
+        assert consumed is not None
+        assert consumed.status == "consumed"
+        ok = store.mark_post_consume("appr-legacy", executed=True)
+        assert ok is True
+        post = store.get("appr-legacy")
+        assert post.execution_status == "executed"
+        assert post.execution_recorded_at is not None
+
     def test_status_filter_via_query(self, tmp_path: Path) -> None:
         """Sanity check that the indexed status column actually filters.
 
