@@ -287,8 +287,7 @@ export const zh: Translations = {
       technical: '技术',
       technicalDesc: '包含原始工具参数/结果及底层细节。',
       themeTitle: '主题',
-      themeDesc: '仅桌面端调色板。所选模式叠加其上。',
-      themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`
+      themeDesc: '仅桌面端调色板。所选模式叠加其上。'
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',
@@ -473,7 +472,9 @@ export const zh: Translations = {
       cantReach: '无法连接更新服务器。',
       tapCheck: '点击"立即检查"以查找更新。',
       updateReady: count => `已准备好新更新 (包含 ${count} 项更改)。`,
-      lastChecked: age => `上次检查:${age}`,
+      rebuildNeeded: '源代码已更改 — 重建以应用本地更改。',
+      rebuildNow: '立即重建',
+      lastChecked: age => `上次检查 ${age}`,
       justNowSuffix: ' · 刚刚',
       automaticUpdates: '自动更新',
       automaticUpdatesDesc: 'Hermes 会在后台自动检查更新，并在有可用更新时通知你。',
@@ -1375,13 +1376,11 @@ export const zh: Translations = {
     unsupportedMessage: '此版本的 Hermes 无法在应用内自行更新。',
     connectionRetry: '请检查网络连接后重试。',
     latestBody: '你正在运行最新版本。',
-    latestBodyBackend: '后端正在运行最新版本。',
     allSetTitle: '已是最新',
     availableTitle: '有可用更新',
-    availableBody: '新版 Hermes 已可安装。',
-    availableTitleBackend: '后端有可用更新',
-    availableBodyBackend: '已连接的 Hermes 后端有新版本可安装。',
-    availableBodyNoChangelog: '已有新版本可用。此安装方式无法显示更新日志。',
+    availableBody: '新版本 Hermes 已准备好安装。',
+    rebuildTitle: '源代码已更改',
+    rebuildBody: 'Hermes 源代码自上次构建以来已更改。重建以应用本地更改。',
     updateNow: '立即更新',
     maybeLater: '稍后再说',
     moreChanges: count => `另有 ${count} 项更改。`,
@@ -1392,19 +1391,10 @@ export const zh: Translations = {
     copied: '已复制',
     done: '完成',
     applyingBody: 'Hermes 更新器会在自己的窗口中接管，并在完成后重新打开 Hermes。',
-    applyingBodyBackend: '远程后端正在应用更新并将重启。恢复后 Hermes 会自动重新连接。',
     applyingClose: 'Hermes 将关闭以应用更新。',
     errorTitle: '更新未完成',
     errorBody: '没有数据丢失。你可以现在重试。',
-    notNow: '暂不',
-    applyStatus: {
-      preparing: '正在更新后端…',
-      pulling: '后端更新中…',
-      restarting: '后端正在重启以加载更新…',
-      notAvailable: '此后端无法更新。',
-      failed: '后端更新失败。',
-      noReturn: '后端未恢复在线。更新可能未完成——请检查后端主机。'
-    }
+    notNow: '暂不'
   },
 
   install: {
@@ -1583,10 +1573,8 @@ export const zh: Translations = {
       update: '更新',
       updateInProgress: '正在更新',
       commitsBehind: (count, branch) => `落后 ${branch} ${count} 个提交`,
+      rebuildNeeded: '源代码已更改 — 重建以应用本地更改。',
       desktopVersion: version => `Hermes Desktop v${version}`,
-      backendVersion: version => `后端 v${version}`,
-      clientLabel: version => `客户端 v${version}`,
-      backendLabel: version => `后端 v${version}`,
       commit: sha => `提交 ${sha}`,
       branch: branch => `分支 ${branch}`,
       closeCommandCenter: '关闭命令中心',
