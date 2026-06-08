@@ -9,6 +9,10 @@ Resolution order (first non-None wins):
     3. ``_PLATFORM_DEFAULTS[<platform>][<key>]``  — built-in sensible default
     4. ``_GLOBAL_DEFAULTS[<key>]``              — built-in global default
 
+Exception: ``display.streaming`` is CLI-only.  Gateway streaming follows the
+top-level ``streaming`` config unless ``display.platforms.<platform>.streaming``
+sets an explicit per-platform override.
+
 Backward compatibility: ``display.tool_progress_overrides`` is still read as a
 fallback for ``tool_progress`` when no ``display.platforms`` entry exists.  A
 config migration (version bump) automatically moves the old format into the new
@@ -31,6 +35,17 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
+    # Gateway-only assistant/status chatter controls. These default on for
+    # back-compat, but mobile platforms can opt down to final-answer-first.
+    "interim_assistant_messages": True,
+    "long_running_notifications": True,
+    "busy_ack_detail": True,
+    # When true, delete tool-progress / "⏳ Working — N min" / status bubbles
+    # after the final response lands on platforms that support message
+    # deletion (e.g. Telegram). Off by default — progress is still shown
+    # live, just cleaned up after success so the chat doesn't fill up with
+    # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
+    "cleanup_progress": False,
 }
 
 # ---------------------------------------------------------------------------
@@ -46,6 +61,9 @@ _TIER_HIGH = {
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": None,  # follow global
+    "interim_assistant_messages": True,
+    "long_running_notifications": True,
+    "busy_ack_detail": True,
 }
 
 _TIER_MEDIUM = {
@@ -53,6 +71,9 @@ _TIER_MEDIUM = {
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": None,
+    "interim_assistant_messages": True,
+    "long_running_notifications": True,
+    "busy_ack_detail": True,
 }
 
 _TIER_LOW = {
@@ -60,6 +81,9 @@ _TIER_LOW = {
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": False,
+    "interim_assistant_messages": False,
+    "long_running_notifications": False,
+    "busy_ack_detail": False,
 }
 
 _TIER_MINIMAL = {
@@ -67,15 +91,31 @@ _TIER_MINIMAL = {
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": False,
+    "interim_assistant_messages": False,
+    "long_running_notifications": False,
+    "busy_ack_detail": False,
 }
 
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Tier 1 — full edit support, personal/team use
-    "telegram":    _TIER_HIGH,
+    # Telegram is usually a mobile inbox: keep tool_progress quiet and skip
+    # the verbose busy-ack iteration counter, but DO surface real mid-turn
+    # assistant commentary (interim_assistant_messages) and DO send periodic
+    # heartbeats (long_running_notifications) so the user has signal between
+    # turn start and final answer. Otherwise it looks like "typing..." for
+    # 30 minutes with nothing happening. Opt in to verbose iteration detail
+    # via display.platforms.telegram.busy_ack_detail / tool_progress.
+    "telegram":    {
+        **_TIER_HIGH,
+        "tool_progress": "off",
+        "busy_ack_detail": False,
+    },
     "discord":     _TIER_HIGH,
 
     # Tier 2 — edit support, often customer/workspace channels
-    "slack":           _TIER_MEDIUM,
+    # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;
+    # "new"/"all" spam permanent lines in channels (hermes-agent#14663).
+    "slack":           {**_TIER_MEDIUM, "tool_progress": "off"},
     "mattermost":      _TIER_MEDIUM,
     "matrix":          _TIER_MEDIUM,
     "feishu":          _TIER_MEDIUM,
@@ -143,10 +183,13 @@ def resolve_display_setting(
             if val is not None:
                 return _normalise(setting, val)
 
-    # 2. Global user setting (display.<key>)
-    val = display_cfg.get(setting)
-    if val is not None:
-        return _normalise(setting, val)
+    # 2. Global user setting (display.<key>).  Skip display.streaming because
+    # that key controls only CLI terminal streaming; gateway token streaming is
+    # governed by the top-level streaming config plus per-platform overrides.
+    if setting != "streaming":
+        val = display_cfg.get(setting)
+        if val is not None:
+            return _normalise(setting, val)
 
     # 3. Built-in platform default
     plat_defaults = _PLATFORM_DEFAULTS.get(platform_key)
@@ -175,9 +218,19 @@ def _normalise(setting: str, value: Any) -> Any:
         if value is True:
             return "all"
         return str(value).lower()
-    if setting in ("show_reasoning", "streaming"):
+    if setting in {
+        "show_reasoning",
+        "streaming",
+        "interim_assistant_messages",
+        "long_running_notifications",
+        "busy_ack_detail",
+    }:
         if isinstance(value, str):
-            return value.lower() in ("true", "1", "yes", "on")
+            return value.lower() in {"true", "1", "yes", "on"}
+        return bool(value)
+    if setting == "cleanup_progress":
+        if isinstance(value, str):
+            return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
     if setting == "tool_preview_length":
         try:
