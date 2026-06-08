@@ -70,10 +70,13 @@ interface CollectedPane {
 const DEFAULT_WIDTH = '16rem'
 const DEFAULT_RESIZE_MIN_WIDTH = 160
 
-// Hover-intent gate: only arm the reveal when the pointer is moving slowly
-// inside the edge zone. A fast sweep (heading for the titlebar/statusbar or
-// off the window) blows past this threshold and never triggers.
-const HOVER_INTENT_MAX_SPEED = 0.55 // px per ms
+// Hover-intent gate (port of Brian Cherne's hoverIntent algorithm). Rather than
+// reacting to a single slow pointermove, poll the pointer every INTERVAL and
+// only arm once it has *settled* — i.e. moved less than SENSITIVITY px between
+// two consecutive polls while inside the edge zone. A fast fly-by, a window
+// resize drift, or a pass-through never produces two close samples in a row.
+const HOVER_INTENT_INTERVAL = 90 // ms between position polls
+const HOVER_INTENT_SENSITIVITY = 5 // px; below this between polls === settled
 
 const widthToCss = (value: WidthValue | undefined, fallback: string) =>
   value === undefined ? fallback : typeof value === 'number' ? `${value}px` : value
@@ -219,13 +222,65 @@ export function Pane({
   const paneStates = useStore($paneStates)
   const registered = useRef(false)
   const paneRef = useRef<HTMLDivElement | null>(null)
-  const lastSample = useRef<{ t: number; x: number; y: number } | null>(null)
+  const pointer = useRef({ x: 0, y: 0 }) // live cursor pos (cheap to update)
+  const polled = useRef({ x: 0, y: 0 }) // pos at the previous poll
+  const pollId = useRef<ReturnType<typeof setTimeout> | null>(null)
   const resizingUntil = useRef(0)
   const [hoverRevealed, setHoverRevealed] = useState(false)
+  // True once the slide-in transition finishes; gates panel contents inert
+  // until then so you can't misclick a row mid-animation.
+  const [settled, setSettled] = useState(false)
 
-  // A window resize parks the cursor on the screen edge and fires slow
-  // pointermoves over the hot-zone — which reads as deliberate intent. Suppress
-  // the reveal during, and briefly after, any window resize.
+  const stopPoll = useCallback(() => {
+    if (pollId.current !== null) {
+      clearTimeout(pollId.current)
+      pollId.current = null
+    }
+  }, [])
+
+  // hoverIntent poll: fire once the cursor has settled (moved < SENSITIVITY px
+  // between two polls); otherwise resample and keep waiting. Bail on a held
+  // button (drag/resize) or within the post-resize cooldown.
+  const poll = useCallback(() => {
+    pollId.current = null
+
+    if (performance.now() < resizingUntil.current) {
+      polled.current = { ...pointer.current }
+      pollId.current = setTimeout(poll, HOVER_INTENT_INTERVAL)
+
+      return
+    }
+
+    const moved = Math.hypot(pointer.current.x - polled.current.x, pointer.current.y - polled.current.y)
+
+    if (moved < HOVER_INTENT_SENSITIVITY) {
+      setHoverRevealed(true)
+    } else {
+      polled.current = { ...pointer.current }
+      pollId.current = setTimeout(poll, HOVER_INTENT_INTERVAL)
+    }
+  }, [])
+
+  const onEdgeEnter = useCallback(
+    (e: ReactPointerEvent<HTMLButtonElement>) => {
+      if (e.buttons !== 0) {
+        return
+      }
+
+      pointer.current = { x: e.clientX, y: e.clientY }
+      polled.current = { ...pointer.current }
+      stopPoll()
+      pollId.current = setTimeout(poll, HOVER_INTENT_INTERVAL)
+    },
+    [poll, stopPoll]
+  )
+
+  const onEdgeMove = useCallback((e: ReactPointerEvent<HTMLButtonElement>) => {
+    pointer.current = { x: e.clientX, y: e.clientY }
+  }, [])
+
+  // A window resize parks the cursor on the screen edge and drifts it slowly,
+  // which would otherwise read as settled intent. Suppress during + just after.
   useEffect(() => {
     if (typeof window === 'undefined') {
       return
@@ -241,30 +296,7 @@ export function Pane({
     return () => window.removeEventListener('resize', onResize)
   }, [])
 
-  // Arm the reveal only on a slow, deliberate pass through the edge zone —
-  // ignore fast fly-bys (toward the titlebar/statusbar, or leaving the window),
-  // button-held drags, and the slow drift of a window resize.
-  const onEdgeMove = useCallback((e: ReactPointerEvent<HTMLButtonElement>) => {
-    const prev = lastSample.current
-    const now = e.timeStamp
-    lastSample.current = { t: now, x: e.clientX, y: e.clientY }
-
-    if (!prev || e.buttons !== 0 || performance.now() < resizingUntil.current) {
-      return
-    }
-
-    const dt = now - prev.t
-
-    if (dt <= 0) {
-      return
-    }
-
-    const speed = Math.hypot(e.clientX - prev.x, e.clientY - prev.y) / dt
-
-    if (speed <= HOVER_INTENT_MAX_SPEED) {
-      setHoverRevealed(true)
-    }
-  }, [])
+  useEffect(() => stopPoll, [stopPoll])
 
   useEffect(() => {
     if (registered.current) {
@@ -296,6 +328,14 @@ export function Pane({
       setHoverRevealed(false)
     }
   }, [overlayActive])
+
+  // Contents are only interactive once fully revealed; drop the settled flag
+  // the moment the panel starts retracting.
+  useEffect(() => {
+    if (!revealed) {
+      setSettled(false)
+    }
+  }, [revealed])
 
   useEffect(() => {
     onHoverRevealChange?.(revealed)
@@ -372,7 +412,7 @@ export function Pane({
         ref={paneRef}
         style={{ gridColumn: `${slot.column} / ${slot.column + 1}` }}
       >
-        {/* Invisible edge hot-zone — a slow, intentful pass floats the panel in. */}
+        {/* Invisible edge hot-zone — a settled hover (hoverIntent) floats the panel in. */}
         <button
           aria-expanded={revealed}
           aria-label={`Reveal ${id}`}
@@ -381,24 +421,36 @@ export function Pane({
             left ? 'left-0' : 'right-0'
           )}
           onFocus={() => setHoverRevealed(true)}
-          onPointerLeave={() => {
-            lastSample.current = null
-          }}
+          onPointerDown={stopPoll}
+          onPointerEnter={onEdgeEnter}
+          onPointerLeave={stopPoll}
           onPointerMove={onEdgeMove}
           type="button"
         />
 
-        {/* Floating panel — full-height, anchored to the edge, slid off until revealed. */}
+        {/* Floating panel — full-height, anchored to the edge, slid off until revealed.
+            Contents stay inert until the slide-in finishes so you can't misclick a row mid-animation. */}
         <div
           className={cn(
             'pointer-events-auto absolute inset-y-0 z-30 overflow-hidden transition-transform duration-[260ms] ease-[cubic-bezier(0.32,0.72,0,1)]',
             revealed ? 'translate-x-0' : left ? '-translate-x-[calc(100%+1rem)]' : 'translate-x-[calc(100%+1rem)]'
           )}
           onPointerEnter={() => setHoverRevealed(true)}
-          onPointerLeave={() => setHoverRevealed(false)}
+          onPointerLeave={() => {
+            stopPoll()
+            setHoverRevealed(false)
+            setSettled(false)
+          }}
+          onTransitionEnd={e => {
+            if (e.propertyName === 'transform' && revealed) {
+              setSettled(true)
+            }
+          }}
           style={{ [left ? 'left' : 'right']: 0, width: overlayWidth }}
         >
-          <div className="flex h-full w-full flex-col">{children}</div>
+          <div className={cn('flex h-full w-full flex-col', !(revealed && settled) && 'pointer-events-none')}>
+            {children}
+          </div>
         </div>
       </div>
     )
