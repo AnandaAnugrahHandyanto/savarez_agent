@@ -2248,20 +2248,23 @@ class TestBuildJobPromptMissingSkill:
 class TestBuildJobPromptBumpUse:
     """Verify that cron jobs bump skill usage counters so the curator sees them as active."""
 
-    def test_bump_use_called_for_loaded_skill(self):
-        """bump_use is called for each successfully loaded skill."""
+    def test_bump_use_not_called_in_build_prompt(self):
+        """bump_use is NOT called inside _build_job_prompt — it was moved to
+        the pre-gate loop in _run_job_impl so all code paths (no_agent,
+        script-only, agent) are covered uniformly."""
 
         def _skill_view(name: str) -> str:
             return json.dumps({"success": True, "content": f"Content for {name}."})
 
         with patch("tools.skills_tool.skill_view", side_effect=_skill_view), \
              patch("tools.skill_usage.bump_use") as mock_bump:
-            _build_job_prompt({"skills": ["alpha", "beta"], "prompt": "go"})
+            result = _build_job_prompt({"skills": ["alpha", "beta"], "prompt": "go"})
 
-        assert mock_bump.call_count == 2
-        calls = [c[0][0] for c in mock_bump.call_args_list]
-        assert "alpha" in calls
-        assert "beta" in calls
+        # bump_use is no longer called here — it runs in _run_job_impl pre-gate
+        assert mock_bump.call_count == 0
+        # Prompt should still contain skill content
+        assert "Content for alpha" in result
+        assert "Content for beta" in result
 
     def test_bump_use_not_called_for_missing_skill(self):
         """bump_use is NOT called when a skill fails to load."""
@@ -2275,22 +2278,18 @@ class TestBuildJobPromptBumpUse:
 
         assert mock_bump.call_count == 0
 
-    def test_bump_failure_does_not_break_prompt(self, caplog):
-        """If bump_use raises, the prompt still builds — error is logged at DEBUG."""
+    def test_prompt_builds_without_bump_use(self):
+        """_build_job_prompt works without bump_use — it only loads skill content."""
 
         def _skill_view(name: str) -> str:
             return json.dumps({"success": True, "content": "Works."})
 
-        with patch("tools.skills_tool.skill_view", side_effect=_skill_view), \
-             patch("tools.skill_usage.bump_use", side_effect=RuntimeError("boom")), \
-             caplog.at_level(logging.DEBUG, logger="cron.scheduler"):
+        with patch("tools.skills_tool.skill_view", side_effect=_skill_view):
             result = _build_job_prompt({"skills": ["good-skill"], "prompt": "go"})
 
-        # Prompt should still contain the skill content and original instruction
+        # Prompt should contain skill content and original instruction
         assert "Works." in result
         assert "go" in result
-        # The error should be logged at DEBUG level, not crash
-        assert any("failed to bump" in r.message for r in caplog.records)
 
 
 class TestSendMediaViaAdapter:
