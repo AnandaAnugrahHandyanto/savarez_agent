@@ -37,6 +37,7 @@ from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import (
     _auto_continue_freshness_window,
     _coerce_gateway_timestamp,
+    _format_resume_checkpoint_note,
     _is_fresh_gateway_interruption,
     _last_transcript_timestamp,
     _should_clear_resume_pending_after_turn,
@@ -152,12 +153,24 @@ def _simulate_note_injection(
             if reason == "shutdown_timeout"
             else "a gateway interruption"
         )
+        inflight_text = getattr(resume_entry, "inflight_message_text", None)
+        checkpoint_note = _format_resume_checkpoint_note(
+            getattr(resume_entry, "resume_checkpoint", None)
+        )
+        is_auto_resume_event = bool(not (message or "").strip())
+        if is_auto_resume_event and isinstance(inflight_text, str) and inflight_text.strip():
+            message = inflight_text
+            tail_instruction = "resume the in-flight user request below"
+        else:
+            tail_instruction = "then address the user's new message below"
+        checkpoint_suffix = f" {checkpoint_note}" if checkpoint_note else ""
         message = (
             f"[System note: Your previous turn in this session was interrupted "
-            f"by {reason_phrase}. The conversation history below is intact. "
-            f"If it contains unfinished tool result(s), process them first and "
-            f"summarize what was accomplished, then address the user's new "
-            f"message below.]\n\n"
+            f"by {reason_phrase}. The conversation history below is intact, "
+            f"and the current in-flight user request has been restored below."
+            f"{checkpoint_suffix} If the history contains unfinished tool "
+            f"result(s), process them first and summarize what was accomplished; "
+            f"otherwise {tail_instruction}.]\n\n"
             + message
         )
     elif has_fresh_tool_tail:
@@ -189,6 +202,10 @@ class TestSessionEntryResumeFields:
         assert entry.resume_pending is False
         assert entry.resume_reason is None
         assert entry.last_resume_marked_at is None
+        assert entry.inflight_message_text is None
+        assert entry.inflight_message_id is None
+        assert entry.inflight_message_recorded_at is None
+        assert entry.resume_checkpoint is None
 
     def test_roundtrip_with_resume_fields(self):
         now = datetime(2026, 4, 18, 12, 0, 0)
@@ -200,11 +217,19 @@ class TestSessionEntryResumeFields:
             resume_pending=True,
             resume_reason="restart_timeout",
             last_resume_marked_at=now,
+            inflight_message_text="please finish important work",
+            inflight_message_id="msg-123",
+            inflight_message_recorded_at=now,
+            resume_checkpoint={"current_tool": "terminal", "api_call_count": 3},
         )
         restored = SessionEntry.from_dict(entry.to_dict())
         assert restored.resume_pending is True
         assert restored.resume_reason == "restart_timeout"
         assert restored.last_resume_marked_at == now
+        assert restored.inflight_message_text == "please finish important work"
+        assert restored.inflight_message_id == "msg-123"
+        assert restored.inflight_message_recorded_at == now
+        assert restored.resume_checkpoint == {"current_tool": "terminal", "api_call_count": 3}
 
     def test_from_dict_legacy_without_resume_fields(self):
         """Old sessions.json without the new fields deserialize cleanly."""
@@ -256,6 +281,13 @@ class TestMarkResumePending:
         assert refreshed.resume_reason == "restart_timeout"
         assert refreshed.last_resume_marked_at is not None
 
+    def test_checkpoint_persists(self, tmp_path):
+        store = _make_store(tmp_path)
+        entry = store.get_or_create_session(_make_source())
+
+        assert store.mark_resume_pending(entry.session_key, checkpoint={"current_tool": "terminal"}) is True
+        assert store._entries[entry.session_key].resume_checkpoint == {"current_tool": "terminal"}
+
     def test_custom_reason_persists(self, tmp_path):
         store = _make_store(tmp_path)
         source = _make_source()
@@ -299,13 +331,14 @@ class TestClearResumePending:
         store = _make_store(tmp_path)
         source = _make_source()
         entry = store.get_or_create_session(source)
-        store.mark_resume_pending(entry.session_key)
+        store.mark_resume_pending(entry.session_key, checkpoint={"current_tool": "terminal"})
 
         assert store.clear_resume_pending(entry.session_key) is True
         e = store._entries[entry.session_key]
         assert e.resume_pending is False
         assert e.resume_reason is None
         assert e.last_resume_marked_at is None
+        assert e.resume_checkpoint is None
 
     def test_returns_false_when_not_pending(self, tmp_path):
         store = _make_store(tmp_path)
@@ -317,6 +350,32 @@ class TestClearResumePending:
     def test_returns_false_for_unknown_key(self, tmp_path):
         store = _make_store(tmp_path)
         assert store.clear_resume_pending("no-such-key") is False
+
+
+class TestInflightMessageCheckpoint:
+    def test_record_and_clear_inflight_message(self, tmp_path):
+        store = _make_store(tmp_path)
+        entry = store.get_or_create_session(_make_source())
+
+        assert store.record_inflight_message(entry.session_key, "do the current thing", "m1") is True
+        e = store._entries[entry.session_key]
+        assert e.inflight_message_text == "do the current thing"
+        assert e.inflight_message_id == "m1"
+        assert e.inflight_message_recorded_at is not None
+
+        assert store.clear_inflight_message(entry.session_key) is True
+        e = store._entries[entry.session_key]
+        assert e.inflight_message_text is None
+        assert e.inflight_message_id is None
+        assert e.inflight_message_recorded_at is None
+
+    def test_record_ignores_empty_and_unknown(self, tmp_path):
+        store = _make_store(tmp_path)
+        entry = store.get_or_create_session(_make_source())
+
+        assert store.record_inflight_message(entry.session_key, "   ") is False
+        assert store.record_inflight_message("missing", "real work") is False
+        assert store._entries[entry.session_key].inflight_message_text is None
 
 
 # ---------------------------------------------------------------------------
@@ -395,14 +454,26 @@ class TestSuspendRecentlyActiveSkipsResumePending:
         assert e.suspended is False
         assert e.resume_pending is True
 
-    def test_non_resume_pending_gets_resume_pending(self, tmp_path):
-        """Non-resume sessions are now marked resume_pending (not suspended)."""
+    def test_non_resume_pending_without_inflight_marker_is_ignored(self, tmp_path):
+        """Completed sessions must not be revived just because they were recent."""
+        store = _make_store(tmp_path)
+        source = _make_source(chat_id="b")
+        entry = store.get_or_create_session(source)
+
+        count = store.suspend_recently_active()
+        assert count == 0
+        assert store._entries[entry.session_key].resume_pending is False
+        assert store._entries[entry.session_key].suspended is False
+
+    def test_non_resume_pending_with_inflight_marker_gets_resume_pending(self, tmp_path):
+        """Only sessions with a durable in-flight prompt are auto-resumed."""
         store = _make_store(tmp_path)
         source_a = _make_source(chat_id="a")
         source_b = _make_source(chat_id="b")
         entry_a = store.get_or_create_session(source_a)
         entry_b = store.get_or_create_session(source_b)
         store.mark_resume_pending(entry_a.session_key)
+        store.record_inflight_message(entry_b.session_key, "finish the real in-flight request")
 
         count = store.suspend_recently_active()
         # entry_a is already resume_pending → skipped. entry_b gets marked.
@@ -442,6 +513,23 @@ class TestResumePendingSystemNote:
         assert "[System note:" in result
         assert "gateway restart" in result
         assert "what happened?" in result
+
+    def test_empty_auto_resume_event_restores_inflight_prompt(self):
+        entry = self._pending_entry(reason="restart_timeout")
+        entry.inflight_message_text = "finish the actual in-flight request"
+        entry.resume_checkpoint = {"current_tool": "terminal", "api_call_count": 2, "max_iterations": 8}
+        result = _simulate_note_injection(
+            history=[
+                {"role": "assistant", "content": "previous completed turn", "timestamp": time.time()},
+            ],
+            user_message="",
+            resume_entry=entry,
+        )
+        assert "finish the actual in-flight request" in result
+        assert "previous completed turn" not in result.split("\n\n", 1)[1]
+        assert "Restart checkpoint:" in result
+        assert "current tool: terminal" in result
+        assert "resume the in-flight user request below" in result
 
     def test_resume_pending_shutdown_note_mentions_shutdown(self):
         entry = self._pending_entry(reason="shutdown_timeout")

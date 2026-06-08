@@ -490,6 +490,18 @@ class SessionEntry:
     resume_pending: bool = False
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
+    # Durable copy of the *current* user request while an agent turn is running.
+    # Gateway transcripts are normally written after a turn completes; without
+    # this, a restart mid-turn can only see the previous completed transcript and
+    # auto-resume the wrong request.
+    inflight_message_text: Optional[str] = None
+    inflight_message_id: Optional[str] = None
+    inflight_message_recorded_at: Optional[datetime] = None
+    # Compact, JSON-serializable activity snapshot captured when the gateway
+    # interrupts an in-flight turn during restart/shutdown.  It gives the
+    # resumed agent a durable hint about what it was doing beyond the raw
+    # transcript tail (current tool, iteration, last activity).
+    resume_checkpoint: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -517,6 +529,14 @@ class SessionEntry:
                 if self.last_resume_marked_at
                 else None
             ),
+            "inflight_message_text": self.inflight_message_text,
+            "inflight_message_id": self.inflight_message_id,
+            "inflight_message_recorded_at": (
+                self.inflight_message_recorded_at.isoformat()
+                if self.inflight_message_recorded_at
+                else None
+            ),
+            "resume_checkpoint": self.resume_checkpoint,
             "is_fresh_reset": self.is_fresh_reset,
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
@@ -547,6 +567,14 @@ class SessionEntry:
             except (TypeError, ValueError):
                 last_resume_marked_at = None
 
+        inflight_message_recorded_at = None
+        _imra = data.get("inflight_message_recorded_at")
+        if _imra:
+            try:
+                inflight_message_recorded_at = datetime.fromisoformat(_imra)
+            except (TypeError, ValueError):
+                inflight_message_recorded_at = None
+
         return cls(
             session_key=data["session_key"],
             session_id=data["session_id"],
@@ -569,6 +597,22 @@ class SessionEntry:
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
+            inflight_message_text=(
+                data.get("inflight_message_text")
+                if isinstance(data.get("inflight_message_text"), str)
+                else None
+            ),
+            inflight_message_id=(
+                data.get("inflight_message_id")
+                if isinstance(data.get("inflight_message_id"), str)
+                else None
+            ),
+            inflight_message_recorded_at=inflight_message_recorded_at,
+            resume_checkpoint=(
+                data.get("resume_checkpoint")
+                if isinstance(data.get("resume_checkpoint"), dict)
+                else None
+            ),
             is_fresh_reset=data.get("is_fresh_reset", False),
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
@@ -985,10 +1029,56 @@ class SessionStore:
                 return True
         return False
 
+    def record_inflight_message(
+        self,
+        session_key: str,
+        message_text: str,
+        message_id: Optional[str] = None,
+    ) -> bool:
+        """Persist the current user request before the agent starts work.
+
+        Transcript rows are normally written after a turn completes.  This
+        lightweight checkpoint lets restart recovery know the actual in-flight
+        prompt even if the process exits before transcript persistence.
+        """
+        text = message_text if isinstance(message_text, str) else ""
+        if not text.strip():
+            return False
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or entry.suspended:
+                return False
+            entry.inflight_message_text = text
+            entry.inflight_message_id = str(message_id) if message_id else None
+            entry.inflight_message_recorded_at = _now()
+            self._save()
+            return True
+
+    def clear_inflight_message(self, session_key: str) -> bool:
+        """Clear the durable in-flight prompt after the turn is no longer in flight."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None:
+                return False
+            if (
+                entry.inflight_message_text is None
+                and entry.inflight_message_id is None
+                and entry.inflight_message_recorded_at is None
+            ):
+                return False
+            entry.inflight_message_text = None
+            entry.inflight_message_id = None
+            entry.inflight_message_recorded_at = None
+            self._save()
+            return True
+
     def mark_resume_pending(
         self,
         session_key: str,
         reason: str = "restart_timeout",
+        checkpoint: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """Mark a session as resumable after a restart interruption.
 
@@ -1010,6 +1100,7 @@ class SessionStore:
                 entry.resume_pending = True
                 entry.resume_reason = reason
                 entry.last_resume_marked_at = _now()
+                entry.resume_checkpoint = checkpoint if isinstance(checkpoint, dict) else None
                 self._save()
                 return True
         return False
@@ -1031,6 +1122,7 @@ class SessionStore:
             entry.resume_pending = False
             entry.resume_reason = None
             entry.last_resume_marked_at = None
+            entry.resume_checkpoint = None
             self._save()
             return True
 
@@ -1103,9 +1195,13 @@ class SessionStore:
 
         Entries already flagged ``resume_pending=True`` are skipped.  Entries
         explicitly ``suspended=True`` (from /stop or stuck-loop escalation)
-        are also skipped.  Terminal escalation for genuinely stuck sessions
-        is still handled by the existing ``.restart_failure_counts`` counter
-        (threshold 3), which runs after this method and sets ``suspended=True``.
+        are also skipped.  A session is considered in-flight only if the
+        previous process recorded ``inflight_message_text`` before starting the
+        agent.  Recently updated sessions without that marker completed their
+        last turn and must not be auto-resumed after an unclean restart.
+        Terminal escalation for genuinely stuck sessions is still handled by
+        the existing ``.restart_failure_counts`` counter (threshold 3), which
+        runs after this method and sets ``suspended=True``.
 
         Returns the number of sessions marked resumable.
         """
@@ -1118,10 +1214,14 @@ class SessionStore:
             for entry in self._entries.values():
                 if entry.resume_pending:
                     continue
-                if not entry.suspended and entry.updated_at >= cutoff:
+                if not entry.inflight_message_text:
+                    continue
+                marker = entry.inflight_message_recorded_at or entry.updated_at
+                if not entry.suspended and marker >= cutoff:
                     entry.resume_pending = True
                     entry.resume_reason = "restart_interrupted"
                     entry.last_resume_marked_at = _now()
+                    entry.resume_checkpoint = None
                     count += 1
             if count:
                 self._save()
