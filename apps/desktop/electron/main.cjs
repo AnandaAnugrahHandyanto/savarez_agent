@@ -4948,6 +4948,22 @@ ipcMain.handle('hermes:profile:set', async (_event, name) => {
   return { profile: next }
 })
 
+// Renderer-side /exit or /quit calls this to gracefully shut down the desktop
+// app. The renderer saves session state before invoking this handler; we just
+// need to close the primary window, which triggers the existing before-quit
+// cleanup (hermes process SIGTERM, pool backend stop, log flush).
+//
+// We use mainWindow.close() instead of app.quit() so macOS can re-create the
+// window via the 'activate' event if the dock icon is clicked again.
+ipcMain.handle('hermes:exit', async () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.close()
+  } else {
+    app.quit()
+  }
+  return { ok: true }
+})
+
 ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
   previewShortcutActive = Boolean(active)
 })

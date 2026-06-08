@@ -654,6 +654,27 @@ export function usePromptActions({
           return
         }
 
+        // /exit and /quit save the current session and gracefully exit the
+        // desktop app. These are intercepted here rather than sent to the
+        // slash worker because the worker can't trigger an Electron shutdown.
+        // We save the session first so any pending state is persisted, then
+        // delegate the actual exit to the Electron main process via IPC.
+        if (normalizedName === 'exit' || normalizedName === 'quit') {
+          try {
+            await requestGateway('session.save', { session_id: sessionId }).catch(() => undefined)
+          } catch {
+            // Session save is best-effort — proceed with exit either way.
+          }
+
+          try {
+            await window.hermesDesktop.exit()
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+
+          return
+        }
+
         if (normalizedName === 'skin') {
           renderSlashOutput(handleSkinCommand(arg))
 

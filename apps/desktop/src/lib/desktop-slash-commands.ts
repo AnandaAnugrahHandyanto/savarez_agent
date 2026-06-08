@@ -44,7 +44,9 @@ const DESKTOP_COMMAND_META = [
   ['/undo', 'Remove the last user/assistant exchange'],
   ['/usage', 'Show token usage for this session'],
   ['/version', 'Show Hermes Agent version'],
-  ['/yolo', 'Toggle YOLO — auto-approve dangerous commands']
+  ['/yolo', 'Toggle YOLO — auto-approve dangerous commands'],
+  ['/exit', 'Exit the Hermes desktop app'],
+  ['/quit', 'Exit the Hermes desktop app']
 ] as const
 
 const DESKTOP_COMMANDS: ReadonlySet<string> = new Set(DESKTOP_COMMAND_META.map(([command]) => command))
@@ -74,7 +76,6 @@ const TERMINAL_ONLY_COMMANDS = new Set([
   '/copy',
   '/cron',
   '/details',
-  '/exit',
   '/footer',
   '/gateway',
   '/gquota',
@@ -86,7 +87,6 @@ const TERMINAL_ONLY_COMMANDS = new Set([
   '/paste',
   '/platforms',
   '/plugins',
-  '/quit',
   '/redraw',
   '/reload',
   '/restart',
