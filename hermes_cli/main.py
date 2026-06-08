@@ -10463,6 +10463,38 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # against a non-default channel.
         branch = _resolve_update_branch(args)
 
+        # Refuse to *implicitly* hop branches during an update. Historically
+        # `hermes update` silently `git checkout`ed the target (default main)
+        # whenever HEAD was on a different branch, which can disrupt a user's
+        # in-progress local work without warning. Only switch when the user
+        # opted in: either via --allow-branch-switch, or by naming the target
+        # explicitly with --branch (whose documented behavior is to switch).
+        allow_branch_switch = bool(getattr(args, "allow_branch_switch", False))
+        branch_explicit = bool((getattr(args, "branch", None) or "").strip())
+        if (
+            current_branch != branch
+            and not allow_branch_switch
+            and not branch_explicit
+        ):
+            current_label = (
+                "detached HEAD" if current_branch == "HEAD" else current_branch
+            )
+            print("✗ Refusing to switch branches during update.")
+            print(f"  Current branch: {current_label}")
+            print(f"  Update branch:  {branch}")
+            print()
+            print(
+                "  Hermes will not automatically switch branches during "
+                "`hermes update`"
+            )
+            print("  because this can disrupt local work.")
+            print(
+                f"  Switch to {branch} yourself, or rerun with "
+                "--allow-branch-switch if you"
+            )
+            print("  intentionally want Hermes to switch branches.")
+            sys.exit(1)
+
         # If user is on a different branch than the update target, switch
         # to the target. When the target is "main" this is the historical
         # "always update against main" behavior; for any other target it's

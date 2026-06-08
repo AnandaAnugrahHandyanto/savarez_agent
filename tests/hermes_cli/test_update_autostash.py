@@ -548,14 +548,14 @@ def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_cmd_update_switches_to_main_from_feature_branch(monkeypatch, tmp_path, capsys):
-    """When on a feature branch, update checks out main before pulling."""
+    """With --allow-branch-switch, update checks out main before pulling."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
     side_effect, recorded = _make_update_side_effect(current_branch="fix/something")
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main.cmd_update(SimpleNamespace(allow_branch_switch=True))
 
     checkout_calls = [c for c in recorded if "checkout" in c and "main" in c]
     assert len(checkout_calls) == 1
@@ -566,20 +566,91 @@ def test_cmd_update_switches_to_main_from_feature_branch(monkeypatch, tmp_path, 
 
 
 def test_cmd_update_switches_to_main_from_detached_head(monkeypatch, tmp_path, capsys):
-    """When in detached HEAD state, update checks out main before pulling."""
+    """With --allow-branch-switch, update checks out main from detached HEAD."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
     side_effect, recorded = _make_update_side_effect(current_branch="HEAD")
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main.cmd_update(SimpleNamespace(allow_branch_switch=True))
 
     checkout_calls = [c for c in recorded if "checkout" in c and "main" in c]
     assert len(checkout_calls) == 1
 
     out = capsys.readouterr().out
     assert "detached HEAD" in out
+
+
+def test_cmd_update_refuses_branch_switch_from_feature_branch(monkeypatch, tmp_path, capsys):
+    """Without an override, update on a feature branch refuses before any checkout."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(current_branch="fix/something")
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main.cmd_update(SimpleNamespace())
+    assert exc_info.value.code == 1
+
+    # No checkout/switch should have been attempted.
+    checkout_calls = [c for c in recorded if "checkout" in c]
+    assert checkout_calls == []
+    # And we must not have pulled anything either.
+    pull_calls = [c for c in recorded if "pull" in c]
+    assert pull_calls == []
+
+    out = capsys.readouterr().out
+    assert "Refusing to switch branches during update." in out
+    assert "Current branch: fix/something" in out
+    assert "Update branch:  main" in out
+    assert "--allow-branch-switch" in out
+
+
+def test_cmd_update_refuses_branch_switch_from_detached_head(monkeypatch, tmp_path, capsys):
+    """Detached HEAD also refuses to implicitly switch to the update branch."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(current_branch="HEAD")
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main.cmd_update(SimpleNamespace())
+    assert exc_info.value.code == 1
+
+    checkout_calls = [c for c in recorded if "checkout" in c]
+    assert checkout_calls == []
+
+    out = capsys.readouterr().out
+    assert "Refusing to switch branches during update." in out
+    assert "Current branch: detached HEAD" in out
+    assert "--allow-branch-switch" in out
+
+
+def test_cmd_update_discard_config_does_not_authorize_branch_switch(monkeypatch, tmp_path, capsys):
+    """updates.non_interactive_local_changes=discard governs stash handling,
+    not branch-hop: a non-interactive update on a feature branch still refuses."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr(
+        hermes_config, "load_config",
+        lambda *a, **kw: {"updates": {"non_interactive_local_changes": "discard"}},
+    )
+
+    side_effect, recorded = _make_update_side_effect(current_branch="fix/something")
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main.cmd_update(SimpleNamespace(gateway=True))
+    assert exc_info.value.code == 1
+
+    checkout_calls = [c for c in recorded if "checkout" in c]
+    assert checkout_calls == []
+
+    out = capsys.readouterr().out
+    assert "Refusing to switch branches during update." in out
 
 
 def test_cmd_update_restores_stash_and_branch_when_already_up_to_date(monkeypatch, tmp_path, capsys):
@@ -603,7 +674,7 @@ def test_cmd_update_restores_stash_and_branch_when_already_up_to_date(monkeypatc
     )
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    hermes_main.cmd_update(SimpleNamespace(allow_branch_switch=True))
 
     # Stash should have been restored
     assert len(restore_calls) == 1

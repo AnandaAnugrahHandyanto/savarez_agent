@@ -115,13 +115,16 @@ class TestCmdUpdateBranchFallback:
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
     def test_update_falls_back_to_main_when_branch_not_on_remote(
-        self, mock_run, _mock_which, mock_args, capsys
+        self, mock_run, _mock_which, capsys
     ):
         mock_run.side_effect = _make_run_side_effect(
             branch="fix/stoicneko", verify_ok=False, commit_count="3"
         )
 
-        cmd_update(mock_args)
+        # On a feature branch the update would implicitly hop to main, which
+        # is now refused by default — pass --allow-branch-switch so this test
+        # keeps exercising the main-targeting fallback path.
+        cmd_update(SimpleNamespace(allow_branch_switch=True))
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
 
