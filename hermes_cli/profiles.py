@@ -93,10 +93,26 @@ _CLONE_ALL_STRIP: list[str] = [
 # profile is meant to keep working immediately).
 _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "hermes-agent",
+    "hermes-agent-prclean",
     ".worktrees",
     "profiles",
     "bin",
+    "node",
     "node_modules",
+    "lsp",
+    "cache",
+    "backups",
+    "state-snapshots",
+    "heapdumps",
+    "kanban",
+    "image_cache",
+    "audio_cache",
+    "document_cache",
+    "browser_screenshots",
+    "checkpoints",
+    "sandboxes",
+    "logs",
+    ".skills_prompt_snapshot.json",
 })
 
 # Marker file written by `hermes profile create --no-skills`.  When present in
@@ -170,11 +186,15 @@ def _clone_all_copytree_ignore(source_dir: Path):
 _DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
     # Infrastructure
     "hermes-agent",         # repo checkout (multi-GB)
+    "hermes-agent-prclean",  # temporary/source checkout
     ".worktrees",           # git worktrees
     "profiles",             # other profiles — never recursive-export
-    "bin",                  # installed binaries (tirith, etc.)
+    "bin",                  # installed binaries (tirith etc.) shared per-host
+    "node",                 # managed Node runtime
     "node_modules",         # npm packages
-    # Databases & runtime state
+    "lsp",                  # managed LSP runtimes and node_modules
+    # Large local backups / runtime state
+    "backups", "state-snapshots", "heapdumps", "kanban",
     "state.db", "state.db-shm", "state.db-wal",
     "hermes_state.db",
     "response_store.db", "response_store.db-shm", "response_store.db-wal",
@@ -185,6 +205,7 @@ _DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
     "errors.log",
     ".hermes_history",
     # Caches (regenerated on use)
+    "cache",                # volatile browser/tool caches
     "image_cache", "audio_cache", "document_cache",
     "browser_screenshots", "checkpoints",
     "sandboxes",
@@ -551,7 +572,28 @@ def _check_gateway_running(profile_dir: Path) -> bool:
     """Check if a gateway is running for a given profile directory."""
     try:
         from gateway.status import get_running_pid
-        return get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None
+        if get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None:
+            return True
+    except Exception:
+        pass
+
+    # Some macOS launchd fallback paths can leave the gateway process running
+    # without a profile-local gateway.pid/lock file. For the default profile,
+    # use the process table as a conservative secondary signal so audits do not
+    # report "stopped" immediately after a successful gateway repair.
+    try:
+        real_default_home = (Path.home() / ".hermes").resolve()
+        if profile_dir.resolve() != real_default_home:
+            return False
+        if not (profile_dir / "logs" / "gateway.log").exists():
+            return False
+        result = subprocess.run(
+            ["pgrep", "-fl", r"[h]ermes_cli.main gateway run"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
     except Exception:
         return False
 
@@ -567,6 +609,127 @@ def _count_skills(profile_dir: Path) -> int:
             continue
         count += 1
     return count
+
+
+def _count_files(root: Path) -> int:
+    """Best-effort recursive file count for audit output."""
+    if not root.is_dir():
+        return 0
+    count = 0
+    try:
+        for path in root.rglob("*"):
+            try:
+                if path.is_file():
+                    count += 1
+            except OSError:
+                continue
+    except OSError:
+        return count
+    return count
+
+
+def _path_size_bytes(path: Path) -> int:
+    """Best-effort size calculation that does not follow symlinked dirs."""
+    try:
+        if path.is_symlink() or path.is_file():
+            return path.lstat().st_size
+        if not path.is_dir():
+            return 0
+    except OSError:
+        return 0
+
+    total = 0
+    stack = [path]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        stat_result = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    total += stat_result.st_size
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(Path(entry.path))
+        except OSError:
+            continue
+    return total
+
+
+def format_bytes(num_bytes: int) -> str:
+    """Human-readable byte size for profile audit output."""
+    value = float(max(num_bytes, 0))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            if unit == "B":
+                return f"{int(value)} B"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
+
+
+def audit_profile(name: str, *, top: int = 12) -> dict:
+    """Return a read-only cleanup audit for a profile.
+
+    The audit intentionally reports only metadata and sizes — never file
+    contents, secret values, or token-bearing config snippets.  It is meant as
+    the measurable before/after companion for profile cleanup/reset work.
+    """
+    canon = normalize_profile_name(name)
+    if not profile_exists(canon):
+        raise FileNotFoundError(f"Profile '{name}' does not exist")
+    profile_dir = get_profile_dir(canon)
+    model, provider = _read_config_model(profile_dir)
+    root_entries: list[dict] = []
+    try:
+        for entry in sorted(profile_dir.iterdir(), key=lambda p: p.name.lower()):
+            size = _path_size_bytes(entry)
+            root_entries.append({
+                "name": entry.name,
+                "type": "dir" if entry.is_dir() else "file",
+                "bytes": size,
+                "human": format_bytes(size),
+                "export_excluded": bool(
+                    canon == "default" and entry.name in _DEFAULT_EXPORT_EXCLUDE_ROOT
+                ),
+                "clone_all_excluded": bool(
+                    canon == "default" and entry.name in _CLONE_ALL_DEFAULT_EXCLUDE_ROOT
+                ),
+            })
+    except OSError as exc:
+        raise OSError(f"Could not inspect profile '{name}': {exc}") from exc
+
+    root_entries.sort(key=lambda item: item["bytes"], reverse=True)
+    top = max(1, int(top))
+    total_bytes = sum(item["bytes"] for item in root_entries)
+    export_excluded_bytes = sum(
+        item["bytes"] for item in root_entries if item["export_excluded"]
+    )
+    clone_all_excluded_bytes = sum(
+        item["bytes"] for item in root_entries if item["clone_all_excluded"]
+    )
+
+    return {
+        "profile": canon,
+        "path": str(profile_dir),
+        "is_default": canon == "default",
+        "model": model,
+        "provider": provider,
+        "gateway_running": _check_gateway_running(profile_dir),
+        "has_env": (profile_dir / ".env").exists(),
+        "has_soul": (profile_dir / "SOUL.md").exists(),
+        "skills": _count_skills(profile_dir),
+        "memory_files": _count_files(profile_dir / "memories"),
+        "cron_files": _count_files(profile_dir / "cron"),
+        "total_root_bytes": total_bytes,
+        "total_root_human": format_bytes(total_bytes),
+        "export_excluded_bytes": export_excluded_bytes,
+        "export_excluded_human": format_bytes(export_excluded_bytes),
+        "clone_all_excluded_bytes": clone_all_excluded_bytes,
+        "clone_all_excluded_human": format_bytes(clone_all_excluded_bytes),
+        "top_entries": root_entries[:top],
+    }
 
 
 # ---------------------------------------------------------------------------

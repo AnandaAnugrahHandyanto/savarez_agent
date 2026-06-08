@@ -242,11 +242,9 @@ class TestCreateProfile:
         assert not (profile_dir / "profiles").exists()
 
     def test_clone_all_excludes_default_infrastructure(self, profile_env):
-        """--clone-all from default profile excludes hermes-agent, .worktrees,
-        bin, node_modules at root, plus __pycache__/*.pyc/*.pyo/*.sock/*.tmp
-        at any depth.  Profile data (config, env, skills, sessions, logs,
-        state.db) must be preserved — clone-all means "complete snapshot
-        minus infrastructure."
+        """--clone-all from default profile excludes local infrastructure,
+        bulky runtime directories, and volatile files while preserving core
+        profile data needed for rollback.
         """
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
@@ -260,6 +258,15 @@ class TestCreateProfile:
         (default_home / "bin").mkdir(exist_ok=True)
         (default_home / "bin" / "tool").write_text("binary")
         (default_home / "node_modules" / ".package-lock.json").mkdir(parents=True)
+        (default_home / "node" / "bin").mkdir(parents=True)
+        (default_home / "lsp" / "node_modules").mkdir(parents=True)
+        (default_home / "cache" / "browser" ).mkdir(parents=True)
+        (default_home / "cache" / "browser" / "SingletonLock").write_text("volatile")
+        (default_home / "backups" / "old.zip").mkdir(parents=True)
+        (default_home / "state-snapshots" / "pre-update").mkdir(parents=True)
+        (default_home / "heapdumps" / "dump.heapsnapshot").mkdir(parents=True)
+        (default_home / "kanban" / "boards").mkdir(parents=True)
+        (default_home / ".skills_prompt_snapshot.json").write_text("{}")
         # Bytecode + temp files at nested depth (universal exclusion)
         (default_home / "skills" / "my-skill" / "__pycache__").mkdir(parents=True)
         (default_home / "skills" / "my-skill" / "__pycache__" / "module.cpython-311.pyc").write_text("stale")
@@ -285,6 +292,14 @@ class TestCreateProfile:
         assert not (profile_dir / "profiles").exists()
         assert not (profile_dir / "bin").exists()
         assert not (profile_dir / "node_modules").exists()
+        assert not (profile_dir / "node").exists()
+        assert not (profile_dir / "lsp").exists()
+        assert not (profile_dir / "cache").exists()
+        assert not (profile_dir / "backups").exists()
+        assert not (profile_dir / "state-snapshots").exists()
+        assert not (profile_dir / "heapdumps").exists()
+        assert not (profile_dir / "kanban").exists()
+        assert not (profile_dir / ".skills_prompt_snapshot.json").exists()
         # Universal exclusions at any depth
         assert not (profile_dir / "data.sock").exists()
         assert not (profile_dir / "data.tmp").exists()
@@ -297,7 +312,7 @@ class TestCreateProfile:
         assert (profile_dir / ".env").read_text() == "KEY=val"
         assert (profile_dir / "state.db").read_text() == "sessions-data"
         assert (profile_dir / "sessions").exists()
-        assert (profile_dir / "logs" / "gateway.log").read_text() == "log"
+        assert not (profile_dir / "logs").exists()
 
     def test_clone_config_missing_files_skipped(self, profile_env):
         """Clone config gracefully skips files that don't exist in source."""
