@@ -136,6 +136,13 @@ VALID_HOOKS: Set[str] = {
     "transform_llm_output",
     "pre_llm_call",
     "post_llm_call",
+    # Per-turn model routing hook. Fired before an agent is created or before
+    # a live TUI agent runs a turn. Plugins may return a dict with:
+    #   {"model": "...", "provider": "...", "reasoning_config": {...}}
+    # or {"model": "...", "runtime": {...}, "metadata": {...}}.
+    # The first valid result wins; invalid results are ignored and Hermes
+    # falls back to the primary configured model.
+    "resolve_model_route",
     "pre_api_request",
     "post_api_request",
     "api_request_error",
@@ -1590,6 +1597,10 @@ class PluginManager:
         system prompt stays identical across turns so cached tokens
         are reused.  All injected context is ephemeral — never
         persisted to session DB.
+
+        For ``resolve_model_route``, callbacks may return a dict describing
+        the model/runtime to use for the current turn.  The routing helper
+        validates those results and applies the first valid route.
         """
         kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         callbacks = self._hooks.get(hook_name, [])

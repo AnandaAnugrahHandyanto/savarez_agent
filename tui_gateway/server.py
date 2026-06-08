@@ -2680,6 +2680,152 @@ def _make_agent(
     )
 
 
+def _freeze_route_mapping(value: Any) -> tuple | None:
+    if not isinstance(value, dict):
+        return None
+    return tuple(sorted((str(key), str(val)) for key, val in value.items()))
+
+
+def _route_signature_for(
+    model: str,
+    runtime: dict,
+    reasoning_config: dict | None = None,
+) -> tuple:
+    return (
+        str(model or ""),
+        str(runtime.get("provider") or ""),
+        str(runtime.get("base_url") or ""),
+        str(runtime.get("api_mode") or ""),
+        str(runtime.get("command") or ""),
+        tuple(runtime.get("args") or []),
+        runtime.get("max_tokens"),
+        _freeze_route_mapping(reasoning_config),
+    )
+
+
+def _route_transport_signature_for(model: str, runtime: dict) -> tuple:
+    return (
+        str(model or ""),
+        str(runtime.get("provider") or ""),
+        str(runtime.get("base_url") or ""),
+        str(runtime.get("api_mode") or ""),
+        str(runtime.get("command") or ""),
+        tuple(runtime.get("args") or []),
+    )
+
+
+def _agent_primary_runtime(agent) -> dict:
+    return {
+        "api_key": getattr(agent, "api_key", None),
+        "base_url": getattr(agent, "base_url", "") or "",
+        "provider": getattr(agent, "provider", "") or "",
+        "api_mode": getattr(agent, "api_mode", "") or "",
+        "command": getattr(agent, "acp_command", None),
+        "args": list(getattr(agent, "acp_args", []) or []),
+        "credential_pool": getattr(agent, "_credential_pool", None),
+        "max_tokens": getattr(agent, "max_tokens", None),
+    }
+
+
+def _apply_tui_route_runtime(agent, runtime: dict) -> dict:
+    old_values = {
+        "acp_command": getattr(agent, "acp_command", None),
+        "acp_args": list(getattr(agent, "acp_args", []) or []),
+        "_credential_pool": getattr(agent, "_credential_pool", None),
+        "max_tokens": getattr(agent, "max_tokens", None),
+    }
+    agent.acp_command = runtime.get("command")
+    agent.acp_args = list(runtime.get("args") or [])
+    agent._credential_pool = runtime.get("credential_pool")
+    agent.max_tokens = runtime.get("max_tokens")
+    return old_values
+
+
+def _restore_tui_route_runtime(agent, old_values: dict) -> None:
+    for key, value in old_values.items():
+        try:
+            setattr(agent, key, value)
+        except Exception:
+            pass
+
+
+def _route_tui_agent_for_turn(sid: str, session: dict, user_message: Any):
+    """Apply a plugin-selected per-turn model route to a live TUI agent."""
+    agent = session["agent"]
+    primary_model = getattr(agent, "model", "") or _resolve_model()
+    primary_runtime = _agent_primary_runtime(agent)
+    default_reasoning = _load_reasoning_config()
+    try:
+        from agent.model_routing import resolve_model_route
+
+        route = resolve_model_route(
+            user_message=user_message,
+            config=_load_cfg(),
+            primary_model=primary_model,
+            primary_runtime=primary_runtime,
+            platform="tui",
+            session_id=session.get("session_key", "") or "",
+            reasoning_config=default_reasoning,
+        )
+    except Exception as exc:
+        logger.debug("resolve_model_route failed; using primary route: %s", exc)
+        route = {
+            "model": primary_model,
+            "runtime": primary_runtime,
+            "reasoning_config": default_reasoning,
+        }
+
+    runtime = route.get("runtime") or primary_runtime
+    target_reasoning = route.get("reasoning_config", default_reasoning)
+    target_signature = _route_signature_for(
+        route.get("model") or primary_model,
+        runtime,
+        target_reasoning,
+    )
+    current_signature = _route_signature_for(
+        primary_model,
+        primary_runtime,
+        getattr(agent, "reasoning_config", None),
+    )
+    target_transport_signature = _route_transport_signature_for(
+        route.get("model") or primary_model,
+        runtime,
+    )
+    current_transport_signature = _route_transport_signature_for(
+        primary_model,
+        primary_runtime,
+    )
+
+    agent.reasoning_config = target_reasoning
+    agent.service_tier = _load_service_tier()
+    if target_signature == current_signature:
+        return agent
+    if target_transport_signature == current_transport_signature:
+        _apply_tui_route_runtime(agent, runtime)
+        _emit("session.info", sid, _session_info(agent, session))
+        return agent
+
+    old_values = _apply_tui_route_runtime(agent, runtime)
+    try:
+        agent.switch_model(
+            new_model=route.get("model") or primary_model,
+            new_provider=runtime.get("provider")
+            or primary_runtime.get("provider")
+            or "",
+            api_key=runtime.get("api_key") or "",
+            base_url=runtime.get("base_url") or "",
+            api_mode=runtime.get("api_mode") or "",
+        )
+    except Exception:
+        _restore_tui_route_runtime(agent, old_values)
+        raise
+
+    _apply_tui_route_runtime(agent, runtime)
+    _restart_slash_worker(session)
+    _emit("session.info", sid, _session_info(agent, session))
+    return agent
+
+
 def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
     now = time.time()
     with _sessions_lock:
@@ -4631,6 +4777,13 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             cols = session.get("cols", 80)
             streamer = make_stream_renderer(cols)
             prompt = text
+            route_probe: Any = prompt
+            if images:
+                route_probe = [
+                    {"type": "text", "text": str(prompt or "")},
+                    {"type": "image_url", "image_url": {"url": "attached-image"}},
+                ]
+            _route_tui_agent_for_turn(sid, session, route_probe)
 
             if isinstance(prompt, str) and "@" in prompt:
                 from agent.context_references import preprocess_context_references
@@ -4675,16 +4828,12 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         decide_image_input_mode,
                         build_native_content_parts,
                     )
-                    from agent.auxiliary_client import (
-                        _read_main_model,
-                        _read_main_provider,
-                    )
                     from hermes_cli.config import load_config as _tui_load_config
 
                     _cfg = _tui_load_config()
                     _mode = decide_image_input_mode(
-                        _read_main_provider(),
-                        _read_main_model(),
+                        getattr(agent, "provider", "") or "",
+                        getattr(agent, "model", "") or "",
                         _cfg,
                     )
                     if getattr(agent, "api_mode", "") == "codex_app_server":

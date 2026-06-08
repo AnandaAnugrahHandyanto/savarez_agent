@@ -5032,6 +5032,7 @@ class HermesCLI:
             "command": self.acp_command,
             "args": list(self.acp_args or []),
             "credential_pool": getattr(self, "_credential_pool", None),
+            "max_tokens": self.max_tokens,
         }
         route = {
             "model": self.model,
@@ -5045,6 +5046,20 @@ class HermesCLI:
                 tuple(runtime["args"]),
             ),
         }
+        try:
+            from agent.model_routing import resolve_model_route
+
+            route = resolve_model_route(
+                user_message=user_message,
+                config=self.config,
+                primary_model=route["model"],
+                primary_runtime=route["runtime"],
+                platform="cli",
+                session_id=self.session_id,
+                reasoning_config=self.reasoning_config,
+            )
+        except Exception as exc:
+            logger.debug("resolve_model_route failed; using primary route: %s", exc)
 
         service_tier = getattr(self, "service_tier", None)
         if not service_tier:
@@ -5093,7 +5108,15 @@ class HermesCLI:
         except Exception:
             pass
 
-    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
+    def _init_agent(
+        self,
+        *,
+        model_override: str = None,
+        runtime_override: dict = None,
+        request_overrides: dict | None = None,
+        reasoning_config_override: dict | None = None,
+        route_signature: tuple | None = None,
+    ) -> bool:
         """
         Initialize the agent on first use.
         When resuming a session, restores conversation history from SQLite.
@@ -5226,7 +5249,7 @@ class HermesCLI:
                 acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
-                max_tokens=self.max_tokens,
+                max_tokens=runtime.get("max_tokens", self.max_tokens),
                 max_iterations=self.max_turns,
                 enabled_toolsets=self.enabled_toolsets,
                 disabled_toolsets=self.disabled_toolsets,
@@ -5234,7 +5257,7 @@ class HermesCLI:
                 quiet_mode=not self.verbose,
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
-                reasoning_config=self.reasoning_config,
+                reasoning_config=reasoning_config_override if reasoning_config_override is not None else self.reasoning_config,
                 service_tier=self.service_tier,
                 request_overrides=request_overrides,
                 providers_allowed=self._providers_only,
@@ -5283,13 +5306,14 @@ class HermesCLI:
                 seed_credits_at_session_start(self.agent)
             except Exception:
                 pass
-            self._active_agent_route_signature = (
+            self._active_agent_route_signature = route_signature or (
                 effective_model,
                 runtime.get("provider"),
                 runtime.get("base_url"),
                 runtime.get("api_mode"),
                 runtime.get("command"),
                 tuple(runtime.get("args") or ()),
+                runtime.get("max_tokens"),
             )
 
             # Force-create DB row on /title intent, then apply title.
@@ -9367,7 +9391,7 @@ class HermesCLI:
                     session_id=task_id,
                     platform="cli",
                     session_db=self._session_db,
-                    reasoning_config=self.reasoning_config,
+                    reasoning_config=turn_route.get("reasoning_config", self.reasoning_config),
                     service_tier=self.service_tier,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=self._providers_only,
@@ -12254,6 +12278,8 @@ class HermesCLI:
             model_override=turn_route["model"],
             runtime_override=turn_route["runtime"],
             request_overrides=turn_route.get("request_overrides"),
+            reasoning_config_override=turn_route.get("reasoning_config"),
+            route_signature=turn_route.get("signature"),
         ):
             return None
         
@@ -16060,6 +16086,8 @@ def main(
                     model_override=turn_route["model"],
                     runtime_override=turn_route["runtime"],
                     request_overrides=turn_route.get("request_overrides"),
+                    reasoning_config_override=turn_route.get("reasoning_config"),
+                    route_signature=turn_route.get("signature"),
                 ):
                     cli.agent.quiet_mode = True
                     cli.agent.suppress_status_output = True

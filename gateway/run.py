@@ -2727,13 +2727,20 @@ class GatewayRunner:
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        reasoning_config: Optional[dict] = None,
+        session_id: str = "",
+    ) -> dict:
         """Build the effective model/runtime config for a single turn.
 
-        Always uses the session's primary model/provider.  If `/fast` is
-        enabled and the model supports Priority Processing / Anthropic fast
-        mode, attach `request_overrides` so the API call is marked
-        accordingly.
+        Uses the session's primary model/provider by default, then gives
+        plugins a chance to select a per-turn route.  If `/fast` is enabled
+        and the selected model supports Priority Processing / Anthropic fast
+        mode, attach `request_overrides` so the API call is marked accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
@@ -2759,6 +2766,20 @@ class GatewayRunner:
                 tuple(runtime["args"]),
             ),
         }
+        try:
+            from agent.model_routing import resolve_model_route
+
+            route = resolve_model_route(
+                user_message=user_message,
+                config=_load_gateway_config(),
+                primary_model=route["model"],
+                primary_runtime=route["runtime"],
+                platform="gateway",
+                session_id=session_id,
+                reasoning_config=reasoning_config,
+            )
+        except Exception as exc:
+            logger.debug("resolve_model_route failed; using primary route: %s", exc)
 
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
@@ -12750,7 +12771,14 @@ class GatewayRunner:
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(
+                prompt,
+                model,
+                runtime_kwargs,
+                reasoning_config=reasoning_config,
+                session_id=task_id,
+            )
+            turn_reasoning_config = turn_route.get("reasoning_config", reasoning_config)
 
             # Enrich the prompt with image descriptions so the background
             # agent can see user-attached images (same as the main flow).
@@ -12778,7 +12806,7 @@ class GatewayRunner:
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
-                    reasoning_config=reasoning_config,
+                    reasoning_config=turn_reasoning_config,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),
@@ -16411,6 +16439,9 @@ class GatewayRunner:
                 runtime.get("base_url", ""),
                 runtime.get("provider", ""),
                 runtime.get("api_mode", ""),
+                runtime.get("command", ""),
+                list(runtime.get("args") or []),
+                runtime.get("max_tokens"),
                 sorted(enabled_toolsets) if enabled_toolsets else [],
                 # reasoning_config excluded — it's set per-message on the
                 # cached agent and doesn't affect system prompt or tools.
@@ -18013,7 +18044,14 @@ class GatewayRunner:
                     log_message="interim_assistant_callback scheduling error",
                 )
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(
+                message,
+                model,
+                runtime_kwargs,
+                reasoning_config=reasoning_config,
+                session_id=session_key,
+            )
+            turn_reasoning_config = turn_route.get("reasoning_config", reasoning_config)
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -18057,7 +18095,7 @@ class GatewayRunner:
                     disabled_toolsets=disabled_toolsets,
                     ephemeral_system_prompt=combined_ephemeral or None,
                     prefill_messages=self._prefill_messages or None,
-                    reasoning_config=reasoning_config,
+                    reasoning_config=turn_reasoning_config,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),
@@ -18129,7 +18167,7 @@ class GatewayRunner:
 
             agent.notice_callback = _notice_callback_sync
             agent.notice_clear_callback = None
-            agent.reasoning_config = reasoning_config
+            agent.reasoning_config = turn_reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
 
