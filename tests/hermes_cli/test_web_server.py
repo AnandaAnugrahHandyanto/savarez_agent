@@ -505,6 +505,133 @@ class TestWebServerEndpoints:
         assert captured["list"] == 3
         assert captured["count"] == 3
 
+    def test_get_sessions_omits_system_prompt_by_default(self, monkeypatch):
+        """Sidebar lists must stay lightweight; full prompts belong on detail."""
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, **kwargs):
+                return [
+                    {
+                        "id": "with-prompt",
+                        "system_prompt": "huge prompt",
+                        "message_count": 2,
+                        "started_at": 100.0,
+                        "last_active": 100.0,
+                        "ended_at": None,
+                        "archived": 0,
+                    }
+                ]
+
+            def session_count(self, **kwargs):
+                return 1
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+        monkeypatch.setattr("hermes_cli.web_server.time.time", lambda: 120.0)
+
+        resp = self.client.get("/api/sessions")
+
+        assert resp.status_code == 200
+        row = resp.json()["sessions"][0]
+        assert "system_prompt" not in row
+        assert row["is_active"] is True
+
+    def test_get_sessions_can_opt_in_to_system_prompt(self, monkeypatch):
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, **kwargs):
+                return [
+                    {
+                        "id": "with-prompt",
+                        "system_prompt": "full prompt",
+                        "message_count": 1,
+                        "started_at": 100.0,
+                        "last_active": 100.0,
+                        "ended_at": None,
+                        "archived": 0,
+                    }
+                ]
+
+            def session_count(self, **kwargs):
+                return 1
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+        monkeypatch.setattr("hermes_cli.web_server.time.time", lambda: 120.0)
+
+        resp = self.client.get("/api/sessions?include_system_prompt=true")
+
+        assert resp.status_code == 200
+        assert resp.json()["sessions"][0]["system_prompt"] == "full prompt"
+
+    def test_get_sessions_marks_empty_or_stale_rows_inactive(self, monkeypatch):
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, **kwargs):
+                return [
+                    {
+                        "id": "empty",
+                        "message_count": 0,
+                        "started_at": 990.0,
+                        "last_active": 990.0,
+                        "ended_at": None,
+                        "archived": 0,
+                    },
+                    {
+                        "id": "stale",
+                        "message_count": 3,
+                        "started_at": 100.0,
+                        "last_active": 100.0,
+                        "ended_at": None,
+                        "archived": 0,
+                    },
+                ]
+
+            def session_count(self, **kwargs):
+                return 2
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+        monkeypatch.setattr("hermes_cli.web_server.time.time", lambda: 1000.0)
+
+        resp = self.client.get("/api/sessions")
+
+        assert resp.status_code == 200
+        rows = {row["id"]: row for row in resp.json()["sessions"]}
+        assert rows["empty"]["is_active"] is False
+        assert rows["stale"]["is_active"] is False
+
+    def test_get_session_detail_keeps_system_prompt(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="detail-prompt",
+                source="cli",
+                system_prompt="full persisted prompt",
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/detail-prompt")
+
+        assert resp.status_code == 200
+        assert resp.json()["system_prompt"] == "full persisted prompt"
+
     def test_rename_session_updates_title(self):
         """PATCH /api/sessions/{id} renames a session (regression: the route
         was missing entirely, so the desktop rename dialog got a 405)."""

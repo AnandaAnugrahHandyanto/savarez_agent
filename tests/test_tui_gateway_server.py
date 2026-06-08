@@ -986,6 +986,36 @@ def test_ws_orphan_reap_disabled_when_grace_zero(monkeypatch):
     assert fired["timer"] is False
 
 
+def test_get_or_create_slash_worker_reuses_same_session_key(monkeypatch):
+    created: list[str] = []
+
+    class _FakeWorker:
+        def __init__(self, key, model):
+            self.key = key
+            self.model = model
+            self.closed = False
+            created.append(key)
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+    server._slash_workers.clear()
+
+    first = {"session_key": "same-key", "agent": types.SimpleNamespace(model="m1")}
+    second = {"session_key": "same-key", "agent": types.SimpleNamespace(model="m1")}
+
+    try:
+        worker1 = server._get_or_create_slash_worker(first)
+        worker2 = server._get_or_create_slash_worker(second)
+
+        assert worker1 is worker2
+        assert created == ["same-key"]
+        assert second["slash_worker"] is worker1
+    finally:
+        server._slash_workers.clear()
+
+
 def test_init_session_fires_reset_hook(monkeypatch):
     hooks = []
 
@@ -2706,6 +2736,60 @@ def test_image_attach_accepts_unquoted_screenshot_path_with_spaces(monkeypatch):
     assert resp["result"]["path"] == str(screenshot)
     assert resp["result"]["remainder"] == ""
     assert len(server._sessions["sid"]["attached_images"]) == 1
+
+
+def test_image_attach_resolves_structured_path_before_cli_split(monkeypatch):
+    screenshot = Path("/Users/name/Library/Application Support/Hermes/screenshots/shot.png")
+    fake_cli = types.ModuleType("cli")
+    fake_cli._IMAGE_EXTENSIONS = {".png"}
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (
+        "/Users/name/Library/Application",
+        "Support/Hermes/screenshots/shot.png",
+    )
+    fake_cli._resolve_attachment_path = lambda raw: screenshot if raw == str(screenshot) else None
+
+    server._sessions["sid"] = _session()
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach",
+            "params": {"session_id": "sid", "path": str(screenshot)},
+        }
+    )
+
+    assert resp["result"]["attached"] is True
+    assert resp["result"]["path"] == str(screenshot)
+    assert resp["result"]["remainder"] == ""
+    assert len(server._sessions["sid"]["attached_images"]) == 1
+
+
+def test_image_attach_not_found_preserves_full_structured_path(monkeypatch):
+    screenshot = "/Users/name/Library/Application Support/Hermes/screenshots/shot.png"
+    fake_cli = types.ModuleType("cli")
+    fake_cli._IMAGE_EXTENSIONS = {".png"}
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (
+        "/Users/name/Library/Application",
+        "Support/Hermes/screenshots/shot.png",
+    )
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    server._sessions["sid"] = _session()
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "image.attach",
+            "params": {"session_id": "sid", "path": screenshot},
+        }
+    )
+
+    assert resp["error"]["code"] == 4016
+    assert resp["error"]["message"] == f"image not found: {screenshot}"
 
 
 def test_commands_catalog_surfaces_quick_commands(monkeypatch):
@@ -5474,36 +5558,46 @@ class _FakeAgentForBackground:
     _fallback_model = None
 
 
-def test_background_agent_kwargs_reads_nested_max_turns(monkeypatch):
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"max_turns": 300}})
+def test_background_agent_kwargs_reads_nested_background_max_turns(monkeypatch):
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"agent": {"background_max_turns": 6, "max_turns": 300}}
+    )
 
     kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
 
-    assert kwargs["max_iterations"] == 300
+    assert kwargs["max_iterations"] == 6
 
 
-def test_background_agent_kwargs_falls_back_to_root_max_turns(monkeypatch):
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 50})
+def test_background_agent_kwargs_falls_back_to_root_background_max_turns(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"background_max_turns": 5, "max_turns": 50})
 
     kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
 
-    assert kwargs["max_iterations"] == 50
+    assert kwargs["max_iterations"] == 5
 
 
-def test_background_agent_kwargs_defaults_to_25(monkeypatch):
+def test_background_agent_kwargs_defaults_to_8(monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {})
 
     kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
 
-    assert kwargs["max_iterations"] == 25
+    assert kwargs["max_iterations"] == 8
 
 
-def test_background_agent_kwargs_handles_null_agent_config(monkeypatch):
+def test_background_agent_kwargs_ignores_foreground_max_turns(monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": None, "max_turns": 40})
 
     kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
 
-    assert kwargs["max_iterations"] == 40
+    assert kwargs["max_iterations"] == 8
+
+
+def test_background_agent_kwargs_caps_configured_budget(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {"background_max_turns": 99}})
+
+    kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
+
+    assert kwargs["max_iterations"] == 8
 
 
 def test_config_show_displays_nested_max_turns(monkeypatch):

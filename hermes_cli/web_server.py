@@ -1833,6 +1833,7 @@ async def get_sessions(
     order: str = "created",
     source: str = None,
     exclude_sources: str = None,
+    include_system_prompt: bool = False,
 ):
     """List sessions.
 
@@ -1888,10 +1889,7 @@ async def get_sessions(
             )
             now = time.time()
             for s in sessions:
-                s["is_active"] = (
-                    s.get("ended_at") is None
-                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
-                )
+                _prepare_session_list_row(s, now=now, include_system_prompt=include_system_prompt)
                 # SQLite stores the flag as 0/1; expose a real JSON boolean.
                 s["archived"] = bool(s.get("archived"))
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
@@ -1912,6 +1910,7 @@ async def get_profiles_sessions(
     profile: str = "all",
     source: str = None,
     exclude_sources: str = None,
+    include_system_prompt: bool = False,
 ):
     """Unified, read-only session list aggregated across ALL profiles.
 
@@ -1997,10 +1996,7 @@ async def get_profiles_sessions(
             for s in rows:
                 s["profile"] = name
                 s["is_default_profile"] = name == "default"
-                s["is_active"] = (
-                    s.get("ended_at") is None
-                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
-                )
+                _prepare_session_list_row(s, now=now, include_system_prompt=include_system_prompt)
                 s["archived"] = bool(s.get("archived"))
                 merged.append(s)
         except Exception as exc:
@@ -5549,6 +5545,37 @@ def _open_session_db_for_profile(profile: Optional[str]):
         return SessionDB()
     _name, home = _cron_profile_home(profile)
     return SessionDB(db_path=Path(home) / "state.db")
+
+
+def _prepare_session_list_row(
+    session: Dict[str, Any],
+    *,
+    now: float,
+    include_system_prompt: bool = False,
+) -> None:
+    """Normalize a session-list row for sidebar APIs.
+
+    Full system prompts can be hundreds of KB once repo guidance, skills, and
+    memory are injected. Keep list endpoints lightweight; detail endpoints still
+    return the full persisted session row when a user opens a specific session.
+    """
+    if not include_system_prompt:
+        session.pop("system_prompt", None)
+
+    try:
+        last_active = float(session.get("last_active") or session.get("started_at") or 0)
+    except (TypeError, ValueError):
+        last_active = 0.0
+    try:
+        message_count = int(session.get("message_count") or 0)
+    except (TypeError, ValueError):
+        message_count = 0
+
+    session["is_active"] = (
+        session.get("ended_at") is None
+        and message_count > 0
+        and (now - last_active) < 300
+    )
 
 
 @app.get("/api/sessions/{session_id}")

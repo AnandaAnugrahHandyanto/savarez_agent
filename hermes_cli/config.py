@@ -807,6 +807,13 @@ DEFAULT_CONFIG = {
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
+        # TUI/dashboard foreground turn budget. Kept separate from CLI
+        # max_turns so stable desktop sessions do not inherit automation-sized
+        # budgets that make disconnects and large-context stalls feel silent.
+        "tui_max_turns": 35,
+        # Hidden background maintenance/restart agents should stay bounded and
+        # never inherit the foreground budget.
+        "background_max_turns": 8,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has

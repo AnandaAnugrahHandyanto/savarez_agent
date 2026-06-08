@@ -206,12 +206,15 @@ sys.stdout = sys.stderr
 # contextvar or session. Stream resolved through a lambda so runtime monkey-
 # patches of `_real_stdout` (used extensively in tests) still land correctly.
 _stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
+_slash_workers_lock = threading.RLock()
+_slash_workers: dict[str, "_SlashWorker"] = {}
 
 
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
     def __init__(self, session_key: str, model: str):
+        self.session_key = session_key
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
@@ -290,6 +293,65 @@ class _SlashWorker:
                 self.proc.kill()
             except Exception:
                 pass
+        with _slash_workers_lock:
+            if _slash_workers.get(self.session_key) is self:
+                _slash_workers.pop(self.session_key, None)
+
+
+def _slash_worker_alive(worker: Any) -> bool:
+    proc = getattr(worker, "proc", None)
+    if proc is None:
+        return True
+    try:
+        return proc.poll() is None
+    except Exception:
+        return False
+
+
+def _forget_slash_worker(session: dict, worker: Any) -> None:
+    key = session.get("session_key")
+    if not key:
+        return
+    with _slash_workers_lock:
+        if _slash_workers.get(key) is worker:
+            _slash_workers.pop(key, None)
+
+
+def _get_or_create_slash_worker(
+    session: dict,
+    model: str | None = None,
+    *,
+    force_restart: bool = False,
+):
+    key = session["session_key"]
+    model = model or getattr(session.get("agent"), "model", _resolve_model())
+    with _slash_workers_lock:
+        current = session.get("slash_worker")
+        if current is not None and not force_restart and _slash_worker_alive(current):
+            _slash_workers[key] = current
+            return current
+
+        registered = _slash_workers.get(key)
+        if registered is not None and registered is not current:
+            if force_restart or not _slash_worker_alive(registered):
+                try:
+                    registered.close()
+                except Exception:
+                    pass
+            else:
+                session["slash_worker"] = registered
+                return registered
+
+        if current is not None:
+            try:
+                current.close()
+            except Exception:
+                pass
+
+        worker = _SlashWorker(key, model)
+        _slash_workers[key] = worker
+        session["slash_worker"] = worker
+        return worker
 
 
 def _load_busy_input_mode() -> str:
@@ -376,6 +438,7 @@ def _teardown_session(session: dict | None) -> None:
         worker = session.get("slash_worker")
         if worker:
             worker.close()
+            _forget_slash_worker(session, worker)
     except Exception:
         pass
 
@@ -430,6 +493,7 @@ def _shutdown_sessions() -> None:
             worker = session.get("slash_worker")
             if worker:
                 worker.close()
+                _forget_slash_worker(session, worker)
         except Exception:
             pass
 
@@ -704,7 +768,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
             current["agent"] = agent
 
             try:
-                worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
+                worker = _get_or_create_slash_worker(
+                    current, getattr(agent, "model", _resolve_model())
+                )
                 current["slash_worker"] = worker
             except Exception:
                 pass
@@ -1424,12 +1490,14 @@ def _restart_slash_worker(session: dict):
     if worker:
         try:
             worker.close()
+            _forget_slash_worker(session, worker)
         except Exception:
             pass
     try:
-        session["slash_worker"] = _SlashWorker(
-            session["session_key"],
+        session["slash_worker"] = _get_or_create_slash_worker(
+            session,
             getattr(session.get("agent"), "model", _resolve_model()),
+            force_restart=True,
         )
     except Exception:
         session["slash_worker"] = None
@@ -2360,15 +2428,45 @@ def _apply_personality_to_session(
     return False, None
 
 
-def _cfg_max_turns(cfg: dict, default: int) -> int:
+def _positive_int(value: Any) -> int | None:
     try:
-        env_max = int(os.environ.get("HERMES_TUI_MAX_TURNS", "") or 0)
-        if env_max > 0:
-            return env_max
+        parsed = int(value)
     except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _cfg_tui_max_turns(cfg: dict, default: int = 35) -> int:
+    try:
+        env_max = _positive_int(os.environ.get("HERMES_TUI_MAX_TURNS", ""))
+        if env_max is not None:
+            return env_max
+    except Exception:
         pass
     agent_cfg = cfg.get("agent") or {}
-    return int(agent_cfg.get("max_turns") or cfg.get("max_turns") or default)
+    return (
+        _positive_int(agent_cfg.get("tui_max_turns"))
+        or _positive_int(cfg.get("tui_max_turns"))
+        or _positive_int(agent_cfg.get("max_turns"))
+        or _positive_int(cfg.get("max_turns"))
+        or default
+    )
+
+
+def _cfg_background_max_turns(cfg: dict, default: int = 8) -> int:
+    try:
+        env_max = _positive_int(os.environ.get("HERMES_TUI_BACKGROUND_MAX_TURNS", ""))
+        if env_max is not None:
+            return env_max
+    except Exception:
+        pass
+    agent_cfg = cfg.get("agent") or {}
+    configured = (
+        _positive_int(agent_cfg.get("background_max_turns"))
+        or _positive_int(cfg.get("background_max_turns"))
+        or default
+    )
+    return min(configured, 8)
 
 
 def _parse_tui_skills_env() -> list[str]:
@@ -2394,7 +2492,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "acp_command": getattr(agent, "acp_command", None) or None,
         "acp_args": getattr(agent, "acp_args", None) or None,
         "model": getattr(agent, "model", None) or _resolve_model(),
-        "max_iterations": _cfg_max_turns(cfg, 25),
+        "max_iterations": _cfg_background_max_turns(cfg, 8),
         "enabled_toolsets": getattr(agent, "enabled_toolsets", None)
         or _load_enabled_toolsets(),
         "quiet_mode": True,
@@ -2651,7 +2749,7 @@ def _make_agent(
         )
     return AIAgent(
         model=model,
-        max_iterations=_cfg_max_turns(cfg, 90),
+        max_iterations=_cfg_tui_max_turns(cfg, 35),
         provider=runtime.get("provider"),
         base_url=runtime.get("base_url"),
         api_key=runtime.get("api_key"),
@@ -2724,8 +2822,8 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
                 logger.debug("failed to persist resumed session cwd", exc_info=True)
     _register_session_cwd(_sessions[sid])
     try:
-        _sessions[sid]["slash_worker"] = _SlashWorker(
-            key, getattr(agent, "model", _resolve_model())
+        _sessions[sid]["slash_worker"] = _get_or_create_slash_worker(
+            _sessions[sid], getattr(agent, "model", _resolve_model())
         )
     except Exception:
         # Defer hard-failure to slash.exec; chat still works without slash worker.
@@ -5070,15 +5168,20 @@ def _(rid, params: dict) -> dict:
             _split_path_input,
         )
 
-        dropped = _detect_file_drop(raw)
-        if dropped:
-            image_path = dropped["path"]
-            remainder = dropped["remainder"]
+        direct_path = _resolve_attachment_path(raw)
+        if direct_path is not None:
+            image_path = direct_path
+            remainder = ""
         else:
-            path_token, remainder = _split_path_input(raw)
-            image_path = _resolve_attachment_path(path_token)
-            if image_path is None:
-                return _err(rid, 4016, f"image not found: {path_token}")
+            dropped = _detect_file_drop(raw)
+            if dropped:
+                image_path = dropped["path"]
+                remainder = dropped["remainder"]
+            else:
+                path_token, remainder = _split_path_input(raw)
+                image_path = _resolve_attachment_path(path_token)
+                if image_path is None:
+                    return _err(rid, 4016, f"image not found: {raw}")
         if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
             return _err(rid, 4016, f"unsupported image: {image_path.name}")
         session.setdefault("attached_images", []).append(str(image_path))
@@ -7768,11 +7871,10 @@ def _(rid, params: dict) -> dict:
     worker = session.get("slash_worker")
     if not worker:
         try:
-            worker = _SlashWorker(
-                session["session_key"],
+            worker = _get_or_create_slash_worker(
+                session,
                 getattr(session.get("agent"), "model", _resolve_model()),
             )
-            session["slash_worker"] = worker
         except Exception as e:
             return _err(rid, 5030, f"slash worker start failed: {e}")
 
@@ -7786,6 +7888,7 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         try:
             worker.close()
+            _forget_slash_worker(session, worker)
         except Exception:
             pass
         session["slash_worker"] = None
@@ -8457,7 +8560,7 @@ def _(rid, params: dict) -> dict:
             {
                 "title": "Agent",
                 "rows": [
-                    ["Max Turns", str(_cfg_max_turns(cfg, 90))],
+                    ["Max Turns", str(_cfg_tui_max_turns(cfg, 35))],
                     ["Toolsets", ", ".join(cfg.get("enabled_toolsets", [])) or "all"],
                     ["Verbose", str(cfg.get("verbose", False))],
                 ],
