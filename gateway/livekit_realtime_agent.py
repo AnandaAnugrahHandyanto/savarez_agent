@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import sys
+import time
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
@@ -73,6 +74,103 @@ _JWT_RESPONSE_RE = re.compile(
 _PROVIDER_TOKEN_RESPONSE_RE = re.compile(
     r"\b(?:sk-|xai-|AIza)[a-zA-Z0-9_-]{16,}\b"
 )
+
+
+def _room_name(room: Any) -> str:
+    name = str(getattr(room, "name", "") or "unknown")
+    return re.sub(r"[^a-zA-Z0-9_.:-]+", "_", name)[:96]
+
+
+def _log_call_event(event: str, **fields: Any) -> None:
+    safe_fields = " ".join(
+        f"{key}={str(value).replace(' ', '_')[:160]}"
+        for key, value in sorted(fields.items())
+        if value is not None
+    )
+    logger.info("hermes_call event=%s %s", event, safe_fields)
+
+
+def _install_session_telemetry(
+    session: Any,
+    *,
+    config: LiveKitVoiceConfig,
+    room_name: str,
+    started_at: float,
+) -> None:
+    """Install redacted LiveKit session telemetry for benchmarkable phone calls."""
+
+    def elapsed_ms() -> int:
+        return int((time.perf_counter() - started_at) * 1000)
+
+    def on_close(event: Any) -> None:
+        error = getattr(event, "error", None)
+        reason = getattr(event, "reason", None)
+        _log_call_event(
+            "close",
+            elapsed_ms=elapsed_ms(),
+            room=room_name,
+            reason=getattr(reason, "value", reason),
+            error=error.__class__.__name__ if error else "none",
+        )
+
+    def on_agent_state(event: Any) -> None:
+        _log_call_event(
+            "agent_state",
+            elapsed_ms=elapsed_ms(),
+            room=room_name,
+            old=getattr(event, "old_state", None),
+            new=getattr(event, "new_state", None),
+        )
+
+    def on_user_state(event: Any) -> None:
+        _log_call_event(
+            "user_state",
+            elapsed_ms=elapsed_ms(),
+            room=room_name,
+            old=getattr(event, "old_state", None),
+            new=getattr(event, "new_state", None),
+        )
+
+    def on_transcript(event: Any) -> None:
+        transcript = str(getattr(event, "transcript", "") or "")
+        _log_call_event(
+            "transcript",
+            elapsed_ms=elapsed_ms(),
+            room=room_name,
+            final=getattr(event, "is_final", None),
+            chars=len(transcript),
+        )
+
+    def on_conversation_item(event: Any) -> None:
+        item = getattr(event, "item", None)
+        role = getattr(item, "role", None)
+        content = getattr(item, "content", None)
+        chars = len(str(content or ""))
+        _log_call_event(
+            "conversation_item",
+            elapsed_ms=elapsed_ms(),
+            room=room_name,
+            role=role,
+            chars=chars,
+        )
+
+    for event_name, callback in (
+        ("close", on_close),
+        ("agent_state_changed", on_agent_state),
+        ("user_state_changed", on_user_state),
+        ("user_input_transcribed", on_transcript),
+        ("conversation_item_added", on_conversation_item),
+    ):
+        try:
+            session.on(event_name, callback)
+        except Exception as exc:
+            _log_call_event(
+                "telemetry_install_failed",
+                room=room_name,
+                provider=config.realtime_provider,
+                event_name=event_name,
+                error=exc.__class__.__name__,
+            )
 
 
 def build_assistant_instructions(config: LiveKitVoiceConfig | None = None) -> str:
@@ -298,7 +396,21 @@ class HermesRealtimeAssistant(Agent):  # type: ignore[misc,valid-type]
         )
     )
     async def ask_hermes_brain(self, question: str) -> str:
-        return await query_hermes_brain(question, config=self._config)
+        started_at = time.perf_counter()
+        _log_call_event(
+            "brain_tool_start",
+            provider=self._config.realtime_provider,
+            question_chars=len(question or ""),
+        )
+        answer = await query_hermes_brain(question, config=self._config)
+        _log_call_event(
+            "brain_tool_done",
+            elapsed_ms=int((time.perf_counter() - started_at) * 1000),
+            provider=self._config.realtime_provider,
+            answer_chars=len(answer or ""),
+            unavailable=answer == HERMES_BRAIN_UNAVAILABLE_MESSAGE,
+        )
+        return answer
 
 
 async def hermes_live_voice(ctx: Any) -> None:
@@ -308,8 +420,29 @@ async def hermes_live_voice(ctx: Any) -> None:
             "Install the livekit optional extra before starting the worker"
         )
     cfg = load_livekit_config()
+    room_name = _room_name(ctx.room)
+    started_at = time.perf_counter()
+    _log_call_event(
+        "job_start",
+        room=room_name,
+        provider=cfg.realtime_provider,
+        model=cfg.realtime_model,
+        voice=cfg.realtime_voice,
+    )
     session = AgentSession(llm=create_realtime_model(cfg))
+    _install_session_telemetry(
+        session,
+        config=cfg,
+        room_name=room_name,
+        started_at=started_at,
+    )
     await session.start(room=ctx.room, agent=HermesRealtimeAssistant(cfg))
+    _log_call_event(
+        "session_started",
+        elapsed_ms=int((time.perf_counter() - started_at) * 1000),
+        room=room_name,
+        provider=cfg.realtime_provider,
+    )
     if cfg.realtime_provider == "openai":
         await session.generate_reply(
             instructions=(

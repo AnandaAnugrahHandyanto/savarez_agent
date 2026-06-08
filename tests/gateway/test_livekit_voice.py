@@ -1,7 +1,9 @@
 import asyncio
 import json
+import logging
 import os
 import sys
+import time
 import types
 
 import pytest
@@ -14,6 +16,8 @@ from gateway.livekit_realtime_agent import (
     build_assistant_instructions,
     create_realtime_model,
     guard_enabled_for_run,
+    hermes_live_voice,
+    _install_session_telemetry,
     is_hermes_brain_url_allowed,
     query_hermes_brain,
     sanitize_hermes_brain_answer,
@@ -271,6 +275,91 @@ def test_realtime_assistant_registers_hermes_brain_tool():
         for tool in assistant._tools
     }
     assert "ask_hermes_brain" in tool_names
+
+
+def test_session_telemetry_logs_redacted_events(caplog):
+    caplog.set_level(logging.INFO, logger="gateway.livekit_realtime_agent")
+
+    class FakeSession:
+        def __init__(self):
+            self.callbacks = {}
+
+        def on(self, event_name, callback):
+            self.callbacks[event_name] = callback
+
+    session = FakeSession()
+    cfg = load_livekit_config({"HERMES_LIVEKIT_REALTIME_PROVIDER": "xai"})
+    _install_session_telemetry(
+        session,
+        config=cfg,
+        room_name="room one",
+        started_at=time.monotonic(),
+    )
+
+    session.callbacks["user_input_transcribed"](
+        types.SimpleNamespace(transcript="secret user words", is_final=True)
+    )
+    session.callbacks["agent_state_changed"](
+        types.SimpleNamespace(old_state="thinking", new_state="speaking")
+    )
+    session.callbacks["close"](
+        types.SimpleNamespace(reason=types.SimpleNamespace(value="done"), error=None)
+    )
+
+    assert "hermes_call event=transcript" in caplog.text
+    assert "chars=17" in caplog.text
+    assert "secret user words" not in caplog.text
+    assert "hermes_call event=close" in caplog.text
+
+
+def test_brain_tool_logs_start_and_done(monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="gateway.livekit_realtime_agent")
+    cfg = load_livekit_config({"HERMES_LIVEKIT_REALTIME_PROVIDER": "xai"})
+    assistant = HermesRealtimeAssistant(cfg)
+
+    async def fake_query(question, *, config):
+        return "answer"
+
+    monkeypatch.setattr(
+        "gateway.livekit_realtime_agent.query_hermes_brain",
+        fake_query,
+    )
+
+    answer = asyncio.run(assistant.ask_hermes_brain("question"))
+
+    assert answer == "answer"
+    assert "hermes_call event=brain_tool_start" in caplog.text
+    assert "hermes_call event=brain_tool_done" in caplog.text
+
+
+def test_hermes_live_voice_logs_job_and_session(monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="gateway.livekit_realtime_agent")
+
+    class FakeSession:
+        def __init__(self, *, llm):
+            self.llm = llm
+            self.callbacks = {}
+
+        def on(self, event_name, callback):
+            self.callbacks[event_name] = callback
+
+        async def start(self, *, room, agent):
+            self.room = room
+            self.agent = agent
+
+    monkeypatch.setattr("gateway.livekit_realtime_agent.AgentSession", FakeSession)
+    monkeypatch.setattr(
+        "gateway.livekit_realtime_agent.create_realtime_model",
+        lambda cfg: object(),
+    )
+    monkeypatch.setenv("HERMES_LIVEKIT_REALTIME_PROVIDER", "xai")
+    ctx = types.SimpleNamespace(room=types.SimpleNamespace(name="bench-room"))
+
+    asyncio.run(hermes_live_voice(ctx))
+
+    assert "hermes_call event=job_start" in caplog.text
+    assert "room=bench-room" in caplog.text
+    assert "hermes_call event=session_started" in caplog.text
 
 
 def test_realtime_preflight_reports_missing_openai_key():
