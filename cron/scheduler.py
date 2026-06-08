@@ -12,6 +12,7 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -258,6 +259,127 @@ def _get_lock_paths() -> tuple[Path, Path]:
     return lock_dir, lock_dir / ".tick.lock"
 
 
+def _try_lock_file(lock_fd) -> bool:
+    """Attempt a non-blocking exclusive lock on an already-open file."""
+    try:
+        if fcntl:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        elif msvcrt:
+            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
+        return True
+    except (OSError, IOError):
+        return False
+
+
+def _unlock_file(lock_fd) -> None:
+    """Release a lock previously acquired with _try_lock_file()."""
+    if fcntl:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except (OSError, IOError):
+            pass
+    elif msvcrt:
+        try:
+            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+        except (OSError, IOError):
+            pass
+
+
+def _get_job_run_lock_path(job_id: str) -> Path:
+    """Return the per-job cross-process run lock file path."""
+    lock_dir, _tick_lock = _get_lock_paths()
+    digest = hashlib.sha256(str(job_id).encode("utf-8")).hexdigest()
+    return lock_dir / f".job-run-{digest}.lock"
+
+
+def _claim_running_job(job_id: str):
+    """Claim a job for execution across both threads and processes."""
+    with _running_lock:
+        if job_id in _running_job_ids:
+            return None
+        lock_file = _get_job_run_lock_path(job_id)
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = open(lock_file, "a+", encoding="utf-8")
+        if not _try_lock_file(lock_fd):
+            lock_fd.close()
+            return None
+        _running_job_ids.add(job_id)
+        return lock_fd
+
+
+def _release_running_job(job_id: str, lock_fd) -> None:
+    """Release a prior _claim_running_job() claim."""
+    with _running_lock:
+        _running_job_ids.discard(job_id)
+    if lock_fd is None:
+        return
+    _unlock_file(lock_fd)
+    lock_fd.close()
+
+
+@contextmanager
+def _job_profile_context(job_id: str, profile: Optional[str]):
+    """Temporarily run a job under a specific Hermes profile.
+
+    Cron jobs are stored and scheduled by the profile running the scheduler, but
+    an individual job can opt into a different runtime profile. While active,
+    the scheduler's test/override hook and a context-local Hermes home override
+    both point at the resolved profile directory so _get_hermes_home(),
+    .env/config loading, script resolution, AIAgent construction, and downstream
+    get_hermes_home() callers agree on the same home.
+
+    Some existing provider/config paths still load profile .env values through
+    os.environ, so profile jobs also snapshot and restore the process
+    environment on exit. tick() runs profile jobs sequentially to keep that
+    temporary mutation isolated from other scheduled jobs.
+    """
+    raw_profile = str(profile or "").strip()
+    if not raw_profile:
+        yield None
+        return
+
+    global _hermes_home
+    prior_override = _hermes_home
+    env_snapshot = os.environ.copy()
+
+    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    normalized_profile = normalize_profile_name(raw_profile)
+    try:
+        profile_home = Path(resolve_profile_env(normalized_profile)).resolve()
+    except (FileNotFoundError, ValueError) as exc:
+        logger.warning(
+            "Job '%s': configured profile %r no longer valid (%s) — "
+            "falling back to scheduler default",
+            job_id, raw_profile, exc,
+        )
+        yield None
+        return
+
+    override_token = None
+    try:
+        override_token = set_hermes_home_override(profile_home)
+        _hermes_home = profile_home
+        logger.info(
+            "Job '%s': using Hermes profile '%s' (%s)",
+            job_id,
+            normalized_profile,
+            profile_home,
+        )
+        yield normalized_profile
+    finally:
+        _hermes_home = prior_override
+        if override_token is not None:
+            reset_hermes_home_override(override_token)
+        # Delta-based restore: remove added keys, restore changed keys.
+        # Avoids a brief window where other threads see an empty env.
+        added = set(os.environ.keys()) - set(env_snapshot.keys())
+        for k in added:
+            os.environ.pop(k, None)
+        for k, v in env_snapshot.items():
+            if os.environ.get(k) != v:
+                os.environ[k] = v
 def _resolve_origin(job: dict) -> Optional[dict]:
     """Extract origin info from a job, preserving any extra routing metadata.
 
@@ -1371,11 +1493,10 @@ def run_job_immediate(job_id: str, schedule_snapshot: Optional[dict] = None) -> 
     if not job:
         return False, f"Job '{job_id}' not found"
 
-    with _running_lock:
-        if job["id"] in _running_job_ids:
-            _restore_manual_run_schedule(job["id"], schedule_snapshot)
-            return False, f"Job '{job_id}' is already running; this manual run was not queued"
-        _running_job_ids.add(job["id"])
+    run_lock = _claim_running_job(job["id"])
+    if run_lock is None:
+        _restore_manual_run_schedule(job["id"], schedule_snapshot)
+        return False, f"Job '{job_id}' is already running; this manual run was not queued"
 
     pool = (
         _get_sequential_pool()
@@ -1386,7 +1507,7 @@ def run_job_immediate(job_id: str, schedule_snapshot: Optional[dict] = None) -> 
     adapters = _live_delivery_adapters
     loop = _live_delivery_loop
 
-    def _run_and_release(j=job, ctx=_ctx):
+    def _run_and_release(j=job, ctx=_ctx, job_lock=run_lock):
         try:
             success, output, final_response, error = ctx.run(run_job, j)
             if success:
@@ -1416,14 +1537,12 @@ def run_job_immediate(job_id: str, schedule_snapshot: Optional[dict] = None) -> 
             mark_job_run(j["id"], False, str(e))
             _restore_manual_run_schedule(j["id"], schedule_snapshot)
         finally:
-            with _running_lock:
-                _running_job_ids.discard(j["id"])
+            _release_running_job(j["id"], job_lock)
 
     try:
         pool.submit(_run_and_release)
     except Exception:
-        with _running_lock:
-            _running_job_ids.discard(job["id"])
+        _release_running_job(job["id"], run_lock)
         _restore_manual_run_schedule(job["id"], schedule_snapshot)
         raise
     return True, None
@@ -2117,10 +2236,8 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
     lock_fd = None
     try:
         lock_fd = open(lock_file, "w", encoding="utf-8")
-        if fcntl:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        elif msvcrt:
-            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
+        if not _try_lock_file(lock_fd):
+            raise OSError("tick lock busy")
     except (OSError, IOError):
         logger.debug("Tick skipped — another instance holds the lock")
         if lock_fd is not None:
@@ -2217,23 +2334,22 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             """Submit a job fire-and-forget with the in-flight dedup guard.
 
             Returns the future, or None if the job was skipped because a prior
-            tick's run of the same job is still in flight.  The running-set
-            membership is released in the worker's finally block.
+            tick's run of the same job is still in flight, whether in this
+            process or another Hermes cron process. The running claim is
+            released in the worker's finally block.
             """
             job_id = job["id"]
-            with _running_lock:
-                if job_id in _running_job_ids:
-                    logger.info("Job '%s' already running — skipping", job.get("name", job_id))
-                    return None
-                _running_job_ids.add(job_id)
+            run_lock = _claim_running_job(job_id)
+            if run_lock is None:
+                logger.info("Job '%s' already running — skipping", job.get("name", job_id))
+                return None
             _ctx = contextvars.copy_context()
 
-            def _run_and_release(j=job, ctx=_ctx):
+            def _run_and_release(j=job, ctx=_ctx, job_lock=run_lock):
                 try:
                     return ctx.run(_process_job, j)
                 finally:
-                    with _running_lock:
-                        _running_job_ids.discard(j["id"])
+                    _release_running_job(j["id"], job_lock)
 
             return pool.submit(_run_and_release)
 
@@ -2311,16 +2427,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
         return sum(_results)
     finally:
-        if fcntl:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except (OSError, IOError):
-                pass
-        elif msvcrt:
-            try:
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-            except (OSError, IOError):
-                pass
+        _unlock_file(lock_fd)
         lock_fd.close()
 
 
