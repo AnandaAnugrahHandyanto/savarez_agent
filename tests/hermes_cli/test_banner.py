@@ -68,3 +68,20 @@ def test_build_welcome_banner_uses_normalized_toolset_names():
     assert "homeassistant_tools:" not in output
     assert "honcho_tools:" not in output
     assert "web_tools:" not in output
+
+
+def test_strip_terminal_markup():
+    assert banner._strip_terminal_markup("[red]abc[/]") == "abc"
+    assert banner._strip_terminal_markup("\x1b[31mabc\x1b[0m") == "abc"
+
+
+def test_fit_items_to_width_keeps_all_items_when_space_available():
+    items = [f"item{i}" for i in range(6)]
+    assert banner._fit_items_to_width(items, 100) == ", ".join(items)
+
+
+def test_fit_items_to_width_appends_ellipsis_when_truncated():
+    items = ["alpha", "beta", "gamma", "delta"]
+    # "alpha, beta" fits, "gamma" requires truncation; room for an ellipsis after two entries.
+    assert banner._fit_items_to_width(items, 16) == "alpha, beta, ..."
+    assert banner._fit_items_to_width(items, 14) == "alpha, ..."

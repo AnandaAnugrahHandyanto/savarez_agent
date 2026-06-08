@@ -5,6 +5,7 @@ Pure display functions with no HermesCLI state dependency.
 
 import json
 import logging
+import re
 import shutil
 import subprocess
 import threading
@@ -58,6 +59,44 @@ def _skin_branding(key: str, fallback: str) -> str:
         return get_active_skin().get_branding(key, fallback)
     except Exception:
         return fallback
+
+
+def _strip_terminal_markup(text: str) -> str:
+    """Strip prompt-toolkit/ANSI style markers for width-aware formatting."""
+    if not text:
+        return ""
+    # Remove ANSI color escape sequences and prompt-toolkit style tokens like [red], [/] etc.
+    return re.sub(r"\x1b\[[0-9;]*m", "", re.sub(r"\[[^\]]+\]", "", text))
+
+
+def _fit_items_to_width(items: List[str], max_width: int) -> str:
+    """Fit comma-separated items into a fixed width, appending ellipsis when truncated."""
+    if not items or max_width <= 0:
+        return ""
+
+    shown: List[str] = []
+    used = 0
+    for item in items:
+        candidate = item if not shown else f", {item}"
+        if used + len(candidate) <= max_width:
+            shown.append(item)
+            used += len(candidate)
+            continue
+
+        # If we can, add ellipsis marker to show truncation.
+        overflow = "..."
+        if not shown:
+            return overflow if len(overflow) <= max_width else ""
+
+        while shown:
+            candidate = ", ".join(shown + [overflow])
+            if len(candidate) <= max_width:
+                return candidate
+            shown.pop()
+
+        return overflow if len(overflow) <= max_width else ""
+
+    return ", ".join(shown)
 
 
 # =========================================================================
@@ -466,20 +505,26 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     right_lines.append("")
     right_lines.append(f"[bold {accent}]Available Skills[/]")
+
+    # Compute a best-effort width budget so skill lists fill the available
+    # banner space instead of being cut at arbitrary constants.
+    console_width = console.width or shutil.get_terminal_size().columns
+    left_visible_width = max(len(_strip_terminal_markup(line)) for line in left_content.split("\n"))
+    _banner_gap = 8
+    skill_line_width = max(40, console_width - left_visible_width - _banner_gap)
+
     skills_by_category = get_available_skills()
     total_skills = sum(len(s) for s in skills_by_category.values())
 
     if skills_by_category:
         for category in sorted(skills_by_category.keys()):
             skill_names = sorted(skills_by_category[category])
-            if len(skill_names) > 8:
-                display_names = skill_names[:8]
-                skills_str = ", ".join(display_names) + f" +{len(skill_names) - 8} more"
-            else:
-                skills_str = ", ".join(skill_names)
-            if len(skills_str) > 50:
-                skills_str = skills_str[:47] + "..."
-            right_lines.append(f"[dim {dim}]{category}:[/] [{text}]{skills_str}[/]")
+            category_prefix = f"{category}:"
+            available_name_width = max(20, skill_line_width - len(category_prefix) - 2)
+            skills_str = _fit_items_to_width(skill_names, available_name_width)
+            if not skills_str:
+                skills_str = "..."
+            right_lines.append(f"[dim {dim}]{category_prefix}[/] [{text}]{skills_str}[/]")
     else:
         right_lines.append(f"[dim {dim}]No skills installed[/]")
 
