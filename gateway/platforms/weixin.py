@@ -28,8 +28,11 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlparse
+
+if TYPE_CHECKING:
+    from gateway.config import HomeChannel
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +116,115 @@ MEDIA_FILE = 3
 MEDIA_VOICE = 4
 
 _LIVE_ADAPTERS: Dict[str, Any] = {}
+_ACCOUNT_CHAT_SEPARATOR = ":"
+
+
+def _load_accounts_value(value: Any) -> List[Dict[str, Any]]:
+    """Normalize a multi-account config value into a list of mappings."""
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            logger.warning("Invalid WEIXIN_ACCOUNTS_JSON/accounts value: %s", exc)
+            return []
+    if isinstance(value, dict):
+        # Accept either {"accounts": [...]} or {"label": {...}} shapes.
+        if isinstance(value.get("accounts"), list):
+            value = value["accounts"]
+        else:
+            value = list(value.values())
+    if not isinstance(value, list):
+        logger.warning("Weixin accounts config must be a list or JSON object")
+        return []
+    accounts: List[Dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, dict):
+            accounts.append(dict(item))
+        else:
+            logger.warning("Ignoring non-object Weixin account entry: %r", item)
+    return accounts
+
+
+def _account_chat_id(account_id: str, peer_id: str) -> str:
+    return f"{account_id}{_ACCOUNT_CHAT_SEPARATOR}{peer_id}"
+
+
+def _split_account_chat_id(chat_id: str) -> Tuple[Optional[str], str]:
+    if _ACCOUNT_CHAT_SEPARATOR not in str(chat_id):
+        return None, str(chat_id)
+    account_id, peer_id = str(chat_id).split(_ACCOUNT_CHAT_SEPARATOR, 1)
+    if account_id and peer_id:
+        return account_id, peer_id
+    return None, str(chat_id)
+
+
+def resolve_weixin_accounts(config: PlatformConfig) -> List[Dict[str, Any]]:
+    """Return normalized Weixin account configs for single or multi-account mode."""
+    extra = dict(config.extra or {})
+    raw_accounts = extra.get("accounts")
+    if raw_accounts in (None, ""):
+        raw_accounts = os.getenv("WEIXIN_ACCOUNTS_JSON", "")
+
+    accounts = _load_accounts_value(raw_accounts)
+    if not accounts:
+        account_id = str(extra.get("account_id") or os.getenv("WEIXIN_ACCOUNT_ID", "")).strip()
+        token = str(config.token or extra.get("token") or os.getenv("WEIXIN_TOKEN", "")).strip()
+        if account_id or token:
+            accounts = [{"account_id": account_id, "token": token}]
+
+    defaults = {
+        "base_url": str(
+            extra.get("base_url") or os.getenv("WEIXIN_BASE_URL", ILINK_BASE_URL)
+        ).strip().rstrip("/"),
+        "cdn_base_url": str(
+            extra.get("cdn_base_url") or os.getenv("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL)
+        ).strip().rstrip("/"),
+        "dm_policy": str(
+            extra.get("dm_policy") or os.getenv("WEIXIN_DM_POLICY", "open")
+        ).strip().lower(),
+        "group_policy": str(
+            extra.get("group_policy") or os.getenv("WEIXIN_GROUP_POLICY", "disabled")
+        ).strip().lower(),
+        "allow_from": (
+            extra.get("allow_from")
+            if extra.get("allow_from") is not None
+            else os.getenv("WEIXIN_ALLOWED_USERS", "")
+        ),
+        "group_allow_from": (
+            extra.get("group_allow_from")
+            if extra.get("group_allow_from") is not None
+            else os.getenv("WEIXIN_GROUP_ALLOWED_USERS", "")
+        ),
+        "split_multiline_messages": (
+            extra.get("split_multiline_messages")
+            if extra.get("split_multiline_messages") is not None
+            else os.getenv("WEIXIN_SPLIT_MULTILINE_MESSAGES")
+        ),
+    }
+
+    normalized: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for account in accounts:
+        merged = {**defaults, **account}
+        account_id = str(merged.get("account_id") or "").strip()
+        token = str(merged.get("token") or "").strip()
+        if not account_id or not token:
+            logger.warning("Ignoring Weixin account entry missing account_id or token")
+            continue
+        if account_id in seen:
+            logger.warning("Ignoring duplicate Weixin account entry for %s", _safe_id(account_id))
+            continue
+        seen.add(account_id)
+        merged["account_id"] = account_id
+        merged["token"] = token
+        merged["base_url"] = str(merged.get("base_url") or ILINK_BASE_URL).strip().rstrip("/")
+        merged["cdn_base_url"] = str(merged.get("cdn_base_url") or WEIXIN_CDN_BASE_URL).strip().rstrip("/")
+        merged["dm_policy"] = str(merged.get("dm_policy") or "open").strip().lower()
+        merged["group_policy"] = str(merged.get("group_policy") or "disabled").strip().lower()
+        normalized.append(merged)
+    return normalized
 
 
 def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
@@ -1149,6 +1261,7 @@ class WeixinAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WEIXIN)
         extra = config.extra or {}
+        self._session_account_prefix = _coerce_bool(extra.get("account_session_prefix"), default=False)
         hermes_home = str(get_hermes_home())
         self._hermes_home = hermes_home
         self._token_store = ContextTokenStore(hermes_home)
@@ -1212,6 +1325,17 @@ class WeixinAdapter(BasePlatformAdapter):
             if persisted:
                 self._token = str(persisted.get("token") or "").strip()
                 self._base_url = str(persisted.get("base_url") or self._base_url).strip().rstrip("/")
+
+    def _session_chat_id(self, peer_id: str) -> str:
+        if self._session_account_prefix and self._account_id:
+            return _account_chat_id(self._account_id, peer_id)
+        return peer_id
+
+    def _peer_chat_id(self, chat_id: str) -> str:
+        account_id, peer_id = _split_account_chat_id(str(chat_id))
+        if account_id and account_id == self._account_id:
+            return peer_id
+        return str(chat_id)
 
     def _coerce_float_extra(self, key: str, default: float) -> float:
         """Read a float from ``config.extra``, guarding against bad/non-finite values.
@@ -1430,10 +1554,13 @@ class WeixinAdapter(BasePlatformAdapter):
             return
 
         source = self.build_source(
-            chat_id=effective_chat_id,
+            chat_id=self._session_chat_id(effective_chat_id),
+            chat_name=effective_chat_id,
             chat_type=chat_type,
             user_id=sender_id,
             user_name=sender_id,
+            chat_id_alt=effective_chat_id,
+            parent_chat_id=self._account_id if self._session_account_prefix else None,
         )
         event = MessageEvent(
             text=text,
@@ -1750,6 +1877,7 @@ class WeixinAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        chat_id = self._peer_chat_id(chat_id)
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
         context_token = self._token_store.get(self._account_id, chat_id)
@@ -1811,6 +1939,7 @@ class WeixinAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+        chat_id = self._peer_chat_id(chat_id)
         if not self._send_session or not self._token:
             return
         typing_ticket = self._typing_cache.get(chat_id)
@@ -1829,6 +1958,7 @@ class WeixinAdapter(BasePlatformAdapter):
             logger.debug("[%s] typing start failed for %s: %s", self.name, _safe_id(chat_id), exc)
 
     async def stop_typing(self, chat_id: str) -> None:
+        chat_id = self._peer_chat_id(chat_id)
         if not self._send_session or not self._token:
             return
         typing_ticket = self._typing_cache.get(chat_id)
@@ -1899,6 +2029,7 @@ class WeixinAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         del file_name, reply_to, metadata, kwargs
+        chat_id = self._peer_chat_id(chat_id)
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
         try:
@@ -1916,6 +2047,7 @@ class WeixinAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        chat_id = self._peer_chat_id(chat_id)
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
         try:
@@ -1933,6 +2065,7 @@ class WeixinAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        chat_id = self._peer_chat_id(chat_id)
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
 
@@ -2139,6 +2272,7 @@ class WeixinAdapter(BasePlatformAdapter):
         }
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+        chat_id = self._peer_chat_id(chat_id)
         chat_type = "group" if chat_id.endswith("@chatroom") else "dm"
         return {"name": chat_id, "type": chat_type, "chat_id": chat_id}
 
@@ -2146,6 +2280,563 @@ class WeixinAdapter(BasePlatformAdapter):
         if content is None:
             return ""
         return _wrap_copy_friendly_lines_for_weixin(_normalize_markdown_blocks(content))
+
+
+class WeixinMultiAccountAdapter(BasePlatformAdapter):
+    """Adapter facade that connects multiple iLink bot accounts in one gateway."""
+
+    MAX_MESSAGE_LENGTH = WeixinAdapter.MAX_MESSAGE_LENGTH
+    SUPPORTS_MESSAGE_EDITING = WeixinAdapter.SUPPORTS_MESSAGE_EDITING
+
+    def __init__(self, config: PlatformConfig):
+        super().__init__(config, Platform.WEIXIN)
+        self._account_configs = resolve_weixin_accounts(config)
+        self._adapters_by_account: Dict[str, WeixinAdapter] = {}
+        self._connected_adapters: Dict[str, WeixinAdapter] = {}
+        self._primary_account_id: Optional[str] = None
+        self._child_runtime_attrs = (
+            "_auto_tts_default",
+            "_auto_tts_enabled_chats",
+            "_auto_tts_disabled_chats",
+            "_busy_text_mode",
+            "_busy_text_debounce_seconds",
+            "_busy_text_hard_cap_seconds",
+        )
+
+        for account in self._account_configs:
+            account_id = str(account["account_id"])
+            if self._primary_account_id is None:
+                self._primary_account_id = account_id
+            child_extra = {
+                key: value
+                for key, value in dict(self.config.extra or {}).items()
+                if key not in {"accounts"}
+            }
+            child_extra.update(account)
+            child_extra["account_session_prefix"] = True
+            child_config = PlatformConfig(
+                enabled=True,
+                token=str(account.get("token") or ""),
+                extra=child_extra,
+            )
+            self._adapters_by_account[account_id] = WeixinAdapter(child_config)
+
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        return True
+
+    @property
+    def is_connected(self) -> bool:
+        return bool(self._connected_adapters)
+
+    @property
+    def name(self) -> str:
+        return "Weixin"
+
+    def _propagate(self, method_name: str, *args: Any) -> None:
+        for adapter in self._adapters_by_account.values():
+            method = getattr(adapter, method_name, None)
+            if callable(method):
+                method(*args)
+
+    def set_message_handler(self, handler):
+        super().set_message_handler(handler)
+        self._propagate("set_message_handler", handler)
+
+    def set_session_store(self, session_store: Any) -> None:
+        super().set_session_store(session_store)
+        self._propagate("set_session_store", session_store)
+
+    def set_busy_session_handler(self, handler):
+        super().set_busy_session_handler(handler)
+        self._propagate("set_busy_session_handler", handler)
+
+    def set_topic_recovery_fn(self, fn):
+        super().set_topic_recovery_fn(fn)
+        self._propagate("set_topic_recovery_fn", fn)
+
+    def _child_for_source(self, source: Any) -> Optional[WeixinAdapter]:
+        account_id = str(getattr(source, "parent_chat_id", "") or "").strip()
+        if not account_id:
+            return None
+        return self._adapters_by_account.get(account_id)
+
+    def authorized_source_at_intake(self, source: Any) -> Optional[bool]:
+        """Return the child account's intake-auth decision when it is explicit."""
+        adapter = self._child_for_source(source)
+        if adapter is None:
+            return False
+
+        chat_type = str(getattr(source, "chat_type", "") or "dm").lower()
+        user_id = str(getattr(source, "user_id", "") or "").strip()
+        if chat_type == "dm":
+            policy = str(getattr(adapter, "_dm_policy", "") or "").strip().lower()
+            if policy in {"disabled", "pairing"}:
+                return False
+            if policy == "allowlist":
+                return user_id in getattr(adapter, "_allow_from", [])
+            return None
+
+        if chat_type in {"group", "forum", "channel"}:
+            policy = str(getattr(adapter, "_group_policy", "") or "").strip().lower()
+            _, peer_chat_id = _split_account_chat_id(str(getattr(source, "chat_id", "") or ""))
+            chat_id = str(getattr(source, "chat_id_alt", "") or peer_chat_id).strip()
+            if policy == "disabled":
+                return False
+            if policy == "allowlist":
+                return chat_id in getattr(adapter, "_group_allow_from", [])
+            return None
+
+        return None
+
+    def unauthorized_dm_behavior_for_source(self, source: Any) -> Optional[str]:
+        """Return source-scoped unauthorized DM behavior for the child account."""
+        chat_type = str(getattr(source, "chat_type", "") or "dm").lower()
+        if chat_type != "dm":
+            return None
+
+        adapter = self._child_for_source(source)
+        if adapter is None:
+            return None
+
+        policy = str(getattr(adapter, "_dm_policy", "") or "").strip().lower()
+        if policy == "pairing":
+            return "pair"
+        if policy in {"allowlist", "disabled"}:
+            return "ignore"
+        return None
+
+    def home_notification_targets(
+        self,
+        home: Optional["HomeChannel"] = None,
+    ) -> List["HomeChannel"]:
+        """Return account-scoped home channels for gateway system notices."""
+        from gateway.config import HomeChannel
+
+        targets: List["HomeChannel"] = []
+        for account in self._account_configs:
+            account_id = str(account.get("account_id") or "").strip()
+            chat_id = str(account.get("home_channel") or "").strip()
+            if not account_id or not chat_id:
+                continue
+            selected_account, _peer_id = _split_account_chat_id(chat_id)
+            if selected_account is None:
+                chat_id = _account_chat_id(account_id, chat_id)
+            thread_id = account.get("home_channel_thread_id") or account.get("thread_id")
+            targets.append(
+                HomeChannel(
+                    platform=Platform.WEIXIN,
+                    chat_id=chat_id,
+                    name=str(account.get("home_channel_name") or account_id),
+                    thread_id=str(thread_id) if thread_id else None,
+                )
+            )
+
+        if targets:
+            return targets
+
+        if home is not None and getattr(home, "chat_id", None):
+            chat_id = str(home.chat_id)
+            selected_account, _peer_id = _split_account_chat_id(chat_id)
+            if selected_account is None and self._primary_account_id:
+                chat_id = _account_chat_id(self._primary_account_id, chat_id)
+            return [
+                HomeChannel(
+                    platform=Platform.WEIXIN,
+                    chat_id=chat_id,
+                    name=getattr(home, "name", "Home"),
+                    thread_id=getattr(home, "thread_id", None),
+                )
+            ]
+
+        return []
+
+    def _account_id_from_session_key(self, session_key: str) -> Optional[str]:
+        parts = str(session_key or "").split(":")
+        if (
+            len(parts) >= 5
+            and parts[0] == "agent"
+            and parts[1] == "main"
+            and parts[2] == "weixin"
+        ):
+            account_id = parts[4]
+            if account_id in self._adapters_by_account:
+                return account_id
+        return None
+
+    def _child_for_control(
+        self,
+        *,
+        chat_id: Optional[str] = None,
+        session_key: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        connected_only: bool = False,
+    ) -> Tuple[Optional[WeixinAdapter], str]:
+        account_id = self._account_id_from_session_key(session_key or "")
+        peer_id = str(chat_id or "")
+        if chat_id:
+            selected, peer_id = _split_account_chat_id(str(chat_id))
+            account_id = account_id or selected
+        if not account_id and metadata:
+            account_id = str(
+                metadata.get("weixin_account_id") or metadata.get("account_id") or ""
+            ).strip() or None
+        adapters = self._connected_adapters if connected_only else self._adapters_by_account
+        if account_id:
+            return adapters.get(account_id), peer_id
+        if connected_only and self._primary_account_id:
+            adapter = adapters.get(self._primary_account_id)
+            if adapter:
+                return adapter, peer_id
+        return None, peer_id
+
+    def bind_run_generation(self, session_key: str, generation: int | None) -> bool:
+        if not session_key or generation is None:
+            return False
+        adapter, _peer_id = self._child_for_control(session_key=session_key)
+        if adapter is None:
+            return False
+        interrupt_event = getattr(adapter, "_active_sessions", {}).get(session_key)
+        if interrupt_event is None:
+            return False
+        setattr(interrupt_event, "_hermes_run_generation", int(generation))
+        return True
+
+    def active_run_generation(self, session_key: str) -> Optional[int]:
+        adapter, _peer_id = self._child_for_control(session_key=session_key)
+        if adapter is None:
+            return None
+        interrupt_event = getattr(adapter, "_active_sessions", {}).get(session_key)
+        if interrupt_event is None:
+            return None
+        generation = getattr(interrupt_event, "_hermes_run_generation", None)
+        return int(generation) if generation is not None else None
+
+    async def interrupt_session_activity(self, session_key: str, chat_id: str) -> None:
+        adapter, peer_id = self._child_for_control(
+            chat_id=chat_id,
+            session_key=session_key,
+            connected_only=True,
+        )
+        if adapter is not None:
+            await adapter.interrupt_session_activity(session_key, peer_id)
+            return
+        await super().interrupt_session_activity(session_key, chat_id)
+
+    async def cancel_background_tasks(self) -> None:
+        for adapter in list(self._adapters_by_account.values()):
+            try:
+                await adapter.cancel_background_tasks()
+            except Exception:
+                logger.debug("[Weixin] child background-task cancel failed", exc_info=True)
+        await super().cancel_background_tasks()
+
+    def has_pending_interrupt(self, session_key: str) -> bool:
+        adapter, _peer_id = self._child_for_control(session_key=session_key)
+        if adapter is not None:
+            return adapter.has_pending_interrupt(session_key)
+        return any(
+            adapter.has_pending_interrupt(session_key)
+            for adapter in self._adapters_by_account.values()
+        )
+
+    def get_pending_message(self, session_key: str) -> Optional[MessageEvent]:
+        adapter, _peer_id = self._child_for_control(session_key=session_key)
+        if adapter is not None:
+            return adapter.get_pending_message(session_key)
+        for child in self._adapters_by_account.values():
+            pending = child.get_pending_message(session_key)
+            if pending is not None:
+                return pending
+        return None
+
+    def pause_typing_for_chat(self, chat_id: str) -> None:
+        super().pause_typing_for_chat(chat_id)
+        adapter, peer_id = self._child_for_control(chat_id=chat_id)
+        if adapter is not None:
+            adapter.pause_typing_for_chat(peer_id)
+
+    def resume_typing_for_chat(self, chat_id: str) -> None:
+        super().resume_typing_for_chat(chat_id)
+        adapter, peer_id = self._child_for_control(chat_id=chat_id)
+        if adapter is not None:
+            adapter.resume_typing_for_chat(peer_id)
+
+    def register_post_delivery_callback(
+        self,
+        session_key: str,
+        callback: Any,
+        *,
+        generation: int | None = None,
+    ) -> None:
+        adapter, _peer_id = self._child_for_control(session_key=session_key)
+        if adapter is not None:
+            adapter.register_post_delivery_callback(
+                session_key,
+                callback,
+                generation=generation,
+            )
+            return
+        super().register_post_delivery_callback(
+            session_key,
+            callback,
+            generation=generation,
+        )
+
+    def pop_post_delivery_callback(
+        self,
+        session_key: str,
+        *,
+        generation: int | None = None,
+    ) -> Any:
+        adapter, _peer_id = self._child_for_control(session_key=session_key)
+        if adapter is not None:
+            return adapter.pop_post_delivery_callback(
+                session_key,
+                generation=generation,
+            )
+        return super().pop_post_delivery_callback(session_key, generation=generation)
+
+    def set_fatal_error_handler(self, handler):
+        self._fatal_error_handler = handler
+        for adapter in self._adapters_by_account.values():
+            adapter.set_fatal_error_handler(self._handle_child_fatal_error)
+
+    def sync_child_runtime_state(self) -> None:
+        for adapter in self._adapters_by_account.values():
+            for attr in self._child_runtime_attrs:
+                if hasattr(self, attr):
+                    value = getattr(self, attr)
+                    if isinstance(value, set):
+                        value = set(value)
+                    setattr(adapter, attr, value)
+
+    async def _handle_child_fatal_error(self, adapter: WeixinAdapter) -> None:
+        account_id = getattr(adapter, "_account_id", "")
+        logger.error(
+            "[Weixin] account %s fatal error (%s): %s",
+            _safe_id(account_id),
+            adapter.fatal_error_code or "unknown",
+            adapter.fatal_error_message or "unknown error",
+        )
+        if account_id in self._connected_adapters:
+            try:
+                await adapter.disconnect()
+            finally:
+                self._connected_adapters.pop(account_id, None)
+        if self._connected_adapters:
+            return
+        self._set_fatal_error(
+            adapter.fatal_error_code or "weixin_multi_all_accounts_down",
+            adapter.fatal_error_message or "All Weixin accounts disconnected",
+            retryable=adapter.fatal_error_retryable,
+        )
+        await self._notify_fatal_error()
+
+    async def connect(self) -> bool:
+        if not self._adapters_by_account:
+            self._set_fatal_error(
+                "weixin_multi_no_accounts",
+                "Weixin multi-account config did not contain any usable accounts",
+                retryable=False,
+            )
+            return False
+
+        self.sync_child_runtime_state()
+        last_retryable = False
+        failures: List[str] = []
+        for account_id, adapter in self._adapters_by_account.items():
+            try:
+                success = await adapter.connect()
+            except Exception as exc:
+                logger.exception("[Weixin] account %s connect failed", _safe_id(account_id))
+                failures.append(f"{_safe_id(account_id)}: {exc}")
+                last_retryable = True
+                continue
+            if success:
+                self._connected_adapters[account_id] = adapter
+            else:
+                failures.append(
+                    f"{_safe_id(account_id)}: {adapter.fatal_error_message or 'connect failed'}"
+                )
+                last_retryable = last_retryable or adapter.fatal_error_retryable
+
+        if self._connected_adapters:
+            self._mark_connected()
+            if failures:
+                logger.warning(
+                    "[Weixin] %d/%d account(s) connected; failures: %s",
+                    len(self._connected_adapters),
+                    len(self._adapters_by_account),
+                    "; ".join(failures),
+                )
+            else:
+                logger.info("[Weixin] connected %d account(s)", len(self._connected_adapters))
+            return True
+
+        self._set_fatal_error(
+            "weixin_multi_connect_failed",
+            "No Weixin accounts connected" + (f": {'; '.join(failures)}" if failures else ""),
+            retryable=last_retryable,
+        )
+        return False
+
+    async def disconnect(self) -> None:
+        for adapter in list(self._adapters_by_account.values()):
+            try:
+                await adapter.disconnect()
+            except Exception:
+                logger.debug("[Weixin] child disconnect failed", exc_info=True)
+        self._connected_adapters.clear()
+        self._mark_disconnected()
+
+    def _select_adapter(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Optional[WeixinAdapter], str]:
+        metadata = metadata or {}
+        requested = str(
+            metadata.get("weixin_account_id")
+            or metadata.get("account_id")
+            or ""
+        ).strip()
+        account_id, peer_id = _split_account_chat_id(chat_id)
+        if not requested and account_id:
+            requested = account_id
+        if requested:
+            return self._connected_adapters.get(requested), peer_id
+        if self._primary_account_id:
+            adapter = self._connected_adapters.get(self._primary_account_id)
+            if adapter:
+                return adapter, peer_id
+        if self._connected_adapters:
+            account_id, adapter = next(iter(self._connected_adapters.items()))
+            return adapter, peer_id
+        return None, peer_id
+
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        adapter, peer_id = self._select_adapter(chat_id, metadata)
+        if not adapter:
+            return SendResult(success=False, error="No connected Weixin account for target")
+        return await adapter.send(peer_id, content, reply_to=reply_to, metadata=metadata)
+
+    async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+        adapter, peer_id = self._select_adapter(chat_id, metadata)
+        if adapter:
+            await adapter.send_typing(peer_id, metadata=metadata)
+
+    async def stop_typing(self, chat_id: str) -> None:
+        adapter, peer_id = self._select_adapter(chat_id)
+        if adapter:
+            await adapter.stop_typing(peer_id)
+
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        adapter, peer_id = self._select_adapter(chat_id, metadata)
+        if not adapter:
+            return SendResult(success=False, error="No connected Weixin account for target")
+        return await adapter.send_image(peer_id, image_url, caption, reply_to=reply_to, metadata=metadata)
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        adapter, peer_id = self._select_adapter(chat_id, metadata)
+        if not adapter:
+            return SendResult(success=False, error="No connected Weixin account for target")
+        return await adapter.send_image_file(
+            peer_id,
+            image_path,
+            caption=caption,
+            reply_to=reply_to,
+            metadata=metadata,
+            **kwargs,
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        adapter, peer_id = self._select_adapter(chat_id, metadata)
+        if not adapter:
+            return SendResult(success=False, error="No connected Weixin account for target")
+        return await adapter.send_document(
+            peer_id,
+            file_path,
+            caption=caption,
+            file_name=file_name,
+            reply_to=reply_to,
+            metadata=metadata,
+            **kwargs,
+        )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        adapter, peer_id = self._select_adapter(chat_id, metadata)
+        if not adapter:
+            return SendResult(success=False, error="No connected Weixin account for target")
+        return await adapter.send_video(peer_id, video_path, caption=caption, reply_to=reply_to, metadata=metadata)
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        adapter, peer_id = self._select_adapter(chat_id, metadata)
+        if not adapter:
+            return SendResult(success=False, error="No connected Weixin account for target")
+        return await adapter.send_voice(peer_id, audio_path, caption=caption, reply_to=reply_to, metadata=metadata)
+
+    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+        adapter, peer_id = self._select_adapter(chat_id)
+        if not adapter:
+            return {"name": chat_id, "type": "dm", "chat_id": chat_id}
+        info = await adapter.get_chat_info(peer_id)
+        info["chat_id"] = chat_id
+        return info
+
+    def format_message(self, content: Optional[str]) -> str:
+        primary = (
+            self._adapters_by_account.get(self._primary_account_id)
+            if self._primary_account_id
+            else None
+        )
+        if primary:
+            return primary.format_message(content)
+        return "" if content is None else str(content)
 
 
 async def send_weixin_direct(
@@ -2161,10 +2852,40 @@ async def send_weixin_direct(
 
     This bypasses the long-poll adapter lifecycle and uses the raw API directly.
     """
-    account_id = str(extra.get("account_id") or os.getenv("WEIXIN_ACCOUNT_ID", "")).strip()
-    base_url = str(extra.get("base_url") or os.getenv("WEIXIN_BASE_URL", ILINK_BASE_URL)).strip().rstrip("/")
-    cdn_base_url = str(extra.get("cdn_base_url") or os.getenv("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL)).strip().rstrip("/")
-    resolved_token = str(token or extra.get("token") or os.getenv("WEIXIN_TOKEN", "")).strip()
+    account_from_chat, peer_chat_id = _split_account_chat_id(chat_id)
+    accounts = resolve_weixin_accounts(
+        PlatformConfig(enabled=True, token=token or "", extra=dict(extra or {}))
+    )
+    selected_account: Optional[Dict[str, Any]] = None
+    if accounts:
+        if account_from_chat:
+            selected_account = next(
+                (
+                    account for account in accounts
+                    if str(account.get("account_id") or "").strip() == account_from_chat
+                ),
+                None,
+            )
+            if selected_account is None:
+                return {"error": f"Weixin account {account_from_chat!r} is not configured"}
+        selected_account = selected_account or accounts[0]
+
+    if selected_account:
+        chat_id = peer_chat_id
+        account_id = str(selected_account.get("account_id") or "").strip()
+        base_url = str(selected_account.get("base_url") or ILINK_BASE_URL).strip().rstrip("/")
+        cdn_base_url = str(
+            selected_account.get("cdn_base_url") or WEIXIN_CDN_BASE_URL
+        ).strip().rstrip("/")
+        resolved_token = str(selected_account.get("token") or "").strip()
+    else:
+        account_id = str(extra.get("account_id") or os.getenv("WEIXIN_ACCOUNT_ID", "")).strip()
+        base_url = str(extra.get("base_url") or os.getenv("WEIXIN_BASE_URL", ILINK_BASE_URL)).strip().rstrip("/")
+        cdn_base_url = str(
+            extra.get("cdn_base_url")
+            or os.getenv("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL)
+        ).strip().rstrip("/")
+        resolved_token = str(token or extra.get("token") or os.getenv("WEIXIN_TOKEN", "")).strip()
     if not resolved_token:
         return {"error": "Weixin token missing. Configure WEIXIN_TOKEN or platforms.weixin.token."}
     if not account_id:
