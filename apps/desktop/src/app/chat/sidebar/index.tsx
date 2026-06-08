@@ -580,7 +580,12 @@ export function ChatSidebar({
         panesFlipped ? 'border-l border-r-0' : 'border-r border-l-0',
         sidebarOpen
           ? 'border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) opacity-100'
-          : 'pointer-events-none border-transparent bg-transparent opacity-0'
+          : 'pointer-events-none border-transparent bg-transparent opacity-0',
+        // Hover-reveal overlay: when collapsed, the PaneShell floats this
+        // sidebar over the content and marks the wrapper `data-pane-hover-reveal`.
+        // Force it fully visible + interactive while revealed, regardless of the
+        // collapsed (sidebarOpen=false) styling above.
+        'in-data-[pane-hover-reveal=open]:pointer-events-auto in-data-[pane-hover-reveal=open]:border-(--sidebar-edge-border) in-data-[pane-hover-reveal=open]:bg-(--ui-sidebar-surface-background) in-data-[pane-hover-reveal=open]:opacity-100'
       )}
       collapsible="none"
     >

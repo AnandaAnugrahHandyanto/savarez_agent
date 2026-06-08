@@ -10,7 +10,8 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef
+  useRef,
+  useState
 } from 'react'
 
 import { cn } from '@/lib/utils'
@@ -31,6 +32,13 @@ export interface PaneProps {
   defaultOpen?: boolean
   /** Forces the pane closed (track→0, aria-hidden) without writing to the store — for transient route gates. */
   disabled?: boolean
+  /**
+   * When the pane is collapsed, reveal its contents as a fixed overlay on hover
+   * (or keyboard focus) instead of leaving it fully hidden. The overlay floats
+   * over the main content — it does not reserve grid space, so the collapsed
+   * track stays at 0px.
+   */
+  hoverReveal?: boolean
   id: string
   maxWidth?: WidthValue
   minWidth?: WidthValue
@@ -193,14 +201,18 @@ export function Pane({
   className,
   defaultOpen = true,
   disabled = false,
+  hoverReveal = false,
   id,
   maxWidth,
   minWidth,
-  resizable = false
+  resizable = false,
+  width
 }: PaneProps) {
   const ctx = useContext(PaneShellContext)
+  const paneStates = useStore($paneStates)
   const registered = useRef(false)
   const paneRef = useRef<HTMLDivElement | null>(null)
+  const [hoverRevealed, setHoverRevealed] = useState(false)
 
   useEffect(() => {
     if (registered.current) {
@@ -217,6 +229,24 @@ export function Pane({
   const lo = widthToPx(minWidth) ?? DEFAULT_RESIZE_MIN_WIDTH
   const hi = widthToPx(maxWidth) ?? Number.POSITIVE_INFINITY
   const side = slot?.side ?? 'left'
+
+  // Collapsed + hoverReveal: float the pane contents over the main column on
+  // hover/focus instead of leaving them fully hidden. Honors any persisted
+  // resize width so the overlay matches the pane's expanded size.
+  const overlayActive = !open && hoverReveal && !disabled
+
+  const overlayWidth =
+    resizable && paneStates[id]?.widthOverride !== undefined
+      ? `${paneStates[id]?.widthOverride}px`
+      : widthToCss(width, DEFAULT_WIDTH)
+
+  // Collapse the reveal whenever the pane reopens or gets disabled so it never
+  // sticks "open" underneath the now-expanded track.
+  useEffect(() => {
+    if (!overlayActive && hoverRevealed) {
+      setHoverRevealed(false)
+    }
+  }, [overlayActive, hoverRevealed])
 
   const startResize = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -271,6 +301,61 @@ export function Pane({
 
   if (!slot) {
     return null
+  }
+
+  // Collapsed hover-reveal track: keep the grid cell at 0px (no reserved space)
+  // but don't clip — the trigger strip and the floating overlay both escape the
+  // zero-width box via absolute positioning, so the panel renders over the main
+  // content rather than pushing it.
+  if (overlayActive) {
+    const revealEdge = slot.side === 'left' ? { left: 0 } : { right: 0 }
+
+    return (
+      <div
+        className={cn('pointer-events-none relative row-start-1 min-w-0', className)}
+        data-pane-hover-reveal={hoverRevealed ? 'open' : 'closed'}
+        data-pane-id={id}
+        data-pane-open="false"
+        data-pane-side={slot.side}
+        ref={paneRef}
+        style={{ gridColumn: `${slot.column} / ${slot.column + 1}` }}
+      >
+        {/* Edge hot-zone: hovering it (or moving onto the revealed overlay)
+            keeps the panel open. Sits above main content but is invisible. */}
+        <button
+          aria-expanded={hoverRevealed}
+          aria-label={`Reveal ${id}`}
+          className={cn(
+            'pointer-events-auto absolute inset-y-0 z-30 w-3 cursor-pointer [-webkit-app-region:no-drag]',
+            slot.side === 'left' ? 'left-0' : 'right-0'
+          )}
+          onFocus={() => setHoverRevealed(true)}
+          onPointerEnter={() => setHoverRevealed(true)}
+          type="button"
+        />
+
+        {/* Floating panel — fixed-height, absolutely positioned over the main
+            column. Slides in from the edge; hidden (translated off-edge) until
+            hovered/focused. */}
+        <div
+          className={cn(
+            'pointer-events-auto absolute inset-y-0 z-30 overflow-hidden shadow-2xl transition-transform duration-200 ease-out',
+            slot.side === 'left'
+              ? hoverRevealed
+                ? 'translate-x-0'
+                : '-translate-x-[calc(100%+1rem)]'
+              : hoverRevealed
+                ? 'translate-x-0'
+                : 'translate-x-[calc(100%+1rem)]'
+          )}
+          onPointerEnter={() => setHoverRevealed(true)}
+          onPointerLeave={() => setHoverRevealed(false)}
+          style={{ ...revealEdge, width: overlayWidth }}
+        >
+          <div className="flex h-full w-full flex-col">{children}</div>
+        </div>
+      </div>
+    )
   }
 
   return (

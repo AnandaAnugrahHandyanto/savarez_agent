@@ -873,6 +873,7 @@ export function DesktopController() {
     >
       <Pane
         disabled={terminalTakeoverActive}
+        hoverReveal
         id="chat-sidebar"
         maxWidth={SIDEBAR_MAX_WIDTH}
         minWidth={SIDEBAR_DEFAULT_WIDTH}
