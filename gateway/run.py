@@ -16950,6 +16950,7 @@ class GatewayRunner:
                         config=_consumer_cfg,
                         metadata=_thread_metadata,
                         initial_reply_to_id=event_message_id,
+                        session_store=self.session_store,
                     )
                     
                     # Set up streaming checkpoint callback to persist incomplete content
@@ -18003,6 +18004,7 @@ class GatewayRunner:
                                 else None
                             ),
                             initial_reply_to_id=event_message_id,
+                            session_store=self.session_store,
                         )
                         
                         # Set up streaming checkpoint callback to persist incomplete content
