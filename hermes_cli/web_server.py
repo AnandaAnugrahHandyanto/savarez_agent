@@ -604,6 +604,7 @@ class ConfigUpdate(BaseModel):
 class EnvVarUpdate(BaseModel):
     key: str
     value: str
+    api_key: Optional[str] = None
 
 
 class EnvVarDelete(BaseModel):
@@ -2741,7 +2742,11 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
         url = value.rstrip("/") + "/models"
         try:
             with httpx.Client(timeout=httpx.Timeout(8.0)) as client:
-                resp = client.get(url)
+                headers = {}
+                api_key = (body.api_key or "").strip()
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                resp = client.get(url, headers=headers)
             return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
         except Exception:
             return {"ok": False, "reachable": False, "message": f"Could not reach {url}."}

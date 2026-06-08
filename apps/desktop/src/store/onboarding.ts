@@ -701,7 +701,7 @@ export async function recheckExternalSignin(ctx: OnboardingContext) {
   )
 }
 
-export async function saveOnboardingApiKey(envKey: string, value: string, label: string, ctx: OnboardingContext) {
+export async function saveOnboardingApiKey(envKey: string, value: string, label: string, ctx: OnboardingContext, apiKey?: string) {
   const trimmed = value.trim()
 
   if (!trimmed) {
@@ -712,7 +712,7 @@ export async function saveOnboardingApiKey(envKey: string, value: string, label:
   // It must be wired into config (provider=custom + base_url + model), not
   // dropped into .env — runtime resolution ignores OPENAI_BASE_URL.
   if (envKey === 'OPENAI_BASE_URL') {
-    return saveOnboardingLocalEndpoint(trimmed, ctx)
+    return saveOnboardingLocalEndpoint(trimmed, ctx, apiKey)
   }
 
   // No key validation here on purpose: we previously live-probed the key and
@@ -754,7 +754,7 @@ export async function saveOnboardingApiKey(envKey: string, value: string, label:
 // re-assigns the model from /api/model/options WITHOUT a base_url, which would
 // wipe the base_url we just wrote. We have a concrete model already, so we
 // verify the runtime directly and finish.
-export async function saveOnboardingLocalEndpoint(baseUrl: string, ctx: OnboardingContext) {
+export async function saveOnboardingLocalEndpoint(baseUrl: string, ctx: OnboardingContext, apiKey?: string) {
   const url = baseUrl.trim()
 
   if (!url) {
@@ -767,7 +767,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, ctx: Onboardi
   let model = ''
 
   try {
-    const probe = await validateProviderCredential('OPENAI_BASE_URL', url)
+    const probe = await validateProviderCredential('OPENAI_BASE_URL', url, apiKey)
 
     if (!probe.ok && probe.reachable) {
       return { ok: false, message: probe.message || 'Could not reach that endpoint.' }
@@ -790,6 +790,12 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, ctx: Onboardi
   }
 
   try {
+    // Save the API key to .env if provided — the runtime resolver checks
+    // CUSTOM_API_KEY as a fallback for custom endpoints.
+    if (apiKey?.trim()) {
+      await setEnvVar('CUSTOM_API_KEY', apiKey.trim())
+    }
+
     await setModelAssignment({ scope: 'main', provider: 'custom', model, base_url: url })
     await ctx.requestGateway('reload.env').catch(() => undefined)
 

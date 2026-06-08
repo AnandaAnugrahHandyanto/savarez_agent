@@ -4593,6 +4593,79 @@ class TestValidateProviderCredential:
         data = self._post("OPENAI_API_KEY", "   ").json()
         assert data["ok"] is False
 
+    def test_custom_endpoint_without_api_key(self, monkeypatch):
+        """OPENAI_BASE_URL validation works without an API key (unauthenticated)."""
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=200))
+        resp = self.client.post(
+            "/api/providers/validate",
+            json={"key": "OPENAI_BASE_URL", "value": "http://127.0.0.1:8000/v1"},
+        )
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["reachable"] is True
+
+    def test_custom_endpoint_with_api_key_passes_bearer_header(self, monkeypatch):
+        """OPENAI_BASE_URL validation sends Authorization header when api_key is provided."""
+        captured_headers = {}
+
+        class _CaptureClient:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url, *a, **k):
+                captured_headers.update(k.get("headers", {}))
+                return type("R", (), {"status_code": 200, "is_success": True})()
+
+        monkeypatch.setattr("httpx.Client", _CaptureClient)
+        resp = self.client.post(
+            "/api/providers/validate",
+            json={
+                "key": "OPENAI_BASE_URL",
+                "value": "http://127.0.0.1:8000/v1",
+                "api_key": "***",
+            },
+        )
+        data = resp.json()
+        assert data["ok"] is True
+        assert captured_headers.get("Authorization") == "Bearer ***"
+
+    def test_custom_endpoint_with_empty_api_key_no_header(self, monkeypatch):
+        """OPENAI_BASE_URL validation skips Authorization when api_key is empty."""
+        captured_headers = {}
+
+        class _CaptureClient:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url, *a, **k):
+                captured_headers.update(k.get("headers", {}))
+                return type("R", (), {"status_code": 200, "is_success": True})()
+
+        monkeypatch.setattr("httpx.Client", _CaptureClient)
+        resp = self.client.post(
+            "/api/providers/validate",
+            json={
+                "key": "OPENAI_BASE_URL",
+                "value": "http://127.0.0.1:8000/v1",
+                "api_key": "",
+            },
+        )
+        data = resp.json()
+        assert data["ok"] is True
+        assert "Authorization" not in captured_headers
+
 
 class TestDesktopCronTicker:
     """The dashboard backend fires cron jobs itself only when desktop-spawned."""
