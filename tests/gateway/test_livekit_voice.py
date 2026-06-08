@@ -1,16 +1,22 @@
 import asyncio
 import json
+import os
+import sys
+import types
 
 import pytest
 
 from gateway.livekit_realtime_agent import (
     HERMES_BRAIN_UNAVAILABLE_MESSAGE,
     HermesRealtimeAssistant,
+    build_server,
     build_hermes_brain_payload,
     build_assistant_instructions,
     create_realtime_model,
     guard_enabled_for_run,
+    is_hermes_brain_url_allowed,
     query_hermes_brain,
+    sanitize_hermes_brain_answer,
 )
 from gateway.livekit_voice import (
     DEFAULT_GEMINI_REALTIME_MODEL,
@@ -23,6 +29,7 @@ from gateway.livekit_voice import (
     build_realtime_room_metadata,
     build_realtime_worker_status,
     build_room_name,
+    build_room_token_output,
     load_livekit_config,
 )
 
@@ -81,6 +88,7 @@ def test_hermes_brain_config_is_loaded_and_redacted():
         "HERMES_LIVEKIT_HERMES_MODEL": "voice",
         "HERMES_LIVEKIT_HERMES_TIMEOUT_SECONDS": "9.5",
         "HERMES_LIVEKIT_HERMES_MAX_TOKENS": "320",
+        "HERMES_LIVEKIT_HERMES_ALLOWED_HOSTS": "brain.example.com, api.example.net",
     }
     cfg = load_livekit_config(env)
     rendered = json.dumps(cfg.public_dict(), sort_keys=True)
@@ -89,6 +97,10 @@ def test_hermes_brain_config_is_loaded_and_redacted():
     assert cfg.hermes_brain_model == "voice"
     assert cfg.hermes_brain_timeout_seconds == 9.5
     assert cfg.hermes_brain_max_tokens == 320
+    assert cfg.hermes_brain_allowed_hosts == (
+        "brain.example.com",
+        "api.example.net",
+    )
     assert cfg.has_brain_credentials is True
     assert cfg.public_dict()["hermes_brain_api_key"] == "set"
     assert "hermes-brain-secret" not in rendered
@@ -99,7 +111,24 @@ def test_hermes_brain_config_defaults_are_phone_safe():
     assert cfg.hermes_brain_model == DEFAULT_HERMES_BRAIN_MODEL
     assert cfg.hermes_brain_timeout_seconds <= 10
     assert cfg.hermes_brain_max_tokens <= 500
+    assert cfg.hermes_brain_allow_remote is False
     assert cfg.has_brain_credentials is False
+
+
+def test_hermes_brain_url_allows_only_trusted_hosts_by_default():
+    assert is_hermes_brain_url_allowed("http://127.0.0.1:8646/v1/chat/completions")
+    assert not is_hermes_brain_url_allowed("http://10.0.0.5:8646/v1/chat/completions")
+    assert not is_hermes_brain_url_allowed("https://brain.example.com/v1/chat/completions")
+    assert not is_hermes_brain_url_allowed(
+        "https://brain.example.com/v1/chat/completions",
+        allow_remote=True,
+    )
+    assert is_hermes_brain_url_allowed(
+        "https://brain.example.com/v1/chat/completions",
+        allow_remote=True,
+        allowed_hosts=("brain.example.com",),
+    )
+    assert not is_hermes_brain_url_allowed("http://brain.example.com/v1/chat/completions", allow_remote=True)
 
 
 def test_hermes_brain_payload_is_concise_and_non_streaming():
@@ -168,7 +197,26 @@ def test_query_hermes_brain_returns_assistant_text():
     assert fake_client.posted[1]["Authorization"] == "Bearer fake-brain-key"
 
 
-def test_query_hermes_brain_returns_safe_message_on_error():
+def test_sanitize_hermes_brain_answer_redacts_and_clamps():
+    raw = (
+        "Here is the answer. API_KEY=secret-value "
+        "Bearer abcdefghijklmnopqrstuvwxyz "
+        "eyJaaaaaaaaaaa.bbbbbbbbbbbb.cccccccccccc "
+        "xai-abcdefghijklmnopqrstuvwxyz "
+        + ("x" * 2000)
+    )
+    clean = sanitize_hermes_brain_answer(raw)
+    assert "secret-value" not in clean
+    assert "abcdefghijklmnopqrstuvwxyz" not in clean
+    assert "API_KEY=[redacted]" in clean
+    assert "Bearer [redacted]" in clean
+    assert "[redacted-jwt]" in clean
+    assert "[redacted-token]" in clean
+    assert len(clean) <= 1203
+    assert clean.endswith("...")
+
+
+def test_query_hermes_brain_returns_safe_message_on_error(caplog):
     cfg = load_livekit_config({
         "HERMES_LIVEKIT_HERMES_API_KEY": "fake-brain-key",
     })
@@ -188,6 +236,28 @@ def test_query_hermes_brain_returns_safe_message_on_error():
             "Need deep answer.",
             config=cfg,
             client_factory=lambda **_: FailingClient(),
+        )
+    )
+    assert answer == HERMES_BRAIN_UNAVAILABLE_MESSAGE
+    assert "Hermes brain query failed: RuntimeError" in caplog.text
+    assert "fake-brain-key" not in caplog.text
+
+
+def test_query_hermes_brain_does_not_send_key_to_untrusted_url():
+    cfg = load_livekit_config({
+        "HERMES_LIVEKIT_HERMES_URL": "https://brain.example.com/v1/chat/completions",
+        "HERMES_LIVEKIT_HERMES_API_KEY": "fake-brain-key",
+    })
+
+    class FailingIfCalledClient:
+        async def __aenter__(self):
+            raise AssertionError("client must not be opened for untrusted brain URL")
+
+    answer = asyncio.run(
+        query_hermes_brain(
+            "Need deep answer.",
+            config=cfg,
+            client_factory=lambda **_: FailingIfCalledClient(),
         )
     )
     assert answer == HERMES_BRAIN_UNAVAILABLE_MESSAGE
@@ -213,6 +283,40 @@ def test_realtime_preflight_reports_missing_openai_key():
     assert report["ok"] is False
     assert report["ready"]["realtime_agent"] is False
     assert any(issue["code"] == "missing_openai_api_key" for issue in report["issues"])
+
+
+def test_livekit_preflight_rejects_remote_ws_url():
+    env = {
+        "LIVEKIT_URL": "ws://livekit.example.com",
+        "LIVEKIT_API_KEY": "livekit-key",
+        "LIVEKIT_API_SECRET": "livekit-secret",
+    }
+    report = build_livekit_preflight(env)
+    assert report["ok"] is False
+    assert any(issue["code"] == "invalid_livekit_url" for issue in report["issues"])
+
+
+def test_livekit_preflight_allows_loopback_ws_url():
+    env = {
+        "LIVEKIT_URL": "ws://127.0.0.1:7880",
+        "LIVEKIT_API_KEY": "livekit-key",
+        "LIVEKIT_API_SECRET": "livekit-secret",
+    }
+    report = build_livekit_preflight(env)
+    assert report["ok"] is True
+    assert not any(issue["code"] == "invalid_livekit_url" for issue in report["issues"])
+
+
+def test_livekit_preflight_rejects_invalid_agent_name():
+    env = {
+        "LIVEKIT_URL": "wss://pafi-livekit.example.com",
+        "LIVEKIT_API_KEY": "livekit-key",
+        "LIVEKIT_API_SECRET": "livekit-secret",
+        "HERMES_LIVEKIT_AGENT_NAME": "../bad agent",
+    }
+    report = build_livekit_preflight(env)
+    assert report["ok"] is False
+    assert any(issue["code"] == "invalid_agent_name" for issue in report["issues"])
 
 
 def test_gemini_realtime_preflight_accepts_gemini_api_key():
@@ -337,6 +441,83 @@ def test_create_realtime_model_rejects_unknown_provider():
         create_realtime_model(cfg)
 
 
+def test_openai_realtime_model_uses_config_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    class FakeRealtimeModel:
+        def __init__(self, *, model, voice):
+            self.model = model
+            self.voice = voice
+
+    fake_openai = types.SimpleNamespace(
+        realtime=types.SimpleNamespace(RealtimeModel=FakeRealtimeModel)
+    )
+    fake_plugins = types.SimpleNamespace(openai=fake_openai)
+    monkeypatch.setitem(sys.modules, "livekit.plugins", fake_plugins)
+    monkeypatch.setitem(sys.modules, "livekit.plugins.openai", fake_openai)
+
+    cfg = load_livekit_config({"OPENAI_API_KEY": "cfg-openai-key"})
+    model = create_realtime_model(cfg)
+
+    assert os.environ["OPENAI_API_KEY"] == "cfg-openai-key"
+    assert model.model == DEFAULT_REALTIME_MODEL
+    assert model.voice == "coral"
+
+
+def test_gemini_realtime_model_uses_config_key_and_instructions(monkeypatch):
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
+    class FakeRealtimeModel:
+        def __init__(self, *, model, voice, instructions):
+            self.model = model
+            self.voice = voice
+            self.instructions = instructions
+
+    fake_google = types.SimpleNamespace(
+        realtime=types.SimpleNamespace(RealtimeModel=FakeRealtimeModel)
+    )
+    fake_plugins = types.SimpleNamespace(google=fake_google)
+    monkeypatch.setitem(sys.modules, "livekit.plugins", fake_plugins)
+    monkeypatch.setitem(sys.modules, "livekit.plugins.google", fake_google)
+
+    cfg = load_livekit_config({
+        "HERMES_LIVEKIT_REALTIME_PROVIDER": "gemini",
+        "GEMINI_API_KEY": "cfg-gemini-key",
+    })
+    model = create_realtime_model(cfg)
+
+    assert os.environ["GOOGLE_API_KEY"] == "cfg-gemini-key"
+    assert model.model == DEFAULT_GEMINI_REALTIME_MODEL
+    assert model.voice == "Puck"
+    assert "live voice call" in model.instructions
+
+
+def test_xai_realtime_model_uses_config_key(monkeypatch):
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+
+    class FakeRealtimeModel:
+        def __init__(self, *, model, voice):
+            self.model = model
+            self.voice = voice
+
+    fake_xai = types.SimpleNamespace(
+        realtime=types.SimpleNamespace(RealtimeModel=FakeRealtimeModel)
+    )
+    fake_plugins = types.SimpleNamespace(xai=fake_xai)
+    monkeypatch.setitem(sys.modules, "livekit.plugins", fake_plugins)
+    monkeypatch.setitem(sys.modules, "livekit.plugins.xai", fake_xai)
+
+    cfg = load_livekit_config({
+        "HERMES_LIVEKIT_REALTIME_PROVIDER": "xai",
+        "XAI_API_KEY": "cfg-xai-key",
+    })
+    model = create_realtime_model(cfg)
+
+    assert os.environ["XAI_API_KEY"] == "cfg-xai-key"
+    assert model.model == DEFAULT_XAI_REALTIME_MODEL
+    assert model.voice == "ara"
+
+
 def test_dispatch_rule_payload_uses_explicit_agent_dispatch():
     payload = build_dispatch_rule_payload(
         agent_name="hermes-live-voice",
@@ -357,6 +538,46 @@ def test_dispatch_rule_payload_uses_explicit_agent_dispatch():
             ]
         },
     }
+
+
+def test_dispatch_rule_payload_rejects_invalid_agent_name():
+    with pytest.raises(ValueError, match="agent_name"):
+        build_dispatch_rule_payload(agent_name="../bad agent")
+
+
+def test_dispatch_rule_payload_rejects_invalid_trunk_id():
+    with pytest.raises(ValueError, match="trunk_ids"):
+        build_dispatch_rule_payload(trunk_ids=["ST_good", "../bad"])
+
+
+def test_build_server_registers_validated_agent_name(monkeypatch):
+    calls = []
+
+    class FakeAgentServer:
+        def rtc_session(self, entrypoint, *, agent_name):
+            calls.append((entrypoint, agent_name))
+
+    fake_agents = types.SimpleNamespace(AgentServer=FakeAgentServer)
+    monkeypatch.setitem(sys.modules, "livekit.agents", fake_agents)
+    monkeypatch.setenv("HERMES_LIVEKIT_AGENT_NAME", "safe-agent")
+
+    server = build_server()
+
+    assert isinstance(server, FakeAgentServer)
+    assert calls[0][1] == "safe-agent"
+
+
+def test_build_server_rejects_invalid_agent_name(monkeypatch):
+    class FakeAgentServer:
+        def rtc_session(self, entrypoint, *, agent_name):
+            raise AssertionError("invalid agent name should fail before registration")
+
+    fake_agents = types.SimpleNamespace(AgentServer=FakeAgentServer)
+    monkeypatch.setitem(sys.modules, "livekit.agents", fake_agents)
+    monkeypatch.setenv("HERMES_LIVEKIT_AGENT_NAME", "../bad agent")
+
+    with pytest.raises(ValueError, match="agent_name"):
+        build_server()
 
 
 def test_inbound_trunk_payload_requires_e164_number():
@@ -380,3 +601,32 @@ def test_room_name_is_stable_safe_and_prefixed():
         build_room_name("Hermes Call ", "Pafi Main Chat", suffix="abc123")
         == "hermes-call-pafi-main-chat-abc123"
     )
+
+
+def test_room_name_preserves_suffix_when_prefix_is_long():
+    room = build_room_name("x" * 200, "session", suffix="abc123")
+    assert len(room) <= 96
+    assert room.endswith("-abc123")
+
+
+def test_room_token_output_redacts_jwt_by_default():
+    output = build_room_token_output(
+        livekit_url="wss://livekit.example.com",
+        room="room",
+        identity="pafi",
+        token="jwt-secret",
+    )
+    assert output["token"] == "redacted"
+    assert output["token_sensitive"] is True
+    assert "jwt-secret" not in json.dumps(output)
+
+
+def test_room_token_output_can_show_jwt_explicitly():
+    output = build_room_token_output(
+        livekit_url="wss://livekit.example.com",
+        room="room",
+        identity="pafi",
+        token="jwt-secret",
+        show_token=True,
+    )
+    assert output["token"] == "jwt-secret"

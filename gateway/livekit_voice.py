@@ -13,12 +13,14 @@ phone-number-independent pieces of Voice v02:
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import re
 import secrets
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
+from urllib.parse import urlparse
 
 DEFAULT_AGENT_NAME = "hermes-live-voice"
 DEFAULT_ROOM_PREFIX = "hermes-call-"
@@ -42,6 +44,8 @@ DEFAULT_REALTIME_INSTRUCTIONS = (
 )
 
 _E164_RE = re.compile(r"^\+[1-9]\d{6,14}$")
+_SAFE_AGENT_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+_SAFE_LIVEKIT_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 _SAFE_NAME_RE = re.compile(r"[^a-zA-Z0-9_-]+")
 _TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 
@@ -62,6 +66,8 @@ class LiveKitVoiceConfig:
     hermes_brain_model: str = DEFAULT_HERMES_BRAIN_MODEL
     hermes_brain_timeout_seconds: float = DEFAULT_HERMES_BRAIN_TIMEOUT_SECONDS
     hermes_brain_max_tokens: int = DEFAULT_HERMES_BRAIN_MAX_TOKENS
+    hermes_brain_allow_remote: bool = False
+    hermes_brain_allowed_hosts: tuple[str, ...] = ()
     realtime_enabled: bool = False
     realtime_provider: str = DEFAULT_REALTIME_PROVIDER
     realtime_model: str = DEFAULT_REALTIME_MODEL
@@ -112,6 +118,12 @@ class LiveKitVoiceConfig:
             "hermes_brain_model": self.hermes_brain_model,
             "hermes_brain_timeout_seconds": str(self.hermes_brain_timeout_seconds),
             "hermes_brain_max_tokens": str(self.hermes_brain_max_tokens),
+            "hermes_brain_allow_remote": "true"
+            if self.hermes_brain_allow_remote
+            else "false",
+            "hermes_brain_allowed_hosts": ",".join(self.hermes_brain_allowed_hosts)
+            if self.hermes_brain_allowed_hosts
+            else "none",
             "realtime_enabled": "true" if self.realtime_enabled else "false",
             "realtime_provider": self.realtime_provider,
             "realtime_model": self.realtime_model,
@@ -167,6 +179,17 @@ def _env_int(
     return min(max(parsed, minimum), maximum)
 
 
+def _env_csv(env: Mapping[str, str], name: str) -> tuple[str, ...]:
+    value = _env_get(env, name)
+    if not value:
+        return ()
+    return tuple(
+        item.strip().strip("[]").lower()
+        for item in value.split(",")
+        if item.strip()
+    )
+
+
 def load_livekit_config(env: Mapping[str, str] | None = None) -> LiveKitVoiceConfig:
     """Load LiveKit voice settings from *env* or ``os.environ``."""
     source = os.environ if env is None else env
@@ -204,6 +227,12 @@ def load_livekit_config(env: Mapping[str, str] | None = None) -> LiveKitVoiceCon
             DEFAULT_HERMES_BRAIN_MAX_TOKENS,
             minimum=64,
             maximum=800,
+        ),
+        hermes_brain_allow_remote=_env_bool(
+            source, "HERMES_LIVEKIT_HERMES_ALLOW_REMOTE", False
+        ),
+        hermes_brain_allowed_hosts=_env_csv(
+            source, "HERMES_LIVEKIT_HERMES_ALLOWED_HOSTS"
         ),
         realtime_enabled=_env_bool(source, "HERMES_LIVEKIT_REALTIME_ENABLED", False),
         realtime_provider=_env_get(
@@ -277,11 +306,11 @@ def build_livekit_preflight(
             "code": "missing_livekit_url",
             "message": "Set LIVEKIT_URL before running the WebRTC MVP.",
         })
-    elif not cfg.livekit_url.startswith(("wss://", "ws://")):
+    elif not _is_valid_livekit_url(cfg.livekit_url):
         issues.append({
             "severity": "error",
             "code": "invalid_livekit_url",
-            "message": "LIVEKIT_URL must start with wss:// or ws://.",
+            "message": "LIVEKIT_URL must use wss://, except ws:// is allowed for loopback development only.",
         })
     if not cfg.livekit_api_key:
         issues.append({
@@ -301,6 +330,15 @@ def build_livekit_preflight(
             "code": "missing_agent_name",
             "message": "Set HERMES_LIVEKIT_AGENT_NAME or use the default.",
         })
+    else:
+        try:
+            validate_agent_name(cfg.agent_name)
+        except ValueError:
+            issues.append({
+                "severity": "error",
+                "code": "invalid_agent_name",
+                "message": "HERMES_LIVEKIT_AGENT_NAME must contain only letters, digits, _ or -.",
+            })
 
     phone_severity = "error" if require_phone_number else "warn"
     if not cfg.phone_number:
@@ -454,14 +492,50 @@ def _safe_slug(value: str) -> str:
     return clean or "hermes"
 
 
+def _is_loopback_host(host: str | None) -> bool:
+    if not host:
+        return False
+    clean = host.strip("[]").lower()
+    if clean == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(clean).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_valid_livekit_url(value: str) -> bool:
+    parsed = urlparse(value)
+    if parsed.scheme == "wss" and parsed.hostname:
+        return True
+    return parsed.scheme == "ws" and _is_loopback_host(parsed.hostname)
+
+
+def validate_agent_name(agent_name: str) -> str:
+    """Return a stripped LiveKit agent name or raise for unsafe values."""
+    clean_agent_name = agent_name.strip()
+    if not _SAFE_AGENT_NAME_RE.match(clean_agent_name):
+        raise ValueError("agent_name must contain only letters, digits, _ or -")
+    return clean_agent_name
+
+
 def build_room_name(
     room_prefix: str = DEFAULT_ROOM_PREFIX, seed: str = "", *, suffix: str | None = None
 ) -> str:
     """Return a LiveKit-safe room name for one live-call session."""
+    max_len = 96
     prefix = _normalize_room_prefix(room_prefix)
     stem = _safe_slug(seed) if seed else "session"
     tail = _safe_slug(suffix) if suffix else secrets.token_hex(4)
-    return f"{prefix}{stem}-{tail}"[:96]
+    tail_segment = f"-{tail}"
+    max_prefix_len = max(1, max_len - len(tail_segment) - 1)
+    if len(prefix) > max_prefix_len:
+        prefix = prefix[: max_prefix_len - 1].rstrip("-_")
+        prefix = f"{prefix}-" if prefix else "h-"
+    stem_len = max_len - len(prefix) - len(tail_segment)
+    clean_stem = stem[:stem_len].strip("-_") if stem_len > 0 else ""
+    clean_stem = clean_stem or "s"
+    return f"{prefix}{clean_stem}{tail_segment}"[:max_len]
 
 
 def _json_metadata(metadata: Mapping[str, Any] | None = None) -> str:
@@ -480,8 +554,9 @@ def build_dispatch_rule_payload(
     name: str = "Hermes live voice dispatch",
 ) -> dict[str, Any]:
     """Build LiveKit SIP dispatch JSON using explicit agent dispatch."""
-    if not agent_name.strip():
-        raise ValueError("agent_name is required")
+    clean_agent_name = agent_name.strip()
+    if not _SAFE_AGENT_NAME_RE.match(clean_agent_name):
+        raise ValueError("agent_name must contain only letters, digits, _ or -")
     payload: dict[str, Any] = {
         "name": name,
         "rule": {
@@ -491,11 +566,14 @@ def build_dispatch_rule_payload(
         },
         "roomConfig": {
             "agents": [
-                {"agentName": agent_name.strip(), "metadata": _json_metadata(metadata)}
+                {"agentName": clean_agent_name, "metadata": _json_metadata(metadata)}
             ]
         },
     }
     clean_trunk_ids = [item.strip() for item in (trunk_ids or []) if item.strip()]
+    for trunk_id in clean_trunk_ids:
+        if not _SAFE_LIVEKIT_ID_RE.match(trunk_id):
+            raise ValueError("trunk_ids must contain only letters, digits, _ or -")
     if clean_trunk_ids:
         payload["trunkIds"] = clean_trunk_ids
     return payload
@@ -573,6 +651,29 @@ def create_web_participant_token(
     return token.to_jwt()
 
 
+def build_room_token_output(
+    *,
+    livekit_url: str,
+    room: str,
+    identity: str,
+    token: str,
+    show_token: bool = False,
+) -> dict[str, Any]:
+    """Build room-token CLI output without exposing bearer material by default."""
+    data: dict[str, Any] = {
+        "livekit_url": livekit_url,
+        "room": room,
+        "identity": identity,
+        "token_sensitive": True,
+    }
+    if show_token:
+        data["token"] = token
+    else:
+        data["token"] = "redacted"
+        data["token_note"] = "Use --show-token only in a private terminal."
+    return data
+
+
 def _print_json(data: Any) -> None:
     print(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True))
 
@@ -598,6 +699,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     token.add_argument("--identity", default="pafi")
     token.add_argument("--name", default="Pafi")
     token.add_argument("--no-agent-dispatch", action="store_true")
+    token.add_argument("--show-token", action="store_true")
 
     sub.add_parser("worker-status")
 
@@ -638,12 +740,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             metadata=build_realtime_room_metadata(mode="webrtc"),
             config=cfg,
         )
-        _print_json({
-            "livekit_url": cfg.livekit_url,
-            "room": room,
-            "identity": args.identity,
-            "token": jwt,
-        })
+        _print_json(
+            build_room_token_output(
+                livekit_url=cfg.livekit_url,
+                room=room,
+                identity=args.identity,
+                token=jwt,
+                show_token=args.show_token,
+            )
+        )
         return 0
     if args.command == "worker-status":
         _print_json(build_realtime_worker_status(config=cfg))

@@ -7,32 +7,72 @@ Telegram gateway continues to run independently.
 
 from __future__ import annotations
 
+import ipaddress
+import logging
 import os
+import re
 import sys
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from gateway.livekit_voice import (
     DEFAULT_REALTIME_INSTRUCTIONS,
     LiveKitVoiceConfig,
     load_livekit_config,
+    validate_agent_name,
 )
+
+logger = logging.getLogger(__name__)
 
 try:
     from livekit import agents  # type: ignore
     from livekit.agents import Agent, AgentSession, function_tool  # type: ignore
 except Exception:  # pragma: no cover - import checked by build_server
     agents = None  # type: ignore[assignment]
-    Agent = object  # type: ignore[assignment,misc]
     AgentSession = None  # type: ignore[assignment]
-    function_tool = lambda f=None, **_: f if f is not None else (lambda fn: fn)  # type: ignore[assignment]
+
+    class _FallbackAgent:
+        def __init__(self, *, instructions: str, **_: Any) -> None:
+            self._instructions = instructions
+            self._tools = []
+            for attr_name in dir(self):
+                attr = getattr(self, attr_name)
+                info = getattr(attr, "__livekit_tool_info", None)
+                if info is not None:
+                    self._tools.append(SimpleNamespace(_info=info))
+
+    def function_tool(f=None, *, name=None, description=None, **_):  # type: ignore[no-redef]
+        def deco(fn):
+            setattr(
+                fn,
+                "__livekit_tool_info",
+                SimpleNamespace(name=name or fn.__name__, description=description),
+            )
+            return fn
+
+        return deco(f) if f is not None else deco
+
+    Agent = _FallbackAgent  # type: ignore[assignment,misc]
 
 
 HERMES_BRAIN_UNAVAILABLE_MESSAGE = (
     "Hermes brain is unavailable right now. Continue with the fast voice answer."
 )
 _MAX_BRAIN_QUESTION_CHARS = 4000
+_MAX_BRAIN_RESPONSE_CHARS = 1200
+_SENSITIVE_KV_RESPONSE_RE = re.compile(
+    r"(?i)(api[_ -]?key|authorization|bearer|password|secret|token)\s*[:=]\s*\S+"
+)
+_BEARER_RESPONSE_RE = re.compile(r"(?i)\bbearer\s+[a-z0-9._~+/=-]{16,}")
+_JWT_RESPONSE_RE = re.compile(
+    r"\beyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\b"
+)
+_PROVIDER_TOKEN_RESPONSE_RE = re.compile(
+    r"\b(?:sk-|xai-|AIza)[a-zA-Z0-9_-]{16,}\b"
+)
 
 
 def build_assistant_instructions(config: LiveKitVoiceConfig | None = None) -> str:
@@ -67,6 +107,8 @@ def _create_openai_realtime_model(cfg: LiveKitVoiceConfig) -> Any:
         raise RuntimeError(
             "OPENAI_API_KEY is required for the LiveKit OpenAI Realtime worker"
         )
+    if cfg.openai_api_key:
+        os.environ.setdefault("OPENAI_API_KEY", cfg.openai_api_key)
     try:
         from livekit.plugins import openai  # type: ignore
     except Exception as exc:  # pragma: no cover - covered by operator smoke
@@ -153,6 +195,37 @@ def build_hermes_brain_payload(
     }
 
 
+def is_hermes_brain_url_allowed(
+    url: str,
+    *,
+    allow_remote: bool = False,
+    allowed_hosts: tuple[str, ...] = (),
+) -> bool:
+    """Return whether a brain URL may receive the Hermes bearer token."""
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    clean_host = parsed.hostname.strip("[]").lower()
+    if _is_loopback_host(clean_host):
+        return True
+    return (
+        allow_remote
+        and parsed.scheme == "https"
+        and clean_host in set(allowed_hosts)
+    )
+
+
+def _is_loopback_host(host: str) -> bool:
+    clean = host.strip("[]").lower()
+    if clean == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(clean)
+    except ValueError:
+        return False
+    return address.is_loopback
+
+
 async def query_hermes_brain(
     question: str,
     *,
@@ -162,6 +235,12 @@ async def query_hermes_brain(
     """Query the local Hermes brain gateway with safe timeout and redaction."""
     cfg = config or load_livekit_config()
     if not cfg.has_brain_credentials:
+        return HERMES_BRAIN_UNAVAILABLE_MESSAGE
+    if not is_hermes_brain_url_allowed(
+        cfg.hermes_brain_url,
+        allow_remote=cfg.hermes_brain_allow_remote,
+        allowed_hosts=cfg.hermes_brain_allowed_hosts,
+    ):
         return HERMES_BRAIN_UNAVAILABLE_MESSAGE
     try:
         payload = build_hermes_brain_payload(question, config=cfg)
@@ -181,14 +260,29 @@ async def query_hermes_brain(
             )
             response.raise_for_status()
             data = response.json()
-    except Exception:
+    except Exception as exc:
+        logger.warning("Hermes brain query failed: %s", exc.__class__.__name__)
         return HERMES_BRAIN_UNAVAILABLE_MESSAGE
 
     try:
-        answer = str(data["choices"][0]["message"]["content"]).strip()
-    except (KeyError, IndexError, TypeError):
+        answer = sanitize_hermes_brain_answer(
+            str(data["choices"][0]["message"]["content"])
+        )
+    except (KeyError, IndexError, TypeError) as exc:
+        logger.warning("Hermes brain response parse failed: %s", exc.__class__.__name__)
         return HERMES_BRAIN_UNAVAILABLE_MESSAGE
     return answer or HERMES_BRAIN_UNAVAILABLE_MESSAGE
+
+
+def sanitize_hermes_brain_answer(text: str) -> str:
+    """Clamp and redact brain output before returning across the tool boundary."""
+    clean = _SENSITIVE_KV_RESPONSE_RE.sub(r"\1=[redacted]", text.strip())
+    clean = _BEARER_RESPONSE_RE.sub("Bearer [redacted]", clean)
+    clean = _JWT_RESPONSE_RE.sub("[redacted-jwt]", clean)
+    clean = _PROVIDER_TOKEN_RESPONSE_RE.sub("[redacted-token]", clean)
+    if len(clean) > _MAX_BRAIN_RESPONSE_CHARS:
+        clean = f"{clean[:_MAX_BRAIN_RESPONSE_CHARS].rstrip()}..."
+    return clean
 
 
 class HermesRealtimeAssistant(Agent):  # type: ignore[misc,valid-type]
@@ -235,7 +329,10 @@ def build_server() -> Any:
         ) from exc
 
     server = AgentServer()
-    server.rtc_session(hermes_live_voice, agent_name=load_livekit_config().agent_name)
+    server.rtc_session(
+        hermes_live_voice,
+        agent_name=validate_agent_name(load_livekit_config().agent_name),
+    )
     return server
 
 
