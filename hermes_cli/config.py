@@ -2002,6 +2002,11 @@ DEFAULT_CONFIG = {
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
         "agent": {
+            # Gateway-created agents normally inherit cwd context files
+            # (AGENTS.md, CLAUDE.md, etc.).  Chat platforms can opt out to
+            # keep short message turns from carrying repo-sized prompts.
+            "skip_context_files": False,
+            "platforms": {},
             "model_override": {
                 "enabled": False,
                 "provider": "",
