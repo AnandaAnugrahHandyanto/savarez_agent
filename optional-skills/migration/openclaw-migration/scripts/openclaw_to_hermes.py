@@ -904,6 +904,53 @@ class Migrator:
             counter += 1
         return candidate
 
+    def _warn_unmigrated_workflows(self) -> None:
+        """Warn when the source has OpenClaw *workflows* that this migrator
+        does not port.
+
+        Workflows are script-backed scheduled jobs under
+        ``workspace/workflows/<name>/``. The migrator has no workflow option,
+        so they survive a migration ONLY while the ``~/.openclaw`` tree still
+        exists — any cron job that shells out to one keeps working until
+        ``hermes claw cleanup`` removes the tree, at which point it breaks
+        silently. Surfacing the directory in the report lets the operator port
+        (lift-and-shift or rewrite as a skill) before cleanup instead of
+        discovering a dead job days later.
+        """
+        workflows_dir = self.source_candidate(
+            "workspace/workflows", "workspace.default/workflows"
+        )
+        if workflows_dir is None or not workflows_dir.is_dir():
+            return
+
+        names = sorted(
+            child.name
+            for child in workflows_dir.iterdir()
+            if child.is_dir() and not child.name.startswith(".")
+        )
+        if not names:
+            return
+
+        preview = names[:10]
+        details: Dict[str, Any] = {"workflow_count": len(names), "workflows": preview}
+        if len(names) > len(preview):
+            details["workflows_truncated"] = len(names) - len(preview)
+
+        self.record(
+            "workflows",
+            str(workflows_dir),
+            None,
+            "warning",
+            (
+                "OpenClaw workflows are NOT migrated automatically. They keep "
+                "running only while ~/.openclaw exists and will break silently "
+                "on `hermes claw cleanup`. Port each one (lift-and-shift the "
+                "script into ~/.hermes/workspace and repoint paths + delivery, "
+                "or rewrite as a Hermes skill) before cleanup."
+            ),
+            **details,
+        )
+
     def migrate(self) -> Dict[str, Any]:
         if not self.source_root.exists():
             self.record("source", self.source_root, None, "error", "OpenClaw directory does not exist")
@@ -959,6 +1006,10 @@ class Migrator:
         self.run_if_selected("mcp-servers", lambda: self.migrate_mcp_servers(config))
         self.run_if_selected("plugins-config", lambda: self.migrate_plugins_config(config))
         self.run_if_selected("cron-jobs", lambda: self.migrate_cron_jobs(config))
+        # Always check for unmigrated workflow scripts — the migrator has no
+        # workflow option, so live OpenClaw workflows survive only while the
+        # ~/.openclaw tree exists and break silently on `hermes claw cleanup`.
+        self._warn_unmigrated_workflows()
         self.run_if_selected("hooks-config", lambda: self.migrate_hooks_config(config))
         self.run_if_selected("agent-config", lambda: self.migrate_agent_config(config))
         self.run_if_selected("gateway-config", lambda: self.migrate_gateway_config(config))
@@ -2991,10 +3042,11 @@ class Migrator:
             notes.extend([
                 "## ⚠️ Warnings (Will Break After Migration Unless Fixed)",
                 "",
-                "These items migrated/archived successfully but will FAIL when you",
-                "use them in Hermes unless you act. Most common: cron prompts that",
-                "trip Hermes' runtime cron prompt-injection scanner and get BLOCKED",
-                "on every tick (the job silently never runs).",
+                "These migration findings will FAIL in Hermes unless you act.",
+                "Common examples: cron prompts that trip Hermes' runtime cron",
+                "prompt-injection scanner and get BLOCKED on every tick, or",
+                "OpenClaw workflow scripts that keep running only until cleanup",
+                "removes their original tree.",
                 "",
             ])
             for item in warnings:
