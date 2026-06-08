@@ -3247,6 +3247,106 @@ class TestOptimizeFts:
         assert len(db.search_messages("repeat")) == 1
 
 
+class TestTrigramFtsDisabled:
+    """Behaviour when HERMES_DISABLE_FTS_TRIGRAM is set (see #22478)."""
+
+    def test_default_triggers_include_trigram(self, monkeypatch):
+        """Sanity: with the env var unset, the expected trigger set is the full one."""
+        monkeypatch.delenv("HERMES_DISABLE_FTS_TRIGRAM", raising=False)
+        from hermes_state import _PORTER_FTS_TRIGGERS, _TRIGRAM_FTS_TRIGGERS
+        assert SessionDB._expected_fts_triggers() == _PORTER_FTS_TRIGGERS + _TRIGRAM_FTS_TRIGGERS
+
+    def test_env_var_hides_trigram_triggers(self, monkeypatch):
+        """When the env var is set, the expected trigger set is porter-only."""
+        for value in ("1", "true", "yes", "on", "  YES  "):
+            monkeypatch.setenv("HERMES_DISABLE_FTS_TRIGRAM", value)
+            assert SessionDB._expected_fts_triggers() == (
+                "messages_fts_insert",
+                "messages_fts_delete",
+                "messages_fts_update",
+            ), f"value={value!r}"
+
+    def test_env_var_truthy_parsing(self, monkeypatch):
+        """The env var accepts 1/true/yes/on (case-insensitive) and rejects others."""
+        from hermes_state import _trigram_fts_disabled
+        for truthy in ("1", "true", "TRUE", "yes", "Yes", "on", "  yes  "):
+            monkeypatch.setenv("HERMES_DISABLE_FTS_TRIGRAM", truthy)
+            assert _trigram_fts_disabled() is True, f"truthy={truthy!r}"
+        for falsy in ("0", "false", "no", "off", "", "random"):
+            monkeypatch.setenv("HERMES_DISABLE_FTS_TRIGRAM", falsy)
+            assert _trigram_fts_disabled() is False, f"falsy={falsy!r}"
+        monkeypatch.delenv("HERMES_DISABLE_FTS_TRIGRAM", raising=False)
+        assert _trigram_fts_disabled() is False
+
+    def test_env_var_skips_trigram_table_creation(self, tmp_path, monkeypatch):
+        """SessionDB created with the env var set never builds messages_fts_trigram."""
+        monkeypatch.setenv("HERMES_DISABLE_FTS_TRIGRAM", "1")
+        db_path = tmp_path / "no_trigram.db"
+        session_db = SessionDB(db_path=db_path)
+        try:
+            assert session_db._fts_table_exists("messages_fts") is True
+            assert session_db._fts_table_exists("messages_fts_trigram") is False
+        finally:
+            session_db.close()
+
+    def test_env_var_skips_trigram_triggers(self, tmp_path, monkeypatch):
+        """None of the trigram triggers are created when the env var is set."""
+        monkeypatch.setenv("HERMES_DISABLE_FTS_TRIGRAM", "1")
+        db_path = tmp_path / "no_trigram.db"
+        session_db = SessionDB(db_path=db_path)
+        try:
+            trigger_names = {
+                row[0]
+                for row in session_db._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+                ).fetchall()
+            }
+            for trig in (
+                "messages_fts_trigram_insert",
+                "messages_fts_trigram_delete",
+                "messages_fts_trigram_update",
+            ):
+                assert trig not in trigger_names, f"{trig} should not exist"
+            for trig in (
+                "messages_fts_insert",
+                "messages_fts_delete",
+                "messages_fts_update",
+            ):
+                assert trig in trigger_names, f"{trig} should exist"
+        finally:
+            session_db.close()
+
+    def test_env_var_still_allows_english_search(self, tmp_path, monkeypatch):
+        """Porter-stemmer FTS stays functional when trigram is disabled."""
+        monkeypatch.setenv("HERMES_DISABLE_FTS_TRIGRAM", "1")
+        db_path = tmp_path / "no_trigram.db"
+        session_db = SessionDB(db_path=db_path)
+        try:
+            session_db.create_session(session_id="s1", source="cli")
+            session_db.append_message(
+                session_id="s1", role="user", content="the quick brown fox"
+            )
+            session_db.append_message(
+                session_id="s1", role="assistant", content="jumps over the lazy dog"
+            )
+            assert len(session_db.search_messages("fox")) == 1
+            assert len(session_db.search_messages("jumps")) == 1
+        finally:
+            session_db.close()
+
+    def test_optimize_with_trigram_disabled(self, tmp_path, monkeypatch):
+        """optimize_fts() returns 1 (porter only) when trigram is disabled."""
+        monkeypatch.setenv("HERMES_DISABLE_FTS_TRIGRAM", "1")
+        db_path = tmp_path / "no_trigram.db"
+        session_db = SessionDB(db_path=db_path)
+        try:
+            session_db.create_session(session_id="s1", source="cli")
+            session_db.append_message(session_id="s1", role="user", content="hello")
+            assert session_db.optimize_fts() == 1
+        finally:
+            session_db.close()
+
+
 class TestAutoMaintenance:
     def _make_old_ended(self, db, sid: str, days_old: int = 100):
         """Create a session that is ended and was started `days_old` days ago."""
