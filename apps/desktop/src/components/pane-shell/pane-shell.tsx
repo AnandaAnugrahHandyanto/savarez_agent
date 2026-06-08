@@ -75,6 +75,9 @@ const DEFAULT_RESIZE_MIN_WIDTH = 160
 const HOVER_REVEAL_SLIDE_MS = 220
 const HOVER_REVEAL_ENTER_DELAY_MS = 130
 const HOVER_REVEAL_EASE = 'cubic-bezier(0.32,0.72,0,1)'
+// Offset shadow lifting the revealed panel off the content (same both sides;
+// the mirror axis is offset-x, which is 0). Same color on light + dark.
+const HOVER_REVEAL_SHADOW = '0px -18px 18px -5px #00000012'
 // Edge trigger strip, inset past the OS window-resize grab area.
 const HOVER_REVEAL_TRIGGER_WIDTH = 14
 const HOVER_REVEAL_EDGE_GUTTER = 6
@@ -371,9 +374,7 @@ export function Pane({
             {
               [edge]: 0,
               width: overlayWidth,
-              // Brooklyn's tuned offset shadow, verbatim. Mirror axis is offset-x
-              // (0 here → same both sides); never flip the y/blur/spread.
-              '--reveal-shadow': '0px -18px 18px -5px #0000003b',
+              '--reveal-shadow': HOVER_REVEAL_SHADOW,
               transitionDuration: `${HOVER_REVEAL_SLIDE_MS}ms`,
               transitionTimingFunction: HOVER_REVEAL_EASE,
               '--reveal-enter-delay': `${HOVER_REVEAL_ENTER_DELAY_MS}ms`
