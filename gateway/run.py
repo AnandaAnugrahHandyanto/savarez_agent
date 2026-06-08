@@ -7578,32 +7578,70 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
                         event.text = msg
                         # Fall through to normal message processing with skill content
                 else:
-                    # Not an active skill — check if it's a known-but-disabled or
-                    # uninstalled skill and give actionable guidance.
-                    _unavail_msg = _check_unavailable_skill(command)
-                    if _unavail_msg:
-                        return _unavail_msg
-                    # Genuinely unrecognized /command: not a built-in, not a
-                    # plugin, not a skill, not a known-inactive skill. Warn
-                    # the user instead of silently forwarding it to the LLM
-                    # as free text (which leads to silent-failure behavior
-                    # like the model inventing a delegate_task call).
-                    # Normalize to hyphenated form before checking known
-                    # built-ins (command may be an alias target set by the
-                    # quick-command block above, so _cmd_def can be stale).
-                    if command.replace("_", "-") not in GATEWAY_KNOWN_COMMANDS:
-                        logger.warning(
-                            "Unrecognized slash command /%s from %s — "
-                            "replying with unknown-command notice",
+                    # Operator-tunable pass-through whitelist. Slash tokens
+                    # listed in TELEGRAM_PASSTHROUGH_PREFIXES are delivered
+                    # verbatim to the agent (event.text keeps its leading
+                    # slash) instead of being short-circuited as "Unknown
+                    # command". This is a deliberate escape hatch for
+                    # operators who register custom slash commands in their
+                    # agent prompt / system instructions (e.g. SOUL.md
+                    # branches that pattern-match on a leading slash) and
+                    # want the gateway to forward them unmodified.
+                    #
+                    # Format: comma-separated, with or without leading
+                    # slash. Matching is case-insensitive.
+                    #   TELEGRAM_PASSTHROUGH_PREFIXES="/foo,bar,/baz"
+                    #
+                    # Backwards compatible: when the env var is unset or
+                    # empty, behaviour is identical to before (unknown
+                    # commands return the unknown-command notice).
+                    _env_passthrough = os.environ.get(
+                        "TELEGRAM_PASSTHROUGH_PREFIXES", ""
+                    )
+                    _passthrough_commands: set[str] = set()
+                    if _env_passthrough:
+                        for _tok in _env_passthrough.split(","):
+                            _tok = _tok.strip().lstrip("/").lower()
+                            if _tok:
+                                _passthrough_commands.add(_tok)
+                    if command.lower() in _passthrough_commands:
+                        logger.info(
+                            "[passthrough] /%s from %s — delivering verbatim "
+                            "to agent (event.text preserved with leading "
+                            "slash; TELEGRAM_PASSTHROUGH_PREFIXES match)",
                             command,
                             source.platform.value if source.platform else "?",
                         )
-                        return (
-                            f"Unknown command `/{command}`. "
-                            f"Type /commands to see what's available, "
-                            f"or resend without the leading slash to send "
-                            f"as a regular message."
-                        )
+                        # Fall through to normal message processing — do
+                        # NOT mutate event.text; the agent decides what to
+                        # do with the prefixed message.
+                    else:
+                        # Not an active skill — check if it's a known-but-disabled or
+                        # uninstalled skill and give actionable guidance.
+                        _unavail_msg = _check_unavailable_skill(command)
+                        if _unavail_msg:
+                            return _unavail_msg
+                        # Genuinely unrecognized /command: not a built-in, not a
+                        # plugin, not a skill, not a known-inactive skill. Warn
+                        # the user instead of silently forwarding it to the LLM
+                        # as free text (which leads to silent-failure behavior
+                        # like the model inventing a delegate_task call).
+                        # Normalize to hyphenated form before checking known
+                        # built-ins (command may be an alias target set by the
+                        # quick-command block above, so _cmd_def can be stale).
+                        if command.replace("_", "-") not in GATEWAY_KNOWN_COMMANDS:
+                            logger.warning(
+                                "Unrecognized slash command /%s from %s — "
+                                "replying with unknown-command notice",
+                                command,
+                                source.platform.value if source.platform else "?",
+                            )
+                            return (
+                                f"Unknown command `/{command}`. "
+                                f"Type /commands to see what's available, "
+                                f"or resend without the leading slash to send "
+                                f"as a regular message."
+                            )
             except Exception as e:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
         
