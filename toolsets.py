@@ -520,7 +520,13 @@ TOOLSETS = {
 
     "hermes-yuanbao": {
         "description": "Yuanbao Bot 元宝消息平台工具集 - 群信息、成员查询、私聊、贴纸表情",
-        "tools": _HERMES_CORE_TOOLS + [
+        # Keep this platform adapter toolset platform-specific.  The shared
+        # default surface already comes from hermes-cli / hermes-gateway; if a
+        # profile disables hermes-yuanbao, subtraction must remove only
+        # Yuanbao tools, never _HERMES_CORE_TOOLS.  Otherwise dispatcher-spawned
+        # Kanban workers lose terminal/file/kanban tools and exit without a
+        # lifecycle handoff.
+        "tools": [
             "yb_query_group_info",
             "yb_query_group_members",
             "yb_send_dm",

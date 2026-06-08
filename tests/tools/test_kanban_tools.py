@@ -87,6 +87,41 @@ def test_kanban_worker_env_overrides_profile_toolset_filter(monkeypatch, tmp_pat
     assert "kanban_list" not in names
 
 
+def test_disabled_yuanbao_platform_toolset_does_not_strip_worker_core_tools(monkeypatch, tmp_path):
+    """Disabling a platform integration must not subtract shared core tools.
+
+    Regression coverage for profiles that disable ``hermes-yuanbao``: that
+    platform toolset used to include ``_HERMES_CORE_TOOLS``, so the disabled
+    subtraction path removed terminal/file/kanban tools from dispatcher-spawned
+    workers and caused clean exits without kanban_complete/kanban_block.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import tools.kanban_tools  # ensure registered
+    from model_tools import _clear_tool_defs_cache, get_tool_definitions
+    from tools.registry import invalidate_check_fn_cache
+    from toolsets import resolve_toolset
+
+    assert "kanban_show" not in set(resolve_toolset("hermes-yuanbao"))
+    assert "terminal" not in set(resolve_toolset("hermes-yuanbao"))
+
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+    schema = get_tool_definitions(
+        disabled_toolsets=["hermes-yuanbao"],
+        quiet_mode=True,
+    )
+    names = {s["function"].get("name") for s in schema if "function" in s}
+    assert "kanban_show" in names
+    assert "kanban_complete" in names
+    assert "kanban_block" in names
+    assert "terminal" in names
+    assert "read_file" in names
+
+
 def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_path):
     """Task scope wins over profile config for board-routing tools.
 
