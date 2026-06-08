@@ -14,6 +14,11 @@ import {
 
 import { setMutableRef } from '@/lib/mutable-ref'
 import { cn } from '@/lib/utils'
+import {
+  setActiveTurnIndex,
+  setTimelineScrollFn,
+  setTimelineTurns
+} from '@/store/timeline'
 import { setThreadScrolledUp } from '@/store/thread-scroll'
 
 const ESTIMATED_ITEM_HEIGHT = 220
@@ -131,6 +136,55 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
     stickyBottomRef,
     virtualizer
   })
+
+  // Publish user turns to the timeline store so TimelineDots can render them.
+  useEffect(() => {
+    const turns = groups
+      .map((group, groupIndex) =>
+        group.kind === 'turn'
+          ? { id: group.id, messageIndex: group.indices[0], groupIndex }
+          : null
+      )
+      .filter((t): t is NonNullable<typeof t> => t !== null)
+    setTimelineTurns(turns)
+  }, [groups])
+
+  // Expose scrollToIndex so TimelineDots can jump to a turn.
+  useEffect(() => {
+    setTimelineScrollFn((groupIndex, opts) => {
+      virtualizer.scrollToIndex(groupIndex, opts)
+    })
+    return () => setTimelineScrollFn(null)
+  }, [virtualizer])
+
+  // Track which turn is closest to the viewport top for highlighting.
+  useEffect(() => {
+    const el = scrollerRef.current
+    if (!el) return
+
+    const updateActive = () => {
+      const scrollTop = el.scrollTop
+      const viewportMid = scrollTop + el.clientHeight / 3
+
+      // Find the turn group whose start is closest to (but not past) viewportMid.
+      const virtualItems = virtualizer.getVirtualItems()
+      const turns = groups
+        .map((g, i) => (g.kind === 'turn' ? { groupIndex: i, start: virtualItems.find((v: { index: number; start: number }) => v.index === i)?.start } : null))
+        .filter((t): t is { groupIndex: number; start: number } => t !== null && t.start !== undefined)
+
+      let active = 0
+      for (let i = 0; i < turns.length; i++) {
+        if ((turns[i].start ?? 0) <= viewportMid) {
+          active = i
+        }
+      }
+      setActiveTurnIndex(active)
+    }
+
+    el.addEventListener('scroll', updateActive, { passive: true })
+    updateActive()
+    return () => el.removeEventListener('scroll', updateActive)
+  }, [groups, virtualizer])
 
   const virtualItems = virtualizer.getVirtualItems()
   const totalSize = virtualizer.getTotalSize()
