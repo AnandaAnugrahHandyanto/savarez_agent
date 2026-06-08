@@ -1636,6 +1636,7 @@ export const zhHant = defineLocale({
     sourceLineTitle: '點擊選取 · shift 點擊擴展 · 拖曳至輸入框',
     source: '原始碼',
     renderedPreview: '預覽',
+    changes: '變更',
     unknownSize: '大小未知',
     binaryTitle: '這看起來像二進位檔案',
     binaryBody: label => `預覽 ${label} 可能會顯示無法讀取的文字。`,
