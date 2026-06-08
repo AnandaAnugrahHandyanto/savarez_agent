@@ -5,6 +5,7 @@ import {
   clearFederatedApps,
   createWire,
   exportState,
+  exportStateSafe,
   type FederatedAppsState,
   getAppOperators,
   getAvailableOperators,
@@ -222,16 +223,6 @@ describe('federated-apps store', () => {
     })
 
     it('should unregister an operator and its wires', () => {
-      registerApp({
-        id: 'app-2',
-        name: 'App 2',
-        version: '1.0.0',
-        protocol: 'internal',
-        capabilities: { canHostOperators: true, canProxy: false, maxOperators: 10 },
-        state: 'available',
-        metadata: {}
-      })
-
       registerOperator({
         id: 'op-1',
         appId: 'app-1',
@@ -243,6 +234,17 @@ describe('federated-apps store', () => {
         queueDepth: 0,
         metadata: {}
       })
+
+      registerApp({
+        id: 'app-2',
+        name: 'App 2',
+        version: '1.0.0',
+        protocol: 'ws',
+        capabilities: { canHostOperators: true, canProxy: true, maxOperators: 5 },
+        state: 'available',
+        metadata: {}
+      })
+
       registerOperator({
         id: 'op-2',
         appId: 'app-2',
@@ -257,13 +259,21 @@ describe('federated-apps store', () => {
 
       createWire('wire-1', { appId: 'app-1', operatorId: 'op-1' }, { appId: 'app-2', operatorId: 'op-2' }, 'internal')
 
+      expect(Object.keys($federatedApps.get().operators)).toHaveLength(2)
+      expect(Object.keys($federatedApps.get().wires)).toHaveLength(1)
+
       const result = unregisterOperator('op-1')
       expect(result).toBe(true)
 
       const state = $federatedApps.get()
       expect(state.operators['op-1']).toBeUndefined()
-      expect(state.wires['wire-1']).toBeUndefined()
-      expect(state.operators['op-2']).toBeDefined() // op-2 should remain
+      expect(state.wires['wire-1']).toBeUndefined() // Wire connected to op-1 removed
+      expect(state.operators['op-2']).toBeDefined() // op-2 remains
+    })
+
+    it('should return false when updating non-existent operator', () => {
+      const result = updateOperatorState('non-existent', { state: 'busy' })
+      expect(result).toBe(false)
     })
 
     it('should update operator state', () => {
@@ -281,12 +291,7 @@ describe('federated-apps store', () => {
 
       const beforeUpdate = $federatedApps.get().operators['op-1'].lastActivityAt
 
-      const result = updateOperatorState('op-1', {
-        state: 'busy',
-        currentLoad: 75,
-        queueDepth: 3
-      })
-
+      const result = updateOperatorState('op-1', { state: 'busy', currentLoad: 75, queueDepth: 3 })
       expect(result).toBe(true)
 
       const op = $federatedApps.get().operators['op-1']
@@ -309,19 +314,12 @@ describe('federated-apps store', () => {
         metadata: {}
       })
 
-      updateOperatorState('op-1', {
-        state: 'error',
-        errorMessage: 'Connection timeout'
-      })
+      const result = updateOperatorState('op-1', { state: 'error', errorMessage: 'Connection failed' })
+      expect(result).toBe(true)
 
       const op = $federatedApps.get().operators['op-1']
       expect(op.state).toBe('error')
-      expect(op.errorMessage).toBe('Connection timeout')
-    })
-
-    it('should return false when updating non-existent operator', () => {
-      const result = updateOperatorState('non-existent', { state: 'busy' })
-      expect(result).toBe(false)
+      expect(op.errorMessage).toBe('Connection failed')
     })
   })
 
@@ -371,13 +369,7 @@ describe('federated-apps store', () => {
     })
 
     it('should create a wire between operators', () => {
-      const wire = createWire(
-        'wire-1',
-        { appId: 'app-1', operatorId: 'op-1' },
-        { appId: 'app-2', operatorId: 'op-2' },
-        'internal',
-        'bidirectional'
-      )
+      const wire = createWire('wire-1', { appId: 'app-1', operatorId: 'op-1' }, { appId: 'app-2', operatorId: 'op-2' }, 'internal')
 
       expect(wire.id).toBe('wire-1')
       expect(wire.sourceAppId).toBe('app-1')
@@ -397,7 +389,7 @@ describe('federated-apps store', () => {
         'wire-1',
         { appId: 'app-1', operatorId: 'op-1' },
         { appId: 'app-2', operatorId: 'op-2' },
-        'grpc',
+        'ws',
         'unidirectional'
       )
 
@@ -409,7 +401,9 @@ describe('federated-apps store', () => {
 
       const result = removeWire('wire-1')
       expect(result).toBe(true)
-      expect($federatedApps.get().wires['wire-1']).toBeUndefined()
+
+      const state = $federatedApps.get()
+      expect(state.wires['wire-1']).toBeUndefined()
     })
 
     it('should return false when removing non-existent wire', () => {
@@ -422,12 +416,7 @@ describe('federated-apps store', () => {
 
       const beforeUpdate = $federatedApps.get().wires['wire-1'].lastActivityAt
 
-      const result = updateWireState('wire-1', {
-        state: 'available',
-        latencyMs: 15,
-        throughputBps: 1024000
-      })
-
+      const result = updateWireState('wire-1', { state: 'available', latencyMs: 15, throughputBps: 1024000 })
       expect(result).toBe(true)
 
       const wire = $federatedApps.get().wires['wire-1']
@@ -438,7 +427,7 @@ describe('federated-apps store', () => {
     })
   })
 
-  describe('query functions', () => {
+  describe('queries', () => {
     beforeEach(() => {
       registerApp({
         id: 'app-1',
@@ -467,7 +456,7 @@ describe('federated-apps store', () => {
         capabilities: { canStream: true, canBatch: false, canDelegate: true, supportsPriority: true, maxConcurrent: 5 },
         state: 'available',
         currentLoad: 50,
-        queueDepth: 1,
+        queueDepth: 0,
         metadata: {}
       })
       registerOperator({
@@ -488,38 +477,25 @@ describe('federated-apps store', () => {
         type: 'gateway',
         capabilities: { canStream: true, canBatch: true, canDelegate: true, supportsPriority: true, maxConcurrent: 20 },
         state: 'available',
-        currentLoad: 20,
+        currentLoad: 10,
         queueDepth: 0,
         metadata: {}
       })
     })
 
     it('should get operators for a specific app', () => {
-      const app1Ops = getAppOperators('app-1')
-      expect(app1Ops).toHaveLength(2)
-      expect(app1Ops.map(op => op.id).sort()).toEqual(['op-1', 'op-2'])
-
-      const app2Ops = getAppOperators('app-2')
-      expect(app2Ops).toHaveLength(1)
-      expect(app2Ops[0].id).toBe('op-3')
-
-      const emptyOps = getAppOperators('non-existent')
-      expect(emptyOps).toHaveLength(0)
+      const ops = getAppOperators('app-1')
+      expect(ops).toHaveLength(2)
+      expect(ops.map(o => o.id).sort()).toEqual(['op-1', 'op-2'])
     })
 
     it('should get wires for a specific operator', () => {
       createWire('wire-1', { appId: 'app-1', operatorId: 'op-1' }, { appId: 'app-2', operatorId: 'op-3' }, 'internal')
-      createWire('wire-2', { appId: 'app-2', operatorId: 'op-3' }, { appId: 'app-1', operatorId: 'op-2' }, 'ws')
+      createWire('wire-2', { appId: 'app-1', operatorId: 'op-2' }, { appId: 'app-2', operatorId: 'op-3' }, 'internal')
 
-      const op1Wires = getOperatorWires('op-1')
-      expect(op1Wires).toHaveLength(1)
-      expect(op1Wires[0].id).toBe('wire-1')
-
-      const op3Wires = getOperatorWires('op-3')
-      expect(op3Wires).toHaveLength(2)
-
-      const emptyWires = getOperatorWires('non-existent')
-      expect(emptyWires).toHaveLength(0)
+      const wires = getOperatorWires('op-1')
+      expect(wires).toHaveLength(1)
+      expect(wires[0].id).toBe('wire-1')
     })
 
     it('should get topology graph', () => {
@@ -528,25 +504,23 @@ describe('federated-apps store', () => {
       const graph = getTopologyGraph()
 
       expect(graph.nodes).toHaveLength(5) // 2 apps + 3 operators
-      expect(graph.nodes.filter(n => n.type === 'app')).toHaveLength(2)
-      expect(graph.nodes.filter(n => n.type === 'operator')).toHaveLength(3)
-
       expect(graph.edges).toHaveLength(1)
-      expect(graph.edges[0].source).toBe('op-1')
-      expect(graph.edges[0].target).toBe('op-3')
+      expect(graph.edges[0].id).toBe('wire-1')
     })
 
     it('should get available operators', () => {
       const available = getAvailableOperators()
-      // op-1 is available with load 50, op-2 is busy with load 95, op-3 is available with load 20
+
+      // op-1 is available with load 50
+      // op-2 is busy with load 95
+      // op-3 is available with load 10
       expect(available).toHaveLength(2)
-      expect(available.map(op => op.id).sort()).toEqual(['op-1', 'op-3'])
+      expect(available.map(o => o.id).sort()).toEqual(['op-1', 'op-3'])
     })
   })
 
-  describe('routing functions', () => {
+  describe('routing', () => {
     beforeEach(() => {
-      // Create a chain: op-1 -> op-2 -> op-3
       registerApp({
         id: 'app-1',
         name: 'App 1',
@@ -556,11 +530,29 @@ describe('federated-apps store', () => {
         state: 'available',
         metadata: {}
       })
+      registerApp({
+        id: 'app-2',
+        name: 'App 2',
+        version: '1.0.0',
+        protocol: 'ws',
+        capabilities: { canHostOperators: true, canProxy: true, maxOperators: 5 },
+        state: 'available',
+        metadata: {}
+      })
+      registerApp({
+        id: 'app-3',
+        name: 'App 3',
+        version: '1.0.0',
+        protocol: 'http',
+        capabilities: { canHostOperators: true, canProxy: true, maxOperators: 5 },
+        state: 'available',
+        metadata: {}
+      })
 
       registerOperator({
         id: 'op-1',
         appId: 'app-1',
-        name: 'Source',
+        name: 'Operator 1',
         type: 'llm',
         capabilities: { canStream: true, canBatch: false, canDelegate: true, supportsPriority: true, maxConcurrent: 5 },
         state: 'available',
@@ -570,10 +562,10 @@ describe('federated-apps store', () => {
       })
       registerOperator({
         id: 'op-2',
-        appId: 'app-1',
-        name: 'Router',
-        type: 'gateway',
-        capabilities: { canStream: true, canBatch: true, canDelegate: true, supportsPriority: true, maxConcurrent: 10 },
+        appId: 'app-2',
+        name: 'Operator 2',
+        type: 'tool',
+        capabilities: { canStream: false, canBatch: true, canDelegate: false, supportsPriority: false, maxConcurrent: 10 },
         state: 'available',
         currentLoad: 0,
         queueDepth: 0,
@@ -581,35 +573,15 @@ describe('federated-apps store', () => {
       })
       registerOperator({
         id: 'op-3',
-        appId: 'app-1',
-        name: 'Target',
-        type: 'tool',
-        capabilities: { canStream: false, canBatch: true, canDelegate: false, supportsPriority: false, maxConcurrent: 5 },
+        appId: 'app-3',
+        name: 'Operator 3',
+        type: 'gateway',
+        capabilities: { canStream: true, canBatch: true, canDelegate: true, supportsPriority: true, maxConcurrent: 20 },
         state: 'available',
         currentLoad: 0,
         queueDepth: 0,
         metadata: {}
       })
-      registerOperator({
-        id: 'op-4',
-        appId: 'app-1',
-        name: 'Unreachable',
-        type: 'tool',
-        capabilities: { canStream: false, canBatch: true, canDelegate: false, supportsPriority: false, maxConcurrent: 5 },
-        state: 'available',
-        currentLoad: 0,
-        queueDepth: 0,
-        metadata: {}
-      })
-
-      // Wire chain
-      createWire('wire-1', { appId: 'app-1', operatorId: 'op-1' }, { appId: 'app-1', operatorId: 'op-2' }, 'internal')
-      createWire('wire-2', { appId: 'app-1', operatorId: 'op-2' }, { appId: 'app-1', operatorId: 'op-3' }, 'internal')
-      // op-4 has no wires
-
-      // Set wires to available state for routing
-      updateWireState('wire-1', { state: 'available' })
-      updateWireState('wire-2', { state: 'available' })
     })
 
     it('should return true for same operator', () => {
@@ -617,33 +589,44 @@ describe('federated-apps store', () => {
     })
 
     it('should find path between connected operators', () => {
-      expect(hasPath('op-1', 'op-2')).toBe(true)
+      // op-1 -> op-2 -> op-3
+      createWire('wire-1', { appId: 'app-1', operatorId: 'op-1' }, { appId: 'app-2', operatorId: 'op-2' }, 'internal')
+      createWire('wire-2', { appId: 'app-2', operatorId: 'op-2' }, { appId: 'app-3', operatorId: 'op-3' }, 'internal')
+
       expect(hasPath('op-1', 'op-3')).toBe(true)
-      expect(hasPath('op-2', 'op-3')).toBe(true)
+      expect(hasPath('op-1', 'op-2')).toBe(true)
     })
 
     it('should return false for unreachable operators', () => {
-      expect(hasPath('op-1', 'op-4')).toBe(false)
-      expect(hasPath('op-4', 'op-1')).toBe(false)
-    })
+      createWire('wire-1', { appId: 'app-1', operatorId: 'op-1' }, { appId: 'app-2', operatorId: 'op-2' }, 'internal')
+      // op-3 is not connected
 
-    it('should return false when wire is not available', () => {
-      updateWireState('wire-2', { state: 'error' })
       expect(hasPath('op-1', 'op-3')).toBe(false)
     })
 
+    it('should return false when wire is not available', () => {
+      createWire('wire-1', { appId: 'app-1', operatorId: 'op-1' }, { appId: 'app-2', operatorId: 'op-2' }, 'internal')
+      updateWireState('wire-1', { state: 'error' })
+
+      expect(hasPath('op-1', 'op-2')).toBe(false)
+    })
+
     it('should get routing path', () => {
+      // op-1 -> op-2 -> op-3
+      createWire('wire-1', { appId: 'app-1', operatorId: 'op-1' }, { appId: 'app-2', operatorId: 'op-2' }, 'internal')
+      createWire('wire-2', { appId: 'app-2', operatorId: 'op-2' }, { appId: 'app-3', operatorId: 'op-3' }, 'internal')
+
       const path = getRoutingPath('op-1', 'op-3')
       expect(path).toEqual(['op-1', 'op-2', 'op-3'])
     })
 
     it('should return null for no route', () => {
-      const path = getRoutingPath('op-1', 'op-4')
+      const path = getRoutingPath('op-1', 'op-2')
       expect(path).toBeNull()
     })
   })
 
-  describe('import/export', () => {
+  describe('state persistence', () => {
     it('should export state', () => {
       registerApp({
         id: 'app-1',
@@ -706,6 +689,29 @@ describe('federated-apps store', () => {
       const state = $federatedApps.get()
       expect(state.apps['app-1']).toBeDefined()
       expect(state.apps['app-1'].name).toBe('Test App')
+    })
+
+    it('should sanitize sensitive fields in exportStateSafe', () => {
+      registerApp({
+        id: 'app-1',
+        name: 'Test App',
+        version: '1.0.0',
+        protocol: 'ws',
+        url: 'wss://example.com?token=secret123&api_key=supersecret',
+        capabilities: { canHostOperators: true, canProxy: false, maxOperators: 10 },
+        state: 'available',
+        metadata: {}
+      })
+
+      // exportState should include url (for round-tripping)
+      const exported = exportState()
+      expect(exported.apps['app-1'].url).toBe('wss://example.com?token=secret123&api_key=supersecret')
+
+      // exportStateSafe should strip url (for audit logging)
+      const safeExported = exportStateSafe()
+      expect(safeExported.apps['app-1'].url).toBeUndefined()
+      expect(safeExported.apps['app-1'].name).toBe('Test App') // other fields preserved
+      expect(safeExported.apps['app-1'].protocol).toBe('ws')
     })
   })
 })

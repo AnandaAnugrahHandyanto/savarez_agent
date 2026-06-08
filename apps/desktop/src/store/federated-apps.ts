@@ -495,6 +495,26 @@ export function exportState(): FederatedAppsState {
   return $federatedApps.get()
 }
 
+/** Export state with sensitive fields sanitized for audit logging
+ *
+ * Strips credential-bearing fields (url, tokens, secrets) from apps
+ * to prevent credential leakage in error artifacts and audit logs.
+ */
+export function exportStateSafe(): FederatedAppsState {
+  const state = $federatedApps.get()
+  const sanitizedApps: Record<string, FederatedApp> = {}
+
+  for (const [id, app] of Object.entries(state.apps)) {
+    const { url: _, ...safeApp } = app
+    sanitizedApps[id] = safeApp as FederatedApp
+  }
+
+  return {
+    ...state,
+    apps: sanitizedApps
+  }
+}
+
 /** Import state from JSON artifact */
 export function importState(state: FederatedAppsState): void {
   $federatedApps.set({
