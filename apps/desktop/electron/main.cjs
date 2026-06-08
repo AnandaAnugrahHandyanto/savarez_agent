@@ -6022,6 +6022,27 @@ ipcMain.handle('hermes:fs:upload', async (_event, localPath, destDir) => {
   }
 })
 
+// Overwrite a file's contents from the in-app editor (local or remote-over-SSH).
+// Mirror the preview read split: only an absolute POSIX path is a remote
+// workspace file written over SSH; a client-OS path (e.g. a local attachment
+// opened from C:\…) is written on this machine. (#38369)
+ipcMain.handle('hermes:fs:writeFile', async (_event, filePath, content) => {
+  const ssh = previewReadsFromRemote(filePath) ? await resolveRemoteSshConfig() : null
+  const text = typeof content === 'string' ? content : String(content ?? '')
+
+  if (ssh) {
+    return remoteSsh.writeFile(ssh, String(filePath || ''), text)
+  }
+
+  try {
+    await fs.promises.writeFile(path.resolve(String(filePath || '')), text, 'utf8')
+
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error?.code || 'write-failed' }
+  }
+})
+
 ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   if (!nodePty) {
     throw new Error('PTY support is unavailable. Reinstall desktop dependencies and restart Hermes.')
