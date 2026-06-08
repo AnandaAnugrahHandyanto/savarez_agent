@@ -668,7 +668,7 @@ export function ChatSidebar({
         {contentVisible && showSessionSections && trimmedQuery && (
           <SidebarSessionsSection
             activeSessionId={activeSidebarSessionId}
-            contentClassName="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
+            contentClassName="flex min-h-0 flex-1 flex-col gap-px overflow-x-hidden overflow-y-auto overscroll-contain pb-1.75"
             emptyState={
               <div className="grid min-h-24 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
                 {s.noMatch(trimmedQuery)}
@@ -715,7 +715,7 @@ export function ChatSidebar({
           <SidebarSessionsSection
             activeSessionId={activeSidebarSessionId}
             contentClassName={cn(
-              'flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pb-1.75',
+              'flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto overscroll-contain pb-1.75',
               // Separate profile sections clearly in the ALL view; rows inside
               // each group keep their own tight gap-px rhythm.
               showAllProfiles ? 'gap-3' : 'gap-px'
