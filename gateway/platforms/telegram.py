@@ -438,6 +438,12 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+        # Persistent typing loop per chat — cancelled by stop_typing().
+        # Telegram's send_chat_action("typing") expires after ~5s, so a
+        # background loop refreshes it.  When stop_typing() is called the loop
+        # is cancelled and the indicator disappears within ~5s (natural
+        # expiry of the last action).
+        self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._polling_error_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
@@ -4272,39 +4278,74 @@ class TelegramAdapter(BasePlatformAdapter):
             return await self.send_image(chat_id, animation_url, caption, reply_to, metadata=metadata)
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
-        """Send typing indicator."""
-        if self._bot:
-            _is_dm_topic: bool = False
-            message_thread_id: Optional[int] = None
+        """Start a persistent typing indicator for a chat.
+
+        Telegram's ``send_chat_action("typing")`` expires after ~5 seconds.
+        We start a lightweight background loop that refreshes the action every
+        4 seconds.  The loop is cancelled when ``stop_typing()`` is called,
+        and the indicator disappears within ~5s after the last refresh (natural
+        expiry — Telegram has no explicit "cancel typing" API).
+        """
+        if not self._bot:
+            return
+        # Don't start a duplicate loop.
+        if chat_id in self._typing_tasks:
+            return
+
+        async def _typing_loop() -> None:
             try:
-                _typing_thread = self._metadata_thread_id(metadata)
-                _is_dm_topic = bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
-                message_thread_id = self._message_thread_id_for_typing(_typing_thread)
-                await self._bot.send_chat_action(
-                    chat_id=int(chat_id),
-                    action="typing",
-                    message_thread_id=message_thread_id,
-                )
-            except Exception as e:
-                # For DM topic lanes, Telegram may reject message_thread_id.
-                # Fall back to sending typing without thread_id so the typing
-                # indicator at least appears in the main DM view.
-                if _is_dm_topic and message_thread_id is not None:
+                while True:
+                    _is_dm_topic: bool = False
+                    message_thread_id: Optional[int] = None
                     try:
+                        _typing_thread = self._metadata_thread_id(metadata)
+                        _is_dm_topic = bool(metadata and metadata.get("telegram_dm_topic_reply_fallback"))
+                        message_thread_id = self._message_thread_id_for_typing(_typing_thread)
                         await self._bot.send_chat_action(
                             chat_id=int(chat_id),
                             action="typing",
+                            message_thread_id=message_thread_id,
                         )
-                        return
-                    except Exception:
-                        pass
-                # Typing failures are non-fatal; log at debug level only.
-                logger.debug(
-                    "[%s] Failed to send Telegram typing indicator: %s",
-                    self.name,
-                    e,
-                    exc_info=True,
-                )
+                    except Exception as e:
+                        # For DM topic lanes, Telegram may reject message_thread_id.
+                        # Fall back to sending typing without thread_id.
+                        if _is_dm_topic and message_thread_id is not None:
+                            try:
+                                await self._bot.send_chat_action(
+                                    chat_id=int(chat_id),
+                                    action="typing",
+                                )
+                            except Exception:
+                                return
+                        else:
+                            logger.debug(
+                                "[%s] Failed to send Telegram typing indicator: %s",
+                                self.name,
+                                e,
+                                exc_info=True,
+                            )
+                            return
+                    await asyncio.sleep(4)
+            except asyncio.CancelledError:
+                pass
+            finally:
+                self._typing_tasks.pop(chat_id, None)
+
+        self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Stop the persistent typing indicator for a chat.
+
+        Cancels the background refresh loop.  The last ``send_chat_action``
+        already sent will expire naturally within ~5 seconds.
+        """
+        task = self._typing_tasks.pop(chat_id, None)
+        if task:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Telegram chat."""
