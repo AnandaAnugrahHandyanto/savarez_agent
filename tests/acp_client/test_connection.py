@@ -5,6 +5,8 @@ fake async connection; ``HermesACPClient`` is exercised directly for inbound
 permission + session_update handling.
 """
 
+import asyncio
+import contextlib
 import pathlib
 from types import SimpleNamespace
 
@@ -13,11 +15,15 @@ import pytest
 import acp
 from acp.schema import AllowedOutcome, DeniedOutcome
 
+from acp_client import AcpClientUnavailable
 from hermes_state import SessionDB
 from acp_client.connection import (
+    DEFAULT_INIT_TIMEOUT,
+    INIT_TIMEOUT_ENV_VAR,
     HermesACPClient,
     OutboundConnection,
     normalize_stop_reason,
+    resolve_init_timeout,
 )
 from acp_client.event_translator import EventTranslator
 from acp_client.outbound_session import OutboundSessionManager
@@ -144,6 +150,71 @@ class TestOutboundConnection:
 # ---------------------------------------------------------------------------
 # HermesACPClient inbound handling
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Bounded, diagnostic initialize timeout (spawn handshake guard)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveInitTimeout:
+    def test_default_when_unset(self):
+        assert resolve_init_timeout({}) == DEFAULT_INIT_TIMEOUT
+
+    def test_override_is_honoured(self):
+        assert resolve_init_timeout({INIT_TIMEOUT_ENV_VAR: "12.5"}) == 12.5
+
+    @pytest.mark.parametrize("bad", ["", "  ", "abc", "0", "-5"])
+    def test_bad_values_fall_back_to_default(self, bad):
+        # A bad value must never silently disable the bound (it would
+        # reintroduce the indefinite hang the timeout guards against).
+        assert resolve_init_timeout({INIT_TIMEOUT_ENV_VAR: bad}) == DEFAULT_INIT_TIMEOUT
+
+
+class _HangingConn(FakeConn):
+    """A connection whose initialize never returns (simulates a wedged CLI)."""
+
+    async def initialize(self, *, protocol_version):
+        await asyncio.Event().wait()  # blocks until cancelled by wait_for
+
+
+def _patch_spawn(monkeypatch, conn):
+    """Replace acp.spawn_agent_process with a fake yielding *conn* (no process)."""
+
+    @contextlib.asynccontextmanager
+    async def fake_spawn(to_client, command, *args, env=None, cwd=None, **_):
+        yield conn, SimpleNamespace(pid=4242)
+
+    monkeypatch.setattr(acp, "spawn_agent_process", fake_spawn)
+
+
+class TestSpawnInitTimeout:
+    @pytest.mark.asyncio
+    async def test_hanging_initialize_raises_diagnostic(self, monkeypatch):
+        _patch_spawn(monkeypatch, _HangingConn())
+        with pytest.raises(AcpClientUnavailable) as excinfo:
+            async with OutboundConnection.spawn(
+                "claude",
+                cwd="/work",
+                base_env={INIT_TIMEOUT_ENV_VAR: "0.05"},
+            ):
+                pass
+        msg = str(excinfo.value)
+        assert "failed to initialize" in msg
+        assert "claude" in msg  # backend name surfaced
+        assert INIT_TIMEOUT_ENV_VAR in msg  # remediation hint surfaced
+
+    @pytest.mark.asyncio
+    async def test_fast_initialize_yields_connection(self, monkeypatch):
+        _patch_spawn(monkeypatch, FakeConn())
+        async with OutboundConnection.spawn(
+            "claude",
+            cwd="/work",
+            base_env={INIT_TIMEOUT_ENV_VAR: "5"},
+        ) as oc:
+            assert oc.backend == "claude"
+            state = await oc.create_session(cwd="/work")
+            assert state.session_id == "ext-sess"
 
 
 class TestHermesACPClient:

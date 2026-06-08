@@ -98,7 +98,7 @@ _DEFAULT_TRANSPORTS: tuple[TransportSpec, ...] = (
     TransportSpec(
         name="gemini-cli",
         command="gemini",
-        args=("--experimental-acp",),
+        args=("--acp",),
         supports_load_session=False,
         notes="Google Gemini CLI ACP mode; manages its own credentials.",
     ),

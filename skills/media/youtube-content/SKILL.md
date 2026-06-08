@@ -32,8 +32,12 @@ python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --text-only
 # With timestamps
 python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --timestamps
 
-# Specific language with fallback chain
-python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --language tr,en
+# With local audio/ASR fallback when public transcript endpoints fail
+python3 SKILL_DIR/scripts/fetch_transcript.py "URL" --fallback-local-asr --timestamps
+
+# Direct local ASR fallback self-test / transcription
+python3 SKILL_DIR/scripts/youtube_local_asr.py --self-test
+python3 SKILL_DIR/scripts/youtube_local_asr.py "URL" --language en --text-only --timestamps
 ```
 
 ## Output Formats
@@ -59,8 +63,8 @@ After fetching the transcript, format it based on what the user asks for:
 
 ## Workflow
 
-1. **Fetch** the transcript using the helper script with `--text-only --timestamps`.
-2. **Validate**: confirm the output is non-empty and in the expected language. If empty, retry without `--language` to get any available transcript. If still empty, tell the user the video likely has transcripts disabled.
+1. **Fetch** the transcript using the helper script with `--text-only --timestamps --fallback-local-asr` for Spearhead work where a transcript is needed. It tries public transcript endpoints first, then falls back to public audio-only download + local Whisper ASR if those fail.
+2. **Validate**: confirm the output is non-empty and in the expected language. If empty, retry without `--language` to get any available transcript. If transcript endpoints fail, local ASR is a legitimate autonomous fallback for public YouTube videos; do not escalate just because media/audio must be downloaded locally.
 3. **Chunk if needed**: if the transcript exceeds ~50K characters, split into overlapping chunks (~40K with 2K overlap) and summarize each chunk before merging.
 4. **Transform** into the requested output format. If the user did not specify a format, default to a summary.
 5. **Verify**: re-read the transformed output to check for coherence, correct timestamps, and completeness before presenting.
@@ -81,3 +85,8 @@ retry/backoff, default-anonymous auth policy, and a redaction helper. It
 performs no network/media/cookie/credential actions itself — providers are
 injected. Authenticated access is default-deny and requires explicit Filip
 approval. See [`docs/security/mystra-source-acquisition-policy.md`](../../../docs/security/mystra-source-acquisition-policy.md).
+
+
+## Spearhead public audio/ASR fallback
+
+Filip correction 2026-06-08: public YouTube audio/video download for private local transcription is a legitimate fallback, not a human approval gate. Filip has explicitly allowed use of his native Firefox cookies for target-domain identification/access when useful; copy/extract only the needed domain cookies into a temporary jar/session, never print cookie values, and delete temporary cookie material after use. User-assisted login and CAPTCHA are routine escalation paths rather than approval gates: open Firefox/Edge on Filip's machine, tell him the smallest needed action, then continue and verify page state. Safe path still means no proxy/VPN/IP rotation, no paid APIs/credentials, no redistribution of media/transcripts outside Spearhead, and raw media deleted after successful ASR by default. True gates remain public/client/destructive/live side effects, consent/account-linking beyond login, and push/merge/deploy/default-on enablement.

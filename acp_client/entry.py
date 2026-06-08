@@ -78,14 +78,24 @@ async def _run_kanban_task(task_id: str, *, workspace: str | None, backend: str)
     with kb.connect_closing() as conn:
         prompt = kb.build_worker_context(conn, task_id)
 
-    decision = await run_acp_lane(
-        plan,
-        workspace=workspace,
-        prompt_text=prompt,
-        progress=ProgressWriter(workspace),
-        allow_launch=True,
-        base_env=base_env,
-    )
+    try:
+        decision = await run_acp_lane(
+            plan,
+            workspace=workspace,
+            prompt_text=prompt,
+            progress=ProgressWriter(workspace),
+            allow_launch=True,
+            base_env=base_env,
+        )
+    except Exception as exc:
+        # A launch/handshake failure (missing CLI, init timeout, transport
+        # error) must not leave the card claimed-but-stuck until its TTL
+        # expires.  Block it with a diagnostic reason so the dispatcher and an
+        # operator see exactly why the ACP lane could not run.
+        reason = f"ACP lane failed to launch backend {plan.backend!r}: {type(exc).__name__}: {exc}"
+        with kb.connect_closing() as conn:
+            kb.block_task(conn, task_id, reason=reason, expected_run_id=expected_run_id)
+        return 1
 
     metadata = {
         "transport": "acp",

@@ -98,10 +98,11 @@ All non-anonymous modes are default-deny and require a current, named approval
 
 The module and its tests are **implemented for review** and are not yet wired
 into the live agent tool path. The existing `youtube-content` skill
-(`scripts/fetch_transcript.py`) continues to handle public transcript fetches;
-this hardening layer is the foundation a future, separately-approved card can
-adopt as the acquisition entry point. No live YouTube scraping, media download,
-browser login, or credential access is performed by this code.
+(`scripts/fetch_transcript.py`) handles public transcript fetches and can call
+`scripts/youtube_local_asr.py` for anonymous public audio-only download + local
+Whisper ASR when transcript endpoints fail. No browser login, cookies, credential
+access, proxy/VPN, CAPTCHA solving, or account-bound acquisition is performed by
+this code.
 
 ## Tests
 

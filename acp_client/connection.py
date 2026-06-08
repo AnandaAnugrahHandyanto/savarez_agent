@@ -28,16 +28,47 @@ is the real-launch path (used by Phase 2's kanban runner); the tests drive
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
+import os
 from typing import Any, Mapping, Optional, Sequence
 
+from acp_client import AcpClientUnavailable
 from acp_client.event_translator import EventTranslator
 from acp_client.outbound_session import OutboundSessionManager, OutboundSessionState
 from acp_client.permission_relay import PermissionRelay
 from acp_client.transport_registry import DEFAULT_REGISTRY, TransportRegistry
 
 logger = logging.getLogger(__name__)
+
+# Bound on the ACP ``initialize`` handshake (design §2.3).  The external CLI is
+# spawned and must complete the protocol-version negotiation within this window;
+# a missing / mis-authenticated / wedged agent otherwise hangs the spawn
+# indefinitely, which in the Kanban lane means the worker boot never returns and
+# the dispatcher's claim TTL (180s) expires with a non-diagnostic timeout.  The
+# default is generous enough for a real cold start but well under the claim TTL,
+# and is overridable for slow environments via ``HERMES_ACP_INIT_TIMEOUT``.
+INIT_TIMEOUT_ENV_VAR = "HERMES_ACP_INIT_TIMEOUT"
+DEFAULT_INIT_TIMEOUT = 60.0
+
+
+def resolve_init_timeout(env: Optional[Mapping[str, str]] = None) -> float:
+    """Resolve the ACP initialize timeout (seconds) from the environment.
+
+    Falls back to :data:`DEFAULT_INIT_TIMEOUT` when the override is unset,
+    non-numeric, or non-positive — a bad value must never silently disable the
+    bound (that would reintroduce the indefinite hang this guards against).
+    """
+    source = os.environ if env is None else env
+    raw = (source.get(INIT_TIMEOUT_ENV_VAR) or "").strip()
+    if not raw:
+        return DEFAULT_INIT_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_INIT_TIMEOUT
+    return value if value > 0 else DEFAULT_INIT_TIMEOUT
 
 
 # ACP stop-reason → coarse Hermes category.  Fixture-tested (design R8) so the
@@ -277,6 +308,8 @@ class OutboundConnection:
         env = spec.resolve_env(base_env)
         relay = PermissionRelay(workspace_path=workspace_path or cwd, audit_log=None)
         client = HermesACPClient(permission_relay=relay, on_event=on_event)
+        init_timeout = resolve_init_timeout(base_env)
+        cmdline = " ".join([spec.command, *spec.args])
 
         async with acp.spawn_agent_process(
             client, spec.command, *spec.args, env=env, cwd=cwd
@@ -288,5 +321,17 @@ class OutboundConnection:
                 backend=transport_name,
                 process=proc,
             )
-            await oc.initialize()
+            # Bound the handshake so a missing / wedged / unauthenticated agent
+            # fails fast with a diagnostic message rather than hanging the spawn
+            # (and, in the Kanban lane, the whole worker boot) indefinitely.
+            try:
+                await asyncio.wait_for(oc.initialize(), timeout=init_timeout)
+            except asyncio.TimeoutError as exc:
+                raise AcpClientUnavailable(
+                    f"ACP backend {transport_name!r} failed to initialize within "
+                    f"{init_timeout:.0f}s (command: {cmdline!r}). The external "
+                    "agent did not complete the ACP handshake — verify the CLI is "
+                    "installed on PATH and authenticated. Raise the bound via "
+                    f"{INIT_TIMEOUT_ENV_VAR}=<seconds> for slow cold starts."
+                ) from exc
             yield oc

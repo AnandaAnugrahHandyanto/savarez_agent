@@ -263,7 +263,7 @@ class TestDisabledTranscript:
 
 
 # ===========================================================================
-# 5. Login-required marker (hard stop, no auto-auth)
+# 5. Login-required marker (stop automated provider pass; use approved native-browser path)
 # ===========================================================================
 
 
@@ -274,9 +274,9 @@ class TestLoginRequired:
         never = FakeProvider("api2", [_ok_result()])
         result = acquire("dQw4w9WgXcQ", [gated, never])
         assert result.status is AcquisitionStatus.LOGIN_REQUIRED
-        # No automatic fallback after a login gate.
+        # No blind anonymous-provider fallback after a login marker; use the approved native-browser path.
         assert never.fetch_calls == 0
-        assert "approval" in result.next_safe_action.lower()
+        assert "native-browser" in result.next_safe_action.lower()
 
     def test_captcha_and_geo_hard_stop(self):
         for st in (AcquisitionStatus.CAPTCHA_REQUIRED, AcquisitionStatus.GEO_RESTRICTED):

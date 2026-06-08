@@ -91,6 +91,10 @@ Rules:
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
+  - When a child task body lists implementation steps or sub-tasks, use the
+    canonical P3 format: `- [ ] [ID] [P] Description (file/path.py)` where
+    [P] marks steps that can run in parallel with their siblings within that
+    task, and [ID] is a short stable reference (e.g. T1, T2).
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:

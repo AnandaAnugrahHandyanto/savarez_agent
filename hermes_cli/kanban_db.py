@@ -6269,6 +6269,36 @@ def _spawn_callable_for_task(task: Task, spawn_fn=None):
     return _default_spawn
 
 
+def _acp_child_pythonpath_env(env: dict[str, str]) -> dict[str, str]:
+    """Return a copy of *env* with the Hermes repo root pinned on PYTHONPATH.
+
+    The ACP worker is launched as ``sys.executable -m acp_client`` with
+    ``cwd=workspace``.  Unlike the PTY lane — which resolves an installed
+    ``hermes`` console-script — ``-m acp_client`` resolves the package purely
+    from ``sys.path``.  When the running interpreter's editable/installed
+    distribution predates the ``acp_client`` package (e.g. the canonical venv's
+    ``__editable__`` finder mapping was frozen before ``acp_client`` was added)
+    the package is *only* importable when ``sys.path[0]`` happens to be the repo
+    root.  Spawning with ``cwd=workspace`` removes that accident and the child
+    dies with ``No module named acp_client``.
+
+    Pinning the repo root (the parent of the ``acp_client`` package, resolved
+    from its on-disk location) onto the child's PYTHONPATH makes the import
+    deterministic regardless of cwd or install snapshot.  Any existing
+    PYTHONPATH is preserved after the repo root.
+    """
+    import acp_client
+
+    repo_root = str(Path(acp_client.__file__).resolve().parents[1])
+    child_env = dict(env)
+    existing = child_env.get("PYTHONPATH", "")
+    parts = [p for p in existing.split(os.pathsep) if p]
+    if repo_root not in parts:
+        parts.insert(0, repo_root)
+    child_env["PYTHONPATH"] = os.pathsep.join(parts)
+    return child_env
+
+
 def _spawn_acp_kanban_worker(
     task: Task,
     workspace: str,
@@ -6296,6 +6326,9 @@ def _spawn_acp_kanban_worker(
         "--backend",
         backend,
     ]
+    # Pin the repo root on the child's PYTHONPATH so ``-m acp_client`` resolves
+    # regardless of cwd (=workspace) or a stale editable-install mapping.
+    env = _acp_child_pythonpath_env(env)
     log_dir = worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.id}.log"

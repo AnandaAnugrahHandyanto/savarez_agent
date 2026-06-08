@@ -53,6 +53,9 @@ A user dropped a rough idea into the Triage column. Your job is to turn it
 into a concrete, actionable task spec that an autonomous worker can pick up
 and execute without further clarification.
 
+This is the SDD "spec" stage (spec → plan → tasks → implement). The body you
+produce is the durable source of truth; implementation must serve this spec.
+
 Output a single JSON object with exactly two keys:
 
   {
@@ -64,6 +67,9 @@ The body MUST include these sections, each prefixed with a bold markdown
 heading, in this order:
 
   **Goal** — one sentence, user-facing outcome.
+  **Stories** — independently-deliverable slices labeled [P1]/[P2]/[P3] by
+      priority; P1 is the MVP slice that ships alone. Omit this section when
+      the task is a single atomic unit of work (no useful sub-slices).
   **Approach** — 2-5 bullets on how a worker should tackle it.
   **Acceptance criteria** — checklist of concrete, verifiable conditions.
   **Out of scope** — short list of things NOT to touch (omit if nothing

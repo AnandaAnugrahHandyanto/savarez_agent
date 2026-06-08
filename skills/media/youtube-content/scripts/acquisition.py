@@ -109,9 +109,10 @@ RETRYABLE_STATUSES = frozenset({
     AcquisitionStatus.RATE_LIMITED,
 })
 
-# Hard stops: encountering one halts the whole acquisition — no cross-provider
-# fallback, because falling back would mean improvising auth or bypassing a
-# gate (design §3 "auth/browser fallback never auto-enabled", §7).
+# Stops for the current fully-automated provider pass. These do not necessarily
+# mean a Filip approval gate: login/cookie/CAPTCHA can move to an approved
+# user-assisted/native-browser path; proxy/VPN/token/paid/provider bypass still
+# require explicit approval.
 HARD_STOP_STATUSES = frozenset({
     AcquisitionStatus.LOGIN_REQUIRED,
     AcquisitionStatus.AUTH_COOKIE_STALE,
@@ -149,15 +150,16 @@ _NEXT_SAFE_ACTION = {
         "observed languages and proceed metadata-only or try a language fallback."
     ),
     AcquisitionStatus.LOGIN_REQUIRED: (
-        "Stop. Sign-in/account state required — request explicit EMA/Filip "
-        "approval for an authenticated case, or use a public alternative."
+        "Use the approved native-browser path: try target-domain Firefox cookies "
+        "or ask Filip for a small user-assisted login step; do not print/store secrets."
     ),
     AcquisitionStatus.AUTH_COOKIE_STALE: (
-        "Stop. Approved auth appears stale; do not refresh/rotate/login. "
-        "Emit a redacted warning and request re-approval."
+        "Refresh via approved native Firefox cookie/session or user-assisted login; "
+        "use only target-domain cookies and delete temporary cookie material."
     ),
     AcquisitionStatus.CAPTCHA_REQUIRED: (
-        "Stop. Anti-abuse challenge encountered; never solve automatically."
+        "Open Firefox/Edge on Filip's machine and ask him to complete the CAPTCHA; "
+        "then continue and verify page state. Never solve/bypass it automatically."
     ),
     AcquisitionStatus.RATE_LIMITED: (
         "Back off and retry later within deadline; no credential workaround."
@@ -166,8 +168,10 @@ _NEXT_SAFE_ACTION = {
         "Stop. Region-blocked; proxy/VPN requires a separate approval card."
     ),
     AcquisitionStatus.DRM_OR_MEDIA_BLOCKED: (
-        "Continue with transcript/metadata if available; media path needs a "
-        "separate approval card."
+        "Continue with transcript/metadata if available. For public YouTube videos, "
+        "audio/video download plus local ASR is an allowed fallback. If auth is needed, "
+        "use target-domain Firefox cookies or user-assisted login/CAPTCHA; stop only for "
+        "proxy/VPN/paid/token-provider requirements or sensitive side effects."
     ),
     AcquisitionStatus.TOKEN_REQUIRED: (
         "Stop unless an approved token adapter is configured; degrade to "
@@ -506,7 +510,7 @@ class AcquisitionRequest:
 
     source: SourceRef
     requested_languages: list = field(default_factory=list)
-    allow_media: bool = False          # media never acquired unless explicit
+    allow_media: bool = False          # legacy flag; public local ASR provider may opt in explicitly
     request_id: Optional[str] = None
 
 

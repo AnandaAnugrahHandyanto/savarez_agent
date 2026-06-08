@@ -1577,6 +1577,12 @@ def test_default_spawn_uses_gated_acp_runner_when_enabled(
     assert task_id in cmd
     assert kwargs["env"]["HERMES_KANBAN_TASK"] == task_id
     assert kwargs["env"]["HERMES_PROFILE"] == "gond"
+    # Regression guard for dispatcher launches from a workspace cwd: the child
+    # must be able to resolve ``python -m acp_client`` even when the editable
+    # install's finder mapping is stale. Preserve existing PYTHONPATH entries
+    # after the repo root.
+    pythonpath = kwargs["env"].get("PYTHONPATH", "")
+    assert pythonpath.split(os.pathsep)[0] == str(Path(kb.__file__).resolve().parents[1])
 
 
 def test_dispatch_spawn_failure_releases_claim(kanban_home, all_assignees_spawnable):

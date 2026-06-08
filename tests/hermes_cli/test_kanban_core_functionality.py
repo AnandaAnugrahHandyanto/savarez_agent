@@ -2715,6 +2715,10 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     # HERMES_HOME — the fixture creates an empty tmpdir without the
     # devops/kanban-worker tree, and _default_spawn gates the --skills
     # flag on actual resolvability.
+    # This test verifies the legacy Hermes chat worker argv, not the optional
+    # ACP transport lane. Keep it stable even when a developer .env enables
+    # KANBAN_WORKER_TRANSPORT=acp globally.
+    monkeypatch.setenv("KANBAN_WORKER_TRANSPORT", "pty")
     monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
 
     captured = {}
@@ -2986,6 +2990,7 @@ def test_create_task_skills_lists_all_toolset_typos(kanban_home):
 def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     """Dispatcher argv must carry one `--skills X` pair per task skill,
     in addition to the built-in kanban-worker."""
+    monkeypatch.setenv("KANBAN_WORKER_TRANSPORT", "pty")
     monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
     captured = {}
 
@@ -3036,6 +3041,7 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
 
 def test_default_spawn_passes_task_model_override(kanban_home, monkeypatch):
     """Dispatcher argv must carry a persisted per-task model override."""
+    monkeypatch.setenv("KANBAN_WORKER_TRANSPORT", "pty")
     monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
     captured = {}
 
@@ -3072,6 +3078,7 @@ def test_default_spawn_passes_task_model_override(kanban_home, monkeypatch):
 
 def test_default_spawn_dedupes_kanban_worker_from_task_skills(kanban_home, monkeypatch):
     """If a task explicitly lists 'kanban-worker', we don't double-pass it."""
+    monkeypatch.setenv("KANBAN_WORKER_TRANSPORT", "pty")
     monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
     captured = {}
 
