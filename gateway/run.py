@@ -14575,6 +14575,7 @@ class GatewayRunner:
             result = await loop.run_in_executor(None, reload_skills)
             added = result.get("added", [])      # [{"name", "description"}, ...]
             removed = result.get("removed", [])  # [{"name", "description"}, ...]
+            modified = result.get("modified", [])  # [{"name", "description"}, ...]
             total = result.get("total", 0)
 
             # Let each connected adapter refresh any platform-side state
@@ -14600,7 +14601,7 @@ class GatewayRunner:
                     )
 
             lines = [t("gateway.reload_skills.header")]
-            if not added and not removed:
+            if not added and not removed and not modified:
                 lines.append(t("gateway.reload_skills.no_new"))
                 lines.append(t("gateway.reload_skills.total", count=total))
                 return "\n".join(lines)
@@ -14620,6 +14621,10 @@ class GatewayRunner:
                 lines.append(t("gateway.reload_skills.removed_header"))
                 for item in removed:
                     lines.append(_fmt_line(item))
+            if modified:
+                lines.append(t("gateway.reload_skills.modified_header"))
+                for item in modified:
+                    lines.append(_fmt_line(item))
             lines.append(t("gateway.reload_skills.total", count=total))
 
             # Queue the one-shot note for the next user turn in this session.
@@ -14636,6 +14641,11 @@ class GatewayRunner:
                 sections.append("")
                 sections.append("Removed Skills:")
                 for item in removed:
+                    sections.append(_fmt_line(item))
+            if modified:
+                sections.append("")
+                sections.append("Modified Skills:")
+                for item in modified:
                     sections.append(_fmt_line(item))
             sections.append("")
             sections.append("Use skills_list to see the updated catalog.]")
