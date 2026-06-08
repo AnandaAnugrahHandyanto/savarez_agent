@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import json
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -343,6 +344,29 @@ class TestRenderPrompt:
         )
         assert "{nonexistent}" in result
 
+    def test_render_prompt_payload_file_special_value(self):
+        """{__payload_file__} resolves when the handler supplies a file path."""
+        adapter = _make_adapter()
+        result = adapter._render_prompt(
+            "Payload file: {__payload_file__}",
+            {"action": "opened"},
+            "push",
+            "test",
+            special_values={"__payload_file__": "/tmp/payload.json"},
+        )
+        assert result == "Payload file: /tmp/payload.json"
+
+    def test_render_prompt_payload_file_preserved_without_special_value(self):
+        """Direct render callers preserve {__payload_file__} when no file exists."""
+        adapter = _make_adapter()
+        result = adapter._render_prompt(
+            "Payload file: {__payload_file__}",
+            {"action": "opened"},
+            "push",
+            "test",
+        )
+        assert result == "Payload file: {__payload_file__}"
+
     def test_render_prompt_no_template_dumps_json(self):
         """Empty template → JSON dump fallback with event/route context."""
         adapter = _make_adapter()
@@ -400,6 +424,43 @@ class TestEventFilter:
                 headers={"X-GitHub-Event": "pull_request"},
             )
             assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_handle_webhook_materializes_payload_file_token(self, tmp_path, monkeypatch):
+        """Routes using {__payload_file__} receive a real JSON file path."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        routes = {
+            "assign": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "Payload file: {__payload_file__}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/assign",
+                json={"id": 123, "assignee": {"slug": "development"}},
+                headers={"X-Request-ID": "assignment-123"},
+            )
+            assert resp.status == 202
+
+        adapter.handle_message.assert_awaited_once()
+        assert adapter.handle_message.await_args is not None
+        event = adapter.handle_message.await_args.args[0]
+        assert "{__payload_file__}" not in event.text
+        prefix = "Payload file: "
+        assert event.text.startswith(prefix)
+        payload_path = Path(event.text.removeprefix(prefix))
+        assert payload_path.exists()
+        assert payload_path.parent == tmp_path / ".hermes" / "webhook_payloads"
+        assert payload_path.stat().st_mode & 0o777 == 0o600
+        envelope = json.loads(payload_path.read_text())
+        assert envelope["route"] == "assign"
+        assert envelope["delivery_id"] == "assignment-123"
+        assert envelope["payload"]["assignee"]["slug"] == "development"
 
     @pytest.mark.asyncio
     async def test_event_filter_rejects_non_matching(self):

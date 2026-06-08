@@ -33,9 +33,11 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import subprocess
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
@@ -53,6 +55,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +70,8 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
+_PAYLOAD_FILES_DIRNAME = "webhook_payloads"
+_PAYLOAD_FILE_TTL_SECONDS = 24 * 60 * 60
 
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
@@ -457,10 +462,39 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "ignored", "event": event_type}
             )
 
-        # Format prompt from template
+        # Build a unique delivery ID before rendering so {__payload_file__}
+        # can name the persisted envelope consistently with the agent session.
+        delivery_id = request.headers.get(
+            "X-GitHub-Delivery",
+            request.headers.get(
+                "svix-id",
+                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
+            ),
+        )
+
         prompt_template = route_config.get("prompt", "")
+        payload_file = ""
+        if "{__payload_file__}" in prompt_template:
+            try:
+                payload_file = self._write_payload_file(
+                    route_name=route_name,
+                    delivery_id=delivery_id,
+                    event_type=event_type,
+                    payload=payload,
+                )
+            except Exception:
+                logger.exception(
+                    "[webhook] Failed to write payload file for route=%s",
+                    route_name,
+                )
+
+        # Format prompt from template
         prompt = self._render_prompt(
-            prompt_template, payload, event_type, route_name
+            prompt_template,
+            payload,
+            event_type,
+            route_name,
+            special_values={"__payload_file__": payload_file} if payload_file else None,
         )
 
         # Inject skill content if configured.
@@ -491,15 +525,6 @@ class WebhookAdapter(BasePlatformAdapter):
                         )
             except Exception as e:
                 logger.warning("[webhook] Skill loading failed: %s", e)
-
-        # Build a unique delivery ID
-        delivery_id = request.headers.get(
-            "X-GitHub-Delivery",
-            request.headers.get(
-                "svix-id",
-                request.headers.get("X-Request-ID", str(int(time.time() * 1000))),
-            ),
-        )
 
         # ── Idempotency ─────────────────────────────────────────
         # Skip duplicate deliveries (webhook retries).
@@ -756,6 +781,7 @@ class WebhookAdapter(BasePlatformAdapter):
         payload: dict,
         event_type: str,
         route_name: str,
+        special_values: Optional[Dict[str, str]] = None,
     ) -> str:
         """Render a prompt template with the webhook payload.
 
@@ -765,6 +791,11 @@ class WebhookAdapter(BasePlatformAdapter):
         Special token ``{__raw__}`` dumps the entire payload as indented
         JSON (truncated to 4000 chars).  Useful for monitoring alerts or
         any webhook where the agent needs to see the full payload.
+
+        Special token ``{__payload_file__}`` is populated by _handle_webhook()
+        when a route template asks for it. Direct _render_prompt() callers may
+        pass ``special_values`` explicitly. When no value is available, the
+        token is preserved like any other missing field.
         """
         if not template:
             truncated = json.dumps(payload, indent=2)[:4000]
@@ -775,6 +806,8 @@ class WebhookAdapter(BasePlatformAdapter):
 
         def _resolve(match: re.Match) -> str:
             key = match.group(1)
+            if special_values and key in special_values:
+                return special_values[key]
             # Special token: dump the entire payload as JSON
             if key == "__raw__":
                 return json.dumps(payload, indent=2)[:4000]
@@ -789,6 +822,63 @@ class WebhookAdapter(BasePlatformAdapter):
             return str(value)
 
         return re.sub(r"\{([a-zA-Z0-9_.]+)\}", _resolve, template)
+
+    def _write_payload_file(
+        self,
+        *,
+        route_name: str,
+        delivery_id: str,
+        event_type: str,
+        payload: dict,
+    ) -> str:
+        """Persist a webhook payload envelope and return its readable path.
+
+        Webhook-triggered agent runs are asynchronous and may need the full
+        payload after the HTTP request has returned. Store the JSON under the
+        active Hermes home instead of using an auto-deleting temp file.
+        """
+        payload_dir = get_hermes_home() / _PAYLOAD_FILES_DIRNAME
+        payload_dir.mkdir(parents=True, exist_ok=True)
+        self._prune_payload_files(payload_dir)
+
+        safe_route = re.sub(r"[^a-zA-Z0-9_.-]+", "-", route_name).strip("-") or "route"
+        safe_delivery = re.sub(r"[^a-zA-Z0-9_.-]+", "-", delivery_id).strip("-")
+        if not safe_delivery:
+            safe_delivery = str(int(time.time() * 1000))
+        filename = f"{int(time.time())}-{safe_route}-{safe_delivery}.json"
+        path = payload_dir / filename
+        envelope = {
+            "route": route_name,
+            "event_type": event_type,
+            "delivery_id": delivery_id,
+            "received_at": int(time.time()),
+            "payload": payload,
+        }
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        fd = os.open(path, flags, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(envelope, fh, indent=2)
+                fh.write("\n")
+        except Exception:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise
+        return str(path)
+
+    def _prune_payload_files(self, payload_dir: Path) -> None:
+        cutoff = time.time() - _PAYLOAD_FILE_TTL_SECONDS
+        try:
+            for path in payload_dir.glob("*.json"):
+                try:
+                    if path.stat().st_mtime < cutoff:
+                        path.unlink()
+                except OSError:
+                    continue
+        except OSError:
+            return
 
     def _render_delivery_extra(
         self, extra: dict, payload: dict
