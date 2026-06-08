@@ -775,6 +775,96 @@ def test_m2_gate_blocks_on_symlink_staged(kanban_home, tmp_path):
 # ===========================================================================
 # Phase 3 — m2_spawn.run_and_capture reaped 마커 + 안전 capture_dir (실 reap)
 # ===========================================================================
+# ===========================================================================
+# Phase 4 — 직접/CLI supervisor 경로의 plan 증거 자동 제출
+# (라이브 one-shot 회귀: 워커는 sandbox·untrusted라 plan_submit 불가 →
+#  부모 supervisor가 declared manifest에서 compliant write-plan을 기록해야
+#  plan_gate가 fail-closed 되지 않는다. Codex fail-closed는 그대로 유지.)
+# ===========================================================================
+def test_supervise_records_plan_evidence_on_direct_path(kanban_home, tmp_path):
+    # plan 미제출 상태로 supervise 직접 호출(=라이브 main 경로). 부모가 manifest
+    # 기반 compliant plan을 기록하므로 plan_gate가 통과하고 done까지 간다.
+    ws = tmp_path / "ws"; ws.mkdir()
+    deliverable = "proposal/MERGE_PROPOSAL.json"
+    with kb.connect() as conn:
+        tid = _make_impl_task(conn, ws, deliverable)
+        # 의도적으로 record_plan_submission 호출하지 않는다.
+        task = kb.get_task(conn, tid)
+        res = m2_supervisor.supervise(
+            conn, task, str(ws),
+            declared_writes=["source_staging/gen.py"],
+            deliverable=deliverable,
+            spawn_capture_fn=_mock_spawn_capture_factory("x = 1\n"),
+            codex_review_fn=lambda staged: {"verdict": "PASS", "high": 0},
+            timeout=10,
+        )
+        assert res["completed"] is True, res
+        assert kb.get_task(conn, tid).status == "done"
+        # plan_submitted 이벤트가 부모에 의해 실제로 기록됐는지 확인.
+        prow = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? "
+            "AND kind = 'plan_submitted' ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert prow is not None
+        plan = (json.loads(prow["payload"]) or {})
+        assert plan.get("policy") == "write"
+        assert plan.get("passed") is True
+
+
+def test_supervise_does_not_override_existing_plan(kanban_home, tmp_path):
+    # 워커/디스패처 경로에서 이미 제출된 compliant plan이 있으면 부모는 그것을
+    # 권위로 인정하고 덮어쓰지 않는다(이중 제출 회피, 기존 동작 보존).
+    ws = tmp_path / "ws"; ws.mkdir()
+    deliverable = "proposal/MERGE_PROPOSAL.json"
+    with kb.connect() as conn:
+        tid = _make_impl_task(conn, ws, deliverable)
+        kb.record_plan_submission(conn, tid, WRITE_PLAN)
+        before = conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id = ? "
+            "AND kind = 'plan_submitted'", (tid,)
+        ).fetchone()[0]
+        task = kb.get_task(conn, tid)
+        res = m2_supervisor.supervise(
+            conn, task, str(ws),
+            declared_writes=["source_staging/gen.py"],
+            deliverable=deliverable,
+            spawn_capture_fn=_mock_spawn_capture_factory("x = 1\n"),
+            codex_review_fn=lambda staged: {"verdict": "PASS", "high": 0},
+            timeout=10,
+        )
+        assert res["completed"] is True, res
+        after = conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id = ? "
+            "AND kind = 'plan_submitted'", (tid,)
+        ).fetchone()[0]
+        assert after == before  # 추가 plan_submitted 이벤트 없음
+
+
+def test_supervise_default_codex_still_fail_closed_with_auto_plan(kanban_home, tmp_path):
+    # 핵심 안전: plan 증거를 부모가 자동 기록해도 실/미배선 Codex(_real_codex_review
+    # → BLOCKED)는 여전히 fail-closed로 완료를 막는다. plan 자동제출이 Codex 게이트를
+    # 약화시키지 않음을 입증.
+    ws = tmp_path / "ws"; ws.mkdir()
+    deliverable = "proposal/MERGE_PROPOSAL.json"
+    with kb.connect() as conn:
+        tid = _make_impl_task(conn, ws, deliverable)
+        task = kb.get_task(conn, tid)
+        res = m2_supervisor.supervise(
+            conn, task, str(ws),
+            declared_writes=["source_staging/gen.py"],
+            deliverable=deliverable,
+            spawn_capture_fn=_mock_spawn_capture_factory("x = 1\n"),
+            # codex_review_fn 미지정 → 기본 _real_codex_review(BLOCKED, R5 미배선).
+            timeout=10,
+        )
+        assert res["completed"] is False
+        assert res.get("error") == "verification_failed"
+        assert any(f["type"] == "codex_review_passed" and not f["ok"]
+                   for f in res["findings"])
+        assert kb.get_task(conn, tid).status != "done"
+
+
 def test_run_and_capture_marks_reaped_and_secure_dir(tmp_path):
     from hermes_cli import m2_spawn
     ws = tmp_path / "ws"

@@ -122,6 +122,45 @@ class ProposalWriteError(RuntimeError):
     """Proposal artifact could not be written without following untrusted paths."""
 
 
+def _build_write_plan(declared_writes, deliverable: str) -> str:
+    """부모(supervisor)가 자기 declared manifest로 ``write`` 정책 plan 텍스트를 조립.
+
+    implementer 워커는 sandbox·untrusted라 ``kanban_submit_plan`` 을 직접 호출할
+    수 없다. 정상 디스패처 경로에서도 plan 증거를 만들 신뢰 주체는 **부모**뿐이다.
+    이 plan은 supervisor가 실제로 선언한 write manifest(``declared_writes`` +
+    ``deliverable``)를 그대로 반영한다 — 허구가 아니라 실제 의도의 결정적 기록이다.
+    role_gate.check_plan(policy="write") 3요소(kill switch·[write:대상]·의존성)를
+    만족하도록 구성하되, 허용영역 밖 write 대상이 섞이면 plan_gate가 그대로
+    fail-closed 한다(약화 없음).
+    """
+    writes = [str(w) for w in (declared_writes or [])]
+    write_lines = "".join(
+        f"  - [write:{w}] 선언 manifest staging\n" for w in writes
+    )
+    return (
+        "구현 계획 (implementer · supervisor 직접/복구 경로)\n"
+        f"- 의존성: 입력 스펙, 산출물 경로 {deliverable}\n"
+        "- 중단 조건: 선언 manifest 밖 write 시 중단한다(STOP) 후 보고.\n"
+        "- 단계:\n"
+        "  - [read] 입력 스펙·baseline 열람\n"
+        f"{write_lines}"
+        f"  - [write:{deliverable}] 제안서(inert) 조립\n"
+    )
+
+
+def _has_plan_submitted(conn, task_id) -> bool:
+    """이 태스크에 ``plan_submitted`` 이벤트가 이미 있는지 확인.
+
+    있으면 워커/디스패처가 제출한 권위 있는 plan으로 보고 부모가 덮지 않는다.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'plan_submitted' "
+        "LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    return row is not None
+
+
 # ---------------------------------------------------------------------------
 # core — 감독 1회 실행
 # ---------------------------------------------------------------------------
@@ -159,6 +198,20 @@ def supervise(
     # phase1: 선언 write → M1 검증 → 절대 leaf. 실패 시 ManifestReject 전파(fail-closed).
     declared_leaves = mp.phase1_validate(list(declared_writes), ws)
     result["declared_leaves"] = declared_leaves
+
+    # ② plan 증거: implementer 워커는 sandbox·untrusted라 kanban_submit_plan을
+    # 직접 호출할 수 없다. 부모(이 supervisor)가 자기 declared manifest로
+    # compliant write-plan을 기록해야 complete_task의 plan_gate가 fail-closed
+    # 되지 않는다(#m2-implementer-ignition 2026-06-08 라이브 one-shot 회귀).
+    # 이미 제출된 plan(디스패처/워커 경로)이 있으면 그것을 권위로 인정하고 덮지
+    # 않는다. plan은 role_gate.check_plan으로 완료 시 RE-RUN되므로 허용영역 밖
+    # write 대상이 섞이면 여기서 통과해도 그대로 막힌다(우회 불가, 약화 없음).
+    if not _has_plan_submitted(conn, task.id):
+        kdb.record_plan_submission(
+            conn, task.id,
+            _build_write_plan(declared_writes, deliverable),
+            run_id=run_id,
+        )
 
     # 워커 실행 전 baseline 스냅샷(phase2 대조 기준).
     baseline = mp.baseline_snapshot(ws)
