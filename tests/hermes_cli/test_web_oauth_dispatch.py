@@ -28,10 +28,46 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_cli.web_server import _SESSION_TOKEN, app
+from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
+pytestmark = pytest.mark.xdist_group("dashboard_auth_app_state")
 client = TestClient(app)
 HEADERS = {"X-Hermes-Session-Token": _SESSION_TOKEN}
+
+
+@pytest.fixture
+def gated_client():
+    clear_providers()
+    register_provider(StubAuthProvider())
+    prev_host = getattr(app.state, "bound_host", None)
+    prev_port = getattr(app.state, "bound_port", None)
+    prev_required = getattr(app.state, "auth_required", None)
+    app.state.bound_host = "hermes.example.test"
+    app.state.bound_port = 443
+    app.state.auth_required = True
+    gated = TestClient(app, base_url="https://hermes.example.test")
+    try:
+        yield gated
+    finally:
+        clear_providers()
+        app.state.bound_host = prev_host
+        app.state.bound_port = prev_port
+        app.state.auth_required = prev_required
+
+
+@pytest.fixture
+def gated_cookie_client(gated_client):
+    login = gated_client.get("/auth/login?provider=stub", follow_redirects=False)
+    assert login.status_code == 302
+    state = login.headers["location"].split("state=")[1]
+    callback = gated_client.get(
+        f"/auth/callback?code=stub_code&state={state}",
+        follow_redirects=False,
+    )
+    assert callback.status_code == 302
+    yield gated_client
 
 
 def _fake_nous_device_data():
@@ -58,6 +94,52 @@ def _invoke_scope_refusal():
         request=request,
     )
     return httpx.HTTPStatusError("invalid scope", request=request, response=response)
+
+
+def test_provider_oauth_start_accepts_dashboard_cookie_in_gated_mode(
+    gated_cookie_client, monkeypatch,
+):
+    from hermes_cli import web_server as ws
+
+    async def fake_start_device_code_flow(provider_id):
+        sid, _ = ws._new_oauth_session(provider_id, "device_code")
+        return {
+            "session_id": sid,
+            "flow": "device_code",
+            "verification_url": "https://portal.nousresearch.com/device",
+            "user_code": "NOUS-1234",
+            "expires_in": 600,
+            "interval": 5,
+        }
+
+    monkeypatch.setattr(ws, "_start_device_code_flow", fake_start_device_code_flow)
+
+    resp = gated_cookie_client.post("/api/providers/oauth/nous/start")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["user_code"] == "NOUS-1234"
+
+
+def test_provider_oauth_start_rejects_missing_dashboard_cookie_in_gated_mode(
+    gated_client, monkeypatch,
+):
+    from hermes_cli import web_server as ws
+
+    started = False
+
+    async def fake_start_device_code_flow(provider_id):
+        nonlocal started
+        started = True
+        raise AssertionError("unauthenticated requests must not start OAuth")
+
+    monkeypatch.setattr(ws, "_start_device_code_flow", fake_start_device_code_flow)
+
+    resp = gated_client.post("/api/providers/oauth/nous/start")
+
+    assert resp.status_code == 401
+    assert resp.json()["error"] == "unauthenticated"
+    assert resp.json()["reason"] == "no_cookie"
+    assert not started
 
 
 def test_minimax_login_does_not_launch_anthropic_flow():
