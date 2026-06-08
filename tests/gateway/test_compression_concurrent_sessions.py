@@ -175,7 +175,6 @@ def test_concurrent_compressions_same_session_serialize(tmp_path: Path) -> None:
     # Grab a reference to the *original* compress_context before the patch
     # so the lambda can call it without infinite recursion.
     from agent.conversation_compression import compress_context as _orig_compress_context
-
     t_a = threading.Thread(target=run, args=("a", agent_a), name="main_turn")
     t_b = threading.Thread(target=run, args=("b", agent_b), name="review_fork")
     t_a.start()
@@ -219,4 +218,4 @@ def test_concurrent_compressions_same_session_serialize(tmp_path: Path) -> None:
         "Compression lock leaked: still held on the parent session_id after both "
         "threads joined. Future compression on the child session would deadlock."
     )
-# CI trigger test
+
