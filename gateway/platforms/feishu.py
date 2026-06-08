@@ -4328,8 +4328,40 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
     # Outbound payload construction and send pipeline
     # =========================================================================
+    #
+    # Card JSON 2.0 table rendering pipeline
+    # -------------------------------------
+    # Feishu supports two card schema versions:
+    #
+    #   Card JSON 1.0 ("schema": "1.0")
+    #     - Uses ``tag: "markdown"`` elements for all content, including tables.
+    #     - Tables rendered as markdown text inside a markdown block — visually
+    #       monospaced but not a native table component (no column sizing,
+    #       no header styling, no pagination).
+    #     - Simpler but limited; the ``markdown`` element has a ~30 KB size cap.
+    #
+    #   Card JSON 2.0 ("schema": "2.0")  ← used by this PR
+    #     - Introduces native ``tag: "table"`` component with explicit columns,
+    #       rows, header styling, and pagination (``page_size``, [1-10]).
+    #     - Cards can mix ``tag: "markdown"`` and ``tag: "table"`` elements,
+    #       preserving rich formatting for prose while rendering tables natively.
+    #     - Max 5 table components per card (verified against official docs and
+    #       empirically). Exceeding this triggers API rejection.
+    #     - ``config.wide_screen_mode: true`` enables full-width card rendering.
+    #     - Table columns use ``data_type: "markdown"`` so cell content supports
+    #       bold, italic, links, and inline code.
+    #
+    # Key schema differences from v1.0:
+    #   - ``schema`` field changes from ``"1.0"`` to ``"2.0"``
+    #   - ``body.elements`` can contain ``{"tag": "table", ...}`` entries
+    #   - ``config.wide_screen_mode`` added (default: false, we set true)
+    #   - ``header`` block (v1.0 title) is optional and omitted here
+    #
+    # Official docs:
+    #   https://open.feishu.cn/document/feishu-cards/card-json-v2-components/content-components/table
+    #
 
-# Feishu CardKit 2.0 limits the total number of GFM tables across an
+    # Feishu CardKit 2.0 limits the total number of GFM tables across an
     # entire interactive card to 5. Verified against official Feishu docs
     # (open.feishu.cn) and empirically (2026-05-27). Exceeding this triggers
     # API rejection. Split into multiple cards when content has > 5 tables.
