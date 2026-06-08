@@ -490,6 +490,37 @@
 1. 本批收尾创建本地 checkpoint commit，作为 5B stable point。
 2. 当前未重启 gateway/WebUI；如果需要运行态加载 5B，必须另行确认 restart/reload。
 
+## 第 6A 批执行记录：browser runtime repair script
+
+状态：**6A 已应用到 live 工作区并完成 focused 验证；本地 checkpoint commit 在本批收尾创建；未 push，未重启**。
+
+范围：恢复 WebUI/browser 本地运行时修复脚本 `scripts/runtime/repair_webui_browser_runtime.py` 及其 focused tests。第 6 批其余候选（custom Codex proxy cache compat、custom Responses image providers）不混入本批。
+
+- 隔离 worktree：`/workspace/.hermes-worktrees/hermes-agent-runtime-codex-browser-6a-20260608143723`
+- 隔离分支：`recover/browser-6a-20260608143723`
+- 基线 HEAD：`803062c48 fix(codex): block unguarded implementation launches`
+- 候选来源：
+  - `a8863e37f fix(browser): add WebUI runtime repair script`
+- 冲突处理：
+  - 无冲突应用。
+- 隔离 worktree touched files：
+  - `scripts/runtime/repair_webui_browser_runtime.py`
+  - `tests/scripts/test_repair_webui_browser_runtime.py`
+- 隔离验证命令与结果（live 复跑同组命令结果一致）：
+  - `PYTHONDONTWRITEBYTECODE=1 python -m py_compile scripts/runtime/repair_webui_browser_runtime.py tests/scripts/test_repair_webui_browser_runtime.py` ✅
+  - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider tests/scripts/test_repair_webui_browser_runtime.py -q -o addopts=''` ✅ `7 passed in 0.49s`
+  - `PYTHONDONTWRITEBYTECODE=1 python scripts/runtime/repair_webui_browser_runtime.py --help` ✅ `1153 bytes`
+  - `git diff --check HEAD -- scripts/runtime/repair_webui_browser_runtime.py tests/scripts/test_repair_webui_browser_runtime.py docs/runtime-recovery-audit-2026-06-08.md` ✅
+  - `*.pyc` 缓存清理与复查 ✅ `deleted_pyc=2`，最终 `0`
+- 当前隔离 worktree 状态：保留 staged candidate diff 作为来源证据。
+- live 状态：已应用 6A 代码并完成 focused 验证；未 push，未重启。live 仍有非本轮未跟踪文档 `docs/codex-workflow-local-capability-and-external-recommendations-2026-06-08.md`，本批未触碰。
+
+下一步选择：
+
+1. 本批收尾创建本地 checkpoint commit，作为 6A stable point。
+2. 当前未重启 gateway/WebUI；该脚本落 live 也不等于运行脚本或修复当前 browser runtime，实际执行 `--check` / `--repair` 需要另行确认。
+3. 6A checkpoint 后，再分别处理 6B `custom Codex proxy cache compat` 与 6C `custom Responses image providers`。
+
 ## 当前待办
 
 - [x] 第 0 批：初版恢复清单。
@@ -499,4 +530,6 @@
 - [x] 第 4 批：terminal raw Codex policy（已落 live 并完成 focused 验证；未 push/未重启）。
 - [x] 第 5 批：guarded Codex workflow tools（已落 live 并完成 focused 验证；未 push/未重启）。
 - [x] 第 5B 批：strong raw Codex implementation block（已落 live 并完成 focused 验证；未 push/未重启）。
-- [ ] 第 6 批：browser / image / custom provider 增强。
+- [x] 第 6A 批：browser runtime repair script（已落 live 并完成 focused 验证；未 push/未重启）。
+- [ ] 第 6B 批：custom Codex proxy cache compat。
+- [ ] 第 6C 批：custom Responses image providers。
