@@ -7,7 +7,7 @@ phone-number-independent pieces of Voice v02:
 * preflight checks for LiveKit credentials and SIP readiness;
 * JSON payloads for LiveKit SIP trunk and explicit agent dispatch setup;
 * optional WebRTC room token generation for browser-call MVP testing;
-* redacted realtime-worker readiness checks for the LiveKit/OpenAI path.
+* redacted realtime-worker readiness checks for LiveKit realtime providers.
 """
 
 from __future__ import annotations
@@ -27,6 +27,8 @@ DEFAULT_HERMES_BRAIN_URL = "http://127.0.0.1:8646/v1/chat/completions"
 DEFAULT_REALTIME_PROVIDER = "openai"
 DEFAULT_REALTIME_MODEL = "gpt-realtime"
 DEFAULT_REALTIME_VOICE = "coral"
+DEFAULT_GEMINI_REALTIME_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+DEFAULT_GEMINI_REALTIME_VOICE = "Puck"
 DEFAULT_REALTIME_VERSION = "v02"
 DEFAULT_REALTIME_INSTRUCTIONS = (
     "You are Hermes live voice for Pafi. Keep replies brief, useful, and natural. "
@@ -57,6 +59,7 @@ class LiveKitVoiceConfig:
     realtime_voice: str = DEFAULT_REALTIME_VOICE
     realtime_instructions: str = DEFAULT_REALTIME_INSTRUCTIONS
     openai_api_key: str = ""
+    google_api_key: str = ""
 
     @property
     def has_credentials(self) -> bool:
@@ -70,7 +73,11 @@ class LiveKitVoiceConfig:
 
     @property
     def has_realtime_credentials(self) -> bool:
-        return self.realtime_provider == "openai" and bool(self.openai_api_key)
+        if self.realtime_provider == "openai":
+            return bool(self.openai_api_key)
+        if self.realtime_provider == "gemini":
+            return bool(self.google_api_key)
+        return False
 
     def public_dict(self) -> dict[str, str]:
         """Return a redacted view safe for Telegram/status messages."""
@@ -88,6 +95,7 @@ class LiveKitVoiceConfig:
             "realtime_model": self.realtime_model,
             "realtime_voice": self.realtime_voice,
             "openai_api_key": "set" if self.openai_api_key else "missing",
+            "google_api_key": "set" if self.google_api_key else "missing",
         }
 
 
@@ -120,19 +128,43 @@ def load_livekit_config(env: Mapping[str, str] | None = None) -> LiveKitVoiceCon
         realtime_provider=_env_get(
             source, "HERMES_LIVEKIT_REALTIME_PROVIDER", DEFAULT_REALTIME_PROVIDER
         ).lower(),
-        realtime_model=_env_get(
-            source, "HERMES_OPENAI_REALTIME_MODEL", DEFAULT_REALTIME_MODEL
-        ),
-        realtime_voice=_env_get(
-            source, "HERMES_OPENAI_REALTIME_VOICE", DEFAULT_REALTIME_VOICE
-        ),
+        realtime_model=_load_realtime_model(source),
+        realtime_voice=_load_realtime_voice(source),
         realtime_instructions=_env_get(
             source,
             "HERMES_LIVEKIT_REALTIME_INSTRUCTIONS",
             DEFAULT_REALTIME_INSTRUCTIONS,
         ),
         openai_api_key=_env_get(source, "OPENAI_API_KEY"),
+        google_api_key=_env_get(source, "GOOGLE_API_KEY")
+        or _env_get(source, "GEMINI_API_KEY"),
     )
+
+
+def _load_realtime_model(source: Mapping[str, str]) -> str:
+    provider = _env_get(
+        source, "HERMES_LIVEKIT_REALTIME_PROVIDER", DEFAULT_REALTIME_PROVIDER
+    ).lower()
+    if provider == "gemini":
+        return _env_get(
+            source,
+            "HERMES_GEMINI_REALTIME_MODEL",
+            DEFAULT_GEMINI_REALTIME_MODEL,
+        )
+    return _env_get(source, "HERMES_OPENAI_REALTIME_MODEL", DEFAULT_REALTIME_MODEL)
+
+
+def _load_realtime_voice(source: Mapping[str, str]) -> str:
+    provider = _env_get(
+        source, "HERMES_LIVEKIT_REALTIME_PROVIDER", DEFAULT_REALTIME_PROVIDER
+    ).lower()
+    if provider == "gemini":
+        return _env_get(
+            source,
+            "HERMES_GEMINI_REALTIME_VOICE",
+            DEFAULT_GEMINI_REALTIME_VOICE,
+        )
+    return _env_get(source, "HERMES_OPENAI_REALTIME_VOICE", DEFAULT_REALTIME_VOICE)
 
 
 def build_livekit_preflight(
@@ -191,17 +223,23 @@ def build_livekit_preflight(
         })
 
     if include_realtime:
-        if cfg.realtime_provider != "openai":
+        if cfg.realtime_provider not in {"openai", "gemini"}:
             issues.append({
                 "severity": "error",
                 "code": "unsupported_realtime_provider",
-                "message": "Voice v02 MVP supports HERMES_LIVEKIT_REALTIME_PROVIDER=openai only.",
+                "message": "Voice v02 supports HERMES_LIVEKIT_REALTIME_PROVIDER=openai or gemini.",
             })
-        if not cfg.openai_api_key:
+        if cfg.realtime_provider == "openai" and not cfg.openai_api_key:
             issues.append({
                 "severity": "error",
                 "code": "missing_openai_api_key",
                 "message": "Set OPENAI_API_KEY before starting the OpenAI Realtime worker.",
+            })
+        if cfg.realtime_provider == "gemini" and not cfg.google_api_key:
+            issues.append({
+                "severity": "error",
+                "code": "missing_google_api_key",
+                "message": "Set GOOGLE_API_KEY or GEMINI_API_KEY before starting the Gemini Live worker.",
             })
         if not cfg.realtime_enabled:
             issues.append({
@@ -264,14 +302,18 @@ def build_realtime_worker_status(
 
 
 def build_realtime_room_metadata(
-    *, mode: str = "webrtc", extra: Mapping[str, Any] | None = None
+    *,
+    mode: str = "webrtc",
+    extra: Mapping[str, Any] | None = None,
+    config: LiveKitVoiceConfig | None = None,
 ) -> dict[str, Any]:
     """Build dispatch metadata shared by WebRTC and future SIP rooms."""
+    cfg = config or load_livekit_config()
     data: dict[str, Any] = {
         "mode": mode,
         "route": DEFAULT_ROUTE,
         "voice_version": DEFAULT_REALTIME_VERSION,
-        "realtime_provider": DEFAULT_REALTIME_PROVIDER,
+        "realtime_provider": cfg.realtime_provider,
     }
     if extra:
         data.update(extra)
@@ -285,9 +327,7 @@ def _next_steps(
     if not web_ready:
         steps.append("Create a LiveKit project and set LIVEKIT_URL/API_KEY/API_SECRET.")
     elif not realtime_ready:
-        steps.append(
-            "Set OPENAI_API_KEY, then run the LiveKit realtime worker preflight."
-        )
+        steps.append("Set realtime provider credentials, then run preflight.")
     elif not realtime_enabled:
         steps.append(
             "Enable the manual worker with HERMES_LIVEKIT_REALTIME_ENABLED=true."

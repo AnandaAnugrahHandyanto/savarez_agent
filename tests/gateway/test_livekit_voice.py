@@ -4,9 +4,11 @@ import pytest
 
 from gateway.livekit_realtime_agent import (
     build_assistant_instructions,
+    create_realtime_model,
     guard_enabled_for_run,
 )
 from gateway.livekit_voice import (
+    DEFAULT_GEMINI_REALTIME_MODEL,
     DEFAULT_REALTIME_MODEL,
     build_dispatch_rule_payload,
     build_inbound_trunk_payload,
@@ -61,6 +63,7 @@ def test_preflight_redacts_secret_values():
     assert report["config"]["livekit_api_key"] == "set"
     assert report["config"]["livekit_api_secret"] == "set"
     assert report["config"]["openai_api_key"] == "set"
+    assert report["config"]["google_api_key"] == "missing"
 
 
 def test_realtime_preflight_reports_missing_openai_key():
@@ -73,6 +76,36 @@ def test_realtime_preflight_reports_missing_openai_key():
     assert report["ok"] is False
     assert report["ready"]["realtime_agent"] is False
     assert any(issue["code"] == "missing_openai_api_key" for issue in report["issues"])
+
+
+def test_gemini_realtime_preflight_accepts_gemini_api_key():
+    env = {
+        "LIVEKIT_URL": "wss://pafi-livekit.example.com",
+        "LIVEKIT_API_KEY": "livekit-key",
+        "LIVEKIT_API_SECRET": "livekit-secret",
+        "HERMES_LIVEKIT_REALTIME_PROVIDER": "gemini",
+        "GEMINI_API_KEY": "gemini-secret-value",
+    }
+    report = build_livekit_preflight(env, include_realtime=True)
+    rendered = json.dumps(report, sort_keys=True)
+    assert report["ok"] is True
+    assert report["ready"]["realtime_agent"] is True
+    assert report["config"]["google_api_key"] == "set"
+    assert "gemini-secret-value" not in rendered
+    assert report["worker"]["model"] == DEFAULT_GEMINI_REALTIME_MODEL
+
+
+def test_gemini_realtime_preflight_reports_missing_google_key():
+    env = {
+        "LIVEKIT_URL": "wss://pafi-livekit.example.com",
+        "LIVEKIT_API_KEY": "livekit-key",
+        "LIVEKIT_API_SECRET": "livekit-secret",
+        "HERMES_LIVEKIT_REALTIME_PROVIDER": "gemini",
+    }
+    report = build_livekit_preflight(env, include_realtime=True)
+    assert report["ok"] is False
+    assert report["ready"]["realtime_agent"] is False
+    assert any(issue["code"] == "missing_google_api_key" for issue in report["issues"])
 
 
 def test_realtime_config_defaults_and_status_are_operator_safe():
@@ -94,12 +127,18 @@ def test_realtime_config_defaults_and_status_are_operator_safe():
 
 
 def test_realtime_room_metadata_is_stable_for_webrtc_dispatch():
-    assert build_realtime_room_metadata(mode="webrtc") == {
+    cfg = load_livekit_config({"HERMES_LIVEKIT_REALTIME_PROVIDER": "openai"})
+    assert build_realtime_room_metadata(mode="webrtc", config=cfg) == {
         "mode": "webrtc",
         "route": "hermes-main",
         "voice_version": "v02",
         "realtime_provider": "openai",
     }
+
+
+def test_realtime_room_metadata_uses_configured_provider():
+    cfg = load_livekit_config({"HERMES_LIVEKIT_REALTIME_PROVIDER": "gemini"})
+    assert build_realtime_room_metadata(mode="sip", config=cfg)["realtime_provider"] == "gemini"
 
 
 def test_assistant_instructions_are_short_and_language_aware():
@@ -119,6 +158,12 @@ def test_realtime_worker_start_guard_requires_explicit_enable():
     guard_enabled_for_run(["--help"], cfg)
     enabled_cfg = load_livekit_config({"HERMES_LIVEKIT_REALTIME_ENABLED": "true"})
     guard_enabled_for_run(["dev"], enabled_cfg)
+
+
+def test_create_realtime_model_rejects_unknown_provider():
+    cfg = load_livekit_config({"HERMES_LIVEKIT_REALTIME_PROVIDER": "bogus"})
+    with pytest.raises(RuntimeError, match="openai.*gemini"):
+        create_realtime_model(cfg)
 
 
 def test_dispatch_rule_payload_uses_explicit_agent_dispatch():

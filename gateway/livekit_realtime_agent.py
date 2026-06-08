@@ -1,4 +1,4 @@
-"""Hermes LiveKit OpenAI Realtime worker.
+"""Hermes LiveKit realtime voice worker.
 
 This module is intentionally separate from ``gateway.run``. Starting it joins
 LiveKit rooms as the explicit ``hermes-live-voice`` agent while the existing
@@ -38,12 +38,18 @@ def build_assistant_instructions(config: LiveKitVoiceConfig | None = None) -> st
 
 
 def create_realtime_model(config: LiveKitVoiceConfig | None = None) -> Any:
-    """Create the OpenAI Realtime model lazily so imports stay isolated."""
+    """Create the configured realtime model lazily so imports stay isolated."""
     cfg = config or load_livekit_config()
-    if cfg.realtime_provider != "openai":
-        raise RuntimeError(
-            "Only HERMES_LIVEKIT_REALTIME_PROVIDER=openai is supported in v02"
-        )
+    if cfg.realtime_provider == "openai":
+        return _create_openai_realtime_model(cfg)
+    if cfg.realtime_provider == "gemini":
+        return _create_gemini_realtime_model(cfg)
+    raise RuntimeError(
+        "HERMES_LIVEKIT_REALTIME_PROVIDER must be 'openai' or 'gemini'"
+    )
+
+
+def _create_openai_realtime_model(cfg: LiveKitVoiceConfig) -> Any:
     if not cfg.openai_api_key and not os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError(
             "OPENAI_API_KEY is required for the LiveKit OpenAI Realtime worker"
@@ -54,8 +60,26 @@ def create_realtime_model(config: LiveKitVoiceConfig | None = None) -> Any:
         raise RuntimeError(
             "Install the livekit optional extra with OpenAI plugin support"
         ) from exc
-    return openai.realtime.RealtimeModel(
-        model=cfg.realtime_model, voice=cfg.realtime_voice
+    return openai.realtime.RealtimeModel(model=cfg.realtime_model, voice=cfg.realtime_voice)
+
+
+def _create_gemini_realtime_model(cfg: LiveKitVoiceConfig) -> Any:
+    google_api_key = cfg.google_api_key or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    if not google_api_key:
+        raise RuntimeError(
+            "GOOGLE_API_KEY or GEMINI_API_KEY is required for the LiveKit Gemini Live worker"
+        )
+    os.environ.setdefault("GOOGLE_API_KEY", google_api_key)
+    try:
+        from livekit.plugins import google  # type: ignore
+    except Exception as exc:  # pragma: no cover - covered by operator smoke
+        raise RuntimeError(
+            "Install the livekit optional extra with Google plugin support"
+        ) from exc
+    return google.realtime.RealtimeModel(
+        model=cfg.realtime_model,
+        voice=cfg.realtime_voice,
+        instructions=build_assistant_instructions(cfg),
     )
 
 
@@ -73,12 +97,13 @@ async def hermes_live_voice(ctx: Any) -> None:
     cfg = load_livekit_config()
     session = AgentSession(llm=create_realtime_model(cfg))
     await session.start(room=ctx.room, agent=HermesRealtimeAssistant(cfg))
-    await session.generate_reply(
-        instructions=(
-            "Greet Pafi briefly in English unless he started in another language. "
-            "Say that Hermes live voice is ready."
+    if cfg.realtime_provider == "openai":
+        await session.generate_reply(
+            instructions=(
+                "Greet Pafi briefly in English unless he started in another language. "
+                "Say that Hermes live voice is ready."
+            )
         )
-    )
 
 
 def build_server() -> Any:
