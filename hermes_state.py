@@ -631,6 +631,10 @@ class SessionDB:
         # Track every connection we hand out so close() can release them all
         # (thread-locals are otherwise invisible to other threads).
         self._all_conns: List[sqlite3.Connection] = []
+        # Set after schema init so lazy per-thread connections never open
+        # against a half-initialised database (issue #34444).
+        self._schema_ready = threading.Event()
+        self._closed = False
         try:
             if read_only:
                 # Read-only attach for cross-profile aggregation: SELECT-only,
@@ -660,6 +664,7 @@ class SessionDB:
                 self._tls.conn = conn
                 with self._lock:
                     self._all_conns.append(conn)
+                self._schema_ready.set()
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -667,6 +672,7 @@ class SessionDB:
             def _connect_and_init():
                 self._new_connection()
                 self._init_schema()
+                self._schema_ready.set()
 
             try:
                 _connect_and_init()
@@ -724,6 +730,9 @@ class SessionDB:
         that would apply WAL/foreign-keys/DDL to a DB we are only meant to
         read.
         """
+        if getattr(self, "_closed", False):
+            raise RuntimeError("SessionDB is closed")
+
         if getattr(self, "read_only", False):
             conn = sqlite3.connect(
                 f"file:{self.db_path}?mode=ro",
@@ -771,6 +780,11 @@ class SessionDB:
         """
         conn = getattr(self._tls, "conn", None)
         if conn is None:
+            # Lazy open from a worker thread must wait for __init__'s
+            # one-time schema setup on the creating thread.
+            ready = getattr(self, "_schema_ready", None)
+            if ready is not None:
+                ready.wait()
             conn = self._new_connection()
         return conn
 
@@ -943,29 +957,21 @@ class SessionDB:
         )
 
     def _try_wal_checkpoint(self) -> None:
-        """Best-effort TRUNCATE WAL checkpoint.  Never raises.
+        """Best-effort PASSIVE WAL checkpoint.  Never raises.
 
-        Flushes committed WAL frames back into the main DB file and
-        truncates the WAL file to zero bytes.  Keeps the WAL from
-        growing unbounded when many processes hold persistent
-        connections.
+        Flushes committed WAL frames when possible without blocking other
+        connections' writers.  With per-thread connections (issue #34444),
+        TRUNCATE here would stall *every* competing writer across all
+        thread-local handles — the old single-connection ``self._lock``
+        no longer serialises that, so the hot path must stay non-blocking.
 
-        PASSIVE checkpoint was previously used here, but it never
-        truncates the WAL file — the file stays at its high-water
-        mark until an explicit TRUNCATE is called (which only
-        happened inside the infrequent vacuum()).
-
-        TRUNCATE may block writers briefly while checkpointing, but
-        _try_wal_checkpoint is called off the hot path (every 50
-        writes) and already runs under ``self._lock``, so the
-        additional hold time is negligible.
+        TRUNCATE is reserved for :meth:`close` / :meth:`vacuum`, when we
+        are shutting down and can afford to wait.
         """
         try:
-            # Uses this thread's own connection; no cross-thread lock needed
-            # (issue #34444). TRUNCATE (kept from main) actively shrinks the
-            # WAL file rather than just flushing it.
+            # PASSIVE: never blocks writers on other per-thread connections.
             result = self._conn.execute(
-                "PRAGMA wal_checkpoint(TRUNCATE)"
+                "PRAGMA wal_checkpoint(PASSIVE)"
             ).fetchone()
             if result and result[1] > 0:
                 logger.debug(
@@ -985,6 +991,9 @@ class SessionDB:
         not just one).
         """
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             conns = list(self._all_conns)
             self._all_conns.clear()
         # Checkpoint once on whichever connection belongs to this thread.
