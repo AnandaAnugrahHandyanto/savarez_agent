@@ -72,9 +72,37 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'context.engine': ['compressor', 'default', 'custom'],
   'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh'],
   'memory.provider': ['', 'builtin', 'honcho'],
+  // Terminal execution backends — kept in sync with the dispatch ladder in
+  // tools/terminal_tool.py::_create_environment (local/docker/singularity/
+  // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).
+  'terminal.backend': ['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'],
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
+  // Speech-to-text backends — kept in sync with the stt block in
+  // hermes_cli/config.py (local/groq/openai/mistral/elevenlabs).
+  'stt.provider': ['local', 'groq', 'openai', 'mistral', 'xai', 'elevenlabs'],
   'tts.openai.voice': ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'],
+  // Text-to-speech backends — kept in sync with the built-in source of truth
+  // (agent/tts_registry.py::_BUILTIN_NAMES / tools/tts_tool.py::
+  // BUILTIN_TTS_PROVIDERS). 'xai' is Grok TTS.
+  'tts.provider': [
+    'edge',
+    'elevenlabs',
+    'openai',
+    'xai',
+    'minimax',
+    'mistral',
+    'gemini',
+    'neutts',
+    'kittentts',
+    'piper'
+  ],
+  'stt.openai.model': ['whisper-1', 'gpt-4o-mini-transcribe', 'gpt-4o-transcribe'],
+  'stt.mistral.model': ['voxtral-mini-latest', 'voxtral-mini-2602'],
+  'tts.openai.model': ['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd'],
+  'tts.elevenlabs.model_id': ['eleven_multilingual_v2', 'eleven_turbo_v2_5', 'eleven_flash_v2_5'],
+  // NeuTTS local inference device.
+  'tts.neutts.device': ['cpu', 'cuda', 'mps'],
   'updates.non_interactive_local_changes': ['stash', 'discard']
 }
 
@@ -259,8 +287,24 @@ export const SECTIONS: DesktopConfigSection[] = [
       'tts.openai.voice',
       'tts.elevenlabs.voice_id',
       'tts.elevenlabs.model_id',
+      'tts.xai.voice_id',
+      'tts.xai.language',
+      'tts.minimax.model',
+      'tts.minimax.voice_id',
+      'tts.mistral.model',
+      'tts.mistral.voice_id',
+      'tts.gemini.model',
+      'tts.gemini.voice',
+      'tts.neutts.model',
+      'tts.neutts.device',
+      'tts.kittentts.model',
+      'tts.kittentts.voice',
+      'tts.piper.voice',
       'stt.local.model',
       'stt.local.language',
+      'stt.openai.model',
+      'stt.groq.model',
+      'stt.mistral.model',
       'stt.elevenlabs.model_id',
       'stt.elevenlabs.language_code',
       'stt.elevenlabs.tag_audio_events',
@@ -278,6 +322,10 @@ export const SECTIONS: DesktopConfigSection[] = [
       'toolsets',
       'terminal.backend',
       'terminal.timeout',
+      'terminal.docker_image',
+      'terminal.singularity_image',
+      'terminal.modal_image',
+      'terminal.daytona_image',
       'tool_output.max_bytes',
       'tool_output.max_lines',
       'tool_output.max_line_length',

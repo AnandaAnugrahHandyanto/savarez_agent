@@ -4,6 +4,7 @@ import { useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
+import { useI18n } from '@/i18n'
 import {
   Activity,
   AlertCircle,
@@ -41,7 +42,7 @@ import { useLocaleSync } from '@/store/use-locale-sync'
 import type { StatusResponse } from '@/types/hermes'
 
 import { CRON_ROUTE } from '../../routes'
-import type { StatusbarItem } from '../statusbar-controls'
+import type { StatusbarItem, StatusbarSelectModifiers } from '../statusbar-controls'
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
