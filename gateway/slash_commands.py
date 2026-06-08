@@ -2729,8 +2729,12 @@ class GatewaySlashCommandsMixin:
 
         def _list_titled_sessions() -> list[dict]:
             user_source = source.platform.value if source.platform else None
-            sessions = self._session_db.list_sessions_rich(source=user_source, limit=10)
-            return [s for s in sessions if s.get("title")][:10]
+            sessions = self._session_db.list_sessions_rich(source=user_source, limit=50)
+            return [
+                s
+                for s in sessions
+                if s.get("title") and s.get("user_id") in (None, source.user_id)
+            ][:10]
 
         if not name:
             # List recent titled sessions for this user/platform
@@ -2761,6 +2765,8 @@ class GatewaySlashCommandsMixin:
                 logger.debug("Failed to list titled sessions: %s", e)
                 return t("gateway.resume.list_failed", error=e)
 
+        user_source = source.platform.value if source.platform else None
+        user_id = source.user_id
         # Resolve a numbered choice or a title to a session ID.
         if name.isdigit():
             try:
@@ -2778,10 +2784,18 @@ class GatewaySlashCommandsMixin:
             # Try direct session ID lookup first (so `/resume <session_id>`
             # works in the gateway, not just `/resume <title>`).
             session = self._session_db.get_session(name)
-            if session:
+            session_source = session.get("source") if session else None
+            session_user_id = session.get("user_id") if session else None
+            if (
+                session
+                and session_source == user_source
+                and (user_id is None or session_user_id in (None, user_id))
+            ):
                 target_id = session["id"]
             else:
-                target_id = self._session_db.resolve_session_by_title(name)
+                target_id = self._session_db.resolve_session_by_title(
+                    name, source=user_source, user_id=user_id
+                )
         if not target_id:
             return t("gateway.resume.not_found", name=name)
         # Compression creates child continuations that hold the live transcript.

@@ -1456,6 +1456,11 @@ def _get_platform_tools(
         and isinstance(platform_toolsets.get(platform), list)
         and not toolset_names
     )
+    explicit_configurable_selection = (
+        has_explicit_config
+        and platform_toolsets_explicit
+        and isinstance(platform_toolsets.get(platform), list)
+    )
 
     # Plugin toolsets: enabled by default unless explicitly disabled, or
     # unless the toolset is in _DEFAULT_OFF_TOOLSETS (e.g. spotify —
@@ -1474,7 +1479,11 @@ def _get_platform_tools(
             elif pts in _DEFAULT_OFF_TOOLSETS:
                 # Opt-in plugin toolset — stay off until user picks it
                 continue
-            elif pts not in known_for_platform and not explicit_empty_selection:
+            elif (
+                pts not in known_for_platform
+                and not explicit_empty_selection
+                and not explicit_configurable_selection
+            ):
                 # New plugin not yet seen by hermes tools — default enabled,
                 # unless the user explicitly saved an empty selection for this platform.
                 enabled_toolsets.add(pts)

@@ -5413,9 +5413,7 @@ def refresh_nous_oauth_pure(
                 refreshed.get("token_type") or state.get("token_type") or "Bearer"
             )
             state["scope"] = refreshed.get("scope") or state.get("scope")
-            refreshed_url = _validate_nous_inference_url_from_network(
-                refreshed.get("inference_base_url")
-            )
+            refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
             if refreshed_url:
                 state["inference_base_url"] = refreshed_url
             state["obtained_at"] = now.isoformat()
@@ -5717,9 +5715,7 @@ def resolve_nous_runtime_credentials(
                             or "Bearer"
                         )
                         state["scope"] = refreshed.get("scope") or state.get("scope")
-                        refreshed_url = _validate_nous_inference_url_from_network(
-                            refreshed.get("inference_base_url")
-                        )
+                        refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
                         if refreshed_url:
                             inference_base_url = refreshed_url
                         state["obtained_at"] = now.isoformat()
