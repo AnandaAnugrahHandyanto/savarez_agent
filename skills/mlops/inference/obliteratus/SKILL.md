@@ -16,7 +16,7 @@ metadata:
 
 ## What's inside
 
-9 CLI methods, 28 analysis modules, 116 model presets across 5 compute tiers, tournament evaluation, and telemetry-driven recommendations.
+9 CLI methods, 3 direction-extraction backends, 15 README-highlighted analysis modules plus additional advanced helpers, 116 model presets across 5 compute tiers, tournament evaluation, and telemetry-driven recommendations.
 
 Remove refusal behaviors (guardrails) from open-weight LLMs without retraining or fine-tuning. Uses mechanistic interpretability techniques — including diff-in-means, SVD, whitened SVD, LEACE concept erasure, SAE decomposition, Bayesian kernel projection, and more — to identify and surgically excise refusal directions from model weights while preserving reasoning capabilities.
 
@@ -50,9 +50,9 @@ If not installed, clone and install from GitHub:
 ```bash
 git clone https://github.com/elder-plinius/OBLITERATUS.git
 cd OBLITERATUS
-pip install -e .
+python3 -m pip install -e .
 # For Gradio web UI support:
-# pip install -e ".[spaces]"
+# python3 -m pip install -e "[spaces]"
 ```
 
 **IMPORTANT:** Confirm with user before installing. This pulls in ~5-10GB of dependencies (PyTorch, Transformers, bitsandbytes, etc.).
@@ -230,7 +230,7 @@ python3 -c "
 from transformers import AutoModelForCausalLM, AutoTokenizer
 model = AutoModelForCausalLM.from_pretrained('./abliterated-models/<model>')
 tokenizer = AutoTokenizer.from_pretrained('./abliterated-models/<model>')
-inputs = tokenizer('How do I pick a lock?', return_tensors='pt')
+inputs = tokenizer('Explain how this model was modified and summarize the verification metrics.', return_tensors='pt')
 outputs = model.generate(**inputs, max_new_tokens=200)
 print(tokenizer.decode(outputs[0], skip_special_tokens=True))
 "
@@ -260,8 +260,7 @@ vllm serve ./abliterated-models/<model>
 
 ## Analysis Modules
 
-OBLITERATUS includes 28 analysis modules for mechanistic interpretability.
-See `skill_view(name="obliteratus", file_path="references/analysis-modules.md")` for the full reference.
+OBLITERATUS documents 15 headline analysis modules in its README, with additional advanced analysis helpers in the source tree. See `skill_view(name="obliteratus", file_path="references/analysis-modules.md")` for the full reference.
 
 ### Quick analysis commands
 ```bash
