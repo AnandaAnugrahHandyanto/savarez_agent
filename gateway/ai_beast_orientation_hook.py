@@ -28,6 +28,25 @@ FORBIDDEN_COMMANDS = frozenset(
     }
 )
 ORIENTATION_COMMANDS = frozenset({"whereami", "projects"})
+APPROVED_BEAST_NAMESPACE_SUBCOMMANDS = frozenset(
+    {
+        "whereami",
+        "projects",
+        "sessions",
+        "bindtopic",
+        "task",
+        "steer",
+        "pause",
+        "resume",
+        "cancel",
+        "unbindtopic",
+        "move",
+        "inbox",
+        "open",
+        "switch",
+        "newsession",
+    }
+)
 
 
 def _get_value(source: Any, key: str, default: Any = None) -> Any:
@@ -101,7 +120,7 @@ def _module_file_inside_root(module: Any, project_root: Path) -> bool:
     return bool(module_file and _inside_root(Path(module_file), project_root))
 
 
-def _import_ai_beast_modules(project_root: Path) -> tuple[Any, Any]:
+def _import_ai_beast_modules(project_root: Path) -> tuple[Any, Any, Any]:
     root_text = str(project_root)
     original_path = list(sys.path)
     original_modules = dict(sys.modules)
@@ -109,6 +128,7 @@ def _import_ai_beast_modules(project_root: Path) -> tuple[Any, Any]:
         "ai_beast_registry",
         "ai_beast_registry.loader",
         "ai_beast_registry.telegram_adapter",
+        "ai_beast_registry.beast_namespace",
     )
     previous_modules = {name: sys.modules.get(name) for name in module_names}
     try:
@@ -117,9 +137,11 @@ def _import_ai_beast_modules(project_root: Path) -> tuple[Any, Any]:
         sys.path = [root_text, *(entry for entry in original_path if entry != root_text)]
         loader = importlib.import_module("ai_beast_registry.loader")
         telegram_adapter = importlib.import_module("ai_beast_registry.telegram_adapter")
+        beast_namespace = importlib.import_module("ai_beast_registry.beast_namespace")
         if not (
             _module_file_inside_root(loader, project_root)
             and _module_file_inside_root(telegram_adapter, project_root)
+            and _module_file_inside_root(beast_namespace, project_root)
         ):
             raise ImportError("AI Beast adapter resolved outside project_root")
     finally:
@@ -133,11 +155,103 @@ def _import_ai_beast_modules(project_root: Path) -> tuple[Any, Any]:
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = previous
-    return loader, telegram_adapter
+    return loader, telegram_adapter, beast_namespace
+
+
+def _beast_namespace_enabled(config: Any) -> bool:
+    return bool(_get_value(config, "beast_namespace_enabled", False))
+
+
+def _lazy_beast_namespace_parser(project_root: Path) -> Callable[[str], Any]:
+    _loader, _telegram_adapter, beast_namespace = _import_ai_beast_modules(project_root)
+    parser = getattr(beast_namespace, "parse_beast_command", None)
+    if not callable(parser):
+        raise ImportError("AI Beast beast_namespace parser is not available")
+    return parser
+
+
+def _parse_value(parse: Any, key: str, default: Any = None) -> Any:
+    return _get_value(parse, key, default)
+
+
+def _beast_command_text(context: Mapping[str, Any]) -> str:
+    raw_args = str(context.get("raw_args") or context.get("args") or "").strip()
+    return f"/beast {raw_args}".strip()
+
+
+def _format_beast_namespace_result(parse: Any) -> dict[str, str]:
+    status = str(_parse_value(parse, "status", "unknown"))
+    command_class = str(_parse_value(parse, "command_class", "unknown"))
+    subcommand = _parse_value(parse, "subcommand")
+    args = tuple(_parse_value(parse, "args", ()) or ())
+    raw_text = str(_parse_value(parse, "raw_text", "") or "").strip()
+    args_text = " ".join(str(arg) for arg in args)
+    if raw_text:
+        command_label = raw_text
+    elif subcommand:
+        command_label = f"/beast {subcommand} {args_text}".strip()
+    else:
+        command_label = "/beast"
+
+    if subcommand and str(subcommand) not in APPROVED_BEAST_NAMESPACE_SUBCOMMANDS:
+        return {
+            "decision": "deny",
+            "message": (
+                f"AI Beast /beast command fail-closed: {command_label} "
+                f"subcommand={subcommand} is not approved for this disabled fixture path. "
+                "No command behaviour executed."
+            ),
+        }
+
+    if status != "recognised" or command_class.endswith("UNKNOWN") or command_class == "unknown":
+        return {
+            "decision": "deny",
+            "message": (
+                f"AI Beast /beast command fail-closed: {command_label} "
+                f"status={status} class={command_class}. No command behaviour executed."
+            ),
+        }
+
+    target = f" {args_text}" if args_text else ""
+    if bool(_parse_value(parse, "is_read_only", False)):
+        detail = "read-only metadata" if subcommand == "sessions" else "read-only classification"
+        message = (
+            f"AI Beast /beast classification: {command_label}\n"
+            f"subcommand={subcommand}{target}\n"
+            f"class={command_class}\n"
+            f"safety={detail}; no routing, binding, inbox, audit, memory, Kanban, durable continuation, Telegram, or service side effects."
+        )
+        return {"decision": "handled", "message": message}
+
+    if bool(_parse_value(parse, "is_proposal_only", False)):
+        message = (
+            f"AI Beast /beast classification: {command_label}\n"
+            f"subcommand={subcommand}{target}\n"
+            f"class={command_class}\n"
+            "safety=proposal/approval-gated only; no binding was created and no command behaviour executed."
+        )
+        return {"decision": "handled", "message": message}
+
+    if bool(_parse_value(parse, "is_state_changing", False)):
+        message = (
+            f"AI Beast /beast classification: {command_label}\n"
+            f"subcommand={subcommand}{target}\n"
+            f"class={command_class}\n"
+            "safety=state-changing/approval-gated only; not executed."
+        )
+        return {"decision": "handled", "message": message}
+
+    return {
+        "decision": "deny",
+        "message": (
+            f"AI Beast /beast command fail-closed: {command_label} "
+            f"status={status} class={command_class}. No command behaviour executed."
+        ),
+    }
 
 
 def _lazy_orientation_adapter(config: Any, project_root: Path, context: Mapping[str, Any]) -> Callable[..., Any]:
-    loader, telegram_adapter = _import_ai_beast_modules(project_root)
+    loader, telegram_adapter, _beast_namespace = _import_ai_beast_modules(project_root)
     workspaces_path, bindings_path = _registry_paths(config, project_root)
     registry = loader.load_registry(workspaces_path, bindings_path)
 
@@ -191,11 +305,32 @@ async def handle(
     command = _normalise_command(event_type, context)
     if command in HERMES_OWNED_COMMANDS or command in FORBIDDEN_COMMANDS:
         return None
-    if command not in ORIENTATION_COMMANDS:
-        return None
 
     config = _orientation_config(context)
     if not bool(_get_value(config, "enabled", False)):
+        return None
+
+    if command == "beast":
+        if not _beast_namespace_enabled(config):
+            return None
+        project_root_value = _get_value(config, "project_root")
+        project_root = _safe_project_root(project_root_value)
+        if project_root is None:
+            return {
+                "decision": "deny",
+                "message": "AI Beast orientation root is not available.",
+            }
+        try:
+            parser = _lazy_beast_namespace_parser(project_root)
+            parse = parser(_beast_command_text(context))
+        except Exception:
+            return {
+                "decision": "deny",
+                "message": "AI Beast /beast command fail-closed: parser unavailable. No command behaviour executed.",
+            }
+        return _format_beast_namespace_result(parse)
+
+    if command not in ORIENTATION_COMMANDS:
         return None
 
     project_root_value = _get_value(config, "project_root")

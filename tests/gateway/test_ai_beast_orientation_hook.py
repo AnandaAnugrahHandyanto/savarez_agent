@@ -54,6 +54,56 @@ def _write_fake_ai_beast_adapter(project_root: Path) -> None:
         "    raise RegistryError(f'unsupported command: {text}')\n",
         encoding="utf-8",
     )
+    (package / "beast_namespace.py").write_text(
+        "from dataclasses import dataclass\n"
+        "import shlex\n"
+        "class BeastParseStatus:\n"
+        "    RECOGNISED = 'recognised'\n"
+        "class BeastCommandClass:\n"
+        "    READ_ONLY_ORIENTATION = 'read_only_orientation'\n"
+        "    PROPOSAL_APPROVAL_GATED = 'proposal_approval_gated'\n"
+        "    STATE_CHANGING_APPROVAL_GATED = 'state_changing_approval_gated'\n"
+        "    UNKNOWN = 'unknown'\n"
+        "@dataclass(frozen=True)\n"
+        "class Parse:\n"
+        "    status: str\n"
+        "    command_class: str\n"
+        "    subcommand: str | None = None\n"
+        "    args: tuple[str, ...] = ()\n"
+        "    is_read_only: bool = False\n"
+        "    is_proposal_only: bool = False\n"
+        "    is_state_changing: bool = False\n"
+        "    requires_approval: bool = False\n"
+        "    fail_closed: bool = True\n"
+        "    writes_memory: bool = False\n"
+        "    mutates_kanban: bool = False\n"
+        "    invokes_durable_continuation: bool = False\n"
+        "    activates_routing: bool = False\n"
+        "    creates_binding: bool = False\n"
+        "def parse_beast_command(text):\n"
+        "    try:\n"
+        "        parts = shlex.split(text)\n"
+        "    except ValueError:\n"
+        "        return Parse('invalid_syntax', 'unknown')\n"
+        "    if len(parts) < 2:\n"
+        "        return Parse('missing_subcommand', 'unknown')\n"
+        "    sub = parts[1]\n"
+        "    args = tuple(parts[2:])\n"
+        "    if sub in {'whereami', 'projects', 'topicstatus'} and not args:\n"
+        "        return Parse('recognised', 'read_only_orientation', sub, args, True, False, False, False, False)\n"
+        "    if sub == 'sessions' and len(args) == 1:\n"
+        "        return Parse('recognised', 'read_only_orientation', sub, args, True, False, False, False, False)\n"
+        "    if sub == 'bindtopic' and len(args) == 1:\n"
+        "        return Parse('recognised', 'proposal_approval_gated', sub, args, False, True, False, True, False)\n"
+        "    if sub in {'unbindtopic', 'inbox'} and not args:\n"
+        "        return Parse('recognised', 'state_changing_approval_gated', sub, args, False, False, True, True, False)\n"
+        "    if sub in {'pause', 'resume', 'cancel', 'open', 'switch'} and len(args) == 1:\n"
+        "        return Parse('recognised', 'state_changing_approval_gated', sub, args, False, False, True, True, False)\n"
+        "    if sub in {'task', 'steer', 'move', 'newsession'} and len(args) == 2:\n"
+        "        return Parse('recognised', 'state_changing_approval_gated', sub, args, False, False, True, True, False)\n"
+        "    return Parse('unknown_subcommand', 'unknown', sub, args)\n",
+        encoding="utf-8",
+    )
 
 
 def _write_fake_registry(project_root: Path) -> None:
@@ -83,16 +133,24 @@ def _load_hook_module():
     return importlib.import_module(HOOK_MODULE)
 
 
-def _context(command: str, *, project_root: Path | None = None) -> dict:
+def _context(
+    command: str,
+    *,
+    project_root: Path | None = None,
+    raw_args: str = "",
+    beast_namespace_enabled: bool | None = None,
+) -> dict:
     config: dict[str, object] = {
         "enabled": project_root is not None,
     }
     if project_root is not None:
         config["project_root"] = str(project_root)
+    if beast_namespace_enabled is not None:
+        config["beast_namespace_enabled"] = beast_namespace_enabled
     return {
         "command": command,
-        "raw_args": "",
-        "message": f"/{command}",
+        "raw_args": raw_args,
+        "message": f"/{command} {raw_args}".strip(),
         "source": SimpleNamespace(
             platform="telegram",
             chat_id="chat-1",
@@ -332,6 +390,147 @@ async def test_ai_beast_orientation_hook_does_not_call_forbidden_side_effects(tm
         forbidden_call.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_ai_beast_beast_namespace_is_disabled_by_default(tmp_path):
+    hook = _load_hook_module()
+    _write_fake_ai_beast_adapter(tmp_path)
+    _write_fake_registry(tmp_path)
+
+    result = await hook.handle(
+        "command:beast",
+        _context("beast", project_root=tmp_path, raw_args="whereami"),
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_args", "expected_fragments"),
+    [
+        ("whereami", ("/beast whereami", "read_only_orientation", "read-only")),
+        ("projects", ("/beast projects", "read_only_orientation", "read-only")),
+        (
+            "sessions interaction-routing-layer",
+            ("/beast sessions interaction-routing-layer", "read_only_orientation", "read-only metadata"),
+        ),
+        (
+            "bindtopic interaction-routing-layer",
+            ("/beast bindtopic interaction-routing-layer", "proposal_approval_gated", "approval-gated only"),
+        ),
+        (
+            'task interaction-routing-layer "test task"',
+            ("/beast task", "state_changing_approval_gated", "not executed"),
+        ),
+        (
+            'steer card123 "test steer"',
+            ("/beast steer", "state_changing_approval_gated", "not executed"),
+        ),
+    ],
+)
+async def test_ai_beast_beast_namespace_enabled_fixture_classifies_without_execution(
+    tmp_path, monkeypatch, raw_args, expected_fragments
+):
+    hook = _load_hook_module()
+    _write_fake_ai_beast_adapter(tmp_path)
+    _write_fake_registry(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _clear_fake_ai_beast_modules()
+    side_effects = {
+        "memory_write": Mock(side_effect=AssertionError("memory write called")),
+        "kanban_mutation": Mock(side_effect=AssertionError("Kanban mutation called")),
+        "durable_continuation": Mock(side_effect=AssertionError("durable continuation called")),
+        "binding_write": Mock(side_effect=AssertionError("binding write called")),
+        "smart_routing": Mock(side_effect=AssertionError("smart routing called")),
+        "inbox_persistence": Mock(side_effect=AssertionError("inbox persistence called")),
+        "audit_write": Mock(side_effect=AssertionError("audit write called")),
+        "telegram_send": Mock(side_effect=AssertionError("live Telegram send called")),
+    }
+
+    result = await hook.handle(
+        "command:beast",
+        _context(
+            "beast",
+            project_root=tmp_path,
+            raw_args=raw_args,
+            beast_namespace_enabled=True,
+        ),
+        side_effects=side_effects,
+    )
+
+    assert result["decision"] == "handled"
+    for expected in expected_fragments:
+        assert expected in result["message"]
+    for forbidden_call in side_effects.values():
+        forbidden_call.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_args",
+    [
+        'task interaction-routing-layer "test task"',
+        'steer card123 "test steer"',
+        "pause card123",
+        "resume card123",
+        "cancel card123",
+        "unbindtopic",
+        "move card123 lane2",
+        "inbox",
+        "open card123",
+        "switch interaction-routing-layer",
+        "newsession interaction-routing-layer focused-session",
+    ],
+)
+async def test_ai_beast_beast_namespace_state_changing_approved_list_is_classified_only(
+    tmp_path, monkeypatch, raw_args
+):
+    hook = _load_hook_module()
+    _write_fake_ai_beast_adapter(tmp_path)
+    _write_fake_registry(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _clear_fake_ai_beast_modules()
+
+    result = await hook.handle(
+        "command:beast",
+        _context(
+            "beast",
+            project_root=tmp_path,
+            raw_args=raw_args,
+            beast_namespace_enabled=True,
+        ),
+    )
+
+    assert result["decision"] == "handled"
+    assert "state_changing_approval_gated" in result["message"]
+    assert "not executed" in result["message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw_args", ["", "unknown", "topicstatus", 'whereami "unterminated'])
+async def test_ai_beast_beast_namespace_enabled_fixture_fails_closed_for_bad_input(
+    tmp_path, monkeypatch, raw_args
+):
+    hook = _load_hook_module()
+    _write_fake_ai_beast_adapter(tmp_path)
+    _write_fake_registry(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _clear_fake_ai_beast_modules()
+
+    result = await hook.handle(
+        "command:beast",
+        _context(
+            "beast",
+            project_root=tmp_path,
+            raw_args=raw_args,
+            beast_namespace_enabled=True,
+        ),
+    )
+
+    assert result["decision"] == "deny"
+    assert "fail-closed" in result["message"]
+
+
 def _make_gateway_source() -> SessionSource:
     return SessionSource(
         platform=Platform.TELEGRAM,
@@ -347,18 +546,26 @@ def _make_gateway_event(text: str) -> MessageEvent:
     return MessageEvent(text=text, source=_make_gateway_source(), message_id="message-1")
 
 
-def _make_gateway_runner_with_real_orientation_hook(project_root: Path):
+def _make_gateway_runner_with_real_orientation_hook(
+    project_root: Path,
+    *,
+    command_hook_commands: dict[str, object] | None = None,
+    beast_namespace_enabled: bool = False,
+):
     from gateway.run import GatewayRunner
 
+    orientation_config: dict[str, object] = {
+        "enabled": True,
+        "project_root": str(project_root),
+        "bot_username": "hermes_test_bot",
+    }
+    if beast_namespace_enabled:
+        orientation_config["beast_namespace_enabled"] = True
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
-        command_hook_commands={"whereami": {}, "projects": {}},
-        ai_beast_orientation={
-            "enabled": True,
-            "project_root": str(project_root),
-            "bot_username": "hermes_test_bot",
-        },
+        command_hook_commands=command_hook_commands or {"whereami": {}, "projects": {}},
+        ai_beast_orientation=orientation_config,
     )
     adapter = MagicMock()
     adapter.send = AsyncMock(side_effect=AssertionError("live platform send called"))
@@ -424,6 +631,63 @@ async def test_ai_beast_orientation_gateway_command_path_uses_real_hook_without_
     if command == "/whereami":
         assert "chat=chat-1 thread=thread-1" in result
         assert "bot=hermes_test_bot" in result
+    runner._run_agent.assert_not_called()
+    runner.adapters[Platform.TELEGRAM].send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ai_beast_beast_gateway_path_is_disabled_by_default_even_when_hook_command_configured(
+    tmp_path, monkeypatch
+):
+    _write_fake_ai_beast_adapter(tmp_path)
+    _write_fake_registry(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _clear_fake_ai_beast_modules()
+    runner = _make_gateway_runner_with_real_orientation_hook(
+        tmp_path,
+        command_hook_commands={"whereami": {}, "projects": {}, "beast": {}},
+        beast_namespace_enabled=False,
+    )
+
+    result = await runner._handle_message(_make_gateway_event("/beast whereami"))
+
+    assert result is not None
+    assert "registered for command hooks" in result
+    assert "read_only_orientation" not in result
+    runner._run_agent.assert_not_called()
+    runner.adapters[Platform.TELEGRAM].send.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("/beast whereami", "read_only_orientation"),
+        ("/beast projects", "read_only_orientation"),
+        ("/beast sessions interaction-routing-layer", "read-only metadata"),
+        ("/beast unknown", "fail-closed"),
+        ("/beast", "fail-closed"),
+        ("/beast task interaction-routing-layer test-task", "state_changing_approval_gated"),
+        ("/beast bindtopic interaction-routing-layer", "proposal_approval_gated"),
+    ],
+)
+async def test_ai_beast_beast_gateway_fixture_enabled_path_handles_without_agent_or_live_send(
+    tmp_path, monkeypatch, message, expected
+):
+    _write_fake_ai_beast_adapter(tmp_path)
+    _write_fake_registry(tmp_path)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    _clear_fake_ai_beast_modules()
+    runner = _make_gateway_runner_with_real_orientation_hook(
+        tmp_path,
+        command_hook_commands={"whereami": {}, "projects": {}, "beast": {}},
+        beast_namespace_enabled=True,
+    )
+
+    result = await runner._handle_message(_make_gateway_event(message))
+
+    assert result is not None
+    assert expected in result
     runner._run_agent.assert_not_called()
     runner.adapters[Platform.TELEGRAM].send.assert_not_called()
 
