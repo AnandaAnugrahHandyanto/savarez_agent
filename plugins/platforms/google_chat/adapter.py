@@ -1546,8 +1546,16 @@ class GoogleChatAdapter(BasePlatformAdapter):
             self._last_sender_by_chat[space_name] = sender_email.strip().lower()
 
         chat_type = "dm" if space_type in {"DIRECT_MESSAGE", "DM"} else "group"
-        text = msg.get("argumentText") or msg.get("text") or ""
+        # Prefer argumentText for commands, but preserve /setup-files
+        # so the OAuth interceptor can recognise it. Google Chat sends
+        # slash commands as argumentText (just the args), stripping the
+        # command name; without this guard /setup-files start becomes
+        # /cmd_NNN start and the interceptor never fires.
+        raw_text = (msg.get("text") or "").strip()
+        text = msg.get("argumentText") or raw_text or ""
         text = text.strip()
+        if raw_text.startswith("/setup-files"):
+            text = raw_text
 
         # Slash command: emit MessageType.COMMAND with normalized text.
         slash = msg.get("slashCommand") or {}
