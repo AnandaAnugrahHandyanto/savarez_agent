@@ -324,6 +324,26 @@ class TestEmailResponseDelivery(unittest.TestCase):
         self.assertEqual(result.message_id, "email-message-id")
         adapter.send.assert_awaited_once()
 
+    def test_email_discord_delivery_suppresses_home_channel_notice(self):
+        from gateway.run import _suppress_home_channel_notice
+
+        with patch.dict(os.environ, {
+            "EMAIL_RESPONSE_DELIVERY": "discord",
+            "EMAIL_SUPPRESS_HOME_NOTICE": "",
+            "EMAIL_SUPPRESS_HOME_CHANNEL_NOTICE": "",
+        }, clear=False):
+            self.assertTrue(_suppress_home_channel_notice("email"))
+
+    def test_email_suppress_home_notice_env_override(self):
+        from gateway.run import _suppress_home_channel_notice
+
+        with patch.dict(os.environ, {
+            "EMAIL_RESPONSE_DELIVERY": "",
+            "EMAIL_SUPPRESS_HOME_NOTICE": "true",
+            "EMAIL_SUPPRESS_HOME_CHANNEL_NOTICE": "",
+        }, clear=False):
+            self.assertTrue(_suppress_home_channel_notice("email"))
+
 
 class TestDispatchMessage(unittest.TestCase):
     """Test email message dispatch logic."""

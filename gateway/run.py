@@ -842,16 +842,31 @@ def _home_thread_env_var(platform_name: str) -> str:
 
 
 def _suppress_home_channel_notice(platform_name: str) -> bool:
-    """Return True when a platform opts out of the first-run /sethome notice."""
+    """Return True when a platform opts out of the first-run /sethome notice.
+
+    Env overrides are intentionally supported for gateway platforms because
+    several adapters, including Email, are primarily configured from `.env`.
+    For email intake routed to Discord, suppress the prompt implicitly: email is
+    the inbound surface, not the home-channel surface.
+    """
+    env_prefix = platform_name.upper().replace("-", "_")
+    if os.getenv(f"{env_prefix}_SUPPRESS_HOME_NOTICE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    if os.getenv(f"{env_prefix}_SUPPRESS_HOME_CHANNEL_NOTICE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    if platform_name == "email" and os.getenv("EMAIL_RESPONSE_DELIVERY", "").strip().lower() in {"discord", "discord_home", "approval_discord"}:
+        return True
     try:
         cfg = _load_gateway_config()
         platforms = cfg.get("platforms") or {}
         platform_cfg = platforms.get(platform_name) or {}
         if not isinstance(platform_cfg, dict):
             return False
+        response_delivery = str(platform_cfg.get("response_delivery") or "").strip().lower()
         return bool(
             platform_cfg.get("suppress_home_notice")
             or platform_cfg.get("suppress_home_channel_notice")
+            or (platform_name == "email" and response_delivery in {"discord", "discord_home", "approval_discord"})
         )
     except Exception:
         return False
