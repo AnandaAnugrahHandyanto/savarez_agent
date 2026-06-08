@@ -9327,6 +9327,12 @@ class GatewayRunner:
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
+                                    session_db=self.session_store._db,
+                                    platform=(
+                                        "cli"
+                                        if source.platform == Platform.LOCAL
+                                        else source.platform.value
+                                    ),
                                 )
                                 try:
                                     _hyg_agent._print_fn = lambda *a, **kw: None
@@ -9352,12 +9358,11 @@ class GatewayRunner:
                                             source, session_entry,
                                             reason="hygiene-compression",
                                         )
-
-                                    self.session_store.rewrite_transcript(
-                                        session_entry.session_id, _compressed
-                                    )
-                                    # Reset stored token count — transcript was rewritten
-                                    session_entry.last_prompt_tokens = 0
+                                        self.session_store.rewrite_transcript(
+                                            session_entry.session_id, _compressed
+                                        )
+                                        # Reset stored token count — transcript was rewritten
+                                        session_entry.last_prompt_tokens = 0
                                     history = _compressed
                                     _new_count = len(_compressed)
                                     _new_tokens = estimate_messages_tokens_rough(
@@ -13307,6 +13312,12 @@ class GatewayRunner:
                 skip_memory=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
+                session_db=self.session_store._db,
+                platform=(
+                    "cli"
+                    if source.platform == Platform.LOCAL
+                    else source.platform.value
+                ),
             )
             try:
                 tmp_agent._print_fn = lambda *a, **kw: None
@@ -13347,12 +13358,11 @@ class GatewayRunner:
                     self._sync_telegram_topic_binding(
                         source, session_entry, reason="compress-command",
                     )
-
-                self.session_store.rewrite_transcript(new_session_id, compressed)
-                # Reset stored token count — transcript changed, old value is stale
-                self.session_store.update_session(
-                    session_entry.session_key, last_prompt_tokens=0
-                )
+                    self.session_store.rewrite_transcript(new_session_id, compressed)
+                    # Reset stored token count — transcript changed, old value is stale
+                    self.session_store.update_session(
+                        session_entry.session_key, last_prompt_tokens=0
+                    )
                 new_tokens = estimate_request_tokens_rough(
                     compressed, system_prompt=_sys_prompt, tools=_tools
                 )
