@@ -1162,7 +1162,7 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
                 current_model=ctx.current_model,
                 user_providers=ctx.user_providers,
                 custom_providers=ctx.custom_providers,
-                max_models=50,
+                max_models=200,
             )
         except Exception:
             # Best-effort warmup — never surface errors into the session.
