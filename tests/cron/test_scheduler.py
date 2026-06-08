@@ -1305,6 +1305,68 @@ class TestRunJobSessionPersistence:
         assert call_args[0][1] is False  # success should be False
         assert "empty" in call_args[0][2].lower()  # error should mention empty
 
+    def test_tick_delivers_response_that_mentions_silent_marker(self, tmp_path):
+        """A report that merely discusses ``[SILENT]`` must still deliver.
+
+        The sentinel is an exact whole-response command, not a substring
+        filter.  Otherwise normal changelogs for scripts/options named
+        ``--silent-*`` can accidentally suppress useful cron reports.
+        """
+        from cron.scheduler import tick
+
+        job = {
+            "id": "mentions-silent-job",
+            "name": "mentions-silent",
+            "prompt": "do something",
+            "schedule": "every 1h",
+            "enabled": True,
+            "next_run_at": "2020-01-01T00:00:00",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+            "last_status": None,
+        }
+        final_response = "Built a helper where --silent-empty emits [SILENT] when empty."
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.mark_job_run") as mock_mark, \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result", return_value=None) as mock_deliver, \
+             patch("cron.scheduler.run_job", return_value=(True, "output", final_response, None)):
+            tick(verbose=False)
+
+        mock_deliver.assert_called_once_with(job, final_response, adapters=None, loop=None)
+        mock_mark.assert_called_once_with("mentions-silent-job", True, None, delivery_error=None)
+
+    def test_tick_suppresses_delivery_only_for_exact_silent_marker(self, tmp_path):
+        """Exact ``[SILENT]`` responses suppress delivery but still mark ok."""
+        from cron.scheduler import tick
+
+        job = {
+            "id": "exact-silent-job",
+            "name": "exact-silent",
+            "prompt": "do something",
+            "schedule": "every 1h",
+            "enabled": True,
+            "next_run_at": "2020-01-01T00:00:00",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+            "last_status": None,
+        }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.mark_job_run") as mock_mark, \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as mock_deliver, \
+             patch("cron.scheduler.run_job", return_value=(True, "output", " \n[SILENT]\n", None)):
+            tick(verbose=False)
+
+        mock_deliver.assert_not_called()
+        mock_mark.assert_called_once_with("exact-silent-job", True, None, delivery_error=None)
+
     def test_run_job_sets_auto_delivery_env_from_dotenv_home_channel(self, tmp_path, monkeypatch):
         job = {
             "id": "test-job",
@@ -1830,31 +1892,33 @@ class TestSilentDelivery:
         deliver_mock.assert_not_called()
         assert any(SILENT_MARKER in r.message for r in caplog.records)
 
-    def test_silent_with_note_suppresses_delivery(self):
+    def test_silent_with_note_delivers(self):
+        """A response starting with [SILENT] plus prose is user-facing output."""
+        response = "[SILENT] No changes detected"
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT] No changes detected", None)), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler._deliver_result", return_value=None) as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
             tick(verbose=False)
-        deliver_mock.assert_not_called()
+        deliver_mock.assert_called_once_with(self._make_job(), response, adapters=None, loop=None)
 
-    def test_silent_trailing_suppresses_delivery(self):
-        """Agent appended [SILENT] after explanation text — must still suppress."""
+    def test_silent_trailing_note_delivers(self):
+        """Explanation text plus [SILENT] is a report, not a suppression command."""
         response = "2 deals filtered out (like<10, reply<15).\n\n[SILENT]"
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler._deliver_result", return_value=None) as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
             tick(verbose=False)
-        deliver_mock.assert_not_called()
+        deliver_mock.assert_called_once_with(self._make_job(), response, adapters=None, loop=None)
 
-    def test_silent_is_case_insensitive(self):
+    def test_silent_exact_marker_is_case_insensitive(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", "[silent] nothing new", None)), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[silent]", None)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
