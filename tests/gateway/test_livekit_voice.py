@@ -1,14 +1,20 @@
+import asyncio
 import json
 
 import pytest
 
 from gateway.livekit_realtime_agent import (
+    HERMES_BRAIN_UNAVAILABLE_MESSAGE,
+    HermesRealtimeAssistant,
+    build_hermes_brain_payload,
     build_assistant_instructions,
     create_realtime_model,
     guard_enabled_for_run,
+    query_hermes_brain,
 )
 from gateway.livekit_voice import (
     DEFAULT_GEMINI_REALTIME_MODEL,
+    DEFAULT_HERMES_BRAIN_MODEL,
     DEFAULT_REALTIME_MODEL,
     DEFAULT_XAI_REALTIME_MODEL,
     build_dispatch_rule_payload,
@@ -66,6 +72,135 @@ def test_preflight_redacts_secret_values():
     assert report["config"]["openai_api_key"] == "set"
     assert report["config"]["google_api_key"] == "missing"
     assert report["config"]["xai_api_key"] == "missing"
+
+
+def test_hermes_brain_config_is_loaded_and_redacted():
+    env = {
+        "HERMES_LIVEKIT_HERMES_URL": "http://127.0.0.1:8646/v1/chat/completions",
+        "HERMES_LIVEKIT_HERMES_API_KEY": "hermes-brain-secret",
+        "HERMES_LIVEKIT_HERMES_MODEL": "voice",
+        "HERMES_LIVEKIT_HERMES_TIMEOUT_SECONDS": "9.5",
+        "HERMES_LIVEKIT_HERMES_MAX_TOKENS": "320",
+    }
+    cfg = load_livekit_config(env)
+    rendered = json.dumps(cfg.public_dict(), sort_keys=True)
+    assert cfg.hermes_brain_url.endswith("/v1/chat/completions")
+    assert cfg.hermes_brain_api_key == "hermes-brain-secret"
+    assert cfg.hermes_brain_model == "voice"
+    assert cfg.hermes_brain_timeout_seconds == 9.5
+    assert cfg.hermes_brain_max_tokens == 320
+    assert cfg.has_brain_credentials is True
+    assert cfg.public_dict()["hermes_brain_api_key"] == "set"
+    assert "hermes-brain-secret" not in rendered
+
+
+def test_hermes_brain_config_defaults_are_phone_safe():
+    cfg = load_livekit_config({})
+    assert cfg.hermes_brain_model == DEFAULT_HERMES_BRAIN_MODEL
+    assert cfg.hermes_brain_timeout_seconds <= 10
+    assert cfg.hermes_brain_max_tokens <= 500
+    assert cfg.has_brain_credentials is False
+
+
+def test_hermes_brain_payload_is_concise_and_non_streaming():
+    cfg = load_livekit_config({
+        "HERMES_LIVEKIT_HERMES_MODEL": "voice",
+        "HERMES_LIVEKIT_HERMES_MAX_TOKENS": "321",
+    })
+    payload = build_hermes_brain_payload(
+        "Explain the Hermes phone architecture in depth.",
+        config=cfg,
+    )
+    assert payload["model"] == "voice"
+    assert payload["stream"] is False
+    assert payload["max_tokens"] == 321
+    assert payload["temperature"] <= 0.3
+    assert "live phone call" in payload["messages"][0]["content"]
+    assert "Hermes phone architecture" in payload["messages"][1]["content"]
+
+
+def test_hermes_brain_payload_rejects_empty_questions():
+    cfg = load_livekit_config({})
+    with pytest.raises(ValueError, match="question"):
+        build_hermes_brain_payload("   ", config=cfg)
+
+
+def test_query_hermes_brain_returns_assistant_text():
+    cfg = load_livekit_config({
+        "HERMES_LIVEKIT_HERMES_API_KEY": "fake-brain-key",
+        "HERMES_LIVEKIT_HERMES_MODEL": "voice",
+    })
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {"message": {"content": "Use the fast voice model first."}}
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self):
+            self.posted = None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, *, headers, json):
+            self.posted = (url, headers, json)
+            return FakeResponse()
+
+    fake_client = FakeClient()
+    answer = asyncio.run(
+        query_hermes_brain(
+            "Should this use deeper reasoning?",
+            config=cfg,
+            client_factory=lambda **_: fake_client,
+        )
+    )
+    assert answer == "Use the fast voice model first."
+    assert fake_client.posted[1]["Authorization"] == "Bearer fake-brain-key"
+
+
+def test_query_hermes_brain_returns_safe_message_on_error():
+    cfg = load_livekit_config({
+        "HERMES_LIVEKIT_HERMES_API_KEY": "fake-brain-key",
+    })
+
+    class FailingClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, *, headers, json):
+            raise RuntimeError("upstream leaked detail")
+
+    answer = asyncio.run(
+        query_hermes_brain(
+            "Need deep answer.",
+            config=cfg,
+            client_factory=lambda **_: FailingClient(),
+        )
+    )
+    assert answer == HERMES_BRAIN_UNAVAILABLE_MESSAGE
+
+
+def test_realtime_assistant_registers_hermes_brain_tool():
+    cfg = load_livekit_config({})
+    assistant = HermesRealtimeAssistant(cfg)
+    tool_names = {
+        getattr(getattr(tool, "_info", None), "name", None)
+        for tool in assistant._tools
+    }
+    assert "ask_hermes_brain" in tool_names
 
 
 def test_realtime_preflight_reports_missing_openai_key():

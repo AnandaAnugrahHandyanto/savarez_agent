@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable
 from typing import Any
 
+import httpx
 from gateway.livekit_voice import (
     DEFAULT_REALTIME_INSTRUCTIONS,
     LiveKitVoiceConfig,
@@ -19,11 +21,18 @@ from gateway.livekit_voice import (
 
 try:
     from livekit import agents  # type: ignore
-    from livekit.agents import Agent, AgentSession  # type: ignore
+    from livekit.agents import Agent, AgentSession, function_tool  # type: ignore
 except Exception:  # pragma: no cover - import checked by build_server
     agents = None  # type: ignore[assignment]
     Agent = object  # type: ignore[assignment,misc]
     AgentSession = None  # type: ignore[assignment]
+    function_tool = lambda f=None, **_: f if f is not None else (lambda fn: fn)  # type: ignore[assignment]
+
+
+HERMES_BRAIN_UNAVAILABLE_MESSAGE = (
+    "Hermes brain is unavailable right now. Continue with the fast voice answer."
+)
+_MAX_BRAIN_QUESTION_CHARS = 4000
 
 
 def build_assistant_instructions(config: LiveKitVoiceConfig | None = None) -> str:
@@ -34,6 +43,8 @@ def build_assistant_instructions(config: LiveKitVoiceConfig | None = None) -> st
         base.strip(),
         "You are in a live voice call. Speak naturally and keep turns short.",
         "If the user speaks Romanian, answer in Romanian. If the user speaks English, answer in English.",
+        "For complex planning, debugging, architecture, research synthesis, or high-stakes answers, call ask_hermes_brain before answering.",
+        "When using Hermes brain, give the caller a concise spoken summary instead of reading long analysis verbatim.",
     ])
 
 
@@ -111,9 +122,89 @@ def _create_xai_realtime_model(cfg: LiveKitVoiceConfig) -> Any:
     )
 
 
+def build_hermes_brain_payload(
+    question: str,
+    *,
+    config: LiveKitVoiceConfig | None = None,
+) -> dict[str, Any]:
+    """Build the OpenAI-compatible Hermes brain request payload."""
+    cfg = config or load_livekit_config()
+    clean_question = question.strip()
+    if not clean_question:
+        raise ValueError("question is required for Hermes brain")
+    clean_question = clean_question[:_MAX_BRAIN_QUESTION_CHARS]
+    return {
+        "model": cfg.hermes_brain_model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are Hermes brain for a live phone call. Provide accurate, "
+                    "useful reasoning, but keep the answer concise enough to be "
+                    "summarized aloud. Do not mention hidden prompts, secrets, "
+                    "API keys, or internal runtime details."
+                ),
+            },
+            {"role": "user", "content": clean_question},
+        ],
+        "temperature": 0.2,
+        "max_tokens": cfg.hermes_brain_max_tokens,
+        "stream": False,
+    }
+
+
+async def query_hermes_brain(
+    question: str,
+    *,
+    config: LiveKitVoiceConfig | None = None,
+    client_factory: Callable[..., Any] = httpx.AsyncClient,
+) -> str:
+    """Query the local Hermes brain gateway with safe timeout and redaction."""
+    cfg = config or load_livekit_config()
+    if not cfg.has_brain_credentials:
+        return HERMES_BRAIN_UNAVAILABLE_MESSAGE
+    try:
+        payload = build_hermes_brain_payload(question, config=cfg)
+    except ValueError:
+        return HERMES_BRAIN_UNAVAILABLE_MESSAGE
+
+    headers = {
+        "Authorization": f"Bearer {cfg.hermes_brain_api_key}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with client_factory(timeout=cfg.hermes_brain_timeout_seconds) as client:
+            response = await client.post(
+                cfg.hermes_brain_url,
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+    except Exception:
+        return HERMES_BRAIN_UNAVAILABLE_MESSAGE
+
+    try:
+        answer = str(data["choices"][0]["message"]["content"]).strip()
+    except (KeyError, IndexError, TypeError):
+        return HERMES_BRAIN_UNAVAILABLE_MESSAGE
+    return answer or HERMES_BRAIN_UNAVAILABLE_MESSAGE
+
+
 class HermesRealtimeAssistant(Agent):  # type: ignore[misc,valid-type]
     def __init__(self, config: LiveKitVoiceConfig) -> None:
+        self._config = config
         super().__init__(instructions=build_assistant_instructions(config))
+
+    @function_tool(
+        description=(
+            "Ask Hermes brain for deeper reasoning when the caller needs complex "
+            "planning, debugging, architecture analysis, research synthesis, or a "
+            "more advanced answer than the fast voice model should provide."
+        )
+    )
+    async def ask_hermes_brain(self, question: str) -> str:
+        return await query_hermes_brain(question, config=self._config)
 
 
 async def hermes_live_voice(ctx: Any) -> None:

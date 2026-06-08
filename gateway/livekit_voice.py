@@ -24,6 +24,9 @@ DEFAULT_AGENT_NAME = "hermes-live-voice"
 DEFAULT_ROOM_PREFIX = "hermes-call-"
 DEFAULT_ROUTE = "hermes-main"
 DEFAULT_HERMES_BRAIN_URL = "http://127.0.0.1:8646/v1/chat/completions"
+DEFAULT_HERMES_BRAIN_MODEL = "voice"
+DEFAULT_HERMES_BRAIN_TIMEOUT_SECONDS = 8.0
+DEFAULT_HERMES_BRAIN_MAX_TOKENS = 450
 DEFAULT_REALTIME_PROVIDER = "openai"
 DEFAULT_REALTIME_MODEL = "gpt-realtime"
 DEFAULT_REALTIME_VOICE = "coral"
@@ -55,6 +58,10 @@ class LiveKitVoiceConfig:
     phone_number: str = ""
     sip_provider: str = ""
     hermes_brain_url: str = DEFAULT_HERMES_BRAIN_URL
+    hermes_brain_api_key: str = ""
+    hermes_brain_model: str = DEFAULT_HERMES_BRAIN_MODEL
+    hermes_brain_timeout_seconds: float = DEFAULT_HERMES_BRAIN_TIMEOUT_SECONDS
+    hermes_brain_max_tokens: int = DEFAULT_HERMES_BRAIN_MAX_TOKENS
     realtime_enabled: bool = False
     realtime_provider: str = DEFAULT_REALTIME_PROVIDER
     realtime_model: str = DEFAULT_REALTIME_MODEL
@@ -84,6 +91,10 @@ class LiveKitVoiceConfig:
             return bool(self.xai_api_key)
         return False
 
+    @property
+    def has_brain_credentials(self) -> bool:
+        return bool(self.hermes_brain_url and self.hermes_brain_api_key)
+
     def public_dict(self) -> dict[str, str]:
         """Return a redacted view safe for Telegram/status messages."""
         return {
@@ -95,6 +106,12 @@ class LiveKitVoiceConfig:
             "phone_number": self.phone_number if self.phone_number else "missing",
             "sip_provider": self.sip_provider if self.sip_provider else "missing",
             "hermes_brain_url": self.hermes_brain_url,
+            "hermes_brain_api_key": "set"
+            if self.hermes_brain_api_key
+            else "missing",
+            "hermes_brain_model": self.hermes_brain_model,
+            "hermes_brain_timeout_seconds": str(self.hermes_brain_timeout_seconds),
+            "hermes_brain_max_tokens": str(self.hermes_brain_max_tokens),
             "realtime_enabled": "true" if self.realtime_enabled else "false",
             "realtime_provider": self.realtime_provider,
             "realtime_model": self.realtime_model,
@@ -114,6 +131,42 @@ def _env_bool(env: Mapping[str, str], name: str, default: bool = False) -> bool:
     return default if not value else value.lower() in _TRUE_VALUES
 
 
+def _env_float(
+    env: Mapping[str, str],
+    name: str,
+    default: float,
+    *,
+    minimum: float,
+    maximum: float,
+) -> float:
+    value = _env_get(env, name)
+    if not value:
+        return default
+    try:
+        parsed = float(value)
+    except ValueError:
+        return default
+    return min(max(parsed, minimum), maximum)
+
+
+def _env_int(
+    env: Mapping[str, str],
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    value = _env_get(env, name)
+    if not value:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return min(max(parsed, minimum), maximum)
+
+
 def load_livekit_config(env: Mapping[str, str] | None = None) -> LiveKitVoiceConfig:
     """Load LiveKit voice settings from *env* or ``os.environ``."""
     source = os.environ if env is None else env
@@ -129,6 +182,28 @@ def load_livekit_config(env: Mapping[str, str] | None = None) -> LiveKitVoiceCon
         sip_provider=_env_get(source, "HERMES_LIVEKIT_SIP_PROVIDER"),
         hermes_brain_url=_env_get(
             source, "HERMES_LIVEKIT_HERMES_URL", DEFAULT_HERMES_BRAIN_URL
+        ),
+        hermes_brain_api_key=_env_get(
+            source,
+            "HERMES_LIVEKIT_HERMES_API_KEY",
+            _env_get(source, "HERMES_VOICE_API_KEY", _env_get(source, "API_SERVER_KEY")),
+        ),
+        hermes_brain_model=_env_get(
+            source, "HERMES_LIVEKIT_HERMES_MODEL", DEFAULT_HERMES_BRAIN_MODEL
+        ),
+        hermes_brain_timeout_seconds=_env_float(
+            source,
+            "HERMES_LIVEKIT_HERMES_TIMEOUT_SECONDS",
+            DEFAULT_HERMES_BRAIN_TIMEOUT_SECONDS,
+            minimum=1.0,
+            maximum=15.0,
+        ),
+        hermes_brain_max_tokens=_env_int(
+            source,
+            "HERMES_LIVEKIT_HERMES_MAX_TOKENS",
+            DEFAULT_HERMES_BRAIN_MAX_TOKENS,
+            minimum=64,
+            maximum=800,
         ),
         realtime_enabled=_env_bool(source, "HERMES_LIVEKIT_REALTIME_ENABLED", False),
         realtime_provider=_env_get(
