@@ -285,14 +285,30 @@ def test_check_requirements_always_true():
 # Live integration (skipped if offline)
 # ---------------------------------------------------------------------------
 
+def _httpbin_reachable() -> bool:
+    """Quick probe (1 s) to decide whether httpbin.org is usable."""
+    import socket
+    try:
+        sock = socket.create_connection(("httpbin.org", 443), timeout=1)
+        sock.close()
+        return True
+    except Exception:
+        return False
+
+
 @pytest.mark.skipif(
-    not pytest.importorskip("urllib.request", reason="no network"),
-    reason="network required",
+    not _httpbin_reachable(),
+    reason="httpbin.org unreachable (network or firewall)"
 )
 def test_live_get_httpbin():
-    """Smoke test against httpbin.org /get endpoint."""
+    """Smoke test against httpbin.org /get endpoint.
+
+    Uses a short 5-second timeout so a slow/unreachable host is caught
+    by the ``except`` block and converted to a skip rather than blowing
+    the per-test 30-second pytest-timeout cap.
+    """
     try:
-        result = json.loads(http_request_tool("https://httpbin.org/get"))
+        result = json.loads(http_request_tool("https://httpbin.org/get", timeout=5))
         assert result["success"] is True
         assert result["status_code"] == 200
         assert "headers" in result
@@ -301,11 +317,16 @@ def test_live_get_httpbin():
 
 
 @pytest.mark.skipif(
-    not pytest.importorskip("urllib.request", reason="no network"),
-    reason="network required",
+    not _httpbin_reachable(),
+    reason="httpbin.org unreachable (network or firewall)"
 )
 def test_live_post_httpbin():
-    """Smoke test against httpbin.org /post endpoint."""
+    """Smoke test against httpbin.org /post endpoint.
+
+    Uses a short 5-second timeout so a slow/unreachable host is caught
+    by the ``except`` block and converted to a skip rather than blowing
+    the per-test 30-second pytest-timeout cap.
+    """
     try:
         result = json.loads(
             http_request_tool(
@@ -313,6 +334,7 @@ def test_live_post_httpbin():
                 method="POST",
                 headers={"Content-Type": "application/json"},
                 body='{"hello": "world"}',
+                timeout=5,
             )
         )
         assert result["success"] is True
