@@ -15,5 +15,5 @@ export const PAGE_INSET_NEG_X = '-mx-[clamp(1.25rem,4vw,4rem)]'
 // Below this viewport width a docked sidebar leaves no room for content, so both
 // rails auto-collapse into the hover-reveal overlay. Single source of truth for
 // the responsive collapse point.
-export const SIDEBAR_COLLAPSE_BREAKPOINT_PX = 600
+export const SIDEBAR_COLLAPSE_BREAKPOINT_PX = 768
 export const SIDEBAR_COLLAPSE_MEDIA_QUERY = `(max-width: ${SIDEBAR_COLLAPSE_BREAKPOINT_PX}px)`
