@@ -9231,7 +9231,46 @@ class GatewayRunner:
             "start_notice": bool(route.get("start_notice", runtime.get("start_notice", True))),
         }
 
-    def _build_research_profile_runtime_prompt(self, user_text: str) -> str:
+    def _classify_research_profile_depth(self, profile: str, user_text: str) -> dict[str, Any] | None:
+        triage_path = _hermes_home / "profiles" / profile / "lib" / "depth_triage.py"
+        if not triage_path.exists():
+            return None
+        try:
+            import importlib.util
+
+            module_name = "_hermes_profile_depth_triage_" + re.sub(r"[^A-Za-z0-9_]", "_", profile)
+            spec = importlib.util.spec_from_file_location(module_name, triage_path)
+            if spec is None or spec.loader is None:
+                return None
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            classify_depth = getattr(module, "classify_depth", None)
+            if not callable(classify_depth):
+                return None
+            result = classify_depth(user_text)
+            if not isinstance(result, dict):
+                return None
+            return result
+        except Exception as exc:
+            logger.warning("[Gateway] Hermes Research depth triage failed for profile=%s: %s", profile, exc)
+            return None
+
+    def _build_research_profile_runtime_prompt(
+        self,
+        user_text: str,
+        *,
+        depth_triage: dict[str, Any] | None = None,
+    ) -> str:
+        triage_block = ""
+        if depth_triage:
+            triage_json = json.dumps(depth_triage, ensure_ascii=False, sort_keys=True)
+            triage_block = (
+                "Gateway auto-depth triage result:\n"
+                f"```json\n{triage_json}\n```\n"
+                "Use this as the selected research depth unless the user's explicit "
+                "request or safety policy requires a higher depth. Do not silently "
+                "downgrade below this depth.\n\n"
+            )
         return (
             "You are being invoked as the isolated Hermes Research profile runtime by "
             "the Hermes-main profile router. Follow the hermes-research profile, "
@@ -9241,6 +9280,7 @@ class GatewayRunner:
             "Return the best source-backed answer you can produce, preserve source "
             "URLs/citations/caveats, and do not claim that Hermes-main performed the "
             "research.\n\n"
+            f"{triage_block}"
             "Original Hermes-main user request:\n"
             f"{user_text}"
         )
@@ -9268,23 +9308,33 @@ class GatewayRunner:
                 }
             self._profile_runtime_active[profile] = active + 1
 
+        depth_triage = self._classify_research_profile_depth(profile, user_text)
+        depth_label = None
+        if isinstance(depth_triage, dict):
+            raw_depth = depth_triage.get("depth")
+            if isinstance(raw_depth, str) and raw_depth.strip():
+                depth_label = raw_depth.strip().upper()
+
         try:
             if route.get("start_notice") and source.platform == Platform.TELEGRAM and source.chat_id:
                 try:
                     adapter = self.adapters.get(source.platform)
                     if adapter:
+                        notice = (
+                            "Routed this request to the Hermes Research profile runtime. "
+                            "I will send the final answer here; long answers still use the normal PDF auto-attach path."
+                        )
+                        if depth_label:
+                            notice += f" Auto-depth: {depth_label}."
                         await adapter.send(
                             source.chat_id,
-                            (
-                                "Routed this request to the Hermes Research profile runtime. "
-                                "I will send the final answer here; long answers still use the normal PDF auto-attach path."
-                            ),
+                            notice,
                             metadata=self._thread_metadata_for_source(source),
                         )
                 except Exception as exc:
                     logger.debug("Profile runtime start notice failed: %s", exc)
 
-            child_prompt = self._build_research_profile_runtime_prompt(user_text)
+            child_prompt = self._build_research_profile_runtime_prompt(user_text, depth_triage=depth_triage)
             agent_root = Path(__file__).resolve().parents[1]
             cmd = [
                 sys.executable,
@@ -9309,9 +9359,14 @@ class GatewayRunner:
             env["HERMES_PROFILE"] = profile
             env["HERMES_PROFILE_ROUTER_INTENT"] = intent
             env["HERMES_PROFILE_ROUTER_PARENT_SESSION"] = session_key
+            if depth_label:
+                env["HERMES_PROFILE_ROUTER_DEPTH"] = depth_label
+            if depth_triage:
+                env["HERMES_PROFILE_ROUTER_DEPTH_TRIAGE"] = json.dumps(depth_triage, ensure_ascii=False, sort_keys=True)
             logger.info(
-                "[Gateway] Invoking profile runtime: profile=%s provider=%s model=%s timeout=%ss",
+                "[Gateway] Invoking profile runtime: profile=%s depth=%s provider=%s model=%s timeout=%ss",
                 profile,
+                depth_label or "unknown",
                 route["provider"],
                 route["model"],
                 route["timeout_seconds"],

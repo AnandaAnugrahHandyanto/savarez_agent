@@ -3296,6 +3296,42 @@ class TestVoiceTTSPlayback:
             "Audit Hermes research and check why the profile router was not invoked."
         ) is False
 
+    def test_research_profile_runtime_prompt_includes_gateway_depth_triage(self):
+        """Gateway passes deterministic auto-depth into Hermes Research."""
+        runner = self._make_runner()
+
+        prompt = runner._build_research_profile_runtime_prompt(
+            "Research live call platforms for Hermes.",
+            depth_triage={"depth": "D2", "confidence": 0.9, "approval_required": False},
+        )
+
+        assert "Gateway auto-depth triage result" in prompt
+        assert '"depth": "D2"' in prompt
+        assert "Do not silently downgrade below this depth" in prompt
+        assert "Research live call platforms for Hermes." in prompt
+
+    def test_research_profile_depth_classifier_loaded_from_profile(self, tmp_path, monkeypatch):
+        """Gateway can load hermes-research/lib/depth_triage.py at runtime."""
+        from gateway import run as gateway_run
+
+        runner = self._make_runner()
+        profile_lib = tmp_path / "profiles" / "hermes-research" / "lib"
+        profile_lib.mkdir(parents=True)
+        (profile_lib / "depth_triage.py").write_text(
+            "def classify_depth(text):\n"
+            "    return {'depth': 'D3', 'confidence': 0.88, 'text': text}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+        result = runner._classify_research_profile_depth(
+            "hermes-research",
+            "deep competitive research request",
+        )
+
+        assert result["depth"] == "D3"
+        assert result["confidence"] == 0.88
+
     @pytest.mark.asyncio
     async def test_prepared_voice_transcript_routes_to_research_profile(self):
         """Profile routing must run after STT has converted voice into text."""
