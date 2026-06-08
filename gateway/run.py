@@ -541,6 +541,8 @@ def _build_replay_entry(role: str, content: Any, msg: Dict[str, Any]) -> Dict[st
     providers.
     """
     entry: Dict[str, Any] = {"role": role, "content": content}
+    if msg.get("timestamp") is not None:
+        entry["timestamp"] = msg["timestamp"]
     if role == "assistant":
         for _rkey in _ASSISTANT_REPLAY_FIELDS:
             if _rkey not in msg:
@@ -9570,6 +9572,7 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                current_message_timestamp=event.timestamp,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -9815,6 +9818,9 @@ class GatewayRunner:
                 )
 
             ts = datetime.now().isoformat()
+            inbound_ts = _coerce_gateway_timestamp(getattr(event, "timestamp", None))
+            if inbound_ts is None:
+                inbound_ts = ts
             
             # If this is a fresh session (no history), write the full tool
             # definitions as the first entry so the transcript is self-describing
@@ -9845,7 +9851,7 @@ class GatewayRunner:
                 # message so the next message can load a transcript that
                 # reflects what was said.  Skip the assistant error text since
                 # it's a gateway-generated hint, not model output. (#7100)
-                _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
+                _user_entry = {"role": "user", "content": message_text, "timestamp": inbound_ts}
                 if event.message_id:
                     _user_entry["message_id"] = str(event.message_id)
                 self.session_store.append_to_transcript(
@@ -9858,7 +9864,7 @@ class GatewayRunner:
 
                 # If no new messages found (edge case), fall back to simple user/assistant
                 if not new_messages:
-                    _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
+                    _user_entry = {"role": "user", "content": message_text, "timestamp": inbound_ts}
                     if event.message_id:
                         _user_entry["message_id"] = str(event.message_id)
                     self.session_store.append_to_transcript(
@@ -9886,7 +9892,12 @@ class GatewayRunner:
                         if msg.get("role") == "system":
                             continue
                         # Add timestamp to each message for debugging
-                        entry = {**msg, "timestamp": ts}
+                        entry_ts = msg.get("timestamp")
+                        if entry_ts is None and msg.get("role") == "user":
+                            entry_ts = inbound_ts
+                        if entry_ts is None:
+                            entry_ts = ts
+                        entry = {**msg, "timestamp": entry_ts}
                         if (
                             not _user_msg_id_attached
                             and msg.get("role") == "user"
@@ -17109,6 +17120,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        current_message_timestamp: Any = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -18525,6 +18537,7 @@ class GatewayRunner:
                 _conversation_kwargs = {
                     "conversation_history": agent_history,
                     "task_id": session_id,
+                    "current_message_timestamp": current_message_timestamp,
                 }
                 if observed_group_context:
                     _conversation_kwargs["persist_user_message"] = message
@@ -19336,6 +19349,11 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    current_message_timestamp=(
+                        getattr(pending_event, "timestamp", None)
+                        if pending_event is not None
+                        else None
+                    ),
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

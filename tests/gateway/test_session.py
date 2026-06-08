@@ -534,6 +534,18 @@ class TestSessionStoreRewriteTranscript:
         assert reloaded[0]["content"] == "hello"
         assert reloaded[1]["content"] == "hi"
 
+    def test_rewrite_preserves_message_timestamps(self, store):
+        session_id = "test_session_timestamps"
+        store._db.create_session(session_id=session_id, source="test")
+
+        store.rewrite_transcript(session_id, [
+            {"role": "user", "content": "old question", "timestamp": 1710000000.0},
+            {"role": "assistant", "content": "old answer", "timestamp": 1710000001.5},
+        ])
+
+        reloaded = store.load_transcript(session_id)
+        assert [msg["timestamp"] for msg in reloaded] == [1710000000.0, 1710000001.5]
+
     def test_rewrite_with_empty_list(self, store):
         session_id = "test_session_2"
         store._db.create_session(session_id=session_id, source="test")
@@ -563,13 +575,15 @@ class TestLoadTranscriptDBOnly:
         store = SessionStore(sessions_dir=tmp_path, config=config)
         sid = "db_only_session"
         store._db.create_session(session_id=sid, source="gateway", model="m")
-        store._db.append_message(session_id=sid, role="user", content="db-q")
-        store._db.append_message(session_id=sid, role="assistant", content="db-a")
+        store._db.append_message(session_id=sid, role="user", content="db-q", timestamp=3.0)
+        store._db.append_message(session_id=sid, role="assistant", content="db-a", timestamp=4.0)
 
         result = store.load_transcript(sid)
         assert len(result) == 2
         assert result[0]["content"] == "db-q"
+        assert result[0]["timestamp"] == 3.0
         assert result[1]["content"] == "db-a"
+        assert result[1]["timestamp"] == 4.0
 
 
 class TestSessionStoreSwitchSession:

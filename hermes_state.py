@@ -21,6 +21,7 @@ import re
 import sqlite3
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -1993,6 +1994,30 @@ class SessionDB:
                 return content
         return content
 
+    @staticmethod
+    def _coerce_timestamp(value: Any) -> Optional[float]:
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, datetime):
+            return value.timestamp()
+        if isinstance(value, (int, float)):
+            numeric = float(value)
+            return numeric / 1000.0 if numeric > 10_000_000_000 else numeric
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return None
+            try:
+                numeric = float(text)
+                return numeric / 1000.0 if numeric > 10_000_000_000 else numeric
+            except ValueError:
+                pass
+            try:
+                return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                return None
+        return None
+
     def append_message(
         self,
         session_id: str,
@@ -2010,6 +2035,7 @@ class SessionDB:
         codex_message_items: Any = None,
         platform_message_id: str = None,
         observed: bool = False,
+        timestamp: Any = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -2040,6 +2066,9 @@ class SessionDB:
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
+        stored_timestamp = self._coerce_timestamp(timestamp)
+        if stored_timestamp is None:
+            stored_timestamp = time.time()
 
         # Pre-compute tool call count
         num_tool_calls = 0
@@ -2060,7 +2089,7 @@ class SessionDB:
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
-                    time.time(),
+                    stored_timestamp,
                     token_count,
                     finish_reason,
                     reasoning,
@@ -2136,6 +2165,9 @@ class SessionDB:
                 platform_msg_id = (
                     msg.get("platform_message_id") or msg.get("message_id")
                 )
+                msg_ts = self._coerce_timestamp(msg.get("timestamp"))
+                if msg_ts is None:
+                    msg_ts = now_ts
 
                 conn.execute(
                     """INSERT INTO messages (session_id, role, content, tool_call_id,
@@ -2150,7 +2182,7 @@ class SessionDB:
                         msg.get("tool_call_id"),
                         tool_calls_json,
                         msg.get("tool_name"),
-                        now_ts,
+                        msg_ts,
                         msg.get("token_count"),
                         msg.get("finish_reason"),
                         msg.get("reasoning") if role == "assistant" else None,
@@ -2167,7 +2199,7 @@ class SessionDB:
                     total_tool_calls += (
                         len(tool_calls) if isinstance(tool_calls, list) else 1
                     )
-                now_ts += 1e-6
+                now_ts = max(now_ts + 1e-6, msg_ts + 1e-6)
 
             conn.execute(
                 "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
@@ -2496,7 +2528,7 @@ class SessionDB:
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
-                "SELECT role, content, tool_call_id, tool_calls, tool_name, "
+                "SELECT role, content, tool_call_id, tool_calls, tool_name, timestamp, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items, platform_message_id, observed "
                 f"FROM messages WHERE session_id IN ({placeholders})"
@@ -2510,6 +2542,8 @@ class SessionDB:
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}
+            if row["timestamp"] is not None:
+                msg["timestamp"] = row["timestamp"]
             if row["tool_call_id"]:
                 msg["tool_call_id"] = row["tool_call_id"]
             if row["tool_name"]:

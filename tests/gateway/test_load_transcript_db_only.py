@@ -27,4 +27,6 @@ def test_load_transcript_returns_db_messages_when_no_jsonl(tmp_path, monkeypatch
     history = store.load_transcript(sid)
     assert len(history) == 2
     assert history[0]["content"] == "hello"
+    assert history[0]["timestamp"] == 1.0
     assert history[1]["content"] == "world"
+    assert history[1]["timestamp"] == 2.0

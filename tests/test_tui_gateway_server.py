@@ -659,10 +659,11 @@ def test_load_enabled_toolsets_reports_disabled_mcp_separately(monkeypatch, caps
 
 def test_history_to_messages_preserves_tool_calls_for_resume_display():
     history = [
-        {"role": "user", "content": "first prompt"},
+        {"role": "user", "content": "first prompt", "timestamp": 1710000000.0},
         {
             "role": "assistant",
             "content": "",
+            "timestamp": 1710000000.5,
             "tool_calls": [
                 {
                     "id": "call_1",
@@ -673,16 +674,16 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
                 }
             ],
         },
-        {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
-        {"role": "assistant", "content": "first answer"},
-        {"role": "user", "content": "second prompt"},
+        {"role": "tool", "content": "{}", "tool_call_id": "call_1", "timestamp": 1710000000.75},
+        {"role": "assistant", "content": "first answer", "timestamp": 1710000001.0},
+        {"role": "user", "content": "second prompt", "timestamp": 1710000002.0},
     ]
 
     assert server._history_to_messages(history) == [
-        {"role": "user", "text": "first prompt"},
-        {"context": "resume", "name": "search_files", "role": "tool"},
-        {"role": "assistant", "text": "first answer"},
-        {"role": "user", "text": "second prompt"},
+        {"role": "user", "text": "first prompt", "timestamp": 1710000000.0},
+        {"context": "resume", "name": "search_files", "role": "tool", "timestamp": 1710000000.75},
+        {"role": "assistant", "text": "first answer", "timestamp": 1710000001.0},
+        {"role": "user", "text": "second prompt", "timestamp": 1710000002.0},
     ]
 
 
