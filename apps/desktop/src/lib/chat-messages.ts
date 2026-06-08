@@ -110,6 +110,65 @@ export function chatMessageText(message: ChatMessage): string {
     .join('')
 }
 
+function normalizeTextForDedupe(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+export function finalizeAssistantTextParts(parts: ChatMessagePart[], finalText: string): ChatMessagePart[] {
+  const dedupeReference = normalizeTextForDedupe(finalText)
+
+  const withoutDuplicateReasoning = parts.filter(part => {
+    if (part.type !== 'reasoning' || !dedupeReference) {
+      return true
+    }
+
+    const reasoning = normalizeTextForDedupe(part.text)
+
+    return !(reasoning && (dedupeReference.startsWith(reasoning) || reasoning.startsWith(dedupeReference)))
+  })
+
+  if (!finalText) {
+    return withoutDuplicateReasoning
+  }
+
+  const textIndexes = withoutDuplicateReasoning
+    .map((part, index) => (part.type === 'text' ? index : -1))
+    .filter(index => index >= 0)
+
+  if (!textIndexes.length) {
+    return [...withoutDuplicateReasoning, assistantTextPart(finalText)]
+  }
+
+  const lastTextIndex = textIndexes.at(-1)!
+
+  const textBeforeLast = textIndexes
+    .slice(0, -1)
+    .map(index => (withoutDuplicateReasoning[index] as Extract<ChatMessagePart, { type: 'text' }>).text)
+    .join('')
+
+  const lastText = (withoutDuplicateReasoning[lastTextIndex] as Extract<ChatMessagePart, { type: 'text' }>).text
+  const existingText = `${textBeforeLast}${lastText}`
+
+  if (normalizeTextForDedupe(existingText) === dedupeReference) {
+    return withoutDuplicateReasoning
+  }
+
+  const next = [...withoutDuplicateReasoning]
+
+  const currentSegmentText =
+    textBeforeLast && finalText.startsWith(textBeforeLast) ? finalText.slice(textBeforeLast.length) : finalText
+
+  if (!currentSegmentText) {
+    next.splice(lastTextIndex, 1)
+
+    return next
+  }
+
+  next[lastTextIndex] = assistantTextPart(currentSegmentText)
+
+  return next
+}
+
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g

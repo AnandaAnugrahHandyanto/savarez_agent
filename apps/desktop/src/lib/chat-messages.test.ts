@@ -3,12 +3,26 @@ import { describe, expect, it } from 'vitest'
 import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {
   appendAssistantTextPart,
+  assistantTextPart,
   chatMessageText,
+  finalizeAssistantTextParts,
   preserveLocalAssistantErrors,
   renderMediaTags,
   toChatMessages,
   upsertToolPart
 } from './chat-messages'
+
+function completedToolPart(id: string): ChatMessagePart {
+  return {
+    args: {} as never,
+    argsText: '{}',
+    isError: false,
+    result: {},
+    toolCallId: id,
+    toolName: 'terminal',
+    type: 'tool-call'
+  }
+}
 
 describe('toChatMessages', () => {
   it('keeps a turn with interleaved tool-only rows in a single bubble', () => {
@@ -140,6 +154,34 @@ describe('renderMediaTags', () => {
     const text = chatMessageText({ id: 'a', role: 'assistant', parts })
 
     expect(text).toBe('ok\n[Audio: voice.mp3](#media:%2Ftmp%2Fvoice.mp3)')
+  })
+})
+
+describe('finalizeAssistantTextParts', () => {
+  it('preserves assistant text before tool calls when completion text is only the final segment', () => {
+    const parts = [
+      assistantTextPart('First, I will inspect the tree.'),
+      completedToolPart('tool-1'),
+      assistantTextPart('Now I will inspect the tests.'),
+      completedToolPart('tool-2'),
+      assistantTextPart('Partial final')
+    ]
+
+    const finalized = finalizeAssistantTextParts(parts, 'Final answer.')
+
+    expect(finalized.map(part => part.type)).toEqual(['text', 'tool-call', 'text', 'tool-call', 'text'])
+    expect(chatMessageText({ id: 'a', parts: finalized, role: 'assistant' })).toBe(
+      'First, I will inspect the tree.Now I will inspect the tests.Final answer.'
+    )
+  })
+
+  it('does not duplicate prior text when completion text contains the full streamed assistant text', () => {
+    const parts = [assistantTextPart('Planning.'), completedToolPart('tool-1'), assistantTextPart('Done.')]
+
+    const finalized = finalizeAssistantTextParts(parts, 'Planning.Done.')
+
+    expect(finalized.map(part => part.type)).toEqual(['text', 'tool-call', 'text'])
+    expect(chatMessageText({ id: 'a', parts: finalized, role: 'assistant' })).toBe('Planning.Done.')
   })
 })
 
