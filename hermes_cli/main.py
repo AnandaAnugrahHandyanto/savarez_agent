@@ -2014,7 +2014,7 @@ def _preflight_runtime_paths() -> list[str]:
                 parent.mkdir(parents=True, exist_ok=True)
                 if path.exists():
                     # File exists — try appending
-                    with open(path, "a") as f:
+                    with open(path, "a", encoding="utf-8") as f:
                         f.write("")
                 else:
                     # File doesn't exist — try creating and removing
