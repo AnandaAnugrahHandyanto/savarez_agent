@@ -6701,6 +6701,22 @@ def _default_spawn(
 
     profile_arg = normalize_profile_name(task.assignee)
 
+    # Operator override: route every worker to a single known-good profile when
+    # kanban.worker_profile_override is set. The per-assignee custom profiles
+    # (claude_architekt, governance_kern, ...) have NO working inference provider
+    # configured -- `-m <model>` / `--provider` can't supply provider credentials,
+    # so they fail with "No inference provider configured" or openrouter HTTP 401
+    # and produced ZERO completions. The 'default' profile inherits the global
+    # deepseek config (DEEPSEEK_API_KEY) and answers cleanly. Until each profile
+    # has its own provider wired, this routes workers to the profile that works.
+    try:
+        from hermes_cli.config import load_config as _lc_ovr
+        _ovr = ((_lc_ovr().get("kanban") or {}).get("worker_profile_override") or "").strip()
+        if _ovr:
+            profile_arg = normalize_profile_name(_ovr)
+    except Exception:
+        pass
+
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
 
@@ -6733,12 +6749,27 @@ def _default_spawn(
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
     # Goal-loop mode: the worker reads these and wraps its run in the
-    # Ralph-style /goal judge loop (see cli.py quiet-mode path). Only set
-    # when enabled so non-goal tasks keep a clean env.
-    if task.goal_mode:
+    # Ralph-style /goal judge loop (see cli.py quiet-mode path). Enabled
+    # per-task (task.goal_mode) OR globally via kanban.goal_mode_default.
+    # The global default was a DEAD config key (read nowhere) until now, so
+    # every worker ran single-shot (1 message, 0 tool calls, never calling
+    # kanban_complete) and completions stuck at 4 forever. Wiring it here
+    # makes the operator's `goal_mode_default: true` actually drive the loop.
+    _goal_default = False
+    _goal_turns_default = None
+    try:
+        from hermes_cli.config import load_config
+        _kc = (load_config().get("kanban") or {})
+        _goal_default = bool(_kc.get("goal_mode_default", False))
+        _gt = _kc.get("goal_max_turns_default")
+        _goal_turns_default = int(_gt) if _gt is not None else None
+    except Exception:
+        pass
+    if task.goal_mode or _goal_default:
         env["HERMES_KANBAN_GOAL_MODE"] = "1"
-        if task.goal_max_turns is not None:
-            env["HERMES_KANBAN_GOAL_MAX_TURNS"] = str(int(task.goal_max_turns))
+        _turns = task.goal_max_turns if task.goal_max_turns is not None else _goal_turns_default
+        if _turns is not None:
+            env["HERMES_KANBAN_GOAL_MAX_TURNS"] = str(int(_turns))
     terminal_timeout = _worker_terminal_timeout_env(
         task.max_runtime_seconds,
         env.get("TERMINAL_TIMEOUT"),
