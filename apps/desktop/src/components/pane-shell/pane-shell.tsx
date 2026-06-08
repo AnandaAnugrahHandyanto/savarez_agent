@@ -36,8 +36,8 @@ export interface PaneProps {
   forceCollapsed?: boolean
   /** When collapsed, float the contents over the main column on hover/focus instead of hiding them (track stays 0px). */
   hoverReveal?: boolean
-  /** Called with the reveal state whenever a collapsed hoverReveal pane floats in/out. */
-  onHoverRevealChange?: (revealed: boolean) => void
+  /** Called with true while the pane is in collapsed hover-reveal mode, so the consumer can keep contents mounted (ready to slide). */
+  onHoverRevealChange?: (overlayActive: boolean) => void
   id: string
   maxWidth?: WidthValue
   minWidth?: WidthValue
@@ -401,9 +401,13 @@ export function Pane({
     }
   }, [overlayActive])
 
+  // Report overlay-mode (not just the live reveal) so the consumer can keep the
+  // panel's contents MOUNTED while collapsed — otherwise the heavy mount happens
+  // on reveal and stalls the slide a frame (very visible on the instant keyboard
+  // toggle). Visibility is handled separately via the data-pane-hover-reveal attr.
   useEffect(() => {
-    onHoverRevealChange?.(revealed)
-  }, [onHoverRevealChange, revealed])
+    onHoverRevealChange?.(overlayActive)
+  }, [onHoverRevealChange, overlayActive])
 
   const startResize = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
