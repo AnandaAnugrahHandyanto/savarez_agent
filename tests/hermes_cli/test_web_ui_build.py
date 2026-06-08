@@ -140,6 +140,50 @@ class TestBuildWebUISkipsWhenFresh:
         assert kwargs["encoding"] == "utf-8"
         assert kwargs["errors"] == "replace"
 
+    def test_npm_install_always_sets_ci(self, tmp_path):
+        """Helper always sets CI=1 to suppress noisy postinstall scripts."""
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+
+        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run:
+            result = _run_npm_install_deterministic("/usr/bin/npm", web_dir)
+
+        assert result.returncode == 0
+        _, kwargs = mock_run.call_args
+        assert kwargs["env"]["CI"] == "1"
+        assert "PATH" in kwargs["env"]
+
+    def test_npm_install_always_sets_ci_even_with_explicit_env(self, tmp_path):
+        """CI=1 is added even when caller passes an explicit env dict."""
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+
+        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run:
+            _run_npm_install_deterministic(
+                "/usr/bin/npm",
+                web_dir,
+                env={"PATH": "/usr/bin", "NODE_ENV": "production"},
+            )
+
+        _, kwargs = mock_run.call_args
+        assert kwargs["env"]["CI"] == "1"
+        assert kwargs["env"]["PATH"] == "/usr/bin"
+
+    def test_npm_install_ci_overrides_parent_env(self, tmp_path, monkeypatch):
+        """Helper's CI=1 overwrites any CI value inherited from the parent env."""
+        monkeypatch.setenv("CI", "github-actions")
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+
+        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run:
+            _run_npm_install_deterministic("/usr/bin/npm", web_dir)
+
+        _, kwargs = mock_run.call_args
+        assert kwargs["env"]["CI"] == "1"
+
     def test_npm_install_uses_workspace_web_scope(self, tmp_path):
         web_dir, _ = _make_web_dir(tmp_path)
         mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")

@@ -7113,14 +7113,20 @@ def _run_npm_install_deterministic(
     rewrites committed lockfiles (stripping ``"peer": true`` etc.), which leaves
     the working tree dirty and causes the next ``hermes update`` to stash the
     lockfile — repeatedly.
+
+    Always sets ``CI=1`` to suppress noisy postinstall scripts from transitive
+    dependencies (notably ``unicode-animations@1.0.3``'s ANSI banner demo).
     """
+    process_env = env if env is not None else os.environ.copy()
+    process_env["CI"] = "1"
+
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
         ci_cmd = [npm, "ci", *extra_args]
         ci_result = subprocess.run(
             ci_cmd,
             cwd=cwd,
-            env=env,
+            env=process_env,
             capture_output=capture_output,
             text=True,
             encoding="utf-8",
@@ -7135,7 +7141,7 @@ def _run_npm_install_deterministic(
     return subprocess.run(
         install_cmd,
         cwd=cwd,
-        env=env,
+        env=process_env,
         capture_output=capture_output,
         text=True,
         encoding="utf-8",
