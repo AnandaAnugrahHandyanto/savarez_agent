@@ -185,6 +185,19 @@ class TestSendChunking:
         assert adapter._http_session.post.call_count == 1
 
     @pytest.mark.asyncio
+    async def test_bare_phone_chat_id_normalized_for_send(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter.send("15005004144", "short message")
+
+        assert result.success
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["chatId"] == "15005004144@s.whatsapp.net"
+
+    @pytest.mark.asyncio
     async def test_long_message_chunked(self):
         adapter = _make_adapter()
         resp = MagicMock(status=200)
@@ -230,6 +243,32 @@ class TestSendChunking:
         result = await adapter.send("chat1", "   \n  ")
         assert result.success
         assert adapter._http_session.post.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_bare_phone_chat_id_normalized_for_media(self, tmp_path):
+        adapter = _make_adapter()
+        media_path = tmp_path / "photo.jpg"
+        media_path.write_bytes(b"fake image")
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "media1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter._send_media_to_bridge("+15005004144", str(media_path), "image")
+
+        assert result.success
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["chatId"] == "15005004144@s.whatsapp.net"
+
+    @pytest.mark.asyncio
+    async def test_bare_phone_chat_id_normalized_for_typing(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        await adapter.send_typing("+15005004144")
+
+        payload = adapter._http_session.post.call_args.kwargs["json"]
+        assert payload["chatId"] == "15005004144@s.whatsapp.net"
 
     @pytest.mark.asyncio
     async def test_format_applied_before_send(self):

@@ -189,6 +189,7 @@ from gateway.platforms.base import (
     cache_image_from_url,
     cache_audio_from_url,
 )
+from gateway.whatsapp_identity import normalize_whatsapp_send_target
 
 
 def check_whatsapp_requirements() -> bool:
@@ -935,11 +936,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # Format and chunk the message
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self._outgoing_chunk_limit())
+            bridge_chat_id = normalize_whatsapp_send_target(chat_id)
 
             last_message_id = None
             for chunk in chunks:
                 payload: Dict[str, Any] = {
-                    "chatId": chat_id,
+                    "chatId": bridge_chat_id,
                     "message": chunk,
                 }
                 if reply_to and last_message_id is None:
@@ -1022,8 +1024,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
             if not os.path.exists(file_path):
                 return SendResult(success=False, error=f"File not found: {file_path}")
 
+            bridge_chat_id = normalize_whatsapp_send_target(chat_id)
             payload: Dict[str, Any] = {
-                "chatId": chat_id,
+                "chatId": bridge_chat_id,
                 "filePath": file_path,
                 "mediaType": media_type,
             }
@@ -1128,7 +1131,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # socket in CLOSE_WAIT. See #18451.
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/typing",
-                json={"chatId": chat_id},
+                json={"chatId": normalize_whatsapp_send_target(chat_id)},
                 timeout=aiohttp.ClientTimeout(total=5)
             ):
                 pass

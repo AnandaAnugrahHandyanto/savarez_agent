@@ -13,6 +13,7 @@ from gateway.session import (
     build_session_key,
     canonical_whatsapp_identifier,
 )
+from gateway.whatsapp_identity import normalize_whatsapp_send_target
 
 # Legacy name preserved for these tests; product renamed the function to
 # canonical_whatsapp_identifier.  Keep the tests referencing the old name
@@ -950,6 +951,21 @@ class TestWhatsAppIdentifierPublicHelpers:
     def test_normalize_handles_empty_and_none(self):
         assert normalize_whatsapp_identifier("") == ""
         assert normalize_whatsapp_identifier(None) == ""  # type: ignore[arg-type]
+
+    def test_send_target_adds_dm_jid_for_bare_phone(self):
+        assert normalize_whatsapp_send_target("15005004144") == "15005004144@s.whatsapp.net"
+
+    def test_send_target_strips_e164_plus_before_jid_suffix(self):
+        assert normalize_whatsapp_send_target("+15005004144") == "15005004144@s.whatsapp.net"
+
+    def test_send_target_preserves_existing_whatsapp_jids(self):
+        assert normalize_whatsapp_send_target("15005004144@s.whatsapp.net") == "15005004144@s.whatsapp.net"
+        assert normalize_whatsapp_send_target("999999999999999@lid") == "999999999999999@lid"
+        assert normalize_whatsapp_send_target("120363000000000000@g.us") == "120363000000000000@g.us"
+        assert normalize_whatsapp_send_target("status@broadcast") == "status@broadcast"
+
+    def test_send_target_leaves_non_phone_labels_unchanged(self):
+        assert normalize_whatsapp_send_target("Alice (dm)") == "Alice (dm)"
 
     def test_canonical_without_mapping_returns_normalized(self, tmp_path, monkeypatch):
         """With no bridge mapping files, the normalized input is returned."""

@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 # ``@``, ``.`` and ``:`` separators. ``\w`` is pinned to ASCII so
 # full-width digits / Unicode word chars can't sneak through.
 _SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9@.+\-]+$")
+_BARE_SEND_PHONE_RE = re.compile(r"^\+?\d{7,15}$")
 
 from hermes_constants import get_hermes_home
 
@@ -65,6 +66,25 @@ def normalize_whatsapp_identifier(value: str) -> str:
         .split(":", 1)[0]
         .split("@", 1)[0]
     )
+
+
+def normalize_whatsapp_send_target(value: str | None) -> str:
+    """Return a WhatsApp bridge-addressable chat id for outbound sends.
+
+    The Baileys bridge expects direct-message recipients as full JIDs such
+    as ``15551234567@s.whatsapp.net``. Users commonly type the same target
+    as a bare phone number, or in E.164 form with a leading ``+``. Existing
+    JIDs and non-phone labels are left untouched so group chats, LIDs,
+    broadcasts, and directory-resolved names keep their explicit shape.
+    """
+    target = str(value or "").strip()
+    if not target or "@" in target:
+        return target
+    if _BARE_SEND_PHONE_RE.fullmatch(target):
+        if target.startswith("+"):
+            target = target[1:]
+        return f"{target}@s.whatsapp.net"
+    return target
 
 
 def expand_whatsapp_aliases(identifier: str) -> Set[str]:

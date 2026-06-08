@@ -32,6 +32,7 @@ from tools.send_message_tool import (
     _send_matrix_via_adapter,
     _send_signal,
     _send_telegram,
+    _send_whatsapp,
     _send_to_platform,
     send_message_tool,
 )
@@ -863,6 +864,46 @@ class TestSendToPlatformWhatsapp:
 
         assert result["success"] is True
         async_mock.assert_awaited_once_with({"bridge_port": 3000}, chat_id, "hello from hermes")
+
+    @staticmethod
+    def _build_whatsapp_http_mock():
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"messageId": "abc123"})
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_session.post = MagicMock(return_value=mock_resp)
+        return mock_session
+
+    def test_standalone_whatsapp_send_normalizes_bare_phone(self):
+        mock_session = self._build_whatsapp_http_mock()
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(
+                _send_whatsapp({"bridge_port": 3000}, "15005004144", "hello from hermes")
+            )
+
+        assert result["success"] is True
+        assert result["chat_id"] == "15005004144@s.whatsapp.net"
+        payload = mock_session.post.call_args.kwargs["json"]
+        assert payload["chatId"] == "15005004144@s.whatsapp.net"
+
+    def test_standalone_whatsapp_send_preserves_existing_jid(self):
+        mock_session = self._build_whatsapp_http_mock()
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(
+                _send_whatsapp({"bridge_port": 3000}, "999999999999999@lid", "hello")
+            )
+
+        assert result["success"] is True
+        assert result["chat_id"] == "999999999999999@lid"
+        payload = mock_session.post.call_args.kwargs["json"]
+        assert payload["chatId"] == "999999999999999@lid"
 
 
 class TestSendTelegramHtmlDetection:

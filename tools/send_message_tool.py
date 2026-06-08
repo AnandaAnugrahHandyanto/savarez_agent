@@ -15,6 +15,7 @@ import time
 from email.utils import formatdate
 
 from agent.redact import redact_sensitive_text
+from gateway.whatsapp_identity import normalize_whatsapp_send_target
 
 logger = logging.getLogger(__name__)
 
@@ -1090,10 +1091,11 @@ async def _send_whatsapp(extra, chat_id, message):
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         bridge_port = extra.get("bridge_port", 3000)
+        bridge_chat_id = normalize_whatsapp_send_target(chat_id)
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"http://localhost:{bridge_port}/send",
-                json={"chatId": chat_id, "message": message},
+                json={"chatId": bridge_chat_id, "message": message},
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 if resp.status == 200:
@@ -1101,7 +1103,7 @@ async def _send_whatsapp(extra, chat_id, message):
                     return {
                         "success": True,
                         "platform": "whatsapp",
-                        "chat_id": chat_id,
+                        "chat_id": bridge_chat_id,
                         "message_id": data.get("messageId"),
                     }
                 body = await resp.text()
