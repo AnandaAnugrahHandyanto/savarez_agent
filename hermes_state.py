@@ -1009,6 +1009,16 @@ class SessionDB:
             conn.execute("UPDATE sessions SET cwd = ? WHERE id = ?", (cwd, session_id))
 
         self._execute_write(_do)
+
+    def get_session_cwd(self, session_id: str) -> Optional[str]:
+        """Get the working directory for a session, or None."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT cwd FROM sessions WHERE id = ?", (session_id,)
+            )
+            row = cursor.fetchone()
+        return row["cwd"] if row else None
+
     # ──────────────────────────────────────────────────────────────────────
     # Compression locks
     # ──────────────────────────────────────────────────────────────────────
