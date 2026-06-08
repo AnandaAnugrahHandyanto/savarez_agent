@@ -12,6 +12,7 @@ import asyncio
 import contextvars
 import json
 import logging
+import mimetypes
 import os
 import re
 import time
@@ -53,6 +54,52 @@ from gateway.platforms.base import (
 
 
 logger = logging.getLogger(__name__)
+
+_SUPPORTED_SLACK_IMAGE_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".gif",
+    ".webp",
+    ".heic",
+    ".heif",
+    ".tif",
+    ".tiff",
+    ".bmp",
+}
+
+
+def _slack_image_extension(file_obj: Dict[str, Any], mimetype: str) -> str:
+    """Preserve Slack image formats instead of coercing unknown images to .jpg."""
+
+    for key in ("name", "title"):
+        raw_name = str(file_obj.get(key) or "")
+        if raw_name:
+            _base, ext = os.path.splitext(raw_name)
+            ext = ext.lower()
+            if ext in _SUPPORTED_SLACK_IMAGE_EXTENSIONS:
+                return ext
+
+    guessed = mimetypes.guess_extension((mimetype or "").split(";", 1)[0].strip())
+    if guessed:
+        guessed = ".jpg" if guessed == ".jpe" else guessed.lower()
+        if guessed in _SUPPORTED_SLACK_IMAGE_EXTENSIONS:
+            return guessed
+
+    subtype = (mimetype or "").split("/", 1)[-1].split(";", 1)[0].lower()
+    subtype_map = {
+        "jpeg": ".jpg",
+        "jpg": ".jpg",
+        "png": ".png",
+        "gif": ".gif",
+        "webp": ".webp",
+        "heic": ".heic",
+        "heif": ".heif",
+        "tiff": ".tiff",
+        "tif": ".tif",
+        "bmp": ".bmp",
+    }
+    return subtype_map.get(subtype, ".jpg")
 
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
@@ -2461,9 +2508,7 @@ class SlackAdapter(BasePlatformAdapter):
             url = f.get("url_private_download") or f.get("url_private", "")
             if mimetype.startswith("image/") and url:
                 try:
-                    ext = "." + mimetype.split("/")[-1].split(";")[0]
-                    if ext not in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
-                        ext = ".jpg"
+                    ext = _slack_image_extension(f, mimetype)
                     # Slack private URLs require the bot token as auth header
                     cached = await self._download_slack_file(url, ext, team_id=team_id)
                     media_urls.append(cached)

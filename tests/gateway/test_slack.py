@@ -67,7 +67,7 @@ import gateway.platforms.slack as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from gateway.platforms.slack import SlackAdapter, _slack_image_extension  # noqa: E402
 
 
 async def _pending_for_fake_task():
@@ -76,6 +76,18 @@ async def _pending_for_fake_task():
     # event loop will cancel us at teardown, which the adapter's
     # ``_on_socket_mode_task_done`` already treats as intentional shutdown.
     await asyncio.Event().wait()
+
+
+def test_slack_image_extension_preserves_heic_from_filename():
+    assert _slack_image_extension({"name": "screenshot.HEIC"}, "image/heic") == ".heic"
+
+
+def test_slack_image_extension_preserves_tiff_from_mimetype():
+    assert _slack_image_extension({"name": "screenshot"}, "image/tiff") == ".tiff"
+
+
+def test_slack_image_extension_falls_back_to_jpg_for_unknown_image():
+    assert _slack_image_extension({"name": "screenshot"}, "image/x-unknown") == ".jpg"
 
 
 def _fake_create_task(coro):
