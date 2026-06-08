@@ -252,6 +252,82 @@ class TestGoalManager:
         assert mgr2.state.goal == "do the thing"
         assert mgr2.is_active()
 
+    def test_set_budget_updates_max_turns_in_place(self, hermes_home):
+        """/goal budget N — bump the budget on an active goal without losing turns_used."""
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="budget-sid-1", default_max_turns=5)
+        mgr.set("do work")
+        mgr.state.turns_used = 3
+        state = mgr.set_budget(20)
+        assert state is not None
+        assert state.max_turns == 20
+        assert state.turns_used == 3  # NOT reset, unlike resume()
+        assert state.status == "active"
+
+    def test_set_budget_unpauses_when_exhausted_and_new_budget_higher(self, hermes_home):
+        """If the goal auto-paused because the budget was exhausted, raising
+        the ceiling should put it straight back to active so the next user
+        message resumes the loop."""
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="budget-sid-2", default_max_turns=5)
+        mgr.set("do work")
+        # Simulate the exhausted-budget auto-pause path
+        mgr.state.turns_used = 5
+        mgr.state.status = "paused"
+        mgr.state.paused_reason = "turn budget exhausted (5/5)"
+
+        state = mgr.set_budget(20)
+        assert state.status == "active"
+        assert state.paused_reason is None
+        assert state.max_turns == 20
+        assert state.turns_used == 5  # preserved
+
+    def test_set_budget_preserves_user_pause(self, hermes_home):
+        """A user-initiated pause should stay paused after a budget bump —
+        only budget-exhausted auto-pauses get auto-resumed."""
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="budget-sid-3", default_max_turns=5)
+        mgr.set("do work")
+        mgr.pause(reason="user-paused")
+
+        state = mgr.set_budget(20)
+        assert state.status == "paused"
+        assert state.paused_reason == "user-paused"
+        assert state.max_turns == 20
+
+    def test_set_budget_rejects_invalid(self, hermes_home):
+        import pytest as _pytest
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="budget-sid-4")
+        mgr.set("g")
+        with _pytest.raises(ValueError):
+            mgr.set_budget(0)
+        with _pytest.raises(ValueError):
+            mgr.set_budget(-3)
+        with _pytest.raises(ValueError):
+            mgr.set_budget("not a number")
+
+    def test_set_budget_returns_none_with_no_goal(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="budget-sid-5")
+        assert mgr.set_budget(50) is None
+
+    def test_set_budget_persists_across_managers(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr1 = GoalManager(session_id="budget-sid-6", default_max_turns=5)
+        mgr1.set("work")
+        mgr1.set_budget(42)
+
+        mgr2 = GoalManager(session_id="budget-sid-6")
+        assert mgr2.state is not None
+        assert mgr2.state.max_turns == 42
+
     def test_evaluate_after_turn_done(self, hermes_home):
         """Judge says done → status=done, no continuation."""
         from hermes_cli import goals
