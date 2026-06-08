@@ -514,6 +514,59 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
     assert all(sid == winner for sid in server._sessions)
 
 
+def test_ws_detach_drops_running_session_events_instead_of_falling_back_to_stdio(
+    server, monkeypatch
+):
+    """A detached WS-owned running session must not stream raw events to stdout.
+
+    The dashboard service runs the gateway in-process with stdout connected to
+    journald, not a TUI reader. Falling back a disconnected WS session to
+    ``_stdio_transport`` leaks live stream frames into the service log and leaves
+    Desktop out of sync until resume rebinds the session.
+    """
+
+    import importlib
+
+    ws_mod = importlib.import_module("tui_gateway.ws")
+
+    class _ClosedWsTransport:
+        def write(self, _obj):
+            raise AssertionError("closed websocket transport should not be used")
+
+        def close(self):
+            pass
+
+    closed_transport = _ClosedWsTransport()
+    stdout = io.StringIO()
+    server._real_stdout = stdout
+    scheduled = []
+    monkeypatch.setattr(server, "_schedule_ws_orphan_reap", scheduled.append)
+
+    server._sessions["live"] = {
+        "history_lock": threading.RLock(),
+        "running": True,
+        "transport": closed_transport,
+    }
+
+    detached, reaped = ws_mod._detach_sessions_for_transport(
+        closed_transport,
+        peer="test-peer",
+    )
+
+    assert detached == 1
+    assert reaped == 1
+    assert scheduled == ["live"]
+    assert server._sessions["live"]["transport"] is not server._stdio_transport
+
+    server._emit("reasoning.delta", "live", {"text": "must-not-hit-journal"})
+
+    assert stdout.getvalue() == ""
+    assert not server._ws_session_is_orphaned(server._sessions["live"])
+
+    server._sessions["live"]["running"] = False
+    assert server._ws_session_is_orphaned(server._sessions["live"])
+
+
 def test_session_resume_live_payload_uses_current_history_with_ancestors(server, monkeypatch):
     """Live resume should not reuse a stale ancestor-inclusive snapshot."""
 

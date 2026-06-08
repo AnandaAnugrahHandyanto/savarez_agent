@@ -933,7 +933,7 @@ def test_ws_orphan_reap_closes_worker_when_session_stays_detached(monkeypatch):
             closed["worker"] = True
 
     server._sessions["orphan-sid"] = _session(
-        transport=server._stdio_transport,
+        transport=server._detached_ws_transport,
         slash_worker=_FakeWorker(),
         running=False,
     )
@@ -961,11 +961,11 @@ def test_ws_orphan_reap_spares_reattached_session(monkeypatch):
     assert server._ws_session_is_orphaned(reattached) is False
 
     # Mid-turn sessions are also spared even if detached.
-    mid_turn = _session(transport=server._stdio_transport, running=True)
+    mid_turn = _session(transport=server._detached_ws_transport, running=True)
     assert server._ws_session_is_orphaned(mid_turn) is False
 
     # Already finalized sessions are spared (idempotency).
-    done = _session(transport=server._stdio_transport, running=False, _finalized=True)
+    done = _session(transport=server._detached_ws_transport, running=False, _finalized=True)
     assert server._ws_session_is_orphaned(done) is False
 
 

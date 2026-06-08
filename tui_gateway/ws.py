@@ -156,6 +156,35 @@ def _disable_nagle(ws: Any) -> None:
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
 
+def _detach_sessions_for_transport(transport: WSTransport, *, peer: str) -> tuple[int, int]:
+    """Park sessions owned by a dead WS transport without falling back to stdio.
+
+    In stdio/Ink mode the stdio transport is a real JSON-RPC peer. In the
+    dashboard's in-process WebSocket mode, stdout is the service log. A WS-owned
+    session that falls back to stdio after disconnect will stream raw event
+    frames to journald and Desktop will miss them. Point detached sessions at a
+    dropping transport until ``session.resume`` or ``prompt.submit`` rebinds a
+    live client transport.
+    """
+
+    detached_sessions = 0
+    reaped_scheduled = 0
+    for _sid, sess in list(server._sessions.items()):
+        if sess.get("transport") is transport:
+            sess["transport"] = server._detached_ws_transport
+            detached_sessions += 1
+            try:
+                server._schedule_ws_orphan_reap(_sid)
+                reaped_scheduled += 1
+            except Exception:
+                _log.exception(
+                    "ws orphan-reap schedule failed peer=%s sid=%s",
+                    peer,
+                    _sid,
+                )
+    return detached_sessions, reaped_scheduled
+
+
 async def handle_ws(ws: Any) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
     peer = _ws_peer_label(ws)
@@ -288,28 +317,15 @@ async def handle_ws(ws: Any) -> None:
         if transport is not None:
             transport.close()
 
-            # Detach the transport from any sessions it owned so later emits
-            # fall back to stdio instead of crashing into a closed socket.
-            #
-            # In the dashboard's in-process gateway that stdio fallback has no
-            # real reader, so a detached session would otherwise sit forever
-            # holding its _SlashWorker subprocess open (one leaked python proc
-            # per browser refresh — #38591 fallout). Schedule a grace-delayed
-            # reap; a quick reconnect / session.resume re-binds a live
-            # transport and cancels it (see _ws_session_is_orphaned).
-            for _sid, sess in list(server._sessions.items()):
-                if sess.get("transport") is transport:
-                    sess["transport"] = server._stdio_transport
-                    detached_sessions += 1
-                    try:
-                        server._schedule_ws_orphan_reap(_sid)
-                        reaped_scheduled += 1
-                    except Exception:
-                        _log.exception(
-                            "ws orphan-reap schedule failed peer=%s sid=%s",
-                            peer,
-                            _sid,
-                        )
+            # Detach the transport from any sessions it owned so later emits do
+            # not crash into a closed socket or fall through to dashboard
+            # stdout/journald. A quick reconnect / session.resume re-binds a
+            # live transport and cancels the orphan reap (see
+            # _ws_session_is_orphaned).
+            detached_sessions, reaped_scheduled = _detach_sessions_for_transport(
+                transport,
+                peer=peer,
+            )
         try:
             await ws.close()
         except Exception as exc:

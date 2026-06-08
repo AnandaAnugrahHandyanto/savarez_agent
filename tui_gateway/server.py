@@ -25,6 +25,7 @@ from hermes_constants import (
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tui_gateway.transport import (
+    DroppingTransport,
     StdioTransport,
     Transport,
     bind_transport,
@@ -207,6 +208,12 @@ sys.stdout = sys.stderr
 # patches of `_real_stdout` (used extensively in tests) still land correctly.
 _stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
 
+# Detached WebSocket sessions are parked here until a reconnect/resume rebinds
+# them to a live WS transport. Do not use _stdio_transport for these sessions:
+# in the dashboard service stdout is journald, so stream frames would leak to
+# service logs and Desktop would remain out of sync.
+_detached_ws_transport = DroppingTransport()
+
 
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
@@ -383,16 +390,17 @@ def _teardown_session(session: dict | None) -> None:
 def _ws_session_is_orphaned(session: dict | None) -> bool:
     """True if a WS session has no live transport and no in-flight turn.
 
-    After ``handle_ws`` detaches a disconnected client it points the session
-    at ``_stdio_transport``. In the dashboard's in-process gateway there is no
-    real stdio peer reading those frames, so a session left on the stdio
-    transport (and not mid-turn) is genuinely orphaned and safe to reap.
+    After ``handle_ws`` detaches a disconnected client it points the session at
+    ``_detached_ws_transport``. That transport intentionally drops stream frames
+    instead of falling back to stdout/journald. Once the session is idle, it is
+    genuinely orphaned and safe to reap unless a reconnect/resume has rebound it
+    to a live client transport.
     """
     if not session or session.get("_finalized"):
         return False
     if session.get("running"):
         return False
-    return session.get("transport") is _stdio_transport
+    return session.get("transport") is _detached_ws_transport
 
 
 def _schedule_ws_orphan_reap(sid: str) -> None:
@@ -4348,7 +4356,7 @@ def _(rid, params: dict) -> dict:
         return err
     # Re-bind to the current client transport for this request. This keeps
     # streaming events on the active websocket even if an earlier disconnect
-    # or fallback moved the session transport to stdio.
+    # parked the session on the detached-WS dropping transport.
     if (t := current_transport()) is not None:
         session["transport"] = t
     with session["history_lock"]:

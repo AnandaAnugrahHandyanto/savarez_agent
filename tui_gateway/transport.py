@@ -183,6 +183,25 @@ class StdioTransport:
         return None
 
 
+class DroppingTransport:
+    """Transport that intentionally drops frames while reporting success.
+
+    Used for WebSocket-owned sessions after their client disconnects. In the
+    dashboard process, falling back those sessions to stdio writes raw JSON-RPC
+    stream frames to journald instead of a real TUI reader. Dropping keeps the
+    running agent safe until a later ``session.resume``/``prompt.submit``
+    rebinds the session to a live client transport.
+    """
+
+    __slots__ = ()
+
+    def write(self, obj: dict) -> bool:
+        return True
+
+    def close(self) -> None:
+        return None
+
+
 class TeeTransport:
     """Mirrors writes to one primary plus N best-effort secondaries.
 
