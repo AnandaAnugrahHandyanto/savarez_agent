@@ -1383,6 +1383,15 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.error("Job '%s': %s", job_id, err)
             return False, "", "", err
 
+        # Bump usage for all listed skills even in no_agent mode.
+        # The skill being wired to a scheduled job is the usage signal.
+        for _skill_name in (job.get("skills") or []):
+            try:
+                from tools.skill_usage import bump_use as _bump
+                _bump(str(_skill_name).strip())
+            except Exception:
+                logger.debug("no_agent pre-gate bump_use(%s) failed", _skill_name, exc_info=True)
+
         # Apply workdir if configured — lets scripts use predictable relative
         # paths. For no_agent jobs this is just the subprocess cwd (not an
         # agent TERMINAL_CWD bridge).
@@ -1405,6 +1414,19 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     pass
 
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Gap 2: when the script lives inside a skill directory, bump
+        # that skill's usage so script-only (no_agent) invocations are
+        # tracked.  Without this the curator prunes active skills.
+        try:
+            _script_resolved = Path(script_path).resolve()
+            _skills_dir = _get_hermes_home() / "skills"
+            if _script_resolved.is_relative_to(_skills_dir):
+                _script_skill = _script_resolved.relative_to(_skills_dir).parts[0]
+                from tools.skill_usage import bump_use as _bump
+                _bump(_script_skill)
+        except Exception:
+            logger.debug("no_agent script-path skill bump failed for '%s'", script_path, exc_info=True)
 
         if not ok:
             # Script crashed / timed out / exited non-zero.  Deliver the
@@ -1478,6 +1500,18 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     except Exception as e:
         logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
 
+    # Bump usage for all listed skills BEFORE the wake gate.  Their being
+    # wired into a scheduled job is itself the usage signal — whether this
+    # particular tick fires the agent is incidental.  Without this,
+    # script-gated jobs accumulate no usage telemetry and the curator
+    # prunes the skills as stale.  (Fixes #42303, Gap 1.)
+    for _skill_name in (job.get("skills") or []):
+        try:
+            from tools.skill_usage import bump_use as _bump
+            _bump(str(_skill_name).strip())
+        except Exception:
+            logger.debug("pre-gate bump_use(%s) failed", _skill_name, exc_info=True)
+
     # Wake-gate: if this job has a pre-check script, run it BEFORE building
     # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
     # the whole agent run. We pass the result into _build_job_prompt so
@@ -1487,6 +1521,19 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     if script_path:
         prerun_script = _run_job_script(script_path)
         _ran_ok, _script_output = prerun_script
+
+        # Gap 2: when the script lives inside a skill directory, bump
+        # that skill's usage so script-only invocations are tracked.
+        try:
+            _script_resolved = Path(script_path).resolve()
+            _skills_dir = _get_hermes_home() / "skills"
+            if _script_resolved.is_relative_to(_skills_dir):
+                _script_skill = _script_resolved.relative_to(_skills_dir).parts[0]
+                from tools.skill_usage import bump_use as _bump
+                _bump(_script_skill)
+        except Exception:
+            logger.debug("script-path skill bump failed for '%s'", script_path, exc_info=True)
+
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(
                 "Job '%s' (ID: %s): wakeAgent=false, skipping agent run",

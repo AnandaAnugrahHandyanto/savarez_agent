@@ -2736,3 +2736,141 @@ class TestCronDeliveryTargets:
         monkeypatch.setattr(gateway_config, "load_gateway_config", _boom)
 
         assert cron_delivery_targets() == []
+
+
+class TestBumpUseBeforeWakeGate:
+    """Regression tests for #42303: bump_use must fire before the wake gate."""
+
+    def test_skills_bumped_even_when_wake_agent_false(self, tmp_path, monkeypatch):
+        """Gap 1: skills listed in the job must be bumped even when the
+        prerun script returns ``wakeAgent: false`` and the agent is skipped."""
+        from cron.scheduler import _run_job_impl
+
+        config = tmp_path / "config.yaml"
+        config.write_text("model: openrouter/test\n")
+        (tmp_path / ".env").touch()
+
+        bump_calls = []
+
+        def fake_bump(name):
+            bump_calls.append(name)
+
+        monkeypatch.setattr("cron.scheduler._hermes_home", tmp_path)
+        with patch("cron.scheduler._run_job_script",
+                   return_value=(True, '{"wakeAgent": false}')), \
+             patch("cron.scheduler._parse_wake_gate", return_value=False), \
+             patch("tools.skill_usage.bump_use", side_effect=fake_bump):
+            job = {
+                "id": "test-1",
+                "name": "test",
+                "prompt": "hello",
+                "skills": ["drive-planner", "daily-briefing"],
+                "script": "/tmp/gate.sh",
+            }
+            ok, doc, resp, err = _run_job_impl(job)
+
+        assert ok is True
+        assert "wakeAgent=false" in doc
+        # Both skills must have been bumped even though agent was skipped.
+        assert "drive-planner" in bump_calls
+        assert "daily-briefing" in bump_calls
+
+    def test_script_under_skill_dir_bumps_that_skill(self, tmp_path, monkeypatch):
+        """Gap 2: when ``script:`` resolves under the skills directory,
+        the containing skill's usage is bumped."""
+        from cron.scheduler import _run_job_impl
+
+        config = tmp_path / "config.yaml"
+        config.write_text("model: openrouter/test\n")
+        (tmp_path / ".env").touch()
+
+        # Create a fake skill directory with a script.
+        skill_dir = tmp_path / "skills" / "drive-planner"
+        skill_dir.mkdir(parents=True)
+        script = skill_dir / "sweep.sh"
+        script.write_text("#!/bin/bash\necho done\n")
+        script.chmod(0o755)
+
+        bump_calls = []
+
+        def fake_bump(name):
+            bump_calls.append(name)
+
+        monkeypatch.setattr("cron.scheduler._hermes_home", tmp_path)
+        with patch("tools.skill_usage.bump_use", side_effect=fake_bump), \
+             patch("cron.scheduler._run_job_script",
+                   return_value=(True, '{"wakeAgent": false}')), \
+             patch("cron.scheduler._parse_wake_gate", return_value=False):
+            job = {
+                "id": "test-2",
+                "name": "test",
+                "prompt": "hello",
+                "skills": [],
+                "script": str(script),
+            }
+            _run_job_impl(job)
+
+        assert "drive-planner" in bump_calls
+
+    def test_no_agent_skills_bumped(self, tmp_path, monkeypatch):
+        """no_agent path: skills listed in the job are bumped even when
+        the job runs in pure-script mode."""
+        from cron.scheduler import _run_job_impl
+
+        config = tmp_path / "config.yaml"
+        config.write_text("model: openrouter/test\n")
+        (tmp_path / ".env").touch()
+
+        bump_calls = []
+
+        def fake_bump(name):
+            bump_calls.append(name)
+
+        monkeypatch.setattr("cron.scheduler._hermes_home", tmp_path)
+        with patch("tools.skill_usage.bump_use", side_effect=fake_bump), \
+             patch("cron.scheduler._run_job_script",
+                   return_value=(True, "all clear")):
+            job = {
+                "id": "test-3",
+                "name": "test",
+                "no_agent": True,
+                "skills": ["methodology"],
+                "script": "/tmp/run.sh",
+            }
+            _run_job_impl(job)
+
+        assert "methodology" in bump_calls
+
+    def test_no_agent_script_under_skill_dir_bumps(self, tmp_path, monkeypatch):
+        """no_agent path + Gap 2: script under skill dir bumps that skill."""
+        from cron.scheduler import _run_job_impl
+
+        config = tmp_path / "config.yaml"
+        config.write_text("model: openrouter/test\n")
+        (tmp_path / ".env").touch()
+
+        skill_dir = tmp_path / "skills" / "where-am-i"
+        skill_dir.mkdir(parents=True)
+        script = skill_dir / "locate.sh"
+        script.write_text("#!/bin/bash\necho here\n")
+        script.chmod(0o755)
+
+        bump_calls = []
+
+        def fake_bump(name):
+            bump_calls.append(name)
+
+        monkeypatch.setattr("cron.scheduler._hermes_home", tmp_path)
+        with patch("tools.skill_usage.bump_use", side_effect=fake_bump), \
+             patch("cron.scheduler._run_job_script",
+                   return_value=(True, "done")):
+            job = {
+                "id": "test-4",
+                "name": "test",
+                "no_agent": True,
+                "skills": [],
+                "script": str(script),
+            }
+            _run_job_impl(job)
+
+        assert "where-am-i" in bump_calls
