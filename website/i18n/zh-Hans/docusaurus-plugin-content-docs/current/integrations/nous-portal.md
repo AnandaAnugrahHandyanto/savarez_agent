@@ -60,7 +60,7 @@ Portal 汇集了一批适合智能体任务的模型，并统一计入你的 Nou
 
 你的 Portal 账号同样覆盖 [chat.nousresearch.com](https://chat.nousresearch.com)——Nous Research 的网页对话界面，使用相同的模型目录。适合离开终端时使用，或用于非 agent 的普通对话场景。
 
-### 凭证不落入 dotfiles
+### 不在 dotfiles 中保存凭证
 
 由于所有请求都通过一个经 OAuth 认证的 Portal 会话路由，你不会积累一个包含十几个长期 API 密钥的 `.env` 文件。磁盘上唯一的凭证是 `~/.hermes/auth.json` 中的 refresh token（刷新令牌），Hermes 会在每次请求时从中生成短期 JWT——详见下方[令牌处理](#token-handling)。
 
@@ -102,7 +102,7 @@ hermes setup --portal
 
 如果还没有订阅，请先在 [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) 注册。
 
-### 已有安装——在现有提供商旁添加 Portal
+### 已有安装——将 Portal 添加为另一个提供商
 
 如果你已经配置了 OpenRouter、Anthropic 或其他提供商，想在此基础上添加 Portal：
 
