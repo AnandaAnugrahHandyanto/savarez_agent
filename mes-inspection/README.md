@@ -44,7 +44,20 @@ cp config/mes_inspection.yaml.example ~/.mes-inspection/config.yaml
 # 编辑配置：目标主机、SSH 凭据、阈值、飞书 Webhook
 ```
 
-### 3. 运行巡检
+### 3. 环境变量（密钥）
+
+```bash
+cp .env.example .env
+# 编辑 .env 填入实际密钥
+```
+
+所有密钥通过环境变量传递，不写入 YAML：
+- `ORACLE_PASSWORD` — Oracle 数据库密码
+- `GITLAB_TOKEN` — GitLab API Token
+- `FEISHU_APP_ID` / `FEISHU_APP_SECRET` — 飞书应用凭据
+- `QWEN_API_KEY` — 模型 API Key
+
+### 4. 运行巡检
 
 ```bash
 # 心跳检查（upstream 节点存活）
@@ -57,7 +70,7 @@ python scripts/full_check.py
 python scripts/deep_analysis.py
 ```
 
-### 4. 调试工具
+### 5. 调试工具
 
 ```bash
 # GC 日志截取（按时间段）
