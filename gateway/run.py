@@ -6232,6 +6232,7 @@ class GatewayRunner(GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
         platform_allow_bots_map = {
             Platform.DISCORD: "DISCORD_ALLOW_BOTS",
             Platform.FEISHU: "FEISHU_ALLOW_BOTS",
+            Platform.SLACK: "SLACK_ALLOW_BOTS",
         }
 
         # Plugin platforms: check the registry for auth env var names
