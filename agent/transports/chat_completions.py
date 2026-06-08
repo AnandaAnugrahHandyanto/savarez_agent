@@ -468,17 +468,41 @@ class ChatCompletionsTransport(ProviderTransport):
                 extra_body["thinking_config"] = thinking_config
 
         # Merge any pre-built extra_body additions
+        # Special handling for local Ollama: preserve num_predict=-1 to avoid
+        # truncating long responses, even when user has a finite value in their
+        # profile or request_overrides. Local development workflows almost always
+        # want unlimited output.
+        _base_url_str = str(params.get("base_url") or "")
+        is_local_ollama = urlparse(_base_url_str).port == 11434
         additions = params.get("extra_body_additions")
         if additions:
+            if is_local_ollama and "num_predict" in extra_body:
+                additions = {**additions}  # shallow copy to avoid mutating original
+                del additions["num_predict"]  # preserve our -1 setting
             extra_body.update(additions)
 
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
         # Request overrides last (service_tier etc.)
+        # Special handling for local Ollama: preserve num_predict=-1 to avoid
+        # truncating long responses, even when user has a finite value in their
+        # profile or request_overrides. Local development workflows almost always
+        # want unlimited output.
+        _base_url_str = str(params.get("base_url") or "")
         overrides = params.get("request_overrides")
         if overrides:
-            api_kwargs.update(overrides)
+            for k, v in overrides.items():
+                if k == "extra_body" and isinstance(v, dict):
+                    # For Ollama local backend, keep num_predict=-1 (unlimited) 
+                    # to prevent artificial truncation of long responses.
+                    is_local_ollama = urlparse(_base_url_str).port == 11434
+                    if is_local_ollama and "num_predict" in extra_body:
+                        v = {**v}  # shallow copy to avoid mutating original
+                        del v["num_predict"]  # preserve our -1 setting
+                    extra_body.update(v)
+                else:
+                    api_kwargs[k] = v
 
         return api_kwargs
 
@@ -550,6 +574,13 @@ class ChatCompletionsTransport(ProviderTransport):
         elif anthropic_max is not None:
             api_kwargs["max_tokens"] = anthropic_max
 
+        # === Local Ollama Backend Configuration ===  Similar to legacy path, preserve num_predict=-1 for local Ollama.
+        _base_url_str = str(params.get("base_url") or "")
+        if urlparse(_base_url_str).port == 11434:  # Local Ollama default port
+            api_kwargs["max_tokens"] = max(
+                api_kwargs.get("max_tokens", 0), 16384
+            )
+
         # Provider-specific api_kwargs extras (reasoning_effort, metadata, etc.)
         reasoning_config = params.get("reasoning_config")
         extra_body_from_profile, top_level_from_profile = (
@@ -566,6 +597,11 @@ class ChatCompletionsTransport(ProviderTransport):
 
         # extra_body assembly
         extra_body: dict[str, Any] = {}
+
+        # Initialize with Ollama local defaults first (same as legacy path)
+        _base_url_str = str(params.get("base_url") or "")
+        if urlparse(_base_url_str).port == 11434:  # Local Ollama default port
+            extra_body["num_predict"] = -1
 
         # Profile's extra_body (tags, provider prefs, vl_high_resolution, etc.)
         profile_body = profile.build_extra_body(
@@ -589,10 +625,19 @@ class ChatCompletionsTransport(ProviderTransport):
             extra_body.update(additions)
 
         # Request overrides (user config)
+        # Special handling for local Ollama: preserve num_predict=-1 to avoid
+        # truncating long responses, even when user has a finite value.
+        _base_url_str = str(params.get("base_url") or "")
         overrides = params.get("request_overrides")
         if overrides:
             for k, v in overrides.items():
                 if k == "extra_body" and isinstance(v, dict):
+                    # For Ollama local backend, keep num_predict=-1 (unlimited) 
+                    # to prevent artificial truncation of long responses.
+                    is_local_ollama = urlparse(_base_url_str).port == 11434
+                    if is_local_ollama and "num_predict" in extra_body:
+                        v = {**v}  # shallow copy to avoid mutating original
+                        del v["num_predict"]  # preserve our -1 setting
                     extra_body.update(v)
                 else:
                     api_kwargs[k] = v
