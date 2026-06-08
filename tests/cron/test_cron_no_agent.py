@@ -12,6 +12,8 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -329,3 +331,75 @@ def test_run_job_script_path_traversal_still_blocked(hermes_env):
     ok, output = _run_job_script("/etc/passwd")
     assert ok is False
     assert "Blocked" in output or "outside" in output
+
+
+# ---------------------------------------------------------------------------
+# _run_job_script: cwd_override (per-job workdir) — process-cwd isolation
+# ---------------------------------------------------------------------------
+
+
+def test_run_job_script_honours_cwd_override(hermes_env, tmp_path):
+    """A configured workdir becomes the script subprocess cwd."""
+    from cron.scheduler import _run_job_script
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+
+    script_path = hermes_env / "scripts" / "where.sh"
+    script_path.write_text("#!/bin/bash\npwd\n")
+
+    ok, output = _run_job_script("where.sh", cwd_override=str(workdir))
+    assert ok is True
+    # Compare resolved paths — on macOS /tmp is a symlink to /private/tmp.
+    assert Path(output.strip()).resolve() == workdir.resolve()
+
+
+def test_run_job_script_invalid_cwd_override_falls_back(hermes_env):
+    """A workdir that no longer exists falls back to the script's own dir
+    instead of failing the run."""
+    from cron.scheduler import _run_job_script
+
+    script_path = hermes_env / "scripts" / "where2.sh"
+    script_path.write_text("#!/bin/bash\npwd\n")
+
+    ok, output = _run_job_script("where2.sh", cwd_override="/no/such/dir/xyz")
+    assert ok is True
+    assert Path(output.strip()).resolve() == (hermes_env / "scripts").resolve()
+
+
+def test_run_job_no_agent_does_not_mutate_process_cwd(hermes_env, tmp_path):
+    """Regression: a no_agent job with a workdir runs its script from that
+    workdir WITHOUT os.chdir()-ing the scheduler process.
+
+    os.chdir is process-global. tick() dispatches workdir/profile jobs on a
+    sequential pool concurrently with the workdir-less parallel pool, and
+    those parallel jobs rely on the scheduler's own cwd. A global cwd change
+    here would bleed into them, so the workdir must be scoped to the script
+    subprocess only.
+    """
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    workdir = tmp_path / "proj"
+    workdir.mkdir()
+
+    script_path = hermes_env / "scripts" / "where3.sh"
+    script_path.write_text("#!/bin/bash\npwd\n")
+
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="where3.sh",
+        no_agent=True,
+        deliver="local",
+        workdir=str(workdir),
+    )
+
+    cwd_before = os.getcwd()
+    success, _doc, final_response, error = run_job(job)
+    assert success is True
+    assert error is None
+    # The script saw the configured workdir as its cwd...
+    assert Path(final_response.strip()).resolve() == workdir.resolve()
+    # ...but the scheduler's own process cwd was never changed.
+    assert os.getcwd() == cwd_before

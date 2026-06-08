@@ -954,7 +954,9 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(
+    script_path: str, cwd_override: Optional[str] = None
+) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -976,6 +978,14 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
             are also validated to ensure they stay within the scripts dir.
+        cwd_override: Optional working directory for the script subprocess
+            (a job's configured ``workdir``).  When set and pointing at an
+            existing directory, the script runs from there so its relative
+            paths resolve predictably; otherwise it falls back to the
+            script's own directory.  This is passed straight to
+            ``subprocess.run(cwd=...)`` and never mutates the scheduler's
+            process-global cwd, so it cannot bleed into other jobs running
+            concurrently in the parallel pool.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -1043,6 +1053,24 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     except Exception:
         pass
 
+    # Resolve the subprocess working directory.  Default to the script's own
+    # directory (legacy behaviour); honour an explicit ``cwd_override`` only
+    # when it points at an existing directory.  This is scoped to the child
+    # process — we deliberately do NOT os.chdir() the scheduler, which is
+    # process-global and would corrupt jobs running concurrently in the
+    # parallel pool.
+    run_cwd = str(path.parent)
+    if cwd_override:
+        override_path = Path(cwd_override)
+        if override_path.is_dir():
+            run_cwd = str(override_path)
+        else:
+            logger.warning(
+                "Cron script %s: configured workdir %r is not a directory — "
+                "running from the script's own directory instead",
+                path.name, cwd_override,
+            )
+
     try:
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
         result = subprocess.run(
@@ -1050,7 +1078,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=script_timeout,
-            cwd=str(path.parent),
+            cwd=run_cwd,
             env=run_env,
             **popen_kwargs,
         )
@@ -1385,24 +1413,14 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         # Apply workdir if configured — lets scripts use predictable relative
         # paths. For no_agent jobs this is just the subprocess cwd (not an
-        # agent TERMINAL_CWD bridge).
+        # agent TERMINAL_CWD bridge).  We pass it straight through to the
+        # subprocess instead of os.chdir()-ing the scheduler: os.chdir is
+        # process-global, and the sequential (workdir/profile) pool runs
+        # concurrently with the parallel pool, so a global cwd change here
+        # bleeds into workdir-less jobs that rely on the scheduler's cwd.
         _job_workdir = (job.get("workdir") or "").strip() or None
-        _prior_cwd = None
-        if _job_workdir and Path(_job_workdir).is_dir():
-            _prior_cwd = os.getcwd()
-            try:
-                os.chdir(_job_workdir)
-            except OSError:
-                _prior_cwd = None
 
-        try:
-            ok, output = _run_job_script(script_path)
-        finally:
-            if _prior_cwd is not None:
-                try:
-                    os.chdir(_prior_cwd)
-                except OSError:
-                    pass
+        ok, output = _run_job_script(script_path, cwd_override=_job_workdir)
 
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
 
