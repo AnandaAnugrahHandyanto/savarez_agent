@@ -74,25 +74,19 @@ def _load_firecrawl_keys() -> List[str]:
     """Load keys from ``FIRECRAWL_API_KEYS`` or fall back to ``FIRECRAWL_API_KEY``.
 
     Parses comma, comma+space, newline, or whitespace-separated values.
-    Caches the result so subsequent calls are O(1).
+    Reads from env vars every call so monkeypatching in tests work.
     """
-    global _firecrawl_keys
-    if _firecrawl_keys:
-        return _firecrawl_keys
-
     multi = os.getenv("FIRECRAWL_API_KEYS", "").strip()
     if multi:
         keys = _re.split(r"[,;\s]+", multi)
         keys = [k.strip() for k in keys if k.strip()]
         if keys:
-            _firecrawl_keys = keys
-            logger.info("Loaded %d Firecrawl API keys from FIRECRAWL_API_KEYS", len(keys))
-            return _firecrawl_keys
+            return keys
 
     single = os.getenv("FIRECRAWL_API_KEY", "").strip()
     if single:
-        _firecrawl_keys = [single]
-    return _firecrawl_keys
+        return [single]
+    return []
 
 
 def _current_firecrawl_key() -> Optional[str]:
