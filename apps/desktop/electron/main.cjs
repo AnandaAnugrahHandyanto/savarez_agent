@@ -1392,6 +1392,41 @@ async function checkUpdates() {
     }
   }
 
+  // --- Stale binary detection (before fetch, works offline) ---
+  // Two failure modes:
+  //   1. Git commit mismatch: the embedded install-stamp.commit (from when the
+  //      running .app was built) doesn't match git HEAD. This catches git pulls,
+  //      merges, and checkout changes.
+  //   2. Local file drift: files under apps/desktop/ differ from HEAD (uncommitted
+  //      edits, staged changes). This catches developer workflow changes that
+  //      don't alter the commit SHA.
+  let rebuildNeeded = false
+  let currentSha = ''
+  try {
+    currentSha = await runGit(['rev-parse', 'HEAD'], { cwd: updateRoot }).then(r => r.stdout?.trim() || '')
+    if (currentSha) {
+      const bundlePath = runningAppBundle()
+      if (bundlePath) {
+        const stampPath = path.join(bundlePath, 'Contents', 'Resources', 'install-stamp.json')
+        if (fileExists(stampPath)) {
+          const stamp = JSON.parse(fs.readFileSync(stampPath, 'utf8'))
+          const stampCommit = String(stamp?.commit || '').trim()
+          if (stampCommit && stampCommit !== currentSha) {
+            rebuildNeeded = true
+          }
+        }
+      }
+      // Catch local uncommitted edits to desktop source files
+      const desktopDiff = await runGit(['diff', '--name-only', 'HEAD', '--', 'apps/desktop/'], { cwd: updateRoot })
+      if (desktopDiff.code === 0 && desktopDiff.stdout?.trim().length > 0) {
+        rebuildNeeded = true
+      }
+    }
+  } catch {
+    // Best-effort — don't let stamp or diff failure break the check
+  }
+  // --- End stale binary detection ---
+
   const target = await resolveUpdateTarget(updateRoot, branch, remote)
   branch = target.label
   const fetched = await runGit(['fetch', '--quiet', target.remote, target.branch], { cwd: updateRoot })
@@ -1399,6 +1434,8 @@ async function checkUpdates() {
     return {
       supported: true,
       branch,
+      rebuildNeeded,
+      currentSha: currentSha || '',
       error: 'fetch-failed',
       message: firstLine(fetched.stderr) || 'git fetch failed.',
       hermesRoot: updateRoot,
@@ -1407,37 +1444,36 @@ async function checkUpdates() {
   }
 
   const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
-  const [currentSha, targetSha, countStr, dirtyStr] = await Promise.all([
+  const [currentShaAfter, targetSha, countStr, dirtyStr] = await Promise.all([
     git(['rev-parse', 'HEAD']),
     git(['rev-parse', target.ref]),
     git(['rev-list', `HEAD..${target.ref}`, '--count']),
     git(['status', '--porcelain'])
   ])
 
-  const behind = Number.parseInt(countStr, 10) || 0
-  const commits = behind > 0 ? await readCommitLog(updateRoot, target.ref) : []
-
-  // Detect if the running app bundle is stale relative to the source checkout.
-  // This catches the case where source was changed (merge, local edit) but the
-  // desktop app hasn't been rebuilt yet — no new git commits, but a rebuild is
-  // still needed. We compare the embedded install-stamp commit (baked into
-  // the running .app) against the current git HEAD.
-  let rebuildNeeded = false
-  try {
-    const bundlePath = runningAppBundle()
-    if (bundlePath) {
-      const stampPath = path.join(bundlePath, 'Contents', 'Resources', 'install-stamp.json')
-      if (fileExists(stampPath)) {
-        const stamp = JSON.parse(fs.readFileSync(stampPath, 'utf8'))
-        const stampCommit = String(stamp?.commit || '').trim()
-        if (stampCommit && stampCommit !== currentSha) {
-          rebuildNeeded = true
+  // git fetch does not change HEAD, but re-check in case the initial
+  // rev-parse raced with an external pull — covers the edge where HEAD
+  // advanced between our pre-fetch and post-fetch reads.
+  if (!rebuildNeeded && currentShaAfter && currentShaAfter !== currentSha) {
+    try {
+      const bundlePath = runningAppBundle()
+      if (bundlePath) {
+        const stampPath = path.join(bundlePath, 'Contents', 'Resources', 'install-stamp.json')
+        if (fileExists(stampPath)) {
+          const stamp = JSON.parse(fs.readFileSync(stampPath, 'utf8'))
+          const stampCommit = String(stamp?.commit || '').trim()
+          if (stampCommit && stampCommit !== currentShaAfter) {
+            rebuildNeeded = true
+          }
         }
       }
+    } catch {
+      // Best-effort
     }
-  } catch {
-    // Best-effort — don't let a stamp read failure break the check
   }
+
+  const behind = Number.parseInt(countStr, 10) || 0
+  const commits = behind > 0 ? await readCommitLog(updateRoot, target.ref) : []
 
   return {
     supported: true,
@@ -1445,7 +1481,7 @@ async function checkUpdates() {
     currentBranch: target.currentBranch,
     behind,
     rebuildNeeded,
-    currentSha,
+    currentSha: currentShaAfter,
     targetSha,
     commits,
     dirty: dirtyStr.length > 0,
