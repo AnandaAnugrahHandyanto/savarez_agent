@@ -8524,6 +8524,45 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("FHS PATH guard check failed: %s", e)
 
+        # macOS 26+ plist provenance pre-flight. After a `hermes update` the
+        # LaunchAgent plist gets rewritten, which makes launchd refuse the
+        # bootstrap with errno 5 (EBADF) and silently downgrade the gateway
+        # to a detached background process that won't auto-restart on crash.
+        # Best-effort repair happens here, BEFORE the auto-restart block
+        # below, so the next ``hermes gateway restart`` lands on a clean
+        # plist identity. No-op on non-macOS hosts.
+        if sys.platform == "darwin":
+            try:
+                from hermes_cli.gateway import (
+                    get_active_launchd_label,
+                    get_launchd_plist_path,
+                    _maybe_clear_plist_provenance_xattr,
+                    _plist_has_provenance_xattr,
+                )
+
+                # Check the plist that's actually registered with launchd
+                # (could be ai.hermes.gateway.v2 / .v3 / ... after a prior
+                # label migration), not just the canonical filename.
+                active_label = get_active_launchd_label()
+                plist_path = (
+                    Path("~/Library/LaunchAgents").expanduser()
+                    / f"{active_label}.plist"
+                )
+                # Also probe the canonical path in case migration hasn't
+                # happened yet but a stale xattr is sitting there.
+                canonical = get_launchd_plist_path()
+                candidates = [p for p in (plist_path, canonical)
+                              if p is not None and p.exists()]
+                dirty = any(_plist_has_provenance_xattr(p) for p in candidates)
+                if dirty:
+                    print()
+                    print("→ Repairing macOS 26 plist provenance xattr...")
+                    for p in candidates:
+                        if _plist_has_provenance_xattr(p):
+                            _maybe_clear_plist_provenance_xattr(p)
+            except Exception as e:
+                logger.debug("Plist provenance pre-flight failed: %s", e)
+
         # Refresh the cua-driver binary used by the Computer Use toolset.
         # The upstream installer is gated on macOS and on the binary already
         # being on PATH, so this is a no-op for users who don't have it.
