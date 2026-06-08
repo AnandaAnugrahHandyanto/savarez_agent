@@ -82,7 +82,7 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
     launcher_parser.add_argument(
         "--cwd",
         default=None,
-        help="Project directory for the launcher to open (default: $HOME)",
+        help="Project directory for the launcher to target (default: $HOME)",
     )
     launcher_parser.add_argument(
         "--name",
