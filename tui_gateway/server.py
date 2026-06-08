@@ -165,16 +165,20 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
 # to minutes (slash.exec, cli.exec, shell.exec, session.resume,
-# session.branch, session.compress, skills.manage).  While they're running, inbound RPCs —
-# notably approval.respond and session.interrupt — sit unread in the
-# stdin pipe.  We route only those slow handlers onto a small thread pool;
-# everything else stays on the main thread so ordering stays sane for the
-# fast path.  write_json is already _stdout_lock-guarded, so concurrent
-# response writes are safe.
+# session.branch, session.compress, skills.manage).  The remote-media-relay
+# handlers belong here too: pdf.attach shells out to pdftoppm with a 120s
+# timeout and image.attach_bytes base64-decodes and writes multi-MB uploads
+# to disk.  While they're running, inbound RPCs — notably approval.respond
+# and session.interrupt — sit unread in the stdin pipe.  We route only those
+# slow handlers onto a small thread pool; everything else stays on the main
+# thread so ordering stays sane for the fast path.  write_json is already
+# _stdout_lock-guarded, so concurrent response writes are safe.
 _LONG_HANDLERS = frozenset(
     {
         "browser.manage",
         "cli.exec",
+        "image.attach_bytes",
+        "pdf.attach",
         "session.branch",
         "session.compress",
         "session.resume",

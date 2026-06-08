@@ -1182,3 +1182,28 @@ def test_dispatch_unknown_long_method_still_goes_inline(server):
     resp = server.dispatch({"id": "r4", "method": "some.method", "params": {}})
 
     assert resp["result"] == {"ok": True}
+
+
+@pytest.mark.parametrize("media_method", ["pdf.attach", "image.attach_bytes"])
+def test_dispatch_media_attach_does_not_block_fast_handler(server, media_method):
+    """Remote-media attach is long-running (pdftoppm / multi-MB decode); it must
+    be offloaded so interrupts and approvals stay responsive while it works."""
+    assert media_method in server._LONG_HANDLERS
+
+    released = threading.Event()
+    server._methods[media_method] = lambda rid, params: (
+        released.wait(timeout=5),
+        server._ok(rid, {"attached": True}),
+    )[1]
+    server._methods["fast.ping"] = lambda rid, params: server._ok(rid, {"pong": True})
+
+    t0 = time.monotonic()
+    assert server.dispatch({"id": "slow", "method": media_method, "params": {}}) is None
+
+    fast_resp = server.dispatch({"id": "fast", "method": "fast.ping", "params": {}})
+    fast_elapsed = time.monotonic() - t0
+
+    assert fast_resp["result"] == {"pong": True}
+    assert fast_elapsed < 0.5, f"fast handler blocked for {fast_elapsed:.2f}s behind {media_method}"
+
+    released.set()
