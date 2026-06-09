@@ -208,8 +208,8 @@ def _resolve_anthropic_messages_max_tokens(
 
 
 def _supports_adaptive_thinking(model: str) -> bool:
-    """Return True for Claude 4.6+ models that support adaptive thinking."""
-    return any(v in model for v in _ADAPTIVE_THINKING_SUBSTRINGS)
+    """Return True for Claude 4.6+ and MiniMax M3 models that support adaptive thinking."""
+    return _is_minimax_m3(model) or any(v in model for v in _ADAPTIVE_THINKING_SUBSTRINGS)
 
 
 def _supports_xhigh_effort(model: str) -> bool:
@@ -511,6 +511,16 @@ def _is_minimax_anthropic_endpoint(base_url: str | None) -> bool:
     return normalized.startswith(
         ("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic")
     )
+
+
+def _is_minimax_m3(model: str) -> bool:
+    """Return True for MiniMax M3 (MiniMax-M3, minimax/minimax-m3, ...).
+
+    Unlike the M2.x family, M3's Anthropic endpoint requires thinking to be
+    enabled: a request that omits the thinking parameter comes back empty
+    (``content: null``, 1 output token). So M3 defaults thinking on.
+    """
+    return "minimax-m3" in model.lower()
 
 
 def _is_azure_anthropic_endpoint(base_url: str | None) -> bool:
@@ -2249,6 +2259,11 @@ def build_anthropic_kwargs(
     # request "summarized" so the reasoning blocks stay populated — matching
     # 4.6 behavior and preserving the activity-feed UX during long tool runs.
     _is_kimi_coding = _is_kimi_family_endpoint(base_url, model)
+    # M3 returns an empty response unless thinking is enabled, so default it on
+    # when the caller expressed no preference. An explicit {"enabled": False}
+    # still disables it below.
+    if reasoning_config is None and _is_minimax_m3(model):
+        reasoning_config = {"enabled": True}
     if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
