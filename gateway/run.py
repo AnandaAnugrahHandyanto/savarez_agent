@@ -11618,7 +11618,18 @@ class GatewayRunner:
         from hermes_cli.loop_command import handle_loop_command
 
         args = (event.get_command_args() or "").strip()
-        result_json = handle_loop_command(args)
+
+        # Extract origin from event for delivery routing
+        origin = None
+        if event.source:
+            origin = {
+                "platform": str(event.source.platform),
+                "chat_id": event.source.chat_id,
+                "chat_name": event.source.chat_name,
+                "thread_id": event.source.thread_id,
+            }
+
+        result_json = handle_loop_command(args, origin=origin)
         try:
             import json as _json
             result = _json.loads(result_json)
@@ -11630,7 +11641,8 @@ class GatewayRunner:
             return msg
         if not result.get("success"):
             return result.get("error", "Unknown loop command error")
-        return result_json
+        # Success with no message — shouldn't happen with current subcommands
+        return "Loop command completed."
 
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
         """Send a /goal judge status line back to the originating chat/thread."""

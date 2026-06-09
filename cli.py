@@ -9722,6 +9722,7 @@ class HermesCLI:
         elif not result.get("success"):
             error = result.get("error", "Unknown error")
             _cprint(f"  \033[1;31m{error}\033[0m")
+        # success with no message — nothing to display (shouldn't happen)
 
     def _maybe_continue_goal_after_turn(self) -> None:
         """Hook run after every CLI turn. Judges + maybe re-queues.

@@ -725,6 +725,8 @@ def create_job(
         "loop_no_progress_count": 0,
         "loop_last_output_hash": None,
         "loop_last_response": None,
+        "loop_last_delivered_hash": None,
+        "loop_last_verify_error": None,
     }
 
     jobs = load_jobs()
@@ -757,28 +759,39 @@ class AmbiguousJobReference(LookupError):
 
 
 def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
-    """Resolve a job reference (ID or name) to a job record.
+    """Resolve a job reference (ID, name, or partial ID prefix) to a job record.
 
     - Exact ID match wins (works even if a different job's name equals this ID).
-    - Otherwise, case-insensitive name match.
-    - If a name matches more than one job, raises AmbiguousJobReference so the
-      caller can surface the matching IDs rather than silently picking one.
+    - Exact case-insensitive name match.
+    - Prefix ID match (if ref is a prefix of exactly one job's ID).
+    - If multiple jobs match, raises AmbiguousJobReference so the caller can
+      surface the matching IDs rather than silently picking one.
     """
     if not ref:
         return None
     jobs = load_jobs()
+    # 1. Exact ID match
     for job in jobs:
         if job["id"] == ref:
             return _normalize_job_record(job)
+    # 2. Exact case-insensitive name match
     ref_lower = ref.lower()
     name_matches = [j for j in jobs if (j.get("name") or "").lower() == ref_lower]
-    if not name_matches:
-        return None
+    if len(name_matches) == 1:
+        return _normalize_job_record(name_matches[0])
     if len(name_matches) > 1:
         raise AmbiguousJobReference(
             ref, [_normalize_job_record(j) for j in name_matches]
         )
-    return _normalize_job_record(name_matches[0])
+    # 3. Prefix ID match (partial ID)
+    prefix_matches = [j for j in jobs if j["id"].startswith(ref)]
+    if len(prefix_matches) == 1:
+        return _normalize_job_record(prefix_matches[0])
+    if len(prefix_matches) > 1:
+        raise AmbiguousJobReference(
+            ref, [_normalize_job_record(j) for j in prefix_matches]
+        )
+    return None
 
 
 def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
