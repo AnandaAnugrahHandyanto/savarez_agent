@@ -441,6 +441,8 @@ class _MatrixHTMLSanitizer(HTMLParser):
 
     ALLOWED_ATTRS = {
         "a": {"href"},
+        "code": {"class"},
+        "pre": {"class"},
     }
 
     # Dangerous URL schemes to strip
@@ -474,10 +476,12 @@ class _MatrixHTMLSanitizer(HTMLParser):
                     value = self._sanitize_url(value)
                     if value:  # Only keep if not stripped to empty
                         safe_attrs.append((name, value))
+                else:
+                    safe_attrs.append((name, value))
             elif name_lower == "alt" and tag_lower == "code":
                 # Allow alt on code (pre/code blocks sometimes have it)
                 safe_attrs.append((name, value))
-            # Drop all other attributes (style, class, onclick, etc.)
+            # Drop all other attributes (style, onclick, etc.)
 
         # Build tag
         if safe_attrs:
@@ -2932,6 +2936,16 @@ class MatrixAdapter(BasePlatformAdapter):
             )
             if "html_block" in md.preprocessors:
                 md.preprocessors.deregister("html_block")
+
+            # Add strikethrough support (~~text~~ -> <del>text</del>)
+            # Python-Markdown doesn't have built-in strikethrough, so we add
+            # a simple inline pattern.
+            from markdown.inlinepatterns import SimpleTagInlineProcessor
+
+            # Register with lower priority than emphasis to avoid conflicts
+            md.inlinePatterns.register(
+                SimpleTagInlineProcessor(r"(~~)(.+?)(~~)", "del"), "strikethrough", 50
+            )
 
             html = md.convert(text)
             md.reset()
