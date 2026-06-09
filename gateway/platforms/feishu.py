@@ -112,8 +112,10 @@ try:
         CallBackToast,
         P2CardActionTriggerResponse,
     )
-    # Accept both string and dict button values (Feishu API spec allows both,
-    # but the SDK model requires Dict).  Prevents 200671 errors.
+    # Accept both string and dict button values (Feishu API spec allows
+    # both, but the SDK model requires Dict).  Prevents 200671 errors.
+    # Relies on lark-oapi's parse() treating Union types as pass-through
+    # (tested with lark-oapi 1.5.3).
     if CallBackAction is not None:
         CallBackAction._types["value"] = Union[str, Dict[str, Any]]
     from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
@@ -1379,6 +1381,7 @@ def check_feishu_requirements() -> bool:
         from lark_oapi.event.callback.model.p2_card_action_trigger import (
             CallBackAction, CallBackCard, CallBackToast, P2CardActionTriggerResponse,
         )
+        # Accept both string and dict button values (see static import above).
         if CallBackAction is not None:
             CallBackAction._types["value"] = Union[str, Dict[str, Any]]
         from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
