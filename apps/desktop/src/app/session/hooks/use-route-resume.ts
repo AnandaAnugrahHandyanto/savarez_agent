@@ -62,6 +62,10 @@ export function useRouteResume({
   useEffect(() => {
     const gatewayOpen = gatewayState === 'open'
     const pathnameChanged = lastPathnameRef.current !== locationPathname
+    // Fire only on a genuine closed->open transition (a reconnect). seenGatewayStateRef
+    // stays false until the first effect run, so a session that mounts with the gateway
+    // already open is not mistaken for "became open" and does not double-resume with the
+    // pathname-driven initial resume below.
     const gatewayBecameOpen = seenGatewayStateRef.current && !wasGatewayOpenRef.current && gatewayOpen
     lastPathnameRef.current = locationPathname
     seenGatewayStateRef.current = true
@@ -101,6 +105,10 @@ export function useRouteResume({
       // before the pathname updates from /:sid -> /.
       const shouldResume = pathnameChanged || gatewayBecameOpen || stuckOnRoutedSession
 
+      // On a reconnect (gatewayBecameOpen) re-resume even when the route looks
+      // `alreadyActive`: the cached runtime id can be stale once the gateway
+      // rebinds/reaps the session on its side, and trusting it strands Desktop on
+      // a dead id ("session not found"). Otherwise keep skipping when already active.
       if ((gatewayBecameOpen || !alreadyActive) && shouldResume && !creatingSessionRef.current) {
         void resumeSession(routedSessionId, true)
       }
