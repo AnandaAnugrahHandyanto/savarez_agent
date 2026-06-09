@@ -1533,6 +1533,7 @@ export const en: Translations = {
     source: 'SOURCE',
     renderedPreview: 'PREVIEW',
     changes: 'CHANGES',
+    edit: 'EDIT',
     unknownSize: 'unknown size',
     binaryTitle: 'This looks like a binary file',
     binaryBody: label => `Previewing ${label} may show unreadable text.`,
