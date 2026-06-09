@@ -232,14 +232,34 @@ class ToolCallGuardrailController:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._deterministic_retry_blocks: dict[tuple[ToolCallSignature, str], dict[str, Any]] = {}
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
 
-    def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
+    def before_call(
+        self,
+        tool_name: str,
+        args: Mapping[str, Any] | None,
+        *,
+        state_token: str | None = None,
+    ) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
+        if state_token:
+            blocked = self._deterministic_retry_blocks.get((signature, state_token))
+            if blocked is not None:
+                decision = ToolGuardrailDecision(
+                    action="block",
+                    code="deterministic_retry_blocked",
+                    message=_deterministic_retry_message(tool_name, blocked),
+                    tool_name=tool_name,
+                    count=int(blocked.get("count", 1) or 1),
+                    signature=signature,
+                )
+                self._halt_decision = decision
+                return decision
         if not self.config.hard_stop_enabled:
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -289,6 +309,7 @@ class ToolCallGuardrailController:
         result: str | None,
         *,
         failed: bool | None = None,
+        state_token: str | None = None,
     ) -> ToolGuardrailDecision:
         args = _coerce_args(args)
         signature = ToolCallSignature.from_call(tool_name, args)
@@ -296,6 +317,13 @@ class ToolCallGuardrailController:
             failed, _ = classify_tool_failure(tool_name, result)
 
         if failed:
+            quota_failure = _memory_quota_failure_metadata(tool_name, result)
+            if quota_failure is not None:
+                quota_state_token = quota_failure.get("store_state_token") or state_token
+                if isinstance(quota_state_token, str) and quota_state_token:
+                    blocked = dict(quota_failure)
+                    blocked["count"] = int(blocked.get("count", 0) or 0) + 1
+                    self._deterministic_retry_blocks[(signature, quota_state_token)] = blocked
             exact_count = self._exact_failure_counts.get(signature, 0) + 1
             self._exact_failure_counts[signature] = exact_count
             self._no_progress.pop(signature, None)
@@ -420,6 +448,38 @@ def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
         "Try different arguments, a narrower query/path, an absolute path when relevant, "
         "or a different tool that can make progress. If the blocker is external, report "
         "the blocker after one diagnostic attempt instead of repeating the same failing path."
+    )
+
+
+def _memory_quota_failure_metadata(tool_name: str, result: str | None) -> dict[str, Any] | None:
+    if tool_name != "memory" or not isinstance(result, str):
+        return None
+    data = safe_json_loads(result)
+    if not isinstance(data, dict):
+        return None
+    if data.get("error_code") != "memory_quota_exceeded":
+        return None
+    if data.get("success") is not False:
+        return None
+    token = data.get("store_state_token")
+    if not isinstance(token, str) or not token:
+        return None
+    return data
+
+
+def _deterministic_retry_message(tool_name: str, blocked: Mapping[str, Any]) -> str:
+    if tool_name == "memory" and blocked.get("error_code") == "memory_quota_exceeded":
+        operation = blocked.get("operation") or "write"
+        target = blocked.get("target") or "memory"
+        return (
+            f"Blocked {tool_name}: the same {target} {operation} request already failed "
+            "with quota exceeded against the current store state. Shorten the new content, "
+            "replace or remove existing entries to make room, or skip the memory write "
+            "instead of retrying it unchanged."
+        )
+    return (
+        f"Blocked {tool_name}: the same request already failed deterministically against "
+        "the current state. Change strategy instead of retrying it unchanged."
     )
 
 

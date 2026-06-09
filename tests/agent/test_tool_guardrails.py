@@ -256,3 +256,33 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
 
     assert controller.before_call("web_search", {"query": "same"}).action == "allow"
     assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
+
+
+def test_memory_quota_failure_blocks_same_request_only_for_same_store_state():
+    controller = ToolCallGuardrailController()
+    args = {"action": "add", "target": "memory", "content": "new fact"}
+    overflow = json.dumps(
+        {
+            "success": False,
+            "error_code": "memory_quota_exceeded",
+            "error": "would exceed the limit",
+            "operation": "add",
+            "target": "memory",
+            "store_state_token": "state-1",
+        }
+    )
+
+    decision = controller.after_call("memory", args, overflow, failed=True)
+    assert decision.action == "allow"
+
+    blocked = controller.before_call("memory", args, state_token="state-1")
+    assert blocked.action == "block"
+    assert blocked.code == "deterministic_retry_blocked"
+    assert "replace or remove existing entries" in blocked.message
+
+    assert controller.before_call("memory", args, state_token="state-2").action == "allow"
+    assert controller.before_call(
+        "memory",
+        {"action": "add", "target": "memory", "content": "shorter fact"},
+        state_token="state-1",
+    ).action == "allow"

@@ -372,7 +372,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     middleware_trace=list(middleware_trace),
                 )
             else:
-                guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
+                guardrail_decision = agent._tool_guardrails.before_call(
+                    function_name,
+                    function_args,
+                    state_token=agent._tool_guardrail_state_token(function_name, function_args),
+                )
                 if not guardrail_decision.allows_execution:
                     block_result = agent._guardrail_block_result(guardrail_decision)
                     blocked_by_guardrail = True
@@ -850,7 +854,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
         if _block_msg is None:
-            guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
+            guardrail_decision = agent._tool_guardrails.before_call(
+                function_name,
+                function_args,
+                state_token=agent._tool_guardrail_state_token(function_name, function_args),
+            )
             if not guardrail_decision.allows_execution:
                 _guardrail_block_decision = guardrail_decision
 

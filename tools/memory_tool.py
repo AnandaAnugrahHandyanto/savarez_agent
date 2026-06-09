@@ -24,6 +24,7 @@ Design:
 """
 
 import json
+import hashlib
 import logging
 import os
 import tempfile
@@ -57,6 +58,17 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
+
+
+def _memory_state_token(entries: List[str], limit: int) -> str:
+    """Return a stable fingerprint for the current store contents and quota."""
+    payload = json.dumps(
+        {"entries": entries, "limit": limit},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +341,8 @@ class MemoryStore:
                 current = self._char_count(target)
                 return {
                     "success": False,
+                    "error_code": "memory_quota_exceeded",
+                    "non_retryable": True,
                     "error": (
                         f"Memory at {current:,}/{limit:,} chars. "
                         f"Adding this entry ({len(content)} chars) would exceed the limit. "
@@ -336,6 +350,13 @@ class MemoryStore:
                         f"shorter ones or 'remove' stale or less important entries (see "
                         f"current_entries below), then retry this add — all in this turn."
                     ),
+                    "operation": "add",
+                    "target": target,
+                    "store_state_token": self.state_token(target),
+                    "current_total": current,
+                    "attempted_total": new_total,
+                    "limit": limit,
+                    "overage": new_total - limit,
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
                 }
@@ -395,12 +416,21 @@ class MemoryStore:
                 current = self._char_count(target)
                 return {
                     "success": False,
+                    "error_code": "memory_quota_exceeded",
+                    "non_retryable": True,
                     "error": (
                         f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
                         f"Shorten the new content, or 'remove' other stale or less important "
                         f"entries to make room (see current_entries below), then retry — all "
                         f"in this turn."
                     ),
+                    "operation": "replace",
+                    "target": target,
+                    "store_state_token": self.state_token(target),
+                    "current_total": current,
+                    "attempted_total": new_total,
+                    "limit": limit,
+                    "overage": new_total - limit,
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
                 }
@@ -459,6 +489,12 @@ class MemoryStore:
         """
         block = self._system_prompt_snapshot.get(target, "")
         return block if block else None
+
+    def state_token(self, target: str) -> str:
+        """Return a token that changes whenever the live store state changes."""
+        entries = self._entries_for(target)
+        limit = self._char_limit(target)
+        return _memory_state_token(entries, limit)
 
     # -- Internal helpers --
 
@@ -724,7 +760,6 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
 
 
 

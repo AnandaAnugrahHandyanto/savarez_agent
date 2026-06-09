@@ -4955,6 +4955,18 @@ class AIAgent:
         if decision.should_halt and self._tool_guardrail_halt_decision is None:
             self._tool_guardrail_halt_decision = decision
 
+    def _tool_guardrail_state_token(self, tool_name: str, function_args: dict | None) -> str | None:
+        """Return the live state token relevant to a guardrailed tool call."""
+        if tool_name != "memory" or not getattr(self, "_memory_store", None):
+            return None
+        target = (function_args or {}).get("target", "memory")
+        if target not in {"memory", "user"}:
+            return None
+        try:
+            return self._memory_store.state_token(target)
+        except Exception:
+            return None
+
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         tool = decision.tool_name or "a tool"
         return (
@@ -4977,6 +4989,7 @@ class AIAgent:
             function_args,
             function_result,
             failed=failed,
+            state_token=self._tool_guardrail_state_token(tool_name, function_args),
         )
         if decision.action in {"warn", "halt"}:
             function_result = append_toolguard_guidance(function_result, decision)

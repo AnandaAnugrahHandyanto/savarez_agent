@@ -1,10 +1,13 @@
 """Runtime tests for tool-call loop guardrails."""
 
 import json
+import tempfile
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import run_agent
 from run_agent import AIAgent
 
 
@@ -37,11 +40,14 @@ def _mock_response(content="Hello", finish_reason="stop", tool_calls=None):
 
 
 def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None = None) -> AIAgent:
+    hermes_home = Path(tempfile.mkdtemp(prefix="hermes-test-home-"))
     with (
         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs(*tool_names)),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value=config or {}),
         patch("run_agent.OpenAI"),
+        patch.object(run_agent, "_hermes_home", hermes_home),
+        patch("agent.agent_init.get_hermes_home", return_value=hermes_home),
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
@@ -134,6 +140,64 @@ def test_config_enabled_hard_stop_blocks_repeated_exact_failure_before_execution
     assert messages[0]["role"] == "tool"
     assert messages[0]["tool_call_id"] == "c-block"
     assert "repeated_exact_failure_block" in messages[0]["content"]
+
+
+def test_memory_quota_retry_is_blocked_before_reexecution_even_without_global_hard_stop():
+    agent = _make_agent("memory")
+    args = {"action": "add", "target": "memory", "content": "new fact"}
+    agent._memory_store = SimpleNamespace(state_token=lambda target: "state-1")
+    overflow = json.dumps(
+        {
+            "success": False,
+            "error_code": "memory_quota_exceeded",
+            "error": "would exceed the limit",
+            "operation": "add",
+            "target": "memory",
+            "store_state_token": "state-1",
+        }
+    )
+    agent._tool_guardrails.after_call("memory", args, overflow, failed=True)
+    tc = _mock_tool_call("memory", json.dumps(args), "c-memory-block")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value="SHOULD_NOT_RUN") as mock_hfc:
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    mock_hfc.assert_not_called()
+    assert len(messages) == 1
+    assert messages[0]["tool_call_id"] == "c-memory-block"
+    assert "deterministic_retry_blocked" in messages[0]["content"]
+    assert "skip the memory write" in messages[0]["content"]
+
+
+def test_memory_quota_retry_is_allowed_after_store_state_changes():
+    agent = _make_agent("memory")
+    args = {"action": "add", "target": "memory", "content": "new fact"}
+    state = {"token": "state-1"}
+    agent._memory_store = SimpleNamespace(
+        state_token=lambda target: state["token"],
+        add=lambda target, content: {"success": True},
+    )
+    overflow = json.dumps(
+        {
+            "success": False,
+            "error_code": "memory_quota_exceeded",
+            "error": "would exceed the limit",
+            "operation": "add",
+            "target": "memory",
+            "store_state_token": "state-1",
+        }
+    )
+    agent._tool_guardrails.after_call("memory", args, overflow, failed=True)
+    state["token"] = "state-2"
+    tc = _mock_tool_call("memory", json.dumps(args), "c-memory-allow")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    agent._execute_tool_calls_sequential(msg, messages, "task-1")
+    assert len(messages) == 1
+    assert json.loads(messages[0]["content"]) == {"success": True}
 
 
 def test_sequential_after_call_appends_guidance_to_tool_result_without_extra_messages():

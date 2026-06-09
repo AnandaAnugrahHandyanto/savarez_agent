@@ -292,6 +292,13 @@ class TestMemoryStoreAdd:
         store.add("memory", "x" * 490)
         result = store.add("memory", "this will exceed the limit")
         assert result["success"] is False
+        assert result["error_code"] == "memory_quota_exceeded"
+        assert result["non_retryable"] is True
+        assert result["operation"] == "add"
+        assert result["target"] == "memory"
+        assert result["attempted_total"] > result["limit"]
+        assert result["overage"] == result["attempted_total"] - result["limit"]
+        assert result["store_state_token"] == store.state_token("memory")
         assert "exceed" in result["error"].lower()
         # Overflow response gives the model what it needs to consolidate in-turn
         assert "current_entries" in result
@@ -304,6 +311,13 @@ class TestMemoryStoreAdd:
         store.add("memory", "short")
         result = store.replace("memory", "short", "y" * 600)
         assert result["success"] is False
+        assert result["error_code"] == "memory_quota_exceeded"
+        assert result["non_retryable"] is True
+        assert result["operation"] == "replace"
+        assert result["target"] == "memory"
+        assert result["attempted_total"] > result["limit"]
+        assert result["overage"] == result["attempted_total"] - result["limit"]
+        assert result["store_state_token"] == store.state_token("memory")
         assert "current_entries" in result
         assert "usage" in result
         assert "retry" in result["error"].lower()
