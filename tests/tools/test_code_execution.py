@@ -85,9 +85,9 @@ class TestHermesToolsGeneration(unittest.TestCase):
             self.assertIn(f"def {tool}(", src)
 
     def test_generates_subset(self):
-        src = generate_hermes_tools_module(["terminal", "web_search"])
-        self.assertIn("def terminal(", src)
+        src = generate_hermes_tools_module(["web_search", "write_file"])
         self.assertIn("def web_search(", src)
+        self.assertIn("def write_file(", src)
         self.assertNotIn("def read_file(", src)
 
     def test_empty_list_generates_nothing(self):
@@ -96,12 +96,12 @@ class TestHermesToolsGeneration(unittest.TestCase):
         self.assertIn("def _call(", src)  # infrastructure still present
 
     def test_non_allowed_tools_ignored(self):
-        src = generate_hermes_tools_module(["vision_analyze", "terminal"])
-        self.assertIn("def terminal(", src)
+        src = generate_hermes_tools_module(["vision_analyze", "web_search"])
+        self.assertIn("def web_search(", src)
         self.assertNotIn("def vision_analyze(", src)
 
     def test_rpc_infrastructure_present(self):
-        src = generate_hermes_tools_module(["terminal"])
+        src = generate_hermes_tools_module(["web_search"])
         self.assertIn("HERMES_RPC_SOCKET", src)
         self.assertIn("AF_UNIX", src)
         self.assertIn("def _connect(", src)
@@ -109,7 +109,7 @@ class TestHermesToolsGeneration(unittest.TestCase):
 
     def test_convenience_helpers_present(self):
         """Verify json_parse, shell_quote, and retry helpers are generated."""
-        src = generate_hermes_tools_module(["terminal"])
+        src = generate_hermes_tools_module(["web_search"])
         self.assertIn("def json_parse(", src)
         self.assertIn("def shell_quote(", src)
         self.assertIn("def retry(", src)
@@ -794,7 +794,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
     def test_none_enabled_tools_uses_all(self):
         """When enabled_tools is None, all sandbox tools should be available."""
         code = (
-            "from hermes_tools import terminal, web_search, read_file\n"
+            "from hermes_tools import web_search, read_file, write_file\n"
             "print('all imports ok')\n"
         )
         with patch("model_tools.handle_function_call",
@@ -808,7 +808,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
     def test_empty_enabled_tools_uses_all(self):
         """When enabled_tools is [] (empty), all sandbox tools should be available."""
         code = (
-            "from hermes_tools import terminal, web_search\n"
+            "from hermes_tools import web_search, read_file\n"
             "print('imports ok')\n"
         )
         with patch("model_tools.handle_function_call",
@@ -823,7 +823,7 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         """When enabled_tools has no overlap with SANDBOX_ALLOWED_TOOLS,
         should fall back to all allowed tools."""
         code = (
-            "from hermes_tools import terminal\n"
+            "from hermes_tools import web_search\n"
             "print('fallback ok')\n"
         )
         with patch("model_tools.handle_function_call",
