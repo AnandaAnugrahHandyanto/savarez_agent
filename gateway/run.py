@@ -13039,6 +13039,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _code_block is not None:
                     progress_queue.put(_code_block)
                     return
+                # terminal_progress=compact keeps the terminal command compact
+                # even in verbose mode: the full command must not be posted to
+                # chat. Render the truncated `terminal: "..."` preview with a
+                # hard 40-char cap when tool_preview_length is unset (verbose
+                # otherwise leaves tool_preview_length at 0, which would dump the
+                # whole command via the args branch below).
+                if (
+                    tool_name == "terminal"
+                    and _terminal_progress == "compact"
+                    and preview
+                ):
+                    from agent.display import get_tool_preview_max_len
+                    _pl = get_tool_preview_max_len()
+                    _cap = _pl if _pl > 0 else 40
+                    _cmd_preview = preview
+                    if len(_cmd_preview) > _cap:
+                        _cmd_preview = _cmd_preview[:_cap - 3] + "..."
+                    progress_queue.put(f"{emoji} {tool_name}: \"{_cmd_preview}\"")
+                    return
                 if args:
                     from agent.display import get_tool_preview_max_len
                     _pl = get_tool_preview_max_len()

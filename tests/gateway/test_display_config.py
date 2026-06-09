@@ -482,6 +482,18 @@ class TestTerminalProgress:
         config = {"display": {"terminal_progress": "loud"}}
         assert resolve_display_setting(config, "telegram", "terminal_progress") == "code_block"
 
+    def test_non_string_scalar_normalises_to_code_block(self):
+        """YAML scalars like bare true / 1 stringify to a non-matching value
+        and fall back to the safe default rather than crashing."""
+        from gateway.display_config import resolve_display_setting
+
+        for val in (True, False, 1, 0):
+            config = {"display": {"platforms": {"telegram": {"terminal_progress": val}}}}
+            assert (
+                resolve_display_setting(config, "telegram", "terminal_progress")
+                == "code_block"
+            ), val
+
     def test_value_is_case_insensitive(self):
         """Mixed-case values normalise to lowercase canonical forms."""
         from gateway.display_config import resolve_display_setting

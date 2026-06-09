@@ -1453,8 +1453,9 @@ async def test_terminal_progress_compact_knob_truncates_not_code_block(monkeypat
     assert "```" not in all_content
     # The compact quoted preview IS used for the terminal command.
     assert 'terminal: "' in all_content
-    # The full command body is truncated away, not posted verbatim.
-    assert "npm install -g hyperframes@latest" not in all_content
+    # The command tail (past the 40-char cap) is truncated away, not posted
+    # verbatim or partially.
+    assert "hyperfram" not in all_content
 
 
 @pytest.mark.asyncio
@@ -1499,8 +1500,13 @@ async def test_terminal_progress_compact_knob_verbose_no_code_block(monkeypatch,
     assert result["final_response"] == "done"
     all_content = " ".join(call["content"] for call in adapter.sent)
     all_content += " ".join(call["content"] for call in adapter.edits)
+    # No fenced block, and the compact truncated preview is used instead.
     assert "```" not in all_content
-    assert "npm install -g hyperframes@latest" not in all_content
+    assert 'terminal: "' in all_content
+    # The command tail (well past the 40-char cap) must not appear at all, even
+    # partially. Guards against the full command being dumped via the verbose
+    # args branch when terminal_progress is compact.
+    assert "hyperfram" not in all_content
 
 
 @pytest.mark.asyncio
