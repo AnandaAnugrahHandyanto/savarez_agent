@@ -929,6 +929,8 @@ class SlackAdapter(BasePlatformAdapter):
                     response_type="ephemeral",
                     text=f"Running `/{slash}`…",
                 )
+                if await self._try_handle_shopmonkey_native_slash(command):
+                    return
                 await self._handle_slash_command(command)
 
             # Register Block Kit action handlers for approval buttons
@@ -3309,6 +3311,53 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)
             return ""
+
+    async def _try_handle_shopmonkey_native_slash(self, command: dict) -> bool:
+        """Fast-path Shopmonkey native Slack slashes through the plugin table.
+
+        The command still goes through the plugin's registered slash handler,
+        and that handler calls ctx.dispatch_tool(...), so per-profile MCP
+        allowlists remain authoritative.  This only skips the LLM/gateway
+        agent turn for the four high-volume read commands.
+        """
+        slash = (command.get("command") or "").lstrip("/").lower().strip()
+        if slash not in {"ro", "po", "board", "ar"}:
+            return False
+        try:
+            from hermes_plugins.shopmonkey import slack_native as _sm_slack
+        except Exception:
+            try:
+                from shopmonkey import slack_native as _sm_slack  # type: ignore
+            except Exception:
+                logger.debug(
+                    "[Slack] shopmonkey native slash table unavailable",
+                    exc_info=True,
+                )
+                return False
+
+        text = command.get("text", "") or ""
+        try:
+            result_text = await asyncio.to_thread(_sm_slack.dispatch, slash, text)
+        except Exception as exc:  # pragma: no cover - dispatch is fail-soft
+            logger.warning("[Slack] Shopmonkey /%s dispatch failed: %s", slash, exc)
+            result_text = f"Shopmonkey /{slash} failed: {exc}"
+
+        response_url = command.get("response_url") or ""
+        if response_url:
+            await self._send_slash_ephemeral(
+                {"response_url": response_url, "ts": time.monotonic()},
+                result_text or f"/{slash} returned no output.",
+            )
+        else:
+            channel_id = command.get("channel_id", "")
+            user_id = command.get("user_id", "")
+            if channel_id and user_id:
+                await self.send_private_notice(
+                    channel_id,
+                    user_id,
+                    result_text or f"/{slash} returned no output.",
+                )
+        return True
 
     async def _handle_slash_command(self, command: dict) -> None:
         """Handle Slack slash commands.

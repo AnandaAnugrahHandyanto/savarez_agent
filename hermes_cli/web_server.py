@@ -9769,10 +9769,28 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
 
     parsed = urllib.parse.urlparse(origin)
     if parsed.scheme not in {"http", "https"}:
-        # Non-web origin (packaged Electron: file://, null, app://). The
-        # upstream credential check is the real auth boundary; trust it.
-        # See _ws_host_origin_is_allowed for the full rationale.
-        return None
+        # Packaged Electron loads the desktop renderer over file://, so its
+        # WebSocket handshake carries a non-web Origin such as file:// or null.
+        # DNS-rebinding attacks originate from an http(s) site; they cannot
+        # forge a file:// origin and still hold the loopback session token.
+        #
+        # OAuth-gated public dashboards authenticate with cookies/tickets and
+        # have no legitimate file:// client, so keep them strict.
+        if getattr(app.state, "auth_required", False):
+            return f"origin_mismatch origin={origin} bound={bound_host}"
+        if bound_host.lower() in _LOOPBACK_HOST_VALUES:
+            return None
+
+        # Remote Hermes Desktop intentionally connects to a dashboard bound to
+        # a private operator-selected interface (for example Tailscale) with
+        # --insecure and legacy token auth. The WS handlers call _ws_auth_ok()
+        # before this origin guard, so accepting Electron's non-web origin here
+        # is still token-gated. Do not extend this to wildcard binds where the
+        # dashboard is exposed on every interface.
+        allow_public = bool(getattr(app.state, "allow_public", False))
+        if allow_public and bound_host not in {"0.0.0.0", "::"}:
+            return None
+        return f"origin_mismatch origin={origin} bound={bound_host}"
 
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
@@ -11454,6 +11472,7 @@ def start_server(
     # uses this to decide whether to refuse the bind, log the gate-on
     # banner, and enable uvicorn proxy_headers.
     app.state.auth_required = should_require_auth(host, allow_public)
+    app.state.allow_public = allow_public
 
     if app.state.auth_required:
         # Phase 3.5: the gate engages on non-loopback binds.  The legacy

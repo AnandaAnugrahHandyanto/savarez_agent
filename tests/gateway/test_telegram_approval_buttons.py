@@ -59,6 +59,161 @@ def _make_adapter(extra=None):
     return adapter
 
 
+# ===========================================================================
+# generic send — opt-in assistant inline buttons
+# ===========================================================================
+
+class TestTelegramAssistantInlineButtons:
+    """Test hidden assistant button markers are stripped and rendered."""
+
+    @pytest.mark.asyncio
+    async def test_send_strips_marker_and_attaches_asst_keyboard(self):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+
+        content = (
+            "Assistant Updates\n\nCustomer card\n\n"
+            'HERMES_TELEGRAM_BUTTONS_JSON: {"rows":[[{"text":"Handled 1","callback_data":"asst:handledk:abc123abc123abc123abc123"},'
+            '{"text":"Why 1","callback_data":"asst:whyk:abc123abc123abc123abc123"}]]}'
+        )
+
+        result = await adapter.send(chat_id="12345", content=content)
+
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        assert "HERMES_TELEGRAM_BUTTONS_JSON" not in kwargs["text"]
+        assert "Customer card" in kwargs["text"]
+        assert kwargs.get("reply_markup") is not None
+
+    @pytest.mark.asyncio
+    async def test_send_strips_unsafe_marker_without_keyboard(self):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+
+        content = 'Hi\nHERMES_TELEGRAM_BUTTONS_JSON: {"rows":[[{"text":"Bad","callback_data":"ea:once:1"}]]}'
+
+        result = await adapter.send(chat_id="12345", content=content)
+
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args.kwargs
+        assert kwargs["text"] == "Hi"
+        assert kwargs.get("reply_markup") is None
+
+
+def _assistant_callback_update(data="asst:handledk:abc123abc123abc123abc123"):
+    query = AsyncMock()
+    query.data = data
+    query.from_user.id = "12345"
+    query.from_user.first_name = "Chris"
+    query.message = MagicMock()
+    query.message.chat_id = 12345
+    query.message.message_id = 99
+    query.message.message_thread_id = None
+    query.message.text = "Assistant Updates\n\nCustomer card"
+    query.message.chat.type = "private"
+    update = MagicMock()
+    update.callback_query = query
+    return update, query
+
+
+class _AsyncProc:
+    def __init__(self, returncode=0, stdout=b"Marked Customer handled.\n", stderr=b""):
+        self.returncode = returncode
+        self._stdout = stdout
+        self._stderr = stderr
+
+    async def communicate(self):
+        return self._stdout, self._stderr
+
+
+class TestTelegramAssistantActionCallback:
+    @pytest.mark.asyncio
+    async def test_asst_callback_routes_to_profile_action_handler(self, tmp_path):
+        adapter = _make_adapter()
+        home = tmp_path / "assistant-home"
+        scripts = home / "scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "assistant_actions.py").write_text("# test handler\n")
+        update, query = _assistant_callback_update()
+
+        calls = []
+
+        async def fake_exec(*cmd, stdout=None, stderr=None):
+            calls.append(cmd)
+            return _AsyncProc()
+
+        adapter._send_message_with_thread_fallback = AsyncMock(return_value=SimpleNamespace(message_id=100))
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("gateway.platforms.telegram.get_hermes_home", return_value=home):
+                with patch("gateway.platforms.telegram.asyncio.create_subprocess_exec", fake_exec):
+                    await adapter._handle_callback_query(update, MagicMock())
+
+        assert calls
+        assert calls[0][-5:] == ("handled", "--key", "abc123abc123abc123abc123", "--reason", "telegram button")
+        query.answer.assert_called_once()
+        query.edit_message_text.assert_awaited_once()
+        adapter._send_message_with_thread_fallback.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_asst_send_button_executes_live_send(self, tmp_path):
+        adapter = _make_adapter()
+        home = tmp_path / "assistant-home"
+        scripts = home / "scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "assistant_actions.py").write_text("# test handler\n")
+        update, _query = _assistant_callback_update("asst:sendk:abc123abc123abc123abc123")
+        calls = []
+
+        async def fake_exec(*cmd, stdout=None, stderr=None):
+            calls.append(cmd)
+            return _AsyncProc(stdout=b"Sent.\n")
+
+        adapter._send_message_with_thread_fallback = AsyncMock(return_value=SimpleNamespace(message_id=100))
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            with patch("gateway.platforms.telegram.get_hermes_home", return_value=home):
+                with patch("gateway.platforms.telegram.asyncio.create_subprocess_exec", fake_exec):
+                    await adapter._handle_callback_query(update, MagicMock())
+
+        assert calls
+        assert calls[0][-4:] == ("send", "--key", "abc123abc123abc123abc123", "--execute")
+
+    @pytest.mark.asyncio
+    async def test_asst_callback_rejects_unauthorized_user(self, tmp_path):
+        adapter = _make_adapter()
+        update, query = _assistant_callback_update()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "999"}, clear=False):
+            with patch("gateway.platforms.telegram.asyncio.create_subprocess_exec") as mock_exec:
+                await adapter._handle_callback_query(update, MagicMock())
+
+        mock_exec.assert_not_called()
+        query.answer.assert_called_once()
+
+    def test_asst_wait_callback_maps_owner_and_token(self):
+        adapter = _make_adapter()
+        mapped = adapter._assistant_action_command("asst:waitk:vendor:abc123")
+        assert mapped is not None
+        argv, label, remove_keyboard = mapped
+        assert argv == ["waiting", "--key", "abc123", "vendor", "tomorrow 10am", "--reason", "telegram button"]
+        assert label == "wait vendor"
+        assert remove_keyboard is True
+
+    def test_asst_callback_rejects_sensitive_or_malformed_payloads(self):
+        adapter = _make_adapter()
+        assert adapter._assistant_action_command("ea:once:1") is None
+        assert adapter._assistant_action_command("asst:sendk:bad/token") is None
+        assert adapter._assistant_action_command("asst:waitk:root:abc123") is None
+
+    def test_asst_edit_callback_maps_to_edit_context(self):
+        adapter = _make_adapter()
+        mapped = adapter._assistant_action_command("asst:editk:abc123")
+        assert mapped is not None
+        argv, label, remove_keyboard = mapped
+        assert argv == ["edit-context", "--key", "abc123"]
+        assert label == "edit context"
+        assert remove_keyboard is False
+
+
 class _AuthRunner:
     """Minimal runner shim for callback auth tests."""
 

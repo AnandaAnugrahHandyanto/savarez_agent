@@ -1112,6 +1112,18 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         if cmd is not None:
             _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
 
+    # Priority first-party plugin commands.  Shopmonkey's /ro, /po, /board,
+    # and /ar are installed as native Slack slashes for default + parts and
+    # must survive the 50-command Slack manifest clamp.  They still dispatch
+    # through the plugin command table, so per-profile MCP allowlists remain
+    # authoritative.
+    try:
+        for _name, _desc, _hint in _iter_plugin_command_entries():
+            if _name in {"ro", "po", "board", "ar"}:
+                _add(_name, _desc, _hint or "")
+    except Exception:
+        pass
+
     # First pass: canonical names (so they win slots if we hit the cap).
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):

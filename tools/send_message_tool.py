@@ -846,8 +846,44 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     instead, bypassing MarkdownV2 conversion.
     """
     try:
-        from telegram import Bot
+        from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
         from telegram.constants import ParseMode
+
+        inline_keyboard = None
+        marker_re = re.compile(r"(?m)^\s*HERMES_TELEGRAM_BUTTONS_JSON:\s*(\{.*\})\s*$")
+        marker_match = marker_re.search(message or "")
+        if marker_match:
+            # Match gateway/platforms/telegram.py so standalone `hermes send`
+            # cron delivery strips the hidden marker and turns it into a real
+            # Telegram inline keyboard instead of exposing raw JSON to Chris.
+            stripped_message = marker_re.sub("", message).strip()
+            try:
+                payload = json.loads(marker_match.group(1))
+                rows = payload.get("rows") if isinstance(payload, dict) else None
+                keyboard_rows = []
+                if isinstance(rows, list):
+                    for row in rows[:24]:
+                        if not isinstance(row, list):
+                            continue
+                        keyboard_row = []
+                        for button in row[:4]:
+                            if not isinstance(button, dict):
+                                continue
+                            text = str(button.get("text", ""))[:64].strip()
+                            callback_data = str(button.get("callback_data", ""))[:64].strip()
+                            if not text or not callback_data.startswith(("asst:", "sm:ro:")):
+                                continue
+                            keyboard_row.append(InlineKeyboardButton(text, callback_data=callback_data))
+                        if keyboard_row:
+                            keyboard_rows.append(keyboard_row)
+                if keyboard_rows:
+                    inline_keyboard = InlineKeyboardMarkup(keyboard_rows)
+            except Exception as marker_err:
+                logger.warning(
+                    "Invalid Telegram inline button marker ignored in send_message standalone path: %s",
+                    marker_err,
+                )
+            message = stripped_message
 
         # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
         # Inspired by github.com/ashaney — PR #1568.
@@ -922,6 +958,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         text_kwargs = dict(thread_kwargs)
         if disable_link_previews:
             text_kwargs["disable_web_page_preview"] = True
+        if inline_keyboard is not None:
+            text_kwargs["reply_markup"] = inline_keyboard
 
         last_msg = None
         warnings = []
