@@ -1532,7 +1532,10 @@ export const en: Translations = {
     stagedChanges: 'Staged Changes',
     changes: 'Changes',
     untrackedFiles: 'Untracked Files',
-    addToChat: 'Add to chat'
+    addToChat: 'Add to chat',
+    stageChanges: 'Stage changes',
+    unstageChanges: 'Unstage changes',
+    discardChanges: 'Discard changes'
   },
 
   preview: {
