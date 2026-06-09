@@ -368,3 +368,64 @@ class TestChannelPostEarlyAuth:
         assert adapter._is_user_auth_early(msg) is True
         assert captured["user_id"] == "-200"
         assert captured["chat_type"] == "channel"
+
+
+def _make_channel_post_no_sender_chat(channel_id=-100, channel_title="TestChannel"):
+    """Create a mock channel post with no from_user AND no sender_chat."""
+    chat = SimpleNamespace(id=channel_id, type="channel", title=channel_title)
+    return SimpleNamespace(
+        from_user=None,
+        chat=chat,
+        sender_chat=None,
+        message_thread_id=None,
+        text="broadcast",
+    )
+
+
+class TestChannelPostNoSenderChat:
+    """Channel posts without sender_chat must be rejected, not allowed through
+    as service messages.  Regression test for #40863 residual gap."""
+
+    def test_channel_post_no_sender_chat_no_runner_denied(self, monkeypatch):
+        """Channel post with no from_user, no sender_chat, no runner → denied."""
+        monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        adapter = _make_adapter()
+        adapter._message_handler = None
+        msg = _make_channel_post_no_sender_chat()
+        assert adapter._is_user_auth_early(msg) is False
+
+    def test_channel_post_no_sender_chat_runner_denied(self, monkeypatch):
+        """Channel post without sender_chat → runner auth never reached, denied."""
+        monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        adapter = _make_adapter()
+
+        class MockRunner:
+            def _is_user_authorized(self, source):
+                return True  # Would allow, but we never reach this
+
+        handler = lambda self_ref, *a, **kw: None
+        handler.__self__ = MockRunner()
+        adapter._message_handler = handler
+
+        msg = _make_channel_post_no_sender_chat()
+        assert adapter._is_user_auth_early(msg) is False
+
+    def test_group_service_message_still_allowed(self, monkeypatch):
+        """Group service messages (pin, delete) with no identity are still allowed."""
+        monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        adapter = _make_adapter()
+        adapter._message_handler = None
+        # Simulate a service message: no from_user, no sender_chat, group chat
+        chat = SimpleNamespace(id=-200, type="group", title="TestGroup")
+        msg = SimpleNamespace(
+            from_user=None,
+            chat=chat,
+            sender_chat=None,
+            message_thread_id=None,
+            text=None,
+            pinned_message=True,
+        )
+        assert adapter._is_user_auth_early(msg) is True

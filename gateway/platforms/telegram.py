@@ -5191,8 +5191,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 auth_id = str(getattr(sender_chat, "id", "")).strip() or None
                 auth_name = getattr(sender_chat, "title", None)
             # Still no identity — genuine service message (pin, delete,
-            # new_chat_members, etc.).  Let the cold path decide.
+            # new_chat_members, etc.) from a group chat.  Let the cold
+            # path decide.  BUT channel posts without sender_chat have
+            # no user identity to authorize — reject them here to close
+            # the pre-auth event-construction gap (#40863).
             if not auth_id:
+                if chat_type == "channel":
+                    logger.debug(
+                        "[Telegram] Rejected channel post with no identity (chat=%s) before event construction",
+                        getattr(chat, "id", "?"),
+                    )
+                    return False
                 return True
 
         chat_id = str(getattr(chat, "id", auth_id))
