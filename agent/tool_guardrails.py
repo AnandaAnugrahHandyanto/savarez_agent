@@ -240,15 +240,7 @@ def _memory_quota_display_error(data: Mapping[str, Any]) -> bool:
 
 def _memory_write_is_space_increasing(args: Mapping[str, Any]) -> bool:
     action = str(args.get("action") or "")
-    if action == "add":
-        return True
-    if action == "replace":
-        old_text = args.get("old_text")
-        content = args.get("content")
-        if old_text is not None and content is not None:
-            return len(str(content).strip()) > len(str(old_text).strip())
-        return True
-    return False
+    return action == "add"
 
 
 def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:

@@ -304,6 +304,28 @@ def test_memory_quota_budget_allows_clearly_shrinking_replace():
     assert shrinking_replace.action == "allow"
 
 
+def test_memory_quota_budget_allows_replace_when_old_text_is_only_selector():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(memory_quota_failure_suppress_after=2)
+    )
+
+    first_args = {"action": "add", "target": "user", "content": "oversized one"}
+    second_args = {"action": "add", "target": "user", "content": "oversized two"}
+
+    controller.before_call("memory", first_args, current_store_state_token="opaque:A")
+    controller.after_call("memory", first_args, _memory_quota_result(store_state_token="opaque:A"), failed=True)
+    controller.before_call("memory", second_args, current_store_state_token="opaque:A")
+    controller.after_call("memory", second_args, _memory_quota_result(store_state_token="opaque:A"), failed=True)
+
+    selector_replace = controller.before_call(
+        "memory",
+        {"action": "replace", "target": "user", "old_text": "abc", "content": "compact replacement"},
+        current_store_state_token="opaque:A",
+    )
+
+    assert selector_replace.action == "allow"
+
+
 def test_memory_quota_budget_allows_space_increasing_write_after_store_state_changes():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(memory_quota_failure_suppress_after=2)
