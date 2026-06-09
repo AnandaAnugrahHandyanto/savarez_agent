@@ -23,8 +23,10 @@ vi.mock('@/hermes', () => ({
 
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
-    desktop: {
-      modelSwitchFailed: 'Model switch failed'
+    t: {
+      desktop: {
+        modelSwitchFailed: 'Model switch failed'
+      }
     }
   })
 }))
