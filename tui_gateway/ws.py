@@ -27,16 +27,23 @@ import asyncio
 import json
 import logging
 import socket
+import sys
 from typing import Any
 
 from tui_gateway import server
 
 _log = logging.getLogger(__name__)
 
+def _default_ws_write_timeout_s() -> float:
+    # Windows ProactorEventLoop can take longer to run a thread-safe callback
+    # when the loop is under heavy stream-output load.
+    return 30.0 if sys.platform == "win32" else 10.0
+
+
 # Max seconds a pool-dispatched handler will block waiting for the event loop
 # to flush a WS frame before we mark the transport dead. Protects handler
 # threads from a wedged socket.
-_WS_WRITE_TIMEOUT_S = 10.0
+_WS_WRITE_TIMEOUT_S = _default_ws_write_timeout_s()
 _WS_LOG_PAYLOAD_PREVIEW = 240
 
 # Keep starlette optional at import time; handle_ws uses the real class when

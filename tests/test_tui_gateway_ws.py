@@ -87,3 +87,11 @@ def test_ws_disconnect_preserves_and_repoints_reconnectable_session(monkeypatch)
         assert server._sessions["plain"]["transport"] is server._detached_ws_transport
     finally:
         server._sessions.clear()
+
+
+def test_ws_write_timeout_is_longer_on_windows(monkeypatch):
+    monkeypatch.setattr(ws_mod.sys, "platform", "win32")
+    assert ws_mod._default_ws_write_timeout_s() == 30.0
+
+    monkeypatch.setattr(ws_mod.sys, "platform", "linux")
+    assert ws_mod._default_ws_write_timeout_s() == 10.0
