@@ -8973,6 +8973,8 @@ class HermesCLI:
             self._handle_goal_command(cmd_original)
         elif canonical == "subgoal":
             self._handle_subgoal_command(cmd_original)
+        elif canonical == "loop":
+            self._handle_loop_command(cmd_original)
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
@@ -9699,6 +9701,27 @@ class HermesCLI:
             return
         idx = len(mgr.state.subgoals) if mgr.state else 0
         _cprint(f"  ✓ Added subgoal {idx}: {text}")
+
+    def _handle_loop_command(self, cmd: str) -> None:
+        """Dispatch /loop subcommands: create / status / pause / resume / stop."""
+        from hermes_cli.loop_command import handle_loop_command
+
+        parts = (cmd or "").strip().split(None, 1)
+        args = parts[1].strip() if len(parts) > 1 else ""
+
+        result_json = handle_loop_command(args)
+        try:
+            result = json.loads(result_json)
+        except (json.JSONDecodeError, TypeError):
+            _cprint(result_json)
+            return
+
+        msg = result.get("message", "")
+        if msg:
+            _cprint(f"  {msg}")
+        elif not result.get("success"):
+            error = result.get("error", "Unknown error")
+            _cprint(f"  \033[1;31m{error}\033[0m")
 
     def _maybe_continue_goal_after_turn(self) -> None:
         """Hook run after every CLI turn. Judges + maybe re-queues.

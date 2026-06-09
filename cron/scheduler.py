@@ -11,6 +11,7 @@ runs at a time if multiple processes overlap.
 import asyncio
 import concurrent.futures
 import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -1015,6 +1016,22 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     prompt = str(job.get("prompt") or "")
     skills = job.get("skills")
 
+    # Inject previous loop response as context for the next tick.
+    if job.get("loop") and job.get("loop_last_response"):
+        prev_response = job["loop_last_response"]
+        # Truncate to 4K to avoid prompt bloat
+        _MAX_PREV = 4000
+        if len(prev_response) > _MAX_PREV:
+            prev_response = prev_response[:_MAX_PREV] + "\n\n[... truncated ...]"
+        prompt = (
+            "## Previous tick response\n"
+            "The following was the final response from the previous run of this "
+            "loop. Use it as context — continue from where it left off, or "
+            "improve upon it.\n\n"
+            f"```\n{prev_response}\n```\n\n"
+            f"{prompt}"
+        )
+
     # Run data-collection script if configured, inject output as context.
     script_path = job.get("script")
     if script_path:
@@ -1962,6 +1979,137 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 _max_workers if _max_workers else "unbounded",
             )
 
+        def _run_loop_verify(job: dict) -> Optional[str]:
+            """Run a loop job's --verify command and return error context or None."""
+            verify_cmd = job.get("loop_verify")
+            if not verify_cmd:
+                return None
+            try:
+                result = subprocess.run(
+                    verify_cmd, shell=True, capture_output=True,
+                    text=True, timeout=60,
+                )
+                if result.returncode != 0:
+                    stderr = (result.stderr or "").strip()
+                    stdout = (result.stdout or "").strip()
+                    parts = [f"verify command failed (exit {result.returncode})"]
+                    if stderr:
+                        parts.append(f"stderr: {stderr}")
+                    if stdout:
+                        parts.append(f"stdout: {stdout}")
+                    return "\n".join(parts)
+            except subprocess.TimeoutExpired:
+                return f"verify command timed out after 60s: {verify_cmd}"
+            except Exception as exc:
+                return f"verify command error: {exc}"
+            return None
+
+        def _evaluate_loop_tick(job: dict, final_response: str) -> tuple[Optional[str], bool]:
+            """Evaluate a loop job tick and update tracking state.
+
+            Returns (alert_message, skip_delivery).
+            - alert_message: non-None when the loop is auto-paused.
+            - skip_delivery: True when the output hash matches last delivered.
+            """
+            from cron.jobs import update_job, pause_job
+
+            job_id = job["id"]
+            threshold = job.get("loop_no_progress_threshold", 3)
+            last_hash = job.get("loop_last_output_hash")
+            no_progress_count = job.get("loop_no_progress_count", 0)
+            last_delivered_hash = job.get("loop_last_delivered_hash")
+
+            # Hash the final_response (sha256, truncated to 16 hex chars)
+            response_hash = hashlib.sha256(
+                (final_response or "").encode("utf-8")
+            ).hexdigest()[:16]
+
+            # Compare to previous output hash
+            if response_hash == last_hash:
+                no_progress_count += 1
+                logger.info(
+                    "Job '%s' loop: output unchanged (%s), no_progress_count=%d/%d",
+                    job_id, response_hash, no_progress_count, threshold,
+                )
+            else:
+                no_progress_count = 0
+                logger.info(
+                    "Job '%s' loop: output changed (%s → %s), resetting count",
+                    job_id, last_hash, response_hash,
+                )
+
+            # Check hash-based threshold before judge
+            if no_progress_count >= threshold:
+                alert = (
+                    f"🔄 Loop job '{job.get('name', job_id)}' auto-paused: "
+                    f"{threshold} consecutive identical outputs detected "
+                    f"(no progress). Use /loop resume {job_id} to restart."
+                )
+                update_job(job_id, {
+                    "loop_no_progress_count": no_progress_count,
+                    "loop_last_output_hash": response_hash,
+                    "loop_last_response": final_response,
+                })
+                pause_job(job_id, reason="no progress detected")
+                return alert, True
+
+            # Judge-based evaluation
+            verdict = None
+            try:
+                from hermes_cli.goals import judge_goal
+                verdict, reason, parse_failed = judge_goal(
+                    job.get("prompt", ""), final_response,
+                )
+                logger.info(
+                    "Job '%s' loop judge: verdict=%s reason=%s parse_failed=%s",
+                    job_id, verdict, reason, parse_failed,
+                )
+            except Exception as exc:
+                logger.debug("Job '%s' loop judge failed: %s", job_id, exc)
+
+            # For loops: verdict='done' means NOT useful (goal is satisfied,
+            # nothing more to do). verdict='continue' means useful progress.
+            if verdict == "done":
+                no_progress_count += 1
+                logger.info(
+                    "Job '%s' loop: judge says done (no progress), count=%d/%d",
+                    job_id, no_progress_count, threshold,
+                )
+                if no_progress_count >= threshold:
+                    alert = (
+                        f"🔄 Loop job '{job.get('name', job_id)}' auto-paused: "
+                        f"judge detected {threshold} consecutive no-progress "
+                        f"verdicts. Use /loop resume {job_id} to restart."
+                    )
+                    update_job(job_id, {
+                        "loop_no_progress_count": no_progress_count,
+                        "loop_last_output_hash": response_hash,
+                        "loop_last_response": final_response,
+                    })
+                    pause_job(job_id, reason="no progress detected")
+                    return alert, True
+
+            # Run --verify command if configured
+            verify_error = _run_loop_verify(job)
+            if verify_error:
+                logger.info("Job '%s' loop: verify failed: %s", job_id, verify_error)
+
+            # Determine delivery gating: skip if hash matches last delivered
+            skip_delivery = (last_delivered_hash is not None and response_hash == last_delivered_hash)
+
+            # Update loop state on the job record
+            updates = {
+                "loop_no_progress_count": no_progress_count,
+                "loop_last_output_hash": response_hash,
+                "loop_last_response": final_response,
+            }
+            # Track last delivered hash only when we actually deliver
+            if not skip_delivery and final_response.strip():
+                updates["loop_last_delivered_hash"] = response_hash
+            update_job(job_id, updates)
+
+            return None, skip_delivery
+
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
             try:
@@ -1970,6 +2118,13 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 output_file = save_job_output(job["id"], output)
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
+
+                # --- Loop self-evaluation ---
+                # After each run, evaluate progress and update loop tracking state.
+                loop_alert_msg = None
+                loop_skip_delivery = False
+                if job.get("loop") and success:
+                    loop_alert_msg, loop_skip_delivery = _evaluate_loop_tick(job, final_response)
 
                 # Deliver the final response to the origin/target chat.
                 # If the agent responded with [SILENT], skip delivery (but
@@ -1983,6 +2138,11 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                     should_deliver = False
 
+                # Loop delivery gating: skip when output unchanged from last delivery
+                if loop_skip_delivery:
+                    logger.info("Job '%s': loop output unchanged from last delivery — skipping", job["id"])
+                    should_deliver = False
+
                 delivery_error = None
                 if should_deliver:
                     try:
@@ -1990,6 +2150,13 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+                # Deliver loop alert (auto-pause notification) as a separate message
+                if loop_alert_msg:
+                    try:
+                        _deliver_result(job, loop_alert_msg, adapters=adapters, loop=loop)
+                    except Exception as de:
+                        logger.warning("Loop alert delivery failed for job %s: %s", job["id"], de)
 
                 # Treat empty final_response as a soft failure so last_status
                 # is not "ok" — the agent ran but produced nothing useful.

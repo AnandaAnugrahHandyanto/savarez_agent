@@ -7793,6 +7793,10 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "subgoal":
                 return await self._handle_subgoal_command(event)
 
+            # /loop is safe mid-run — it only manages cron jobs (control-plane).
+            if _cmd_def_inner and _cmd_def_inner.name == "loop":
+                return await self._handle_loop_command(event)
+
             # Session-level toggles that are safe to run mid-agent —
             # /yolo can unblock a pending approval prompt, /verbose cycles
             # the tool-progress display mode for the ongoing stream.
@@ -8214,6 +8218,9 @@ class GatewayRunner:
 
         if canonical == "subgoal":
             return await self._handle_subgoal_command(event)
+
+        if canonical == "loop":
+            return await self._handle_loop_command(event)
 
         if canonical == "voice":
             return await self._handle_voice_command(event)
@@ -11601,6 +11608,29 @@ class GatewayRunner:
             return f"/subgoal: {exc}"
         idx = len(mgr.state.subgoals) if mgr.state else 0
         return f"✓ Added subgoal {idx}: {text}"
+
+    async def _handle_loop_command(self, event: "MessageEvent") -> str:
+        """Handle /loop for gateway platforms.
+
+        Subcommands: ``/loop <interval> <prompt>`` / ``/loop status`` /
+        ``/loop pause <id>`` / ``/loop resume <id>`` / ``/loop stop <id>``.
+        """
+        from hermes_cli.loop_command import handle_loop_command
+
+        args = (event.get_command_args() or "").strip()
+        result_json = handle_loop_command(args)
+        try:
+            import json as _json
+            result = _json.loads(result_json)
+        except (ValueError, TypeError):
+            return result_json
+
+        msg = result.get("message", "")
+        if msg:
+            return msg
+        if not result.get("success"):
+            return result.get("error", "Unknown loop command error")
+        return result_json
 
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
         """Send a /goal judge status line back to the originating chat/thread."""

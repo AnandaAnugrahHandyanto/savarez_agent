@@ -565,6 +565,9 @@ def create_job(
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: bool = False,
+    loop: bool = False,
+    loop_verify: Optional[str] = None,
+    loop_no_progress_threshold: int = 3,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -614,6 +617,14 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        loop: When True, create a persistent scheduled loop with self-evaluation.
+                After each run, a judge evaluates progress; 3 consecutive
+                no-progress detections auto-pause the job.
+        loop_verify: Optional shell command to run after each agent tick to
+                verify the agent's actions. Failure context is injected into
+                the next tick's prompt.
+        loop_no_progress_threshold: Number of consecutive no-progress detections
+                before auto-pausing (default 3).
 
     Returns:
         The created job dict
@@ -649,6 +660,10 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_profile = _normalize_profile(profile)
     normalized_no_agent = bool(no_agent)
+    normalized_loop = bool(loop)
+    normalized_loop_verify = str(loop_verify).strip() if isinstance(loop_verify, str) else None
+    normalized_loop_verify = normalized_loop_verify or None
+    normalized_loop_threshold = max(1, int(loop_no_progress_threshold)) if loop_no_progress_threshold else 3
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -703,6 +718,13 @@ def create_job(
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
         "profile": normalized_profile,
+        # Loop self-evaluation fields
+        "loop": normalized_loop,
+        "loop_verify": normalized_loop_verify,
+        "loop_no_progress_threshold": normalized_loop_threshold,
+        "loop_no_progress_count": 0,
+        "loop_last_output_hash": None,
+        "loop_last_response": None,
     }
 
     jobs = load_jobs()
