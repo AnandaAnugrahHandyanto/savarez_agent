@@ -45,7 +45,8 @@ The installer auto-retries flaky git fetches and strips BOM from any downloaded 
 
 ### Desktop installer (alternative)
 
-A thin GUI installer is also available — useful if you'd rather double-click an `.exe` than open PowerShell. Download Hermes Desktop, run the installer, and on first launch the GUI calls `install.ps1` under the hood to provision Python (via `uv`), Node, PortableGit, and the rest of the dependency bootstrap described below. After the first run, the desktop app and the PowerShell-installed `hermes` CLI share the same `%LOCALAPPDATA%\hermes\hermes-agent` install and `%LOCALAPPDATA%\hermes` data directory — switch between the GUI and the CLI freely.
+A thin GUI installer is also available — useful if you'd rather double-click an `.exe` than open PowerShell. Download Hermes Desktop, run the installer, and on first launch the GUI calls `install.ps1` under the hood to provision Python (via `uv`), Node, PortableGit, and the rest of the dependency bootstrap described below. After the first run, the desktop app and the PowerShell-installed `hermes` CLI share the same `%LOCALAPPDATA%\hermes\savarez-agent` install and `%USERPROFILE%\.hermes` data directory — switch between the GUI and the CLI freely.
+
 
 Use the desktop installer when you want a familiar Windows install experience or you're handing Hermes to a non-developer; use the PowerShell one-liner when you're already in a terminal.
 
@@ -202,7 +203,8 @@ Services require admin rights to install and tie the gateway's lifecycle to mach
 
 | Path | Contents |
 |---|---|
-| `%LOCALAPPDATA%\hermes\hermes-agent\` | Git checkout + venv. `venv\Scripts\hermes.exe` is the command added to User PATH. Safe to `Remove-Item -Recurse` and reinstall. |
+| `%LOCALAPPDATA%\hermes\savarez-agent\` | Git checkout + venv. Safe to `Remove-Item -Recurse` and reinstall. |
+
 | `%LOCALAPPDATA%\hermes\git\` | PortableGit (only if the installer provisioned it). |
 | `%LOCALAPPDATA%\hermes\node\` | Portable Node.js (only if the installer provisioned it). |
 | `%LOCALAPPDATA%\hermes\bin\` | Hermes's managed `uv.exe` (the Python manager it uses for updates). |
@@ -262,7 +264,8 @@ From PowerShell:
 hermes uninstall
 ```
 
-That's the clean path — removes the schtasks entry, Startup folder shortcut, `hermes.cmd` shim, deletes `%LOCALAPPDATA%\hermes\hermes-agent\`, and trims the User PATH. It leaves the rest of `%LOCALAPPDATA%\hermes\` alone (your config, auth, skills, sessions, logs) in case you're reinstalling.
+That's the clean path — removes the schtasks entry, Startup folder shortcut, `hermes.cmd` shim, deletes `%LOCALAPPDATA%\hermes\savarez-agent\`, and trims the User PATH. It leaves `%USERPROFILE%\.hermes\` alone (your config, auth, skills, sessions, logs) in case you're reinstalling.
+
 
 To nuke everything:
 
