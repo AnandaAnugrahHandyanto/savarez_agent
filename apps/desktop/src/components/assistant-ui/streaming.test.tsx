@@ -85,11 +85,11 @@ async function wait(ms: number) {
   })
 }
 
-function userMessage(): ThreadMessage {
+function userMessage(id = 'user-1', text = 'Stream a response'): ThreadMessage {
   return {
-    id: 'user-1',
+    id,
     role: 'user',
-    content: [{ type: 'text', text: 'Stream a response' }],
+    content: [{ type: 'text', text }],
     attachments: [],
     createdAt,
     metadata: { custom: {} }
@@ -274,6 +274,38 @@ function StaticThreadHarness() {
     <AssistantRuntimeProvider runtime={runtime}>
       <Thread />
     </AssistantRuntimeProvider>
+  )
+}
+
+function SubmitJumpHarness() {
+  const [messages, setMessages] = useState<ThreadMessage[]>([
+    userMessage('user-0', 'Earlier prompt'),
+    assistantMessage('Earlier answer', false)
+  ])
+
+  const [isRunning, setIsRunning] = useState(false)
+
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages,
+    isRunning,
+    onNew: async () => {}
+  })
+
+  return (
+    <>
+      <button
+        onClick={() => {
+          setMessages(current => [...current, userMessage('user-2', 'Fresh prompt')])
+          setIsRunning(true)
+        }}
+        type="button"
+      >
+        Send
+      </button>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread loading={isRunning ? 'response' : undefined} />
+      </AssistantRuntimeProvider>
+    </>
   )
 }
 
@@ -534,6 +566,62 @@ describe('assistant-ui streaming renderer', () => {
     await wait(0)
 
     expect(viewport.scrollTop).toBe(760)
+  })
+
+  it('does not jump upward before the submit-time bottom pin completes', async () => {
+    const scrollOffsets: number[] = []
+
+    const scrollToSpy = vi.spyOn(Element.prototype, 'scrollTo').mockImplementation(function scrollTo(
+      xOrOptions: ScrollToOptions | number,
+      y?: number
+    ) {
+      const top =
+        typeof xOrOptions === 'number'
+          ? (y ?? 0)
+          : typeof xOrOptions.top === 'number'
+            ? xOrOptions.top
+            : 0
+
+      scrollOffsets.push(top)
+      ;(this as HTMLElement).scrollTop = top
+    })
+
+    try {
+      const { container } = render(<SubmitJumpHarness />)
+
+      const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
+      const viewport = content.parentElement as HTMLDivElement
+      let scrollHeight = 1_000
+
+      Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
+      Object.defineProperty(viewport, 'scrollHeight', {
+        configurable: true,
+        get: () => scrollHeight
+      })
+
+      await wait(0)
+
+      await act(async () => {
+        viewport.scrollTop = 800
+        fireEvent.scroll(viewport)
+      })
+
+      scrollOffsets.length = 0
+      scrollHeight = 1_240
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+      })
+
+      expect(viewport.scrollTop).toBe(1_240)
+      expect(scrollOffsets.some(offset => offset > 800 && offset < 1_240)).toBe(false)
+
+      await wait(0)
+
+      expect(viewport.scrollTop).toBe(1_240)
+    } finally {
+      scrollToSpy.mockRestore()
+    }
   })
 
   it('honors the first upward wheel scroll even when a programmatic bottom-pin scroll event is still pending', async () => {
