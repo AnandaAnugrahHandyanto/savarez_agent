@@ -15,6 +15,7 @@ sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -48,6 +49,30 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+def _redact_message_content(content: Any, redact_fn) -> Any:
+    """Redact sensitive text in a message content field.
+
+    Handles both plain-string content (OpenAI string format) and
+    list-typed content (Anthropic/multimodal content block format,
+    OpenAI vision messages, tool result blocks).
+    """
+    if isinstance(content, str):
+        return redact_fn(content, force=True)
+    if isinstance(content, list):
+        redacted = []
+        for part in content:
+            if isinstance(part, dict):
+                part = dict(part)  # shallow copy to avoid in-place mutation
+                for key in ("text", "thinking", "content"):
+                    if key in part and isinstance(part[key], str):
+                        part[key] = redact_fn(part[key], force=True)
+                    elif key in part and isinstance(part[key], list):
+                        part[key] = _redact_message_content(part[key], redact_fn)
+            redacted.append(part)
+        return redacted
+    return content
 
 
 def estimate_request_context_tokens(api_payload: Any) -> int:
@@ -192,6 +217,23 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
     def _call():
         try:
+            # ── DETE: redact messages before they leave the trust boundary ────
+            # The messages list may contain credentials reconstructed by the agent
+            # or leaked from tool output. Apply display-style redaction as a
+            # last-line-of-defense before serialization to the provider's API.
+            # This is non-optional — it runs on every API call regardless of
+            # the HERMES_REDACT_SECRETS env var (the kill switch was removed).
+            # Redact on a deep copy to preserve the original for diagnostics,
+            # retries, and downstream consumers that hold references.
+            from agent.redact import redact_sensitive_text
+            messages = api_kwargs.get("messages", [])
+            if messages:
+                redacted_messages = copy.deepcopy(messages)
+                for msg in redacted_messages:
+                    if isinstance(msg, dict) and "content" in msg:
+                        msg["content"] = _redact_message_content(msg["content"], redact_sensitive_text)
+                api_kwargs["messages"] = redacted_messages
+            # ────────────────────────────────────────────────────────────────
             if agent.api_mode == "codex_responses":
                 request_client = _set_request_client(
                     agent._create_request_openai_client(
@@ -2193,6 +2235,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
     def _call():
         import httpx as _httpx
+
+        # ── DETE: redact messages before they leave the trust boundary ────
+        from agent.redact import redact_sensitive_text
+        messages = api_kwargs.get("messages", [])
+        if messages:
+            redacted_messages = copy.deepcopy(messages)
+            for msg in redacted_messages:
+                if isinstance(msg, dict) and "content" in msg:
+                    msg["content"] = _redact_message_content(msg["content"], redact_sensitive_text)
+            api_kwargs["messages"] = redacted_messages
+        # ────────────────────────────────────────────────────────────────
 
         _max_stream_retries = env_int("HERMES_STREAM_RETRIES", 2)
 
