@@ -859,7 +859,9 @@ def remove_job(job_id: str) -> bool:
             # half-applying the removal.
             job_output_dir = _job_output_dir(canonical_id)
             save_jobs(jobs)
-            # Clean up output directory to prevent orphaned dirs accumulating
+            # Clean up output directory to prevent orphaned dirs accumulating.
+            # rmtree kept inside the lock so a concurrent tick cannot write
+            # new output into this directory between our save and the delete.
             if job_output_dir.exists():
                 shutil.rmtree(job_output_dir)
             return True
