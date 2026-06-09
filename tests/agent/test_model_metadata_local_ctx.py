@@ -8,7 +8,16 @@ import sys
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+
+@pytest.fixture(autouse=True)
+def _clear_model_metadata_caches():
+    """Clear module-level caches before each test to prevent cross-test contamination."""
+    from agent.model_metadata import _clear_local_caches
+    _clear_local_caches()
 
 
 
