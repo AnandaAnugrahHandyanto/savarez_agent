@@ -436,3 +436,63 @@ class TestCleanupProgress:
                 }
             }
             assert resolve_display_setting(config, "telegram", "cleanup_progress") is True, val
+
+
+class TestTerminalProgress:
+    """``terminal_progress`` controls terminal-command rendering on
+    markdown-capable platforms; defaults to ``code_block`` everywhere."""
+
+    def test_default_code_block_for_all_platforms(self):
+        """No config set → terminal_progress resolves to 'code_block'."""
+        from gateway.display_config import resolve_display_setting
+
+        for plat in ("telegram", "whatsapp", "slack", "discord", "email", "unknown"):
+            assert (
+                resolve_display_setting({}, plat, "terminal_progress")
+                == "code_block"
+            ), plat
+
+    def test_global_compact_applies_to_all_platforms(self):
+        """display.terminal_progress=compact opts in globally."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"terminal_progress": "compact"}}
+        assert resolve_display_setting(config, "telegram", "terminal_progress") == "compact"
+        assert resolve_display_setting(config, "slack", "terminal_progress") == "compact"
+
+    def test_per_platform_override_wins(self):
+        """display.platforms.<plat>.terminal_progress beats the global value."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "terminal_progress": "code_block",
+                "platforms": {
+                    "telegram": {"terminal_progress": "compact"},
+                },
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "terminal_progress") == "compact"
+        assert resolve_display_setting(config, "slack", "terminal_progress") == "code_block"
+
+    def test_unknown_value_normalises_to_code_block(self):
+        """An unrecognised value falls back to the safe default."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"terminal_progress": "loud"}}
+        assert resolve_display_setting(config, "telegram", "terminal_progress") == "code_block"
+
+    def test_value_is_case_insensitive(self):
+        """Mixed-case values normalise to lowercase canonical forms."""
+        from gateway.display_config import resolve_display_setting
+
+        cfg_compact = {"display": {"platforms": {"telegram": {"terminal_progress": "Compact"}}}}
+        cfg_block = {"display": {"platforms": {"telegram": {"terminal_progress": "CODE_BLOCK"}}}}
+        assert resolve_display_setting(cfg_compact, "telegram", "terminal_progress") == "compact"
+        assert resolve_display_setting(cfg_block, "telegram", "terminal_progress") == "code_block"
+
+    def test_terminal_progress_is_overrideable_key(self):
+        """The key participates in per-platform override validation."""
+        from gateway.display_config import OVERRIDEABLE_KEYS
+
+        assert "terminal_progress" in OVERRIDEABLE_KEYS

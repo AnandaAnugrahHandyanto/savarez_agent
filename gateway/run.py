@@ -12849,6 +12849,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _env_tp and not _tool_progress_configured
             else (_resolved_tp or _env_tp or "all")
         )
+        # Terminal-command progress rendering on markdown-capable platforms.
+        # "code_block" (default) keeps the full fenced command; "compact" falls
+        # back to the short truncated `terminal: "..."` preview so the full
+        # command is not posted to chat. Resolved once here, read in the
+        # progress callback below.
+        _terminal_progress = resolve_display_setting(
+            user_config, platform_key, "terminal_progress", "code_block"
+        )
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
@@ -13005,16 +13013,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # code block (full command, no truncation) instead of the compact
             # `terminal: "cmd…"` preview.  Gated on the adapter's
             # ``supports_code_blocks`` capability so plain-text platforms keep
-            # the short line.  No language tag is emitted — Slack mrkdwn renders
-            # the tag as a literal first code line ("bash"), and a bare fence
-            # renders correctly everywhere that supports blocks.
+            # the short line, and on the ``terminal_progress`` display setting so
+            # deployments can resolve it to "compact" to keep the truncated
+            # preview (and not post the full command to chat).  No language tag
+            # is emitted; Slack mrkdwn renders the tag as a literal first code
+            # line ("bash"), and a bare fence renders correctly everywhere that
+            # supports blocks.
             _code_block = None
             try:
                 _progress_adapter = self.adapters.get(source.platform)
             except Exception:
                 _progress_adapter = None
             if (
-                getattr(_progress_adapter, "supports_code_blocks", False)
+                _terminal_progress == "code_block"
+                and getattr(_progress_adapter, "supports_code_blocks", False)
                 and tool_name == "terminal"
                 and isinstance(args, dict)
                 and isinstance(args.get("command"), str)
@@ -13048,7 +13060,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # config (defaults to 40 chars when unset to keep gateway messages
             # compact — unlike CLI spinners, these persist as permanent messages).
             # Terminal commands on markdown platforms get the full fenced block
-            # built above instead of the truncated preview.
+            # built above, unless terminal_progress resolved to "compact", in
+            # which case _code_block is None and the truncated preview is used.
             if _code_block is not None:
                 msg = _code_block
             elif preview:

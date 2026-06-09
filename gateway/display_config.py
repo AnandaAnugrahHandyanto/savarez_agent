@@ -46,6 +46,14 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # How the terminal tool's command is rendered in tool progress on
+    # markdown-capable platforms (those with supports_code_blocks). Two values:
+    #   "code_block" (default) renders the full command in a bare fenced block.
+    #   "compact" keeps the short truncated `terminal: "..."` preview that every
+    #   other tool already uses, so the full command is not posted to the chat.
+    # Only affects the terminal tool; other breadcrumbs (search_files, read_file,
+    # patch, todo, etc.) are unchanged. Default preserves current behavior.
+    "terminal_progress": "code_block",
 }
 
 # ---------------------------------------------------------------------------
@@ -237,4 +245,9 @@ def _normalise(setting: str, value: Any) -> Any:
             return int(value)
         except (TypeError, ValueError):
             return 0
+    if setting == "terminal_progress":
+        normalised = str(value).strip().lower()
+        if normalised in {"compact", "code_block"}:
+            return normalised
+        return "code_block"
     return value

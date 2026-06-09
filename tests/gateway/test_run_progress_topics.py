@@ -1386,3 +1386,165 @@ async def test_terminal_progress_no_bash_block_in_verbose_mode(monkeypatch, tmp_
     all_content = " ".join(call["content"] for call in adapter.sent)
     all_content += " ".join(call["content"] for call in adapter.edits)
     assert "```bash" not in all_content
+
+
+def _write_terminal_progress_config(tmp_path, value):
+    """Write a minimal config.yaml that sets telegram's terminal_progress.
+
+    _load_gateway_config() reads _hermes_home / 'config.yaml' (monkeypatched to
+    tmp_path), so this exercises real per-platform display resolution rather
+    than stubbing resolve_display_setting.
+    """
+    (tmp_path / "config.yaml").write_text(
+        "display:\n"
+        "  platforms:\n"
+        "    telegram:\n"
+        f"      terminal_progress: {value}\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_terminal_progress_compact_knob_truncates_not_code_block(monkeypatch, tmp_path):
+    """With display.platforms.telegram.terminal_progress=compact, a terminal
+    command in 'all' mode must render the short truncated `terminal: "..."`
+    preview, not a fenced block with the full command. This is the regression
+    that returned after #42576: the full command must not be posted to chat.
+
+    Drives the real {"command": ...} path (TerminalCommandAgent), so it would
+    not pass against #42576's code, unlike the {}-arg truncation tests."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    _write_terminal_progress_config(tmp_path, "compact")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = TerminalCommandAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+
+    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-terminal-compact-all",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent)
+    all_content += " ".join(call["content"] for call in adapter.edits)
+    # No fenced block at all (bare fence too, not only the ```bash tag).
+    assert "```" not in all_content
+    # The compact quoted preview IS used for the terminal command.
+    assert 'terminal: "' in all_content
+    # The full command body is truncated away, not posted verbatim.
+    assert "npm install -g hyperframes@latest" not in all_content
+
+
+@pytest.mark.asyncio
+async def test_terminal_progress_compact_knob_verbose_no_code_block(monkeypatch, tmp_path):
+    """terminal_progress=compact also suppresses the fenced block in verbose
+    mode. Verbose may show a truncated args preview, but never the full command
+    as a code block."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "verbose")
+    _write_terminal_progress_config(tmp_path, "compact")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = TerminalCommandAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+
+    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-terminal-compact-verbose",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent)
+    all_content += " ".join(call["content"] for call in adapter.edits)
+    assert "```" not in all_content
+    assert "npm install -g hyperframes@latest" not in all_content
+
+
+@pytest.mark.asyncio
+async def test_terminal_progress_explicit_code_block_still_renders(monkeypatch, tmp_path):
+    """Setting terminal_progress=code_block explicitly keeps the full fenced
+    block. Guards that the knob's default value resolves correctly (not only the
+    absent-config default) and that #42576's behavior stays available."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    _write_terminal_progress_config(tmp_path, "code_block")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = TerminalCommandAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+
+    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-terminal-explicit-code-block",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent)
+    all_content += " ".join(call["content"] for call in adapter.edits)
+    assert "```" in all_content
+    assert "npm install -g hyperframes@latest" in all_content
+    assert 'terminal: "' not in all_content

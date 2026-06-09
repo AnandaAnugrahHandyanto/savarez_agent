@@ -939,6 +939,23 @@ display:
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
+  # How the terminal tool's command is shown in tool progress on
+  # markdown-capable chat platforms (Telegram, WhatsApp, Slack, Feishu, Matrix,
+  # Weixin). Only affects the terminal tool; other breadcrumbs (search_files,
+  # read_file, patch, todo, etc.) are unchanged.
+  #   code_block: Render the full command in a fenced code block (default)
+  #   compact:    Keep the short truncated `terminal: "..."` preview, so the
+  #               full command is not posted to the chat
+  # Default preserves the fenced-block behavior. Set compact per platform to
+  # keep terminal progress quiet on a mobile or shared channel without turning
+  # off all tool progress.
+  # Per-platform override example:
+  #   display:
+  #     platforms:
+  #       telegram:
+  #         terminal_progress: compact
+  terminal_progress: code_block
+
   # Per-platform defaults can be quieter than the global setting. Telegram
   # tunes for mobile: tool_progress and busy_ack_detail default off (no
   # per-tool breadcrumb stream, no "iteration 21/60" debug detail in busy
