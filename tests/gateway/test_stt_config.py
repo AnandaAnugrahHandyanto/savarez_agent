@@ -60,6 +60,36 @@ async def test_enrich_message_with_transcription_surfaces_path_when_stt_disabled
 
 
 @pytest.mark.asyncio
+async def test_enrich_voice_only_message_returns_tuple_not_bare_string():
+    """A voice-only message (caption == the Discord empty-content placeholder)
+    whose audio transcribes successfully must return the (enriched_text,
+    successful_transcripts) tuple, not a bare string. Returning a bare string
+    made every caller's ``a, b = await ...`` unpack crash with "too many values
+    to unpack", dropping the whole reply on voice-only Discord messages (#42709).
+    """
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+
+    placeholder = "(The user sent a message with no text content)"
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={"success": True, "transcript": "hello there"},
+    ):
+        result = await runner._enrich_message_with_transcription(
+            placeholder,
+            ["/tmp/voice.ogg"],
+        )
+
+    # The bug returned a bare ``str`` here; unpacking it would raise.
+    enriched, transcripts = result
+    assert "hello there" in enriched
+    assert placeholder not in enriched  # placeholder dropped once transcribed
+    assert transcripts == ["hello there"]
+
+
+@pytest.mark.asyncio
 async def test_enrich_message_with_transcription_omits_duration_on_probe_failure():
     from gateway.run import GatewayRunner
 
