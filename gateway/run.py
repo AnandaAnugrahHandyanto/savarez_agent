@@ -4193,7 +4193,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # that triggered the /restart command closing its console.
         if sys.platform == "win32":
             import textwrap
-            from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+            from hermes_cli._subprocess_compat import (
+                windows_detach_flags_without_breakaway,
+                windows_detach_popen_kwargs,
+            )
 
             cmd_argv = [*hermes_cmd, "gateway", "restart"]
             watcher = textwrap.dedent(
@@ -4237,20 +4240,89 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _CREATE_NEW_PROCESS_GROUP = 0x00000200
                 _DETACHED_PROCESS = 0x00000008
                 _CREATE_NO_WINDOW = 0x08000000
-                subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=_CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS | _CREATE_NO_WINDOW,
+                # Without CREATE_BREAKAWAY_FROM_JOB the respawned gateway
+                # stays in the parent CLI's job object and is reaped when
+                # the CLI exits (Electron/Tauri-spawned Hermes Desktop,
+                # Windows Terminal with default job settings, schtasks
+                # shells).  The breakaway bit can be rejected with
+                # ERROR_ACCESS_DENIED on restrictive job objects (Windows
+                # Terminal containers, kiosk-mode shells); in that case we
+                # fall back to the bundle without the breakaway bit and
+                # rely on DETACHED_PROCESS alone.  Mirrors the canonical
+                # fallback in hermes_cli/gateway.py:launch_detached_profile_gateway_restart
+                # (PR #40909) and the TestGatewayDetachedWatcherWindowsFlags
+                # regression tests in tests/tools/test_windows_native_support.py.
+                _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+                _flags_full = (
+                    _CREATE_NEW_PROCESS_GROUP
+                    | _DETACHED_PROCESS
+                    | _CREATE_NO_WINDOW
+                    | _CREATE_BREAKAWAY_FROM_JOB
                 )
+                _flags_fallback = _flags_full & ~_CREATE_BREAKAWAY_FROM_JOB
+                try:
+                    subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=_flags_full,
+                    )
+                except OSError:
+                    subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        creationflags=_flags_fallback,
+                    )
                 """
             ).strip()
-            subprocess.Popen(
-                [sys.executable, "-c", watcher, str(current_pid), *cmd_argv],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                **windows_detach_popen_kwargs(),
-            )
+            # Same platform-aware detach for the watcher process itself.
+            # If the parent's job object refuses CREATE_BREAKAWAY_FROM_JOB
+            # (Windows Terminal with restrictive job settings, containers,
+            # kiosk-mode shells), retry the watcher spawn without it.
+            try:
+                subprocess.Popen(
+                    [sys.executable, "-c", watcher, str(current_pid), *cmd_argv],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    **windows_detach_popen_kwargs(),
+                )
+            except OSError:
+                # CREATE_BREAKAWAY_FROM_JOB rejected by the parent job
+                # object (Electron, Windows Terminal with restrictive
+                # job settings, containers, kiosk-mode shells). Retry
+                # without it. Mirrors hermes_cli/gateway.py:716-742:
+                # nested try/except so a SECOND OSError on the fallback
+                # doesn't escape to the user.
+                fallback_kwargs: dict = (
+                    {"creationflags": windows_detach_flags_without_breakaway()}
+                    if sys.platform == "win32"
+                    else {"start_new_session": True}
+                )
+                try:
+                    subprocess.Popen(
+                        [sys.executable, "-c", watcher, str(current_pid), *cmd_argv],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        **fallback_kwargs,
+                    )
+                except OSError as exc:
+                    # Both attempts failed (e.g. job object forbids
+                    # ALL detach, or the user's job is so restrictive
+                    # that even the no-breakaway bundle is rejected).
+                    # Log the failure so the user has a signal — the
+                    # gateway is NOT respawned in this case, and the
+                    # silent-pass that an earlier draft of this patch
+                    # had was a real maintainer-review blocker. The
+                    # user's CLI still exits cleanly (we don't crash),
+                    # but a WARNING in the log is the right balance.
+                    logger.warning(
+                        "Could not spawn detached gateway restart watcher "
+                        "(parent job object refused both attach attempts): %s. "
+                        "The respawned gateway will not survive the parent "
+                        "CLI's job teardown in this restrictive setup.",
+                        exc,
+                    )
             return
 
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
