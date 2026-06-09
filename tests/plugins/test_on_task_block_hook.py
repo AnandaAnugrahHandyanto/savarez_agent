@@ -1,7 +1,6 @@
 ﻿"""Tests for the on_task_block plugin hook."""
 from __future__ import annotations
 from unittest.mock import MagicMock
-import pytest
 
 
 def _make_board(tmp_path):
@@ -10,8 +9,8 @@ def _make_board(tmp_path):
     conn = kb.connect(db_path=db_path)
     with conn:
         tid = kb.create_task(conn, title="test task", assignee="worker")
-        kb.set_task_status(conn, tid, "running")
-    return str(db_path), tid  # str for env var
+        kb.claim_task(conn, tid, profile="worker")
+    return str(db_path), tid
 
 
 class TestOnTaskBlockToolHook:
