@@ -7612,11 +7612,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _msg_config_ctx = int(_msg_raw_ctx)
                 except Exception:
                     pass
+                _msg_custom_providers = None
+                try:
+                    from hermes_cli.config import get_compatible_custom_providers
+                    _msg_custom_providers = get_compatible_custom_providers()
+                except Exception:
+                    pass
                 _msg_ctx_len = get_model_context_length(
                     self._model,
                     base_url=self._base_url or _msg_runtime.get("base_url") or "",
                     api_key=_msg_runtime.get("api_key") or "",
                     config_context_length=_msg_config_ctx,
+                    custom_providers=_msg_custom_providers,
                 )
                 _ctx_result = await preprocess_context_references_async(
                     message_text,
