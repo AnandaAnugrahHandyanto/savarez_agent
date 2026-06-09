@@ -147,6 +147,13 @@ class AnthropicTransport(ProviderTransport):
         — the model's canonical way of signalling "nothing more to add" after
         a tool turn that already delivered the user-facing text. Treating it
         as invalid falsely retries a completed response.
+
+        An empty content list with ``stop_reason == "refusal"`` is an HTTP-200
+        safety refusal. This still returns False here (the response carries no
+        usable content), but the conversation loop special-cases the refusal
+        ``stop_reason`` *before* the generic invalid-response retry path and
+        routes it to content-policy handling instead of retrying 3× — see the
+        ``anthropic_refusal`` branch in ``agent/conversation_loop.py``.
         """
         if response is None:
             return False

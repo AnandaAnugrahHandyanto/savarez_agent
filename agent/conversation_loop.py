@@ -1044,6 +1044,12 @@ def run_conversation(
                 
                 # Validate response shape before proceeding
                 response_invalid = False
+                # Set when an Anthropic response is an HTTP-200 safety refusal
+                # (stop_reason="refusal", empty content). Routed to the
+                # content-policy path instead of the generic invalid-response
+                # retry loop, which would burn paid retries on a deterministic
+                # block and mislabel it "response.content invalid".
+                anthropic_refusal = False
                 error_details = []
                 if agent.api_mode == "codex_responses":
                     _ct_v = agent._get_transport()
@@ -1096,11 +1102,27 @@ def run_conversation(
                 elif agent.api_mode == "anthropic_messages":
                     _tv = agent._get_transport()
                     if not _tv.validate_response(response):
-                        response_invalid = True
-                        if response is None:
-                            error_details.append("response is None")
+                        # An HTTP-200 safety refusal arrives as stop_reason
+                        # "refusal" with an empty content list. It is
+                        # deterministic for the unchanged request, so the
+                        # generic invalid-response path (3× backoff retry,
+                        # "response.content invalid" wording) is both wrong and
+                        # wasteful. Flag it so it routes to the content-policy
+                        # handler below instead.
+                        if (
+                            response is not None
+                            and getattr(response, "stop_reason", None) == "refusal"
+                        ):
+                            anthropic_refusal = True
+                            error_details.append(
+                                "model safety refusal (stop_reason=refusal)"
+                            )
                         else:
-                            error_details.append("response.content invalid (not a non-empty list)")
+                            response_invalid = True
+                            if response is None:
+                                error_details.append("response is None")
+                            else:
+                                error_details.append("response.content invalid (not a non-empty list)")
                 elif agent.api_mode == "bedrock_converse":
                     _btv = agent._get_transport()
                     if not _btv.validate_response(response):
@@ -1121,6 +1143,88 @@ def run_conversation(
                             error_details.append("response.choices is None")
                         else:
                             error_details.append("response.choices is empty")
+
+                if anthropic_refusal:
+                    # HTTP-200 safety refusal: deterministic for the unchanged
+                    # request, so retrying just reproduces the block and burns
+                    # paid attempts. Mirror the exception-driven
+                    # content_policy_blocked path: stop the spinner, try a
+                    # configured fallback, otherwise return an honest
+                    # "provider safety filter blocked this" result rather than
+                    # the misleading "Invalid API response after 3 retries".
+                    agent._invoke_api_request_error_hook(
+                        task_id=effective_task_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        api_call_count=api_call_count,
+                        api_start_time=api_start_time,
+                        api_kwargs=api_kwargs,
+                        error_type="ContentPolicyBlocked",
+                        error_message=", ".join(error_details) or "model safety refusal",
+                        status_code=None,
+                        retry_count=retry_count,
+                        max_retries=max_retries,
+                        retryable=False,
+                        reason="content_policy_blocked",
+                    )
+                    if thinking_spinner:
+                        thinking_spinner.stop("")
+                        thinking_spinner = None
+                    if agent.thinking_callback:
+                        agent.thinking_callback("")
+
+                    _refusal_model = getattr(agent, "model", "unknown")
+                    if agent._has_pending_fallback():
+                        agent._buffer_status(
+                            "⚠️ Model safety filter refused this request — trying fallback..."
+                        )
+                    if agent._try_activate_fallback():
+                        retry_count = 0
+                        compression_attempts = 0
+                        _retry.primary_recovery_attempted = False
+                        continue
+
+                    agent._flush_status_buffer()
+                    agent._emit_status(
+                        f"❌ The model ({_refusal_model}) refused this request "
+                        f"(safety filter, stop_reason=refusal)."
+                    )
+                    agent._vprint(
+                        f"{agent.log_prefix}   💡 This is a model-level safety refusal, "
+                        f"not a Hermes or network error. Retrying the same request won't help.",
+                        force=True,
+                    )
+                    agent._vprint(
+                        f"{agent.log_prefix}      • Try rephrasing, narrowing the context, "
+                        f"or switching to a less restrictive model.",
+                        force=True,
+                    )
+                    agent._vprint(
+                        f"{agent.log_prefix}      • Configure a fallback provider so future "
+                        f"refusals route automatically:  hermes fallback add",
+                        force=True,
+                    )
+                    logger.warning(
+                        "%sModel safety refusal (stop_reason=refusal) on model=%s provider=%s. "
+                        "Not retrying (deterministic).",
+                        agent.log_prefix, _refusal_model, getattr(agent, "provider", "unknown"),
+                    )
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "final_response": (
+                            f"⚠️  The model ({_refusal_model}) declined to respond to this "
+                            f"request (provider safety filter, stop_reason=refusal — not a "
+                            f"Hermes or network failure).\n\n"
+                            f"Try rephrasing the request, narrowing the context, switching to "
+                            f"a less restrictive model, or adding a fallback provider with "
+                            f"`hermes fallback add`."
+                        ),
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "failed": True,
+                        "error": "content_policy_blocked: model safety refusal (stop_reason=refusal)",
+                    }
 
                 if response_invalid:
                     agent._invoke_api_request_error_hook(
