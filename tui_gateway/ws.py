@@ -156,35 +156,6 @@ def _disable_nagle(ws: Any) -> None:
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
 
-def _detach_sessions_for_transport(transport: WSTransport, *, peer: str) -> tuple[int, int]:
-    """Park sessions owned by a dead WS transport without falling back to stdio.
-
-    In stdio/Ink mode the stdio transport is a real JSON-RPC peer. In the
-    dashboard's in-process WebSocket mode, stdout is the service log. A WS-owned
-    session that falls back to stdio after disconnect will stream raw event
-    frames to journald and Desktop will miss them. Point detached sessions at a
-    dropping transport until ``session.resume`` or ``prompt.submit`` rebinds a
-    live client transport.
-    """
-
-    detached_sessions = 0
-    reaped_scheduled = 0
-    for _sid, sess in list(server._sessions.items()):
-        if sess.get("transport") is transport:
-            sess["transport"] = server._detached_ws_transport
-            detached_sessions += 1
-            try:
-                server._schedule_ws_orphan_reap(_sid)
-                reaped_scheduled += 1
-            except Exception:
-                _log.exception(
-                    "ws orphan-reap schedule failed peer=%s sid=%s",
-                    peer,
-                    _sid,
-                )
-    return detached_sessions, reaped_scheduled
-
-
 async def handle_ws(ws: Any) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
     peer = _ws_peer_label(ws)
@@ -312,32 +283,44 @@ async def handle_ws(ws: Any) -> None:
                 )
                 break
     finally:
+        reaped_sessions = 0
         detached_sessions = 0
-        reaped_scheduled = 0
         if transport is not None:
             transport.close()
 
-            # Detach the transport from any sessions it owned so later emits do
-            # not crash into a closed socket or fall through to dashboard
-            # stdout/journald. A quick reconnect / session.resume re-binds a
-            # live transport and cancels the orphan reap (see
-            # _ws_session_is_orphaned).
-            detached_sessions, reaped_scheduled = _detach_sessions_for_transport(
-                transport,
-                peer=peer,
-            )
+            # Reap sessions this transport owned (close_on_disconnect sidecar
+            # sessions) or detach the rest to the drop sentinel so later emits
+            # don't crash into a closed socket or fall through to desktop stdout
+            # logs. Detached sessions are handed to the grace-windowed WS-orphan
+            # reaper inside _close_sessions_for_transport (a quick reconnect /
+            # session.resume cancels it). This is the single WS-disconnect
+            # teardown path.
+            #
+            # Offloaded: _close_session_by_id does a blocking worker.close()
+            # (terminate + waits) plus a synchronous DB write — inline that
+            # would freeze the uvicorn event loop for every other live
+            # connection.
+            try:
+                reaped_sessions, detached_sessions = await asyncio.to_thread(
+                    server._close_sessions_for_transport,
+                    transport,
+                    end_reason="ws_disconnect",
+                )
+            except Exception:
+                _log.exception("ws transport teardown failed peer=%s", peer)
         try:
             await ws.close()
         except Exception as exc:
             _log.debug("ws close failed peer=%s error=%s", peer, exc)
         _log.info(
             "ws closed peer=%s reason=%s messages=%d parse_errors=%d "
-            "dispatch_crashes=%d send_failures=%d detached_sessions=%d",
+            "dispatch_crashes=%d send_failures=%d reaped_sessions=%d detached_sessions=%d",
             peer,
             disconnect_reason,
             messages,
             parse_errors,
             dispatch_crashes,
             send_failures,
+            reaped_sessions,
             detached_sessions,
         )
