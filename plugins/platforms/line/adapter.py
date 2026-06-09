@@ -16,10 +16,11 @@ expired, or rejected by the API.
 **Slow-LLM postback button (optional).** When the LLM is still running past
 ``slow_response_threshold`` seconds (default 45, leaving 15s margin on the
 60s reply-token TTL), we burn the original reply token to send a Template
-Buttons bubble — the user taps it later to receive the cached answer via a
-*fresh* reply token (also free). State machine: PENDING → READY → DELIVERED,
-with ERROR for cancelled runs. Set the threshold to 0 to disable the
-button and always Push-fallback instead.
+Buttons bubble. When the answer becomes ready we proactively Push the final
+response back to the chat; if that Push fails, the existing button still lets
+the user fetch the cached answer via a *fresh* reply token. State machine:
+PENDING → READY → DELIVERED, with ERROR for cancelled runs. Set the
+threshold to 0 to disable the button and always Push-fallback instead.
 
 **Three-allowlist gating.** Separate allowlists for users (U-prefixed),
 groups (C-prefixed), and rooms (R-prefixed). ``LINE_ALLOW_ALL_USERS=true``
@@ -938,13 +939,6 @@ class LineAdapter(BasePlatformAdapter):
         chat_id, chat_type = _resolve_chat(source)
         user_id = source.get("userId", "") or chat_id
 
-        # Stash the reply token for outbound use.
-        if chat_id and reply_token:
-            self._reply_tokens[chat_id] = (
-                reply_token,
-                time.time() + LINE_REPLY_TOKEN_TTL_SECONDS,
-            )
-
         # Handle media inbound — fetch the binary, cache it, and surface a
         # vision-tool-friendly local path on the MessageEvent.
         media_urls: List[str] = []
@@ -968,6 +962,39 @@ class LineAdapter(BasePlatformAdapter):
             text = f"[location: {title} {address}]".strip()
         else:
             text = f"[unsupported message type: {msg_type}]"
+
+        # Mention gate for group/room:
+        # - allow when text starts with @hermes / ＠hermes (case-insensitive), OR
+        # - allow when LINE mention metadata includes @all / isSelf.
+        # DM bypasses this gate.
+        source_type = (source.get("type") or "").lower()
+        if source_type in {"group", "room"}:
+            if msg_type != "text":
+                logger.info("LINE: mention gate skip (group non-text), chat=%s", chat_id)
+                return
+
+            text_for_gate = text.strip()
+            has_prefix_mention = bool(
+                re.match(r"^[＠@]\s*hermes\b", text_for_gate, flags=re.IGNORECASE)
+            )
+            mention = msg.get("mention") or {}
+            mentionees = mention.get("mentionees") or []
+            has_true_mention = any(
+                isinstance(m, dict) and (m.get("isSelf") is True or m.get("type") == "all")
+                for m in mentionees
+            )
+            if not (has_prefix_mention or has_true_mention):
+                logger.info("LINE: mention gate skip (group text without mention), chat=%s", chat_id)
+                return
+
+        # Stash the reply token for outbound use only after this message has
+        # passed gating, so unrelated group chatter cannot overwrite the token
+        # for an in-flight mentioned request.
+        if chat_id and reply_token:
+            self._reply_tokens[chat_id] = (
+                reply_token,
+                time.time() + LINE_REPLY_TOKEN_TTL_SECONDS,
+            )
 
         # Best-effort typing indicator (DM only).
         if chat_type == "dm" and self._client:
@@ -1092,14 +1119,46 @@ class LineAdapter(BasePlatformAdapter):
         if _is_system_bypass(content):
             return await self._send_text_chunks(chat_id, content, force_push=False)
 
-        # If the chat has a PENDING postback button outstanding, route the
-        # response into the cache for the user to fetch via tap.
+        # If the chat has a PENDING postback button outstanding, cache the
+        # response immediately and then proactively push it to the chat. If the
+        # push fails, keep the READY cache entry so the existing postback button
+        # still works as a manual fallback.
         pending_rid = self._pending_buttons.get(chat_id)
         if pending_rid:
             self._cache.set_ready(pending_rid, content)
+            await self._push_cached_response(chat_id, pending_rid)
             return SendResult(success=True, message_id=pending_rid)
 
         return await self._send_text_chunks(chat_id, content, force_push=False)
+
+    async def _push_cached_response(self, chat_id: str, request_id: str) -> bool:
+        """Push a cached READY response to chat; keep cache as fallback on failure."""
+        entry = self._cache.get(request_id)
+        if not self._client or not entry or entry.state is not State.READY:
+            return False
+
+        payload = entry.payload or ""
+        chunks = split_for_line(strip_markdown_preserving_urls(str(payload)))
+        messages = [_text_message(c) for c in chunks][:LINE_MAX_MESSAGES_PER_CALL]
+        if not messages:
+            self._cache.mark_delivered(request_id)
+            self._pending_buttons.pop(chat_id, None)
+            return True
+
+        try:
+            await self._client.push(chat_id, messages)
+            self._cache.mark_delivered(request_id)
+            self._pending_buttons.pop(chat_id, None)
+            logger.info("LINE: auto-pushed ready response for chat %s (rid=%s)", chat_id, request_id)
+            return True
+        except Exception as exc:
+            logger.warning(
+                "LINE: auto-push ready response failed for chat %s (rid=%s): %s",
+                chat_id,
+                request_id,
+                exc,
+            )
+            return False
 
     async def _send_text_chunks(
         self,

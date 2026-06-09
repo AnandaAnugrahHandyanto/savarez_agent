@@ -324,6 +324,43 @@ class TestSendRouting:
         assert not _is_system_bypass("Hello world")
         assert not _is_system_bypass("")
 
+    def test_group_fullwidth_prefix_mention_reaches_handler(self, adapter):
+        adapter.handle_message = AsyncMock()
+        event = {
+            "replyToken": "rtok",
+            "source": {"type": "group", "groupId": "Cchat", "userId": "Uuser"},
+            "message": {"id": "m1", "type": "text", "text": "＠hermes 幫我整理"},
+        }
+        asyncio.run(adapter._handle_message_event(event))
+        adapter.handle_message.assert_awaited_once()
+
+    def test_group_text_without_mention_is_ignored(self, adapter):
+        adapter.handle_message = AsyncMock()
+        event = {
+            "replyToken": "rtok",
+            "source": {"type": "group", "groupId": "Cchat", "userId": "Uuser"},
+            "message": {"id": "m2", "type": "text", "text": "幫我整理"},
+        }
+        asyncio.run(adapter._handle_message_event(event))
+        adapter.handle_message.assert_not_awaited()
+
+    def test_ignored_group_chatter_does_not_overwrite_reply_token(self, adapter):
+        adapter.handle_message = AsyncMock()
+        mention_event = {
+            "replyToken": "rtok-mention",
+            "source": {"type": "group", "groupId": "Cchat", "userId": "Uuser"},
+            "message": {"id": "m3", "type": "text", "text": "＠hermes 幫我整理"},
+        }
+        ignored_event = {
+            "replyToken": "rtok-ignored",
+            "source": {"type": "group", "groupId": "Cchat", "userId": "Uuser"},
+            "message": {"id": "m4", "type": "text", "text": "路過聊天"},
+        }
+        asyncio.run(adapter._handle_message_event(mention_event))
+        asyncio.run(adapter._handle_message_event(ignored_event))
+        assert adapter._reply_tokens["Cchat"][0] == "rtok-mention"
+        assert adapter.handle_message.await_count == 1
+
     def test_send_uses_reply_when_token_present(self, adapter):
         import time as _time
         adapter._reply_tokens["Uchat"] = ("rt-token", _time.time() + 30)
@@ -355,17 +392,28 @@ class TestSendRouting:
         assert not result.success
         assert "network" in result.error
 
-    def test_send_pending_button_caches_response(self, adapter):
+    def test_send_pending_button_auto_pushes_ready_response(self, adapter):
         # Simulate that the slow-LLM postback button has fired.
         rid = adapter._cache.register_pending("Uchat")
         adapter._pending_buttons["Uchat"] = rid
         result = asyncio.run(adapter.send("Uchat", "the answer"))
         assert result.success
-        # Response must have been cached, not pushed/replied.
         adapter._client.reply.assert_not_called()
-        adapter._client.push.assert_not_called()
+        adapter._client.push.assert_called_once()
+        assert adapter._cache.get(rid).state is State.DELIVERED
+        assert "Uchat" not in adapter._pending_buttons
+
+    def test_send_pending_button_keeps_ready_cache_when_auto_push_fails(self, adapter):
+        rid = adapter._cache.register_pending("Uchat")
+        adapter._pending_buttons["Uchat"] = rid
+        adapter._client.push.side_effect = RuntimeError("network")
+        result = asyncio.run(adapter.send("Uchat", "the answer"))
+        assert result.success
+        adapter._client.reply.assert_not_called()
+        adapter._client.push.assert_called_once()
         assert adapter._cache.get(rid).state is State.READY
         assert adapter._cache.get(rid).payload == "the answer"
+        assert adapter._pending_buttons["Uchat"] == rid
 
     def test_send_system_bypass_skips_postback_cache(self, adapter):
         # Even with a pending button, system busy-acks must surface visibly.
