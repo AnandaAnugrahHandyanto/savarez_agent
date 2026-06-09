@@ -105,3 +105,66 @@ class TestImportTimeEnvParsing:
                 assert mod.DISK_USAGE_WARNING_THRESHOLD_GB == 500.0
         finally:
             importlib.reload(_tt_mod)
+
+
+class TestDockerEnvVarIsolation:
+    """Docker-specific env vars should not crash non-Docker backends (#42725)."""
+
+    def test_local_backend_ignores_invalid_docker_volumes(self):
+        """Invalid TERMINAL_DOCKER_VOLUMES should not crash local backend."""
+        with patch.dict("os.environ", {
+            "TERMINAL_ENV": "local",
+            "TERMINAL_DOCKER_VOLUMES": "None",  # Invalid JSON
+        }, clear=False):
+            config = _tt_mod._get_env_config()
+            assert config["env_type"] == "local"
+            assert config["docker_volumes"] == []
+
+    def test_ssh_backend_ignores_invalid_docker_env(self):
+        """Invalid TERMINAL_DOCKER_ENV should not crash SSH backend."""
+        with patch.dict("os.environ", {
+            "TERMINAL_ENV": "ssh",
+            "TERMINAL_DOCKER_ENV": "invalid",
+        }, clear=False):
+            config = _tt_mod._get_env_config()
+            assert config["env_type"] == "ssh"
+            assert config["docker_env"] == {}
+
+    def test_local_backend_ignores_invalid_docker_extra_args(self):
+        """Invalid TERMINAL_DOCKER_EXTRA_ARGS should not crash local backend."""
+        with patch.dict("os.environ", {
+            "TERMINAL_ENV": "local",
+            "TERMINAL_DOCKER_EXTRA_ARGS": "not-json",
+        }, clear=False):
+            config = _tt_mod._get_env_config()
+            assert config["env_type"] == "local"
+            assert config["docker_extra_args"] == []
+
+    def test_local_backend_ignores_invalid_docker_forward_env(self):
+        """Invalid TERMINAL_DOCKER_FORWARD_ENV should not crash local backend."""
+        with patch.dict("os.environ", {
+            "TERMINAL_ENV": "local",
+            "TERMINAL_DOCKER_FORWARD_ENV": "broken",
+        }, clear=False):
+            config = _tt_mod._get_env_config()
+            assert config["env_type"] == "local"
+            assert config["docker_forward_env"] == []
+
+    def test_docker_backend_still_parses_valid_volumes(self):
+        """Docker backend should still parse valid TERMINAL_DOCKER_VOLUMES."""
+        with patch.dict("os.environ", {
+            "TERMINAL_ENV": "docker",
+            "TERMINAL_DOCKER_VOLUMES": '["/host:/container"]',
+        }, clear=False):
+            config = _tt_mod._get_env_config()
+            assert config["env_type"] == "docker"
+            assert config["docker_volumes"] == ["/host:/container"]
+
+    def test_docker_backend_still_rejects_invalid_volumes(self):
+        """Docker backend should raise on invalid TERMINAL_DOCKER_VOLUMES."""
+        with patch.dict("os.environ", {
+            "TERMINAL_ENV": "docker",
+            "TERMINAL_DOCKER_VOLUMES": "not-json",
+        }, clear=False):
+            with pytest.raises(ValueError, match="TERMINAL_DOCKER_VOLUMES"):
+                _tt_mod._get_env_config()
