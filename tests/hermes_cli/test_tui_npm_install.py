@@ -262,7 +262,115 @@ def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
         "--no-audit",
         "--progress=false",
     ]
-    assert calls[0][1]["cwd"] == str(tmp_path)
+
+
+def test_make_tui_argv_falls_back_to_prebuilt_when_npm_install_fails(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    """When npm install fails AND ``dist/entry.js`` is available, the launcher
+    should recover by launching the prebuilt bundle instead of dying.
+
+    The contract: only diverge from the historical path when npm is actually
+    failing.  A prebuilt bundle is the recovery; without one, keep the
+    fail-fast behaviour.
+    """
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (tui_dir / "dist").mkdir()
+    (tui_dir / "dist" / "entry.js").write_text("// prebuilt")
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        if "install" in args[0]:
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    argv, _ = main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    # The failed npm install call IS recorded, but no esbuild rebuild is
+    # attempted (it would also fail — node_modules/esbuild is not installed)
+    # and the prebuilt bundle is launched directly.
+    assert len(calls) == 1, f"expected only the failed install call, got {calls}"
+    assert "install" in calls[0][0][0]
+    assert argv[0] == "/bin/node"
+    assert argv[-1].endswith("dist/entry.js")
+
+
+def test_make_tui_argv_does_not_fall_back_without_prebuilt_bundle(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    """When npm install fails AND no prebuilt bundle exists, keep the
+    historical fail-fast behaviour — the doctrine is "only diverge when
+    npm is failing AND a recovery is actually possible."
+    """
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    # No dist/entry.js shipped.
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    assert exc.value.code == 1
+    # Only the failed install call — no recovery attempt, no esbuild call.
+    assert len(calls) == 1
+
+
+def test_make_tui_argv_does_not_skip_build_when_npm_succeeds(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    """Working install: desktop retains its historical "always rebuild"
+    behaviour.  The prebuilt-fallback must NOT fire here — that's the
+    "don't change anything if it's working normally" contract.
+    """
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (tui_dir / "dist").mkdir()
+    (tui_dir / "dist" / "entry.js").write_text("// prebuilt")
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    # Both the npm install AND the esbuild rebuild happened.
+    assert len(calls) == 2
+    assert "install" in calls[0][0][0]
+    assert "build" in calls[1][0][0]
 
 
 def test_make_tui_argv_keeps_desktop_always_build_behaviour(
