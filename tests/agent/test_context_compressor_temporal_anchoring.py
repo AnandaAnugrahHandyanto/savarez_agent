@@ -98,7 +98,7 @@ def test_clock_failure_omits_rule_but_compaction_still_runs():
     prompt = mock_call.call_args.kwargs["messages"][0]["content"]
     assert "TEMPORAL ANCHORING" not in prompt
     # Structured template still intact.
-    assert "## Active Task" in prompt
+    assert "## Historical Task (prior session)" in prompt
 
 
 def test_anchoring_rule_uses_date_from_hermes_time_now():

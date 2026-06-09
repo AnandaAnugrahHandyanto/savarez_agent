@@ -157,7 +157,7 @@ class TestCompress:
             result = c.compress(msgs)
 
         combined = "\n".join(str(m.get("content", "")) for m in result)
-        assert "## Active Task" in combined
+        assert "## Historical Task (prior session)" in combined
         assert "Please fix the compression summary failure" in combined
         assert "read_file" in combined
         assert "agent/context_compressor.py" in combined
@@ -1213,7 +1213,7 @@ class TestCompressWithClient:
         """When the summary lands as standalone role='user' (e.g. head ends
         with assistant/tool), the message body must include the explicit
         '--- END OF CONTEXT SUMMARY ---' marker. Without it, weak models
-        read the verbatim past user request quoted in '## Active Task' as
+        read the verbatim past user request quoted in '## Historical Task (prior session)' as
         fresh input (#11475, #14521).
         """
         mock_response = MagicMock()

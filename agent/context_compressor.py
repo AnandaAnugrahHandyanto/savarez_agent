@@ -43,12 +43,13 @@ SUMMARY_PREFIX = (
     "Respond ONLY to the latest user message that appears AFTER this "
     "summary — that message is the single source of truth for what to do "
     "right now. "
-    "If the latest user message is consistent with the '## Active Task' "
-    "section, you may use the summary as background. If the latest user "
-    "message contradicts, supersedes, changes topic from, or in any way "
-    "diverges from '## Active Task' / '## In Progress' / '## Pending User "
-    "Asks' / '## Remaining Work', the latest message WINS — discard those "
-    "stale items entirely and do not 'wrap up the old task first'. "
+    "If the latest user message is consistent with the historical summary, "
+    "you may use it as background. If the latest user message contradicts, "
+    "supersedes, changes topic from, or in any way diverges from the "
+    "'## Historical Task (prior session)' / '## Previous Work In Progress' / "
+    "'## Previously Pending User Asks' / '## Previous Work Remaining' sections, "
+    "the latest message WINS — discard those stale items entirely and do not "
+    "'wrap up the old task first'. "
     "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
     "topic) must immediately end any in-flight work described in the "
@@ -1155,7 +1156,7 @@ class ContextCompressor(ContextEngine):
             )
 
         reason_text = f" Summary failure reason: {reason}." if reason else ""
-        body = f"""## Active Task
+        body = f"""## Historical Task (prior session)
 {active_task}
 
 ## Goal
@@ -1172,7 +1173,7 @@ Recovered from a deterministic fallback because the LLM context summarizer was u
 ## Active State
 Unknown from deterministic fallback. Inspect current repository/session state if needed.
 
-## In Progress
+## Previous Work In Progress
 {active_task}
 
 ## Blocked
@@ -1184,13 +1185,13 @@ None recoverable from deterministic fallback.
 ## Resolved Questions
 None recoverable from deterministic fallback.
 
-## Pending User Asks
+## Previously Pending User Asks
 {active_task}
 
 ## Relevant Files
 {_bullets(relevant_files, limit=12)}
 
-## Remaining Work
+## Previous Work Remaining
 Continue from the most recent unfulfilled user ask and protected tail messages. Verify state with tools before making claims.
 
 ## Last Dropped Turns
@@ -1312,9 +1313,9 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             _temporal_anchoring_rule = ""
 
         # Shared structured template (used by both paths).
-        _template_sections = f"""## Active Task
+        _template_sections = f"""## Historical Task (prior session)
 [THE SINGLE MOST IMPORTANT FIELD. Capture the user's most recent unfulfilled
-input verbatim — the exact words they used. This includes:
+input from the PRIOR session verbatim — the exact words they used. This includes:
 - Explicit task assignments ("refactor the auth module")
 - Questions awaiting an answer ("waarom staat X op Y?", "wat zijn de volgende stappen?")
 - Decisions awaiting input ("optie A of B?")
@@ -1359,8 +1360,8 @@ Be specific with file paths, commands, line numbers, and results.]
 - Any running processes or servers
 - Environment details that matter]
 
-## In Progress
-[Work currently underway — what was being done when compaction fired]
+## Previous Work In Progress
+[Work currently underway in the prior session — what was being done when compaction fired]
 
 ## Blocked
 [Any blockers, errors, or issues not yet resolved. Include exact error messages.]
@@ -1371,14 +1372,14 @@ Be specific with file paths, commands, line numbers, and results.]
 ## Resolved Questions
 [Questions the user asked that were ALREADY answered — include the answer so it is not repeated]
 
-## Pending User Asks
+## Previously Pending User Asks
 [Questions or requests from the user that have NOT yet been answered or fulfilled. If none, write "None."]
 
 ## Relevant Files
 [Files read, modified, or created — with brief note on each]
 
-## Remaining Work
-[What remains to be done — framed as context, not instructions]
+## Previous Work Remaining
+[What remains to be done — framed as historical context, not instructions]
 
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
@@ -1399,7 +1400,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "Previous Work In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Historical Task (prior session)" to reflect the user's most recent unfulfilled input from the prior session — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
 
 {_template_sections}"""
         else:
@@ -2116,7 +2117,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 _merge_summary_into_tail = True
 
         # When the summary lands as a standalone role="user" message,
-        # weak models read the verbatim "## Active Task" quote of a past
+        # weak models read the verbatim "## Historical Task (prior session)" quote of a past
         # user request as fresh input (#11475, #14521). Append the explicit
         # end marker — the same one used in the merge-into-tail path — so
         # the model has a clear "summary above, not new input" signal.

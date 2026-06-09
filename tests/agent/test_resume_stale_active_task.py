@@ -1,5 +1,5 @@
-"""Regression coverage for #35344: a resumed session must not let a stale
-``## Active Task`` from an inherited compaction handoff hijack the reply to a
+"""Regression coverage for #35344 and #42812: a resumed session must not let a stale
+``## Active Task`` (now renamed to ``## Historical Task (prior session)``) from an inherited compaction handoff hijack the reply to a
 new, unrelated user message.
 
 The failure mode (real report): a lineage was compacted, producing a handoff
@@ -12,12 +12,12 @@ reference-only and the latest user message explicitly *wins* on conflict, with
 named reverse-signal verbs. Two invariants guard the resume path specifically:
 
   1. A handoff persisted under the OLD (conflicting) prefix is re-normalized to
-     the CURRENT prefix when it is re-compacted on a resumed lineage — so a
-     pre-fix stale handoff cannot keep its "resume exactly" directive forever.
+      the CURRENT prefix when it is re-compacted on a resumed lineage — so a
+      pre-fix stale handoff cannot keep its "resume exactly" directive forever.
 
   2. The current handoff prefix contains an unambiguous "latest message wins /
-     discard stale Active Task" rule, so an unrelated new ask is privileged over
-     the inherited ``## Active Task``.
+      discard stale historical Task" rule, so an unrelated new ask is privileged over
+      the inherited ``## Historical Task (prior session)``.
 
 These are content/structural assertions (no live model call) — they pin the
 mechanism that makes the stale task historical rather than active.
@@ -46,12 +46,12 @@ _OLD_CONFLICTING_PREFIX = (
 )
 
 
-def test_latest_message_wins_over_inherited_active_task():
+def test_latest_message_wins_over_inherited_historical_task():
     """The handoff must explicitly privilege the latest user message over a
-    stale ``## Active Task`` — the core #35344 contract."""
+    stale ``## Historical Task (prior session)`` — the core #35344 contract."""
     lower = SUMMARY_PREFIX.lower()
     assert "latest user message" in lower
-    assert "## active task" in lower
+    assert "## historical task" in lower
     # Conflict-resolution must be explicit, not implied.
     assert "wins" in lower or "supersede" in lower
     assert "discard" in lower
@@ -69,7 +69,7 @@ def test_resumed_stale_handoff_gets_renormalized_to_current_prefix():
     prefix when re-normalized on re-compaction — so the "resume exactly"
     directive cannot survive into a resumed session."""
     stale_body = (
-        "## Active Task\n"
+        "## Historical Task (prior session)\n"
         "User asked: 'Migrate the billing module to Stripe'\n\n"
         "## Goal\nMigrate billing.\n"
     )
@@ -92,7 +92,7 @@ def test_resumed_stale_handoff_gets_renormalized_to_current_prefix():
 def test_legacy_prefix_handoff_also_renormalized():
     """The same upgrade applies to the oldest ``[CONTEXT SUMMARY]:`` handoff
     format that may sit in a long-lived resumed lineage."""
-    legacy = f"{LEGACY_SUMMARY_PREFIX} ## Active Task\nUser asked: 'task A'"
+    legacy = f"{LEGACY_SUMMARY_PREFIX} ## Historical Task (prior session)\nUser asked: 'task A'"
     renormalized = ContextCompressor._with_summary_prefix(legacy)
     assert renormalized.startswith(SUMMARY_PREFIX)
     assert LEGACY_SUMMARY_PREFIX not in renormalized
@@ -103,11 +103,11 @@ def test_inherited_handoff_detected_in_resumed_protected_head():
     """On a resumed lineage the handoff commonly sits right after the system
     prompt (in the protected head). ``_find_latest_context_summary`` must
     detect it there so re-compaction rehydrates state from it rather than
-    serializing it as a fresh user turn (which is what let the stale Active
+    serializing it as a fresh user turn (which is what let the stale Historical
     Task read as live intent)."""
     messages = [
         {"role": "system", "content": "system prompt"},
-        {"role": "user", "content": f"{SUMMARY_PREFIX}\n## Active Task\nUser asked: 'task A'"},
+        {"role": "user", "content": f"{SUMMARY_PREFIX}\n## Historical Task (prior session)\nUser asked: 'task A'"},
         {"role": "assistant", "content": "ok"},
         {"role": "user", "content": "Unrelated task B: what's the capital of France?"},
     ]
@@ -129,7 +129,7 @@ def test_historical_prefixed_handoff_detected_and_stripped():
     stale 'resume exactly' text as a fresh turn."""
     messages = [
         {"role": "system", "content": "system prompt"},
-        {"role": "user", "content": f"{_OLD_CONFLICTING_PREFIX}\n## Active Task\nUser asked: 'task A'"},
+        {"role": "user", "content": f"{_OLD_CONFLICTING_PREFIX}\n## Historical Task (prior session)\nUser asked: 'task A'"},
         {"role": "assistant", "content": "ok"},
         {"role": "user", "content": "Unrelated task B"},
     ]
