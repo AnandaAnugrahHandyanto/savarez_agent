@@ -9,11 +9,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# python-telegram-bot is an optional dep — skip the entire module when
-# it isn't installed (e.g. CI bare env). Tests that patch telegram.Bot
-# or call _send_telegram need it; tests for other platforms don't but
-# keeping the whole file consistent is simpler.
-_HAS_TELEGRAM = pytest.importorskip("telegram", reason="python-telegram-bot not installed") is not None
+# python-telegram-bot is an optional dep — skip Telegram-specific tests when
+# it isn't installed (e.g. CI bare env).  Other platform tests (QQBot, Discord,
+# etc.) must still run, so we use a try/except instead of importorskip which
+# would skip the entire module.
+try:
+    import telegram as _telegram_mod
+    _HAS_TELEGRAM = True
+except ImportError:
+    _telegram_mod = None
+    _HAS_TELEGRAM = False
+
+_needs_telegram = pytest.mark.skipif(not _HAS_TELEGRAM, reason="python-telegram-bot not installed")
 
 
 @pytest.fixture(autouse=True)
@@ -486,6 +493,7 @@ class TestSendMessageTool:
         assert "access_token=***" in result["error"]
 
 
+@_needs_telegram
 class TestSendTelegramMediaDelivery:
     def test_sends_text_then_photo_for_media_tag(self, tmp_path, monkeypatch):
         image_path = tmp_path / "photo.png"
@@ -868,6 +876,7 @@ class TestSendToPlatformWhatsapp:
         async_mock.assert_awaited_once_with({"bridge_port": 3000}, chat_id, "hello from hermes")
 
 
+@_needs_telegram
 class TestSendTelegramHtmlDetection:
     """Verify that messages containing HTML tags are sent with parse_mode=HTML
     and that plain / markdown messages use MarkdownV2."""
@@ -985,6 +994,7 @@ class TestSendTelegramHtmlDetection:
         sleep_mock.assert_awaited_once()
 
 
+@_needs_telegram
 class TestSendTelegramThreadIdMapping:
     """General-topic mapping in _send_telegram (issue #22267).
 
@@ -2761,6 +2771,7 @@ class TestCheckSendMessage:
             assert _check_send_message() is False
 
 
+@_needs_telegram
 class TestSendTelegramThreadNotFoundRetry:
     """Tests for thread-not-found retry behaviour in _send_telegram (#27012)."""
 
@@ -3094,16 +3105,46 @@ class TestQqbotC2cExtensionFallback:
             token="test_token",
             extra={"app_id": "id", "client_secret": "secret"},
         )
+        captured = []
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                pass
+            async def post(self, url, **kw):
+                captured.append({"url": url, **kw})
+                resp = MagicMock()
+                if "getAppAccessToken" in url:
+                    resp.status_code = 200
+                    resp.json.return_value = {"access_token": "tok"}
+                elif "/files" in url:
+                    resp.status_code = 200
+                    resp.json.return_value = {"file_info": "fi"}
+                else:
+                    resp.status_code = 200
+                    resp.json.return_value = {"id": "msg"}
+                return resp
+
+        mock_httpx = MagicMock()
+        mock_httpx.AsyncClient = MockClient
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=".xyz123", delete=False) as f:
             f.write(b"test")
             weird_path = f.name
         try:
-            result = await _send_qqbot_with_media(
-                pconfig, "c2c:test", "", [(weird_path, False)]
-            )
-            if result and result.get("error"):
-                assert "does not support file format" not in result["error"]
+            with patch.dict("sys.modules", {"httpx": mock_httpx}):
+                result = await _send_qqbot_with_media(
+                    pconfig, "c2c:test", "", [(weird_path, False)]
+                )
+            assert result.get("success") is True
+            # Verify it was uploaded as file_type=4
+            upload_reqs = [r for r in captured if "/files" in r["url"]]
+            assert len(upload_reqs) == 1
+            body = upload_reqs[0]["json"]
+            assert body["file_type"] == 4  # MEDIA_TYPE_FILE
         finally:
             os.unlink(weird_path)
 
@@ -3686,3 +3727,465 @@ class TestQqbotProtocolLevel:
             assert body.get("msg_type") == 7
         finally:
             os.unlink(img_path)
+
+
+# --- Rectification round: force_document, empty ID, URL encoding, is_file ---
+
+
+class _MockQqbotHttpx:
+    """Reusable mock httpx that captures all POST requests."""
+
+    def __init__(self, captured):
+        self._captured = captured
+
+    class AsyncClient:
+        def __init__(self, **kw):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            pass
+        async def post(self, url, **kw):
+            _captured = kw.pop("_captured_ref", None)
+            resp = MagicMock()
+            if "getAppAccessToken" in url:
+                resp.status_code = 200
+                resp.json.return_value = {"access_token": "tok"}
+            elif "/files" in url:
+                resp.status_code = 200
+                resp.json.return_value = {"file_info": "test_fi"}
+            else:
+                resp.status_code = 200
+                resp.json.return_value = {"id": "msg_123"}
+            return resp
+
+    @classmethod
+    def make(cls, captured):
+        """Return a MagicMock module with AsyncClient that captures requests."""
+        class CapClient:
+            def __init__(self, **kw):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                pass
+            async def post(self, url, **kw):
+                captured.append({"url": url, **kw})
+                resp = MagicMock()
+                if "getAppAccessToken" in url:
+                    resp.status_code = 200
+                    resp.json.return_value = {"access_token": "tok"}
+                elif "/files" in url:
+                    resp.status_code = 200
+                    resp.json.return_value = {"file_info": "test_fi"}
+                else:
+                    resp.status_code = 200
+                    resp.json.return_value = {"id": "msg_123"}
+                return resp
+
+        mod = MagicMock()
+        mod.AsyncClient = CapClient
+        return mod
+
+
+def _make_temp_file(suffix, content=b"test"):
+    """Create a temp file and return (path, cleanup_fn)."""
+    import tempfile
+    f = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+    f.write(content)
+    f.close()
+    return f.name
+
+
+class TestQqbotVoiceExts:
+    """4 audio types (.silk, .wav, .mp3, .flac) default → MEDIA_TYPE_VOICE (3)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("suffix", [".silk", ".wav", ".mp3", ".flac"])
+    async def test_audio_default_c2c_voice_type(self, suffix):
+        """Audio files default to voice (file_type=3) on C2C."""
+        pconfig = SimpleNamespace(token="tok", extra={"app_id": "id", "client_secret": "sec"})
+        captured = []
+        mock_httpx = _MockQqbotHttpx.make(captured)
+        path = _make_temp_file(suffix)
+        try:
+            with patch.dict("sys.modules", {"httpx": mock_httpx}):
+                result = await _send_qqbot_with_media(
+                    pconfig, "c2c:oid", "", [(path, True)]
+                )
+            assert result.get("success") is True
+            upload_reqs = [r for r in captured if "/files" in r["url"]]
+            assert len(upload_reqs) == 1
+            body = upload_reqs[0]["json"]
+            assert body["file_type"] == 3, f"{suffix} should be MEDIA_TYPE_VOICE (3), got {body['file_type']}"
+        finally:
+            os.unlink(path)
+
+
+class TestQqbotVoiceAsDocument:
+    """4 audio types C2C + [[as_document]] → MEDIA_TYPE_FILE (4)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("suffix", [".silk", ".wav", ".mp3", ".flac"])
+    async def test_audio_as_document_c2c_file_type(self, suffix):
+        """Audio + force_document → file_type=4 on C2C."""
+        pconfig = SimpleNamespace(token="tok", extra={"app_id": "id", "client_secret": "sec"})
+        captured = []
+        mock_httpx = _MockQqbotHttpx.make(captured)
+        path = _make_temp_file(suffix)
+        try:
+            with patch.dict("sys.modules", {"httpx": mock_httpx}):
+                result = await _send_qqbot_with_media(
+                    pconfig, "c2c:oid", "", [(path, True)], force_document=True
+                )
+            assert result.get("success") is True
+            upload_reqs = [r for r in captured if "/files" in r["url"]]
+            assert len(upload_reqs) == 1
+            body = upload_reqs[0]["json"]
+            assert body["file_type"] == 4, f"{suffix}+as_document should be MEDIA_TYPE_FILE (4), got {body['file_type']}"
+        finally:
+            os.unlink(path)
+
+
+class TestQqbotGroupAudioDefault:
+    """Group default audio → MEDIA_TYPE_VOICE (3)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("suffix", [".silk", ".wav", ".mp3", ".flac"])
+    async def test_audio_default_group_voice_type(self, suffix):
+        """Audio files default to voice (file_type=3) on group."""
+        pconfig = SimpleNamespace(token="tok", extra={"app_id": "id", "client_secret": "sec"})
+        captured = []
+        mock_httpx = _MockQqbotHttpx.make(captured)
+        path = _make_temp_file(suffix)
+        try:
+            with patch.dict("sys.modules", {"httpx": mock_httpx}):
+                result = await _send_qqbot_with_media(
+                    pconfig, "group:gid", "", [(path, True)]
+                )
+            assert result.get("success") is True
+            upload_reqs = [r for r in captured if "/files" in r["url"]]
+            assert len(upload_reqs) == 1
+            body = upload_reqs[0]["json"]
+            assert body["file_type"] == 3, f"{suffix} group should be MEDIA_TYPE_VOICE (3), got {body['file_type']}"
+        finally:
+            os.unlink(path)
+
+
+class TestQqbotGroupAsDocumentReject:
+    """Group + [[as_document]] → reject before any HTTP, zero network calls."""
+
+    @pytest.mark.asyncio
+    async def test_group_force_document_reject_zero_http(self):
+        """Group + force_document rejects without making any HTTP requests."""
+        pconfig = SimpleNamespace(token="tok", extra={"app_id": "id", "client_secret": "sec"})
+        captured = []
+        mock_httpx = _MockQqbotHttpx.make(captured)
+        path = _make_temp_file(".mp3")
+        try:
+            with patch.dict("sys.modules", {"httpx": mock_httpx}):
+                result = await _send_qqbot_with_media(
+                    pconfig, "group:gid", "", [(path, True)], force_document=True
+                )
+            assert result.get("error")
+            assert "document" in result["error"].lower() and "group" in result["error"].lower()
+            # Zero HTTP requests made
+            assert len(captured) == 0, f"Expected zero HTTP calls but got {len(captured)}"
+        finally:
+            os.unlink(path)
+
+
+class TestQqbotUnknownExtC2c:
+    """Unknown extension C2C → MEDIA_TYPE_FILE (4)."""
+
+    @pytest.mark.asyncio
+    async def test_unknown_ext_c2c_file_type(self):
+        """Unknown extension on C2C → file_type=4."""
+        pconfig = SimpleNamespace(token="tok", extra={"app_id": "id", "client_secret": "sec"})
+        captured = []
+        mock_httpx = _MockQqbotHttpx.make(captured)
+        path = _make_temp_file(".xyz123")
+        try:
+            with patch.dict("sys.modules", {"httpx": mock_httpx}):
+                result = await _send_qqbot_with_media(
+                    pconfig, "c2c:oid", "", [(path, False)]
+                )
+            assert result.get("success") is True
+            upload_reqs = [r for r in captured if "/files" in r["url"]]
+            assert len(upload_reqs) == 1
+            assert upload_reqs[0]["json"]["file_type"] == 4
+        finally:
+            os.unlink(path)
+
+
+class TestQqbotEmptyIdReject:
+    """Empty c2c:/user:/group:/guild: IDs must be rejected before HTTP."""
+
+    @pytest.mark.asyncio
+    async def test_empty_c2c_id_reject(self):
+        pconfig = SimpleNamespace(token="tok", extra={"app_id": "id", "client_secret": "sec"})
+        path = _make_temp_file(".png")
+        try:
+            result = await _send_qqbot_with_media(pconfig, "c2c:", "", [(path, False)])
+            assert result.get("error")
+            assert "empty" in result["error"].lower()
+        finally:
+            os.unlink(path)
+
+    @pytest.mark.asyncio
+    async def test_empty_user_id_reject(self):
+        pconfig = SimpleNamespace(token="tok", extra={"app_id": "id", "client_secret": "sec"})
+        path = _make_temp_file(".png")
+        try:
+            result = await _send_qqbot_with_media(pconfig, "user:", "", [(path, False)])
+            assert result.get("error")
+            assert "empty" in result["error"].lower()
+        finally:
+            os.unlink(path)
+
+    @pytest.mark.asyncio
+    async def test_empty_group_id_reject(self):
+        pconfig = SimpleNamespace(token="tok", extra={"app_id": "id", "client_secret": "sec"})
+        path = _make_temp_file(".png")
+        try:
+            result = await _send_qqbot_with_media(pconfig, "group:", "", [(path, False)])
+            assert result.get("error")
+            assert "empty" in result["error"].lower()
+        finally:
+            os.unlink(path)
+
+    @pytest.mark.asyncio
+    async def test_empty_guild_id_reject(self):
+        pconfig = SimpleNamespace(token="tok", extra={"app_id": "id", "client_secret": "sec"})
+        path = _make_temp_file(".png")
+        try:
+            result = await _send_qqbot_with_media(pconfig, "guild:", "", [(path, False)])
+            assert result.get("error")
+            assert "empty" in result["error"].lower()
+        finally:
+            os.unlink(path)
+
+
+class TestQqbotUrlEncoding:
+    """Target ID with special chars must be percent-encoded in URLs."""
+
+    @pytest.mark.asyncio
+    async def test_special_chars_encoded_in_url(self):
+        """Target ID with '/' and '@' is percent-encoded."""
+        pconfig = SimpleNamespace(token="tok", extra={"app_id": "id", "client_secret": "sec"})
+        captured = []
+        mock_httpx = _MockQqbotHttpx.make(captured)
+        path = _make_temp_file(".png")
+        try:
+            with patch.dict("sys.modules", {"httpx": mock_httpx}):
+                result = await _send_qqbot_with_media(
+                    pconfig, "c2c:a/b@c", "", [(path, False)]
+                )
+            assert result.get("success") is True
+            # Verify the target ID is encoded in URLs
+            all_urls = [r["url"] for r in captured]
+            for url in all_urls:
+                if "/v2/" in url:
+                    assert "a%2Fb%40c" in url, f"Target ID not encoded in URL: {url}"
+                    assert "a/b@c" not in url, f"Raw target ID leaked into URL: {url}"
+        finally:
+            os.unlink(path)
+
+    @pytest.mark.asyncio
+    async def test_plain_id_unchanged(self):
+        """Plain alphanumeric ID passes through without modification."""
+        pconfig = SimpleNamespace(token="tok", extra={"app_id": "id", "client_secret": "sec"})
+        captured = []
+        mock_httpx = _MockQqbotHttpx.make(captured)
+        path = _make_temp_file(".png")
+        try:
+            with patch.dict("sys.modules", {"httpx": mock_httpx}):
+                result = await _send_qqbot_with_media(
+                    pconfig, "c2c:abc123", "", [(path, False)]
+                )
+            assert result.get("success") is True
+            upload_reqs = [r for r in captured if "/files" in r["url"]]
+            assert "abc123" in upload_reqs[0]["url"]
+        finally:
+            os.unlink(path)
+
+
+class TestQqbotDirectoryReject:
+    """Directory path must be rejected (is_file() returns False)."""
+
+    @pytest.mark.asyncio
+    async def test_directory_path_rejected(self):
+        """Passing a directory as media_path must be rejected."""
+        import tempfile
+        pconfig = SimpleNamespace(token="tok", extra={"app_id": "id", "client_secret": "sec"})
+        tmpdir = tempfile.mkdtemp()
+        try:
+            result = await _send_qqbot_with_media(
+                pconfig, "c2c:oid", "", [(tmpdir, False)]
+            )
+            assert result.get("error")
+            assert "not found" in result["error"].lower()
+        finally:
+            os.rmdir(tmpdir)
+
+
+class TestQqbotRawOpenIdForceDocument:
+    """Raw OpenID + force_document: try C2C only, 404 → group not supported."""
+
+    @pytest.mark.asyncio
+    async def test_raw_openid_force_document_c2c_success(self):
+        """Raw OpenID + force_document → C2C only, succeeds."""
+        pconfig = SimpleNamespace(token="tok", extra={"app_id": "id", "client_secret": "sec"})
+        captured = []
+        mock_httpx = _MockQqbotHttpx.make(captured)
+        path = _make_temp_file(".mp3")
+        try:
+            with patch.dict("sys.modules", {"httpx": mock_httpx}):
+                result = await _send_qqbot_with_media(
+                    pconfig, "raw_openid", "", [(path, True)], force_document=True
+                )
+            assert result.get("success") is True
+            # Only C2C endpoint should be tried
+            upload_urls = [r["url"] for r in captured if "/files" in r["url"]]
+            assert all("/users/" in u for u in upload_urls), f"Expected only C2C (/users/) endpoint, got: {upload_urls}"
+            assert not any("/groups/" in u for u in upload_urls), f"Group endpoint should not be tried: {upload_urls}"
+        finally:
+            os.unlink(path)
+
+    @pytest.mark.asyncio
+    async def test_raw_openid_force_document_404_group_error(self):
+        """Raw OpenID + force_document + 404 on C2C → 'group not supported' error."""
+        pconfig = SimpleNamespace(token="tok", extra={"app_id": "id", "client_secret": "sec"})
+
+        class C2CFailClient:
+            def __init__(self, **kw):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                pass
+            async def post(self, url, **kw):
+                resp = MagicMock()
+                if "getAppAccessToken" in url:
+                    resp.status_code = 200
+                    resp.json.return_value = {"access_token": "tok"}
+                elif "/files" in url:
+                    resp.status_code = 404
+                    resp.text = "not found"
+                else:
+                    resp.status_code = 200
+                    resp.json.return_value = {"id": "msg"}
+                return resp
+
+        mock_mod = MagicMock()
+        mock_mod.AsyncClient = C2CFailClient
+        path = _make_temp_file(".mp3")
+        try:
+            with patch.dict("sys.modules", {"httpx": mock_mod}):
+                result = await _send_qqbot_with_media(
+                    pconfig, "raw_openid", "", [(path, True)], force_document=True
+                )
+            assert result.get("error")
+            assert "group" in result["error"].lower()
+            assert "document" in result["error"].lower()
+        finally:
+            os.unlink(path)
+
+
+class TestQqbotRawOpenIdForceDocumentNoGroupFallback:
+    """Raw OpenID + force_document should NOT fall back to group endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_no_group_fallback_when_force_document(self):
+        """When force_document=True, raw OpenID tries C2C only — no group fallback."""
+        pconfig = SimpleNamespace(token="tok", extra={"app_id": "id", "client_secret": "sec"})
+        attempted_urls = []
+
+        class TrackingClient:
+            def __init__(self, **kw):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                pass
+            async def post(self, url, **kw):
+                attempted_urls.append(url)
+                resp = MagicMock()
+                if "getAppAccessToken" in url:
+                    resp.status_code = 200
+                    resp.json.return_value = {"access_token": "tok"}
+                elif "/files" in url:
+                    resp.status_code = 404
+                    resp.text = "not found"
+                else:
+                    resp.status_code = 200
+                    resp.json.return_value = {"id": "msg"}
+                return resp
+
+        mock_mod = MagicMock()
+        mock_mod.AsyncClient = TrackingClient
+        path = _make_temp_file(".mp3")
+        try:
+            with patch.dict("sys.modules", {"httpx": mock_mod}):
+                result = await _send_qqbot_with_media(
+                    pconfig, "raw_openid", "", [(path, True)], force_document=True
+                )
+            assert result.get("error")
+            # No group endpoint should have been tried
+            group_urls = [u for u in attempted_urls if "/groups/" in u]
+            assert len(group_urls) == 0, f"Group endpoint should not be tried with force_document: {group_urls}"
+        finally:
+            os.unlink(path)
+
+
+class TestQqbotTextSendEmptyId:
+    """_send_qqbot text-only also rejects empty IDs."""
+
+    @pytest.mark.asyncio
+    async def test_empty_c2c_text_reject(self):
+        pconfig = SimpleNamespace(token="tok", extra={"app_id": "id", "client_secret": "sec"})
+        result = await _send_qqbot(pconfig, "c2c:", "hello")
+        assert result.get("error")
+        assert "empty" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_empty_group_text_reject(self):
+        pconfig = SimpleNamespace(token="tok", extra={"app_id": "id", "client_secret": "sec"})
+        result = await _send_qqbot(pconfig, "group:", "hello")
+        assert result.get("error")
+        assert "empty" in result["error"].lower()
+
+
+class TestQqbotTextSendUrlEncoding:
+    """_send_qqbot text-only also encodes target IDs."""
+
+    @pytest.mark.asyncio
+    async def test_text_special_chars_encoded(self):
+        pconfig = SimpleNamespace(token="tok", extra={"app_id": "id", "client_secret": "sec"})
+        captured = []
+
+        class MockClient:
+            def __init__(self, **kw):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                pass
+            async def post(self, url, **kw):
+                captured.append(url)
+                resp = MagicMock()
+                if "getAppAccessToken" in url:
+                    resp.status_code = 200
+                    resp.json.return_value = {"access_token": "tok"}
+                else:
+                    resp.status_code = 200
+                    resp.json.return_value = {"id": "msg"}
+                return resp
+
+        mock_httpx = MagicMock()
+        mock_httpx.AsyncClient = MockClient
+        with patch.dict("sys.modules", {"httpx": mock_httpx}):
+            result = await _send_qqbot(pconfig, "c2c:a/b@c", "hello")
+        assert result.get("success") is True
+        msg_urls = [u for u in captured if "/messages" in u and "getAppAccessToken" not in u]
+        assert all("a%2Fb%40c" in u for u in msg_urls), f"Target not encoded: {msg_urls}"

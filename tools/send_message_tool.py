@@ -57,7 +57,7 @@ _VOICE_EXTS = {".ogg", ".opus"}
 # QQ Bot API supported formats (narrower than cross-platform sets)
 _QQBOT_IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
 _QQBOT_VIDEO_EXTS = {".mp4"}
-_QQBOT_VOICE_EXTS = {".silk", ".wav"}
+_QQBOT_VOICE_EXTS = {".silk", ".wav", ".mp3", ".flac"}
 _QQBOT_DOC_EXTS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt"}
 # QQ Bot API inline-base64 upload cap.  The API accepts a JSON body with
 # a base64-encoded file_data field.  Base64 expands ~33 %, so a 7 MB raw
@@ -158,7 +158,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
+                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment. When the user explicitly wants a file delivered as a downloadable document (rather than inline image/voice), add [[as_document]] to the message — e.g. 'MEDIA:/tmp/song.mp3 [[as_document]]'. On QQBot, [[as_document]] forces all attachments to upload as a plain file (file_type=4) instead of voice/image. QQBot group targets do not support document uploads — using [[as_document]] with a group target will return an explicit error."
             }
         },
         "required": []
@@ -788,7 +788,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     # --- QQBot: direct REST media upload (no adapter dependency) ---
     if platform == Platform.QQBOT and media_files:
-        return await _send_qqbot_with_media(pconfig, chat_id, message, media_files)
+        return await _send_qqbot_with_media(pconfig, chat_id, message, media_files, force_document=force_document)
 
     # --- Non-media platforms ---
     if media_files and not message.strip():
@@ -1707,11 +1707,14 @@ def _check_send_message():
 def _resolve_qqbot_target(chat_id: str):
     """Resolve a QQBot chat_id into (target_type, target_id, endpoint_order).
 
-    Handles explicit prefixes (c2c:, user:, group:) and raw OpenIDs.
+    Handles explicit prefixes (c2c:, user:, group:, guild:) and raw OpenIDs.
     Returns (target_type, target_id, ep_order) where:
-      - target_type: "c2c" | "group" | "unknown"
-      - target_id: stripped bare ID
+      - target_type: "c2c" | "group" | "guild" | "unknown"
+      - target_id: stripped bare ID (may be empty for empty-prefixed inputs)
       - ep_order: list of endpoint prefixes to try
+
+    Callers MUST check for empty target_id and reject it before making
+    any network requests.
     """
     target_type = "unknown"
     target_id = str(chat_id)
@@ -1739,6 +1742,7 @@ async def _send_qqbot(pconfig, chat_id, message):
         import httpx
     except ImportError:
         return _error("QQBot direct send requires httpx. Run: pip install httpx")
+    from urllib.parse import quote
 
     extra = pconfig.extra or {}
     appid = extra.get("app_id") or os.getenv("QQ_APP_ID", "")
@@ -1748,6 +1752,9 @@ async def _send_qqbot(pconfig, chat_id, message):
         return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
 
     target_type, target_id, ep_order = _resolve_qqbot_target(chat_id)
+    if not target_id:
+        return _error(f"QQBot: empty target ID in chat_id '{chat_id}'")
+    safe_target_id = quote(target_id, safe="")
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -1772,7 +1779,7 @@ async def _send_qqbot(pconfig, chat_id, message):
 
             # For guild channels or unknown targets, try channel endpoint first
             if target_type != "c2c" and target_type != "group":
-                url = f"https://api.sgroup.qq.com/channels/{target_id}/messages"
+                url = f"https://api.sgroup.qq.com/channels/{safe_target_id}/messages"
                 resp = await client.post(url, json=payload, headers=headers)
                 if resp.status_code in {200, 201}:
                     data = resp.json()
@@ -1782,7 +1789,7 @@ async def _send_qqbot(pconfig, chat_id, message):
             # Try resolved endpoints (C2C / group)
             errors = []
             for ep in ep_order:
-                url = f"https://api.sgroup.qq.com/v2/{ep}/{target_id}/messages"
+                url = f"https://api.sgroup.qq.com/v2/{ep}/{safe_target_id}/messages"
                 resp = await client.post(url, json=payload, headers=headers)
                 if resp.status_code in {200, 201}:
                     data = resp.json()
@@ -1795,7 +1802,7 @@ async def _send_qqbot(pconfig, chat_id, message):
         return _error(f"QQBot send failed: {e}")
 
 
-async def _send_qqbot_with_media(pconfig, chat_id, message, media_files):
+async def _send_qqbot_with_media(pconfig, chat_id, message, media_files, force_document=False):
     """Send text plus MEDIA attachments via QQBot C2C/group REST APIs.
 
     Uses the same REST pattern as _send_qqbot but adds media upload support.
@@ -1806,6 +1813,12 @@ async def _send_qqbot_with_media(pconfig, chat_id, message, media_files):
     Target resolution:
     - Explicit prefixes: "c2c:<id>", "user:<id>", "group:<id>"
     - Raw OpenIDs: try C2C first, fallback to group (matches _send_qqbot)
+
+    When *force_document* is True (user requested [[as_document]]):
+    - All attachments are uploaded as file_type=4 (generic document).
+    - Group targets are rejected outright (groups don't support file uploads).
+    - Raw OpenIDs try C2C only; 404 triggers "group not supported" error
+      instead of falling back to the group endpoint.
 
     Design decisions:
     - Probe-first: upload first media to confirm endpoint before sending text.
@@ -1820,6 +1833,7 @@ async def _send_qqbot_with_media(pconfig, chat_id, message, media_files):
         return _error("QQBot direct send requires httpx. Run: pip install httpx")
     import base64
     from pathlib import Path
+    from urllib.parse import quote
     from gateway.platforms.qqbot.constants import (
         API_BASE, TOKEN_URL, MSG_TYPE_MEDIA,
         MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO, MEDIA_TYPE_VOICE, MEDIA_TYPE_FILE,
@@ -1835,16 +1849,36 @@ async def _send_qqbot_with_media(pconfig, chat_id, message, media_files):
 
     # --- Resolve target type from chat_id ---
     target_type, target_id, ep_order = _resolve_qqbot_target(chat_id)
+    if not target_id:
+        return _error(f"QQBot: empty target ID in chat_id '{chat_id}'")
     if target_type == "guild":
         return _error("QQBot MEDIA delivery is only supported for C2C and group chats, not guild channels")
+
+    # URL-safe encoding for target ID
+    safe_target_id = quote(target_id, safe="")
+
+    # --- Group + force_document: reject before any HTTP ---
+    if force_document and target_type == "group":
+        return _error(
+            "QQ Bot API does not support document uploads to groups. "
+            "Cannot send as document to a group target."
+        )
+
+    # --- Raw OpenID + force_document: only try C2C (skip group fallback) ---
+    if force_document and target_type == "unknown":
+        ep_order = ["users"]  # C2C only — no group fallback
 
     # --- Classify each media file with QQBot-specific validation ---
     media_items = []
     for media_path, is_voice in (media_files or []):
-        if not os.path.exists(media_path):
+        media_p = Path(media_path)
+        if not media_p.is_file():
             return _error(f"Media file not found: {media_path}")
-        ext = os.path.splitext(media_path)[1].lower()
-        if ext in _QQBOT_IMAGE_EXTS:
+        ext = media_p.suffix.lower()
+        if force_document:
+            # [[as_document]]: force all attachments as generic file
+            file_type = MEDIA_TYPE_FILE
+        elif ext in _QQBOT_IMAGE_EXTS:
             file_type = MEDIA_TYPE_IMAGE
         elif ext in _QQBOT_VIDEO_EXTS:
             file_type = MEDIA_TYPE_VIDEO
@@ -1859,7 +1893,7 @@ async def _send_qqbot_with_media(pconfig, chat_id, message, media_files):
             # C2C: allow any file as generic document (file_type=4)
             file_type = MEDIA_TYPE_FILE
         else:
-            return _error(f"QQBot does not support file format: {ext} ({Path(media_path).name})")
+            return _error(f"QQBot does not support file format: {ext} ({media_p.name})")
         media_items.append((media_path, file_type, is_voice))
 
     # --- Reject oversized files before reading into memory ---
@@ -1935,13 +1969,21 @@ async def _send_qqbot_with_media(pconfig, chat_id, message, media_files):
                             upload_body["file_name"] = file_name
 
                         upload_resp = await client.post(
-                            f"{API_BASE}/v2/{ep}/{target_id}/files",
+                            f"{API_BASE}/v2/{ep}/{safe_target_id}/files",
                             json=upload_body,
                             headers=headers,
                         )
                         if upload_resp.status_code not in {200, 201}:
                             if _is_endpoint_mismatch(upload_resp.status_code) and ep_idx < len(ep_order) - 1:
                                 continue  # target-type mismatch — try next endpoint
+                            # Raw OpenID + force_document + 404 on C2C: group not supported
+                            if (force_document and target_type == "unknown"
+                                    and upload_resp.status_code == 404):
+                                return _error(
+                                    "QQBot: target appears to be a group (404 on C2C endpoint). "
+                                    "Group targets do not support document uploads. "
+                                    "Remove [[as_document]] to send as image/voice/video."
+                                )
                             return _error(f"QQBot file upload failed ({file_name}): {upload_resp.status_code} {upload_resp.text[:200]}")
 
                         upload_json = upload_resp.json()
@@ -1965,7 +2007,7 @@ async def _send_qqbot_with_media(pconfig, chat_id, message, media_files):
                             upload_body["file_name"] = file_name
 
                         upload_resp = await client.post(
-                            f"{API_BASE}/v2/{ep}/{target_id}/files",
+                            f"{API_BASE}/v2/{ep}/{safe_target_id}/files",
                             json=upload_body,
                             headers=headers,
                         )
@@ -1995,7 +2037,7 @@ async def _send_qqbot_with_media(pconfig, chat_id, message, media_files):
                             msg_body["content"] = text_chunks[0][:MAX_MESSAGE_LENGTH]
 
                         msg_resp = await client.post(
-                            f"{API_BASE}/v2/{ep}/{target_id}/messages",
+                            f"{API_BASE}/v2/{ep}/{safe_target_id}/messages",
                             json=msg_body,
                             headers=headers,
                         )
@@ -2009,7 +2051,7 @@ async def _send_qqbot_with_media(pconfig, chat_id, message, media_files):
                     # --- Send remaining text chunks ---
                     for chunk in text_chunks[1 if uploaded_infos else 0:]:
                         chunk_resp = await client.post(
-                            f"{API_BASE}/v2/{ep}/{target_id}/messages",
+                            f"{API_BASE}/v2/{ep}/{safe_target_id}/messages",
                             json={"content": chunk, "msg_type": 0},
                             headers=headers,
                         )
