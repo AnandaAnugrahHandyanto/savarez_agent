@@ -804,6 +804,31 @@ class TestGatewayProtection:
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is False
 
+    def test_hermes_config_set_model_provider_flagged(self):
+        """hermes config set model.provider should require approval."""
+        cmd = "hermes config set model.provider deepseek"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "connectivity" in desc
+
+    def test_hermes_config_set_model_base_url_flagged(self):
+        """hermes config set model.base_url should require approval."""
+        cmd = "hermes config set model.base_url https://example.com/v1"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_hermes_config_set_model_api_key_flagged(self):
+        """hermes config set model.api_key should require approval."""
+        cmd = "hermes config set model.api_key sk-abc123"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_hermes_config_set_unrelated_not_flagged(self):
+        """hermes config set on non-model keys should not be flagged."""
+        cmd = "hermes config set display.show_cost true"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
 
 class TestNormalizationBypass:
     """Obfuscation techniques must not bypass dangerous command detection."""

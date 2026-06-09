@@ -419,6 +419,13 @@ DANGEROUS_PATTERNS = [
     # terminates all running agents mid-work.
     (r'\bhermes\s+gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
+    # Gateway connectivity protection: config mutations that can break the
+    # agent's own ability to reach its model endpoint.  A mismatched
+    # provider + base_url produces 401 loops indistinguishable from an
+    # expired key, but with no recovery path because the agent can't
+    # call home to report the error.
+    (r'\bhermes\s+config\s+set\s+model\.(provider|base_url|api_key)\b',
+     "modify model connectivity config (may break gateway)"),
     # Docker container lifecycle — any user with docker.sock mounted (a common
     # Docker Compose pattern) gives the agent the ability to restart/stop/kill
     # containers without approval.  These are agent-initiated lifecycle operations
