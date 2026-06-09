@@ -1167,11 +1167,14 @@ export interface Translations {
     aria: string
     panelsAria: string
     files: string
+    sourceControl: string
     terminal: string
     noFolderSelected: string
     changeCwdTitle: string
     folderTip: (cwd: string) => string
     openFolder: string
+    openInFileManager: string
+    couldNotOpenFolder: string
     refreshTree: string
     collapseAll: string
     previewUnavailable: string
@@ -1189,6 +1192,18 @@ export interface Translations {
     loadingFiles: string
     terminalFocus: string
     terminalSplit: string
+    dropPanelHere: string
+    resizePanelSplit: string
+    refreshChanges: string
+    sourceControlUnavailable: string
+    notGitRepository: string
+    notGitRepositoryBody: string
+    noChanges: string
+    noChangesBody: string
+    mergeChanges: string
+    stagedChanges: string
+    changes: string
+    untrackedFiles: string
     addToChat: string
   }
 

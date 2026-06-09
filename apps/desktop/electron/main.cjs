@@ -28,6 +28,7 @@ const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = requ
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
+const { parseGitStatusPorcelainV2 } = require('./git-status.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const {
   buildPosixCleanupScript,
@@ -5191,26 +5192,27 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
   }
 })
 
-ipcMain.handle('hermes:gitFileDiff', async (_event, filePath) => {
+ipcMain.handle('hermes:gitFileDiff', async (_event, filePath, originalPath) => {
   const fs = require('fs')
 
-  if (!filePath || typeof filePath !== 'string') return { diff: '', status: '', fileContent: '' }
+  if (!filePath || typeof filePath !== 'string') return { diff: '', status: '', fileContent: '', headContent: '' }
 
   let resolvedPath = filePath
   if (resolvedPath.startsWith('file://')) {
-    try { resolvedPath = new URL(resolvedPath).pathname } catch {}
+    try { resolvedPath = new URL(resolvedPath).pathname } catch {
+      // Fall through and let path.resolve handle the original value.
+    }
   }
   resolvedPath = path.resolve(resolvedPath)
 
-  if (!fs.existsSync(resolvedPath)) return { diff: '', status: '', fileContent: '' }
-
-  // Read current file
   let fileContent = ''
-  try { fileContent = fs.readFileSync(resolvedPath, 'utf8') } catch { return { diff: '', status: '', fileContent: '' } }
+  if (fs.existsSync(resolvedPath)) {
+    try { fileContent = fs.readFileSync(resolvedPath, 'utf8') } catch { return { diff: '', status: '', fileContent: '', headContent: '' } }
+  }
 
   // Read HEAD version via git show
   const { execFileSync } = require('child_process')
-  const dir = path.dirname(resolvedPath)
+  const dir = fs.existsSync(resolvedPath) && fs.statSync(resolvedPath).isDirectory() ? resolvedPath : path.dirname(resolvedPath)
 
   let gitRoot = ''
   try {
@@ -5218,26 +5220,73 @@ ipcMain.handle('hermes:gitFileDiff', async (_event, filePath) => {
       cwd: dir, timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf8'
     }).trim()
   } catch {
-    return { diff: '', status: '', fileContent }
+    return { diff: '', status: '', fileContent, headContent: '' }
   }
 
-  const relPath = path.relative(gitRoot, resolvedPath)
+  const resolvedOriginalPath =
+    typeof originalPath === 'string' && originalPath
+      ? path.resolve(originalPath.startsWith('file://') ? new URL(originalPath).pathname : originalPath)
+      : resolvedPath
+  const relPath = path.relative(gitRoot, resolvedOriginalPath).split(path.sep).join('/')
 
   let headContent = ''
-  let isUntracked = false
   try {
     headContent = execFileSync('git', ['show', `HEAD:${relPath}`], {
       cwd: gitRoot, timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf8'
     })
   } catch {
-    // File is untracked or not in git
-    isUntracked = true
+    // New and untracked files do not have a HEAD version.
   }
 
-  // Status string for the renderer
-  const status = isUntracked ? 'untracked' : headContent !== fileContent ? 'modified' : ''
+  let porcelain = ''
+  try {
+    porcelain = execFileSync('git', ['status', '--porcelain', '--', path.relative(gitRoot, resolvedPath)], {
+      cwd: gitRoot, timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf8'
+    })
+  } catch {
+    // A missing status only means there is no renderer-visible diff state.
+  }
+
+  const status = porcelain.startsWith('??')
+    ? 'untracked'
+    : porcelain[0] && porcelain[0] !== ' '
+      ? 'staged'
+      : headContent !== fileContent
+        ? 'modified'
+        : ''
 
   return { diff: '', status, fileContent, headContent }
+})
+
+ipcMain.handle('hermes:gitStatus', async (_event, cwd) => {
+  const resolved = path.resolve(String(cwd || ''))
+  const root = findGitRoot(resolved)
+
+  if (!root) {
+    return { branch: { ahead: 0, behind: 0, detached: false, name: '', oid: '', upstream: '' }, entries: [], root: null }
+  }
+
+  try {
+    const result = await runGit(['status', '--porcelain=v2', '-z', '--branch', '--untracked-files=all'], { cwd: root })
+
+    if (result.code !== 0) {
+      return {
+        branch: { ahead: 0, behind: 0, detached: false, name: '', oid: '', upstream: '' },
+        entries: [],
+        error: result.stderr.trim() || 'git-status-failed',
+        root
+      }
+    }
+
+    return parseGitStatusPorcelainV2(result.stdout, root)
+  } catch (error) {
+    return {
+      branch: { ahead: 0, behind: 0, detached: false, name: '', oid: '', upstream: '' },
+      entries: [],
+      error: error instanceof Error ? error.message : String(error),
+      root
+    }
+  }
 })
 
 ipcMain.handle('hermes:writeFileText', async (_event, filePath, content) => {
@@ -5246,7 +5295,9 @@ ipcMain.handle('hermes:writeFileText', async (_event, filePath, content) => {
 
   let resolvedPath = filePath
   if (resolvedPath.startsWith('file://')) {
-    try { resolvedPath = new URL(resolvedPath).pathname } catch {}
+    try { resolvedPath = new URL(resolvedPath).pathname } catch {
+      // Fall through and let path.resolve handle the original value.
+    }
   }
   resolvedPath = path.resolve(resolvedPath)
 
@@ -5548,6 +5599,24 @@ ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => {
     return findGitRoot(start)
   } catch {
     return findGitRoot(resolved)
+  }
+})
+
+ipcMain.handle('hermes:fs:openPath', async (_event, targetPath) => {
+  const resolved = path.resolve(String(targetPath || ''))
+
+  try {
+    const stat = await fs.promises.stat(resolved)
+
+    if (!stat.isDirectory()) {
+      return { error: 'not-a-directory', ok: false }
+    }
+
+    const error = await shell.openPath(resolved)
+
+    return error ? { error, ok: false } : { ok: true }
+  } catch (error) {
+    return { error: error?.message || 'open-path-failed', ok: false }
   }
 })
 

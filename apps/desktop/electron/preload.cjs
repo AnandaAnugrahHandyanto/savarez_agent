@@ -22,7 +22,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
   readFileDataUrl: filePath => ipcRenderer.invoke('hermes:readFileDataUrl', filePath),
   readFileText: filePath => ipcRenderer.invoke('hermes:readFileText', filePath),
-  gitFileDiff: filePath => ipcRenderer.invoke('hermes:gitFileDiff', filePath),
+  gitFileDiff: (filePath, originalPath) => ipcRenderer.invoke('hermes:gitFileDiff', filePath, originalPath),
+  gitStatus: cwd => ipcRenderer.invoke('hermes:gitStatus', cwd),
   writeFileText: (filePath, content) => ipcRenderer.invoke('hermes:writeFileText', filePath, content),
   selectPaths: options => ipcRenderer.invoke('hermes:selectPaths', options),
   writeClipboard: text => ipcRenderer.invoke('hermes:writeClipboard', text),
@@ -52,6 +53,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getRecentLogs: () => ipcRenderer.invoke('hermes:logs:recent'),
   readDir: dirPath => ipcRenderer.invoke('hermes:fs:readDir', dirPath),
   gitRoot: startPath => ipcRenderer.invoke('hermes:fs:gitRoot', startPath),
+  openPath: targetPath => ipcRenderer.invoke('hermes:fs:openPath', targetPath),
   terminal: {
     dispose: id => ipcRenderer.invoke('hermes:terminal:dispose', id),
     resize: (id, size) => ipcRenderer.invoke('hermes:terminal:resize', id, size),

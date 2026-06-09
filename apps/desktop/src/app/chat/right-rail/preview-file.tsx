@@ -967,7 +967,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   const [state, setState] = useState<LocalPreviewState>({ loading: true })
   const [forcePreview, setForcePreview] = useState(false)
   const [renderMarkdownAsSource, setRenderMarkdownAsSource] = useState(false)
-  const [renderMode, setRenderMode] = useState<RenderMode>('source')
+  const [renderMode, setRenderMode] = useState<RenderMode>(target.renderMode === 'diff' ? 'diff' : 'source')
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
 
@@ -988,7 +988,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
     const fetchDiff = async () => {
       try {
-        const result = await window.hermesDesktop?.gitFileDiff?.(filePath)
+        const result = await window.hermesDesktop?.gitFileDiff?.(filePath, target.gitOriginalPath)
 
         if (active && result) {
           setGitDiff(result)
@@ -1005,7 +1005,17 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     return () => {
       active = false
     }
-  }, [filePath, isImage, reloadKey])
+  }, [filePath, isImage, reloadKey, target.gitOriginalPath])
+
+  useEffect(() => {
+    if (target.renderMode === 'diff') {
+      setRenderMode('diff')
+    } else if (target.renderMode === 'source') {
+      setRenderMode('source')
+    } else if (target.renderMode === 'preview') {
+      setRenderMode('preview')
+    }
+  }, [target.renderMode, target.url])
 
   const hasDiff = Boolean(gitDiff.status || gitDiff.headContent)
 
@@ -1080,7 +1090,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     return <PageLoader label={t.preview.loading} />
   }
 
-  if (state.error) {
+  if (state.error && renderMode !== 'diff') {
     return <PreviewEmptyState body={state.error} title={t.preview.unavailable} />
   }
 
