@@ -4238,9 +4238,28 @@ class BasePlatformAdapter(ABC):
                         _thread_metadata["notify"] = True
                     else:
                         _thread_metadata = {"notify": True}
+                    # Extract HERMES_INLINE_BUTTONS: from the response text
+                    # and pass parsed buttons via metadata to platforms that support them.
+                    _cleaned_text_content = text_content
+                    _btn_clean_lines = []
+                    _inline_buttons_parsed = None
+                    for _btn_line in text_content.splitlines():
+                        if _btn_line.strip().startswith("HERMES_INLINE_BUTTONS:"):
+                            _btn_payload = _btn_line.strip()[len("HERMES_INLINE_BUTTONS:"):]
+                            try:
+                                import json as _json
+                                _inline_buttons_parsed = _json.loads(_btn_payload)
+                            except Exception:
+                                _btn_clean_lines.append(_btn_line)
+                        else:
+                            _btn_clean_lines.append(_btn_line)
+                    if _inline_buttons_parsed is not None:
+                        _cleaned_text_content = "\n".join(_btn_clean_lines)
+                        _thread_metadata["inline_buttons"] = _inline_buttons_parsed
+
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
-                        content=text_content,
+                        content=_cleaned_text_content,
                         reply_to=_reply_anchor,
                         metadata=_thread_metadata,
                     )
