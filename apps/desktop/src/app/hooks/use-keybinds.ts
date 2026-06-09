@@ -18,6 +18,7 @@ import {
   toggleSidebarOpen
 } from '@/store/layout'
 import {
+  $newChatProfile,
   cycleProfile,
   requestProfileCreate,
   switchProfileToSlot,
@@ -106,6 +107,10 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.agents': () => navigate(AGENTS_ROUTE),
 
     'session.new': () => {
+      // Match the sidebar New Session button: a plain hotkey new chat should
+      // target the currently active gateway profile, not a previously selected
+      // per-profile quick-create target.
+      $newChatProfile.set(null)
       deps.startFreshSession()
       window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
     },

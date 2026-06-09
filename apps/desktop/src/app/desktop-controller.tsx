@@ -14,6 +14,8 @@ import { useSkinCommand } from '@/themes/use-skin-command'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { COMPLETION_SOUND_VARIANTS, playVariant } from '../lib/completion-sound'
+import { MESSAGING_SESSION_SOURCE_IDS } from '../lib/session-source'
 import { setCronFocusJobId, setCronJobs } from '../store/cron'
 import {
   $panesFlipped,
@@ -121,6 +123,7 @@ const SkillsView = lazy(async () => ({ default: (await import('./skills')).Skill
 // this cadence while the app is open + visible so new runs surface promptly
 // instead of waiting for the next user-triggered refreshSessions().
 const CRON_POLL_INTERVAL_MS = 30_000
+const SIDEBAR_EXCLUDED_SOURCES = ['cron', ...MESSAGING_SESSION_SOURCE_IDS]
 
 // Cheap signature compare so the poll only swaps the atom (and re-renders the
 // sidebar) when the visible cron rows actually changed.
@@ -264,6 +267,44 @@ export function DesktopController() {
     }
   }, [])
 
+  // DEV chime audition: press 1..9 to play completion-sound variant N so we can
+  // A/B the bank live (HMR-safe). Ignored while typing in an input/textarea so
+  // it doesn't fire mid-compose. Stripped from production builds.
+  useEffect(() => {
+    if (!import.meta.env.DEV) {
+      return
+    }
+
+    const onAuditionKey = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) {
+        return
+      }
+
+      const target = event.target as HTMLElement | null
+
+      if (target && (target.isContentEditable || /^(input|textarea|select)$/i.test(target.tagName))) {
+        return
+      }
+
+      const id = Number(event.key)
+
+      if (!Number.isInteger(id) || id < 1 || id > 9) {
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+      playVariant(id)
+      const variant = COMPLETION_SOUND_VARIANTS.find(v => v.id === id)
+      // eslint-disable-next-line no-console
+      console.log(`[chime] ${id}: ${variant?.name ?? 'unknown'}`)
+    }
+
+    window.addEventListener('keydown', onAuditionKey, { capture: true })
+
+    return () => window.removeEventListener('keydown', onAuditionKey, { capture: true })
+  }, [])
+
   // Cron-job sessions as their own list (latest N). Independent of the recents
   // page so the two never compete for slots. Cheap + bounded. Kept (even though
   // the sidebar now lists cron *jobs*, not run sessions) so a pinned cron run
@@ -307,16 +348,16 @@ export function DesktopController() {
       // clutter the sidebar.
       // Unified cross-profile list (served read-only off each profile's
       // state.db; no per-profile backend is spawned). Single-profile users get
-      // the same rows tagged profile="default". Cron sessions are excluded here
-      // and fetched separately (refreshCronSessions) so the scheduler's
-      // always-newest rows can't consume the recents page budget.
+      // the same rows tagged profile="default". Cron + messaging-platform
+      // sessions are excluded here; cron rows are fetched separately
+      // (refreshCronSessions) for the dedicated Cron section.
       // Scope the fetch to the active profile (not always 'all') so a profile
       // with few recent sessions isn't windowed out of the cross-profile
       // recency page — the empty-history-on-profile-switch bug.
       const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
 
       const result = await listAllProfileSessions(limit, 1, 'exclude', 'recent', sessionProfile, {
-        excludeSources: ['cron']
+        excludeSources: SIDEBAR_EXCLUDED_SOURCES
       })
 
       if (refreshSessionsRequestRef.current === requestId) {
@@ -347,7 +388,7 @@ export function DesktopController() {
     const loaded = $sessions.get().filter(inKey).length
 
     const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', key, {
-      excludeSources: ['cron']
+      excludeSources: SIDEBAR_EXCLUDED_SOURCES
     })
 
     const keep = sessionsToKeep(key)

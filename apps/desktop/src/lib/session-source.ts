@@ -34,6 +34,25 @@ const SOURCE_ALIASES: Record<string, string[]> = {
   whatsapp: ['wa']
 }
 
+// Chat recents should stay focused on interactive chat surfaces. Messaging
+// platform session threads are managed in the dedicated Messaging view.
+export const MESSAGING_SESSION_SOURCE_IDS = [
+  'bluebubbles',
+  'discord',
+  'email',
+  'matrix',
+  'mattermost',
+  'qqbot',
+  'signal',
+  'slack',
+  'sms',
+  'telegram',
+  'webhook',
+  'weixin',
+  'whatsapp',
+  'yuanbao'
+] as const
+
 export function normalizeSessionSource(source: null | string | undefined): string | null {
   const id = source?.trim().toLowerCase()
 
