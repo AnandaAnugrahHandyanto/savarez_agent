@@ -1,0 +1,5 @@
+{
+  "name": "hermes-pincher-hooks",
+  "version": "0.1.0",
+  "description": "Project-scoped Goose Open Plugins hooks that route Goose developer tool calls through Pincher hook-check guardrails."
+}
