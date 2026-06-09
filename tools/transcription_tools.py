@@ -92,6 +92,7 @@ DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
+DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -100,7 +101,6 @@ GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
-DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
 ELEVENLABS_STT_MODELS = {"scribe_v1", "scribe_v1_experimental", "scribe_v2"}
 # How far to scan ELEVENLABS_API_KEY_<N> when collecting fallback keys for
 # quota rotation.  Ten is well past anything a real user would set up but
@@ -245,7 +245,11 @@ def _try_lazy_install_stt() -> bool:
     """
     try:
         from tools.lazy_deps import ensure
-        ensure("stt.faster_whisper")
+        # prompt=False: never raise a blocking input() prompt mid-session.
+        # Under the interactive CLI prompt_toolkit owns stdin, so a bare
+        # input() deadlocks the terminal (#40490). The install is already
+        # gated by security.allow_lazy_installs, so reaching here is opt-in.
+        ensure("stt.faster_whisper", prompt=False)
         # Re-check dynamically after install
         import importlib.util as _iu
         if _iu.find_spec("faster_whisper"):
@@ -518,6 +522,7 @@ def _terminate_command_stt_process_tree(proc: subprocess.Popen) -> None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=5,
+                stdin=subprocess.DEVNULL,
             )
         except Exception:
             proc.kill()
@@ -583,7 +588,7 @@ def _run_command_stt(command: str, timeout: float) -> subprocess.CompletedProces
     else:
         popen_kwargs["start_new_session"] = True
 
-    proc = subprocess.Popen(command, **popen_kwargs)
+    proc = subprocess.Popen(command, **popen_kwargs, stdin=subprocess.DEVNULL)
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
@@ -774,7 +779,7 @@ def _get_provider(stt_config: dict) -> str:
 
     When ``stt.provider`` is explicitly set in config, that choice is
     honoured — no silent cloud fallback.  When no provider is configured,
-    auto-detect tries: local > groq > elevenlabs > openai > xai.  Free
+    auto-detect tries: local > groq > elevenlabs > openai > mistral > xai.  Free
     providers (local, groq) come first; among paid providers, Scribe v2
     is preferred over whisper-1 on accuracy and language coverage.
     ``mistral`` is intentionally skipped while ``mistralai`` is quarantined
@@ -831,16 +836,11 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "mistral":
-            # `mistralai` PyPI package was quarantined on 2026-05-12 after a
-            # malicious 2.4.6 release. Refuse to use this provider until it's
-            # available again so we surface a clear message instead of an
-            # opaque ImportError mid-call.
+            if _HAS_MISTRAL and get_env_value("MISTRAL_API_KEY"):
+                return "mistral"
             logger.warning(
-                "STT provider 'mistral' (Voxtral Transcribe) is temporarily "
-                "disabled — `mistralai` PyPI package is quarantined "
-                "(malicious 2.4.6 release on 2026-05-12). Falling back to "
-                "another provider. Set stt.provider in config.yaml to 'local' "
-                "or 'openai' to silence this warning."
+                "STT provider 'mistral' configured but mistralai package "
+                "not installed or MISTRAL_API_KEY not set"
             )
             return "none"
 
@@ -865,13 +865,11 @@ def _get_provider(stt_config: dict) -> str:
         return provider  # Unknown — let it fail downstream
 
     # --- Auto-detect (no explicit provider) -------------------------------
-    # Priority: local > groq > elevenlabs > openai > xai.
+    # Priority: local > groq > elevenlabs > openai > mistral > xai.
     # Free providers (local, groq) still beat paid ones; among paid, Scribe
     # v2's accuracy and 99-language coverage make it the better default than
     # whisper-1 when both keys happen to be present.  Anyone with a strong
     # opinion sets ``stt.provider`` explicitly.
-    # mistral is intentionally skipped while `mistralai` is quarantined on
-    # PyPI (malicious 2.4.6 release on 2026-05-12).
 
     if _HAS_FASTER_WHISPER:
         return "local"
@@ -889,6 +887,12 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and _has_openai_audio_backend():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
+    # Only auto-select Mistral if the SDK is already present — don't trigger a
+    # lazy-install during passive auto-detection. Explicit `provider: mistral`
+    # (above) does lazy-install on first transcription call.
+    if _HAS_MISTRAL and get_env_value("MISTRAL_API_KEY"):
+        logger.info("No local STT available, using Mistral Voxtral Transcribe API")
+        return "mistral"
     try:
         from tools.xai_http import resolve_xai_http_credentials
 
@@ -1222,8 +1226,11 @@ def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], 
     command = [ffmpeg, "-y", "-i", file_path, converted_path]
 
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True)
+        subprocess.run(command, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
         return converted_path, None
+    except subprocess.TimeoutExpired:
+        logger.error("ffmpeg conversion timed out for %s", file_path)
+        return None, "Audio conversion for local STT timed out"
     except subprocess.CalledProcessError as e:
         details = e.stderr.strip() or e.stdout.strip() or str(e)
         logger.error("ffmpeg conversion failed for %s: %s", file_path, details)
@@ -1265,9 +1272,9 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
             use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
             if use_shell:
-                subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+                subprocess.run(command, shell=True, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
             else:
-                subprocess.run(shlex.split(command), check=True, capture_output=True, text=True)
+                subprocess.run(shlex.split(command), check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
             
 
             txt_files = sorted(Path(output_dir).glob("*.txt"))
@@ -1426,6 +1433,11 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": "MISTRAL_API_KEY not set"}
 
     try:
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("stt.mistral", prompt=False)
+        except ImportError:
+            pass
         from mistralai.client import Mistral
 
         with Mistral(api_key=api_key) as client:
@@ -1561,13 +1573,7 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-# HTTP statuses we treat as "this key is exhausted, try the next one".
-# 401 covers an outright-revoked key, 402 covers payment-required (paid plans
-# that have hit a hard cap), 429 covers rate/quota limits.
 _ELEVENLABS_QUOTA_STATUSES = {401, 402, 429}
-
-# Substrings (lowercased) we look for in the response body to detect quota
-# exhaustion even when the HTTP status doesn't make it obvious.
 _ELEVENLABS_QUOTA_BODY_MARKERS = (
     "quota_exceeded",
     "out_of_credits",
@@ -1610,24 +1616,20 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
     """Transcribe using the ElevenLabs Scribe API.
 
     Uses ``POST /v1/speech-to-text`` with multipart/form-data and the
-    ``xi-api-key`` header.  Defaults to ``scribe_v2`` for accuracy; callers
+    ``xi-api-key`` header. Defaults to ``scribe_v2`` for accuracy; callers
     may opt into ``scribe_v1`` or ``scribe_v1_experimental`` via
-    ``stt.elevenlabs.model``.
+    ``stt.elevenlabs.model_id``.
 
     Supports key rotation: when the primary ``ELEVENLABS_API_KEY`` returns
     a quota/auth error (HTTP 401/402/429 or a JSON body indicating
     ``quota_exceeded``), the next key in ``ELEVENLABS_API_KEY_2``,
-    ``_3``, ... is tried automatically.  Non-quota errors (e.g. 400, 5xx)
-    are not retried — the same fault would burn through every key.
+    ``_3``, ... is tried automatically. Non-quota errors (e.g. 400, 5xx)
+    are not retried.
     """
     api_keys = _get_elevenlabs_api_keys()
     if not api_keys:
         return {"success": False, "transcript": "", "error": "ELEVENLABS_API_KEY not set"}
 
-    # Empty / falsy model names fall back to the documented default.  Unknown
-    # but truthy names pass through so users can opt into models released
-    # after this code shipped (e.g. a future scribe_v3) — the API is the
-    # authoritative gate, not this module.
     if not model_name:
         model_name = DEFAULT_ELEVENLABS_STT_MODEL
     elif model_name not in ELEVENLABS_STT_MODELS:
@@ -1694,8 +1696,6 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
                 "ElevenLabs STT request failed (%s): %s", key_label, e, exc_info=True,
             )
             last_error = f"Request failed: {type(e).__name__}: {e}"
-            # Network-level failures aren't a per-key problem — break so we
-            # don't retry the same flaky network N times.
             break
 
         if response.status_code == 200:
@@ -1704,7 +1704,7 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
             except ValueError:
                 last_error = "ElevenLabs STT returned non-JSON response"
                 break
-            transcript_text = (result.get("text") or "").strip()
+            transcript_text = _extract_transcript_text(result)
             if not transcript_text:
                 last_error = "ElevenLabs STT returned empty transcript"
                 break
@@ -1732,13 +1732,12 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
         )
         if _is_elevenlabs_quota_response(response) and index + 1 < len(api_keys):
             logger.warning(
-                "ElevenLabs %s exhausted (HTTP %d): %s — rotating to next key",
+                "ElevenLabs %s exhausted (HTTP %d): %s - rotating to next key",
                 key_label,
                 response.status_code,
                 summary,
             )
             continue
-        # Non-quota fault — bail rather than retry on every key.
         break
 
     return {
@@ -1759,9 +1758,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     Provider priority:
       1. User config (``stt.provider`` in config.yaml)
-      2. Auto-detect: local > groq > elevenlabs > openai > xai
-         (``mistral`` is skipped while ``mistralai`` is quarantined on PyPI —
-          malicious 2.4.6 release on 2026-05-12)
+      2. Auto-detect: local > groq > elevenlabs > openai > mistral > xai
 
     Args:
         file_path: Absolute path to the audio file to transcribe.
@@ -1824,8 +1821,13 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         return _transcribe_xai(file_path, model_name)
 
     if provider == "elevenlabs":
-        el_cfg = stt_config.get("elevenlabs", {}) or {}
-        model_name = model or el_cfg.get("model", DEFAULT_ELEVENLABS_STT_MODEL)
+        elevenlabs_cfg = stt_config.get("elevenlabs", {})
+        model_name = (
+            model
+            or elevenlabs_cfg.get("model_id")
+            or elevenlabs_cfg.get("model")
+            or DEFAULT_ELEVENLABS_STT_MODEL
+        )
         return _transcribe_elevenlabs(file_path, model_name)
 
     # User-declared command-type provider
