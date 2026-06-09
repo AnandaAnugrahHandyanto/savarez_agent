@@ -2888,10 +2888,10 @@ class FeishuAdapter(BasePlatformAdapter):
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
 
-        synthetic_text = f"/card {action_tag}"
+        synthetic_text = f"Card button '{action_tag}' clicked"
         if action_value:
             try:
-                synthetic_text += f" {json.dumps(action_value, ensure_ascii=False)}"
+                synthetic_text += f" with data: {json.dumps(action_value, ensure_ascii=False)}"
             except Exception:
                 pass
 
