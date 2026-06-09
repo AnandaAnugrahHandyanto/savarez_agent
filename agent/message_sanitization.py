@@ -182,6 +182,53 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
     return "".join(out)
 
 
+_FRAGMENTED_CARAT_ESCAPE_RE = re.compile(r"\\\^@([0-9a-fA-F]{2})")
+_NUL_HEX_PAIR_RE = re.compile(r"\x00([0-9a-fA-F]{2})")
+
+
+def _normalize_fragmented_escapes(raw, tool_name: str = "?"):
+    """Repair fragmented Unicode escapes in tool_call argument strings.
+
+    Some models emit ``\\^@XX`` (literal backslash, caret, at-sign, two hex
+    digits) where ``\\u00XX`` was intended.  In raw JSON form this looks like
+    ``"Ume\\^@e5"``; after ``json.loads`` (which would reject ``\\^``, but for
+    the ``\\u0000XX`` variant decodes successfully) the Python string carries
+    a literal NUL followed by hex digits, e.g. ``"Ume\\x00e5"``.  Either form
+    silently corrupts non-ASCII tool arguments and breaks Swedish/Chinese/etc
+    searches downstream (#42801).
+
+    Handles both pre-decode (raw JSON containing ``\\^@XX``) and post-decode
+    (Python string containing ``\\x00XX``) forms.  Lone NULs with no hex tail
+    are dropped.  Returns input unchanged when not a non-empty string.
+    """
+    if not isinstance(raw, str) or not raw:
+        return raw
+    out = raw
+    if "\\^@" in out:
+        out = _FRAGMENTED_CARAT_ESCAPE_RE.sub(r"\\u00\1", out)
+    if "\x00" in out:
+        out = _NUL_HEX_PAIR_RE.sub(lambda m: chr(int(m.group(1), 16)), out)
+        if "\x00" in out:
+            out = out.replace("\x00", "")
+    if out != raw:
+        logger.warning(
+            "Repaired fragmented unicode escape in tool_call arguments for %s",
+            tool_name,
+        )
+    return out
+
+
+def _normalize_fragmented_escapes_in_obj(obj, tool_name: str = "?"):
+    """Recursively normalize fragmented escapes in string values within obj."""
+    if isinstance(obj, str):
+        return _normalize_fragmented_escapes(obj, tool_name)
+    if isinstance(obj, dict):
+        return {k: _normalize_fragmented_escapes_in_obj(v, tool_name) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_normalize_fragmented_escapes_in_obj(v, tool_name) for v in obj]
+    return obj
+
+
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Attempt to repair malformed tool_call argument JSON.
 
@@ -192,6 +239,7 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     crashing the session).  All repairs are logged at WARNING level.
     """
     raw_stripped = raw_args.strip() if isinstance(raw_args, str) else ""
+    raw_stripped = _normalize_fragmented_escapes(raw_stripped, tool_name)
 
     # Fast-path: empty / whitespace-only -> empty object
     if not raw_stripped:
@@ -435,6 +483,8 @@ __all__ = [
     "_sanitize_structure_surrogates",
     "_sanitize_messages_surrogates",
     "_escape_invalid_chars_in_json_strings",
+    "_normalize_fragmented_escapes",
+    "_normalize_fragmented_escapes_in_obj",
     "_repair_tool_call_arguments",
     "_strip_non_ascii",
     "_sanitize_messages_non_ascii",
