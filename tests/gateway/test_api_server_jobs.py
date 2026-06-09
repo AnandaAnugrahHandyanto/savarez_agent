@@ -167,6 +167,36 @@ class TestCreateJob:
                 assert call_kwargs["origin"]["chat_id"] == "api"
                 assert call_kwargs["origin"]["forwarded_for"] == "203.0.113.11"
                 assert call_kwargs["origin"]["user_agent"] == "cron-client"
+                assert "workdir" not in call_kwargs
+                assert "profile" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_create_job_allows_runtime_context_fields(self, adapter):
+        """POST /api/jobs passes safe runtime context fields to cron storage."""
+        app = _create_app(adapter)
+        created_job = {
+            **SAMPLE_JOB,
+            "workdir": "/Users/seiyeong/sywork",
+            "profile": "ju3-dev",
+        }
+        mock_create = MagicMock(return_value=created_job)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_create", mock_create
+            ):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "test-job",
+                    "schedule": "*/5 * * * *",
+                    "prompt": "do something",
+                    "workdir": "/Users/seiyeong/sywork",
+                    "profile": "ju3-dev",
+                })
+                assert resp.status == 200
+                call_kwargs = mock_create.call_args[1]
+                assert call_kwargs["workdir"] == "/Users/seiyeong/sywork"
+                assert call_kwargs["profile"] == "ju3-dev"
 
     @pytest.mark.asyncio
     async def test_create_job_missing_name(self, adapter):
@@ -343,10 +373,43 @@ class TestUpdateJob:
                 assert "schedule" in sanitized
 
     @pytest.mark.asyncio
+    async def test_update_job_allows_runtime_context_fields(self, adapter):
+        """PATCH /api/jobs/{id} preserves safe runtime context fields."""
+        app = _create_app(adapter)
+        updated_job = {
+            **SAMPLE_JOB,
+            "workdir": "/Users/seiyeong/sywork",
+            "profile": "ju3-dev",
+        }
+        mock_update = MagicMock(return_value=updated_job)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_update", mock_update
+            ):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}",
+                    json={
+                        "workdir": "/Users/seiyeong/sywork",
+                        "profile": "ju3-dev",
+                    },
+                )
+                assert resp.status == 200
+                call_args = mock_update.call_args
+                sanitized = call_args[0][1]
+                assert sanitized["workdir"] == "/Users/seiyeong/sywork"
+                assert sanitized["profile"] == "ju3-dev"
+
+    @pytest.mark.asyncio
     async def test_update_job_rejects_unknown_fields(self, adapter):
         """PATCH /api/jobs/{id} — only allowed fields pass through."""
         app = _create_app(adapter)
-        updated_job = {**SAMPLE_JOB, "name": "new-name"}
+        updated_job = {
+            **SAMPLE_JOB,
+            "name": "new-name",
+            "workdir": "/Users/seiyeong/sywork",
+        }
         mock_update = MagicMock(return_value=updated_job)
         async with TestClient(TestServer(app)) as cli:
             with patch(
@@ -358,6 +421,7 @@ class TestUpdateJob:
                     f"/api/jobs/{VALID_JOB_ID}",
                     json={
                         "name": "new-name",
+                        "workdir": "/Users/seiyeong/sywork",
                         "evil_field": "malicious",
                         "__proto__": "hack",
                     },
@@ -366,6 +430,7 @@ class TestUpdateJob:
                 call_args = mock_update.call_args
                 sanitized = call_args[0][1]
                 assert "name" in sanitized
+                assert sanitized["workdir"] == "/Users/seiyeong/sywork"
                 assert "evil_field" not in sanitized
                 assert "__proto__" not in sanitized
 
