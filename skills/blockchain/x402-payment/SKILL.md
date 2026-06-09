@@ -1,27 +1,36 @@
 ---
 name: x402-payment
+description: Make autonomous x402 payments on Arc Testnet using USDC. Handles HTTP 402 Payment Required responses automatically.
 version: 1.0.0
-description: Autonomous x402 micropayment skill — detects HTTP 402 Payment Required responses and pays with USDC on Arc Testnet (Chain ID 5042002). No human intervention required.
-author: consumeobeydie
-tags: [blockchain, payments, arc, usdc, x402, web3, autonomous]
-platforms: [linux, macos, wsl2]
-requires:
-  pip: [web3>=6.0.0, eth-account>=0.11.0, requests>=2.33.0, python-dotenv>=1.0.0]
+metadata:
+  hermes:
+    tags: [web3, payments, arc, usdc, x402]
+    category: blockchain
 ---
 
-# x402 Payment Skill
+# x402 Payment Skill — Arc Testnet
 
-Teaches Hermes to autonomously handle HTTP 402 Payment Required responses by paying with USDC on Arc Testnet.
+## When to Use
+- User wants to access an x402-protected API endpoint
+- User wants to make a USDC micropayment on Arc Testnet
+- User encounters HTTP 402 Payment Required response
+- User wants to test agentic payments on Arc Testnet
 
-## When to use
+## Procedure
+1. Load the x402 client tool: `~/.hermes/skills/x402-payment/tools/x402_client.py`
+2. Check wallet balance before payment
+3. Send request to target endpoint
+4. If HTTP 402 received, parse payment requirements
+5. Sign USDC payment authorization (EIP-3009)
+6. Retry request with X-PAYMENT header
+7. Return response to user with payment receipt
 
-- User asks Hermes to access an x402-protected API endpoint
-- Hermes encounters HTTP 402 during a web request
-- User wants to make autonomous USDC micropayments on Arc Testnet
-- User is building or testing x402 payment flows
+## Pitfalls
+- Always check wallet balance before attempting payment
+- Arc Testnet USDC faucet: https://faucet.circle.com
+- Never expose private keys in logs or output
+- Max payment per request: $1.00 USDC (safety limit)
 
-## Prerequisites
-
-1. Wallet private key configured in `~/.hermes/.env`:
-
-
+## Verification
+- Check transaction on Arc explorer: https://testnet.arcscan.app
+- Confirm X-PAYMENT-RESPONSE header in successful response
