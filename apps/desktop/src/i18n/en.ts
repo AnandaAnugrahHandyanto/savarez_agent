@@ -1535,7 +1535,10 @@ export const en: Translations = {
     addToChat: 'Add to chat',
     stageChanges: 'Stage changes',
     unstageChanges: 'Unstage changes',
-    discardChanges: 'Discard changes'
+    discardChanges: 'Discard changes',
+    commitMessagePlaceholder: 'Message...',
+    commitButton: 'Commit',
+    commitHistory: 'Commits'
   },
 
   preview: {
