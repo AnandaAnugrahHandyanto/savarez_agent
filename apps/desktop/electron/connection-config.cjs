@@ -142,6 +142,86 @@ function normAuthMode(mode) {
   return mode === 'oauth' ? 'oauth' : 'token'
 }
 
+// Windows PowerShell 5.1's Set-Content emits UTF-8 with a BOM by default. If a
+// user or repair script rewrites connection.json that way, plain JSON.parse()
+// sees the leading U+FEFF and throws. The desktop used to silently fall back to
+// a local backend on that parse error, which makes a perfectly valid remote
+// dashboard config boot into the misleading "Could not connect to Hermes
+// gateway" recovery screen. Strip only the leading JSON BOM; leave all other
+// content byte-for-byte for normal JSON validation.
+function stripJsonBom(raw) {
+  const text = String(raw ?? '')
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+}
+
+function parseJsonWithOptionalBom(raw) {
+  return JSON.parse(stripJsonBom(raw))
+}
+
+const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+
+// Validate + normalize the per-profile remote overrides map read from disk.
+// Drops malformed names/entries and keeps only the recognized fields so a
+// hand-edited or stale connection.json can't inject junk into resolution.
+function sanitizeConnectionProfiles(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return {}
+  }
+
+  const out = {}
+  for (const [name, entry] of Object.entries(raw)) {
+    if (!entry || typeof entry !== 'object') {
+      continue
+    }
+    if (name !== 'default' && !PROFILE_NAME_RE.test(name)) {
+      continue
+    }
+
+    const cleaned = { mode: entry.mode === 'remote' ? 'remote' : 'local' }
+    const url = String(entry.url || '').trim()
+    if (url) {
+      cleaned.url = url
+    }
+    cleaned.authMode = normAuthMode(entry.authMode)
+    if (entry.token && typeof entry.token === 'object') {
+      cleaned.token = entry.token
+    }
+    out[name] = cleaned
+  }
+
+  return out
+}
+
+function defaultDesktopConnectionConfig() {
+  return { mode: 'local', remote: {}, profiles: {} }
+}
+
+function parseDesktopConnectionConfig(raw) {
+  try {
+    const parsed = parseJsonWithOptionalBom(raw)
+
+    if (parsed && typeof parsed === 'object') {
+      const remote = parsed.remote && typeof parsed.remote === 'object' ? parsed.remote : {}
+      // authMode lives on the remote sub-object: 'oauth' (cookie + ws-ticket)
+      // or 'token' (legacy static session token). Default to 'token' for
+      // backward compatibility with configs written before OAuth support.
+      remote.authMode = remote.authMode === 'oauth' ? 'oauth' : 'token'
+      return {
+        mode: parsed.mode === 'remote' ? 'remote' : 'local',
+        remote,
+        // Per-profile remote overrides: each profile may point at its own
+        // backend (local spawn or its own remote URL). Preserved verbatim so
+        // profileRemoteOverride() can resolve them; normalized lazily on save.
+        profiles: sanitizeConnectionProfiles(parsed.profiles)
+      }
+    }
+  } catch {
+    // Missing or malformed connection settings should fall back to local.
+  }
+
+  return defaultDesktopConnectionConfig()
+}
+
 /**
  * Select a profile's explicit remote override from a connection config, or null
  * when it has none (so the caller falls back to env → global remote → local).
@@ -247,8 +327,12 @@ module.exports = {
   cookiesHaveLiveSession,
   normAuthMode,
   normalizeRemoteBaseUrl,
+  parseDesktopConnectionConfig,
+  parseJsonWithOptionalBom,
   profileRemoteOverride,
+  sanitizeConnectionProfiles,
   resolveAuthMode,
   resolveTestWsUrl,
+  stripJsonBom,
   tokenPreview
 }

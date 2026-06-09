@@ -47,6 +47,8 @@ const {
   cookiesHaveLiveSession,
   normAuthMode,
   normalizeRemoteBaseUrl,
+  parseDesktopConnectionConfig,
+  parseJsonWithOptionalBom,
   profileRemoteOverride,
   resolveAuthMode,
   resolveTestWsUrl,
@@ -1857,7 +1859,7 @@ fi
 
 function readJson(filePath) {
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'))
+    return parseJsonWithOptionalBom(fs.readFileSync(filePath, 'utf8'))
   } catch {
     return null
   }
@@ -3787,38 +3789,6 @@ function decryptDesktopSecret(secret) {
   return value
 }
 
-// Validate + normalize the per-profile remote overrides map read from disk.
-// Drops malformed names/entries and keeps only the recognized fields so a
-// hand-edited or stale connection.json can't inject junk into resolution.
-function sanitizeConnectionProfiles(raw) {
-  if (!raw || typeof raw !== 'object') {
-    return {}
-  }
-
-  const out = {}
-  for (const [name, entry] of Object.entries(raw)) {
-    if (!entry || typeof entry !== 'object') {
-      continue
-    }
-    if (name !== 'default' && !PROFILE_NAME_RE.test(name)) {
-      continue
-    }
-
-    const cleaned = { mode: entry.mode === 'remote' ? 'remote' : 'local' }
-    const url = String(entry.url || '').trim()
-    if (url) {
-      cleaned.url = url
-    }
-    cleaned.authMode = normAuthMode(entry.authMode)
-    if (entry.token && typeof entry.token === 'object') {
-      cleaned.token = entry.token
-    }
-    out[name] = cleaned
-  }
-
-  return out
-}
-
 function readDesktopConnectionConfig() {
   // Check if file changed on disk since last read (e.g. modified by another
   // process or an external tool).  Our own writes update the cache inline
@@ -3834,35 +3804,18 @@ function readDesktopConnectionConfig() {
     return connectionConfigCache
   }
 
-  let config = { mode: 'local', remote: {}, profiles: {} }
-
   try {
     const raw = fs.readFileSync(DESKTOP_CONNECTION_CONFIG_PATH, 'utf8')
-    const parsed = JSON.parse(raw)
-
-    if (parsed && typeof parsed === 'object') {
-      const remote = parsed.remote && typeof parsed.remote === 'object' ? parsed.remote : {}
-      // authMode lives on the remote sub-object: 'oauth' (cookie + ws-ticket)
-      // or 'token' (legacy static session token). Default to 'token' for
-      // backward compatibility with configs written before OAuth support.
-      remote.authMode = remote.authMode === 'oauth' ? 'oauth' : 'token'
-      config = {
-        mode: parsed.mode === 'remote' ? 'remote' : 'local',
-        remote,
-        // Per-profile remote overrides: each profile may point at its own
-        // backend (local spawn or its own remote URL). Preserved verbatim so
-        // profileRemoteOverride() can resolve them; normalized lazily on save.
-        profiles: sanitizeConnectionProfiles(parsed.profiles)
-      }
-    }
+    const config = parseDesktopConnectionConfig(raw)
+    connectionConfigCache = config
   } catch {
     // Missing or malformed connection settings should fall back to local.
+    connectionConfigCache = parseDesktopConnectionConfig(null)
   }
 
-  connectionConfigCache = config
   connectionConfigCacheMtime = mtime
 
-  return config
+  return connectionConfigCache
 }
 
 function writeDesktopConnectionConfig(config) {
