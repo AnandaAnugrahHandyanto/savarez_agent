@@ -343,6 +343,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   compression: {
     enabled: 'Auto-Compression',
     threshold: 'Compression Threshold',
+    minThreshold: 'Min Compression Threshold',
     targetRatio: 'Compression Target',
     protectLastN: 'Protected Recent Messages'
   },
@@ -477,6 +478,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'context.engine',
       'compression.enabled',
       'compression.threshold',
+      'compression.min_threshold',
       'compression.target_ratio',
       'compression.protect_last_n'
     ]
