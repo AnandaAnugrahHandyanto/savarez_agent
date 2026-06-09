@@ -17,6 +17,7 @@ Core invariant these tests pin:
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -89,6 +90,36 @@ def test_task_cwd_override_anchors_before_terminal_env_exists(_isolated_cwd, mon
 
     assert resolved == (workspace / "target.py")
     assert not str(resolved).startswith(str(decoy))
+
+
+def test_task_cwd_override_wins_over_shared_default_live_env(tmp_path, monkeypatch):
+    """Gateway session file tools must not inherit the shared default env cwd."""
+    global_cwd = tmp_path / "global"
+    workspace = tmp_path / "workspace"
+    session_subdir = workspace / "subdir"
+    global_cwd.mkdir()
+    session_subdir.mkdir(parents=True)
+    (global_cwd / "target.py").write_text("GLOBAL\n")
+    (session_subdir / "target.py").write_text("SESSION\n")
+    monkeypatch.chdir(global_cwd)
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setattr(ft, "_file_ops_cache", {})
+    monkeypatch.setattr(
+        terminal_tool,
+        "_active_environments",
+        {"default": SimpleNamespace(cwd=str(global_cwd))},
+    )
+    monkeypatch.setattr(
+        terminal_tool,
+        "_task_env_overrides",
+        {"sess-a": {"cwd": str(session_subdir)}},
+    )
+
+    resolved = ft._resolve_path_for_task("target.py", task_id="sess-a")
+
+    assert terminal_tool._resolve_container_task_id("sess-a") == "default"
+    assert resolved == session_subdir / "target.py"
+    assert resolved != global_cwd / "target.py"
 
 
 def test_absolute_terminal_cwd_used_verbatim(_isolated_cwd, monkeypatch):

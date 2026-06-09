@@ -155,20 +155,36 @@ def _get_task_override_cwd(task_id: str = "default") -> str | None:
     return cwd or None
 
 
+def _uses_shared_terminal_env(task_id: str = "default") -> bool:
+    """Return True when a raw task/session id collapses to the shared env."""
+    if not task_id:
+        return False
+    try:
+        from tools.terminal_tool import _resolve_container_task_id
+
+        return _resolve_container_task_id(task_id) != task_id
+    except Exception:
+        return False
+
+
 def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     """Best-effort absolute workspace root for divergence checks.
 
-    Prefers the live terminal cwd (the directory the agent is actually working
-    in), then any raw task/session cwd registered before terminal env creation.
-    When neither exists, falls back to a sentinel-free absolute ``$TERMINAL_CWD``.
+    For raw session ids that share the collapsed ``default`` terminal env,
+    prefer the task/session override before live tracking.  Otherwise a shared
+    env.cwd can leak another chat's cwd into file tools.  Isolated envs keep the
+    historical live-cwd-first behavior.
 
     Returns ``None`` only when there is genuinely no reliable anchor, in which
     case callers fall back to the process cwd.
     """
+    override = _get_task_override_cwd(task_id)
+    if override and _uses_shared_terminal_env(task_id):
+        return override
+
     live = _get_live_tracking_cwd(task_id)
     if live:
         return live
-    override = _get_task_override_cwd(task_id)
     if override:
         return override
     return _configured_terminal_cwd()
