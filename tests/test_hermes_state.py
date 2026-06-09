@@ -2913,6 +2913,23 @@ class TestCompressionChainProjection:
         # root1's tip must be tip1 (via mid1), not delegate1.
         assert db.get_compression_tip("root1") == "tip1"
 
+    def test_batch_compression_tips_single_root(self, db):
+        """Regression: the batched query has exactly one IN clause, so the
+        binding list must match len(root_ids) — passing root_ids * 2 raised
+        sqlite3.ProgrammingError for every list_sessions_rich call.
+        """
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        assert db._batch_compression_tips(["root1"]) == {"root1": "tip1"}
+
+    def test_batch_compression_tips_multiple_roots(self, db):
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        db.create_session("solo", "cli")
+        tips = db._batch_compression_tips(["root1", "solo"])
+        # solo has no continuation chain, so it is omitted (maps to itself)
+        assert tips == {"root1": "tip1"}
+
     def test_list_surfaces_tip_for_compressed_root(self, db):
         """The list must show the tip's id/message_count/preview in place of
         the root row, so users can see and resume the live conversation.

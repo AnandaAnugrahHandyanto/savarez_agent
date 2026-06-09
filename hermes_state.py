@@ -1802,7 +1802,7 @@ class SessionDB:
             GROUP BY root_id
         """
         with self._lock:
-            cursor = self._conn.execute(query, root_ids * 2)
+            cursor = self._conn.execute(query, root_ids)
             rows = cursor.fetchall()
 
         tips = {}
