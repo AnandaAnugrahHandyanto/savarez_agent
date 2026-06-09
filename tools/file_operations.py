@@ -113,6 +113,36 @@ def _normalize_line_endings(text: str, target: str) -> str:
     return text
 
 
+# UTF-8 byte order mark. Some Windows editors (Notepad, older Visual Studio,
+# some PowerShell redirects) prepend this invisible 3-byte marker
+# (EF BB BF == U+FEFF) to UTF-8 text files. It renders as nothing but is a
+# real character at the start of the decoded string, so without handling it:
+#   - read_file would surface a stray U+FEFF as the first character (the
+#     model sees a phantom char before `import ...`), and
+#   - patch matches against the true first line would miss, and write_file
+#     would silently drop or double the marker on rewrite.
+# We strip it on read so the model sees clean content, and restore it on
+# write when the original file had one — exactly mirroring the line-ending
+# preservation above (detect on disk, preserve across the edit).
+_UTF8_BOM = "\ufeff"
+
+
+def _strip_bom(text: str) -> tuple[str, bool]:
+    """Return (text-without-leading-BOM, had_bom).
+
+    Only a single leading BOM is stripped; a BOM appearing mid-content is
+    left alone (it's legitimate data there, not a file marker).
+    """
+    if text and text.startswith(_UTF8_BOM):
+        return text[len(_UTF8_BOM):], True
+    return text, False
+
+
+def _has_bom(text: Optional[str]) -> bool:
+    """True if ``text`` begins with a UTF-8 BOM."""
+    return bool(text) and text.startswith(_UTF8_BOM)
+
+
 def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
     return _shared_is_write_denied(path)
@@ -255,6 +285,63 @@ class ExecuteResult:
     exit_code: int = 0
 
 
+def _split_tool_diagnostics(output: str) -> tuple[str, str]:
+    """Separate rg/grep diagnostic lines from real match output.
+
+    ``_exec`` runs commands with ``stderr=subprocess.STDOUT``, so error and
+    warning text from ``rg``/``grep`` is interleaved with match lines in a
+    single stream. Diagnostics must not be parsed as matches, and on a hard
+    failure they are the error message to surface.
+
+    Returns ``(diagnostics, payload)`` where ``payload`` contains only lines
+    that look like real search output — a match line (``file:line:content``),
+    a files-only path, a count line, or a context line/separator. Everything
+    else (tool-prefixed errors, rg's multi-line ``regex parse error`` block
+    with its indented carets, blank lines) is folded into ``diagnostics``.
+
+    Classifying by *shape* rather than by error prefix is what lets the
+    exit-2 guard distinguish a pure failure (no usable payload → surface the
+    error) from a partial failure (some files matched, one was unreadable →
+    keep the matches). It also means error text can never be mis-parsed as a
+    match, a latent bug that predates the exit-code fix.
+    """
+    diagnostics: list[str] = []
+    payload: list[str] = []
+    for line in output.split('\n'):
+        if not line.strip():
+            continue
+        # Tool diagnostics always carry the "<tool>: " prefix (e.g.
+        # "rg: <file>: Permission denied", "grep: Invalid regular
+        # expression", "rg: regex parse error:"). Check this first: a real
+        # match path can legitimately contain "-<digit>" (e.g. a tmp dir like
+        # ".../pytest-686/..."), which the shape regex would otherwise treat
+        # as a match line.
+        stripped = line.lstrip()
+        if stripped.startswith("rg: ") or stripped.startswith("grep: "):
+            diagnostics.append(line)
+            continue
+        # Otherwise classify by output shape. rg's regex-parse-error block
+        # also emits an indented caret line and a trailing "error: ..." line
+        # with no tool prefix; neither matches a search-output shape, so they
+        # fall through to diagnostics.
+        #   match / count : "<path>:<...>"   (has a colon; rg -c uses path:count)
+        #   files_only    : "<path>"         (no whitespace, no leading colon)
+        #   context line  : "<path>-<line>-" or the "--" group separator
+        if line == "--" or _SEARCH_OUTPUT_RE.match(line):
+            payload.append(line)
+        else:
+            diagnostics.append(line)
+    return '\n'.join(diagnostics), '\n'.join(payload)
+
+
+# A real rg/grep output line starts with a path token and is followed by a
+# ``:`` (match/count), a ``-`` (context), or nothing (files_only). Tool
+# diagnostics ("rg: ...", "grep: ...", "error: ...", indented carets) never
+# match because the path token forbids whitespace and a leading tool prefix
+# like "rg" is followed by ": " (space) which the negated class rejects.
+_SEARCH_OUTPUT_RE = re.compile(r'^([A-Za-z]:)?[^\s:][^\n]*?[:\-]\d|^[^\s:][^\s]*$')
+
+
 def _parse_search_context_line(line: str) -> tuple[str, int, str] | None:
     """Parse grep/rg context output in ``path-line-content`` format.
 
@@ -322,6 +409,16 @@ class FileOperations(ABC):
     def delete_file(self, path: str) -> WriteResult:
         """Delete a file. Returns WriteResult with .error set on failure."""
         ...
+
+    def delete_path(self, path: str, recursive: bool = False) -> WriteResult:
+        """Cross-platform delete that handles files and (with recursive=True)
+        directory trees. Default implementation delegates to ``delete_file``
+        for the non-recursive case; backends with native recursive support
+        should override.
+        """
+        if recursive:
+            return WriteResult(error="Recursive delete not implemented for this backend")
+        return self.delete_file(path)
 
     @abstractmethod
     def move_file(self, src: str, dst: str) -> WriteResult:
@@ -672,7 +769,20 @@ class ShellFileOperations(FileOperations):
         return ext in IMAGE_EXTENSIONS
     
     def _add_line_numbers(self, content: str, start_line: int = 1) -> str:
-        """Add line numbers to content in LINE_NUM|CONTENT format."""
+        """Add line numbers to content in ``LINE_NUM|CONTENT`` format.
+
+        The gutter uses a compact ``<n>|`` prefix (e.g. ``34|foo``) rather
+        than a fixed-width zero/space-padded one (``    34|foo``). The
+        padding was pure token overhead: on dense source the padded gutter
+        cost ~48% more tokens than the bare content and ~16% more than the
+        compact form, because the leading spaces + zero-padding tokenize
+        into extra tokens on every single line. An A/B (Sonnet 4.6, 2
+        passes) showed the compact gutter matches the padded gutter on
+        line-reference / patch / value-lookup / structure tasks (4/4 both),
+        while dropping line numbers entirely regressed line-referencing
+        (the model hand-counted and was off-by-one, 3/4) — so we keep the
+        numbers, just not the padding.
+        """
         from tools.tool_output_limits import get_max_line_length
         max_line_length = get_max_line_length()
         lines = content.split('\n')
@@ -681,7 +791,7 @@ class ShellFileOperations(FileOperations):
             # Truncate long lines
             if len(line) > max_line_length:
                 line = line[:max_line_length] + "... [truncated]"
-            numbered.append(f"{i:6d}|{line}")
+            numbered.append(f"{i}|{line}")
         return '\n'.join(numbered)
     
     def _expand_path(self, path: str) -> str:
@@ -801,6 +911,22 @@ class ShellFileOperations(FileOperations):
             return None
         return _detect_line_ending(head_result.stdout)
 
+    def _file_has_bom(self, path: str, pre_content: Optional[str] = None) -> bool:
+        """Whether the file on disk starts with a UTF-8 BOM.
+
+        Uses ``pre_content`` if we already read the file (zero extra exec
+        calls); otherwise issues a tiny ``head -c 3`` to sample just the
+        marker. A missing/empty file returns False (new writes get no BOM
+        unless the caller explicitly includes one).
+        """
+        if pre_content is not None:
+            return _has_bom(pre_content)
+        head_cmd = f"head -c 3 {self._escape_shell_arg(path)} 2>/dev/null"
+        head_result = self._exec(head_cmd)
+        if head_result.exit_code != 0 or not head_result.stdout:
+            return False
+        return _has_bom(head_result.stdout)
+
 
     def _unified_diff(self, old_content: str, new_content: str, filename: str) -> str:
         """Generate unified diff between old and new content."""
@@ -885,6 +1011,11 @@ class ShellFileOperations(FileOperations):
         if read_result.exit_code != 0:
             return ReadResult(error=f"Failed to read file: {read_result.stdout}")
         read_output = _strip_terminal_fence_leaks(read_result.stdout)
+        # Strip a leading UTF-8 BOM so the model never sees a phantom U+FEFF
+        # before the first real character. Only meaningful on the first
+        # chunk (the marker lives at byte 0); later pages can't carry it.
+        if offset == 1:
+            read_output, _ = _strip_bom(read_output)
         
         # Get total line count
         wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
@@ -989,19 +1120,76 @@ class ShellFileOperations(FileOperations):
         cat_result = self._exec(f"cat {self._escape_shell_arg(path)}")
         if cat_result.exit_code != 0:
             return ReadResult(error=f"Failed to read file: {cat_result.stdout}")
+        # Strip a leading UTF-8 BOM so patch's fuzzy matcher operates on
+        # clean content (a phantom U+FEFF before line 1 would defeat an
+        # exact first-line match). write_file restores the BOM on the way
+        # back out — it re-probes the on-disk file, which still has the
+        # marker — so the round-trip preserves it.
+        raw_content, _ = _strip_bom(_strip_terminal_fence_leaks(cat_result.stdout))
         return ReadResult(
-            content=_strip_terminal_fence_leaks(cat_result.stdout),
+            content=raw_content,
             file_size=file_size,
         )
 
     def delete_file(self, path: str) -> WriteResult:
-        """Delete a file via rm."""
+        """Delete a single file.
+
+        Cross-platform: runs via ``python -c`` against the terminal env's
+        Python so it works on Windows shells (``cmd.exe``/PowerShell) that
+        don't ship ``rm``. Directories are rejected here — use
+        ``delete_path(recursive=True)`` for trees.
+        """
+        return self._python_delete(path, recursive=False)
+
+    def delete_path(self, path: str, recursive: bool = False) -> WriteResult:
+        """Cross-platform delete that handles files and (with recursive=True)
+        directory trees. Always preferred over emitting ``rm -rf`` /
+        ``Remove-Item -Recurse`` directly so the same tool call works on
+        every backend (local / docker / ssh / Windows).
+        """
+        return self._python_delete(path, recursive=recursive)
+
+    def _python_delete(self, path: str, recursive: bool) -> WriteResult:
         path = self._expand_path(path)
         if _is_write_denied(path):
             return WriteResult(error=f"Delete denied: {path} is a protected path")
-        result = self._exec(f"rm -f {self._escape_shell_arg(path)}")
+
+        # We can't shell out to ``rm`` here — it doesn't exist on Windows
+        # ``cmd.exe`` or PowerShell, so this code path is what's left when
+        # the backend's terminal is a Windows shell. Path is baked into the
+        # snippet via ``repr()`` so quoting is correct on every shell.
+        snippet = (
+            "import shutil, pathlib, sys\n"
+            f"p = pathlib.Path({path!r})\n"
+            f"recursive = {bool(recursive)!r}\n"
+            "try:\n"
+            "    if p.is_dir() and not p.is_symlink():\n"
+            "        if recursive:\n"
+            "            shutil.rmtree(p)\n"
+            "        else:\n"
+            "            print('is a directory: ' + str(p), file=sys.stderr); sys.exit(2)\n"
+            "    else:\n"
+            # NOTE: avoid ``unlink(missing_ok=True)`` — that kwarg lands in
+            # Python 3.8 and the remote interpreter (docker/ssh) may still
+            # be 3.7 on older distros. The FileNotFoundError handler below
+            # covers the same case and works back to 3.4.
+            "        p.unlink()\n"
+            "except FileNotFoundError:\n"
+            "    pass\n"
+            "except Exception as exc:\n"
+            "    print(str(exc), file=sys.stderr); sys.exit(1)\n"
+        )
+
+        result = self._exec(f"python3 -c {self._escape_shell_arg(snippet)}")
+
+        # Fall back to ``python`` (Windows / older systems where there's no
+        # ``python3`` symlink but a ``python`` binary is on PATH).
+        if result.exit_code != 0 and "python3" in (result.stdout or ""):
+            result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
+
         if result.exit_code != 0:
-            return WriteResult(error=f"Failed to delete {path}: {result.stdout}")
+            return WriteResult(error=f"Failed to delete {path}: {(result.stdout or '').strip() or 'unknown error'}")
+
         return WriteResult()
 
     def move_file(self, src: str, dst: str) -> WriteResult:
@@ -1089,6 +1277,18 @@ class ShellFileOperations(FileOperations):
         original_ending = self._detect_file_line_ending(path, pre_content)
         if original_ending == "\r\n":
             content = _normalize_line_endings(content, "\r\n")
+
+        # ── BOM preservation ──────────────────────────────────────────
+        # If the file on disk started with a UTF-8 BOM, keep it. read_file
+        # strips the BOM so the agent never sees it, which means the
+        # content it hands back to write_file / patch has no BOM either —
+        # without restoring it here a round-trip would silently strip the
+        # marker and change the file's byte signature (some Windows
+        # toolchains key on it). Only prepend when the original had a BOM
+        # and the new content doesn't already carry one (guards against
+        # double-BOM if a caller passed raw bytes).
+        if self._file_has_bom(path, pre_content) and not _has_bom(content):
+            content = _UTF8_BOM + content
 
         # Snapshot LSP diagnostics for this file (best-effort) so the
         # post-write LSP layer can return only diagnostics introduced
@@ -1193,7 +1393,13 @@ class ShellFileOperations(FileOperations):
             return PatchResult(error=f"Failed to read file: {path}")
         
         content = read_result.stdout
-        
+        # Strip a leading UTF-8 BOM before matching so the fuzzy matcher and
+        # the diff operate on clean content (a phantom U+FEFF before line 1
+        # defeats an exact first-line match). write_file restores the BOM on
+        # the way back out by re-probing the on-disk file, so the round-trip
+        # preserves the marker.
+        content, _ = _strip_bom(content)
+
         # Import and use fuzzy matching
         from tools.fuzzy_match import fuzzy_find_and_replace
         
@@ -1242,8 +1448,13 @@ class ShellFileOperations(FileOperations):
         # ``new_content`` string has bare LFs.  Without this normalization
         # every patch on Windows returns a bogus "wrote 39, read 42"
         # false-negative even though the edit landed correctly.  POSIX
-        # backends don't translate, so this is a no-op there.
-        _verify_stdout_normalized = verify_result.stdout.replace("\r\n", "\n").replace("\r", "\n")
+        # backends don't translate, so this is a no-op there.  We also
+        # strip a leading BOM from the re-read: write_file restored the
+        # marker on disk but ``new_content`` is the BOM-less string we
+        # matched against, so the comparison must drop it to stay
+        # apples-to-apples.
+        _verify_bomless, _ = _strip_bom(verify_result.stdout)
+        _verify_stdout_normalized = _verify_bomless.replace("\r\n", "\n").replace("\r", "\n")
         _new_content_normalized = new_content.replace("\r\n", "\n").replace("\r", "\n")
         if _verify_stdout_normalized != _new_content_normalized:
             return PatchResult(error=(
@@ -1884,24 +2095,40 @@ class ShellFileOperations(FileOperations):
         fetch_limit = limit + offset + 200 if context > 0 else limit + offset
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
-        cmd = " ".join(cmd_parts)
+        # `set -o pipefail` so rg's exit status propagates through `| head`.
+        # Without it the pipeline reports head's status (0), masking rg's
+        # error code (2) and making the guard below unreachable. rg handles a
+        # truncating head cleanly (exit 0 on SIGPIPE), so pipefail does not
+        # introduce false errors on a successful-but-truncated search.
+        cmd = "set -o pipefail; " + " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
-        
-        # rg exit codes: 0=matches found, 1=no matches, 2=error
-        if result.exit_code == 2 and not result.stdout.strip():
-            error_msg = result.stderr.strip() if hasattr(result, 'stderr') and result.stderr else "Search error"
+
+        # _exec merges stderr into stdout (stderr=subprocess.STDOUT), so rg's
+        # diagnostic lines ("rg: <file>: <error>", "rg: regex parse error:")
+        # are interleaved with match output. Split them out: diagnostics must
+        # not be parsed as matches, and on a hard error they ARE the message.
+        diagnostics, payload = _split_tool_diagnostics(result.stdout)
+
+        # rg exit codes: 0=matches found, 1=no matches, 2=error. rg returns 2
+        # even on partial errors (e.g. one unreadable file in a tree that
+        # otherwise matched), so only surface an error when exit==2 AND no
+        # usable match payload remains. Otherwise we keep the real matches.
+        if result.exit_code == 2 and not payload.strip():
+            error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
             return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
-        
+
+        # Parse the diagnostic-free payload so error text never becomes a match.
+        stdout = payload
         # Parse results based on output mode
         if output_mode == "files_only":
-            all_files = [f for f in result.stdout.strip().split('\n') if f]
+            all_files = [f for f in stdout.strip().split('\n') if f]
             total = len(all_files)
             page = all_files[offset:offset + limit]
             return SearchResult(files=page, total_count=total)
         
         elif output_mode == "count":
             counts = {}
-            for line in result.stdout.strip().split('\n'):
+            for line in stdout.strip().split('\n'):
                 if ':' in line:
                     parts = line.rsplit(':', 1)
                     if len(parts) == 2:
@@ -1920,7 +2147,7 @@ class ShellFileOperations(FileOperations):
             # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
             matches = []
-            for line in result.stdout.strip().split('\n'):
+            for line in stdout.strip().split('\n'):
                 if not line or line == "--":
                     continue
                 
@@ -1984,23 +2211,38 @@ class ShellFileOperations(FileOperations):
         fetch_limit = limit + offset + (200 if context > 0 else 0)
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
-        cmd = " ".join(cmd_parts)
+        # `set -o pipefail` so grep's exit status propagates through `| head`
+        # (without it the pipeline reports head's 0, masking grep's error 2).
+        # A truncating head makes grep exit 141 (SIGPIPE) on an otherwise
+        # successful search; the strict `== 2` guard below ignores that, so
+        # pipefail does not turn truncated results into false errors.
+        cmd = "set -o pipefail; " + " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
-        
-        # grep exit codes: 0=matches found, 1=no matches, 2=error
-        if result.exit_code == 2 and not result.stdout.strip():
-            error_msg = result.stderr.strip() if hasattr(result, 'stderr') and result.stderr else "Search error"
+
+        # _exec merges stderr into stdout, so grep's diagnostic lines
+        # ("grep: <file>: <error>") are interleaved with matches. Split them
+        # out so they're never parsed as matches and so a hard error has a
+        # clean message.
+        diagnostics, payload = _split_tool_diagnostics(result.stdout)
+
+        # grep exit codes: 0=matches found, 1=no matches, 2=error. grep
+        # returns 2 on partial errors (e.g. an unreadable file) even when
+        # other files matched, so only surface an error when exit==2 AND no
+        # usable match payload remains.
+        if result.exit_code == 2 and not payload.strip():
+            error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
             return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
-        
+
+        stdout = payload
         if output_mode == "files_only":
-            all_files = [f for f in result.stdout.strip().split('\n') if f]
+            all_files = [f for f in stdout.strip().split('\n') if f]
             total = len(all_files)
             page = all_files[offset:offset + limit]
             return SearchResult(files=page, total_count=total)
         
         elif output_mode == "count":
             counts = {}
-            for line in result.stdout.strip().split('\n'):
+            for line in stdout.strip().split('\n'):
                 if ':' in line:
                     parts = line.rsplit(':', 1)
                     if len(parts) == 2:
@@ -2018,7 +2260,7 @@ class ShellFileOperations(FileOperations):
             # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
             matches = []
-            for line in result.stdout.strip().split('\n'):
+            for line in stdout.strip().split('\n'):
                 if not line or line == "--":
                     continue
                 
