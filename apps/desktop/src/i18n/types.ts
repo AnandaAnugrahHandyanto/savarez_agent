@@ -948,6 +948,9 @@ export interface Translations {
     allSetTitle: string
     availableTitle: string
     availableBody: string
+    availableTitleBackend: string
+    availableBodyBackend: string
+    availableBodyNoChangelog: string
     rebuildTitle: string
     rebuildBody: string
     updateNow: string
