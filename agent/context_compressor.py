@@ -113,6 +113,16 @@ _FALLBACK_TURN_MAX_CHARS = 700
 
 
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
+_SUMMARY_SECTION_CANONICAL_TO_HISTORICAL = (
+    ("## Active Task", "## Historical Task (prior session)"),
+    ("## In Progress", "## Previous In-Flight Work"),
+    ("## Pending User Asks", "## Previous Pending User Asks"),
+    ("## Remaining Work", "## Previous Work State"),
+)
+_SUMMARY_SECTION_HISTORICAL_TO_CANONICAL = tuple(
+    (historical, canonical)
+    for canonical, historical in _SUMMARY_SECTION_CANONICAL_TO_HISTORICAL
+)
 
 
 def _dedupe_append(items: list[str], value: str, *, limit: int) -> None:
@@ -1577,10 +1587,50 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 return text[len(prefix):].lstrip()
         return text
 
+    @staticmethod
+    def _rewrite_summary_section_headers(
+        summary: str,
+        replacements: tuple[tuple[str, str], ...],
+    ) -> str:
+        """Rewrite exact summary section headings line-by-line.
+
+        The summarizer still thinks in canonical sections (``## Active Task``,
+        ``## Remaining Work``), but the persisted handoff shown to the model on
+        a later resumed turn must read as historical context, not as a fresh
+        checklist of work to continue.
+        """
+        text = summary or ""
+        for old, new in replacements:
+            text = re.sub(
+                rf"(?m)^{re.escape(old)}(?=\s*$)",
+                new,
+                text,
+            )
+        return text
+
+    @classmethod
+    def _canonicalize_handoff_summary_sections(cls, summary: str) -> str:
+        """Restore persisted historical headings to canonical internal names."""
+        return cls._rewrite_summary_section_headers(
+            summary,
+            _SUMMARY_SECTION_HISTORICAL_TO_CANONICAL,
+        )
+
+    @classmethod
+    def _historicalize_handoff_summary_sections(cls, summary: str) -> str:
+        """Rewrite live-sounding headings before persisting a handoff."""
+        return cls._rewrite_summary_section_headers(
+            summary,
+            _SUMMARY_SECTION_CANONICAL_TO_HISTORICAL,
+        )
+
     @classmethod
     def _with_summary_prefix(cls, summary: str) -> str:
         """Normalize summary text to the current compaction handoff format."""
-        text = cls._strip_summary_prefix(summary)
+        text = cls._canonicalize_handoff_summary_sections(
+            cls._strip_summary_prefix(summary)
+        )
+        text = cls._historicalize_handoff_summary_sections(text)
         return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
 
     @staticmethod
@@ -1601,7 +1651,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         for idx in range(end - 1, start - 1, -1):
             content = messages[idx].get("content")
             if cls._is_context_summary_content(content):
-                return idx, cls._strip_summary_prefix(_content_text_for_contains(content))
+                body = cls._strip_summary_prefix(_content_text_for_contains(content))
+                return idx, cls._canonicalize_handoff_summary_sections(body)
         return None, ""
 
     # ------------------------------------------------------------------

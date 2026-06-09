@@ -87,6 +87,8 @@ def test_resumed_stale_handoff_gets_renormalized_to_current_prefix():
     assert "resume exactly" not in renormalized.lower()
     assert renormalized.startswith(SUMMARY_PREFIX)
     assert "wins" in renormalized.lower()
+    assert "## Historical Task (prior session)" in renormalized
+    assert "## Active Task\nUser asked:" not in renormalized
 
 
 def test_legacy_prefix_handoff_also_renormalized():
@@ -97,6 +99,7 @@ def test_legacy_prefix_handoff_also_renormalized():
     assert renormalized.startswith(SUMMARY_PREFIX)
     assert LEGACY_SUMMARY_PREFIX not in renormalized
     assert "task A" in renormalized
+    assert "## Historical Task (prior session)" in renormalized
 
 
 def test_inherited_handoff_detected_in_resumed_protected_head():
@@ -117,9 +120,43 @@ def test_inherited_handoff_detected_in_resumed_protected_head():
     )
     assert idx == 1, "handoff in protected head must be found"
     assert "task A" in body
+    assert "## Active Task" in body
     # The detected body is stripped of the prefix (treated as state, not a
     # standalone instruction message).
     assert not body.startswith(SUMMARY_PREFIX)
+
+
+def test_historical_handoff_headings_are_restored_for_iterative_updates():
+    """Persisted historical headings must map back to canonical internal
+    names when a resumed lineage rehydrates the prior summary."""
+    persisted = (
+        f"{SUMMARY_PREFIX}\n"
+        "## Historical Task (prior session)\n"
+        "User asked: 'task A'\n\n"
+        "## Previous In-Flight Work\n"
+        "Running tests.\n\n"
+        "## Previous Pending User Asks\n"
+        "Answer task A.\n\n"
+        "## Previous Work State\n"
+        "Need final reply.\n"
+    )
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": persisted},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "Unrelated task B"},
+    ]
+
+    idx, body = ContextCompressor._find_latest_context_summary(
+        messages, 1, len(messages)
+    )
+
+    assert idx == 1
+    assert "## Active Task" in body
+    assert "## In Progress" in body
+    assert "## Pending User Asks" in body
+    assert "## Remaining Work" in body
+    assert "Historical Task (prior session)" not in body
 
 
 def test_historical_prefixed_handoff_detected_and_stripped():

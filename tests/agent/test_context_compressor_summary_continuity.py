@@ -85,3 +85,35 @@ def test_handoff_in_protected_head_populates_previous_summary_before_update():
     assert compressor._previous_summary == old_summary
     assert seen_turns
     assert all(old_summary not in str(msg.get("content", "")) for msg in seen_turns)
+
+
+def test_compress_persists_historical_handoff_headings_without_mutating_internal_summary():
+    """The transcript-facing handoff should read as historical context, while
+    ``_previous_summary`` stays canonical for the next iterative update."""
+    compressor = _compressor()
+    canonical_summary = (
+        "## Active Task\n"
+        "User asked: 'task A'\n\n"
+        "## In Progress\n"
+        "Running tests.\n\n"
+        "## Pending User Asks\n"
+        "Answer task A.\n\n"
+        "## Remaining Work\n"
+        "Need final reply.\n"
+    )
+
+    with patch("agent.context_compressor.call_llm", return_value=_response(canonical_summary)):
+        out = compressor.compress(_messages_with_handoff("older summary"))
+
+    persisted_summary = next(
+        msg["content"] for msg in out if msg.get("role") in {"user", "assistant"}
+        and isinstance(msg.get("content"), str)
+        and msg["content"].startswith(SUMMARY_PREFIX)
+        and "task A" in msg["content"]
+    )
+    assert "## Historical Task (prior session)" in persisted_summary
+    assert "## Previous In-Flight Work" in persisted_summary
+    assert "## Previous Pending User Asks" in persisted_summary
+    assert "## Previous Work State" in persisted_summary
+    assert "## Active Task\nUser asked:" not in persisted_summary
+    assert compressor._previous_summary == canonical_summary.strip()
