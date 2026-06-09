@@ -6,6 +6,54 @@ This wrapper should behave like the installed `hermes` command, including
 subcommands such as `gateway`, `cron`, and `doctor`.
 """
 
+import os
+import sys
+from pathlib import Path
+
+
+def _run_with_local_venv() -> bool:
+    repo_root = Path(__file__).resolve().parent
+    if os.name == "nt":
+        candidate = repo_root / "venv" / "Scripts" / "python.exe"
+    else:
+        candidate = repo_root / "venv" / "bin" / "python"
+
+    if not candidate.exists():
+        return False
+
+    # Only re-exec if the venv interpreter is ITSELF >=3.11. A venv built with
+    # the same old system Python that triggered this fallback would otherwise
+    # silently bypass the version guard and crash later with an opaque error
+    # (the codebase assumes 3.11+, e.g. `import tomllib`). On failure, return
+    # False so the friendly SystemExit message fires instead.
+    import subprocess
+
+    try:
+        probe = subprocess.run(
+            [
+                str(candidate),
+                "-c",
+                "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)",
+            ],
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if probe.returncode != 0:
+        return False
+
+    os.execv(str(candidate), [str(candidate), "-m", "hermes_cli.main", *sys.argv[1:]])
+    return True  # not reached (execv replaces the process); kept for clarity
+
+
 if __name__ == "__main__":
+    if sys.version_info < (3, 11):
+        if not _run_with_local_venv():
+            raise SystemExit(
+                "Hermes Agent requires Python 3.11+, but the current interpreter is "
+                f"{sys.version.split()[0]}. Install/use a Python 3.11+ interpreter or "
+                "run via `./venv/bin/hermes`."
+            )
+
     from hermes_cli.main import main
     main()

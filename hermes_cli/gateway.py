@@ -3467,16 +3467,28 @@ def launchd_restart():
             print("✓ Service restart requested")
             return
         if pid is not None:
-            try:
-                terminate_pid(pid, force=False)
-            except (ProcessLookupError, PermissionError, OSError):
-                pid = None
-            if pid is not None:
-                exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
-                if not exited:
-                    print(
-                        f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
+            if _graceful_restart_via_sigusr1(pid, drain_timeout + 5):
+                # Give the process a short moment to exit cleanly.
+                _wait_for_gateway_exit(timeout=5.0, force_after=None)
+            else:
+                try:
+                    terminate_pid(pid, force=False)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pid = None
+                if pid is not None:
+                    exited = _wait_for_gateway_exit(
+                        timeout=drain_timeout, force_after=None
                     )
+                    if not exited:
+                        print(
+                            f"⚠ Gateway did not stop after {drain_timeout:.0f}s — forcing hard stop before launchd restart"
+                        )
+                        try:
+                            terminate_pid(pid, force=True)
+                        except (ProcessLookupError, PermissionError, OSError):
+                            pid = None
+                        else:
+                            _wait_for_gateway_exit(timeout=5.0, force_after=None)
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
@@ -3485,6 +3497,16 @@ def launchd_restart():
             # unmanageable (error 5), degrade to detached; the old process was
             # already drained/terminated above. Otherwise re-raise.
             if _launchctl_domain_unsupported(e.returncode):
+                # Force-kill the STILL-RUNNING gateway, not the captured pid:
+                # on PID reuse the old numeric pid could now belong to an
+                # unrelated process. Bind the SIGKILL to what the liveness
+                # check actually resolves.
+                try:
+                    live = get_running_pid()
+                    if live is not None:
+                        terminate_pid(live, force=True)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
                 _launchd_fallback_to_detached(f"launchctl kickstart exit {e.returncode}")
                 return
             raise

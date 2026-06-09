@@ -561,6 +561,11 @@ class TestLaunchdServiceRecovery:
 
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        # The SIGUSR1 graceful restart is tried first now; force it to decline
+        # so this test exercises the terminate-drain fallback it was written for.
+        monkeypatch.setattr(
+            gateway_cli, "_graceful_restart_via_sigusr1", lambda pid, timeout: False
+        )
         monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
         monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: calls.append(("term", pid, force)))
         monkeypatch.setattr(
@@ -578,6 +583,40 @@ class TestLaunchdServiceRecovery:
 
         assert calls == [
             ("term", 321, False),
+            ["launchctl", "kickstart", "-k", target],
+        ]
+
+    def test_launchd_restart_uses_sigusr1_graceful_path_before_terminate(self, monkeypatch):
+        """When the SIGUSR1 graceful restart succeeds the gateway drains via the
+        signal, so the hard terminate fallback is skipped; kickstart still runs
+        to bring the service back up."""
+        calls = []
+        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: calls.append(("sigusr1", pid)) or True,
+        )
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
+        monkeypatch.setattr(
+            gateway_cli, "terminate_pid", lambda pid, force=False: calls.append(("term", pid, force))
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_restart()
+
+        # SIGUSR1 drained the gateway → no terminate_pid call → kickstart only.
+        assert calls == [
+            ("sigusr1", 321),
             ["launchctl", "kickstart", "-k", target],
         ]
 
