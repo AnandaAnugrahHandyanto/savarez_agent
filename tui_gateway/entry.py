@@ -192,7 +192,7 @@ def _log_exit(reason: str) -> None:
     print(f"[gateway-exit] {reason}", file=sys.stderr, flush=True)
 
 
-def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
+def wait_for_mcp_discovery(timeout: float | None = None) -> None:
     """Briefly block until background MCP discovery finishes, up to ``timeout``.
 
     MCP discovery runs in a daemon thread spawned at startup (see main()) so a
@@ -203,7 +203,17 @@ def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
     before the first agent build lets already-spawning fast servers land
     without re-introducing the startup hang: a dead server simply isn't waited
     on beyond ``timeout``.  No-op when no discovery thread was started.
+
+    Timeout resolution order:
+      1. Explicit ``timeout`` argument (callers like CLI can override)
+      2. ``HERMES_MCP_DISCOVERY_TIMEOUT`` env var (seconds, user-tunable)
+      3. Default 0.75s (original fast-start heuristic)
     """
+    if timeout is None:
+        try:
+            timeout = float(os.environ.get("HERMES_MCP_DISCOVERY_TIMEOUT", "0.75"))
+        except (TypeError, ValueError):
+            timeout = 0.75
     thread = _mcp_discovery_thread
     if thread is None or not thread.is_alive():
         return

@@ -51,8 +51,19 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
         thread.start()
 
 
-def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
-    """Briefly wait for background MCP discovery before the first tool snapshot."""
+def wait_for_mcp_discovery(timeout: float | None = None) -> None:
+    """Briefly wait for background MCP discovery before the first tool snapshot.
+
+    Timeout resolution order:
+      1. Explicit ``timeout`` argument (callers like CLI can override)
+      2. ``HERMES_MCP_DISCOVERY_TIMEOUT`` env var (seconds, user-tunable)
+      3. Default 0.75s (original fast-start heuristic)
+    """
+    if timeout is None:
+        try:
+            timeout = float(os.environ.get("HERMES_MCP_DISCOVERY_TIMEOUT", "0.75"))
+        except (TypeError, ValueError):
+            timeout = 0.75
     thread = _mcp_discovery_thread
     if thread is None or not thread.is_alive():
         return
