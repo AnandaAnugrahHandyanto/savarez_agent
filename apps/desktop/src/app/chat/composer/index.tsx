@@ -77,7 +77,13 @@ import {
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { SkinSlashPopover } from './skin-slash-popover'
-import { detectTrigger, extractClipboardImageBlobs, textBeforeCaret, type TriggerState } from './text-utils'
+import {
+  detectTrigger,
+  extractClipboardImageBlobs,
+  readPastedText,
+  textBeforeCaret,
+  type TriggerState
+} from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { UrlDialog } from './url-dialog'
@@ -485,11 +491,9 @@ export function ChatBar({
       return
     }
 
-    // Trim surrounding whitespace so a copy that dragged along leading/trailing
-    // blank lines (common when selecting from terminals, code blocks, web pages)
-    // doesn't dump multiline padding into the composer. Internal newlines are
-    // preserved — only the edges are cleaned up.
-    const pastedText = event.clipboardData.getData('text').trim()
+    // Trim edge whitespace and collapse spreadsheet column tabs (Excel/Sheets)
+    // to spaces; see readPastedText for the rationale.
+    const pastedText = readPastedText(event.clipboardData)
 
     if (!pastedText) {
       event.preventDefault()
