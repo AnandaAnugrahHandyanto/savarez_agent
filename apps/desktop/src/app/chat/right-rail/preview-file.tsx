@@ -6,7 +6,7 @@ import type {
   MouseEvent as ReactMouseEvent,
   ReactNode
 } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ShikiHighlighter from 'react-shiki'
 import { Streamdown } from 'streamdown'
 
@@ -303,14 +303,126 @@ type DiffLineType = 'add' | 'context' | 'remove'
 interface FullDiffLine {
   content: string
   lineNum: number
+  segments?: DiffSegment[]
   type: DiffLineType
+}
+
+export interface DiffSegment {
+  changed: boolean
+  text: string
+}
+
+const DIFF_TOKEN_RE = /(\s+|[\p{L}\p{N}_]+|[^\s\p{L}\p{N}_])/gu
+
+function tokenizeDiffText(text: string): string[] {
+  return text.match(DIFF_TOKEN_RE) ?? []
+}
+
+function mergeDiffSegments(tokens: string[], unchanged: Set<number>): DiffSegment[] {
+  const segments: DiffSegment[] = []
+
+  tokens.forEach((text, index) => {
+    const changed = !unchanged.has(index)
+    const previous = segments.at(-1)
+
+    if (previous?.changed === changed) {
+      previous.text += text
+    } else {
+      segments.push({ changed, text })
+    }
+  })
+
+  return segments
+}
+
+export function computeTokenDiff(
+  previousText: string,
+  nextText: string
+): { next: DiffSegment[]; previous: DiffSegment[] } {
+  const previousTokens = tokenizeDiffText(previousText)
+  const nextTokens = tokenizeDiffText(nextText)
+  const rows = previousTokens.length + 1
+  const columns = nextTokens.length + 1
+  const lcs = Array.from({ length: rows }, () => new Uint32Array(columns))
+
+  for (let previousIndex = 1; previousIndex < rows; previousIndex += 1) {
+    for (let nextIndex = 1; nextIndex < columns; nextIndex += 1) {
+      lcs[previousIndex][nextIndex] =
+        previousTokens[previousIndex - 1] === nextTokens[nextIndex - 1]
+          ? lcs[previousIndex - 1][nextIndex - 1] + 1
+          : Math.max(lcs[previousIndex - 1][nextIndex], lcs[previousIndex][nextIndex - 1])
+    }
+  }
+
+  const unchangedPrevious = new Set<number>()
+  const unchangedNext = new Set<number>()
+  let previousIndex = previousTokens.length
+  let nextIndex = nextTokens.length
+
+  while (previousIndex > 0 && nextIndex > 0) {
+    if (previousTokens[previousIndex - 1] === nextTokens[nextIndex - 1]) {
+      unchangedPrevious.add(previousIndex - 1)
+      unchangedNext.add(nextIndex - 1)
+      previousIndex -= 1
+      nextIndex -= 1
+    } else if (lcs[previousIndex - 1][nextIndex] >= lcs[previousIndex][nextIndex - 1]) {
+      previousIndex -= 1
+    } else {
+      nextIndex -= 1
+    }
+  }
+
+  return {
+    next: mergeDiffSegments(nextTokens, unchangedNext),
+    previous: mergeDiffSegments(previousTokens, unchangedPrevious)
+  }
+}
+
+function addTokenEmphasis(lines: FullDiffLine[]): FullDiffLine[] {
+  const emphasized = lines.map(line => ({ ...line }))
+
+  for (let index = 0; index < emphasized.length; ) {
+    if (emphasized[index].type !== 'remove') {
+      index += 1
+
+      continue
+    }
+
+    const removedStart = index
+
+    while (index < emphasized.length && emphasized[index].type === 'remove') {
+      index += 1
+    }
+
+    const addedStart = index
+
+    while (index < emphasized.length && emphasized[index].type === 'add') {
+      index += 1
+    }
+
+    const pairCount = Math.min(addedStart - removedStart, index - addedStart)
+
+    for (let pairIndex = 0; pairIndex < pairCount; pairIndex += 1) {
+      const removedLine = emphasized[removedStart + pairIndex]
+      const addedLine = emphasized[addedStart + pairIndex]
+      const segments = computeTokenDiff(removedLine.content, addedLine.content)
+
+      removedLine.segments = segments.previous
+      addedLine.segments = segments.next
+    }
+  }
+
+  return emphasized
 }
 
 /**
  * Compute line-level diff between old (HEAD) and new (working) text.
  * Uses LCS for the middle section after trimming common prefix/suffix.
  */
-function computeLineDiff(headLines: string[], fileLines: string[]): {
+function computeLineDiff(
+  headLines: string[],
+  fileLines: string[]
+): {
   added: Set<number>
   removed: Array<{ afterLine: number; content: string }>
 } {
@@ -319,6 +431,7 @@ function computeLineDiff(headLines: string[], fileLines: string[]): {
 
   // Find common prefix
   let start = 0
+
   while (start < headLines.length && start < fileLines.length && headLines[start] === fileLines[start]) {
     start++
   }
@@ -326,6 +439,7 @@ function computeLineDiff(headLines: string[], fileLines: string[]): {
   // Find common suffix
   let headEnd = headLines.length
   let fileEnd = fileLines.length
+
   while (headEnd > start && fileEnd > start && headLines[headEnd - 1] === fileLines[fileEnd - 1]) {
     headEnd--
     fileEnd--
@@ -356,7 +470,10 @@ function computeLineDiff(headLines: string[], fileLines: string[]): {
 
   // Backtrack to find LCS
   const lcsIndices = new Array<{ headIdx: number; fileIdx: number }>()
-  let i = m, j = n
+
+  let i = m,
+    j = n
+
   while (i > 0 && j > 0) {
     if (headMid[i - 1] === fileMid[j - 1]) {
       lcsIndices.push({ headIdx: i - 1, fileIdx: j - 1 })
@@ -368,10 +485,13 @@ function computeLineDiff(headLines: string[], fileLines: string[]): {
       j--
     }
   }
+
   lcsIndices.reverse()
 
   // Build annotations
-  let hi = 0, fi = 0
+  let hi = 0,
+    fi = 0
+
   for (const { headIdx, fileIdx } of lcsIndices) {
     // Lines in headMid not in LCS → removed
     while (hi < headIdx) {
@@ -379,20 +499,24 @@ function computeLineDiff(headLines: string[], fileLines: string[]): {
       removed.push({ afterLine: afterLine, content: headMid[hi] })
       hi++
     }
+
     // Lines in fileMid not in LCS → added
     while (fi < fileIdx) {
       added.add(start + fi + 1) // 1-indexed
       fi++
     }
+
     // Match → context
     hi++
     fi++
   }
+
   // Trailing removes
   while (hi < headMid.length) {
     removed.push({ afterLine: start + fi, content: headMid[hi] })
     hi++
   }
+
   // Trailing adds
   while (fi < fileMid.length) {
     added.add(start + fi + 1)
@@ -413,6 +537,7 @@ function DiffView({ fileContent, headContent }: { fileContent: string; headConte
       for (let i = 0; i < fileLines.length; i++) {
         result.push({ content: fileLines[i], lineNum: i + 1, type: 'add' })
       }
+
       return result
     }
 
@@ -420,6 +545,7 @@ function DiffView({ fileContent, headContent }: { fileContent: string; headConte
 
     // Group removed lines by insertion point
     const removesByLine = new Map<number, string[]>()
+
     for (const r of removed) {
       const existing = removesByLine.get(r.afterLine) || []
       existing.push(r.content)
@@ -431,6 +557,7 @@ function DiffView({ fileContent, headContent }: { fileContent: string; headConte
 
       // Insert removed lines BEFORE this line
       const removes = removesByLine.get(lineNum - 1) || []
+
       for (const rc of removes) {
         result.push({ content: rc, lineNum: 0, type: 'remove' })
       }
@@ -444,25 +571,22 @@ function DiffView({ fileContent, headContent }: { fileContent: string; headConte
 
     // Trailing removes
     const trailing = removesByLine.get(fileLines.length) || []
+
     for (const rc of trailing) {
       result.push({ content: rc, lineNum: 0, type: 'remove' })
     }
 
-    return result
+    return addTokenEmphasis(result)
   }, [fileContent, headContent])
 
   const hasChanges = lines.some(l => l.type !== 'context')
 
   if (!hasChanges) {
-    return (
-      <div className="grid h-32 place-items-center text-xs text-muted-foreground/60">
-        No uncommitted changes
-      </div>
-    )
+    return <div className="grid h-32 place-items-center text-xs text-muted-foreground/60">No uncommitted changes</div>
   }
 
   return (
-    <div className="min-w-max font-mono text-xs leading-relaxed select-text" data-selectable-text="true">
+    <div className="w-full font-mono text-xs leading-relaxed select-text overflow-x-auto" data-selectable-text="true">
       {lines.map((line, index) => (
         <div
           className={cn(
@@ -493,13 +617,29 @@ function DiffView({ fileContent, headContent }: { fileContent: string; headConte
           </div>
           <pre
             className={cn(
-              'flex-1 whitespace-pre py-px pr-3',
+              'flex-1 whitespace-pre-wrap break-words py-px pr-3',
               line.type === 'add' && 'text-emerald-800 dark:text-emerald-200',
-              line.type === 'remove' && 'text-rose-800 dark:text-rose-200 line-through opacity-70',
+              line.type === 'remove' && 'text-rose-800 dark:text-rose-200',
               line.type === 'context' && 'text-foreground'
             )}
           >
-            {line.content}
+            {line.segments
+              ? line.segments.map((segment, segmentIndex) => (
+                  <span
+                    className={cn(
+                      segment.changed &&
+                        line.type === 'add' &&
+                        'rounded-[0.125rem] bg-emerald-500/35 dark:bg-emerald-400/25',
+                      segment.changed &&
+                        line.type === 'remove' &&
+                        'rounded-[0.125rem] bg-rose-500/35 dark:bg-rose-400/25'
+                    )}
+                    key={segmentIndex}
+                  >
+                    {segment.text}
+                  </span>
+                ))
+              : line.content}
           </pre>
         </div>
       ))}
@@ -523,6 +663,7 @@ function PreviewToggle({
   onModeChange: (mode: RenderMode) => void
 }) {
   const { t } = useI18n()
+
   const modes: { key: RenderMode; label: string }[] = [
     ...(hasPreview ? [{ key: 'preview' as RenderMode, label: t.preview.renderedPreview }] : []),
     { key: 'source' as RenderMode, label: t.preview.source },
@@ -536,9 +677,7 @@ function PreviewToggle({
           <button
             className={cn(
               'rounded px-2 py-0.5 text-[0.625rem] font-bold transition-colors',
-              mode === key
-                ? 'bg-background text-foreground shadow-xs'
-                : 'text-muted-foreground hover:text-foreground'
+              mode === key ? 'bg-background text-foreground shadow-xs' : 'text-muted-foreground hover:text-foreground'
             )}
             key={key}
             onClick={() => onModeChange(key)}
@@ -572,11 +711,160 @@ function startLineDrag(event: ReactDragEvent<HTMLElement>, filePath: string, { e
   event.dataTransfer.effectAllowed = 'copy'
 }
 
-function SourceView({ filePath, language, text }: { filePath: string; language: string; text: string }) {
+function HighlightedSource({
+  language,
+  onReady,
+  text
+}: {
+  language: string
+  onReady: (text: string) => void
+  text: string
+}) {
+  const hostRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    const host = hostRef.current
+
+    if (!host) {
+      return
+    }
+
+    let frame = 0
+
+    const reportReady = () => {
+      if (!host.querySelector('.shiki')) {
+        return
+      }
+
+      frame = window.requestAnimationFrame(() => onReady(text))
+    }
+
+    const observer = new MutationObserver(reportReady)
+
+    observer.observe(host, { childList: true, subtree: true })
+    reportReady()
+
+    return () => {
+      observer.disconnect()
+
+      if (frame) {
+        window.cancelAnimationFrame(frame)
+      }
+    }
+  }, [onReady, text])
+
+  return (
+    <div ref={hostRef}>
+      <ShikiHighlighter
+        addDefaultStyles={false}
+        as="div"
+        defaultColor="light-dark()"
+        delay={0}
+        language={language || 'text'}
+        showLanguage={false}
+        theme={SHIKI_THEME}
+      >
+        {text}
+      </ShikiHighlighter>
+    </div>
+  )
+}
+
+type EditorStatus = 'editing' | 'saving' | 'view'
+
+export function SourceView({
+  filePath,
+  language,
+  onContentSaved,
+  text
+}: {
+  filePath: string
+  language: string
+  onContentSaved?: (newContent: string) => void
+  text: string
+}) {
   const { t } = useI18n()
   const lineCount = useMemo(() => Math.max(1, text.split('\n').length), [text])
   const [selection, setSelection] = useState<LineSelection | null>(null)
+  const [status, setStatus] = useState<EditorStatus>('view')
+  const [editContent, setEditContent] = useState(text)
+  const [pendingSavedText, setPendingSavedText] = useState<string | null>(null)
+  const editorRef = useRef<HTMLTextAreaElement | null>(null)
+  const filePathRef = useRef(filePath)
   const inSelection = (line: number) => selection != null && line >= selection.start && line <= selection.end
+  const editorVisible = status !== 'view'
+
+  useEffect(() => {
+    if (filePathRef.current === filePath) {
+      return
+    }
+
+    filePathRef.current = filePath
+    setEditContent(text)
+    setPendingSavedText(null)
+    setStatus('view')
+  }, [filePath, text])
+
+  useEffect(() => {
+    if (status === 'view') {
+      setEditContent(text)
+    }
+  }, [status, text])
+
+  useEffect(() => {
+    if (status !== 'editing') {
+      return
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      editorRef.current?.focus()
+    })
+
+    return () => window.cancelAnimationFrame(frame)
+  }, [status])
+
+  const handleHighlightedReady = useCallback(
+    (readyText: string) => {
+      if (pendingSavedText !== readyText) {
+        return
+      }
+
+      setPendingSavedText(null)
+      setStatus('view')
+    },
+    [pendingSavedText]
+  )
+
+  const handleSave = async () => {
+    const writeFileText = window.hermesDesktop?.writeFileText
+
+    if (!writeFileText || status === 'saving') {
+      return
+    }
+
+    if (editContent === text) {
+      setStatus('view')
+
+      return
+    }
+
+    setStatus('saving')
+
+    try {
+      const result = await writeFileText(filePath, editContent)
+
+      if (!result?.success) {
+        setStatus('editing')
+
+        return
+      }
+
+      setPendingSavedText(editContent)
+      onContentSaved?.(editContent)
+    } catch {
+      setStatus('editing')
+    }
+  }
 
   const handleLineClick = (event: ReactMouseEvent, line: number) => {
     if (event.shiftKey && selection) {
@@ -599,7 +887,7 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
   }
 
   return (
-    <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)] font-mono text-xs leading-relaxed">
+    <div className="grid w-full grid-cols-[auto_minmax(0,1fr)] font-mono text-xs leading-relaxed overflow-x-auto">
       <div className="select-none py-3 text-right text-muted-foreground/55">
         {Array.from({ length: lineCount }, (_, index) => {
           const line = index + 1
@@ -624,7 +912,10 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
           )
         })}
       </div>
-      <div className="relative [&_pre]:m-0 [&_pre]:px-3 [&_pre]:py-3 [&_pre]:bg-transparent!" data-selectable-text="true">
+      <div
+        className="relative [&_pre]:m-0 [&_pre]:px-3 [&_pre]:py-3 [&_pre]:bg-transparent! [&_pre]:whitespace-pre-wrap [&_pre]:break-words"
+        data-selectable-text="true"
+      >
         {selection && (
           <div
             aria-hidden
@@ -635,17 +926,37 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
             }}
           />
         )}
-        <ShikiHighlighter
-          addDefaultStyles={false}
-          as="div"
-          defaultColor="light-dark()"
-          delay={80}
-          language={language || 'text'}
-          showLanguage={false}
-          theme={SHIKI_THEME}
+        <div
+          aria-hidden={editorVisible}
+          className={cn(
+            'transition-opacity duration-200 ease-out',
+            editorVisible ? 'pointer-events-none opacity-0' : 'opacity-100'
+          )}
         >
-          {text}
-        </ShikiHighlighter>
+          <HighlightedSource key={text} language={language} onReady={handleHighlightedReady} text={text} />
+        </div>
+        <textarea
+          aria-hidden={!editorVisible}
+          className={cn(
+            'absolute inset-0 resize-none border-0 bg-background/96 p-3 font-mono text-xs leading-relaxed text-foreground outline-none whitespace-pre-wrap transition-opacity duration-200 ease-out',
+            editorVisible ? 'opacity-100' : 'pointer-events-none opacity-0'
+          )}
+          disabled={status === 'saving'}
+          onChange={event => setEditContent(event.target.value)}
+          ref={editorRef}
+          spellCheck={false}
+          value={editContent}
+        />
+        <div className="absolute top-1 right-2 z-10">
+          <button
+            className="min-w-11 rounded bg-background/80 px-2 py-0.5 text-[0.625rem] font-bold text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground disabled:cursor-wait disabled:opacity-70"
+            disabled={status === 'saving'}
+            onClick={status === 'view' ? () => setStatus('editing') : () => void handleSave()}
+            type="button"
+          >
+            {status === 'saving' ? 'Saving…' : status === 'editing' ? 'Save' : 'Edit'}
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -660,26 +971,40 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
 
-  const [gitDiff, setGitDiff] = useState<{ diff: string; status: string; fileContent: string; headContent: string }>({ diff: '', status: '', fileContent: '', headContent: '' })
+  const [gitDiff, setGitDiff] = useState<{ diff: string; status: string; fileContent: string; headContent: string }>({
+    diff: '',
+    status: '',
+    fileContent: '',
+    headContent: ''
+  })
 
   // Fetch git diff when file loads or reloadKey changes
   useEffect(() => {
-    if (!filePath || isImage) return
+    if (!filePath || isImage) {
+      return
+    }
 
     let active = true
+
     const fetchDiff = async () => {
       try {
         const result = await window.hermesDesktop?.gitFileDiff?.(filePath)
+
         if (active && result) {
           setGitDiff(result)
         }
       } catch {
-        if (active) setGitDiff({ diff: '', status: '', fileContent: '', headContent: '' })
+        if (active) {
+          setGitDiff({ diff: '', status: '', fileContent: '', headContent: '' })
+        }
       }
     }
+
     void fetchDiff()
 
-    return () => { active = false }
+    return () => {
+      active = false
+    }
   }, [filePath, isImage, reloadKey])
 
   const hasDiff = Boolean(gitDiff.status || gitDiff.headContent)
@@ -781,6 +1106,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
           mode={renderMode}
           onModeChange={newMode => {
             setRenderMode(newMode)
+
             if (newMode === 'source') {
               setRenderMarkdownAsSource(true)
             } else if (newMode === 'preview') {
@@ -789,11 +1115,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
           }}
         />
         <PreviewEmptyState
-          body={
-            binary
-              ? t.preview.binaryBody(target.label)
-              : t.preview.largeBody(target.label, formatBytes(size))
-          }
+          body={binary ? t.preview.binaryBody(target.label) : t.preview.largeBody(target.label, formatBytes(size))}
           primaryAction={{ label: t.preview.previewAnyway, onClick: () => setForcePreview(true) }}
           title={binary ? t.preview.binaryTitle : t.preview.largeTitle}
           tone="warning"
@@ -811,6 +1133,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
           mode={renderMode}
           onModeChange={newMode => {
             setRenderMode(newMode)
+
             if (newMode === 'source') {
               setRenderMarkdownAsSource(true)
             } else if (newMode === 'preview') {
@@ -839,6 +1162,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
           mode={renderMode}
           onModeChange={newMode => {
             setRenderMode(newMode)
+
             if (newMode === 'source') {
               setRenderMarkdownAsSource(true)
             } else if (newMode === 'preview') {
@@ -849,9 +1173,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         {hasDiff ? (
           <DiffView fileContent={gitDiff.fileContent || state.text || ''} headContent={gitDiff.headContent || ''} />
         ) : (
-          <div className="grid h-32 place-items-center text-xs text-muted-foreground/60">
-            No uncommitted changes
-          </div>
+          <div className="grid h-32 place-items-center text-xs text-muted-foreground/60">No uncommitted changes</div>
         )}
       </div>
     )
@@ -866,6 +1188,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
           mode={renderMode}
           onModeChange={newMode => {
             setRenderMode(newMode)
+
             if (newMode === 'source') {
               setRenderMarkdownAsSource(true)
             } else if (newMode === 'preview') {
@@ -881,7 +1204,15 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         {showRendered ? (
           <MarkdownPreview text={state.text!} />
         ) : (
-          <SourceView filePath={filePath} language={state.language || 'text'} text={state.text!} />
+          <SourceView
+            filePath={filePath}
+            language={state.language || 'text'}
+            onContentSaved={newContent => {
+              setState(prev => ({ ...prev, text: newContent }))
+              setGitDiff(prev => ({ ...prev, fileContent: newContent }))
+            }}
+            text={state.text!}
+          />
         )}
       </div>
     )
@@ -895,6 +1226,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         mode={renderMode}
         onModeChange={newMode => {
           setRenderMode(newMode)
+
           if (newMode === 'source') {
             setRenderMarkdownAsSource(true)
           } else if (newMode === 'preview') {
@@ -902,10 +1234,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
           }
         }}
       />
-      <PreviewEmptyState
-        body={t.preview.noInlineBody(target.mimeType || '')}
-        title={t.preview.noInlineTitle}
-      />
+      <PreviewEmptyState body={t.preview.noInlineBody(target.mimeType || '')} title={t.preview.noInlineTitle} />
     </div>
   )
 }
