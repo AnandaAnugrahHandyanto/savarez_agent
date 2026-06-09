@@ -69,7 +69,12 @@ def get_env_value(name, default=None):
     value = _get_env_value(name)
     return default if value is None else value
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway, resolve_openai_audio_api_key
+from tools.tool_backend_helpers import (
+    managed_nous_tools_enabled,
+    nous_tool_gateway_unavailable_message,
+    prefers_gateway,
+    resolve_openai_audio_api_key,
+)
 from tools.xai_http import hermes_xai_user_agent
 
 # ---------------------------------------------------------------------------
@@ -116,7 +121,20 @@ def _import_openai_client():
     return OpenAIClient
 
 def _import_mistral_client():
-    """Lazy import Mistral client. Returns the class or raises ImportError."""
+    """Lazy import Mistral client. Returns the class or raises ImportError.
+
+    Calls :func:`tools.lazy_deps.ensure` first so the ``mistralai`` SDK gets
+    installed on demand if the user picked Mistral as their STT/TTS provider
+    but never ran the post-setup hook (e.g. enabled it by editing config.yaml
+    directly). Mirrors the ElevenLabs lazy-import path.
+    """
+    try:
+        from tools.lazy_deps import ensure
+        ensure("tts.mistral", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:  # FeatureUnavailable or any unexpected error
+        raise ImportError(str(e))
     from mistralai.client import Mistral
     return Mistral
 
@@ -675,6 +693,7 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=5,
+                stdin=subprocess.DEVNULL,
             )
         except Exception:
             proc.kill()
@@ -727,7 +746,7 @@ def _run_command_tts(command: str, timeout: float) -> subprocess.CompletedProces
     else:
         popen_kwargs["start_new_session"] = True
 
-    proc = subprocess.Popen(command, **popen_kwargs)
+    proc = subprocess.Popen(command, **popen_kwargs, stdin=subprocess.DEVNULL)
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
@@ -864,6 +883,7 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
             ["ffmpeg", "-i", mp3_path, "-acodec", "libopus",
              "-ac", "1", "-b:a", "64k", "-vbr", "off", ogg_path, "-y"],
             capture_output=True, timeout=30,
+            stdin=subprocess.DEVNULL,
         )
         if result.returncode != 0:
             logger.warning("ffmpeg conversion failed with return code %d: %s", 
@@ -1243,6 +1263,7 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
     if is_t2a_v2:
         # t2a_v2 returns JSON with hex-encoded audio
+        response.raise_for_status()
         result = response.json()
         base_resp = result.get("base_resp", {})
         status_code = base_resp.get("status_code", -1)
@@ -1485,7 +1506,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
                 ]
             else:
                 cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            result = subprocess.run(cmd, capture_output=True, timeout=30)
+            result = subprocess.run(cmd, capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
             if result.returncode != 0:
                 stderr = result.stderr.decode("utf-8", errors="ignore")[:300]
                 raise RuntimeError(f"ffmpeg conversion failed: {stderr}")
@@ -1568,7 +1589,7 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
         "--device", device,
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         stderr = result.stderr.strip()
         # Filter out the "OK:" line from stderr
@@ -1580,7 +1601,7 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
             conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30)
+            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
             os.remove(wav_path)
         else:
             # No ffmpeg — just rename the WAV to the expected path
@@ -1651,6 +1672,7 @@ def _resolve_piper_voice_path(voice: str, download_dir: Path) -> str:
             [_sys.executable, "-m", "piper.download_voices", voice,
              "--download-dir", str(download_dir)],
             capture_output=True, text=True, timeout=300,
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
@@ -1738,7 +1760,7 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
             conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30)
+            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
             try:
                 os.remove(wav_path)
             except OSError:
@@ -1804,7 +1826,7 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
             conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30)
+            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
             os.remove(wav_path)
         else:
             # No ffmpeg — rename the WAV to the expected path
@@ -1969,21 +1991,16 @@ def text_to_speech_tool(
             _generate_xai_tts(text, file_str, tts_config)
 
         elif provider == "mistral":
-            # `mistralai` PyPI package was quarantined on 2026-05-12 after a
-            # malicious 2.4.6 release. Surface a clear status message instead
-            # of attempting an import that would either fail or pull a stale
-            # cached package.
-            return json.dumps({
-                "success": False,
-                "error": (
-                    "Mistral Voxtral TTS is temporarily disabled. The "
-                    "`mistralai` PyPI package was quarantined on 2026-05-12 "
-                    "after a malicious 2.4.6 release. Switch tts.provider in "
-                    "config.yaml to 'edge', 'elevenlabs', 'openai', 'minimax', "
-                    "'gemini', 'xai', 'neutts', or 'kittentts'. Mistral "
-                    "support will return once PyPI un-quarantines the package."
-                ),
-            }, ensure_ascii=False)
+            try:
+                _import_mistral_client()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "Mistral provider selected but 'mistralai' package not installed. "
+                             "Run: pip install 'hermes-agent[mistral]'"
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Mistral Voxtral TTS...")
+            _generate_mistral_tts(text, file_str, tts_config)
 
         elif provider == "gemini":
             logger.info("Generating speech with Google Gemini TTS...")
@@ -2206,8 +2223,13 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
     managed_gateway = resolve_managed_tool_gateway("openai-audio")
     if managed_gateway is None:
         message = "Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set"
-        if managed_nous_tools_enabled():
-            message += ", and the managed OpenAI audio gateway is unavailable"
+        if managed_nous_tools_enabled() or prefers_gateway("tts"):
+            message += (
+                ". "
+                + nous_tool_gateway_unavailable_message(
+                    "managed OpenAI audio for TTS",
+                )
+            )
         raise ValueError(message)
 
     return managed_gateway.nous_user_token, urljoin(
