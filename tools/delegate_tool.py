@@ -1375,6 +1375,7 @@ def _run_single_child(
     goal: str,
     child=None,
     parent_agent=None,
+    child_timeout: Optional[float] = None,
     **_kwargs,
 ) -> Dict[str, Any]:
     """
@@ -1540,7 +1541,8 @@ def _run_single_child(
 
         # Run child with a hard timeout to prevent indefinite blocking
         # when the child's API call or tool-level HTTP request hangs.
-        child_timeout = _get_child_timeout()
+        # Per-delegation timeout (from delegate_task arg) beats config default.
+        child_timeout = child_timeout if child_timeout is not None else _get_child_timeout()
         _timeout_executor = ThreadPoolExecutor(
             max_workers=1,
             # Install a non-interactive approval callback in the worker thread
@@ -1967,6 +1969,28 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+def _resolve_task_timeout(task: Dict[str, Any], top_level_timeout: Optional[float]) -> Optional[float]:
+    """Resolve per-task timeout: per-task > top-level > None (use config default).
+
+    Returns the timeout in seconds, or None to let _run_single_child fall
+    through to ``_get_child_timeout()`` (which reads
+    ``delegation.child_timeout_seconds`` from config).
+    """
+    per_task = task.get("timeout")
+    if per_task is not None:
+        try:
+            return max(30.0, float(per_task))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Per-task timeout=%r is not a valid number; "
+                "falling back to top-level / config default",
+                per_task,
+            )
+    if top_level_timeout is not None:
+        return max(30.0, float(top_level_timeout))
+    return None
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -1976,6 +2000,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    timeout: Optional[float] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1989,6 +2014,10 @@ def delegate_task(
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    The 'timeout' parameter overrides delegation.child_timeout_seconds
+    (default 600s / 10 minutes) for this delegation. Per-task timeout
+    beats the top-level one. Floor: 30 seconds.
 
     Returns JSON with results array, one entry per task.
     """
@@ -2144,7 +2173,8 @@ def delegate_task(
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)
         _i, _t, child = children[0]
-        result = _run_single_child(0, _t["goal"], child, parent_agent)
+        _task_timeout = _resolve_task_timeout(_t, timeout)
+        result = _run_single_child(0, _t["goal"], child, parent_agent, child_timeout=_task_timeout)
         results.append(result)
     else:
         # Batch -- run in parallel with per-task progress lines
@@ -2154,12 +2184,14 @@ def delegate_task(
         with ThreadPoolExecutor(max_workers=max_children) as executor:
             futures = {}
             for i, t, child in children:
+                _task_timeout = _resolve_task_timeout(t, timeout)
                 future = executor.submit(
                     _run_single_child,
                     task_index=i,
                     goal=t["goal"],
                     child=child,
                     parent_agent=parent_agent,
+                    child_timeout=_task_timeout,
                 )
                 futures[future] = i
 
@@ -2849,6 +2881,14 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "timeout": {
+                            "type": "number",
+                            "description": (
+                                "Per-task timeout override in seconds. "
+                                "Beats the top-level timeout and config default. "
+                                "Floor: 30 seconds."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2884,6 +2924,16 @@ DELEGATE_TASK_SCHEMA = {
                     "Leave empty unless acp_command is explicitly provided."
                 ),
             },
+            "timeout": {
+                "type": "number",
+                "description": (
+                    "Override the subagent timeout in seconds for this delegation. "
+                    "Default: delegation.child_timeout_seconds from config (600s). "
+                    "Per-task timeout beats this value. Floor: 30 seconds. "
+                    "Use longer timeouts for research, multi-step analysis, or "
+                    "large file downloads."
+                ),
+            },
         },
         "required": [],
     },
@@ -2906,6 +2956,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        timeout=args.get("timeout"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,
