@@ -328,3 +328,49 @@ async def test_standalone_send_text_then_attachments(
     assert posted[1][1]["path"] == str(img)
     assert posted[1][1]["kind"] == "attachment"
     assert posted[1][1]["mimeType"] == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_send_strips_markdown_and_splits_into_bubbles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # iMessage renders plain text: markdown is stripped, and paragraphs become
+    # separate bubbles (parity with BlueBubbles).
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    await adapter.send("any;-;+1", "**Bold** title\n\nSecond _paragraph_ here.")
+
+    sends = [b for p, b in calls if p == "/send"]
+    assert len(sends) == 2  # two paragraphs → two bubbles
+    joined = " ".join(b["text"] for b in sends)
+    assert "**" not in joined and "_" not in joined
+    assert "Bold title" in sends[0]["text"]
+    assert "Second paragraph here." in sends[1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_no_ack_reaction_on_reaction_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The bot must not 👀-ack an inbound reaction event (echo-loop guard).
+    from gateway.platforms.base import MessageEvent, MessageType
+
+    monkeypatch.setenv("PHOTON_ALLOWED_USERS", "+15551234567")
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+    src = adapter.build_source(
+        chat_id="any;-;+15551234567",
+        chat_name="any;-;+15551234567",
+        chat_type="dm",
+        user_id="+15551234567",
+        user_name=None,
+    )
+    ev = MessageEvent(
+        text="[Reaction 👀]",
+        message_type=MessageType.TEXT,
+        source=src,
+        message_id="spc-msg-abc:reaction:7",
+    )
+    await adapter.on_processing_start(ev)
+    assert [b for p, b in calls if p == "/react"] == []

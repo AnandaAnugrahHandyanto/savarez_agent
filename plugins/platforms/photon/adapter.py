@@ -64,6 +64,7 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
 )
+from gateway.platforms.helpers import strip_markdown
 
 from .auth import (
     DEFAULT_SPECTRUM_HOST,
@@ -740,6 +741,21 @@ class PhotonAdapter(BasePlatformAdapter):
 
     # -- Outbound ----------------------------------------------------------
 
+    def format_message(self, content: str) -> str:
+        # iMessage renders plain text — markdown syntax (**bold**, # headings,
+        # `code`, links) shows up as literal characters. Strip it, mirroring the
+        # BlueBubbles iMessage channel.
+        return strip_markdown(content)
+
+    @staticmethod
+    def truncate_message(
+        content: str, max_length: int = _MAX_MESSAGE_LENGTH
+    ) -> List[str]:
+        # Use the base splitter but drop "(1/3)" pagination suffixes — iMessage
+        # bubbles flow naturally without them (parity with BlueBubbles).
+        chunks = BasePlatformAdapter.truncate_message(content, max_length)
+        return [re.sub(r"\s*\(\d+/\d+\)$", "", c) for c in chunks]
+
     async def send(
         self,
         chat_id: str,
@@ -747,7 +763,33 @@ class PhotonAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self._sidecar_send(chat_id, content, reply_to=reply_to)
+        text = self.format_message(content)
+        if not text:
+            return SendResult(success=False, error="Photon send requires text")
+        # Split on paragraph breaks so each thought becomes its own iMessage
+        # bubble, then chunk any paragraph that's still too long (parity with
+        # the BlueBubbles channel — natural bubble flow, no hard mid-sentence
+        # cut).
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+        chunks: List[str] = []
+        for para in paragraphs or [text]:
+            if len(para) <= self.MAX_MESSAGE_LENGTH:
+                chunks.append(para)
+            else:
+                chunks.extend(
+                    self.truncate_message(para, max_length=self.MAX_MESSAGE_LENGTH)
+                )
+        last = SendResult(success=True)
+        for chunk in chunks:
+            last = await self._sidecar_send(chat_id, chunk, reply_to=reply_to)
+            if not last.success:
+                return last
+        return last
+
+    # NOTE: no explicit mark_read() — the sidecar already sends a read receipt
+    # for every inbound message it handles (markRead on receipt), so the whole
+    # conversation is always marked read without an on-demand call. This is
+    # broader coverage than the BlueBubbles channel's manual mark_read.
 
     # -- Outbound media (parity with the BlueBubbles iMessage channel) -----
     #
@@ -875,6 +917,13 @@ class PhotonAdapter(BasePlatformAdapter):
 
     def _reactions_enabled(self, event: "MessageEvent" = None) -> bool:
         if os.getenv("PHOTON_REACTIONS", "true").lower() in {"false", "0", "no"}:
+            return False
+        # Never ack a reaction event: the shared line can echo the bot's own
+        # tapback back as an inbound reaction, and acking that would loop. (The
+        # SDK already drops own *messages*; only reactions leak.)
+        if event is not None and ":reaction:" in str(
+            getattr(event, "message_id", "") or ""
+        ):
             return False
         # Only react to allowlisted senders so a stranger never sees the bot
         # acknowledge (the reaction fires before run.py's auth gate). Read the
