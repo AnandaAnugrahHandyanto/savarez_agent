@@ -12,13 +12,38 @@ import tools.approval as approval_module
 from hermes_constants import get_hermes_home
 from tools.approval import (
     _get_approval_mode,
+    _risk_context_for_description,
     _smart_approve,
     approve_session,
+    check_all_command_guards,
     detect_dangerous_command,
     is_approved,
     load_permanent,
     prompt_dangerous_approval,
 )
+
+
+class TestApprovalRiskContext:
+    def test_recursive_delete_reason_has_plain_language_risk(self):
+        risk = _risk_context_for_description("recursive delete of files")
+        assert "permanently remove many files" in risk
+        assert "target path" in risk
+
+    def test_gateway_pending_message_includes_command_reason_and_risk(self, monkeypatch):
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.setenv("HERMES_SESSION_KEY", "risk-test-session")
+        approval_module.clear_session("risk-test-session")
+
+        result = check_all_command_guards("rm -rf /tmp/example", "local")
+
+        assert not result["approved"]
+        assert result["approval_pending"] is True
+        assert result["command"] == "rm -rf /tmp/example"
+        assert "delete" in result["description"]
+        assert "permanently remove many files" in result["risk_context"]
+        assert "**Command:**" in result["message"]
+        assert "rm -rf /tmp/example" in result["message"]
+        assert "Risk:" in result["message"]
 
 
 class TestApprovalModeParsing:
