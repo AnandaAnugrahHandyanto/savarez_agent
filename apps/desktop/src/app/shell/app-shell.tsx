@@ -119,7 +119,7 @@ export function AppShell({
 
   return (
     <SidebarProvider
-      className="h-screen min-h-0 flex-col bg-background"
+      className="h-screen min-h-0 flex-col bg-(--sentinel-bg-main) text-(--sentinel-text-main)"
       onOpenChange={setSidebarOpen}
       open={sidebarOpen}
       style={
@@ -143,7 +143,7 @@ export function AppShell({
     >
       <TitlebarControls leftTools={leftTitlebarTools} onOpenSettings={onOpenSettings} tools={titlebarTools} />
 
-      <main className="relative z-3 flex min-h-0 w-full flex-1 flex-col overflow-hidden transition-none">
+      <main className="relative z-3 flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-(--sentinel-bg-main) transition-none">
         <PaneShell className="min-h-0 flex-1">
           <div
             aria-hidden="true"

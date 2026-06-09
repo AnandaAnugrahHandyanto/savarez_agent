@@ -1,0 +1,25 @@
+{
+  "scope": "Shell chrome visibility check in Electron renderer",
+  "result": "Shell loaded with HermesOps Sentinel chrome visible and no boot overlay in the Electron context observed.",
+  "checked": [
+    {
+      "area": "sidebar",
+      "status": "visible",
+      "note": "Menu labels such as Skills & Tools, Messaging, Artifacts and session list were present in the DOM snapshot."
+    },
+    {
+      "area": "footer/status",
+      "status": "visible",
+      "note": "Footer/status chrome rendered in the Electron session."
+    },
+    {
+      "area": "boot overlay",
+      "status": "not visible",
+      "note": "No Desktop IPC bridge unavailable overlay was present in the Electron renderer snapshot."
+    }
+  ],
+  "limitations": [
+    "This pass did not execute a full click-through matrix on every route.",
+    "The evidence is sufficient to confirm shell health and bridge presence, but not a full interactive regression of every screen."
+  ]
+}

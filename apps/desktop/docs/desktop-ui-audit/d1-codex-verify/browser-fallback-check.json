@@ -1,0 +1,7 @@
+{
+  "source": "browser-renderer-repro",
+  "url": "http://127.0.0.1:5174/#/",
+  "title": "Hermes",
+  "hasHermesDesktop": false,
+  "note": "This was captured from the local browser reproduction, not from Electron. It confirms the bridge is absent in the non-Electron renderer context."
+}

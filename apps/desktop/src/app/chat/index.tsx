@@ -138,7 +138,7 @@ function ChatHeader({
           title={title}
         >
           <Button
-            className="pointer-events-auto flex h-6 min-w-0 max-w-full gap-1 border border-transparent bg-transparent px-2 py-0 text-(--ui-text-secondary) hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground data-[state=open]:border-(--ui-stroke-tertiary) data-[state=open]:bg-(--ui-control-active-background) [-webkit-app-region:no-drag]"
+            className="pointer-events-auto flex h-6 min-w-0 max-w-full gap-1 border border-(--sentinel-border-soft) bg-(--sentinel-bg-card)/85 px-2 py-0 text-(--ui-text-secondary) shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] hover:border-(--sentinel-border-active) hover:bg-(--ui-control-hover-background) hover:text-foreground data-[state=open]:border-(--sentinel-border-active) data-[state=open]:bg-(--ui-control-active-background) [-webkit-app-region:no-drag]"
             type="button"
             variant="ghost"
           >

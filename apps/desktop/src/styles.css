@@ -92,6 +92,27 @@
   :root {
     color-scheme: light;
 
+    /* HermesOps Sentinel palette — technical, low-glare command-center dark. */
+    --sentinel-bg-main: #070a0d;
+    --sentinel-bg-panel: #0d1117;
+    --sentinel-bg-card: #111820;
+    --sentinel-bg-elevated: #151e28;
+
+    --sentinel-text-main: #f4f1e8;
+    --sentinel-text-muted: #9ea7b3;
+    --sentinel-text-soft: #6f7a86;
+
+    --sentinel-primary: #00e5b0;
+    --sentinel-secondary: #38bdf8;
+    --sentinel-warning: #f59e0b;
+    --sentinel-danger: #ef4444;
+    --sentinel-success: #22c55e;
+
+    --sentinel-border-soft: rgba(244, 241, 232, 0.1);
+    --sentinel-border-active: rgba(0, 229, 176, 0.45);
+
+    --sentinel-glow-primary: 0 0 24px rgba(0, 229, 176, 0.24);
+
     --theme-foreground: #17171a;
     --theme-primary: #0053fd;
     --theme-secondary: color-mix(in srgb, #0053fd 7%, #ffffff);
@@ -352,6 +373,8 @@
   }
 
   :root.dark {
+    color-scheme: dark;
+
     /* Per-mode mix knobs — overridden inline by `applyTheme()` per skin. */
     --theme-mix-chrome: 74%;
     --theme-mix-card: 38%;
@@ -361,19 +384,58 @@
     --theme-neutral-sidebar: #0a0a0b;
     --theme-neutral-card: #161618;
 
+    --theme-foreground: var(--sentinel-text-main);
+    --theme-primary: var(--sentinel-primary);
+    --theme-secondary: color-mix(in srgb, var(--sentinel-secondary) 84%, #ffffff 16%);
+    --theme-accent-soft: color-mix(in srgb, var(--sentinel-primary) 14%, var(--sentinel-bg-card));
+    --theme-midground: var(--sentinel-primary);
+    --theme-warm: var(--sentinel-warning);
+    --theme-background-seed: var(--sentinel-bg-main);
+    --theme-sidebar-seed: var(--sentinel-bg-panel);
+    --theme-card-seed: var(--sentinel-bg-card);
+    --theme-elevated-seed: var(--sentinel-bg-elevated);
+    --theme-bubble-seed: var(--sentinel-bg-card);
+    --theme-neutral-chrome: #05080b;
+    --theme-neutral-sidebar: #090d13;
+    --theme-neutral-card: #101720;
+
+    --ui-bg-chrome: var(--sentinel-bg-main);
+    --ui-bg-sidebar: var(--sentinel-bg-panel);
+    --ui-bg-editor: var(--sentinel-bg-card);
+    --ui-bg-elevated: var(--sentinel-bg-elevated);
+    --ui-bg-card: color-mix(in srgb, var(--sentinel-bg-card) 84%, var(--sentinel-primary) 16%);
+    --ui-bg-input: color-mix(in srgb, var(--sentinel-bg-elevated) 82%, #000 18%);
+    --ui-text-primary: var(--sentinel-text-main);
+    --ui-text-secondary: var(--sentinel-text-muted);
+    --ui-text-tertiary: var(--sentinel-text-soft);
+    --ui-text-quaternary: color-mix(in srgb, var(--sentinel-text-soft) 72%, transparent);
+    --ui-stroke-primary: color-mix(in srgb, var(--sentinel-primary) 24%, transparent);
+    --ui-stroke-secondary: var(--sentinel-border-soft);
+    --ui-stroke-tertiary: color-mix(in srgb, var(--sentinel-border-soft) 72%, transparent);
+    --ui-stroke-quaternary: color-mix(in srgb, var(--sentinel-border-soft) 48%, transparent);
+    --ui-sash-hover-border: color-mix(in srgb, var(--sentinel-primary) 18%, var(--sentinel-border-soft));
+    --ui-sash-hover-background: color-mix(in srgb, var(--sentinel-primary) 8%, transparent);
+    --ui-surface-background: var(--sentinel-bg-card);
+    --ui-sidebar-surface-background: var(--sentinel-bg-panel);
+    --ui-chat-surface-background: var(--sentinel-bg-main);
+    --ui-editor-surface-background: var(--sentinel-bg-main);
+    --ui-chat-bubble-background: var(--sentinel-bg-card);
+    --ui-chat-bubble-opaque-background: var(--sentinel-bg-card);
+    --ui-inline-code-background: color-mix(in srgb, #ffffff 7%, transparent);
+    --ui-inline-code-border: color-mix(in srgb, #ffffff 10%, transparent);
+    --ui-inline-code-foreground: color-mix(in srgb, #ffffff 88%, transparent);
+    --ui-selection-background: color-mix(in srgb, var(--sentinel-primary) 36%, transparent);
+
     /* Dark-only accent palette overrides. */
-    --ui-red: #e75e78;
-    --ui-green: #55a583;
-    --ui-cyan: #6f9ba6;
+    --ui-red: var(--sentinel-danger);
+    --ui-green: var(--sentinel-success);
+    --ui-cyan: var(--sentinel-secondary);
 
     --sidebar-edge-border: color-mix(in srgb, var(--ui-base) 12%, transparent);
     --composer-ring-strength: 1.3;
     --backdrop-invert-mul: 0;
 
-    --ui-inline-code-background: color-mix(in srgb, #ffffff 7%, transparent);
-    --ui-inline-code-border: color-mix(in srgb, #ffffff 10%, transparent);
-    --ui-inline-code-foreground: color-mix(in srgb, #ffffff 88%, transparent);
-    --ui-selection-background: color-mix(in srgb, #ffd24a 38%, transparent);
+    --ui-selection-background: color-mix(in srgb, var(--sentinel-primary) 38%, transparent);
   }
 
   * {
@@ -394,6 +456,11 @@
   body {
     margin: 0;
     background: var(--ui-chat-surface-background);
+    background-image:
+      radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--sentinel-primary) 10%, transparent) 0, transparent 34%),
+      radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--sentinel-secondary) 7%, transparent) 0, transparent 26%),
+      linear-gradient(180deg, color-mix(in srgb, var(--sentinel-bg-main) 94%, #0b1015 6%) 0%, var(--sentinel-bg-main) 100%);
+    background-attachment: fixed;
     color: var(--dt-foreground);
     font-family: var(--dt-font-sans);
     font-size: 0.8125rem;
