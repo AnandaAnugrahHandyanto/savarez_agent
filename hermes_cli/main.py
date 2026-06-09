@@ -5229,10 +5229,13 @@ def cmd_gui(args: argparse.Namespace):
             if build_result.returncode != 0 and not source_mode and not env.get("ELECTRON_MIRROR"):
                 # Still failing and the user hasn't pinned a mirror: GitHub's
                 # Electron release host is likely blocked/throttled (the repeating
-                # "retrying" download log). Retry once via a public mirror;
-                # @electron/get still SHASUM-verifies the download, and we never
-                # override a user-set ELECTRON_MIRROR. Without this, a blocked
-                # network hard-fails the rebuild with no self-heal.
+                # "retrying" download log). Retry once via npmmirror.com — the
+                # de-facto Electron community mirror (Alibaba). @electron/get
+                # SHASUM-checks the download, but the SHASUMS come from the same
+                # mirror, so that guards against a corrupt/partial download, NOT
+                # a compromised mirror: reaching for it is an explicit trust
+                # trade-off we only make AFTER the canonical GitHub download has
+                # failed, and we never override a user-pinned ELECTRON_MIRROR.
                 print("  ⚠ Desktop build still failing; the Electron download from "
                       "GitHub looks blocked. Retrying once via a public mirror "
                       "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")

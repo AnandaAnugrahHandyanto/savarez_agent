@@ -2360,11 +2360,12 @@ _desktop_pack() {
 }
 
 # Public Electron mirror used as a last-resort fallback when GitHub's release
-# host is blocked/throttled (the repeating "retrying" symptom). @electron/get
-# verifies the download against the mirror's SHASUMS, so a tampered binary is
-# rejected, but the mirror is third-party — we only reach for it AFTER the
-# canonical GitHub download has failed, and never override a user-pinned
-# ELECTRON_MIRROR.
+# host is blocked/throttled (the repeating "retrying" symptom). npmmirror.com is
+# the de-facto Electron community mirror (Alibaba). @electron/get SHASUM-checks
+# the download, but the SHASUMS come from the same mirror — that guards against a
+# corrupt/partial download, NOT a compromised mirror. Reaching for it is an
+# explicit trust trade-off we only make AFTER the canonical GitHub download has
+# failed, and we never override a user-pinned ELECTRON_MIRROR.
 DESKTOP_ELECTRON_FALLBACK_MIRROR="https://npmmirror.com/mirrors/electron/"
 
 # Build apps/desktop into a launchable native app. Mirrors install.ps1's

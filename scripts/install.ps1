@@ -2250,9 +2250,12 @@ function Install-Desktop {
         }
         # Still failing and the user hasn't pinned their own mirror: GitHub's
         # Electron release host is likely blocked/throttled (the repeating
-        # "retrying" log). Retry once via a public mirror; @electron/get still
-        # SHASUM-verifies the download, and we never override a user-set
-        # ELECTRON_MIRROR. Without this, blocked networks hard-fail the install.
+        # "retrying" log). Retry once via npmmirror.com — the de-facto Electron
+        # community mirror (Alibaba). @electron/get SHASUM-checks the download,
+        # but the SHASUMS come from the same mirror, so that guards against a
+        # corrupt/partial download, NOT a compromised mirror: an explicit trust
+        # trade-off we only make AFTER the canonical GitHub download has failed,
+        # and we never override a user-pinned ELECTRON_MIRROR.
         if ($code -ne 0 -and -not $env:ELECTRON_MIRROR) {
             $prevMirror = $env:ELECTRON_MIRROR
             $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
