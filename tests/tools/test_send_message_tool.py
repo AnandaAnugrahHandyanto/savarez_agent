@@ -29,10 +29,12 @@ from gateway.config import Platform
 from tools.send_message_tool import (
     _is_telegram_thread_not_found,
     _parse_target_ref,
+    _parse_whatsapp_location_directive,
     _send_matrix_via_adapter,
     _send_signal,
     _send_telegram,
     _send_to_platform,
+    _send_whatsapp,
     send_message_tool,
 )
 # Discord helpers moved to the plugin in #24325.  Import from the new path
@@ -863,6 +865,66 @@ class TestSendToPlatformWhatsapp:
 
         assert result["success"] is True
         async_mock.assert_awaited_once_with({"bridge_port": 3000}, chat_id, "hello from hermes")
+
+    def test_location_directive_parser_accepts_native_pin_format(self):
+        parsed = _parse_whatsapp_location_directive(
+            "LOCATION:37.7749,-122.4194|San Francisco City Hall|1 Dr Carlton B Goodlett Pl"
+        )
+
+        assert parsed == {
+            "latitude": 37.7749,
+            "longitude": -122.4194,
+            "name": "San Francisco City Hall",
+            "address": "1 Dr Carlton B Goodlett Pl",
+        }
+
+    def test_location_directive_parser_rejects_out_of_range_coordinates(self):
+        with pytest.raises(ValueError, match="latitude"):
+            _parse_whatsapp_location_directive("LOCATION:118.0,-69.0|Bad")
+
+    @staticmethod
+    def _build_whatsapp_mock(response_status=200, response_data=None, response_text="error body"):
+        mock_resp = MagicMock()
+        mock_resp.status = response_status
+        mock_resp.json = AsyncMock(return_value=response_data or {"messageId": "loc123"})
+        mock_resp.text = AsyncMock(return_value=response_text)
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_session.post = MagicMock(return_value=mock_resp)
+        return mock_session, mock_resp
+
+    def test_send_whatsapp_location_directive_posts_native_location_endpoint(self):
+        mock_session, _ = self._build_whatsapp_mock(response_data={"messageId": "loc123"})
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(
+                _send_whatsapp(
+                    {"bridge_port": 3000},
+                    "test-user@lid",
+                    "LOCATION:37.7749,-122.4194|San Francisco City Hall|1 Dr Carlton B Goodlett Pl",
+                )
+            )
+
+        assert result == {
+            "success": True,
+            "platform": "whatsapp",
+            "chat_id": "test-user@lid",
+            "message_id": "loc123",
+            "native_location": True,
+        }
+        call = mock_session.post.call_args
+        assert call.args[0] == "http://localhost:3000/send-location"
+        assert call.kwargs["json"] == {
+            "chatId": "test-user@lid",
+            "latitude": 37.7749,
+            "longitude": -122.4194,
+            "name": "San Francisco City Hall",
+            "address": "1 Dr Carlton B Goodlett Pl",
+        }
 
 
 class TestSendTelegramHtmlDetection:

@@ -215,6 +215,38 @@ def check_whatsapp_requirements() -> bool:
         return False
 
 
+def _parse_location_directive(content: str) -> Optional[Dict[str, Any]]:
+    """Parse an exact native-location directive for WhatsApp sends."""
+    stripped = (content or "").strip()
+    if not stripped.startswith("LOCATION:"):
+        return None
+
+    body = stripped[len("LOCATION:"):]
+    parts = body.split("|", 2)
+    coord_text = parts[0].strip()
+    if "," not in coord_text:
+        raise ValueError("LOCATION directive must use '<latitude>,<longitude>'")
+
+    lat_text, lon_text = [piece.strip() for piece in coord_text.split(",", 1)]
+    try:
+        latitude = float(lat_text)
+        longitude = float(lon_text)
+    except ValueError as exc:
+        raise ValueError("LOCATION directive latitude/longitude must be numeric") from exc
+
+    if not (-90 <= latitude <= 90):
+        raise ValueError("LOCATION directive latitude must be between -90 and 90")
+    if not (-180 <= longitude <= 180):
+        raise ValueError("LOCATION directive longitude must be between -180 and 180")
+
+    location: Dict[str, Any] = {"latitude": latitude, "longitude": longitude}
+    if len(parts) > 1 and parts[1].strip():
+        location["name"] = parts[1].strip()
+    if len(parts) > 2 and parts[2].strip():
+        location["address"] = parts[2].strip()
+    return location
+
+
 class WhatsAppAdapter(BasePlatformAdapter):
     """
     WhatsApp adapter.
@@ -931,6 +963,22 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
         try:
             import aiohttp
+
+            location = _parse_location_directive(content)
+            if location is not None:
+                payload: Dict[str, Any] = {"chatId": chat_id, **location}
+                if reply_to:
+                    payload["replyTo"] = reply_to
+                async with self._http_session.post(
+                    f"http://127.0.0.1:{self._bridge_port}/send-location",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return SendResult(success=True, message_id=data.get("messageId"))
+                    error = await resp.text()
+                    return SendResult(success=False, error=error)
 
             # Format and chunk the message
             formatted = self.format_message(content)

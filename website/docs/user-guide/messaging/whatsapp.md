@@ -180,6 +180,22 @@ whatsapp:
 
 WhatsApp supports **streaming (progressive) responses** — the bot edits its message in real-time as the AI generates text, just like Discord and Telegram. Internally, WhatsApp is classified as a TIER_MEDIUM platform for delivery capabilities.
 
+### Native Location Pins
+
+Hermes can send a native WhatsApp location pin from `send_message` by making the entire message a `LOCATION:` directive:
+
+```text
+LOCATION:<latitude>,<longitude>|<name>|<address>
+```
+
+Example:
+
+```text
+LOCATION:37.7749,-122.4194|San Francisco City Hall|1 Dr Carlton B Goodlett Pl, San Francisco, CA
+```
+
+The `name` and `address` fields are optional, but the latitude and longitude are required. Coordinates are validated before delivery (`latitude` must be between `-90` and `90`; `longitude` between `-180` and `180`). This uses the local WhatsApp bridge to send a native location message rather than plain text.
+
 ### Chunking
 
 Long responses are automatically split into multiple messages at **4,096 characters** per chunk (WhatsApp's practical display limit). You don't need to configure anything — the gateway handles splitting and sends chunks sequentially.

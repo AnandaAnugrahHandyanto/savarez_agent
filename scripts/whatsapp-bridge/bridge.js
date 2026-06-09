@@ -522,6 +522,46 @@ app.post('/send', async (req, res) => {
   }
 });
 
+// Send a native WhatsApp location pin
+app.post('/send-location', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, latitude, longitude, name, address } = req.body;
+  if (!chatId || latitude === undefined || longitude === undefined) {
+    return res.status(400).json({ error: 'chatId, latitude, and longitude are required' });
+  }
+
+  const lat = Number(latitude);
+  const lon = Number(longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return res.status(400).json({ error: 'latitude and longitude must be numeric' });
+  }
+  if (lat < -90 || lat > 90) {
+    return res.status(400).json({ error: 'latitude must be between -90 and 90' });
+  }
+  if (lon < -180 || lon > 180) {
+    return res.status(400).json({ error: 'longitude must be between -180 and 180' });
+  }
+
+  try {
+    const location = {
+      degreesLatitude: lat,
+      degreesLongitude: lon,
+    };
+    if (name) location.name = String(name);
+    if (address) location.address = String(address);
+
+    const sent = await sendWithTimeout(chatId, { location });
+    trackSentMessageId(sent);
+
+    res.json({ success: true, messageId: sent?.key?.id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Edit a previously sent message
 app.post('/edit', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
