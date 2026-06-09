@@ -44,6 +44,24 @@ from utils import (
 logger = logging.getLogger("gateway.run")
 
 
+def _running_under_service_manager() -> bool:
+    """Return True when the gateway process is supervised by a service manager.
+
+    systemd sets ``INVOCATION_ID``. Native macOS LaunchAgents set
+    ``XPC_SERVICE_NAME`` to the service label (for Hermes: ``ai.hermes.gateway``
+    and profile-suffixed variants). Interactive macOS shells commonly inherit
+    ``XPC_SERVICE_NAME=0`` from launchd; that is not a managed service and must
+    keep using the detached helper path.
+    """
+    if os.environ.get("INVOCATION_ID"):
+        return True
+    if sys.platform == "darwin":
+        xpc_service = (os.environ.get("XPC_SERVICE_NAME") or "").strip()
+        if xpc_service == "ai.hermes.gateway" or xpc_service.startswith("ai.hermes.gateway-"):
+            return True
+    return False
+
+
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
@@ -774,9 +792,8 @@ class GatewaySlashCommandsMixin:
         # us.  The detached subprocess approach (setsid + bash) doesn't work
         # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
         # exits when the gateway dies, taking the detached helper with it).
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-        if _under_service or _in_container:
+        if _running_under_service_manager() or _in_container:
             self.request_restart(detached=False, via_service=True)
         else:
             self.request_restart(detached=True, via_service=False)

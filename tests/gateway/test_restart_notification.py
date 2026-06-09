@@ -99,10 +99,103 @@ async def test_restart_command_uses_service_restart_under_systemd(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypatch):
-    """Without systemd, /restart uses the detached subprocess approach."""
+async def test_restart_command_uses_service_restart_under_launchd(tmp_path, monkeypatch):
+    """Under macOS launchd (XPC_SERVICE_NAME set), /restart uses via_service=True."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr("gateway.slash_commands.sys.platform", "darwin")
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway")
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source = make_restart_source(chat_id="42")
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m1",
+    )
+
+    await runner._handle_restart_command(event)
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+
+
+@pytest.mark.asyncio
+async def test_restart_command_uses_service_restart_under_profile_launchd(tmp_path, monkeypatch):
+    """Profile-scoped Hermes launchd labels should also use via_service=True."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr("gateway.slash_commands.sys.platform", "darwin")
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gateway-coder")
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source = make_restart_source(chat_id="42")
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m1",
+    )
+
+    await runner._handle_restart_command(event)
+    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+
+
+@pytest.mark.asyncio
+async def test_restart_command_uses_detached_for_inherited_launchd_zero(tmp_path, monkeypatch):
+    """macOS shells often inherit XPC_SERVICE_NAME=0; that is not a managed service."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr("gateway.slash_commands.sys.platform", "darwin")
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("XPC_SERVICE_NAME", "0")
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source = make_restart_source(chat_id="42")
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m1",
+    )
+
+    await runner._handle_restart_command(event)
+    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+@pytest.mark.asyncio
+async def test_restart_command_uses_detached_for_unrelated_launchd_prefix(tmp_path, monkeypatch):
+    """Only Hermes gateway LaunchAgents should be treated as managed services."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr("gateway.slash_commands.sys.platform", "darwin")
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("XPC_SERVICE_NAME", "ai.hermes.gatewayhelper")
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source = make_restart_source(chat_id="42")
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m1",
+    )
+
+    await runner._handle_restart_command(event)
+    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+@pytest.mark.asyncio
+async def test_restart_command_uses_detached_without_service_manager(tmp_path, monkeypatch):
+    """Without a known service manager, /restart uses the detached subprocess approach."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
