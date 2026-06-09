@@ -1,0 +1,5 @@
+- [user_pref] Scott Dominguez is the user for Hermes Desktop profile `scott-omega-profile`; Kelvin is the user of the separate default/home profile. (tags: identity,separation,scott)
+- [project] `scott-omega-profile` must not write to Kelvin's default/home SOUL.md, USER.md, MEMORY.md, memory_store.db, or session context. (tags: identity,separation,safety)
+- [project] Scott's Omega profile should retain operational context for Omega fleet behavior and fleet readiness checks. (tags: omega,fleet,readiness)
+- [project] Scott's Omega profile should retain Prometheus/Triton operational context when present in the seed or future verified updates. (tags: prometheus,triton,operations)
+- [project] Scott's Omega profile should retain Obsidian/federation vault behavior, vault journal operations, holographic memory continuity, safe credential handling, and tool-readiness verification before declaring agents operational. (tags: vault,memory,credentials,tool-readiness)

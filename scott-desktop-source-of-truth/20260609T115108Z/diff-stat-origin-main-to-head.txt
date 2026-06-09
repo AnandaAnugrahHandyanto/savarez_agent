@@ -1,0 +1,19 @@
+﻿ agent/agent_init.py                                |    83 +
+ agent/auxiliary_client.py                          | 11716 ++---
+ apps/desktop/electron/main.cjs                     | 11538 ++---
+ apps/desktop/src/app/chat/sidebar/index.tsx        |  2444 +-
+ .../src/app/chat/sidebar/profile-switcher.tsx      |    11 +-
+ apps/desktop/src/app/desktop-controller.tsx        |  1864 +-
+ .../src/app/session/hooks/use-model-controls.ts    |     8 +-
+ apps/desktop/src/app/shell/model-menu-panel.tsx    |    32 +-
+ apps/desktop/src/hermes.ts                         |  1438 +-
+ apps/desktop/src/store/model-visibility.ts         |    13 +-
+ hermes_cli/web_server.py                           | 19879 ++++----
+ .../desktop-baseline-20260607T054234Z/README.md    |    21 +
+ .../git-diff-names.txt                             |    11 +
+ .../git-diff-stat.txt                              |    12 +
+ .../git-status-porcelain.txt                       |    29 +
+ .../laptop-dirty.patch                             | 45969 +++++++++++++++++++
+ .../manifest.json                                  |    28 +
+ .../scott-omega-profile.config.redacted.yaml       |   545 +
+ 18 files changed, 71250 insertions(+), 24391 deletions(-)

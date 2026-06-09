@@ -1,0 +1,14 @@
+{
+  "memory_provider": "holographic",
+  "memory_config_keys": [],
+  "has_custom_providers": true,
+  "custom_provider_names": [
+    "Omega",
+    "Apollo"
+  ],
+  "model_provider": "custom",
+  "model_default": "openclaw-hermes/omega",
+  "model_base_url": "http://10.13.10.23:18822/v1",
+  "has_model_session_id_header": true,
+  "has_model_session_key_header": true
+}

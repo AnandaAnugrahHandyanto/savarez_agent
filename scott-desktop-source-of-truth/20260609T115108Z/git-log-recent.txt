@@ -1,0 +1,12 @@
+﻿957533d76 fix(desktop): keep Scott Omega profile as Desktop home
+7eae7dbcb fix: accept Desktop session model filter parameter
+f189060fc fix: merge headers for named Desktop custom providers
+ff79639fe fix: restore Desktop current model import after upstream merge
+9a23679e4 Merge remote-tracking branch 'origin/main' into preserve/scott-desktop-20260607T054234Z
+f542c2bd8 fix: preserve Scott Desktop Apollo Omega continuity patches
+1f75b9661 chore: preserve Scott Hermes Desktop baseline 20260607T054234Z
+846821d8c Merge pull request #40684 from NousResearch/bb/cron-sessions-sidebar
+210f4e706 fix(desktop): resolve powershell.exe by absolute path in Electron bootstrap
+5dee40fcc test(bootstrap-installer): cover PowerShell path layout cross-platform
+8720023e9 fix(bootstrap-installer): resolve powershell.exe by absolute path on Windows
+fe2942a5a test(desktop): assert every theme typography carries an emoji font (#40364)

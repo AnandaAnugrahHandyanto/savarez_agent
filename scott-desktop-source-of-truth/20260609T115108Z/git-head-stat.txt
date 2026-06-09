@@ -1,0 +1,3 @@
+﻿957533d76 (HEAD -> preserve/scott-desktop-20260607T054234Z) fix(desktop): keep Scott Omega profile as Desktop home
+ apps/desktop/src/hermes.ts | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)

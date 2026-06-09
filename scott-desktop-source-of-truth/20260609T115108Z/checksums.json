@@ -1,0 +1,107 @@
+[
+    {
+        "file":  "config.redacted.yaml",
+        "bytes":  13709,
+        "sha256":  "62f4be4daa2b8a02b9b2f9de0f9c7df99b5ae81942f4e79b0182bd65baee25d1"
+    },
+    {
+        "file":  "custom-source.patch",
+        "bytes":  2012020,
+        "sha256":  "1ff354893e64e4c1f2e85f6a2ff5ba1d8f4831186b03e594f15376531137a567"
+    },
+    {
+        "file":  "diff-name-status-origin-main-to-head.txt",
+        "bytes":  1071,
+        "sha256":  "72a055eb75413a782f066e4fd5cda7164328efdaf39c371d317548c47667b1ed"
+    },
+    {
+        "file":  "diff-stat-origin-main-to-head.txt",
+        "bytes":  1237,
+        "sha256":  "4805fc580f9ebc31446c1107298c6fe91b28a4221fd748e7648ebe154bb3d980"
+    },
+    {
+        "file":  "git-branch.txt",
+        "bytes":  44,
+        "sha256":  "8af607abb78eb9c95312361ee9dc4d05a6b802c351f5550b606fc5f0901c6b00"
+    },
+    {
+        "file":  "git-head.txt",
+        "bytes":  45,
+        "sha256":  "7807ad86983a95d4d4b572e9616dba760be7a1698ac290d39e902d53730d94bf"
+    },
+    {
+        "file":  "git-head-stat.txt",
+        "bytes":  212,
+        "sha256":  "289e963fc6b00d46ebd4cee0aac08a7e436d805fe0ea77cdb50a99283678fea9"
+    },
+    {
+        "file":  "git-log-recent.txt",
+        "bytes":  938,
+        "sha256":  "383b8eaaa3dd43fc182dd805b7db9d427e11308707ec8a7dea309e7ef9834e7d"
+    },
+    {
+        "file":  "git-remote.txt",
+        "bytes":  132,
+        "sha256":  "fe80a1079a81c13705359988c765c42713705085bf91a3c0b4793d59455fe318"
+    },
+    {
+        "file":  "git-status-short.txt",
+        "bytes":  1375,
+        "sha256":  "76f653e0136ed7a34fd126800e24f9fd40256e0439ee2407994af51d64d62a92"
+    },
+    {
+        "file":  "holographic-memory-db-summary.json",
+        "bytes":  496,
+        "sha256":  "b04c3af74db9326c790cbdab1d31b89e7f7e96555e1295591ce35f6517019509"
+    },
+    {
+        "file":  "manifest.json",
+        "bytes":  3690,
+        "sha256":  "241cbd78a7248f12a21a17b7f0d60f919855a486a10bb17b652be7785134d85a"
+    },
+    {
+        "file":  "profile-config-summary.json",
+        "bytes":  362,
+        "sha256":  "f2c76fbe0b43efe286a988ca0137469880d2ec3cfee63be2f8b1990b281be00a"
+    },
+    {
+        "file":  "profile-FACTS.md",
+        "bytes":  974,
+        "sha256":  "9f2a1b40ffd7e6bac8df55bfea7edcaa7f913028abb430df1492125947f34c46"
+    },
+    {
+        "file":  "profile-memories-MEMORY.md",
+        "bytes":  669,
+        "sha256":  "f5e197ba710d55b2b7ea70abb461d40a0c87a58d8764d9bc0be0c9477da1a3e0"
+    },
+    {
+        "file":  "profile-memories-USER.md",
+        "bytes":  534,
+        "sha256":  "40d3cd100132e86f57a331a45f193de10bd225ae16c58bd7d19f37888d63ef2c"
+    },
+    {
+        "file":  "profile-README.md",
+        "bytes":  352,
+        "sha256":  "2b06558f401ff817cc90c8af7cc17040d1dc7867050252bf1bdc7376ce031d92"
+    },
+    {
+        "file":  "profile-SCOTT_PROFILE_CONTEXT.md",
+        "bytes":  567,
+        "sha256":  "2bf534638b74846c1671b99cd6870287b6ee6c1c5e92ed2aa73f5be45cd9decb"
+    },
+    {
+        "file":  "profile-SOUL.md",
+        "bytes":  1167,
+        "sha256":  "a4ed277f74a97f46de396cf62b79d3ee0e7b6cee0e577f7b684ff0c05c67f132"
+    },
+    {
+        "file":  "README.md",
+        "bytes":  1942,
+        "sha256":  "aeb65d123091d49203863f7b08858ccd70b240def212aa2b733ec480fef84fbd"
+    },
+    {
+        "file":  "RESTORE_NOTES.md",
+        "bytes":  7343,
+        "sha256":  "3551fd18bc072939c586d40b8b11d943ea85f65f09e6d99ed42df3755f9d3d50"
+    }
+]

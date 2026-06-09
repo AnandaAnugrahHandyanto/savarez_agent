@@ -1,0 +1,24 @@
+{
+  "tables": [
+    "entities",
+    "fact_entities",
+    "facts",
+    "facts_fts",
+    "facts_fts_config",
+    "facts_fts_data",
+    "facts_fts_docsize",
+    "facts_fts_idx",
+    "memory_banks",
+    "sqlite_sequence"
+  ],
+  "entities_count": 2,
+  "fact_entities_count": 2,
+  "facts_count": 5,
+  "facts_fts_count": 5,
+  "facts_fts_config_count": 1,
+  "facts_fts_data_count": 12,
+  "facts_fts_docsize_count": 5,
+  "facts_fts_idx_count": 10,
+  "memory_banks_count": 2,
+  "sqlite_sequence_count": 3
+}

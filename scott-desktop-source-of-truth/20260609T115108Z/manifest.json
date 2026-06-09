@@ -1,0 +1,63 @@
+{
+    "captured_at_utc":  "2026-06-09T11:51:11.0901552Z",
+    "repository":  "https://github.com/NousResearch/hermes-agent.git",
+    "branch":  "preserve/scott-desktop-20260607T054234Z",
+    "head":  "957533d764a36b4fd7c61317390a6949e72dea78",
+    "desktop_package_version":  "0.15.1",
+    "root_package_version":  "1.0.0",
+    "installed_executable":  {
+                                 "path":  "C:\\Users\\Testing03\\AppData\\Local\\hermes\\hermes-agent\\apps\\desktop\\release\\win-unpacked\\Hermes.exe",
+                                 "exists":  true,
+                                 "size":  213963776,
+                                 "mtime_utc":  "2026-06-08T00:29:47.9609778Z",
+                                 "sha256":  "f89e2a2b437f44027dcbfb644812b0463cc40f256191b74e7141fd5ffe1bb139"
+                             },
+    "profile_manifest":  [
+                             {
+                                 "path":  "profiles/scott-omega-profile/SOUL.md",
+                                 "exists":  true,
+                                 "sha256":  "a4ed277f74a97f46de396cf62b79d3ee0e7b6cee0e577f7b684ff0c05c67f132",
+                                 "bytes":  1167
+                             },
+                             {
+                                 "path":  "profiles/scott-omega-profile/README.md",
+                                 "exists":  true,
+                                 "sha256":  "2b06558f401ff817cc90c8af7cc17040d1dc7867050252bf1bdc7376ce031d92",
+                                 "bytes":  352
+                             },
+                             {
+                                 "path":  "profiles/scott-omega-profile/SCOTT_PROFILE_CONTEXT.md",
+                                 "exists":  true,
+                                 "sha256":  "2bf534638b74846c1671b99cd6870287b6ee6c1c5e92ed2aa73f5be45cd9decb",
+                                 "bytes":  567
+                             },
+                             {
+                                 "path":  "profiles/scott-omega-profile/FACTS.md",
+                                 "exists":  true,
+                                 "sha256":  "9f2a1b40ffd7e6bac8df55bfea7edcaa7f913028abb430df1492125947f34c46",
+                                 "bytes":  974
+                             },
+                             {
+                                 "path":  "profiles/scott-omega-profile/memories/USER.md",
+                                 "exists":  true,
+                                 "sha256":  "40d3cd100132e86f57a331a45f193de10bd225ae16c58bd7d19f37888d63ef2c",
+                                 "bytes":  534
+                             },
+                             {
+                                 "path":  "profiles/scott-omega-profile/memories/MEMORY.md",
+                                 "exists":  true,
+                                 "sha256":  "f5e197ba710d55b2b7ea70abb461d40a0c87a58d8764d9bc0be0c9477da1a3e0",
+                                 "bytes":  669
+                             },
+                             {
+                                 "path":  "profiles/scott-omega-profile/memory_store.db",
+                                 "exists":  true,
+                                 "sha256":  "48dd48aa334e95f6b7a9ef5a611a509e03b4dc1ae00eb1b4cfb211657aec507e",
+                                 "bytes":  122880
+                             }
+                         ],
+    "source_patch":  "custom-source.patch",
+    "redacted_config":  "config.redacted.yaml",
+    "config_summary":  "profile-config-summary.json",
+    "memory_db_summary":  "holographic-memory-db-summary.json"
+}
