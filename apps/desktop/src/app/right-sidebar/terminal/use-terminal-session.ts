@@ -223,18 +223,25 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     onAddSelectionToChatRef.current = onAddSelectionToChat
   }, [onAddSelectionToChat])
 
+  // Live selection at call time. A redraw-heavy TUI (spinners, clocks) outruns
+  // onSelectionChange, so trust xterm directly — fall back to the native
+  // selection — rather than the cached ref / React state.
+  const readSelection = useCallback(
+    () => termRef.current?.getSelection() || window.getSelection()?.toString() || '',
+    []
+  )
+
   const addSelectionToChat = useCallback(() => {
-    const selectedText = selectionRef.current || termRef.current?.getSelection() || ''
-
-    const label =
-      selectionLabelRef.current ||
-      (termRef.current ? terminalSelectionLabel(termRef.current, shellNameRef.current, selectedText) : 'selection')
-
+    const selectedText = readSelection() || selectionRef.current
     const trimmed = selectedText.trim()
 
     if (!trimmed) {
       return
     }
+
+    const label =
+      selectionLabelRef.current ||
+      (termRef.current ? terminalSelectionLabel(termRef.current, shellNameRef.current, selectedText) : 'selection')
 
     onAddSelectionToChatRef.current(trimmed, label)
     termRef.current?.clearSelection()
@@ -243,15 +250,14 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     setSelection('')
     setSelectionStyle(null)
     triggerHaptic('selection')
-  }, [])
+  }, [readSelection])
 
+  // Always listen — gating on the React selection state misses selections the
+  // TUI redraw races. Only swallow ⌘/Ctrl+L when there's text to send, else it
+  // must reach the shell as clear-screen.
   useEffect(() => {
-    if (!selection.trim()) {
-      return
-    }
-
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isAddSelectionShortcut(event)) {
+      if (!isAddSelectionShortcut(event) || !readSelection().trim()) {
         return
       }
 
@@ -263,7 +269,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     window.addEventListener('keydown', onKeyDown, { capture: true })
 
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
-  }, [addSelectionToChat, selection])
+  }, [addSelectionToChat, readSelection])
 
   useEffect(() => {
     const host = hostRef.current
@@ -486,21 +492,6 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     })
 
     cleanup.push(() => selectionDisposable.dispose())
-
-    term.attachCustomKeyEventHandler(event => {
-      if (event.type !== 'keydown') {
-        return true
-      }
-
-      if (isAddSelectionShortcut(event) && term.hasSelection()) {
-        event.preventDefault()
-        addSelectionToChat()
-
-        return false
-      }
-
-      return true
-    })
 
     const startSession = () =>
       void terminalApi
