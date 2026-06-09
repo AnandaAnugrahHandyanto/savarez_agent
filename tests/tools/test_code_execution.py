@@ -85,9 +85,9 @@ class TestHermesToolsGeneration(unittest.TestCase):
             self.assertIn(f"def {tool}(", src)
 
     def test_generates_subset(self):
-        src = generate_hermes_tools_module(["terminal", "web_search"])
-        self.assertIn("def terminal(", src)
+        src = generate_hermes_tools_module(["web_search", "write_file"])
         self.assertIn("def web_search(", src)
+        self.assertIn("def write_file(", src)
         self.assertNotIn("def read_file(", src)
 
     def test_empty_list_generates_nothing(self):
@@ -96,8 +96,8 @@ class TestHermesToolsGeneration(unittest.TestCase):
         self.assertIn("def _call(", src)  # infrastructure still present
 
     def test_non_allowed_tools_ignored(self):
-        src = generate_hermes_tools_module(["vision_analyze", "terminal"])
-        self.assertIn("def terminal(", src)
+        src = generate_hermes_tools_module(["vision_analyze", "web_search"])
+        self.assertIn("def web_search(", src)
         self.assertNotIn("def vision_analyze(", src)
 
     def test_rpc_infrastructure_present(self):

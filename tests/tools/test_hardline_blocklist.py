@@ -239,7 +239,7 @@ def test_container_backends_now_enforce_guards(clean_session):
 
     Hardline and dangerous command detection applies to all environments.
     """
-    for env in ("docker", "singularity", "modal", "daytona"):
+    for env in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
         r1 = check_dangerous_command("rm -rf /", env)
         assert r1["approved"] is False, f"container {env} should block hardline"
         r2 = check_all_command_guards("rm -rf /", env)

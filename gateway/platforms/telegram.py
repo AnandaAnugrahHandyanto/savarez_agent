@@ -5109,6 +5109,13 @@ class TelegramAdapter(BasePlatformAdapter):
             allowed = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
             if not allowed:
                 return True
+            # Only apply user-based allowlist to actual private/DM chats.
+            # Channel posts and other non-group types use
+            # TELEGRAM_ALLOWED_CHATS for access control instead.
+            chat = getattr(message, "chat", None)
+            chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower()
+            if chat_type not in ("dm", "private"):
+                return True
             allowed_ids = {uid.strip() for uid in allowed.split(",") if uid.strip()}
             if "*" in allowed_ids:
                 return True
