@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -286,6 +286,7 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_reasoning_items TEXT,
     codex_message_items TEXT,
     platform_message_id TEXT,
+    sender_device TEXT,
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1
 );
@@ -974,6 +975,17 @@ class SessionDB:
                     )
                 except sqlite3.OperationalError:
                     pass
+            if current_version < 17:
+                # v17: Per-message sender attribution (F-003 multi-participant
+                # channels). User messages record WHICH device they came from
+                # so a session shared across devices reads like a group chat.
+                # Existing rows stay NULL — origin unknown is honest.
+                try:
+                    cursor.execute(
+                        "ALTER TABLE messages ADD COLUMN sender_device TEXT"
+                    )
+                except sqlite3.OperationalError:
+                    pass  # already added (replayed migration)
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -2417,6 +2429,7 @@ class SessionDB:
         codex_message_items: Any = None,
         platform_message_id: str = None,
         observed: bool = False,
+        sender_device: str = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -2429,7 +2442,19 @@ class SessionDB:
         independent of the SQLite autoincrement primary key and is used by
         platform-specific flows like yuanbao's recall guard to redact a
         message by its platform-side identifier.
+
+        ``sender_device`` attributes a user message to the device it was
+        typed on (F-003 multi-participant channels). When omitted, user
+        messages are stamped with this device's resolved name so every
+        writer participates in attribution without call-site changes;
+        remote writers (future fan-out) pass their own device explicitly.
+        Assistant/tool rows stay NULL — the agent is not a "sender".
         """
+        if sender_device is None and role == "user":
+            try:
+                sender_device = get_device_name()
+            except Exception:
+                sender_device = None
         # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = (
             json.dumps(reasoning_details)
@@ -2458,8 +2483,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, sender_device, observed)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -2476,6 +2501,7 @@ class SessionDB:
                     codex_items_json,
                     codex_message_items_json,
                     platform_message_id,
+                    sender_device,
                     1 if observed else 0,
                 ),
             )
@@ -2548,8 +2574,8 @@ class SessionDB:
                     """INSERT INTO messages (session_id, role, content, tool_call_id,
                        tool_calls, tool_name, timestamp, token_count, finish_reason,
                        reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                       codex_message_items, platform_message_id, observed)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       codex_message_items, platform_message_id, sender_device, observed)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         role,
@@ -2566,6 +2592,10 @@ class SessionDB:
                         codex_items_json,
                         codex_message_items_json,
                         platform_msg_id,
+                        # Preserve attribution across transcript rewrites
+                        # (/retry, /undo, /compress) — rewriting history must
+                        # not erase WHO sent each surviving user message.
+                        msg.get("sender_device"),
                         1 if msg.get("observed") else 0,
                     ),
                 )
