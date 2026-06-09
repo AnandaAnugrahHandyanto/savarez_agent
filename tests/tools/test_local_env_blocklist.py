@@ -418,6 +418,41 @@ class TestSanePathIncludesHomebrew:
         assert path_entries.count("/usr/local/bin") == 1
         assert path_entries.count("/usr/bin") == 1
 
+    def test_make_run_env_real_launchd_path_gains_homebrew(self):
+        """The literal macOS launchd PATH is the production trigger for #35613."""
+        from tools.environments.local import _make_run_env
+        launchd_env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
+        with patch.dict(os.environ, launchd_env, clear=True):
+            result = _make_run_env({})
+        path_entries = result["PATH"].split(":")
+        assert "/opt/homebrew/bin" in path_entries
+        assert "/opt/homebrew/sbin" in path_entries
+        # Original entries keep their leading precedence.
+        assert path_entries[:4] == ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+
+    def test_make_run_env_collapses_duplicate_caller_entries(self):
+        """Duplicates already present in the caller PATH are de-duplicated."""
+        from tools.environments.local import _make_run_env
+        dup_env = {"PATH": "/usr/bin:/usr/bin:/custom/bin:/custom/bin:/bin"}
+        with patch.dict(os.environ, dup_env, clear=True):
+            result = _make_run_env({})
+        path_entries = result["PATH"].split(":")
+        assert path_entries.count("/usr/bin") == 1
+        assert path_entries.count("/custom/bin") == 1
+        # First-occurrence order is preserved for the caller entries.
+        assert path_entries[:3] == ["/usr/bin", "/custom/bin", "/bin"]
+
+    def test_make_run_env_strips_empty_path_entries(self):
+        """Leading/trailing/double colons (== CWD on POSIX) are dropped."""
+        from tools.environments.local import _make_run_env
+        empty_env = {"PATH": "/usr/bin::/bin:"}
+        with patch.dict(os.environ, empty_env, clear=True):
+            result = _make_run_env({})
+        path_entries = result["PATH"].split(":")
+        assert "" not in path_entries
+        assert "/usr/bin" in path_entries
+        assert "/opt/homebrew/bin" in path_entries
+
     def test_make_run_env_leaves_windows_path_unchanged(self, monkeypatch):
         from tools.environments import local as local_mod
         from tools.environments.local import _make_run_env

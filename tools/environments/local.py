@@ -301,7 +301,15 @@ _SANE_PATH = (
 
 
 def _append_missing_sane_path_entries(existing_path: str) -> str:
-    """Return PATH with each missing POSIX sane entry appended once."""
+    """Return PATH with each missing POSIX sane entry appended once.
+
+    The caller-supplied PATH is normalised first: empty entries (which a
+    leading/trailing/double ``:`` express, and which POSIX shells treat as
+    the current working directory — a mild foot-gun) and duplicate entries
+    are dropped, preserving first-occurrence order. Each missing _SANE_PATH
+    entry is then appended once at the end so existing entries keep their
+    precedence.
+    """
     if _IS_WINDOWS:
         return existing_path
 
@@ -309,12 +317,22 @@ def _append_missing_sane_path_entries(existing_path: str) -> str:
     if not existing_path:
         return ":".join(sane_entries)
 
-    existing_entries = existing_path.split(":")
-    existing_set = {entry for entry in existing_entries if entry}
-    missing_entries = [entry for entry in sane_entries if entry not in existing_set]
-    if not missing_entries:
-        return existing_path
-    return f"{existing_path}:{':'.join(missing_entries)}"
+    # De-duplicate the caller PATH (first occurrence wins) and drop empty
+    # entries before merging in the sane fallbacks.
+    seen: set[str] = set()
+    ordered_entries: list[str] = []
+    for entry in existing_path.split(":"):
+        if not entry or entry in seen:
+            continue
+        seen.add(entry)
+        ordered_entries.append(entry)
+
+    for entry in sane_entries:
+        if entry not in seen:
+            seen.add(entry)
+            ordered_entries.append(entry)
+
+    return ":".join(ordered_entries)
 
 
 def _path_env_key(run_env: dict) -> str | None:
