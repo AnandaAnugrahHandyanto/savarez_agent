@@ -801,6 +801,10 @@ export function useMessageStream({
 
         flushQueuedDeltas(sessionId)
         upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type)
+        // Update context usage in real-time during tool execution.
+        if (payload?.usage && (!explicitSid || isActiveEvent)) {
+          setCurrentUsage(current => ({ ...current, ...payload.usage }))
+        }
       } else if (event.type === 'tool.complete') {
         if (sessionId) {
           flushQueuedDeltas(sessionId)
@@ -810,6 +814,11 @@ export function useMessageStream({
           // the sidebar indicator clears as soon as it's answered, not only at
           // message.complete.
           updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
+        }
+
+        // Update context usage in real-time after tool completion.
+        if (payload?.usage && (!explicitSid || isActiveEvent)) {
+          setCurrentUsage(current => ({ ...current, ...payload.usage }))
         }
 
         if (typeof payload?.inline_diff === 'string' && payload.inline_diff.trim()) {

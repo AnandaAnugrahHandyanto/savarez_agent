@@ -1820,7 +1820,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # producing an orphaned event clients can't correlate.
             _started_tool_call_ids: set[str] = set()
 
-            def _on_tool_start(tool_call_id, function_name, function_args):
+            def _on_tool_start(tool_call_id, function_name, function_args, **kwargs):
                 """Emit ``hermes.tool.progress`` with ``status: running``.
 
                 Replaces the old ``tool_progress_callback("tool.started",
@@ -1846,7 +1846,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "status": "running",
                 }))
 
-            def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
+            def _on_tool_complete(tool_call_id, function_name, function_args, function_result, **kwargs):
                 """Emit the matching ``status: completed`` event.
 
                 Dropped if the start was filtered (internal tool, missing
@@ -2884,7 +2884,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 """
                 return
 
-            def _on_tool_start(tool_call_id, function_name, function_args):
+            def _on_tool_start(tool_call_id, function_name, function_args, **kwargs):
                 """Queue a started tool for live function_call streaming."""
                 _stream_q.put(("__tool_started__", {
                     "tool_call_id": tool_call_id,
@@ -2892,7 +2892,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "arguments": function_args or {},
                 }))
 
-            def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
+            def _on_tool_complete(tool_call_id, function_name, function_args, function_result, **kwargs):
                 """Queue a completed tool result for live function_call_output streaming."""
                 _stream_q.put(("__tool_completed__", {
                     "tool_call_id": tool_call_id,
