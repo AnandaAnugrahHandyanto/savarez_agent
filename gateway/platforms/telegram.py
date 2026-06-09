@@ -1023,6 +1023,47 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
 
+    async def _polling_liveness_watchdog(self) -> None:
+        """Recover PTB polling when it reports running but stops consuming updates."""
+        interval = int(os.getenv("HERMES_TELEGRAM_LIVENESS_INTERVAL", "15") or "15")
+        consecutive_pending = 0
+        while not self.has_fatal_error:
+            await asyncio.sleep(max(5, interval))
+            if self._webhook_mode or not self._app or not self._app.updater or not self._bot:
+                continue
+            try:
+                info = await self._bot.get_webhook_info()
+                pending = int(getattr(info, "pending_update_count", 0) or 0)
+            except Exception as exc:
+                logger.debug("[%s] Telegram liveness probe failed: %s", self.name, exc)
+                continue
+            if pending <= 0:
+                consecutive_pending = 0
+                continue
+            consecutive_pending += 1
+            if consecutive_pending < 2:
+                continue
+            logger.warning(
+                "[%s] Telegram polling liveness detected %d pending update(s) not being consumed; restarting polling only",
+                self.name, pending,
+            )
+            consecutive_pending = 0
+            try:
+                if self._app.updater.running:
+                    await self._app.updater.stop()
+            except Exception:
+                logger.debug("[%s] Telegram liveness updater.stop failed", self.name, exc_info=True)
+            await self._drain_polling_connections()
+            try:
+                await self._app.updater.start_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=False,
+                    error_callback=self._polling_error_callback_ref,
+                )
+                logger.info("[%s] Telegram polling liveness restart complete", self.name)
+            except Exception as exc:
+                logger.warning("[%s] Telegram liveness polling restart failed: %s", self.name, exc)
+
     async def _verify_polling_after_reconnect(self) -> None:
         """Heartbeat probe scheduled after a successful reconnect.
 
@@ -1641,8 +1682,6 @@ class TelegramAdapter(BasePlatformAdapter):
                         await asyncio.sleep(wait)
                     else:
                         raise
-            await self._app.start()
-
             # Decide between webhook and polling mode
             webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
 
@@ -1716,9 +1755,20 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    drop_pending_updates=False,
                     error_callback=_polling_error_callback,
                 )
+
+            # Match python-telegram-bot run_polling lifecycle: initialize,
+            # start updater polling/webhook, then start the application so
+            # update processing is attached to the active updater.
+            await self._app.start()
+            logger.info(
+                "[%s] Telegram application started (updater_running=%s, running=%s)",
+                self.name,
+                bool(getattr(self._app.updater, "running", False)),
+                bool(getattr(self._app, "running", False)),
+            )
             
             # Register bot commands so Telegram shows a hint menu when users type /
             # List is derived from the central COMMAND_REGISTRY — adding a new
@@ -1766,6 +1816,10 @@ class TelegramAdapter(BasePlatformAdapter):
             self._mark_connected()
             mode = "webhook" if self._webhook_mode else "polling"
             logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
+            if not self._webhook_mode:
+                live_task = asyncio.ensure_future(self._polling_liveness_watchdog())
+                self._background_tasks.add(live_task)
+                live_task.add_done_callback(self._background_tasks.discard)
 
             # Set up DM topics (Bot API 9.4 — Private Chat Topics)
             # Runs after connection is established so the bot can call createForumTopic.
