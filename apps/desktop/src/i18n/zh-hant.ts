@@ -1621,7 +1621,9 @@ export const zhHant = defineLocale({
     loadingFiles: '正在載入檔案',
     terminalFocus: '聚焦終端機檢視',
     terminalSplit: '返回分割檢視',
-    addToChat: '新增至聊天'
+    addToChat: '新增至聊天',
+    copyPath: '複製路徑',
+    copyRelativePath: '複製相對路徑'
   },
 
   preview: {

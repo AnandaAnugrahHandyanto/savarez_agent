@@ -1190,6 +1190,8 @@ export interface Translations {
     terminalFocus: string
     terminalSplit: string
     addToChat: string
+    copyPath: string
+    copyRelativePath: string
   }
 
   preview: {
