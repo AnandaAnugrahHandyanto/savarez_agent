@@ -6736,3 +6736,41 @@ def test_reap_idle_sessions_closes_only_evictable(monkeypatch):
         assert closed == [("stale", "idle_timeout")]
     finally:
         server._sessions.clear()
+
+
+def test_drain_owned_notifications_requeues_foreign_live_session_events(monkeypatch):
+    current = {"session_key": "agent:main:tui:session:current"}
+    other = {"session_key": "agent:main:tui:session:other"}
+    foreign_evt = {
+        "type": "completion",
+        "session_id": "proc_foreign",
+        "session_key": "agent:main:tui:session:other",
+    }
+    owned_evt = {
+        "type": "completion",
+        "session_id": "proc_owned",
+        "session_key": "agent:main:tui:session:current",
+    }
+    global_evt = {"type": "watch_overflow_global", "session_id": "proc_global"}
+    requeued = []
+
+    class _Queue:
+        def put(self, evt):
+            requeued.append(evt)
+
+    class _Registry:
+        completion_queue = _Queue()
+
+        def drain_notifications(self):
+            return [(foreign_evt, "foreign"), (owned_evt, "owned"), (global_evt, "global")]
+
+    monkeypatch.setitem(server._sessions, "current", current)
+    monkeypatch.setitem(server._sessions, "other", other)
+    try:
+        drained = server._drain_owned_notifications(_Registry(), current)
+    finally:
+        server._sessions.pop("current", None)
+        server._sessions.pop("other", None)
+
+    assert drained == [(owned_evt, "owned"), (global_evt, "global")]
+    assert requeued == [foreign_evt]
