@@ -2130,10 +2130,22 @@ def get_launchd_plist_path() -> Path:
 
     Default ``~/.hermes`` → ``ai.hermes.gateway.plist`` (backward compatible).
     Profile ``~/.hermes/profiles/coder`` → ``ai.hermes.gateway-coder.plist``.
+
+    On macOS 26+ this function transparently redirects to the *active* plist
+    (the timestamp-suffixed one written by ``_atomic_label_migration_to_clear_provenance``)
+    whenever a previous migration has happened. The canonical plist filename
+    is still updated in place by ``launchd_install`` — but the read paths
+    (status, plist-equality check) consult the active file so that the
+    service definition matches the live launchd job.
     """
     suffix = _profile_suffix()
     name = f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
-    return _launchd_user_home() / "Library" / "LaunchAgents" / f"{name}.plist"
+    plist_dir = _launchd_user_home() / "Library" / "LaunchAgents"
+    if sys.platform == "darwin":
+        active = _read_active_label()
+        if active and active != name:
+            return plist_dir / f"{active}.plist"
+    return plist_dir / f"{name}.plist"
 
 
 def _detect_venv_dir() -> Path | None:
@@ -3067,6 +3079,19 @@ def get_launchd_label() -> str:
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 
+def get_active_launchd_label() -> str:
+    """Return the launchd label that is *currently registered*.
+
+    If a previous ``_atomic_label_migration_to_clear_provenance`` has moved
+    the gateway to a ``.v2`` / ``.v3`` / ... suffix, that label is returned.
+    Falls back to ``get_launchd_label()`` when no migration has ever happened.
+    """
+    active = _read_active_label()
+    if active:
+        return active
+    return get_launchd_label()
+
+
 def _launchd_domain() -> str:
     # The `user/<uid>` domain (vs the older `gui/<uid>`) is reachable from
     # non-Aqua/background sessions (SSH, headless, login items) and is the only
@@ -3098,8 +3123,300 @@ def _launchctl_domain_unsupported(returncode: int) -> bool:
     Codes 5 and 125 persist on macOS hosts where neither `gui/<uid>` nor
     `user/<uid>` supports service management; treat these as "launchd
     unavailable" and degrade gracefully to a detached process.
+
+    NOTE: code 5 can ALSO mean "stale com.apple.provenance xattr on the plist
+    after a `hermes update` modified it post-bootstrap" — see
+    ``_maybe_clear_plist_provenance_xattr`` for the auto-repair path. Always
+    try the xattr repair before declaring the domain unsupported.
     """
     return returncode in _LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES
+
+
+# =============================================================================
+# macOS plist provenance xattr auto-repair
+# =============================================================================
+#
+# On macOS 26+ (Darwin 25.x), launchd writes a ``com.apple.provenance`` xattr
+# to every LaunchAgent plist at first load. If the plist is later modified
+# (e.g. by ``hermes update`` rewriting it) launchd treats the on-disk version
+# as a different identity and refuses ``launchctl bootstrap`` with errno 5
+# (EBADF → "Input/output error"). The service then degrades to a detached
+# background process that does NOT auto-restart on crash or login.
+#
+# Permanent fix: detect the stale xattr, ask ``launchctl bootout`` to drop
+# the cached job entry, and remove the xattr (which requires root via sudo).
+# On hosts without sudo access we fall back to a domain-level disable+enable
+# cycle that achieves the same cache invalidation, OR an atomic label
+# migration that gives the plist a brand-new launchd identity.
+
+
+def _run_sudo_with_password(argv: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess:
+    """Run a sudo command using ``SUDO_PASSWORD`` from the environment.
+
+    Three strategies, in order:
+    1. ``sudo -n`` (non-interactive, no password) — succeeds if the user has
+       NOPASSWD entries for the target command.
+    2. ``echo "$SUDO_PASSWORD" | sudo -S -p '' <argv>`` — pipes the password
+       on stdin (silenced prompt).
+    Returns a CompletedProcess. Never raises CalledProcessError; callers
+    inspect returncode.
+    """
+    if not argv or argv[0] != "sudo":
+        raise ValueError("_run_sudo_with_password expects argv[0] == 'sudo'")
+    # Strategy 1: passwordless sudo.
+    try:
+        return subprocess.run(
+            ["sudo", "-n"] + argv[1:],
+            check=False, capture_output=True, text=True, timeout=timeout,
+        )
+    except FileNotFoundError:
+        raise
+    # Strategy 2: pipe password on stdin.
+    password = os.environ.get("SUDO_PASSWORD", "").strip()
+    if not password:
+        return subprocess.run(
+            ["sudo", "-n"] + argv[1:],
+            check=False, capture_output=True, text=True, timeout=timeout,
+        )
+    return subprocess.run(
+        ["sudo", "-S", "-p", ""] + argv[1:],
+        input=password + "\n",
+        check=False, capture_output=True, text=True, timeout=timeout,
+    )
+
+
+def _plist_has_provenance_xattr(plist_path: Path) -> bool:
+    """True if ``plist_path`` carries the macOS 26 ``com.apple.provenance`` xattr.
+
+    Use ``xattr`` (names only); ``xattr -l`` prints ``name: value`` pairs
+    and is the wrong format for a presence check.
+    """
+    try:
+        result = subprocess.run(
+            ["xattr", str(plist_path)],
+            check=False, capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    return "com.apple.provenance" in result.stdout.splitlines()
+
+
+def _maybe_clear_plist_provenance_xattr(plist_path: Path) -> bool:
+    """Remove ``com.apple.provenance`` from a plist so launchd can re-bootstrap.
+
+    Idempotent. Returns True if the xattr is gone. Returns False if the xattr
+    is still present after best-effort repair — in which case the caller
+    should still attempt the bootstrap and fall back to atomic label
+    migration if it fails.
+    """
+    if not plist_path.exists():
+        return True
+    if not _plist_has_provenance_xattr(plist_path):
+        return True
+
+    cleared = False
+
+    # Step 1: invalidate the launchd cache.
+    label = get_launchd_label()
+    domain = _launchd_domain()
+    subprocess.run(
+        ["launchctl", "disable", f"{domain}/{label}"],
+        check=False, capture_output=True, text=True, timeout=10,
+    )
+    subprocess.run(
+        ["launchctl", "bootout", f"{domain}/{label}"],
+        check=False, capture_output=True, text=True, timeout=10,
+    )
+
+    # Step 2: try to remove the xattr with sudo.
+    if sys.platform == "darwin":
+        result = _run_sudo_with_password(
+            ["sudo", "-n", "xattr", "-d", "com.apple.provenance", str(plist_path)],
+            timeout=10,
+        )
+        if result.returncode == 0 and not _plist_has_provenance_xattr(plist_path):
+            cleared = True
+        elif result.returncode != 0:
+            pw = _run_sudo_with_password(
+                ["sudo", "xattr", "-d", "com.apple.provenance", str(plist_path)],
+                timeout=10,
+            )
+            if pw.returncode == 0 and not _plist_has_provenance_xattr(plist_path):
+                cleared = True
+
+    # Step 3: re-enable.
+    subprocess.run(
+        ["launchctl", "enable", f"{domain}/{label}"],
+        check=False, capture_output=True, text=True, timeout=10,
+    )
+
+    if cleared:
+        print("  → Cleared stale com.apple.provenance xattr from plist")
+    elif not _plist_has_provenance_xattr(plist_path):
+        print("  → Invalidated launchd cache for plist (no xattr to clear)")
+    else:
+        print("  ⚠ Could not clear com.apple.provenance (no sudo);")
+        print("    continuing with cache invalidation only")
+    return not _plist_has_provenance_xattr(plist_path)
+
+
+# Atomic label-migration fallback. When the provenance xattr can't be removed
+# (no root, stale SUDO_PASSWORD) the only way to restore launchd-managed
+# bootstrap is to give the plist a fresh identity by writing a clone with a
+# new <key>Label</key>. The new label is timestamp-based so it cannot collide
+# with any cached launchd entry. We persist the active label in
+# ``~/.hermes/_state/launchd-active-label`` so the CLI always finds the right
+# plist.
+
+_ACTIVE_LABEL_STATE_FILE = "_state/launchd-active-label"
+
+
+def _active_label_state_path() -> Path:
+    return Path(get_hermes_home()) / _ACTIVE_LABEL_STATE_FILE
+
+
+def _read_active_label() -> str | None:
+    p = _active_label_state_path()
+    if not p.exists():
+        return None
+    text = p.read_text(encoding="utf-8").strip()
+    return text or None
+
+
+def _write_active_label(label: str) -> None:
+    p = _active_label_state_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    # Atomic write: temp file + rename.
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(label + "\n", encoding="utf-8")
+    os.replace(tmp, p)
+
+
+def _atomic_label_migration_to_clear_provenance(base_plist_path: Path) -> Path | None:
+    """Last-resort fix when the provenance xattr can't be removed.
+
+    Clones the plist with a fresh timestamp-suffixed label. Returns the path
+    of the new plist that should be bootstrapped, or None if migration was
+    skipped (e.g. the provenance check is already clean).
+    """
+    if not base_plist_path.exists():
+        return None
+    if not _plist_has_provenance_xattr(base_plist_path):
+        return None
+
+    base_label = get_launchd_label()
+    import time as _time
+    new_label = f"{base_label}.{int(_time.time()) // 10}"
+    new_plist_path = base_plist_path.with_name(f"{new_label}.plist")
+
+    raw = base_plist_path.read_text(encoding="utf-8")
+
+    if f"<string>{base_label}</string>" in raw:
+        new_raw = raw.replace(
+            f"<string>{base_label}</string>",
+            f"<string>{new_label}</string>",
+            1,
+        )
+    elif shutil.which("plutil"):
+        result = subprocess.run(
+            ["plutil", "-convert", "xml1", "-o", "-", str(base_plist_path)],
+            check=False, capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return None
+        new_raw = result.stdout.replace(
+            f"<string>{base_label}</string>",
+            f"<string>{new_label}</string>",
+            1,
+        )
+    else:
+        return None
+
+    new_plist_path.write_text(new_raw, encoding="utf-8")
+
+    # Bootout the BASE and PREVIOUSLY-ACTIVE labels so the two plists don't
+    # fight for the gateway. Don't bootout the new label (it doesn't exist
+    # in launchd yet — that's the whole point).
+    domain = _launchd_domain()
+    previous_active = _read_active_label()
+    bootout_targets = {base_label}
+    if previous_active and previous_active != new_label:
+        bootout_targets.add(previous_active)
+    for target in bootout_targets:
+        subprocess.run(
+            ["launchctl", "disable", f"{domain}/{target}"],
+            check=False, capture_output=True, text=True, timeout=10,
+        )
+        subprocess.run(
+            ["launchctl", "bootout", f"{domain}/{target}"],
+            check=False, capture_output=True, text=True, timeout=30,
+        )
+
+    _write_active_label(new_label)
+
+    # GC: prune timestamped plists older than the current one. Keep the
+    # last 2 (current + previous) so `hermes gateway status` can introspect
+    # them; anything older is a dead label launchd will never use.
+    try:
+        plist_dir = base_plist_path.parent
+        prefix = f"{base_label}."
+        candidates = []
+        for sibling in plist_dir.glob(f"{base_label}.*.plist"):
+            if sibling == new_plist_path:
+                continue
+            suffix = sibling.stem[len(prefix):]
+            if not suffix or not suffix.isdigit():
+                continue
+            candidates.append((int(suffix), sibling))
+        candidates.sort(reverse=True)
+        for ts, path in candidates[2:]:
+            check = subprocess.run(
+                ["launchctl", "print", f"{domain}/{path.stem}"],
+                check=False, capture_output=True, text=True, timeout=5,
+            )
+            if check.returncode == 0 and "label = " in check.stdout:
+                continue
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+    print(f"  → Migrated gateway label: {base_label} → {new_label}")
+    print(f"    (old plist kept as backup at {base_plist_path})")
+    return new_plist_path
+
+
+def _ensure_clean_plist_for_bootstrap(plist_path: Path) -> Path:
+    """Make sure ``plist_path`` is in a state launchd will accept.
+
+    Single entry point used by ``launchd_install`` and
+    ``refresh_launchd_plist_if_needed``. Centralising the policy here means
+    the rest of the code stays agnostic to how the repair happened.
+
+    Strategy order:
+    1. If the plist is clean, return it unchanged.
+    2. Try to clear the provenance xattr (works with sudo).
+    3. If still dirty, perform an atomic label migration and return the new
+       plist path.
+    4. As a final fallback, return the original plist anyway.
+    """
+    if not _plist_has_provenance_xattr(plist_path):
+        return plist_path
+
+    print("  → Detected macOS 26 com.apple.provenance xattr; attempting repair")
+    cleared = _maybe_clear_plist_provenance_xattr(plist_path)
+    if cleared and not _plist_has_provenance_xattr(plist_path):
+        return plist_path
+
+    migrated = _atomic_label_migration_to_clear_provenance(plist_path)
+    if migrated is not None and migrated != plist_path:
+        return migrated
+
+    return plist_path
 
 
 def _gateway_run_command() -> list[str]:
@@ -3292,13 +3609,23 @@ def refresh_launchd_plist_if_needed() -> bool:
     Unlike systemd, launchd picks up plist changes on the next ``launchctl kill``/
     ``launchctl kickstart`` cycle — no daemon-reload is needed. We still bootout/
     bootstrap to make launchd re-read the updated plist immediately.
+
+    Pre-flight: clear any stale ``com.apple.provenance`` xattr (macOS 26+
+    fingerprinting) BEFORE bootstrap so we don't fall into the errno 5 /
+    "Input/output error" trap that drops the service to a detached process.
     """
     plist_path = get_launchd_plist_path()
     if not plist_path.exists() or launchd_plist_is_current():
         return False
 
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-    label = get_launchd_label()
+    label = get_active_launchd_label()
+    # macOS 26 provenance repair — must happen before bootout/bootstrap or
+    # launchd will reject the new plist with errno 5. Returns the plist path
+    # to bootstrap (may be a new file if label migration kicked in).
+    if sys.platform == "darwin":
+        plist_path = _ensure_clean_plist_for_bootstrap(plist_path)
+        label = plist_path.stem
     # Bootout/bootstrap so launchd picks up the new definition
     subprocess.run(
         ["launchctl", "bootout", f"{_launchd_domain()}/{label}"],
@@ -3333,6 +3660,15 @@ def launchd_install(force: bool = False):
     print(f"Installing launchd service to: {plist_path}")
     plist_path.write_text(generate_launchd_plist())
 
+    # Pre-flight: drop the macOS 26 provenance xattr if present so launchd
+    # doesn't refuse the bootstrap with errno 5 (EBADF) and silently downgrade
+    # the service to an unmanaged detached process. May rewrite plist_path
+    # to a new file if label migration was needed.
+    if sys.platform == "darwin":
+        plist_path = _ensure_clean_plist_for_bootstrap(plist_path)
+
+    label = plist_path.stem
+
     try:
         subprocess.run(
             ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
@@ -3340,6 +3676,30 @@ def launchd_install(force: bool = False):
             timeout=30,
         )
     except subprocess.CalledProcessError as e:
+        # If the first attempt failed AND the xattr is still present, try one
+        # more time after a forced repair — code 5 here is the canonical
+        # provenance-stale signature on macOS 26+.
+        if (
+            e.returncode == 5
+            and sys.platform == "darwin"
+            and _plist_has_provenance_xattr(plist_path)
+        ):
+            print("↻ Bootstrap failed with code 5; retrying after provenance repair")
+            plist_path = _ensure_clean_plist_for_bootstrap(plist_path)
+            try:
+                subprocess.run(
+                    ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                    check=True,
+                    timeout=30,
+                )
+                print()
+                print("✓ Service installed and loaded (after provenance repair)!")
+                return
+            except subprocess.CalledProcessError as e2:
+                if not _launchctl_domain_unsupported(e2.returncode):
+                    raise
+                _launchd_fallback_to_detached(f"launchctl bootstrap exit {e2.returncode}")
+                return
         if not _launchctl_domain_unsupported(e.returncode):
             raise
         _launchd_fallback_to_detached(f"launchctl bootstrap exit {e.returncode}")
@@ -3355,25 +3715,38 @@ def launchd_install(force: bool = False):
     print(f"  tail -f {_dhh()}/logs/gateway.log  # View logs")
 
 
-def launchd_uninstall():
+def launchd_uninstall() -> None:
     plist_path = get_launchd_plist_path()
-    label = get_launchd_label()
-    subprocess.run(
-        ["launchctl", "bootout", f"{_launchd_domain()}/{label}"],
-        check=False,
-        timeout=90,
-    )
-
-    if plist_path.exists():
-        plist_path.unlink()
-        print(f"✓ Removed {plist_path}")
-
+    # Bootout BOTH the canonical label and the active (possibly-migrated)
+    # label, so uninstalling a system that's been auto-migrated cleans up
+    # every plist launchd might still know about.
+    for label in {get_launchd_label(), get_active_launchd_label()}:
+        subprocess.run(
+            ["launchctl", "bootout", f"{_launchd_domain()}/{label}"],
+            check=False,
+            timeout=90,
+        )
+    # Best-effort cleanup of every ai.hermes.gateway* plist file. The state
+    # file is removed last so a crash during uninstall doesn't desync the
+    # indirection.
+    for plist in Path("~/Library/LaunchAgents").expanduser().glob(
+        "ai.hermes.gateway*.plist"
+    ):
+        try:
+            plist.unlink()
+            print(f"✓ Removed {plist}")
+        except OSError as e:
+            print(f"⚠ Could not remove {plist}: {e}")
+    state_file = _active_label_state_path()
+    if state_file.exists():
+        state_file.unlink()
     print("✓ Service uninstalled")
 
 
-def launchd_start():
+def launchd_start() -> None:
     plist_path = get_launchd_plist_path()
-    label = get_launchd_label()
+    # Use the active label (post-migration) for the launchd target.
+    label = get_active_launchd_label()
 
     # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
     if not plist_path.exists():
@@ -3411,6 +3784,12 @@ def launchd_start():
             raise
         # Job not loaded in this domain — re-bootstrap the plist and retry.
         print("↻ launchd job was unloaded; reloading service definition")
+        # macOS 26 provenance check (idempotent — returns plist_path
+        # unchanged when no repair is needed). The migration may change
+        # the plist filename, so refresh the label too.
+        if sys.platform == "darwin":
+            plist_path = _ensure_clean_plist_for_bootstrap(plist_path)
+            label = plist_path.stem
         try:
             subprocess.run(
                 ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
@@ -3432,8 +3811,8 @@ def launchd_start():
     print("✓ Service started")
 
 
-def launchd_stop():
-    label = get_launchd_label()
+def launchd_stop() -> None:
+    label = get_active_launchd_label()
     target = f"{_launchd_domain()}/{label}"
     try:
         from gateway.status import get_running_pid, write_planned_stop_marker
@@ -3515,11 +3894,40 @@ def _wait_for_gateway_exit(
     return True
 
 
-def launchd_restart():
-    label = get_launchd_label()
+def launchd_restart() -> None:
+    """Restart the gateway under launchd management.
+
+    Uses ``get_active_launchd_label()`` (NOT the canonical
+    ``get_launchd_label()``) so a previously-migrated label
+    (``ai.hermes.gateway.v2`` / ``.v3`` / ...) is the one we bootout/kickstart.
+    This is what keeps the restart path aligned with the launchd identity that
+    was registered at install time.
+
+    On macOS 26+, the restart ALSO runs the provenance-xattr pre-flight. If
+    the active plist has the stale xattr (e.g. after ``hermes update``
+    rewrote it) the launchd identity is migrated to a fresh timestamp-based
+    label, the new plist is bootstrapped, and the old label is booted out —
+    in that order, so there's never a window with two competing gateways.
+    """
+    label = get_active_launchd_label()
     target = f"{_launchd_domain()}/{label}"
     drain_timeout = _get_restart_drain_timeout()
     from gateway.status import get_running_pid
+
+    # macOS 26 provenance pre-flight. If the active plist has a stale xattr
+    # (typically after `hermes update` rewrote it), clone it to a fresh
+    # timestamp-based label, bootout the old label, and continue the restart
+    # against the new label. This keeps the restart path idempotent.
+    if sys.platform == "darwin":
+        from pathlib import Path as _Path
+
+        plist_dir = _Path("~/Library/LaunchAgents").expanduser()
+        active_plist = plist_dir / f"{label}.plist"
+        if active_plist.exists() and _plist_has_provenance_xattr(active_plist):
+            new_plist = _ensure_clean_plist_for_bootstrap(active_plist)
+            if new_plist != active_plist:
+                label = new_plist.stem
+                target = f"{_launchd_domain()}/{label}"
 
     try:
         pid = get_running_pid()
@@ -3548,9 +3956,15 @@ def launchd_restart():
                 _launchd_fallback_to_detached(f"launchctl kickstart exit {e.returncode}")
                 return
             raise
-        # Job not loaded — bootstrap and start fresh
+        # Job not loaded — try the macOS 26 provenance repair path first, then
+        # bootstrap the (possibly-migrated) plist. Falls back to detached on
+        # any remaining launchd error.
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
+        if sys.platform == "darwin":
+            plist_path = _ensure_clean_plist_for_bootstrap(plist_path)
+            label = plist_path.stem
+            target = f"{_launchd_domain()}/{label}"
         try:
             subprocess.run(
                 ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
@@ -3566,9 +3980,9 @@ def launchd_restart():
         print("✓ Service restarted")
 
 
-def launchd_status(deep: bool = False):
+def launchd_status(deep: bool = False) -> None:
     plist_path = get_launchd_plist_path()
-    label = get_launchd_label()
+    label = get_active_launchd_label()
     try:
         result = subprocess.run(
             ["launchctl", "list", label],
