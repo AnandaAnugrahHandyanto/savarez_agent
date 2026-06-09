@@ -192,6 +192,16 @@ class TestProviderEnvBlocklist:
         for var in leaked_vars:
             assert var not in result_env, f"{var} leaked into subprocess env"
 
+    def test_aws_region_is_preserved(self):
+        """Non-credential AWS settings can still flow to ordinary tools."""
+        result_env = _run_with_env(extra_os_env={
+            "AWS_REGION": "us-east-1",
+            "AWS_DEFAULT_REGION": "us-east-1",
+        })
+
+        assert result_env["AWS_REGION"] == "us-east-1"
+        assert result_env["AWS_DEFAULT_REGION"] == "us-east-1"
+
     def test_safe_vars_are_preserved(self):
         """Standard env vars (PATH, HOME, USER) must still be passed through."""
         result_env = _run_with_env()
