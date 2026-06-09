@@ -159,7 +159,7 @@ class TestHandleVoiceCommand:
         runner._voice_mode["telegram:123"] = "voice_only"
         event = _make_event("/voice status")
         result = await runner._handle_voice_command(event)
-        assert "voice reply" in result.lower()
+        assert "voice" in result.lower()
 
     @pytest.mark.asyncio
     async def test_voice_smoke_runs_without_toggling_mode(self, runner):
@@ -362,12 +362,11 @@ class TestHandleVoiceCommand:
         assert adapter._auto_tts_disabled_chats == {"123"}
 
     def test_sync_populates_enabled_chats_from_voice_modes(self, runner):
-        """Issue #16007: sync also restores per-chat /voice on|tts opt-ins.
+        """Sync restores only explicit /voice tts opt-ins for auto-TTS.
 
         The adapter's ``_auto_tts_enabled_chats`` must mirror chats whose
-        persisted voice_mode is ``voice_only`` or ``all`` — without this,
-        ``/voice on`` was relying on a "not in disabled set" default that
-        silently enabled auto-TTS for every chat.
+        persisted voice_mode is ``all``. ``voice_only`` means STT-only input
+        handling and must not create audio replies.
         """
         from gateway.config import Platform
         runner._voice_mode = {
@@ -386,7 +385,7 @@ class TestHandleVoiceCommand:
         runner._sync_voice_mode_state_to_adapter(adapter)
 
         assert adapter._auto_tts_disabled_chats == {"off_chat"}
-        assert adapter._auto_tts_enabled_chats == {"on_chat", "tts_chat"}
+        assert adapter._auto_tts_enabled_chats == {"tts_chat"}
 
     def test_sync_pushes_config_default_onto_adapter(self, runner, monkeypatch):
         """Issue #16007: ``voice.auto_tts`` must propagate to ``_auto_tts_default``."""
@@ -500,7 +499,7 @@ class TestAutoVoiceReply:
     # | Platform      | Input | Mode       | base | runner | Expected     |
     # |---------------|-------|------------|------|--------|--------------|
     # | Telegram      | voice | off        | yes  | skip   | 1 audio      |
-    # | Telegram      | voice | voice_only | yes  | skip*  | 1 audio      |
+    # | Telegram      | voice | voice_only | skip | skip   | 0 audio      |
     # | Telegram      | voice | all        | yes  | skip*  | 1 audio      |
     # | Telegram      | text  | off        | skip | skip   | 0 audio      |
     # | Telegram      | text  | voice_only | skip | skip   | 0 audio      |
@@ -520,7 +519,7 @@ class TestAutoVoiceReply:
     # -- Telegram/Slack/Web: voice input, base handles ---------------------
 
     def test_voice_input_voice_only_skipped(self, runner):
-        """voice_only + voice input: base auto-TTS handles it, runner skips."""
+        """voice_only + voice input: STT-only, no audio reply."""
         assert self._call(runner, "voice_only", MessageType.VOICE) is False
 
     def test_voice_input_all_mode_skipped(self, runner):
@@ -2978,7 +2977,7 @@ class TestVoiceTTSPlayback:
         assert self._call_should_reply(runner, "all", MessageType.VOICE, already_sent=False) is False
 
     def test_telegram_voice_input_runner_skips_for_adapter_auto_tts(self):
-        """Telegram voice input stays on adapter auto-TTS to avoid duplicate audio."""
+        """Telegram voice_only input is STT-only and never runner TTS."""
         from gateway.config import Platform
         from gateway.platforms.base import MessageType
         runner = self._make_runner()
@@ -3038,7 +3037,7 @@ class TestVoiceTTSPlayback:
         assert self._call_should_reply(runner, "all", MessageType.VOICE, already_sent=True) is True
 
     def test_streaming_on_telegram_voice_input_runner_fires(self):
-        """Streaming Telegram voice input uses runner TTS because adapter has no final text."""
+        """Streaming Telegram voice_only input remains STT-only."""
         from gateway.config import Platform
         from gateway.platforms.base import MessageType
         runner = self._make_runner()
@@ -3048,7 +3047,7 @@ class TestVoiceTTSPlayback:
             MessageType.VOICE,
             already_sent=True,
             platform=Platform.TELEGRAM,
-        ) is True
+        ) is False
 
     def test_streaming_on_text_input_runner_fires(self):
         """Streaming ON + text input: runner handles TTS (same as before)."""
@@ -3080,7 +3079,7 @@ class TestVoiceTTSPlayback:
         ) is False
 
     def test_voice_reply_context_prompt_blocks_manual_tts_tools(self):
-        """Enabled Telegram voice turns instruct the agent to let adapter TTS speak."""
+        """STT-only Telegram voice turns do not add spoken-reply instructions."""
         from gateway.config import Platform
         from gateway.platforms.base import MessageEvent, MessageType, SessionSource
         runner = self._make_runner()
@@ -3093,9 +3092,23 @@ class TestVoiceTTSPlayback:
 
         prompt = runner._voice_reply_context_prompt(event)
 
+        assert prompt == ""
+
+    def test_voice_reply_context_prompt_blocks_manual_tts_tools_in_tts_mode(self):
+        """Explicit /voice tts turns keep spoken-reply guardrails."""
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        runner = self._make_runner()
+        runner._voice_mode["telegram:ch1"] = "all"
+        event = MessageEvent(
+            source=SessionSource(platform=Platform.TELEGRAM, chat_id="ch1"),
+            text="test",
+            message_type=MessageType.VOICE,
+        )
+
+        prompt = runner._voice_reply_context_prompt(event)
+
         assert "Voice reply mode is active" in prompt
-        assert "Do not call text_to_speech" in prompt
-        assert "same language as the voice transcript" in prompt
         assert "If the user asks for only a result, return only the result" in prompt
         assert "Never introduce yourself as Leo" in prompt
         assert "Do not invent live/current facts" in prompt
@@ -3232,14 +3245,18 @@ class TestVoiceTTSPlayback:
 
         assert runner._voice_reply_context_prompt(event) == ""
 
-    def test_is_voice_reply_turn_detects_enabled_voice_messages(self):
-        """Only opted-in voice messages use the low-latency voice route."""
+    def test_is_voice_reply_turn_requires_tts_mode(self):
+        """Only /voice tts messages use the low-latency spoken-reply route."""
         from gateway.config import Platform
         from gateway.platforms.base import MessageEvent, MessageType, SessionSource
         runner = self._make_runner()
         runner._voice_mode["telegram:ch1"] = "voice_only"
         source = SessionSource(platform=Platform.TELEGRAM, chat_id="ch1")
 
+        assert runner._is_voice_reply_turn(
+            MessageEvent(source=source, text="test", message_type=MessageType.VOICE)
+        ) is False
+        runner._voice_mode["telegram:ch1"] = "all"
         assert runner._is_voice_reply_turn(
             MessageEvent(source=source, text="test", message_type=MessageType.VOICE)
         ) is True

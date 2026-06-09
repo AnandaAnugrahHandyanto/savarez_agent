@@ -2896,7 +2896,7 @@ class GatewayRunner:
 
         Populates three fields from config + ``self._voice_mode``:
           - ``_auto_tts_default``: global default from ``voice.auto_tts``
-          - ``_auto_tts_enabled_chats``: chats with mode ``voice_only``/``all``
+          - ``_auto_tts_enabled_chats``: chats with mode ``all``
           - ``_auto_tts_disabled_chats``: chats with mode ``off``
         """
         platform = getattr(adapter, "platform", None)
@@ -2932,7 +2932,7 @@ class GatewayRunner:
             enabled_chats.clear()
             enabled_chats.update(
                 key[len(prefix):] for key, mode in self._voice_mode.items()
-                if mode in {"voice_only", "all"} and key.startswith(prefix)
+                if mode == "all" and key.startswith(prefix)
             )
 
     async def _safe_adapter_disconnect(self, adapter, platform) -> None:
@@ -13331,7 +13331,7 @@ class GatewayRunner:
             self._voice_mode[voice_key] = "voice_only"
             self._save_voice_modes()
             if adapter:
-                self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
+                self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=False)
             return t("gateway.voice.enabled_voice_only")
         elif args == "experiment" or args.startswith("experiment "):
             parts = args.split()
@@ -13400,7 +13400,7 @@ class GatewayRunner:
                 self._voice_mode[voice_key] = "voice_only"
                 self._save_voice_modes()
                 if adapter:
-                    self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
+                    self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=False)
                 toggle_line = t("gateway.voice.enabled_short")
             else:
                 self._voice_mode[voice_key] = "off"
@@ -13992,10 +13992,7 @@ class GatewayRunner:
         voice_mode = self._voice_mode.get(self._voice_key(event.source.platform, chat_id), "off")
         is_voice_input = (event.message_type == MessageType.VOICE)
 
-        should = (
-            (voice_mode == "all")
-            or (voice_mode == "voice_only" and is_voice_input)
-        )
+        should = voice_mode == "all"
         if not should:
             return False
 
@@ -14119,7 +14116,7 @@ class GatewayRunner:
             self._voice_key(event.source.platform, chat_id),
             "off",
         )
-        return voice_mode in {"voice_only", "all"}
+        return voice_mode == "all"
 
     def _voice_fast_reply_route(self, user_config: dict | None) -> dict | None:
         """Resolve optional low-latency model/tool overrides for voice replies.

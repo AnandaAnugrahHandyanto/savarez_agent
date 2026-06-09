@@ -345,7 +345,7 @@ gateway:
     save_failed:           "_(could not save to config: {error})_"
 
   voice:
-    enabled_voice_only:    "Voice mode enabled.\nI'll reply with voice when you send voice messages.\nUse /voice tts to get voice replies for all messages."
+    enabled_voice_only:    "Voice input enabled.\nSend voice messages and I'll transcribe them, understand them, and reply in text.\nUse /voice tts only when you explicitly want voice replies."
     disabled_text:         "Voice mode disabled. Text-only replies."
     tts_enabled:           "Auto-TTS enabled.\nAll replies will include a voice message."
     status_mode:           "Voice mode: {label}"
@@ -353,12 +353,12 @@ gateway:
     status_participants:   "Participants: {count}"
     status_member:         "  - {name}{status}"
     speaking:              " (speaking)"
-    enabled_short:         "Voice mode enabled."
+    enabled_short:         "Voice input enabled."
     disabled_short:        "Voice mode disabled."
     label_off:             "Off (text only)"
-    label_voice_only:      "On (voice reply to voice messages)"
+    label_voice_only:      "On (voice input, text replies)"
     label_all:             "TTS (voice reply to all messages)"
-    help:                  "{toggle}\n\n**How /voice works**\n• `/voice on` — voice reply when you send a voice message\n• `/voice tts` — voice reply to *every* message\n• `/voice off` — back to text-only replies\n• `/voice status` — show the current mode\n• `/voice` (no argument) — quick toggle between on and off{channels}"
+    help:                  "{toggle}\n\n**How /voice works**\n• `/voice on` — transcribe voice messages and reply in text\n• `/voice tts` — voice reply to *every* message\n• `/voice off` — text-only replies without voice-input mode\n• `/voice status` — show the current mode\n• `/voice` (no argument) — quick toggle between on and off{channels}"
     help_channels:         "\n\n**Live voice channels (Discord)**\n• Join a voice channel first, then `/voice channel` — I'll join, listen, and speak my replies\n• `/voice leave` — disconnect from the voice channel"
 
   yolo:

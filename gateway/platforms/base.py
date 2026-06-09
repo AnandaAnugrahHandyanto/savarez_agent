@@ -1845,9 +1845,9 @@ class BasePlatformAdapter(ABC):
         # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
         # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
         # Per-chat overrides live in two sets populated from ``_voice_mode``:
-        #   - ``_auto_tts_enabled_chats``: chat explicitly opted in via ``/voice on``
-        #     or ``/voice tts`` (mode is ``voice_only`` or ``all``). Fires even when
-        #     the global default is False.
+        #   - ``_auto_tts_enabled_chats``: chat explicitly opted in via
+        #     ``/voice tts`` (mode is ``all``). Fires even when the global default
+        #     is False. ``/voice on`` is STT-only and must not auto-TTS.
         #   - ``_auto_tts_disabled_chats``: chat explicitly opted out via
         #     ``/voice off`` (mode is ``off``). Suppresses auto-TTS even when the
         #     global default is True.
@@ -2037,8 +2037,8 @@ class BasePlatformAdapter(ABC):
         """Whether auto-TTS on voice input should fire for ``chat_id``.
 
         Decision layers (Issue #16007):
-          1. Explicit ``/voice on`` or ``/voice tts`` → always fire (even if
-             ``voice.auto_tts`` is False).
+          1. Explicit ``/voice tts`` → always fire (even if
+             ``voice.auto_tts`` is False). ``/voice on`` is STT-only.
           2. Explicit ``/voice off`` → never fire.
           3. Fall back to the global ``voice.auto_tts`` config default.
         """
