@@ -130,7 +130,9 @@ export function SidebarCronJobsSection({
           onClick={onToggle}
           type="button"
         >
-          <SidebarPanelLabel>{label}</SidebarPanelLabel>
+          {/* pl-3 matches the other left-sidebar section headers so the dither
+              marker aligns with the nav-icon column above. */}
+          <SidebarPanelLabel className="pl-3">{label}</SidebarPanelLabel>
           <span className="text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{countLabel}</span>
           <DisclosureCaret
             className="text-(--ui-text-tertiary) opacity-0 transition group-hover/section-label:opacity-100"
@@ -139,7 +141,7 @@ export function SidebarCronJobsSection({
         </button>
       </div>
       {open && (
-        <SidebarGroupContent className="flex max-h-72 shrink-0 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75">
+        <SidebarGroupContent className="flex max-h-72 shrink-0 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75 pt-1">
           {shown.map(job => (
             <CronJobSidebarRow
               expanded={peekJobId === job.id}

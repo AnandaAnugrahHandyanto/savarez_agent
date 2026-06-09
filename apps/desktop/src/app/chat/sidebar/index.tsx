@@ -750,7 +750,7 @@ export function ChatSidebar({
       )}
       collapsible="none"
     >
-      <SidebarContent className="gap-0 overflow-hidden bg-transparent px-2.5">
+      <SidebarContent className="gap-0 overflow-hidden bg-transparent px-1.5">
         <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
@@ -812,9 +812,22 @@ export function ChatSidebar({
         </SidebarGroup>
 
         {contentVisible && showSessionSections && (
-          <div className="shrink-0 px-2 pb-1 pt-1">
+          // No horizontal padding so the field spans the full content-box width
+          // like the nav buttons above (which are w-full inside a p-0 group).
+          // pl-px compensates for the nav buttons' 1px transparent border (their
+          // content sits at border+px-2 = 9px) so the search icon/text land on
+          // the same column as the nav icon/label.
+          <div className="shrink-0 pb-1 pl-px pt-1">
             <SearchField
               aria-label={s.searchAria}
+              // Match the nav rows: full width + fixed (no field-sizing growth),
+              // px-2 + gap-2 + a codicon search glyph (size-4) so the icon shares
+              // the same family/size as the nav codicons and the placeholder
+              // lines up with the nav icon/label columns. text-[0.8125rem] matches
+              // the nav item label size (the shared field defaults to text-sm).
+              containerClassName="flex w-full gap-2 px-2"
+              icon={<Codicon className="pointer-events-none size-4 shrink-0 text-muted-foreground/70" name="search" />}
+              inputClassName="w-full min-w-0 flex-1 text-[0.8125rem] [field-sizing:normal]"
               inputRef={searchInputRef}
               onChange={setSearchQuery}
               placeholder={s.searchPlaceholder}
@@ -982,7 +995,10 @@ function SidebarSectionHeader({ label, open, onToggle, action, meta }: SidebarSe
         onClick={onToggle}
         type="button"
       >
-        <SidebarPanelLabel>{label}</SidebarPanelLabel>
+        {/* pl-3 (vs the component's base pl-2) nudges the dither marker +4px so
+            its center lines up with the nav-icon column above (size-4 icons at
+            px-2 → center 16px from the group edge). */}
+        <SidebarPanelLabel className="pl-3">{label}</SidebarPanelLabel>
         {meta && <SidebarCount>{meta}</SidebarCount>}
         <DisclosureCaret
           className="text-(--ui-text-tertiary) opacity-0 transition group-hover/section-label:opacity-100"
@@ -1021,9 +1037,9 @@ function SidebarPinnedEmptyState() {
   const { t } = useI18n()
 
   return (
-    <div className="flex min-h-7 items-center gap-1.5 rounded-lg pl-2 text-[0.75rem] text-(--ui-text-tertiary)">
-      <span className="grid w-3.5 shrink-0 place-items-center text-(--ui-text-quaternary)">
-        <Codicon name="pin" size="0.75rem" />
+    <div className="flex min-h-7 items-center gap-2 rounded-lg border-l border-transparent pl-2 text-[0.8125rem] text-muted-foreground">
+      <span className="grid size-4 shrink-0 place-items-center text-(--ui-text-quaternary)">
+        <Codicon name="pinned" size="1rem" />
       </span>
       <span>{t.sidebar.shiftClickHint}</span>
     </div>
