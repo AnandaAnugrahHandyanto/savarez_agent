@@ -734,11 +734,21 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     """
     targets = _resolve_delivery_targets(job)
     if not targets:
-        if job.get("deliver", "local") != "local":
-            msg = f"no delivery target resolved for deliver={job.get('deliver', 'local')}"
-            logger.warning("Job '%s': %s", job["id"], msg)
-            return msg
-        return None  # local-only jobs don't deliver — not a failure
+        deliver = job.get("deliver", "local")
+        if deliver == "local":
+            return None  # local-only jobs don't deliver — not a failure
+        if deliver == "origin":
+            # Origin unresolvable (CLI session, no gateway home channels set).
+            # Treat as local — output is still saved in last_output.
+            logger.debug(
+                "Job '%s': deliver=origin but no origin/home channel found; "
+                "falling back to local (output saved in last_output)",
+                job.get("id", "?"),
+            )
+            return None
+        msg = f"no delivery target resolved for deliver={deliver}"
+        logger.warning("Job '%s': %s", job["id"], msg)
+        return msg
 
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform

@@ -2736,3 +2736,31 @@ class TestCronDeliveryTargets:
         monkeypatch.setattr(gateway_config, "load_gateway_config", _boom)
 
         assert cron_delivery_targets() == []
+
+
+class TestDeliverOriginFallbackToLocal:
+    """deliver=origin falls back to local when origin is unresolvable."""
+
+    def test_origin_with_no_origin_and_no_home_channels_returns_none(self, monkeypatch):
+        """When deliver=origin but no origin and no home channels, return None (local fallback)."""
+        # Clear all home channel env vars
+        for var in [
+            "TELEGRAM_HOME_CHANNEL", "DISCORD_HOME_CHANNEL", "SLACK_HOME_CHANNEL",
+            "SIGNAL_HOME_CHANNEL", "MATRIX_HOME_ROOM", "EMAIL_HOME_ADDRESS",
+            "WEIXIN_HOME_CHANNEL", "WECOM_HOME_CHANNEL", "FEISHU_HOME_CHANNEL",
+            "QQBOT_HOME_CHANNEL", "DINGTALK_HOME_CHANNEL", "BLUEBUBBLES_HOME_CHANNEL",
+            "WHATSAPP_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL", "SMS_HOME_CHANNEL",
+        ]:
+            monkeypatch.delenv(var, raising=False)
+
+        job = {"id": "cli-job", "deliver": "origin", "origin": None}
+        result = _deliver_result(job, "Cron output here.")
+        assert result is None  # local fallback, not an error
+
+    def test_explicit_platform_still_returns_error(self, monkeypatch):
+        """deliver=telegram with no home channel should still error (not affected by origin fallback)."""
+        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+        job = {"id": "no-tg", "deliver": "telegram"}
+        result = _deliver_result(job, "Output.")
+        assert result is not None
+        assert "no delivery target" in result
