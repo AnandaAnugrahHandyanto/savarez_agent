@@ -812,9 +812,17 @@ export function ChatSidebar({
         </SidebarGroup>
 
         {contentVisible && showSessionSections && (
-          <div className="shrink-0 px-2 pb-1 pt-1">
+          // No horizontal padding so the field spans the full content-box width
+          // like the nav buttons above (which are w-full inside a p-0 group).
+          <div className="shrink-0 pb-1 pt-1">
             <SearchField
               aria-label={s.searchAria}
+              // Match the nav rows: full width + fixed (no field-sizing growth),
+              // px-2 + gap-2 + a size-4 icon so the magnifier and placeholder
+              // line up with the nav icon/label columns.
+              containerClassName="flex w-full gap-2 px-2"
+              iconClassName="size-4"
+              inputClassName="w-full min-w-0 flex-1 [field-sizing:normal]"
               inputRef={searchInputRef}
               onChange={setSearchQuery}
               placeholder={s.searchPlaceholder}
