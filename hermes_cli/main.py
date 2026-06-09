@@ -5202,7 +5202,18 @@ def cmd_gui(args: argparse.Namespace):
                 stopped = _stop_desktop_processes_locking_build(desktop_dir)
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
-            build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            build_cmd = [npm, "run", build_script]
+            if not source_mode and sys.platform == "darwin":
+                # Local `--dir` packs sign every file with a bare `codesign
+                # --timestamp`, which makes a network round-trip to Apple's
+                # timestamp authority PER FILE (~50+ Electron locales +
+                # frameworks): minutes of added build time, and a hard hang when
+                # offline. Disable secure timestamping for the LOCAL dev pack
+                # only — `--config.mac.timestamp=none` skips it. Notarized
+                # release builds (`dist:mac*`) never run this `pack` path, so
+                # they keep real timestamps.
+                build_cmd += ["--", "--config.mac.timestamp=none"]
+            build_result = subprocess.run(build_cmd, cwd=desktop_dir, env=env, check=False)
             if build_result.returncode != 0 and not source_mode:
                 # A corrupt cached Electron zip makes `pack` fail with an ENOENT
                 # on the final `electron` -> `Hermes` rename: unpack-electron
@@ -5225,7 +5236,7 @@ def cmd_gui(args: argparse.Namespace):
                     # The purge can't remove a win-unpacked tree whose Hermes.exe
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
-                    build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+                    build_result = subprocess.run(build_cmd, cwd=desktop_dir, env=env, check=False)
             if build_result.returncode != 0 and not source_mode and not env.get("ELECTRON_MIRROR"):
                 # Still failing and the user hasn't pinned a mirror: GitHub's
                 # Electron release host is likely blocked/throttled (the repeating
@@ -5242,7 +5253,7 @@ def cmd_gui(args: argparse.Namespace):
                 mirror_env = dict(env)
                 mirror_env["ELECTRON_MIRROR"] = "https://npmmirror.com/mirrors/electron/"
                 _stop_desktop_processes_locking_build(desktop_dir)
-                build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
+                build_result = subprocess.run(build_cmd, cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
