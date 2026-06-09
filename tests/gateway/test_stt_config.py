@@ -143,3 +143,37 @@ async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
     assert result is not None
     assert "queued voice transcript" in result
     assert "voice message" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_enrich_message_with_transcription_returns_tuple_for_placeholder_text():
+    """Regression: voice-only Discord messages must return tuple, not bare string.
+
+    When user_text equals the Discord adapter's empty-content placeholder and
+    transcription succeeds, the function previously returned ``prefix`` (a str)
+    instead of ``(prefix, successful_transcripts)``.  Callers unpack two values
+    and crash with ``ValueError: too many values to unpack``.
+    """
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+
+    placeholder = "(The user sent a message with no text content)"
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={
+            "success": True,
+            "transcript": "hello from voice",
+            "provider": "local_command",
+        },
+    ):
+        result, transcripts = await runner._enrich_message_with_transcription(
+            placeholder,
+            ["/tmp/voice.ogg"],
+        )
+
+    assert "hello from voice" in result
+    assert placeholder not in result
+    assert isinstance(transcripts, list)
+    assert len(transcripts) == 1
