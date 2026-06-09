@@ -753,6 +753,15 @@ const UserMessage: FC<{
     return messageAttachmentRefs(custom.attachmentRefs)
   })
 
+  // F-003 sender attribution: which device this message was typed on. The
+  // session is the channel; the device nickname is the sender identity until
+  // user accounts exist.
+  const senderDevice = useAuiState(s => {
+    const custom = (s.message.metadata?.custom ?? {}) as { senderDevice?: unknown }
+
+    return typeof custom.senderDevice === 'string' && custom.senderDevice.trim() ? custom.senderDevice.trim() : null
+  })
+
   // Sticky human bubbles clamp to ~2 lines with a soft fade so a long prompt
   // doesn't dominate the viewport while the response streams underneath; the
   // clamp lifts on hover / focus (see styles.css). We measure the *unclamped*
@@ -792,6 +801,11 @@ const UserMessage: FC<{
 
   const bubbleContent = (
     <>
+      {senderDevice && (
+        <span className="-mb-0.5 block truncate text-[0.625rem] font-medium leading-none text-(--ui-text-tertiary)">
+          {senderDevice}
+        </span>
+      )}
       {attachmentRefs.length > 0 && (
         <span className="-mx-1 flex flex-wrap gap-1 border-b border-border/45 pb-1.5">
           <DirectiveContent text={attachmentRefs.join(' ')} />
