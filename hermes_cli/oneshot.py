@@ -242,6 +242,43 @@ def _create_session_db_for_oneshot():
         return None
 
 
+def _resolve_oneshot_fallback_runtime(cfg: dict) -> tuple[Optional[dict], Optional[str]]:
+    """Resolve credentials from the configured fallback chain for oneshot.
+
+    Mirrors ``gateway/run.py:_try_resolve_fallback_provider`` (#32790) so the
+    one-shot CLI path is as resilient to a dead primary provider as the
+    gateway/platform path. Returns ``(runtime_dict, model)`` for the first
+    fallback entry whose credentials resolve, or ``(None, None)`` when none
+    are usable. Local Ollama entries need no auth and always resolve, so a
+    chain ending in qwen2.5/hermes3 guarantees a usable terminus.
+    """
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    log = logging.getLogger(__name__)
+    for entry in get_fallback_chain(cfg) or []:
+        try:
+            explicit_api_key = entry.get("api_key")
+            if not explicit_api_key:
+                key_env = str(
+                    entry.get("key_env") or entry.get("api_key_env") or ""
+                ).strip()
+                if key_env:
+                    explicit_api_key = os.getenv(key_env, "").strip() or None
+            runtime = resolve_runtime_provider(
+                requested=entry.get("provider"),
+                target_model=entry.get("model") or None,
+                explicit_base_url=entry.get("base_url"),
+                explicit_api_key=explicit_api_key,
+            )
+            return runtime, entry.get("model")
+        except Exception as fb_exc:  # noqa: BLE001 — try the next entry
+            log.debug(
+                "oneshot fallback entry %s failed: %s", entry.get("provider"), fb_exc
+            )
+            continue
+    return None, None
+
+
 def _run_agent(
     prompt: str,
     model: Optional[str] = None,
@@ -253,6 +290,7 @@ def _run_agent(
     run a single conversation.  Returns the final response string."""
     # Imports are local so they don't run when hermes is invoked for
     # other commands (keeps top-level CLI startup cheap).
+    from hermes_cli.auth import AuthError
     from hermes_cli.config import load_config
     from hermes_cli.models import detect_provider_for_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -314,11 +352,33 @@ def _run_agent(
                 if detected:
                     effective_provider, effective_model = detected
 
-    runtime = resolve_runtime_provider(
-        requested=effective_provider,
-        target_model=effective_model or None,
-        explicit_base_url=explicit_base_url_from_alias,
-    )
+    try:
+        runtime = resolve_runtime_provider(
+            requested=effective_provider,
+            target_model=effective_model or None,
+            explicit_base_url=explicit_base_url_from_alias,
+        )
+    except AuthError as auth_exc:
+        # Primary provider credentials are missing / expired / rate-limited.
+        # Mirror the gateway (gateway/run.py _resolve_runtime_agent_kwargs,
+        # #32790): fall through to the first resolvable fallback provider so a
+        # missing primary token never locks oneshot out entirely. Without this,
+        # a configured-but-unauthenticated primary (e.g. openai-codex with no
+        # OAuth token in ~/.hermes/auth.json) raised straight to the caller —
+        # a hard lockout even when the fallback chain (and the local Ollama
+        # terminus) was perfectly healthy. The runtime fallback chain wired
+        # below (fallback_model=_fb) only covers mid-conversation failures; it
+        # never engages if the primary can't even be resolved at startup.
+        fb_runtime, fb_model = _resolve_oneshot_fallback_runtime(cfg)
+        if fb_runtime is None:
+            raise
+        runtime = fb_runtime
+        if fb_model:
+            effective_model = fb_model
+        logging.getLogger(__name__).warning(
+            "oneshot: primary provider unavailable (%s); falling back to %s/%s",
+            auth_exc, runtime.get("provider"), effective_model,
+        )
 
     # Pull in explicit toolsets when provided; otherwise use whatever the user
     # has enabled for "cli". sorted() gives stable ordering for config-derived
