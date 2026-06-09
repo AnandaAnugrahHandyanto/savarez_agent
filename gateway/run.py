@@ -140,6 +140,16 @@ def _gateway_platform_value(platform: Any) -> str:
     return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
+def _append_pre_turn_context(context_prompt: str, pre_turn_context: str) -> str:
+    pre_turn_context = (pre_turn_context or "").strip()
+    if not pre_turn_context:
+        return context_prompt or ""
+    context_prompt = context_prompt or ""
+    if not context_prompt.strip():
+        return pre_turn_context
+    return f"{context_prompt.rstrip()}\n\n{pre_turn_context}"
+
+
 def _is_transient_network_error(exc: BaseException) -> bool:
     """Return True for transient network errors safe to log + swallow.
 
@@ -1169,6 +1179,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     _reply_anchor_for_event,
+    build_message_provenance_units,
     merge_pending_message_event,
 )
 from gateway.restart import (
@@ -8247,6 +8258,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
+            provenance_units = self._provenance_units_for_prepared_event(event, message_text)
+
             # Run the agent
             agent_result = await self._run_agent(
                 message=message_text,
@@ -8258,6 +8271,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                provenance_units=provenance_units,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -12359,6 +12373,104 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return url.rstrip("/")
         return None
 
+    def _capture_pre_turn_state_context(
+        self,
+        *,
+        message: str,
+        session_key: Optional[str],
+        event_message_id: Optional[str],
+        provenance_units: Optional[List[Dict[str, Any]]],
+    ) -> str:
+        pre_turn_intake_context = ""
+        pre_turn_intake_cards: list[dict[str, Any]] = []
+        pre_turn_context_parts: list[str] = []
+        try:
+            from gateway import kanban_intake as _kanban_intake
+
+            pre_turn_intake_cards = _kanban_intake.capture_inbound(
+                message,
+                session_key=session_key or "",
+                event_message_id=event_message_id,
+                provenance_units=provenance_units,
+            )
+            pre_turn_intake_context = _kanban_intake.format_pre_turn_context(
+                pre_turn_intake_cards
+            )
+            if pre_turn_intake_context:
+                pre_turn_context_parts.append(pre_turn_intake_context)
+        except Exception as _intake_exc:
+            logger.warning("kanban intake pre-capture failed: %s", _intake_exc)
+        try:
+            from agent import task_state as _task_state
+
+            pre_turn_task_context = _task_state.render_active_task_context(
+                user_message=message,
+                session_key=session_key or "",
+                source_message_id=str(event_message_id or ""),
+                provenance_units=provenance_units,
+            )
+            if pre_turn_task_context:
+                pre_turn_context_parts.append(pre_turn_task_context)
+        except Exception as _task_state_exc:
+            logger.warning("task state pre-capture failed: %s", _task_state_exc)
+        pre_turn_context = "\n\n".join(
+            part.strip() for part in pre_turn_context_parts if part and part.strip()
+        )
+        if pre_turn_context:
+            logger.info(
+                "pre-turn state captured %d kanban card(s) before model turn for session=%s",
+                len(pre_turn_intake_cards),
+                session_key or "",
+            )
+        return pre_turn_context
+
+    def _provenance_units_for_prepared_event(
+        self,
+        event: Optional[MessageEvent],
+        prepared_text: Optional[str],
+    ) -> Optional[List[Dict[str, Any]]]:
+        if event is None:
+            return None
+        units = build_message_provenance_units(event)
+        prepared = (prepared_text or "").strip()
+        if units and prepared:
+            residual = prepared
+            for unit in units:
+                existing_text = str(unit.get("text") or "").strip()
+                if existing_text and existing_text in residual:
+                    residual = residual.replace(existing_text, "", 1)
+            residual = re.sub(r"\s+", " ", residual).strip(" -:\n\t")
+            if residual and (
+                event.message_type in {MessageType.VOICE, MessageType.AUDIO}
+                or any(
+                    unit.get("source_type") == "voice_transcript" and not str(unit.get("text") or "").strip()
+                    for unit in units
+                )
+            ):
+                filled = False
+                for unit in units:
+                    if unit.get("source_type") == "voice_transcript" and not str(unit.get("text") or "").strip():
+                        unit["text"] = residual
+                        filled = True
+                        break
+                if not filled and not any(
+                    unit.get("source_type") == "voice_transcript"
+                    and str(unit.get("text") or "").strip() == residual
+                    for unit in units
+                ):
+                    units.extend(
+                        build_message_provenance_units(
+                            event,
+                            text_override=residual,
+                        )
+                    )
+        if not units and prepared_text:
+            units = build_message_provenance_units(
+                event,
+                text_override=prepared_text,
+            )
+        return units
+
     async def _run_agent_via_proxy(
         self,
         message: str,
@@ -12657,6 +12769,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        provenance_units: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -12670,6 +12783,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        pre_turn_intake_context = self._capture_pre_turn_state_context(
+            message=message,
+            session_key=session_key,
+            event_message_id=event_message_id,
+            provenance_units=provenance_units,
+        )
+        context_prompt = _append_pre_turn_context(context_prompt, pre_turn_intake_context)
+
         # ---- Proxy mode: delegate to remote API server ----
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
@@ -13683,6 +13804,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            agent._pre_turn_intake_context = pre_turn_intake_context or None
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
@@ -14949,6 +15071,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
 
+                next_provenance_units = self._provenance_units_for_prepared_event(
+                    pending_event,
+                    next_message,
+                )
+
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
                 # typing task is still alive but may be stale.
@@ -14973,6 +15100,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    provenance_units=next_provenance_units,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

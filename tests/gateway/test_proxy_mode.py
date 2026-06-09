@@ -6,7 +6,7 @@ import pytest
 
 from gateway.config import Platform, StreamingConfig
 from gateway.platforms.base import resolve_proxy_url
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _append_pre_turn_context
 from gateway.session import SessionSource
 
 
@@ -170,6 +170,22 @@ class TestResolveProxyUrl:
 class TestRunAgentProxyDispatch:
     """Test that _run_agent() delegates to proxy when configured."""
 
+    def test_append_pre_turn_context_preserves_base_prompt_for_local_and_proxy(self):
+        context_prompt = _append_pre_turn_context(
+            "base context",
+            "Pre-turn state: Zaya legal name is already provided.",
+        )
+
+        assert context_prompt == (
+            "base context\n\nPre-turn state: Zaya legal name is already provided."
+        )
+
+    def test_append_pre_turn_context_uses_state_when_base_prompt_empty(self):
+        assert (
+            _append_pre_turn_context("", "Pre-turn state: booking confirmed")
+            == "Pre-turn state: booking confirmed"
+        )
+
     @pytest.mark.asyncio
     async def test_run_agent_delegates_to_proxy(self, monkeypatch):
         monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
@@ -201,6 +217,40 @@ class TestRunAgentProxyDispatch:
         assert result["final_response"] == "Hello from remote!"
         runner._run_agent_via_proxy.assert_called_once()
         assert runner._run_agent_via_proxy.call_args.kwargs["run_generation"] == 7
+
+    @pytest.mark.asyncio
+    async def test_run_agent_proxy_receives_pre_turn_state_context(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        runner = _make_runner()
+        source = _make_source()
+        runner._capture_pre_turn_state_context = MagicMock(
+            return_value="Pre-turn intake: captured before proxy"
+        )
+        runner._run_agent_via_proxy = AsyncMock(
+            return_value={
+                "final_response": "ok",
+                "messages": [],
+                "api_calls": 1,
+                "tools": [],
+            }
+        )
+
+        await runner._run_agent(
+            message="Zaya's full name: Zaya De Melo Kim",
+            context_prompt="base context",
+            history=[],
+            source=source,
+            session_id="test-session-123",
+            session_key="test-key",
+            run_generation=7,
+            event_message_id="msg-1",
+            provenance_units=[{"text": "Zaya's full name: Zaya De Melo Kim"}],
+        )
+
+        runner._capture_pre_turn_state_context.assert_called_once()
+        context_prompt = runner._run_agent_via_proxy.call_args.kwargs["context_prompt"]
+        assert "base context" in context_prompt
+        assert "Pre-turn intake: captured before proxy" in context_prompt
 
     @pytest.mark.asyncio
     async def test_run_agent_skips_proxy_when_not_configured(self, monkeypatch):

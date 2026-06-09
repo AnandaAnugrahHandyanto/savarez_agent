@@ -1022,6 +1022,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- case) falls through to the dispatcher-level ``kanban.failure_limit``
     -- config and then ``DEFAULT_FAILURE_LIMIT``.
     max_retries          INTEGER,
+    card_type            TEXT,
+    mental_load_category TEXT,
+    visibility           TEXT,
+    proposed_default     TEXT,
+    source_message_id    TEXT,
     -- When 1, the dispatched worker runs in a Ralph-style goal loop: an
     -- auxiliary judge re-evaluates the worker's response against the
     -- card title/body after each turn and feeds a continuation prompt
@@ -1666,6 +1671,23 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # which is the correct default (they keep the global behaviour
         # they were getting before the column existed).
         _add_column_if_missing(conn, "tasks", "max_retries", "max_retries INTEGER")
+
+    if "card_type" not in cols:
+        _add_column_if_missing(conn, "tasks", "card_type", "card_type TEXT")
+    if "mental_load_category" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "mental_load_category", "mental_load_category TEXT"
+        )
+    if "visibility" not in cols:
+        _add_column_if_missing(conn, "tasks", "visibility", "visibility TEXT")
+    if "proposed_default" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "proposed_default", "proposed_default TEXT"
+        )
+    if "source_message_id" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "source_message_id", "source_message_id TEXT"
+        )
 
     if "model_override" not in cols:
         conn.execute("ALTER TABLE tasks ADD COLUMN model_override TEXT")
