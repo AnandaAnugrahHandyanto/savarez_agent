@@ -7,11 +7,11 @@ import pytest
 def _make_board(tmp_path):
     from hermes_cli import kanban_db as kb
     db_path = tmp_path / "kanban.db"
-    conn = kb.connect(db_path=str(db_path))
+    conn = kb.connect(db_path=db_path)
     with conn:
         tid = kb.create_task(conn, title="test task", assignee="worker")
         kb.set_task_status(conn, tid, "running")
-    return str(db_path), tid
+    return str(db_path), tid  # str for env var
 
 
 class TestOnTaskBlockToolHook:
