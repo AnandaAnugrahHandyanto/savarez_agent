@@ -51,6 +51,9 @@ logger = logging.getLogger(__name__)
 # and is overridable for slow environments via ``HERMES_ACP_INIT_TIMEOUT``.
 INIT_TIMEOUT_ENV_VAR = "HERMES_ACP_INIT_TIMEOUT"
 DEFAULT_INIT_TIMEOUT = 60.0
+STDIO_LIMIT_ENV_VAR = "HERMES_ACP_STDIO_LIMIT"
+DEFAULT_STDIO_LIMIT = 8 * 1024 * 1024
+GEMINI_ACP_MODEL_ENV_VAR = "HERMES_ACP_GEMINI_MODEL"
 
 
 def resolve_init_timeout(env: Optional[Mapping[str, str]] = None) -> float:
@@ -71,7 +74,29 @@ def resolve_init_timeout(env: Optional[Mapping[str, str]] = None) -> float:
     return value if value > 0 else DEFAULT_INIT_TIMEOUT
 
 
-# ACP stop-reason → coarse Hermes category.  Fixture-tested (design R8) so the
+def resolve_stdio_limit(env: Optional[Mapping[str, str]] = None) -> int:
+    """Resolve the ACP stdio reader limit (bytes) from the environment.
+
+    The upstream ``acp`` Python SDK reads JSON-RPC/ACP frames as newline-delimited
+    JSON. Python's default ``StreamReader`` limit is only 64 KiB; a single large
+    ACP notification from Gemini CLI (for example command metadata or a large
+    assistant chunk) can exceed that before the newline separator arrives,
+    yielding ``LimitOverrunError: Separator is not found, and chunk exceed the
+    limit``. Keep the default high enough for real agent payloads while still
+    bounded, and allow operators to tune it for unusual backends.
+    """
+    source = os.environ if env is None else env
+    raw = (source.get(STDIO_LIMIT_ENV_VAR) or "").strip()
+    if not raw:
+        return DEFAULT_STDIO_LIMIT
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_STDIO_LIMIT
+    return value if value > 0 else DEFAULT_STDIO_LIMIT
+
+
+# ACP stop-reason → coarse Hermes category. Fixture-tested (design R8) so the
 # kanban runner (Phase 2) can branch on a stable vocabulary instead of raw
 # backend strings.
 _STOP_REASON_MAP = {
@@ -309,10 +334,21 @@ class OutboundConnection:
         relay = PermissionRelay(workspace_path=workspace_path or cwd, audit_log=None)
         client = HermesACPClient(permission_relay=relay, on_event=on_event)
         init_timeout = resolve_init_timeout(base_env)
-        cmdline = " ".join([spec.command, *spec.args])
+        stdio_limit = resolve_stdio_limit(base_env)
+        args = list(spec.args)
+        if spec.name == "gemini-cli":
+            gemini_model = (base_env or {}).get(GEMINI_ACP_MODEL_ENV_VAR, "").strip()
+            if gemini_model:
+                args.extend(["--model", gemini_model])
+        cmdline = " ".join([spec.command, *args])
 
         async with acp.spawn_agent_process(
-            client, spec.command, *spec.args, env=env, cwd=cwd
+            client,  # type: ignore[arg-type]
+            spec.command,
+            *args,
+            env=env,
+            cwd=cwd,
+            transport_kwargs={"limit": stdio_limit},
         ) as (conn, proc):
             oc = cls(
                 conn,

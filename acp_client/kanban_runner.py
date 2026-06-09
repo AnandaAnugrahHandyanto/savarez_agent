@@ -38,6 +38,17 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BACKEND = "claude"
 PROGRESS_FILENAME = "progress.jsonl"
+GEMINI_3_CAPACITY_FALLBACK_MODEL = "gemini-2.5-flash"
+GEMINI_ACP_MODEL_ENV_VAR = "HERMES_ACP_GEMINI_MODEL"
+
+
+def _is_gemini_capacity_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return (
+        "model_capacity_exhausted" in message
+        or "no capacity available" in message
+        or "capacity exhausted" in message
+    )
 
 
 @dataclass
@@ -257,20 +268,41 @@ async def run_acp_lane(
             "transport": "acp",
         })
 
-    cm = factory(
-        plan.backend,
-        cwd=workspace,
-        workspace_path=workspace,
-        registry=registry,
-        base_env=base_env,
-        sessions=sessions,
-        on_event=_sink,
-    )
-    async with cm as conn:
-        state = await conn.create_session(cwd=workspace)
-        session_id = getattr(state, "session_id", None) or str(state)
-        resp = await conn.prompt(session_id, prompt_text)
-        stop_reason = getattr(resp, "stop_reason", None)
+    backend = plan.backend or DEFAULT_BACKEND
+
+    async def _drive_once(run_env: Optional[Dict[str, str]]) -> Optional[str]:
+        cm = factory(
+            backend,
+            cwd=workspace,
+            workspace_path=workspace,
+            registry=registry,
+            base_env=run_env,
+            sessions=sessions,
+            on_event=_sink,
+        )
+        async with cm as conn:
+            state = await conn.create_session(cwd=workspace)
+            session_id = getattr(state, "session_id", None) or str(state)
+            resp = await conn.prompt(session_id, prompt_text)
+            return getattr(resp, "stop_reason", None)
+
+    try:
+        stop_reason = await _drive_once(base_env)
+    except Exception as exc:
+        if backend == "gemini-cli" and _is_gemini_capacity_error(exc):
+            if progress is not None:
+                progress.write({
+                    "event": "gemini_capacity_fallback",
+                    "from": "gemini-3-*",
+                    "to": GEMINI_3_CAPACITY_FALLBACK_MODEL,
+                    "reason": str(exc)[:500],
+                })
+            assistant_chunks.clear()
+            fallback_env = dict(base_env or {})
+            fallback_env[GEMINI_ACP_MODEL_ENV_VAR] = GEMINI_3_CAPACITY_FALLBACK_MODEL
+            stop_reason = await _drive_once(fallback_env)
+        else:
+            raise
 
     summary = "".join(assistant_chunks)
     decision = decide_writeback(stop_reason, summary)

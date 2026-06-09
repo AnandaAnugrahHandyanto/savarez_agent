@@ -123,13 +123,16 @@ class TestProgressWriter:
 
 
 class _FakeConn:
-    def __init__(self, *, stop_reason, chunks, on_event):
+    def __init__(self, *, stop_reason, chunks, on_event, error: Exception | None = None):
         self._stop_reason = stop_reason
         self._chunks = chunks
         self._on_event = on_event
+        self._error = error
         self.prompts: list[str] = []
 
     async def create_session(self, *, cwd):
+        if self._error is not None:
+            raise self._error
         return SimpleNamespace(session_id="sess-fake-1", cwd=cwd)
 
     async def prompt(self, session_id, text):
@@ -140,8 +143,14 @@ class _FakeConn:
         return SimpleNamespace(stop_reason=self._stop_reason)
 
 
-def _make_factory(*, stop_reason="end_turn", chunks=("hello ", "world")):
-    captured = {}
+def _make_factory(
+    *,
+    stop_reason="end_turn",
+    chunks=("hello ", "world"),
+    errors: list[Exception | None] | None = None,
+):
+    captured: dict[str, object] = {"calls": []}
+    error_queue = list(errors or [])
 
     @contextlib.asynccontextmanager
     async def factory(
@@ -149,7 +158,12 @@ def _make_factory(*, stop_reason="end_turn", chunks=("hello ", "world")):
     ):
         captured["backend"] = backend
         captured["cwd"] = cwd
-        conn = _FakeConn(stop_reason=stop_reason, chunks=chunks, on_event=on_event)
+        captured["base_env"] = base_env
+        calls = captured["calls"]
+        assert isinstance(calls, list)
+        calls.append({"backend": backend, "base_env": base_env})
+        error = error_queue.pop(0) if error_queue else None
+        conn = _FakeConn(stop_reason=stop_reason, chunks=chunks, on_event=on_event, error=error)
         captured["conn"] = conn
         yield conn
 
@@ -190,7 +204,9 @@ class TestRunAcpLane:
         assert decision.action == "complete"
         assert decision.lane_status == "done"
         assert decision.summary == "hello world"  # accumulated from chunks
-        assert captured["conn"].prompts == ["do the thing"]
+        conn = captured["conn"]
+        assert isinstance(conn, _FakeConn)
+        assert conn.prompts == ["do the thing"]
         # progress.jsonl captured lane_start, the message chunks, and lane_end.
         events = [
             json.loads(line)
@@ -199,6 +215,40 @@ class TestRunAcpLane:
         assert events[0]["event"] == "lane_start"
         assert events[-1]["event"] == "lane_end"
         assert events[-1]["action"] == "complete"
+
+    @pytest.mark.asyncio
+    async def test_gemini_capacity_error_retries_with_25_flash(self, tmp_path):
+        plan = LaunchPlan(transport=TRANSPORT_ACP, reason="x", backend="gemini-cli")
+        factory, captured = _make_factory(
+            stop_reason="end_turn",
+            chunks=("fallback ok",),
+            errors=[RuntimeError("No capacity available for model gemini-3-flash-preview"), None],
+        )
+        progress = ProgressWriter(str(tmp_path))
+
+        decision = await run_acp_lane(
+            plan,
+            workspace=str(tmp_path),
+            prompt_text="hi",
+            progress=progress,
+            connection_factory=factory,
+            base_env={"KEEP": "me"},
+        )
+
+        assert decision.action == "complete"
+        assert decision.summary == "fallback ok"
+        calls = captured["calls"]
+        assert isinstance(calls, list)
+        assert calls[0]["base_env"] == {"KEEP": "me"}
+        assert calls[1]["base_env"] == {
+            "KEEP": "me",
+            "HERMES_ACP_GEMINI_MODEL": "gemini-2.5-flash",
+        }
+        events = [
+            json.loads(line)
+            for line in (tmp_path / "progress.jsonl").read_text().splitlines()
+        ]
+        assert any(e.get("event") == "gemini_capacity_fallback" for e in events)
 
     @pytest.mark.asyncio
     async def test_blocked_stop_reason_maps_to_block(self, tmp_path):

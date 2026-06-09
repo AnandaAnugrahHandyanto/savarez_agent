@@ -941,6 +941,50 @@ class TestMakeStreamChunk:
 
 
 class TestGeminiCloudCodeClient:
+    class _FakeResponse:
+        def __init__(self, status_code: int, body: dict | str):
+            self.status_code = status_code
+            self._body = body
+            self.text = json.dumps(body) if isinstance(body, dict) else str(body)
+            self.headers = {}
+
+        def json(self):
+            if isinstance(self._body, dict):
+                return self._body
+            raise ValueError("not json")
+
+        def read(self):
+            return self.text.encode()
+
+    class _FakeHttp:
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self.post_calls = []
+
+        def post(self, url, *, json=None, headers=None):
+            self.post_calls.append({"url": url, "json": json, "headers": headers})
+            if not self.responses:
+                raise AssertionError("unexpected extra HTTP post")
+            return self.responses.pop(0)
+
+        def close(self):
+            pass
+
+    def _client_for_http_test(self, monkeypatch, responses):
+        from types import SimpleNamespace
+        from agent import gemini_cloudcode_adapter as adapter
+
+        monkeypatch.setattr(adapter.google_oauth, "get_valid_access_token", lambda: "token")
+        client = adapter.GeminiCloudCodeClient(api_key="dummy")
+        monkeypatch.setattr(
+            client,
+            "_ensure_project_context",
+            lambda access_token, model: SimpleNamespace(project_id="p1"),
+        )
+        fake_http = self._FakeHttp(responses)
+        monkeypatch.setattr(client, "_http", fake_http)
+        return client, fake_http
+
     def test_client_exposes_openai_interface(self):
         from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
 
@@ -952,6 +996,71 @@ class TestGeminiCloudCodeClient:
         finally:
             client.close()
 
+    def test_gemini_3_capacity_falls_back_once_to_25_flash(self, monkeypatch):
+        capacity_body = {
+            "error": {
+                "code": 429,
+                "message": "No capacity available for model gemini-3-flash-preview",
+                "status": "RESOURCE_EXHAUSTED",
+                "details": [{
+                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                    "reason": "MODEL_CAPACITY_EXHAUSTED",
+                    "metadata": {"model": "gemini-3-flash-preview"},
+                }],
+            }
+        }
+        success_body = {
+            "response": {
+                "candidates": [{
+                    "content": {"parts": [{"text": "fallback ok"}]},
+                    "finishReason": "STOP",
+                }],
+            }
+        }
+        client, fake_http = self._client_for_http_test(
+            monkeypatch,
+            [self._FakeResponse(429, capacity_body), self._FakeResponse(200, success_body)],
+        )
+
+        result = client.chat.completions.create(
+            model="gemini-3-flash-preview",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        assert result.model == "gemini-2.5-flash"
+        assert result.choices[0].message.content == "fallback ok"
+        assert [call["json"]["model"] for call in fake_http.post_calls] == [
+            "gemini-3-flash-preview",
+            "gemini-2.5-flash",
+        ]
+
+    def test_non_gemini_3_capacity_does_not_fallback(self, monkeypatch):
+        from agent.google_code_assist import CodeAssistError
+
+        capacity_body = {
+            "error": {
+                "code": 429,
+                "message": "No capacity available for model gemini-2.5-pro",
+                "status": "RESOURCE_EXHAUSTED",
+                "details": [{
+                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                    "reason": "MODEL_CAPACITY_EXHAUSTED",
+                    "metadata": {"model": "gemini-2.5-pro"},
+                }],
+            }
+        }
+        client, fake_http = self._client_for_http_test(
+            monkeypatch,
+            [self._FakeResponse(429, capacity_body)],
+        )
+
+        with pytest.raises(CodeAssistError):
+            client.chat.completions.create(
+                model="gemini-2.5-pro",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert [call["json"]["model"] for call in fake_http.post_calls] == ["gemini-2.5-pro"]
 
 class TestGeminiHttpErrorParsing:
     """Regression coverage for _gemini_http_error Google-envelope parsing.

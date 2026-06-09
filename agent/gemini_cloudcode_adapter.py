@@ -573,6 +573,27 @@ def _translate_stream_event(
 # =============================================================================
 
 MARKER_BASE_URL = "cloudcode-pa://google"
+GEMINI_3_CAPACITY_FALLBACK_MODEL = "gemini-2.5-flash"
+
+
+def _is_gemini_3_model(model: str) -> bool:
+    normalized = (model or "").strip().lower()
+    if normalized.startswith("google/"):
+        normalized = normalized.split("/", 1)[1]
+    return normalized.startswith("gemini-3-") or normalized.startswith("gemini-3.")
+
+
+def _is_capacity_exhausted_error(exc: BaseException) -> bool:
+    code = str(getattr(exc, "code", "") or "")
+    if code == "code_assist_capacity_exhausted":
+        return True
+    details = getattr(exc, "details", None)
+    if isinstance(details, dict):
+        reason = str(details.get("reason") or "")
+        if reason == "MODEL_CAPACITY_EXHAUSTED":
+            return True
+    message = str(exc).lower()
+    return "no capacity available" in message or "capacity exhausted" in message
 
 
 class _GeminiChatCompletions:
@@ -695,11 +716,14 @@ class GeminiCloudCodeClient:
             stop=stop,
             thinking_config=thinking_config,
         )
-        wrapped = wrap_code_assist_request(
-            project_id=ctx.project_id,
-            model=model,
-            inner_request=inner,
-        )
+        def _wrap_for(request_model: str) -> Dict[str, Any]:
+            return wrap_code_assist_request(
+                project_id=ctx.project_id,
+                model=request_model,
+                inner_request=inner,
+            )
+
+        wrapped = _wrap_for(model)
 
         headers = {
             "Content-Type": "application/json",
@@ -712,12 +736,31 @@ class GeminiCloudCodeClient:
         headers.update(self._default_headers)
 
         if stream:
-            return self._stream_completion(model=model, wrapped=wrapped, headers=headers)
+            return self._stream_completion(
+                model=model,
+                wrapped=wrapped,
+                headers=headers,
+                fallback_model=GEMINI_3_CAPACITY_FALLBACK_MODEL if _is_gemini_3_model(model) else None,
+                fallback_wrapped=_wrap_for(GEMINI_3_CAPACITY_FALLBACK_MODEL) if _is_gemini_3_model(model) else None,
+            )
 
         url = f"{CODE_ASSIST_ENDPOINT}/v1internal:generateContent"
         response = self._http.post(url, json=wrapped, headers=headers)
         if response.status_code != 200:
-            raise _gemini_http_error(response)
+            err = _gemini_http_error(response)
+            if _is_gemini_3_model(model) and _is_capacity_exhausted_error(err):
+                fallback_model = GEMINI_3_CAPACITY_FALLBACK_MODEL
+                logger.info(
+                    "Gemini Code Assist capacity exhausted for %s; retrying once with %s",
+                    model,
+                    fallback_model,
+                )
+                response = self._http.post(url, json=_wrap_for(fallback_model), headers=headers)
+                if response.status_code != 200:
+                    raise _gemini_http_error(response)
+                model = fallback_model
+            else:
+                raise err
         try:
             payload = response.json()
         except ValueError as exc:
@@ -733,23 +776,39 @@ class GeminiCloudCodeClient:
         model: str,
         wrapped: Dict[str, Any],
         headers: Dict[str, str],
+        fallback_model: Optional[str] = None,
+        fallback_wrapped: Optional[Dict[str, Any]] = None,
     ) -> Iterator[_GeminiStreamChunk]:
         """Generator that yields OpenAI-shaped streaming chunks."""
         url = f"{CODE_ASSIST_ENDPOINT}/v1internal:streamGenerateContent?alt=sse"
         stream_headers = dict(headers)
         stream_headers["Accept"] = "text/event-stream"
 
+        def _stream_once(request_model: str, request_wrapped: Dict[str, Any]) -> Iterator[_GeminiStreamChunk]:
+            with self._http.stream("POST", url, json=request_wrapped, headers=stream_headers) as response:
+                if response.status_code != 200:
+                    # Materialize error body for better diagnostics
+                    response.read()
+                    raise _gemini_http_error(response)
+                tool_call_counter: List[int] = [0]
+                for event in _iter_sse_events(response):
+                    for chunk in _translate_stream_event(event, request_model, tool_call_counter):
+                        yield chunk
+
         def _generator() -> Iterator[_GeminiStreamChunk]:
             try:
-                with self._http.stream("POST", url, json=wrapped, headers=stream_headers) as response:
-                    if response.status_code != 200:
-                        # Materialize error body for better diagnostics
-                        response.read()
-                        raise _gemini_http_error(response)
-                    tool_call_counter: List[int] = [0]
-                    for event in _iter_sse_events(response):
-                        for chunk in _translate_stream_event(event, model, tool_call_counter):
-                            yield chunk
+                try:
+                    yield from _stream_once(model, wrapped)
+                except CodeAssistError as exc:
+                    if fallback_model and fallback_wrapped and _is_capacity_exhausted_error(exc):
+                        logger.info(
+                            "Gemini Code Assist streaming capacity exhausted for %s; retrying once with %s",
+                            model,
+                            fallback_model,
+                        )
+                        yield from _stream_once(fallback_model, fallback_wrapped)
+                    else:
+                        raise
             except httpx.HTTPError as exc:
                 raise CodeAssistError(
                     f"Streaming request failed: {exc}",

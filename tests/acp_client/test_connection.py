@@ -19,11 +19,15 @@ from acp_client import AcpClientUnavailable
 from hermes_state import SessionDB
 from acp_client.connection import (
     DEFAULT_INIT_TIMEOUT,
+    DEFAULT_STDIO_LIMIT,
+    GEMINI_ACP_MODEL_ENV_VAR,
     INIT_TIMEOUT_ENV_VAR,
+    STDIO_LIMIT_ENV_VAR,
     HermesACPClient,
     OutboundConnection,
     normalize_stop_reason,
     resolve_init_timeout,
+    resolve_stdio_limit,
 )
 from acp_client.event_translator import EventTranslator
 from acp_client.outbound_session import OutboundSessionManager
@@ -171,6 +175,18 @@ class TestResolveInitTimeout:
         assert resolve_init_timeout({INIT_TIMEOUT_ENV_VAR: bad}) == DEFAULT_INIT_TIMEOUT
 
 
+class TestResolveStdioLimit:
+    def test_default_when_unset(self):
+        assert resolve_stdio_limit({}) == DEFAULT_STDIO_LIMIT
+
+    def test_override_is_honoured(self):
+        assert resolve_stdio_limit({STDIO_LIMIT_ENV_VAR: "1048576"}) == 1048576
+
+    @pytest.mark.parametrize("bad", ["", "  ", "abc", "0", "-5"])
+    def test_bad_values_fall_back_to_default(self, bad):
+        assert resolve_stdio_limit({STDIO_LIMIT_ENV_VAR: bad}) == DEFAULT_STDIO_LIMIT
+
+
 class _HangingConn(FakeConn):
     """A connection whose initialize never returns (simulates a wedged CLI)."""
 
@@ -178,11 +194,22 @@ class _HangingConn(FakeConn):
         await asyncio.Event().wait()  # blocks until cancelled by wait_for
 
 
-def _patch_spawn(monkeypatch, conn):
+def _patch_spawn(monkeypatch, conn, capture=None):
     """Replace acp.spawn_agent_process with a fake yielding *conn* (no process)."""
 
     @contextlib.asynccontextmanager
-    async def fake_spawn(to_client, command, *args, env=None, cwd=None, **_):
+    async def fake_spawn(to_client, command, *args, env=None, cwd=None, **kwargs):
+        if capture is not None:
+            capture.update(
+                {
+                    "to_client": to_client,
+                    "command": command,
+                    "args": args,
+                    "env": env,
+                    "cwd": cwd,
+                    "kwargs": kwargs,
+                }
+            )
         yield conn, SimpleNamespace(pid=4242)
 
     monkeypatch.setattr(acp, "spawn_agent_process", fake_spawn)
@@ -215,6 +242,35 @@ class TestSpawnInitTimeout:
             assert oc.backend == "claude"
             state = await oc.create_session(cwd="/work")
             assert state.session_id == "ext-sess"
+
+    @pytest.mark.asyncio
+    async def test_spawn_passes_bounded_stdio_limit_to_acp_transport(self, monkeypatch):
+        capture = {}
+        _patch_spawn(monkeypatch, FakeConn(), capture=capture)
+        async with OutboundConnection.spawn(
+            "gemini-cli",
+            cwd="/work",
+            base_env={STDIO_LIMIT_ENV_VAR: "1234567"},
+        ) as oc:
+            assert oc.backend == "gemini-cli"
+
+        assert capture["command"] == "gemini"
+        assert capture["args"] == ("--acp",)
+        assert capture["kwargs"]["transport_kwargs"] == {"limit": 1234567}
+
+    @pytest.mark.asyncio
+    async def test_spawn_can_pin_gemini_cli_fallback_model(self, monkeypatch):
+        capture = {}
+        _patch_spawn(monkeypatch, FakeConn(), capture=capture)
+        async with OutboundConnection.spawn(
+            "gemini-cli",
+            cwd="/work",
+            base_env={GEMINI_ACP_MODEL_ENV_VAR: "gemini-2.5-flash"},
+        ) as oc:
+            assert oc.backend == "gemini-cli"
+
+        assert capture["command"] == "gemini"
+        assert capture["args"] == ("--acp", "--model", "gemini-2.5-flash")
 
 
 class TestHermesACPClient:
