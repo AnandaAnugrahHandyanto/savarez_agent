@@ -265,6 +265,7 @@ class PhotonAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._sidecar_proc: Optional[subprocess.Popen] = None
         self._sidecar_supervisor_task: Optional[asyncio.Task] = None
+        self._media_sweeper_task: Optional[asyncio.Task] = None
         self._http_client: Optional["httpx.AsyncClient"] = None
         # Lightweight in-memory dedup. Photon's at-least-once guarantee
         # means we WILL see the same message.id more than once.
@@ -397,6 +398,7 @@ class PhotonAdapter(BasePlatformAdapter):
             logger.info("[photon] sidecar autostart disabled — outbound will fail")
 
         self._http_client = httpx.AsyncClient(timeout=30.0)
+        self._media_sweeper_task = asyncio.create_task(self._sweep_media_temp())
         self._mark_connected()
         logger.info(
             "[photon] connected — webhook at %s:%d%s, sidecar on %s:%d",
@@ -405,7 +407,37 @@ class PhotonAdapter(BasePlatformAdapter):
         )
         return True
 
+    async def _sweep_media_temp(self) -> None:
+        """Periodically delete orphaned media temp dirs (ffmpeg keyframes +
+        .caf→.wav transcodes) and any stale sidecar downloads. They're consumed
+        by the agent within seconds, so an age TTL is safe and bounds disk use
+        (the OS tmp reaper is only a backstop)."""
+        import glob
+
+        ttl = float(os.getenv("PHOTON_MEDIA_TTL_SECONDS", "3600"))  # 1h
+        tmp = tempfile.gettempdir()
+        while True:
+            try:
+                now = time.time()
+                targets = glob.glob(os.path.join(tmp, "photon-vid-*")) + glob.glob(
+                    os.path.join(tmp, "photon-aud-*")
+                )
+                for d in targets:
+                    try:
+                        if now - os.path.getmtime(d) > ttl:
+                            shutil.rmtree(d, ignore_errors=True)
+                    except OSError:
+                        pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.debug("[photon] media sweep error: %s", e)
+            await asyncio.sleep(600)  # every 10 min
+
     async def disconnect(self) -> None:
+        if self._media_sweeper_task is not None:
+            self._media_sweeper_task.cancel()
+            self._media_sweeper_task = None
         await self._stop_sidecar()
         await self._stop_webhook_server()
         if self._http_client is not None:
@@ -419,7 +451,10 @@ class PhotonAdapter(BasePlatformAdapter):
     # -- Webhook server ----------------------------------------------------
 
     async def _start_webhook_server(self) -> None:
-        app = web.Application()
+        # Cap the inbound webhook body — control/metadata messages are tiny, so
+        # 2 MiB is generous headroom while preventing a compromised local peer
+        # from OOMing the receiver (defence-in-depth on the loopback channel).
+        app = web.Application(client_max_size=2 * 1024 * 1024)
         app.router.add_post(self._webhook_path, self._handle_webhook)
         app.router.add_get("/healthz", lambda _: web.Response(text="ok"))
         self._runner = web.AppRunner(app)
@@ -1115,6 +1150,16 @@ def _attachment_message_type(mime: str) -> MessageType:
 _FFMPEG = shutil.which("ffmpeg")
 _FFPROBE = shutil.which("ffprobe")
 
+# Hardening flags for running ffmpeg/ffprobe on UNTRUSTED iMessage media:
+#   -nostdin              never block on / read from stdin
+#   -loglevel error -nostats  quiet, no log-injection surface
+#   -threads 1            bound CPU per job (DoS guard; clips are small)
+#   -protocol_whitelist file,pipe  no network protocols — a crafted container
+#                         can't make ffmpeg fetch a URL (SSRF/exfil guard)
+# (input is also size-capped at 32MB upstream and each run has a wall-timeout.)
+_FFMPEG_HARDEN = ["-nostdin", "-loglevel", "error", "-nostats", "-threads", "1"]
+_FFMPEG_INPUT_GUARD = ["-protocol_whitelist", "file,pipe"]
+
 # The sidecar downloads inbound attachments into this directory (same default,
 # overridable via PHOTON_DOWNLOAD_DIR on both sides). The forwarded `localPath`
 # is only trusted if it resolves inside it — otherwise a forged loopback webhook
@@ -1157,7 +1202,8 @@ async def _transcode_audio_to_wav(src: str) -> Optional[str]:
         workdir = tempfile.mkdtemp(prefix="photon-aud-")
         out = os.path.join(workdir, "voice.wav")
         rc = await _run_quiet(
-            [_FFMPEG, "-y", "-i", src, "-ac", "1", "-ar", "16000", out]
+            [_FFMPEG, *_FFMPEG_HARDEN, "-y", *_FFMPEG_INPUT_GUARD,
+             "-i", src, "-ac", "1", "-ar", "16000", out]
         )
         if rc == 0 and os.path.exists(out) and os.path.getsize(out) > 256:
             return out
@@ -1194,7 +1240,8 @@ async def _video_duration(path: str) -> float:
         return 0.0
     try:
         proc = await asyncio.create_subprocess_exec(
-            _FFPROBE, "-v", "error", "-show_entries", "format=duration",
+            _FFPROBE, "-v", "error", *_FFMPEG_INPUT_GUARD,
+            "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1", path,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         )
@@ -1226,7 +1273,7 @@ async def _extract_video_media(video_path: str, max_frames: int):
             fps = f"{max_frames}/{duration:.3f}"
         frame_tmpl = os.path.join(workdir, "frame_%03d.jpg")
         rc = await _run_quiet([
-            _FFMPEG, "-y", "-i", video_path,
+            _FFMPEG, *_FFMPEG_HARDEN, "-y", *_FFMPEG_INPUT_GUARD, "-i", video_path,
             "-vf", f"fps={fps},scale='min(1024,iw)':-2",
             "-frames:v", str(max_frames), frame_tmpl,
         ])
@@ -1239,8 +1286,8 @@ async def _extract_video_media(video_path: str, max_frames: int):
         # Audio track (silent videos simply won't produce a usable file).
         wav = os.path.join(workdir, "audio.wav")
         rc2 = await _run_quiet([
-            _FFMPEG, "-y", "-i", video_path, "-vn",
-            "-ac", "1", "-ar", "16000", wav,
+            _FFMPEG, *_FFMPEG_HARDEN, "-y", *_FFMPEG_INPUT_GUARD, "-i", video_path,
+            "-vn", "-ac", "1", "-ar", "16000", wav,
         ])
         if rc2 == 0 and os.path.exists(wav) and os.path.getsize(wav) > 1024:
             audio_path = wav

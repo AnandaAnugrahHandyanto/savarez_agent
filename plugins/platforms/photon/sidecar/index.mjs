@@ -291,7 +291,13 @@ async function forwardInbound(message) {
     headers["X-Spectrum-Signature"] = sig;
   }
   try {
-    await fetch(url, { method: "POST", headers, body: bodyStr });
+    // Bound the forward so a hung adapter webhook can't pin a concurrency slot.
+    await fetch(url, {
+      method: "POST",
+      headers,
+      body: bodyStr,
+      signal: AbortSignal.timeout(10000),
+    });
   } catch (e) {
     console.error(
       "photon-sidecar: inbound forward failed: " + (e && e.message ? e.message : e)
@@ -382,9 +388,21 @@ async function handleInbound(space, message) {
   }
 })();
 
+// Control/metadata messages are tiny; cap the body so a compromised local peer
+// can't OOM the sidecar by streaming an unbounded request (defence-in-depth on
+// the loopback channel).
+const MAX_BODY_BYTES = 2 * 1024 * 1024; // 2 MiB
 async function readBody(req) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) {
+      req.destroy();
+      throw new Error("request body too large");
+    }
+    chunks.push(chunk);
+  }
   const raw = Buffer.concat(chunks).toString("utf-8");
   if (!raw) return {};
   try {
@@ -667,6 +685,39 @@ server.listen(port, bind, () => {
   console.error(`photon-sidecar: listening on ${bind}:${port}`);
 });
 
+// Age-based sweeper for downloaded attachments — they're consumed by the agent
+// within seconds, so anything older than the TTL is safe to delete. Keeps the
+// download dir from growing without bound (the OS tmp reaper is only a backstop).
+const ATTACH_TTL_MS = parseInt(
+  process.env.PHOTON_ATTACHMENT_TTL_MS || "3600000", // 1h
+  10
+);
+async function sweepDownloads() {
+  let names;
+  try {
+    names = await fsp.readdir(DOWNLOAD_DIR);
+  } catch {
+    return; // dir not created yet
+  }
+  const now = Date.now();
+  for (const name of names) {
+    const fp = path.join(DOWNLOAD_DIR, name);
+    try {
+      const st = await fsp.stat(fp);
+      if (now - st.mtimeMs > ATTACH_TTL_MS) {
+        await fsp.rm(fp, { force: true, recursive: true });
+      }
+    } catch {
+      /* raced with another delete / vanished — ignore */
+    }
+  }
+}
+setInterval(() => {
+  sweepDownloads().catch((e) =>
+    console.error("photon-sidecar: sweep error: " + (e && e.message ? e.message : e))
+  );
+}, 10 * 60 * 1000).unref(); // every 10 min, don't keep the process alive
+
 async function shutdown(signal) {
   console.error(`photon-sidecar: received ${signal}, stopping...`);
   try {
@@ -683,3 +734,13 @@ async function shutdown(signal) {
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+// Don't let a stray promise rejection take the process down silently — inbound
+// handlers already catch their own errors, so log and keep serving. (Python
+// supervises and restarts on a real fatal exit.)
+process.on("unhandledRejection", (reason) => {
+  console.error(
+    "photon-sidecar: unhandledRejection: " +
+      (reason && reason.stack ? reason.stack : String(reason))
+  );
+});
