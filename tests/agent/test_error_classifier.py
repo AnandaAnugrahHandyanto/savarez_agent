@@ -1567,3 +1567,21 @@ class TestMultimodalToolContentUnsupported:
         e = MockAPIError("bad request: missing field 'model'", status_code=400)
         result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
         assert result.reason != FailoverReason.multimodal_tool_content_unsupported
+
+
+# ── Codex spend-cap: must be a clean non-retryable stop ────────────────
+
+class TestCodexSpendCapClassification:
+    """A CodexSpendCapError is our own proactive global Codex spend breaker.
+    It must classify as a non-retryable hard stop — retrying just re-denies
+    after a pointless backoff, and credential rotation / provider fallback do
+    not reset our global cap."""
+
+    def test_codex_spend_cap_is_non_retryable(self):
+        from agent.codex_spend_guard import CodexSpendCapError
+
+        for reason in ("calls_per_hour", "calls_per_day", "tokens_per_day"):
+            result = classify_api_error(CodexSpendCapError(reason))
+            assert result.retryable is False, reason
+            assert result.should_rotate_credential is False, reason
+            assert result.should_fallback is False, reason

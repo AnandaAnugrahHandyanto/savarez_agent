@@ -533,6 +533,21 @@ def classify_api_error(
         defaults.update(overrides)
         return ClassifiedError(**defaults)
 
+    # ── 0. Local Codex spend-cap stop (highest priority) ────────────
+    # Our own proactive Codex spend guard raised this — a deliberate, global,
+    # process-local circuit-breaker stop, NOT a provider error. It MUST be
+    # non-retryable (each retry just re-denies after a pointless backoff) and
+    # must NOT rotate credentials or fall back to another provider: our global
+    # cap is reset by neither. Surface it as a clean billing-class hard stop.
+    # Matched by type name to avoid importing CodexSpendCapError (circular).
+    if error_type == "CodexSpendCapError":
+        return _result(
+            FailoverReason.billing,
+            retryable=False,
+            should_rotate_credential=False,
+            should_fallback=False,
+        )
+
     # ── 1. Provider-specific patterns (highest priority) ────────────
 
     # Provider content-policy / safety-filter block. The provider has made a
