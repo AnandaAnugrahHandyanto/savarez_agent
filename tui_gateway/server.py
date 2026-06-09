@@ -4615,7 +4615,7 @@ def _(rid, params: dict) -> dict:
         return err
     # Re-bind to the current client transport for this request. This keeps
     # streaming events on the active websocket even if an earlier disconnect
-    # or fallback moved the session transport to stdio.
+    # parked the session on the detached-WS drop transport.
     if (t := current_transport()) is not None:
         session["transport"] = t
     with session["history_lock"]:

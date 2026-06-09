@@ -1,4 +1,5 @@
 import asyncio
+import io
 
 from tui_gateway import server
 from tui_gateway import ws as ws_mod
@@ -85,5 +86,44 @@ def test_ws_disconnect_preserves_and_repoints_reconnectable_session(monkeypatch)
             ),
         )
         assert server._sessions["plain"]["transport"] is server._detached_ws_transport
+    finally:
+        server._sessions.clear()
+
+
+def test_ws_disconnect_detached_running_session_events_do_not_write_to_stdout(
+    monkeypatch,
+):
+    """Detached WS-owned sessions must not leak stream events to stdout.
+
+    In the dashboard service, stdout is journald rather than a TUI JSON-RPC
+    reader. A reconnectable session should park on the detached WS drop
+    transport while running, then become orphan-reap eligible once idle.
+    """
+
+    stdout = io.StringIO()
+    monkeypatch.setattr(server, "_real_stdout", stdout)
+    server._sessions.clear()
+    try:
+        _run_disconnect(
+            monkeypatch,
+            lambda t: server._sessions.update(
+                plain={
+                    "transport": t,
+                    "close_on_disconnect": False,
+                    "session_key": "k",
+                    "running": True,
+                }
+            ),
+        )
+
+        assert server._sessions["plain"]["transport"] is server._detached_ws_transport
+        assert not server._ws_session_is_orphaned(server._sessions["plain"])
+
+        server._emit("reasoning.delta", "plain", {"text": "must-not-hit-journal"})
+
+        assert stdout.getvalue() == ""
+
+        server._sessions["plain"]["running"] = False
+        assert server._ws_session_is_orphaned(server._sessions["plain"])
     finally:
         server._sessions.clear()
