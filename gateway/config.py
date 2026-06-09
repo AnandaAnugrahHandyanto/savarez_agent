@@ -489,6 +489,9 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
         (cfg.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID"))
         and (cfg.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET"))
     ),
+    Platform.CARBONVOICE: lambda cfg: bool(
+        cfg.token or cfg.extra.get("pat") or os.getenv("CARBONVOICE_PAT")
+    ),
 }
 
 
@@ -1915,6 +1918,34 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         yuanbao_group_allow_from = os.getenv("YUANBAO_GROUP_ALLOW_FROM")
         if yuanbao_group_allow_from:
             extra["group_allow_from"] = yuanbao_group_allow_from
+
+    # Carbon Voice — enabled by CARBONVOICE_PAT. The adapter reads most of its
+    # tuning straight from os.environ (CARBONVOICE_*), so the only values we
+    # must thread through PlatformConfig are the token + base_url + home
+    # channel; everything else has env-or-default fallbacks in the adapter.
+    cv_pat = os.getenv("CARBONVOICE_PAT")
+    if cv_pat:
+        if Platform.CARBONVOICE not in config.platforms:
+            config.platforms[Platform.CARBONVOICE] = PlatformConfig()
+        config.platforms[Platform.CARBONVOICE].enabled = True
+        config.platforms[Platform.CARBONVOICE].token = cv_pat
+        extra = config.platforms[Platform.CARBONVOICE].extra
+        extra["pat"] = cv_pat
+        cv_base_url = os.getenv("CARBONVOICE_BASE_URL", "").strip()
+        if cv_base_url:
+            extra["base_url"] = cv_base_url
+        cv_creator = os.getenv("CARBONVOICE_CREATOR_ID", "").strip()
+        if cv_creator:
+            extra["creator_id"] = cv_creator
+        cv_home = os.getenv("CARBONVOICE_HOME_CHANNEL", "").strip()
+        if cv_home:
+            extra["home_channel"] = cv_home
+            config.platforms[Platform.CARBONVOICE].home_channel = HomeChannel(
+                platform=Platform.CARBONVOICE,
+                chat_id=cv_home,
+                name=os.getenv("CARBONVOICE_HOME_CHANNEL_NAME", "Home"),
+                thread_id=os.getenv("CARBONVOICE_HOME_CHANNEL_THREAD_ID") or None,
+            )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")
