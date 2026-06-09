@@ -1953,6 +1953,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._exit_code: Optional[int] = None
         self._draining = False
         self._restart_requested = False
+        self._preserve_gateway_running_state_on_stop = False
         self._restart_task_started = False
         self._restart_detached = False
         self._restart_via_service = False
@@ -5952,7 +5953,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 
             self._draining = False
-            self._update_runtime_status("stopped", self._exit_reason)
+            final_gateway_state = (
+                "running"
+                if self._preserve_gateway_running_state_on_stop and not self._restart_requested
+                else "stopped"
+            )
+            self._update_runtime_status(final_gateway_state, self._exit_reason)
             logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
 
         self._stop_task = asyncio.create_task(_stop_impl())
@@ -15711,6 +15717,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             )
         else:
             _signal_initiated_shutdown = True
+            runner._preserve_gateway_running_state_on_stop = True
             logger.info(
                 "Received %s — initiating shutdown",
                 _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM/SIGINT",

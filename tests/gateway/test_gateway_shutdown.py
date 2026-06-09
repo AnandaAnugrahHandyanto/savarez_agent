@@ -163,6 +163,20 @@ async def test_gateway_stop_launchd_service_restart_keeps_nonzero_exit(tmp_path,
     assert runner._exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE
 
 
+
+@pytest.mark.asyncio
+async def test_unexpected_signal_shutdown_preserves_running_state_for_service_revival():
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    runner._preserve_gateway_running_state_on_stop = True
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    runner._update_runtime_status.assert_called_with("running", None)
+    assert runner._shutdown_event.is_set() is True
+
+
 @pytest.mark.asyncio
 async def test_restart_shutdown_warning_uses_restart_command_reply_anchor_for_active_session():
     runner, adapter = make_restart_runner()
