@@ -2618,6 +2618,46 @@ _copilot_context_cache: dict[str, int] = {}
 _copilot_context_cache_time: float = 0.0
 _COPILOT_CONTEXT_CACHE_TTL = 3600  # 1 hour
 
+# ── Copilot catalog under-report correction ─────────────────────────────────
+# GitHub's Copilot /models catalog advertises ``max_prompt_tokens: 200000`` for
+# the Claude family, but the API does NOT enforce that value — it enforces the
+# model's true ~1M input window. Verified empirically (real POSTs to
+# api.githubcopilot.com/chat/completions, the exact endpoint Hermes uses):
+#
+#     claude-opus-4.8   980,024 tok -> 200 OK   |  1,000,048 tok -> 400 ">1000000 maximum"
+#     claude-opus-4.7   980,019 tok -> 200 OK
+#     claude-opus-4.6   825,011 tok -> 200 OK   (catalog said 200k)
+#     claude-sonnet-4.6 825,012 tok -> 200 OK   (catalog said 200k)
+#
+# Trusting the catalog makes Hermes self-impose a ~5x context handicap that the
+# provider never asked for. We correct the known-false value to the real window.
+#
+# TIER SAFETY: the correction is deliberately narrow. It fires ONLY when the
+# catalog reports the EXACT under-reported value we verified wrong (200000) for a
+# matched model. If a Copilot tier ever reports a different number, or GitHub
+# fixes the catalog, this becomes inert and the catalog value passes through
+# untouched — we never inflate a value GitHub might actually be enforcing.
+_COPILOT_UNDERREPORTED_PROMPT = 200000
+_COPILOT_TRUE_PROMPT_WINDOW = 1000000
+# Substrings (lowercased) of model ids known to carry the ~1M window on Copilot.
+_COPILOT_1M_MODEL_MARKERS = ("claude-opus-4.6", "claude-opus-4.7", "claude-opus-4.8", "claude-sonnet-4.6")
+
+
+def _correct_copilot_max_prompt(model_id: str, max_prompt: int) -> int:
+    """Correct GitHub's known-false ``max_prompt_tokens`` under-report for Claude.
+
+    Returns the true input window when ``max_prompt`` is the exact verified-wrong
+    catalog value (200000) for a known-1M Claude model; otherwise returns
+    ``max_prompt`` unchanged. See the module-level note for the empirical basis
+    and the tier-safety rationale.
+    """
+    if max_prompt != _COPILOT_UNDERREPORTED_PROMPT:
+        return max_prompt
+    mid = (model_id or "").lower()
+    if any(marker in mid for marker in _COPILOT_1M_MODEL_MARKERS):
+        return _COPILOT_TRUE_PROMPT_WINDOW
+    return max_prompt
+
 
 def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> Optional[int]:
     """Look up max_prompt_tokens for a Copilot model from the live /models API.
@@ -2648,6 +2688,7 @@ def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> O
         limits = caps.get("limits") or {}
         max_prompt = limits.get("max_prompt_tokens")
         if isinstance(max_prompt, int) and max_prompt > 0:
+            max_prompt = _correct_copilot_max_prompt(mid, max_prompt)
             cache[mid] = max_prompt
 
     _copilot_context_cache = cache
