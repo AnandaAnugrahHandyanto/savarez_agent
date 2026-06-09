@@ -9,7 +9,7 @@ def _make_board(tmp_path):
     conn = kb.connect(db_path=db_path)
     with conn:
         tid = kb.create_task(conn, title="test task", assignee="worker")
-        kb.claim_task(conn, tid, profile="worker")
+        kb.claim_task(conn, tid, claimer="worker")
     return str(db_path), tid
 
 
