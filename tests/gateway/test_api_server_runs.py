@@ -356,6 +356,33 @@ class TestRunEvents:
         )
 
     @pytest.mark.asyncio
+    async def test_events_reconnect_for_active_run_without_existing_stream(self, adapter):
+        """SSE reconnects should not 404 while the pollable run is still active."""
+        app = _create_runs_app(adapter)
+        run_id = "run_reconnect"
+        adapter._set_run_status(run_id, "running")
+        task = MagicMock()
+        task.done.return_value = False
+        adapter._active_run_tasks[run_id] = task
+
+        async with TestClient(TestServer(app)) as cli:
+            events_task = asyncio.ensure_future(cli.get(f"/v1/runs/{run_id}/events"))
+
+            for _ in range(20):
+                if run_id in adapter._run_streams:
+                    break
+                if events_task.done():
+                    break
+                await asyncio.sleep(0.05)
+
+            if run_id in adapter._run_streams:
+                adapter._run_streams[run_id].put_nowait(None)
+
+            resp = await asyncio.wait_for(events_task, timeout=2.0)
+
+        assert resp.status == 200
+
+    @pytest.mark.asyncio
     async def test_events_not_found_returns_404(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:

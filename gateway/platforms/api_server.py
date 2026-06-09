@@ -3565,6 +3565,45 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_statuses[run_id] = current
         return current
 
+    @staticmethod
+    def _run_status_is_terminal(status: Optional[Dict[str, Any]]) -> bool:
+        """Return whether a pollable run status represents a finished run."""
+        return bool(status and status.get("status") in {"completed", "failed", "cancelled"})
+
+    def _ensure_run_stream(self, run_id: str) -> Optional["asyncio.Queue[Optional[Dict]]"]:
+        """Return an event queue for an active run, creating one for SSE reconnects."""
+        q = self._run_streams.get(run_id)
+        if q is not None:
+            return q
+
+        status = self._run_statuses.get(run_id)
+        if status is None or self._run_status_is_terminal(status):
+            return None
+
+        task = self._active_run_tasks.get(run_id)
+        if task is not None:
+            try:
+                if task.done():
+                    return None
+            except Exception:
+                return None
+
+        q = asyncio.Queue()
+        self._run_streams[run_id] = q
+        self._run_streams_created[run_id] = time.time()
+        logger.debug("[api_server] recreated run event stream for active run %s", run_id)
+        return q
+
+    def _enqueue_run_event(self, run_id: str, event: Optional[Dict[str, Any]]) -> None:
+        """Append an event to the run's current SSE queue, if one is attached."""
+        q = self._run_streams.get(run_id)
+        if q is None:
+            return
+        try:
+            q.put_nowait(event)
+        except Exception:
+            pass
+
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         def _push(event: Dict[str, Any]) -> None:
@@ -3573,11 +3612,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._run_statuses.get(run_id, {}).get("status", "running"),
                 last_event=event.get("event"),
             )
-            q = self._run_streams.get(run_id)
-            if q is None:
-                return
             try:
-                loop.call_soon_threadsafe(q.put_nowait, event)
+                loop.call_soon_threadsafe(self._enqueue_run_event, run_id, event)
             except Exception:
                 pass
 
@@ -3707,7 +3743,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if delta is None:
                 return
             try:
-                loop.call_soon_threadsafe(q.put_nowait, {
+                loop.call_soon_threadsafe(self._enqueue_run_event, run_id, {
                     "event": "message.delta",
                     "run_id": run_id,
                     "timestamp": time.time(),
@@ -3750,7 +3786,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         last_event="approval.request",
                     )
                     try:
-                        loop.call_soon_threadsafe(q.put_nowait, event)
+                        loop.call_soon_threadsafe(self._enqueue_run_event, run_id, event)
                     except Exception:
                         pass
 
@@ -3808,7 +3844,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 # block below never fires — issue #15561).
                 if isinstance(result, dict) and result.get("failed"):
                     error_msg = result.get("error") or "agent run failed"
-                    q.put_nowait({
+                    self._enqueue_run_event(run_id, {
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3822,7 +3858,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                    q.put_nowait({
+                    self._enqueue_run_event(run_id, {
                         "event": "run.completed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3843,7 +3879,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     last_event="run.cancelled",
                 )
                 try:
-                    q.put_nowait({
+                    self._enqueue_run_event(run_id, {
                         "event": "run.cancelled",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3860,7 +3896,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     last_event="run.failed",
                 )
                 try:
-                    q.put_nowait({
+                    self._enqueue_run_event(run_id, {
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3882,7 +3918,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     pass
                 # Sentinel: signal SSE stream to close
                 try:
-                    q.put_nowait(None)
+                    self._enqueue_run_event(run_id, None)
                 except Exception:
                     pass
                 self._active_run_agents.pop(run_id, None)
@@ -3932,13 +3968,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Allow subscribing slightly before the run is registered (race condition window)
         for _ in range(20):
-            if run_id in self._run_streams:
+            q = self._ensure_run_stream(run_id)
+            if q is not None:
                 break
             await asyncio.sleep(0.05)
         else:
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
-
-        q = self._run_streams[run_id]
 
         response = web.StreamResponse(
             status=200,
@@ -3966,8 +4001,9 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
         finally:
-            self._run_streams.pop(run_id, None)
-            self._run_streams_created.pop(run_id, None)
+            if self._run_streams.get(run_id) is q:
+                self._run_streams.pop(run_id, None)
+                self._run_streams_created.pop(run_id, None)
 
         return response
 
