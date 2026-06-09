@@ -455,12 +455,21 @@ class _MatrixHTMLSanitizer(HTMLParser):
 
     def _sanitize_url(self, url: str) -> str:
         """Strip dangerous URL schemes."""
-        stripped = url.strip()
-        if ":" in stripped:
-            scheme = stripped.split(":", 1)[0].lower().strip()
+        # Decode HTML entities before checking scheme (defense against java&#x73;cript:)
+        import html
+        import re
+        decoded = html.unescape(url.strip())
+        # Remove control characters (newlines, tabs, etc.) that could split the scheme
+        decoded = re.sub(r'[\x00-\x1f\x7f]', '', decoded)
+        if ":" in decoded:
+            scheme = decoded.split(":", 1)[0].lower().strip()
             if scheme in self.DANGEROUS_SCHEMES:
                 return ""
-        return stripped.replace('"', "&quot;")
+        return decoded.replace('"', "&quot;")
+
+    def _escape_attr_value(self, value: str) -> str:
+        """HTML-escape an attribute value for safe output."""
+        return _html_escape(value).replace('"', "&quot;")
 
     def handle_starttag(self, tag: str, attrs: list):
         tag_lower = tag.lower()
@@ -475,12 +484,12 @@ class _MatrixHTMLSanitizer(HTMLParser):
                 if name_lower == "href":
                     value = self._sanitize_url(value)
                     if value:  # Only keep if not stripped to empty
-                        safe_attrs.append((name, value))
+                        safe_attrs.append((name, self._escape_attr_value(value)))
                 else:
-                    safe_attrs.append((name, value))
+                    safe_attrs.append((name, self._escape_attr_value(value)))
             elif name_lower == "alt" and tag_lower == "code":
                 # Allow alt on code (pre/code blocks sometimes have it)
-                safe_attrs.append((name, value))
+                safe_attrs.append((name, self._escape_attr_value(value)))
             # Drop all other attributes (style, onclick, etc.)
 
         # Build tag
@@ -509,7 +518,7 @@ class _MatrixHTMLSanitizer(HTMLParser):
                 if name_lower == "href":
                     value = self._sanitize_url(value)
                     if value:
-                        safe_attrs.append((name, value))
+                        safe_attrs.append((name, self._escape_attr_value(value)))
         if safe_attrs:
             attr_str = " ".join(f'{n}="{v}"' for n, v in safe_attrs)
             self.result.append(f"<{tag} {attr_str}/>")
@@ -2956,7 +2965,7 @@ class MatrixAdapter(BasePlatformAdapter):
         except ImportError:
             pass
 
-        return self._markdown_to_html_fallback(text)
+        return _sanitize_matrix_html(self._markdown_to_html_fallback(text))
 
     # ------------------------------------------------------------------
     # Regex-based Markdown -> HTML (no extra dependencies)
@@ -2966,10 +2975,16 @@ class MatrixAdapter(BasePlatformAdapter):
     def _sanitize_link_url(url: str) -> str:
         """Sanitize a URL for use in an href attribute."""
         stripped = url.strip()
-        scheme = stripped.split(":", 1)[0].lower().strip() if ":" in stripped else ""
+        # Decode HTML entities before checking scheme (defense against java&#x73;cript:)
+        import html
+        import re
+        decoded = html.unescape(stripped)
+        # Remove control characters (newlines, tabs, etc.) that could split the scheme
+        decoded = re.sub(r'[\x00-\x1f\x7f]', '', decoded)
+        scheme = decoded.split(":", 1)[0].lower().strip() if ":" in decoded else ""
         if scheme in {"javascript", "data", "vbscript"}:
             return ""
-        return stripped.replace('"', "&quot;")
+        return decoded.replace('"', "&quot;")
 
     @staticmethod
     def _markdown_to_html_fallback(text: str) -> str:
