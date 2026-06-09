@@ -100,6 +100,27 @@ def spawn_late_mcp_refresh(
     # Only spawn if discovery is still running
     thread = _mcp_discovery_thread
     if thread is None or not thread.is_alive():
+        # Discovery thread is None or already finished.  The agent was built
+        # with whatever tools were ready at wait_for_mcp_discovery time.
+        # Slow servers may have connected since then — do one inline refresh
+        # check right now.
+        try:
+            current_tools = set()
+            if hasattr(agent, "tools") and agent.tools:
+                current_tools = {t["function"]["name"] for t in agent.tools}
+            new_defs = get_tool_definitions_fn(quiet_mode=True)
+            new_tool_names = {t["function"]["name"] for t in new_defs} if new_defs else set()
+            added = new_tool_names - current_tools
+            if added:
+                agent.tools = new_defs
+                agent.valid_tool_names = new_tool_names
+                if on_refreshed:
+                    try:
+                        on_refreshed(len(added), len(new_tool_names))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         return
 
     # Avoid spawning multiple late-refresh threads

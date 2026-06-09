@@ -261,6 +261,13 @@ def main():
         # already-spawning fast servers to land (see wait_for_mcp_discovery).
         global _mcp_discovery_thread
         _mcp_discovery_thread = _mcp_thread
+        # Also publish to mcp_startup so spawn_late_mcp_refresh can see it
+        try:
+            import hermes_cli.mcp_startup as _mcp_startup
+            _mcp_startup._mcp_discovery_thread = _mcp_thread
+            _mcp_startup._mcp_discovery_started = True
+        except Exception:
+            pass
 
     if not write_json({
         "jsonrpc": "2.0",
