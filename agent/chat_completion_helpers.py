@@ -575,6 +575,21 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
+    # ── DETE: redact credentials in the original OpenAI-format messages
+    # before any provider-specific conversion (Anthropic, Bedrock, Codex).
+    # This runs on the canonical message format, catching credentials that
+    # might be structurally transformed by provider adapters.
+    if api_messages and isinstance(api_messages, list):
+        import copy
+        from agent.redact import _redact_message_content, redact_sensitive_text
+        redacted = copy.deepcopy(api_messages)
+        for msg in redacted:
+            if isinstance(msg, dict) and "content" in msg:
+                msg["content"] = _redact_message_content(msg["content"], redact_sensitive_text)
+        # Replace in-place — the caller's reference stays correct, but the
+        # original dict objects are preserved via deepcopy.
+        api_messages[:] = redacted
+    # ──────────────────────────────────────────────────────────────────
     tools_for_api = agent.tools
 
     if agent.api_mode == "anthropic_messages":

@@ -58,9 +58,10 @@ _SENSITIVE_BODY_KEYS = frozenset({
 
 # DETE: Redaction is always enabled. The `HERMES_REDACT_SECRETS` env var
 # kill switch has been removed — there is no legitimate reason to send
-# credentials to an LLM provider in plaintext. Callers that need a
-# security-weak path for debugging must use explicit `force=True` parameter
-# to bypass specific patterns, not disable redaction globally.
+# credentials to an LLM provider in plaintext.
+# The ``force`` parameter on ``redact_sensitive_text`` is a forward-compat
+# marker for API enforcement boundaries; it becomes load-bearing only if
+# ``_REDACT_ENABLED`` stops being hardcoded.
 _REDACT_ENABLED = True
 
 # Known API key prefixes -- match the prefix + contiguous token chars
@@ -328,9 +329,13 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
-    Enabled by default. Disable via security.redact_secrets: false in config.yaml.
-    Set force=True for safety boundaries that must never return raw secrets
-    regardless of the user's global logging redaction preference.
+    Enabled by default and non-optional — ``_REDACT_ENABLED`` is hardcoded
+    ``True`` (the ``HERMES_REDACT_SECRETS`` env-var kill switch was removed).
+    The ``force`` parameter exists as a forward-compatibility marker for API
+    enforcement boundaries: it will become meaningful if ``_REDACT_ENABLED``
+    stops being hardcoded (e.g. the kill switch is restored). All callers
+    at safety boundaries should pass ``force=True`` so their intent is
+    explicit even though it is currently redundant.
 
     Set code_file=True to skip the ENV-assignment and JSON-field regex
     patterns when the text is known to be source code (e.g. MAX_TOKENS=***

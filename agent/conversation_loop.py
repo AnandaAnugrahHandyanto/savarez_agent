@@ -3822,6 +3822,19 @@ def run_conversation(
                     conversation_history = None
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
+                # ── DETE: redact credentials at the persistence boundary ────
+                # Defense-in-depth: ensure no credentials ever enter the stored
+                # conversation history, regardless of which API-boundary path
+                # handled (or missed) the redaction.
+                if messages:
+                    import copy
+                    from agent.redact import _redact_message_content, redact_sensitive_text
+                    redacted_msgs = copy.deepcopy(messages)
+                    for msg in redacted_msgs:
+                        if isinstance(msg, dict) and "content" in msg:
+                            msg["content"] = _redact_message_content(msg["content"], redact_sensitive_text)
+                    messages = redacted_msgs
+                # ────────────────────────────────────────────────────────────
                 agent._session_messages = messages
                 
                 # Continue loop for next response
