@@ -60,6 +60,13 @@ const {
   resolveReadableFileForIpc,
   resolveTimeoutMs
 } = require('./hardening.cjs')
+const {
+  ZOOM_STATE_FILE_NAME,
+  ZOOM_STORAGE_KEY,
+  normalizeZoomState,
+  serializeZoomState,
+  shouldHandleZoomShortcut
+} = require('./zoom-state.cjs')
 
 let nodePty = null
 
@@ -3254,57 +3261,81 @@ function installPreviewShortcut(window) {
   })
 }
 
-// Zoom level is persisted in the renderer's own localStorage (per-origin,
-// survives reloads/restarts) rather than a main-process JSON file. The main
-// process owns setZoomLevel, so we mirror each change into localStorage and
-// read it back on did-finish-load to re-apply after reloads or crash recovery.
-const ZOOM_STORAGE_KEY = 'hermes:desktop:zoomLevel'
+// Persist zoom in main-process userData so it survives restarts, renderer
+// origin/storage resets, app moves, and older builds that wrote ui-zoom.json.
+// localStorage remains as a fallback/mirror for compatibility with 0.15.x.
+function zoomStatePath() {
+  return path.join(app.getPath('userData'), ZOOM_STATE_FILE_NAME)
+}
 
-function clampZoomLevel(value) {
-  if (!Number.isFinite(value)) return 0
-  return Math.min(Math.max(value, -9), 9)
+function readPersistedZoomStateFromFile() {
+  try {
+    const statePath = zoomStatePath()
+    if (!fs.existsSync(statePath)) return null
+    return normalizeZoomState(JSON.parse(fs.readFileSync(statePath, 'utf8')))
+  } catch (error) {
+    rememberLog(`[zoom] read failed: ${error?.message || error}`)
+    return null
+  }
+}
+
+function writePersistedZoomLevel(zoomLevel) {
+  const next = serializeZoomState(zoomLevel)
+  try {
+    const statePath = zoomStatePath()
+    fs.mkdirSync(path.dirname(statePath), { recursive: true })
+    fs.writeFileSync(statePath, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+  } catch (error) {
+    rememberLog(`[zoom] file persist failed: ${error?.message || error}`)
+  }
+  return next
 }
 
 function setAndPersistZoomLevel(window, zoomLevel) {
   if (!window || window.isDestroyed()) return
-  const next = clampZoomLevel(zoomLevel)
-  window.webContents.setZoomLevel(next)
+  const next = writePersistedZoomLevel(zoomLevel)
+  window.webContents.setZoomLevel(next.level)
   window.webContents
-    .executeJavaScript(`try { localStorage.setItem(${JSON.stringify(ZOOM_STORAGE_KEY)}, ${JSON.stringify(String(next))}) } catch {}`)
-    .catch(error => rememberLog(`[zoom] persist failed: ${error?.message || error}`))
+    .executeJavaScript(`try { localStorage.setItem(${JSON.stringify(ZOOM_STORAGE_KEY)}, ${JSON.stringify(String(next.level))}) } catch {}`)
+    .catch(error => rememberLog(`[zoom] localStorage persist failed: ${error?.message || error}`))
 }
 
 function restorePersistedZoomLevel(window) {
   if (!window || window.isDestroyed()) return
+
+  const fileState = readPersistedZoomStateFromFile()
+  if (fileState) {
+    window.webContents.setZoomLevel(fileState.level)
+    return
+  }
+
   window.webContents
     .executeJavaScript(`(() => { try { return localStorage.getItem(${JSON.stringify(ZOOM_STORAGE_KEY)}) } catch { return null } })()`)
     .then(stored => {
       if (stored == null || !window || window.isDestroyed()) return
-      const level = clampZoomLevel(Number(stored))
-      window.webContents.setZoomLevel(level)
+      const state = normalizeZoomState(stored)
+      if (!state) return
+      writePersistedZoomLevel(state.level)
+      window.webContents.setZoomLevel(state.level)
     })
-    .catch(error => rememberLog(`[zoom] restore failed: ${error?.message || error}`))
+    .catch(error => rememberLog(`[zoom] localStorage restore failed: ${error?.message || error}`))
 }
 
 function installZoomShortcuts(window) {
   // Override Ctrl/Cmd + +/-/0 with half the default zoom step (0.1 vs 0.2).
-  // The menu items handle this on macOS (where the menu is always present),
-  // but on Linux/Windows the menu is null and Chromium's default handler
-  // would use the full 0.2 step, so we intercept here for consistency.
+  // Cmd++ often arrives as Cmd+Shift+= on macOS keyboard layouts; handle that
+  // explicitly so Chromium's transient default zoom path cannot bypass persist.
   const ZOOM_STEP = 0.1
   window.webContents.on('before-input-event', (event, input) => {
-    const mod = IS_MAC ? input.meta : input.control
-    if (!mod || input.alt || input.shift) return
+    const action = shouldHandleZoomShortcut(input, IS_MAC)
+    if (!action) return
 
-    const key = input.key
-    if (key === '0') {
-      event.preventDefault()
+    event.preventDefault()
+    if (action === 'reset') {
       setAndPersistZoomLevel(window, 0)
-    } else if (key === '=' || key === '+') {
-      event.preventDefault()
+    } else if (action === 'in') {
       setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + ZOOM_STEP)
-    } else if (key === '-') {
-      event.preventDefault()
+    } else if (action === 'out') {
       setAndPersistZoomLevel(window, window.webContents.getZoomLevel() - ZOOM_STEP)
     }
   })
