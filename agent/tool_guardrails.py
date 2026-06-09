@@ -231,6 +231,13 @@ def _memory_quota_error(data: Mapping[str, Any]) -> bool:
     return data.get("error_code") == "memory_quota_exceeded"
 
 
+def _memory_quota_display_error(data: Mapping[str, Any]) -> bool:
+    if _memory_quota_error(data):
+        return True
+    error = str(data.get("error", ""))
+    return "exceed the limit" in error or "Replacement would put memory at" in error
+
+
 def _memory_write_is_space_increasing(args: Mapping[str, Any]) -> bool:
     action = str(args.get("action") or "")
     if action == "add":
@@ -269,9 +276,7 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     if tool_name == "memory":
         data = safe_json_loads(result)
         if isinstance(data, dict):
-            if data.get("success") is False and _memory_quota_error(data):
-                return True, " [full]"
-            if data.get("success") is False and "exceed the limit" in data.get("error", ""):
+            if data.get("success") is False and _memory_quota_display_error(data):
                 return True, " [full]"
 
     lower = result[:500].lower()

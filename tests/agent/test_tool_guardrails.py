@@ -214,6 +214,39 @@ def test_replace_quota_overflow_uses_structured_code_not_error_wording():
     assert skipped.should_halt is False
 
 
+def test_legacy_memory_quota_error_string_does_not_crash_guardrail():
+    controller = ToolCallGuardrailController()
+    args = {"action": "replace", "target": "memory", "old_text": "alpha", "content": "beta"}
+    result = json.dumps({
+        "success": False,
+        "error": (
+            "Replacement would put memory at 1,431/1,375 chars. "
+            "Shorten the new content or remove other entries first."
+        ),
+    })
+
+    controller.before_call("memory", args, current_store_state_token="opaque:A")
+    decision = controller.after_call("memory", args, result, failed=True)
+    retry = controller.before_call("memory", args, current_store_state_token="opaque:A")
+
+    assert decision.action in {"allow", "warn"}
+    assert retry.action == "allow"
+
+
+def test_memory_quota_fallback_classifier_matches_display_full_suffix():
+    structured = _memory_quota_result(operation="replace", store_state_token="opaque:R")
+    legacy = json.dumps({
+        "success": False,
+        "error": (
+            "Replacement would put memory at 1,431/1,375 chars. "
+            "Shorten the new content or remove other entries first."
+        ),
+    })
+
+    assert classify_tool_failure("memory", structured) == (True, " [full]")
+    assert classify_tool_failure("memory", legacy) == (True, " [full]")
+
+
 def test_memory_quota_budget_suppresses_further_space_increasing_writes_without_halting():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(memory_quota_failure_suppress_after=2)
