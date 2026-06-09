@@ -25,6 +25,8 @@
 //              "caption": "..." | null, "pacingMs": 600 | null}
 //   - POST /typing                      -> {"ok": true}
 //       body: {"spaceId": "...", "state": "start" | "stop"}
+//   - POST /react                       -> {"ok": true}
+//       body: {"spaceId": "...", "targetMessageId": "...", "reaction": "👍"}
 //   - POST /shutdown                    -> {"ok": true}; then process exits
 //
 // On SIGINT/SIGTERM the sidecar calls `app.stop()` (3s graceful) before
@@ -66,9 +68,9 @@ if (!projectId || !projectSecret || !sharedToken) {
 
 // Lazy-load spectrum-ts so a missing install fails with a clear message
 // instead of a cryptic module-resolution error during import.
-let Spectrum, imessage, attachment, voice, effect, typing;
+let Spectrum, imessage, attachment, voice, effect, typing, reaction;
 try {
-  ({ Spectrum, attachment, voice, typing } = await import("spectrum-ts"));
+  ({ Spectrum, attachment, voice, typing, reaction } = await import("spectrum-ts"));
   ({ imessage, effect } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
   console.error(
@@ -162,6 +164,20 @@ function isDuplicate(id) {
   if (_seen.has(id)) return true;
   _seen.set(id, now);
   return false;
+}
+
+// Recent inbound messages by id. The reaction() builder needs the full target
+// Message (it validates `isMessage` and reads `target.content.type`), not just
+// an id — so /react resolves the message object from here (the ack flow always
+// reacts to a message we just received and cached).
+const _msgCache = new Map();
+const _MSG_CACHE_MAX = 500;
+function cacheMessage(message) {
+  if (!message?.id) return;
+  if (_msgCache.size >= _MSG_CACHE_MAX) {
+    _msgCache.delete(_msgCache.keys().next().value);
+  }
+  _msgCache.set(message.id, message);
 }
 
 // Bounded-concurrency scheduler so a slow attachment download (large video)
@@ -262,6 +278,7 @@ async function handleInbound(space, message) {
   }
   // Fire-and-forget read receipt (handles its own errors); don't delay forward.
   markRead(space, message);
+  cacheMessage(message); // so /react can resolve this as a tapback target
   const content = message?.content || {};
 
   if (content.type === "attachment" && typeof content.stream === "function") {
@@ -468,10 +485,11 @@ const server = http.createServer(async (req, res) => {
       const space = await resolveSpace(spaceId);
 
       // spectrum-ts infers name + MIME from the file extension; pass
-      // overrides only when Hermes supplied them so a known-good
-      // inference isn't clobbered with an empty string. Images/GIFs/videos and
-      // arbitrary files (PDFs, docs) all go through the same builder and render
-      // natively; a sticker is just a (sticker-sized) image attachment.
+      // overrides only when Hermes supplied them so a known-good inference
+      // isn't clobbered with an empty string. Images/GIFs/videos and voice
+      // (kind="voice") render natively; a sticker is just a (sticker-sized)
+      // image attachment. (Documents/PDFs aren't a reliable send over this
+      // line, so there's no send_document override on the adapter.)
       const opts = {};
       if (name) opts.name = name;
       if (mimeType) opts.mimeType = mimeType;
@@ -548,6 +566,38 @@ const server = http.createServer(async (req, res) => {
             (e && e.message ? e.message : e)
         );
       }
+      return ok(res, {});
+    }
+    if (req.url === "/react") {
+      // Bot -> user tapback. `reaction(emoji, target)` resolves to
+      // `messages.setReaction(...)`; native tapbacks (❤️👍👎😂‼️❓) map to
+      // Apple's tapback kinds, any other emoji is sent as an emoji reaction
+      // (iOS 18+). `targetMessageId` is the guid of the message to react to.
+      const { spaceId, targetMessageId, reaction: emoji } = body || {};
+      if (!spaceId || !targetMessageId || !emoji) {
+        return badRequest(
+          res,
+          "spaceId, targetMessageId and reaction are required"
+        );
+      }
+      const space = await resolveSpace(spaceId);
+      // reaction() needs the full target Message. Prefer the cached inbound
+      // message; fall back to fetching it by id from the provider.
+      let target = _msgCache.get(targetMessageId);
+      if (!target && typeof provider.getMessage === "function") {
+        try {
+          target = await provider.getMessage(space, targetMessageId);
+        } catch (e) {
+          console.error(
+            "photon-sidecar: getMessage(" + targetMessageId + ") failed: " +
+              (e && e.message ? e.message : e)
+          );
+        }
+      }
+      if (!target) {
+        return badRequest(res, "target message not found");
+      }
+      await withRetry(() => space.send(reaction(emoji, target)));
       return ok(res, {});
     }
     res.statusCode = 404;

@@ -234,6 +234,152 @@ async def test_dispatch_reaction(monkeypatch: pytest.MonkeyPatch) -> None:
     assert event.message_type == MessageType.TEXT
 
 
+@pytest.mark.asyncio
+async def test_inbound_audio_maps_to_voice(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A voice memo (audio/*) must map to VOICE so the gateway transcribes it
+    (AUDIO is the never-STT bucket)."""
+    adapter = _make_adapter(monkeypatch)
+    captured: List[MessageEvent] = []
+
+    async def fake_handle(event: MessageEvent) -> None:
+        captured.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+
+    memo = tmp_path / "memo.caf"
+    memo.write_bytes(b"caf fake audio")
+    payload = {
+        "event": "messages",
+        "message": {
+            "id": "spc-msg-voice",
+            "timestamp": "2026-05-14T19:06:32.000Z",
+            "sender": {"id": "+15551234567"},
+            "space": {"id": "any;-;+15551234567"},
+            "content": {
+                "type": "attachment",
+                "name": "memo.caf",
+                "mimeType": "audio/x-caf",
+                "size": 14,
+                "localPath": str(memo),
+            },
+        },
+    }
+    await adapter._dispatch_inbound(payload)
+    event = captured[0]
+    assert event.message_type == MessageType.VOICE
+    assert event.media_urls == [str(memo)]
+
+
+@pytest.mark.asyncio
+async def test_inbound_caf_voice_transcoded_to_wav(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """An iMessage .caf voice memo (which arrives as application/octet-stream
+    and isn't an STT-accepted format) is typed VOICE and transcoded to .wav so
+    the gateway's transcription pipeline accepts it."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not available")
+
+    caf = tmp_path / "Audio Message.caf"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+         str(caf)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
+    )
+
+    adapter = _make_adapter(monkeypatch)
+    captured: List[MessageEvent] = []
+
+    async def fake_handle(event: MessageEvent) -> None:
+        captured.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+
+    payload = {
+        "event": "messages",
+        "message": {
+            "id": "spc-msg-caf",
+            "timestamp": "2026-05-14T19:06:32.000Z",
+            "sender": {"id": "+15551234567"},
+            "space": {"id": "any;-;+15551234567"},
+            "content": {
+                "type": "attachment",
+                "name": "Audio Message.caf",
+                "mimeType": "application/octet-stream",  # how iMessage delivers it
+                "size": caf.stat().st_size,
+                "localPath": str(caf),
+            },
+        },
+    }
+    await adapter._dispatch_inbound(payload)
+    event = captured[0]
+    assert event.message_type == MessageType.VOICE
+    assert len(event.media_urls) == 1
+    assert event.media_urls[0].endswith(".wav")
+    assert event.media_types == ["audio/wav"]
+
+
+@pytest.mark.asyncio
+async def test_inbound_video_extracts_frames_and_audio(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """An inbound video is normalized into keyframes (image/*) + audio track
+    (audio/*) so the existing vision + STT pipelines can consume it."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not available")
+
+    clip = tmp_path / "clip.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-f", "lavfi",
+            "-i", "testsrc=duration=2:size=320x240:rate=10",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+            "-c:v", "libx264", "-c:a", "aac", "-shortest", str(clip),
+        ],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
+    )
+
+    adapter = _make_adapter(monkeypatch)
+    captured: List[MessageEvent] = []
+
+    async def fake_handle(event: MessageEvent) -> None:
+        captured.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+
+    payload = {
+        "event": "messages",
+        "message": {
+            "id": "spc-msg-video",
+            "timestamp": "2026-05-14T19:06:32.000Z",
+            "sender": {"id": "+15551234567"},
+            "space": {"id": "any;-;+15551234567"},
+            "content": {
+                "type": "attachment",
+                "name": "clip.mp4",
+                "mimeType": "video/mp4",
+                "size": clip.stat().st_size,
+                "localPath": str(clip),
+            },
+        },
+    }
+    await adapter._dispatch_inbound(payload)
+    event = captured[0]
+    # Frames (image/jpeg) for vision + audio track (audio/wav) for STT.
+    assert any(t == "image/jpeg" for t in event.media_types)
+    assert any(t.startswith("audio/") for t in event.media_types)
+    # No raw .mp4 left in the media set — it was normalized.
+    assert not any(u.endswith(".mp4") for u in event.media_urls)
+
+
 def test_is_duplicate_window(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _make_adapter(monkeypatch)
     assert adapter._is_duplicate("id-1") is False

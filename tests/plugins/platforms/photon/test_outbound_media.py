@@ -96,22 +96,66 @@ async def test_send_voice_marks_kind_voice(
     assert body["kind"] == "voice"
 
 
+def test_no_send_document_override() -> None:
+    # Documents/PDFs aren't a reliable send over the Photon iMessage line, so
+    # the adapter must NOT override send_document (it falls back to base).
+    assert "send_document" not in vars(PhotonAdapter)
+
+
 @pytest.mark.asyncio
-async def test_send_document_passes_filename(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-) -> None:
-    _patch_safe_path(monkeypatch)
-    doc = tmp_path / "report.pdf"
-    doc.write_bytes(b"%PDF-1.4 fake")
+async def test_reaction_ack_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 👀 on processing start, ✅ on success — bot tapbacks the user's message.
+    from gateway.platforms.base import (
+        MessageEvent,
+        MessageType,
+        ProcessingOutcome,
+    )
+
+    monkeypatch.setenv("PHOTON_ALLOWED_USERS", "+15551234567")
     adapter = _make_adapter(monkeypatch)
     calls = _capture_sidecar(adapter)
 
-    await adapter.send_document("any;-;+1", str(doc), file_name="Q3.pdf")
+    src = adapter.build_source(
+        chat_id="any;-;+15551234567",
+        chat_name="any;-;+15551234567",
+        chat_type="dm",
+        user_id="+15551234567",
+        user_name=None,
+    )
+    ev = MessageEvent(
+        text="hi", message_type=MessageType.TEXT, source=src, message_id="m1"
+    )
 
-    _, body = calls[0]
-    assert body["kind"] == "attachment"
-    assert body["name"] == "Q3.pdf"
-    assert body["mimeType"] == "application/pdf"
+    await adapter.on_processing_start(ev)
+    await adapter.on_processing_complete(ev, ProcessingOutcome.SUCCESS)
+
+    reacts = [body for path, body in calls if path == "/react"]
+    assert len(reacts) == 2
+    assert reacts[0]["reaction"] == "👀"
+    assert reacts[0]["targetMessageId"] == "m1"
+    assert reacts[0]["spaceId"] == "any;-;+15551234567"
+    assert reacts[1]["reaction"] == "✅"
+
+
+@pytest.mark.asyncio
+async def test_reaction_skips_non_allowlisted(monkeypatch: pytest.MonkeyPatch) -> None:
+    from gateway.platforms.base import MessageEvent, MessageType
+
+    monkeypatch.setenv("PHOTON_ALLOWED_USERS", "+15550000000")  # different number
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+    src = adapter.build_source(
+        chat_id="any;-;+15551234567",
+        chat_name="any;-;+15551234567",
+        chat_type="dm",
+        user_id="+15551234567",
+        user_name=None,
+    )
+    ev = MessageEvent(
+        text="hi", message_type=MessageType.TEXT, source=src, message_id="m1"
+    )
+    await adapter.on_processing_start(ev)
+    assert [b for p, b in calls if p == "/react"] == []
 
 
 @pytest.mark.asyncio

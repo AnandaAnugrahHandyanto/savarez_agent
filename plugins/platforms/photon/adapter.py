@@ -36,6 +36,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,6 +61,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
 )
 
@@ -527,9 +529,51 @@ class PhotonAdapter(BasePlatformAdapter):
             mime = (content.get("mimeType") or "").lower()
             local_path = content.get("localPath")
             mtype = _attachment_message_type(mime)
+            # iMessage voice memos are .caf and often arrive WITHOUT an audio/*
+            # mime (so the mime-only check above types them DOCUMENT, which the
+            # gateway excludes from STT). Type by extension too, like the
+            # BlueBubbles channel's `uti.endswith("caf")` check, so voice memos
+            # always reach transcription.
+            _ext = os.path.splitext(name)[1].lower()
+            if _ext in _VOICE_EXTS and mtype is not MessageType.VOICE:
+                mtype = MessageType.VOICE
+            logger.debug(
+                "[photon] inbound attachment name=%r mime=%r ext=%r -> %s",
+                name, mime, _ext, mtype,
+            )
             if local_path and os.path.isfile(local_path):
-                media_urls.append(local_path)
-                media_types.append(mime)
+                if mime.startswith("video/"):
+                    # Hermes has no native inbound-video path, so normalize the
+                    # clip into keyframes (→ the capability-aware vision routing
+                    # in agent/image_routing.py: native pixels if the model is
+                    # vision-capable, else vision_analyze) plus the audio track
+                    # (→ the existing STT path). Model-agnostic — no per-model
+                    # branching here. Falls back to the raw video on failure.
+                    frames, audio = await _extract_video_media(
+                        local_path, _video_frame_count()
+                    )
+                    for f in frames:
+                        media_urls.append(f)
+                        media_types.append("image/jpeg")
+                    if audio:
+                        media_urls.append(audio)
+                        media_types.append("audio/wav")
+                    if not frames and not audio:
+                        media_urls.append(local_path)
+                        media_types.append(mime)
+                elif mtype is MessageType.VOICE and _ext not in _STT_OK_EXTS:
+                    # iMessage voice memos (.caf) aren't an STT-accepted format;
+                    # transcode to .wav so the gateway's transcription works.
+                    wav = await _transcode_audio_to_wav(local_path)
+                    if wav:
+                        media_urls.append(wav)
+                        media_types.append("audio/wav")
+                    else:
+                        media_urls.append(local_path)
+                        media_types.append(mime)
+                else:
+                    media_urls.append(local_path)
+                    media_types.append(mime)
                 text = ""  # attachments usually arrive without caption text
             else:
                 text = (
@@ -757,20 +801,6 @@ class PhotonAdapter(BasePlatformAdapter):
             chat_id, video_path, caption=caption, reply_to=reply_to,
         )
 
-    async def send_document(
-        self,
-        chat_id: str,
-        file_path: str,
-        caption: Optional[str] = None,
-        file_name: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        **kwargs,
-    ) -> SendResult:
-        return await self._sidecar_send_attachment(
-            chat_id, file_path, name=file_name, caption=caption, reply_to=reply_to,
-        )
-
     async def send_animation(
         self,
         chat_id: str,
@@ -800,6 +830,82 @@ class PhotonAdapter(BasePlatformAdapter):
             await self._sidecar_call("/typing", {"spaceId": chat_id, "state": "stop"})
         except Exception as e:
             logger.debug("[photon] stop_typing failed: %s", e)
+
+    # -- Tapback reactions (bot -> user) -----------------------------------
+    #
+    # iMessage tapbacks are sent via spectrum-ts' `reaction(emoji, target)`
+    # builder (resolves to `messages.setReaction(...)`). Native tapbacks
+    # (❤️👍👎😂‼️❓) map to Apple's tapback kinds; any other emoji is delivered
+    # as an emoji reaction (iOS 18+). Used by the on_processing_* hooks to
+    # acknowledge a message with 👀 (received) → ✅/❌ (done), matching the
+    # Signal/Telegram channels.
+
+    def _reactions_enabled(self, event: "MessageEvent" = None) -> bool:
+        if os.getenv("PHOTON_REACTIONS", "true").lower() in {"false", "0", "no"}:
+            return False
+        # Only react to allowlisted senders so a stranger never sees the bot
+        # acknowledge (the reaction fires before run.py's auth gate). Read the
+        # allowlist straight from env — the same source the sidecar uses.
+        allow = {
+            u.strip()
+            for u in os.getenv("PHOTON_ALLOWED_USERS", "").split(",")
+            if u.strip()
+        }
+        if event is not None and allow:
+            sender = getattr(getattr(event, "source", None), "user_id", None)
+            if sender and sender not in allow:
+                return False
+        return True
+
+    def _extract_reaction_target(self, event: "MessageEvent"):
+        mid = getattr(event, "message_id", None)
+        return (mid,) if mid else None
+
+    async def send_reaction(
+        self, chat_id: str, emoji: str, target_message_id: str
+    ) -> bool:
+        try:
+            await self._sidecar_call(
+                "/react",
+                {
+                    "spaceId": chat_id,
+                    "targetMessageId": target_message_id,
+                    "reaction": emoji,
+                },
+            )
+            return True
+        except Exception as e:
+            logger.debug("[photon] send_reaction failed: %s", e)
+            return False
+
+    async def remove_reaction(self, chat_id: str, target_message_id: str) -> None:
+        # spectrum-ts' high-level `reaction()` builder only *adds* a tapback;
+        # clearing one (setReaction isSet=false) isn't exposed, so removal is a
+        # no-op. The completion reaction is simply added alongside the 👀.
+        return None
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        if not self._reactions_enabled(event):
+            return
+        target = self._extract_reaction_target(event)
+        if target:
+            await self.send_reaction(event.source.chat_id, "👀", *target)
+
+    async def on_processing_complete(
+        self, event: MessageEvent, outcome: ProcessingOutcome
+    ) -> None:
+        # CANCELLED: leave 👀 in place — no terminal outcome yet.
+        if not self._reactions_enabled(event) or outcome == ProcessingOutcome.CANCELLED:
+            return
+        target = self._extract_reaction_target(event)
+        if not target:
+            return
+        chat_id = event.source.chat_id
+        await self.remove_reaction(chat_id, *target)
+        if outcome == ProcessingOutcome.SUCCESS:
+            await self.send_reaction(chat_id, "✅", *target)
+        elif outcome == ProcessingOutcome.FAILURE:
+            await self.send_reaction(chat_id, "❌", *target)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return whatever we know about a Spectrum space id.
@@ -911,10 +1017,130 @@ def _attachment_message_type(mime: str) -> MessageType:
     if mime.startswith("video/"):
         return MessageType.VIDEO
     if mime.startswith("audio/"):
-        return MessageType.AUDIO
+        # iMessage voice memos arrive as audio attachments; map to VOICE so
+        # the gateway's STT path transcribes them (MessageType.AUDIO is the
+        # "never transcribe" file-attachment bucket — see gateway/run.py).
+        return MessageType.VOICE
     if mime.startswith("application/"):
         return MessageType.DOCUMENT
     return MessageType.DOCUMENT
+
+
+_FFMPEG = shutil.which("ffmpeg")
+_FFPROBE = shutil.which("ffprobe")
+
+# Voice-memo file extensions — iMessage records voice messages as CoreAudio
+# (.caf); these should always route to STT even when the mime is non-audio.
+_VOICE_EXTS = frozenset({".caf", ".amr", ".opus"})
+
+# Audio container formats Hermes' STT pipeline (tools.transcription_tools)
+# accepts. iMessage's .caf is NOT here, so voice memos must be transcoded to
+# .wav before they reach transcription.
+_STT_OK_EXTS = frozenset(
+    {".aac", ".flac", ".m4a", ".mp3", ".mp4", ".mpeg", ".mpga", ".ogg", ".wav", ".webm"}
+)
+
+
+async def _transcode_audio_to_wav(src: str) -> Optional[str]:
+    """Transcode an audio file to 16 kHz mono WAV (the canonical STT input).
+    Returns the new path, or None on failure (caller falls back to the original).
+    """
+    if not _FFMPEG:
+        return None
+    try:
+        workdir = tempfile.mkdtemp(prefix="photon-aud-")
+        out = os.path.join(workdir, "voice.wav")
+        rc = await _run_quiet(
+            [_FFMPEG, "-y", "-i", src, "-ac", "1", "-ar", "16000", out]
+        )
+        if rc == 0 and os.path.exists(out) and os.path.getsize(out) > 256:
+            return out
+    except Exception as e:
+        logger.debug("[photon] audio transcode failed: %s", e)
+    return None
+
+
+def _video_frame_count() -> int:
+    """How many keyframes to sample from an inbound video (configurable, not
+    hardcoded). Anyone running Hermes can tune PHOTON_VIDEO_FRAMES."""
+    try:
+        return max(1, min(32, int(os.getenv("PHOTON_VIDEO_FRAMES", "6"))))
+    except ValueError:
+        return 6
+
+
+async def _run_quiet(args: List[str], timeout: float = 45.0) -> int:
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return 1
+    return proc.returncode or 0
+
+
+async def _video_duration(path: str) -> float:
+    if not _FFPROBE:
+        return 0.0
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            _FFPROBE, "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+        return float(out.decode().strip())
+    except Exception:
+        return 0.0
+
+
+async def _extract_video_media(video_path: str, max_frames: int):
+    """Normalize an inbound video into model-digestible media: evenly-spaced
+    keyframes (JPEG, for the capability-aware vision pipeline) + the audio track
+    as 16 kHz mono WAV (for STT). Returns ``(frame_paths, audio_path)``.
+
+    Best-effort: returns ``([], None)`` when ffmpeg is missing or extraction
+    fails, so the caller falls back to handing over the raw video path.
+    """
+    if not _FFMPEG:
+        return [], None
+    workdir = tempfile.mkdtemp(prefix="photon-vid-")
+    frames: List[str] = []
+    audio_path: Optional[str] = None
+    try:
+        duration = await _video_duration(video_path)
+        # fps that yields ~max_frames across the whole clip; default to 1 fps for
+        # very short / unknown-duration clips, capped by -frames:v.
+        fps = "1"
+        if duration > 0:
+            fps = f"{max_frames}/{duration:.3f}"
+        frame_tmpl = os.path.join(workdir, "frame_%03d.jpg")
+        rc = await _run_quiet([
+            _FFMPEG, "-y", "-i", video_path,
+            "-vf", f"fps={fps},scale='min(1024,iw)':-2",
+            "-frames:v", str(max_frames), frame_tmpl,
+        ])
+        if rc == 0:
+            frames = sorted(
+                os.path.join(workdir, f)
+                for f in os.listdir(workdir)
+                if f.startswith("frame_") and f.endswith(".jpg")
+            )[:max_frames]
+        # Audio track (silent videos simply won't produce a usable file).
+        wav = os.path.join(workdir, "audio.wav")
+        rc2 = await _run_quiet([
+            _FFMPEG, "-y", "-i", video_path, "-vn",
+            "-ac", "1", "-ar", "16000", wav,
+        ])
+        if rc2 == 0 and os.path.exists(wav) and os.path.getsize(wav) > 1024:
+            audio_path = wav
+    except Exception as e:
+        logger.debug("[photon] video extraction failed: %s", e)
+    return frames, audio_path
 
 
 # ---------------------------------------------------------------------------
