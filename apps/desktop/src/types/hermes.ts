@@ -182,7 +182,9 @@ export interface HermesConfig {
     enabled?: boolean
   }
   voice?: {
+    auto_tts?: boolean
     max_recording_seconds?: number
+    translate_to_language?: string
   }
 }
 
