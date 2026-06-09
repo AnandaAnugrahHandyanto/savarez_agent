@@ -126,7 +126,7 @@ def test_run_json_has_expected_shape(curator_env):
 
     # Diff logic
     assert payload["archived"] == ["old-thing"]
-    assert payload["added"] == ["new-umbrella"]
+    assert payload["added"] == [{"name": "new-umbrella", "created_by": "unknown"}]
     # Counts reflect the diff
     assert payload["counts"]["before"] == 2
     assert payload["counts"]["after"] == 2

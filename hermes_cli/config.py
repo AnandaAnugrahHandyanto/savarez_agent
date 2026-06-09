@@ -1584,6 +1584,11 @@ DEFAULT_CONFIG = {
             "enabled": True,
             "keep": 5,  # retain last N regular snapshots
         },
+        # Optional script to run after each curator pass. Receives the
+        # run.json path as its first argument. Use for custom governance
+        # layers: profile routing, archival overrides, audit logging.
+        # Leave empty for single-profile / no-hook setups.
+        "post_hook_script": "",
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.

@@ -473,8 +473,44 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
 # Core actions
 # =============================================================================
 
-def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
-    """Create a new user skill with SKILL.md content."""
+def _inject_profile_metadata(content: str, profile: str) -> str:
+    """Inject ``created_for_profile: <profile>`` into the YAML frontmatter
+    metadata.hermes block. If no metadata block exists, creates one.
+    Returns the modified content unchanged when the frontmatter is absent.
+    """
+    import re as _re
+    if not content.startswith("---"):
+        return content
+    end_idx = content.find("---", 3)
+    if end_idx == -1:
+        return content
+    frontmatter = content[3:end_idx]
+    body = content[end_idx + 3:]
+    # Already has created_for_profile — don't overwrite
+    if _re.search(r"^\s*created_for_profile\s*:", frontmatter, _re.MULTILINE):
+        return content
+    # Check if metadata.hermes block exists in the frontmatter
+    if "metadata:" in frontmatter and "hermes:" in frontmatter:
+        # Inject under hermes:
+        frontmatter = _re.sub(
+            r"(hermes:.*?\n)((?:\s{2,}\w.*\n)*)",
+            rf"\1\2      created_for_profile: {profile}\n",
+            frontmatter,
+            flags=_re.DOTALL,
+        )
+    else:
+        # No metadata block — append created_for_profile at frontmatter level
+        frontmatter = frontmatter.rstrip() + f"\ncreated_for_profile: {profile}\n"
+    return f"---{frontmatter}---{body}"
+
+
+def _create_skill(name: str, content: str, category: str = None, profile: str = None) -> Dict[str, Any]:
+    """Create a new user skill with SKILL.md content.
+    
+    If *profile* is provided, injects ``created_for_profile`` into the YAML
+    frontmatter metadata so the curator can route the skill to the right
+    profile in its post-run reports.
+    """
     # Validate name
     err = _validate_name(name)
     if err:
@@ -492,6 +528,11 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     err = _validate_content_size(content)
     if err:
         return {"success": False, "error": err}
+
+    # If a profile is specified, inject created_for_profile into the YAML
+    # frontmatter metadata so the curator can route the skill post-creation.
+    if profile:
+        content = _inject_profile_metadata(content, profile)
 
     # Check for name collisions across all directories
     existing = _find_skill(name)
@@ -818,6 +859,7 @@ def skill_manage(
     name: str,
     content: str = None,
     category: str = None,
+    profile: str = None,
     file_path: str = None,
     file_content: str = None,
     old_string: str = None,
@@ -833,7 +875,7 @@ def skill_manage(
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
-        result = _create_skill(name, content, category)
+        result = _create_skill(name, content, category, profile)
 
     elif action == "edit":
         if not content:

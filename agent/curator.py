@@ -1027,6 +1027,15 @@ def _write_run_report(
     after_names = set(after_by_name.keys())
     removed = sorted(before_names - after_names)   # archived during this run
     added = sorted(after_names - before_names)     # new skills this run
+    # Enrich added with created_by from usage records so downstream hooks
+    # can route new skills to the right profile without re-querying.
+    added_with_provenance = [
+        {
+            "name": name,
+            "created_by": (after_by_name.get(name) or {}).get("created_by", "unknown"),
+        }
+        for name in added
+    ]
     before_by_name = {r.get("name"): r for r in before_report if isinstance(r, dict)}
 
     # State transitions between the two snapshots (e.g. active -> stale)
@@ -1139,7 +1148,7 @@ def _write_run_report(
         "consolidated": consolidated,
         "pruned": pruned,
         "pruned_names": [p["name"] for p in pruned],
-        "added": added,
+        "added": added_with_provenance,
         "state_transitions": transitions,
         "cron_rewrites": cron_rewrites,
         "llm_final": llm_meta.get("final", ""),
@@ -1174,6 +1183,31 @@ def _write_run_report(
             )
     except Exception as e:
         logger.debug("Curator cron_rewrites.json write failed: %s", e)
+
+    # ── Post-curator hook ──
+    # If configured, run an external script/hook after each curator pass,
+    # passing the run.json path as the first argument. This lets users
+    # build custom governance layers (profile routing, archival overrides,
+    # audit logging) without maintaining a separate detection pipeline.
+    # Single-profile users: just don't set post_hook_script — no impact.
+    cfg = _load_config()
+    post_hook = cfg.get("post_hook_script") if cfg else None
+    if post_hook:
+        import subprocess as _sp
+        try:
+            result = _sp.run(
+                [post_hook, str(run_dir / "run.json")],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    "Post-curator hook '%s' exited %d: %s",
+                    post_hook,
+                    result.returncode,
+                    (result.stderr or result.stdout)[:200] if (result.stderr or result.stdout) else "(no output)",
+                )
+        except Exception as e:
+            logger.warning("Post-curator hook '%s' failed: %s", post_hook, e)
 
     return run_dir
 
@@ -1293,8 +1327,16 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
     if added:
         lines.append(f"### New skills this run ({len(added)})\n")
         lines.append("_Usually these are new class-level umbrellas created via `skill_manage action=create`._\n")
-        for n in added:
-            lines.append(f"- `{n}`")
+        for entry in added:
+            if isinstance(entry, dict):
+                name = entry.get("name", "?")
+                created_by = entry.get("created_by", "")
+                line = f"- `{name}`"
+                if created_by and created_by != "unknown":
+                    line += f" (created by `{created_by}`)"
+                lines.append(line)
+            else:
+                lines.append(f"- `{entry}`")
         lines.append("")
 
     # State transitions
