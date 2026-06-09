@@ -7041,6 +7041,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "sethome":
             return await self._handle_set_home_command(event)
 
+        if canonical == "workspace":
+            return await self._handle_workspace_command(event)
+
         if canonical == "compress":
             return await self._handle_compress_command(event)
 
@@ -11257,6 +11260,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         in a ``finally`` block.
         """
         from gateway.session_context import set_session_vars
+        cwd = ""
+        try:
+            cwd = self._session_db_cwd(context.session_id)
+            if cwd:
+                self._register_gateway_session_cwd(context.session_id, cwd)
+        except Exception:
+            cwd = ""
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -11266,6 +11276,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
+            cwd=cwd,
         )
 
     def _clear_session_env(self, tokens: list) -> None:

@@ -144,14 +144,23 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
     return None
 
 
+def _get_task_override_cwd(task_id: str = "default") -> str | None:
+    """Return a raw task/session cwd registered before terminal env creation."""
+    try:
+        from tools.terminal_tool import _task_override_cwd
+
+        cwd = _task_override_cwd(task_id)
+    except Exception:
+        return None
+    return cwd or None
+
+
 def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     """Best-effort absolute workspace root for divergence checks.
 
     Prefers the live terminal cwd (the directory the agent is actually working
-    in). When no terminal command has run yet — so the live registry is empty —
-    falls back to a sentinel-free absolute ``$TERMINAL_CWD``. This is what lets
-    a worktree session warn about (and resolve into) the worktree from the very
-    first ``write_file``/``patch``, before any ``cd`` has populated the live cwd.
+    in), then any raw task/session cwd registered before terminal env creation.
+    When neither exists, falls back to a sentinel-free absolute ``$TERMINAL_CWD``.
 
     Returns ``None`` only when there is genuinely no reliable anchor, in which
     case callers fall back to the process cwd.
@@ -159,6 +168,9 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     live = _get_live_tracking_cwd(task_id)
     if live:
         return live
+    override = _get_task_override_cwd(task_id)
+    if override:
+        return override
     return _configured_terminal_cwd()
 
 
@@ -168,10 +180,11 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     Resolution order:
       1. The task's live terminal cwd (the directory the agent is actually
          working in — e.g. a git worktree). Authoritative when known.
-      2. A sentinel-free, absolute ``$TERMINAL_CWD`` (the worktree path set by
+      2. A raw task/session cwd registered before terminal env creation.
+      3. A sentinel-free, absolute ``$TERMINAL_CWD`` (the worktree path set by
          ``cli.py``/``main.py`` for ``-w`` sessions). Used even before any
          terminal command has populated the live cwd registry.
-      3. The process cwd.
+      4. The process cwd.
 
     The returned base is ALWAYS absolute. This is the core invariant that
     prevents the worktree-cwd divergence bug: a relative or sentinel
