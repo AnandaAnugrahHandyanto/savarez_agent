@@ -305,7 +305,7 @@ class QQAdapter(BasePlatformAdapter):
             # faster behind proxies like Cloudflare Warp (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
             self._http_client = httpx.AsyncClient(
-                timeout=30.0,
+                timeout=90.0,
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
                 limits=platform_httpx_limits(),
