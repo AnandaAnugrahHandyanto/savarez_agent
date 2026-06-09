@@ -861,6 +861,42 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 return candidate.strip()
         return None
 
+    def _webhook_dedup_key(
+        self,
+        payload: Dict[str, Any],
+        record: Dict[str, Any],
+        message_id: Optional[str],
+        text: str,
+    ) -> Optional[str]:
+        """Build a replay key without dropping same-GUID lifecycle updates."""
+        if not message_id:
+            return None
+
+        attachments = []
+        for attachment in record.get("attachments") or []:
+            if not isinstance(attachment, dict):
+                continue
+            attachments.append(
+                {
+                    "guid": attachment.get("guid"),
+                    "mimeType": attachment.get("mimeType"),
+                    "transferName": attachment.get("transferName"),
+                    "uti": attachment.get("uti"),
+                }
+            )
+
+        fingerprint = {
+            "event": self._value(payload.get("type"), payload.get("event")),
+            "text": text,
+            "associatedMessageGuid": record.get("associatedMessageGuid"),
+            "associatedMessageType": record.get("associatedMessageType"),
+            "threadOriginatorGuid": record.get("threadOriginatorGuid"),
+            "itemType": record.get("itemType"),
+            "attachments": attachments,
+        }
+        encoded = json.dumps(fingerprint, sort_keys=True, separators=(",", ":"))
+        return f"{message_id}:{encoded}"
+
     async def _handle_webhook(self, request):
         from aiohttp import web
 
@@ -1016,7 +1052,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             record.get("messageGuid"),
             record.get("id"),
         )
-        if message_id and self._dedup.is_duplicate(message_id):
+        dedup_key = self._webhook_dedup_key(payload, record, message_id, text)
+        if dedup_key and self._dedup.is_duplicate(dedup_key):
             logger.debug(
                 "[bluebubbles] duplicate webhook message ignored: %s",
                 _redact(message_id),

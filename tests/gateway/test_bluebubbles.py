@@ -453,6 +453,93 @@ class TestBlueBubblesWebhookParsing:
             "MSG-GUID-2",
         ]
 
+    @pytest.mark.asyncio
+    async def test_webhook_allows_same_guid_text_updates(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter.send_read_receipts = False
+        dispatched = []
+
+        async def fake_handle_message(event):
+            dispatched.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+
+        def payload(text):
+            return {
+                "type": "updated-message",
+                "data": {
+                    "guid": "MSG-GUID-1",
+                    "text": text,
+                    "handle": {"address": "user@example.com"},
+                    "isFromMe": False,
+                    "chats": [
+                        {
+                            "guid": "iMessage;-;user@example.com",
+                            "chatIdentifier": "user@example.com",
+                        }
+                    ],
+                },
+            }
+
+        await adapter._handle_webhook(_FakeBlueBubblesRequest(payload("hello")))
+        await adapter._handle_webhook(
+            _FakeBlueBubblesRequest(payload("hello, edited"))
+        )
+        await asyncio.sleep(0)
+
+        assert [event.text for event in dispatched] == ["hello", "hello, edited"]
+
+    @pytest.mark.asyncio
+    async def test_webhook_allows_same_guid_attachment_completion(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch)
+        adapter.send_read_receipts = False
+        dispatched = []
+
+        async def fake_handle_message(event):
+            dispatched.append(event)
+
+        async def fake_download_attachment(att_guid, att_meta):
+            return f"/tmp/{att_guid}.jpg"
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "_download_attachment", fake_download_attachment)
+
+        base = {
+            "type": "updated-message",
+            "data": {
+                "guid": "MSG-GUID-1",
+                "text": "photo",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chats": [
+                    {
+                        "guid": "iMessage;-;user@example.com",
+                        "chatIdentifier": "user@example.com",
+                    }
+                ],
+            },
+        }
+        completed = json.loads(json.dumps(base))
+        completed["data"]["attachments"] = [
+            {
+                "guid": "ATT-GUID-1",
+                "mimeType": "image/jpeg",
+                "transferName": "photo.jpg",
+            }
+        ]
+
+        await adapter._handle_webhook(_FakeBlueBubblesRequest(base))
+        await adapter._handle_webhook(_FakeBlueBubblesRequest(completed))
+        await asyncio.sleep(0)
+
+        assert [event.message_id for event in dispatched] == [
+            "MSG-GUID-1",
+            "MSG-GUID-1",
+        ]
+        assert dispatched[1].media_urls == ["/tmp/ATT-GUID-1.jpg"]
+
     def test_extract_payload_record_accepts_list_data(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         payload = {
