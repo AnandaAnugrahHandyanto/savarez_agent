@@ -3068,11 +3068,26 @@ def get_launchd_label() -> str:
 
 
 def _launchd_domain() -> str:
-    # The `user/<uid>` domain (vs the older `gui/<uid>`) is reachable from
-    # non-Aqua/background sessions (SSH, headless, login items) and is the only
-    # one that supports service management on macOS 26+. `gui/<uid>` returns
-    # error 125 ("Domain does not support specified action") there. See #23387.
-    return f"user/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    # User LaunchAgents live in the per-login GUI domain on ordinary Aqua
+    # sessions. Managing the same plist through ``user/<uid>`` can leave the
+    # real job loaded under ``gui/<uid>`` while Hermes bootstraps/kickstarts an
+    # empty domain, which trips launchctl exit 5 and forces a detached fallback.
+    # Prefer the GUI domain when it is available; fall back to ``user/<uid>``
+    # for SSH/headless contexts that do not have an Aqua session.
+    uid = os.getuid()  # windows-footgun: ok — POSIX launchd helper, never invoked on Windows
+    gui_domain = f"gui/{uid}"
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", gui_domain],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        )
+        if result.returncode == 0:
+            return gui_domain
+    except Exception:
+        pass
+    return f"user/{uid}"
 
 
 # On macOS, exit code 125 ("Domain does not support specified action") and
