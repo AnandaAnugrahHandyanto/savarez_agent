@@ -7984,8 +7984,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """
         if not self.agent:
             shown = self._show_persisted_session_usage()
+            limits_shown = self._print_account_limits()
             credits_shown = self._print_nous_credits_block()
-            if not shown and not credits_shown:
+            if not shown and not limits_shown and not credits_shown:
                 print("(._.) No active agent -- send a message first.")
             return
 
@@ -8067,26 +8068,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Account limits -- fetched off-thread with a hard timeout so slow
         # provider APIs don't hang the prompt.
-        provider = getattr(agent, "provider", None) or getattr(self, "provider", None)
-        base_url = getattr(agent, "base_url", None) or getattr(self, "base_url", None)
-        api_key = getattr(agent, "api_key", None) or getattr(self, "api_key", None)
-        # Lazy import — pulls the OpenAI SDK chain, only needed here.
-        from agent.account_usage import fetch_account_usage, render_account_usage_lines
-        account_snapshot = None
-        if provider:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-                try:
-                    account_snapshot = _pool.submit(
-                        fetch_account_usage, provider,
-                        base_url=base_url, api_key=api_key,
-                    ).result(timeout=10.0)
-                except (concurrent.futures.TimeoutError, Exception):
-                    account_snapshot = None
-        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
-        if account_lines:
-            print()
-            for line in account_lines:
-                print(line)
+        self._print_account_limits(
+            provider=getattr(agent, "provider", None) or getattr(self, "provider", None),
+            base_url=getattr(agent, "base_url", None) or getattr(self, "base_url", None),
+            api_key=getattr(agent, "api_key", None) or getattr(self, "api_key", None),
+        )
 
         # Nous credits magnitudes + monthly-grant gauge (agent-independent — also
         # runs at the no-agent / no-calls early-returns above). See the helper.
@@ -8106,6 +8092,71 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Console quietness is enforced by hermes_logging not
             # installing a console StreamHandler in non-verbose mode.
 
+    def _persisted_usage_session_row(self) -> Optional[Dict[str, Any]]:
+        session_id = getattr(self, "session_id", None)
+        session_db = getattr(self, "_session_db", None)
+        if not session_id or session_db is None:
+            return None
+        try:
+            row = session_db.get_session(session_id)
+        except Exception:
+            logger.debug("Failed to load persisted usage for session %s", session_id, exc_info=True)
+            return None
+        return row or None
+
+    def _usage_account_provider_from_row(self, row: Optional[Dict[str, Any]]) -> Optional[str]:
+        candidates = [
+            getattr(self, "provider", None),
+            getattr(self, "requested_provider", None),
+            (row or {}).get("billing_provider") if isinstance(row, dict) else None,
+            CLI_CONFIG.get("model", {}).get("provider") if isinstance(CLI_CONFIG.get("model"), dict) else None,
+        ]
+        model = str((row or {}).get("model") or getattr(self, "model", "") or "").lower()
+        if "codex" in model or model.startswith("gpt-5"):
+            candidates.append("openai-codex")
+        for provider in candidates:
+            provider_str = str(provider or "").strip()
+            if provider_str and provider_str.lower() not in {"auto", "custom"}:
+                return provider_str
+        return None
+
+    def _print_account_limits(
+        self,
+        provider: Optional[str] = None,
+        *,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ) -> bool:
+        """Print provider account limits for /usage without requiring a live agent."""
+        row = None
+        if not provider:
+            row = self._persisted_usage_session_row()
+            provider = self._usage_account_provider_from_row(row)
+        if not provider or str(provider).strip().lower() in {"auto", "custom"}:
+            return False
+
+        # Lazy import — pulls the OpenAI SDK chain, only needed here.
+        from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+        account_snapshot = None
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+            try:
+                account_snapshot = _pool.submit(
+                    fetch_account_usage,
+                    provider,
+                    base_url=base_url if base_url is not None else getattr(self, "base_url", None),
+                    api_key=api_key if api_key is not None else getattr(self, "api_key", None),
+                ).result(timeout=10.0)
+            except (concurrent.futures.TimeoutError, Exception):
+                account_snapshot = None
+        account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
+        if not account_lines:
+            return False
+        print()
+        for line in account_lines:
+            print(line)
+        return True
+
     def _show_persisted_session_usage(self) -> bool:
         """Render persisted session usage when /usage runs without a live agent.
 
@@ -8115,15 +8166,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         this fallback shows the best persisted DB snapshot instead of the
         misleading "No active agent" message after a real turn completed.
         """
-        session_id = getattr(self, "session_id", None)
-        session_db = getattr(self, "_session_db", None)
-        if not session_id or session_db is None:
-            return False
-        try:
-            row = session_db.get_session(session_id)
-        except Exception:
-            logger.debug("Failed to load persisted usage for session %s", session_id, exc_info=True)
-            return False
+        row = self._persisted_usage_session_row()
         if not row:
             return False
 
