@@ -14,11 +14,17 @@ import { cn } from '@/lib/utils'
 import { t } from '@/store/i18n'
 import { useLocaleSync } from '@/store/use-locale-sync'
 import {
+  $backendUpdateApply,
+  $backendUpdateChecking,
+  $backendUpdateStatus,
   $updateApply,
   $updateChecking,
   $updateOverlayOpen,
+  $updateOverlayTarget,
   $updateStatus,
+  applyBackendUpdate,
   applyUpdates,
+  checkBackendUpdates,
   checkUpdates,
   resetUpdateApplyState,
   setUpdateOverlayOpen,
@@ -33,15 +39,27 @@ export function UpdatesOverlay() {
   useLocaleSync()
 
   const open = useStore($updateOverlayOpen)
-  const status = useStore($updateStatus)
-  const checking = useStore($updateChecking)
-  const apply = useStore($updateApply)
+  const target = useStore($updateOverlayTarget)
+
+  const clientStatus = useStore($updateStatus)
+  const clientChecking = useStore($updateChecking)
+  const clientApply = useStore($updateApply)
+  const backendStatus = useStore($backendUpdateStatus)
+  const backendChecking = useStore($backendUpdateChecking)
+  const backendApply = useStore($backendUpdateApply)
+
+  const isBackend = target === 'backend'
+  const status = isBackend ? backendStatus : clientStatus
+  const checking = isBackend ? backendChecking : clientChecking
+  const apply = isBackend ? backendApply : clientApply
+  const check = isBackend ? checkBackendUpdates : checkUpdates
+  const install = isBackend ? applyBackendUpdate : applyUpdates
 
   useEffect(() => {
     if (open && !status && !checking) {
-      void checkUpdates()
+      void check()
     }
-  }, [checking, open, status])
+  }, [check, checking, open, status])
 
   const behind = status?.behind ?? 0
 
@@ -67,7 +85,7 @@ export function UpdatesOverlay() {
   }
 
   const handleInstall = () => {
-    void applyUpdates()
+    void install()
   }
 
   return (
@@ -76,7 +94,7 @@ export function UpdatesOverlay() {
         className="max-w-sm overflow-hidden border-border/70 p-0 gap-0"
         showCloseButton={phase !== 'applying'}
       >
-        {phase === 'applying' && <ApplyingView apply={apply} />}
+        {phase === 'applying' && <ApplyingView apply={apply} isBackend={isBackend} />}
 
         {phase === 'manual' && (
           <ManualView command={apply.command ?? 'hermes update'} onDone={() => handleClose(false)} />
@@ -93,8 +111,9 @@ export function UpdatesOverlay() {
             commits={status?.commits ?? []}
             onInstall={handleInstall}
             onLater={() => handleClose(false)}
-            onRetryCheck={() => void checkUpdates()}
+            onRetryCheck={() => void check()}
             status={status}
+            target={target}
           />
         )}
       </DialogContent>
@@ -109,7 +128,8 @@ function IdleView({
   onInstall,
   onLater,
   onRetryCheck,
-  status
+  status,
+  target
 }: {
   behind: number
   checking: boolean
@@ -118,6 +138,7 @@ function IdleView({
   onLater: () => void
   onRetryCheck: () => void
   status: DesktopUpdateStatus | null
+  target: UpdateTarget
 }) {
   const { t } = useI18n()
   const u = t.updates
@@ -181,6 +202,12 @@ function IdleView({
   const shownItems = totalItems(groups)
   const remaining = Math.max(0, behind - shownItems)
 
+  // Name what's being updated. In remote mode the overlay acts on the connected
+  // backend, not the local client — say so. When there are no commit rows to
+  // show (e.g. pip/non-git backend), degrade to honest "no release notes" copy
+  // instead of generic filler.
+  const { title, body } = resolveUpdateCopy({ target, shownItems, copy: u })
+
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
@@ -188,7 +215,7 @@ function IdleView({
 
         <DialogTitle className="text-center text-xl">{t('updates.newUpdateAvailable')}</DialogTitle>
         <DialogDescription className="text-center text-sm">
-          {u.availableBody}
+          {body}
         </DialogDescription>
       </div>
 
@@ -281,10 +308,11 @@ function ManualView({ command, onDone }: { command: string; onDone: () => void }
   )
 }
 
-function ApplyingView({ apply }: { apply: UpdateApplyState }) {
+function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend: boolean }) {
   const { t } = useI18n()
   const u = t.updates
   const label = u.stages[apply.stage as DesktopUpdateStage] ?? u.stages.idle
+  const body = isBackend ? u.applyingBodyBackend : u.applyingBody
 
   const percent =
     typeof apply.percent === 'number' && Number.isFinite(apply.percent)
@@ -298,7 +326,7 @@ function ApplyingView({ apply }: { apply: UpdateApplyState }) {
 
         <DialogTitle className="text-center text-xl">{label}</DialogTitle>
         <DialogDescription className="text-center text-sm">
-          {u.applyingBody}
+          {body}
         </DialogDescription>
       </div>
 

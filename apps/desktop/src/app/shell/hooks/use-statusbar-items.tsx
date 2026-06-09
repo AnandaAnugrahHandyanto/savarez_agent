@@ -25,6 +25,7 @@ import { $desktopActionTasks } from '@/store/activity'
 import { $previewServerRestartStatus } from '@/store/preview'
 import {
   $busy,
+  $connection,
   $currentFastMode,
   $currentModel,
   $currentProvider,
@@ -88,7 +89,10 @@ export function useStatusbarItems({
   const subagentsBySession = useStore($subagentsBySession)
   const updateStatus = useStore($updateStatus)
   const updateApply = useStore($updateApply)
+  const backendUpdateStatus = useStore($backendUpdateStatus)
+  const backendUpdateApply = useStore($backendUpdateApply)
   const desktopVersion = useStore($desktopVersion)
+  const connection = useStore($connection)
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
@@ -146,18 +150,19 @@ export function useStatusbarItems({
       ? 'text-amber-600 hover:text-amber-600'
       : 'text-destructive hover:text-destructive'
 
-  const versionItem = useMemo<StatusbarItem>(() => {
+  const clientVersionItem = useMemo<StatusbarItem>(() => {
     const appVersion = desktopVersion?.appVersion
     const sha = updateStatus?.currentSha?.slice(0, 7) ?? null
     const behind = updateStatus?.behind ?? 0
     const applying = updateApply.applying || updateApply.stage === 'restart'
-    const base = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
+    const remote = connection?.mode === 'remote'
+
+    const version = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
+    const base = remote ? copy.clientLabel(appVersion ?? sha ?? copy.unknown) : version
     const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
 
     const label = applying
-      ? updateApply.stage === 'restart'
-        ? `${base} · ${copy.restart}`
-        : `${base} · ${copy.update}`
+      ? `${base} · ${updateApply.stage === 'restart' ? copy.restart : copy.update}`
       : `${base}${behindHint}`
 
     const tooltip = [
@@ -172,17 +177,18 @@ export function useStatusbarItems({
 
     return {
       className: !applying && behind > 0 ? 'text-primary hover:text-primary' : undefined,
-      detail: appVersion && sha && !applying ? sha : undefined,
+      detail: appVersion && sha && !applying && !remote ? sha : undefined,
       hidden: !appVersion && !sha,
       icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
-      id: 'version',
+      id: 'version-client',
       label,
-      onSelect: () => setUpdateOverlayOpen(true),
+      onSelect: () => openUpdateOverlayFor('client'),
       title: tooltip || undefined,
       variant: 'action'
     }
   }, [
     desktopVersion?.appVersion,
+    connection?.mode,
     copy,
     updateApply.applying,
     updateApply.message,
@@ -190,6 +196,50 @@ export function useStatusbarItems({
     updateStatus?.behind,
     updateStatus?.branch,
     updateStatus?.currentSha
+  ])
+
+  const backendVersionItem = useMemo<StatusbarItem | null>(() => {
+    if (connection?.mode !== 'remote') {
+      return null
+    }
+
+    const backendVersion = statusSnapshot?.version
+    const behind = backendUpdateStatus?.behind ?? 0
+    const applying = backendUpdateApply.applying || backendUpdateApply.stage === 'restart'
+
+    const base = copy.backendLabel(backendVersion ?? copy.unknown)
+    const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
+
+    const label = applying
+      ? `${base} · ${backendUpdateApply.stage === 'restart' ? copy.restart : copy.update}`
+      : `${base}${behindHint}`
+
+    const tooltip = [
+      applying ? backendUpdateApply.message || copy.updateInProgress : null,
+      !applying && behind > 0 && copy.commitsBehind(behind, 'main'),
+      backendVersion && copy.backendVersion(backendVersion)
+    ]
+      .filter(Boolean)
+      .join(' · ')
+
+    return {
+      className: !applying && behind > 0 ? 'text-primary hover:text-primary' : undefined,
+      hidden: !backendVersion,
+      icon: applying ? <Loader2 className="size-3 animate-spin" /> : <Hash className="size-3" />,
+      id: 'version-backend',
+      label,
+      onSelect: () => openUpdateOverlayFor('backend'),
+      title: tooltip || undefined,
+      variant: 'action'
+    }
+  }, [
+    connection?.mode,
+    statusSnapshot?.version,
+    backendUpdateStatus?.behind,
+    backendUpdateApply.applying,
+    backendUpdateApply.message,
+    backendUpdateApply.stage,
+    copy
   ])
 
   const coreLeftStatusbarItems = useMemo<readonly StatusbarItem[]>(
@@ -324,7 +374,8 @@ export function useStatusbarItems({
               variant: 'action' as const
             })
       },
-      versionItem
+      clientVersionItem,
+      ...(backendVersionItem ? [backendVersionItem] : [])
     ],
     [
       busy,
