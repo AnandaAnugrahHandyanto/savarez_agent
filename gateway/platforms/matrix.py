@@ -480,6 +480,9 @@ class _MatrixHTMLSanitizer(HTMLParser):
         safe_attrs = []
         for name, value in attrs:
             name_lower = name.lower()
+            # Handle valueless attributes (e.g., <a href>, <code class>) - HTMLParser gives value=None
+            if value is None:
+                value = ""
             if name_lower in self.ALLOWED_ATTRS.get(tag_lower, set()):
                 if name_lower == "href":
                     value = self._sanitize_url(value)
@@ -514,6 +517,9 @@ class _MatrixHTMLSanitizer(HTMLParser):
         safe_attrs = []
         for name, value in attrs:
             name_lower = name.lower()
+            # Handle valueless attributes (e.g., <a href>, <code class>) - HTMLParser gives value=None
+            if value is None:
+                value = ""
             if name_lower in self.ALLOWED_ATTRS.get(tag_lower, set()):
                 if name_lower == "href":
                     value = self._sanitize_url(value)
