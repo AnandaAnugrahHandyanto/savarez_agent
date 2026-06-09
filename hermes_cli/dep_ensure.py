@@ -147,10 +147,14 @@ def ensure_dependency(
         cmd = ["bash", str(script), "--ensure", dep]
 
     run_env = {**os.environ, "IS_INTERACTIVE": "false"}
-    result = subprocess.run(
-        cmd,
-        env=run_env,
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            env=run_env,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        return False
     if result.returncode != 0:
         return False
 

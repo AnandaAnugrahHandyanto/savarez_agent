@@ -117,6 +117,7 @@ def _ensure_uv_path() -> Optional[str]:
             capture_output=True,
             text=True,
             check=False,
+            timeout=15,
         ).stdout.strip()
         print(f"  ✓ Managed uv installed ({version})")
     else:
@@ -167,18 +168,24 @@ def update_managed_uv() -> Optional[str]:
         # Not installed yet — ensure_uv() will handle that elsewhere.
         return None
 
-    result = subprocess.run(
-        [existing, "self", "update"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [existing, "self", "update"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        logger.debug("uv self update timed out")
+        return existing
     if result.returncode == 0:
         version = subprocess.run(
             [existing, "--version"],
             capture_output=True,
             text=True,
             check=False,
+            timeout=15,
         ).stdout.strip()
         print(f"  ✓ Managed uv updated ({version})")
     else:
@@ -224,12 +231,14 @@ def _install_uv_posix(env: dict[str, str]) -> None:
             ["curl", "-LsSf", "https://astral.sh/uv/install.sh", "-o", installer_path],
             check=True,
             capture_output=True,
+            timeout=60,
         )
         subprocess.run(
             ["sh", installer_path],
             env=env,
             check=True,
             capture_output=True,
+            timeout=120,
         )
     finally:
         try:
@@ -248,6 +257,7 @@ def _install_uv_windows(env: dict[str, str]) -> None:
         env=env,
         check=True,
         capture_output=True,
+        timeout=120,
     )
 
 def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:
