@@ -118,6 +118,20 @@ async function markRead(space, message) {
   }
 }
 
+// Bound concurrent read receipts. markRead is fire-and-forget (not awaited by
+// handleInbound), so a burst could otherwise spawn unbounded in-flight promises
+// that bypass the inbound scheduler's cap. Receipts are non-critical, so simply
+// skip when at capacity.
+const MAX_READ_INFLIGHT = 8;
+let _readActive = 0;
+function markReadBounded(space, message) {
+  if (!SEND_READ_RECEIPTS || _readActive >= MAX_READ_INFLIGHT) return;
+  _readActive += 1;
+  Promise.resolve(markRead(space, message)).finally(() => {
+    _readActive -= 1;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Inbound bridge (sidecar -> adapter).
 //
@@ -182,11 +196,13 @@ const _DEDUP_MAX = 5000;
 const _DEDUP_TTL_MS = 10 * 60 * 1000;
 function isDuplicate(id) {
   const now = Date.now();
-  if (_seen.size > _DEDUP_MAX) {
-    for (const [k, t] of _seen) if (now - t > _DEDUP_TTL_MS) _seen.delete(k);
-  }
-  if (_seen.has(id)) return true;
+  const t = _seen.get(id);
+  if (t !== undefined && now - t < _DEDUP_TTL_MS) return true; // seen, unexpired
+  // New or expired: record and enforce a HARD size bound (LRU evict-oldest), so
+  // a burst of unique ids within the TTL can't grow the map without limit.
+  _seen.delete(id); // refresh insertion order if re-seen after expiry
   _seen.set(id, now);
+  if (_seen.size > _DEDUP_MAX) _seen.delete(_seen.keys().next().value);
   return false;
 }
 
@@ -321,8 +337,8 @@ async function handleInbound(space, message) {
     );
     return;
   }
-  // Fire-and-forget read receipt (handles its own errors); don't delay forward.
-  markRead(space, message);
+  // Fire-and-forget read receipt (bounded; handles its own errors).
+  markReadBounded(space, message);
   cacheMessage(message); // so /react can resolve this as a tapback target
   const content = message?.content || {};
 
@@ -381,18 +397,31 @@ async function handleInbound(space, message) {
   return forwardInbound(message);
 }
 
+// spectrum-ts handles in-session gRPC reconnects internally, but if the async
+// iterator itself throws or ends, the consumer would stop forever. Wrap it in a
+// re-subscribe loop with capped exponential backoff + jitter so inbound always
+// recovers (dedup makes any catch-up replay idempotent).
 (async () => {
-  try {
-    for await (const [space, message] of app.messages) {
-      if (space?.id) setSpace(space.id, space);
-      if (message?.space?.id && space) setSpace(message.space.id, space);
-      schedule(() => handleInbound(space, message));
+  let backoff = 1000;
+  for (;;) {
+    try {
+      for await (const [space, message] of app.messages) {
+        backoff = 1000; // healthy traffic — reset
+        if (space?.id) setSpace(space.id, space);
+        if (message?.space?.id && space) setSpace(message.space.id, space);
+        schedule(() => handleInbound(space, message));
+      }
+      console.error("photon-sidecar: inbound stream ended — re-subscribing");
+    } catch (e) {
+      console.error(
+        "photon-sidecar: inbound stream errored — restarting: " +
+          (e && e.message ? e.message : String(e))
+      );
     }
-  } catch (e) {
-    console.error(
-      "photon-sidecar: inbound stream errored: " +
-        (e && e.stack ? e.stack : String(e))
+    await new Promise((r) =>
+      setTimeout(r, backoff + Math.random() * backoff * 0.2)
     );
+    backoff = Math.min(backoff * 2, 30000);
   }
 })();
 
