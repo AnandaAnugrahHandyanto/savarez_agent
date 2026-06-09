@@ -1,4 +1,5 @@
 """Tests for the Photon CLI setup/status helpers."""
+
 from __future__ import annotations
 
 import argparse
@@ -134,7 +135,11 @@ def test_install_sidecar_fails_when_runtime_probe_fails(monkeypatch, capsys) -> 
         return subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(photon_cli.subprocess, "run", fake_run)
-    monkeypatch.setattr(photon_cli, "_run_sidecar_runtime_probe", lambda _node: (False, "File is not defined"))
+    monkeypatch.setattr(
+        photon_cli,
+        "_run_sidecar_runtime_probe",
+        lambda _node: (False, "File is not defined"),
+    )
 
     rc = photon_cli._install_sidecar()
 
@@ -152,7 +157,9 @@ def test_install_sidecar_verifies_after_npm_success(monkeypatch, capsys) -> None
         return subprocess.CompletedProcess(args, 0)
 
     monkeypatch.setattr(photon_cli.subprocess, "run", fake_run)
-    monkeypatch.setattr(photon_cli, "_run_sidecar_runtime_probe", lambda _node: (True, "ok"))
+    monkeypatch.setattr(
+        photon_cli, "_run_sidecar_runtime_probe", lambda _node: (True, "ok")
+    )
 
     rc = photon_cli._install_sidecar()
 

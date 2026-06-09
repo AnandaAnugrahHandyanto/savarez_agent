@@ -15,6 +15,7 @@ gateway channel onboards through a single setup surface).
 Photon uses the spectrum-ts gRPC stream for inbound — there is no webhook
 to register, so there are no webhook subcommands.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -35,6 +36,7 @@ _SIDECAR_DIR = Path(__file__).parent / "sidecar"
 # ---------------------------------------------------------------------------
 # argparse wiring
 
+
 def register_cli(parser: argparse.ArgumentParser) -> None:
     """Wire up `hermes photon ...` subcommands."""
     subs = parser.add_subparsers(dest="photon_command", required=False)
@@ -43,26 +45,37 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
         "setup",
         help="First-time setup (device login + project + user + sidecar runtime check)",
     )
-    p_setup.add_argument("--project-name", default=None,
-                         help="Project name (default: 'Hermes Agent')")
-    p_setup.add_argument("--phone", default=None,
-                         help="Your E.164 phone number (e.g. +155****4567)")
+    p_setup.add_argument(
+        "--project-name", default=None, help="Project name (default: 'Hermes Agent')"
+    )
+    p_setup.add_argument(
+        "--phone", default=None, help="Your E.164 phone number (e.g. +155****4567)"
+    )
     p_setup.add_argument("--first-name", default=None)
     p_setup.add_argument("--last-name", default=None)
     p_setup.add_argument("--email", default=None)
-    p_setup.add_argument("--no-browser", action="store_true",
-                         help="Don't try to open a browser for device login; print the URL only")
-    p_setup.add_argument("--skip-sidecar-install", action="store_true",
-                         help="Skip `npm install` inside the sidecar directory")
+    p_setup.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Don't try to open a browser for device login; print the URL only",
+    )
+    p_setup.add_argument(
+        "--skip-sidecar-install",
+        action="store_true",
+        help="Skip `npm install` inside the sidecar directory",
+    )
 
     subs.add_parser("status", help="Show login + project + sidecar runtime state")
-    subs.add_parser("install-sidecar", help="Run npm install and verify the sidecar runtime")
+    subs.add_parser(
+        "install-sidecar", help="Run npm install and verify the sidecar runtime"
+    )
 
     parser.set_defaults(func=dispatch)
 
 
 # ---------------------------------------------------------------------------
 # Dispatch
+
 
 def dispatch(args: argparse.Namespace) -> int:
     sub = getattr(args, "photon_command", None)
@@ -82,6 +95,7 @@ def dispatch(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # Subcommand handlers
 
+
 def _run_device_login(args: argparse.Namespace) -> int:
     """Run the RFC 8628 device-code login flow and persist the token.
 
@@ -89,6 +103,7 @@ def _run_device_login(args: argparse.Namespace) -> int:
     no standalone ``hermes photon login`` command; Photon onboards
     through the single ``setup`` surface like every other channel.
     """
+
     def _print_code(code):
         target = code.verification_uri_complete or code.verification_uri
         print()
@@ -159,7 +174,9 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         proj = photon_auth.ensure_spectrum_enabled(token, dashboard_id)
         spectrum_id = proj.get("spectrumProjectId")
         if not spectrum_id:
-            print("spectrum provisioning failed: no spectrum project id", file=sys.stderr)
+            print(
+                "spectrum provisioning failed: no spectrum project id", file=sys.stderr
+            )
             return 1
         spectrum_id = str(spectrum_id)
         secret = photon_auth.regenerate_project_secret(token, dashboard_id)
@@ -186,7 +203,9 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     registered_phone = None
     registered_user_id = None
     if not phone:
-        print("      Skipped user registration (no phone given). Re-run with --phone later.")
+        print(
+            "      Skipped user registration (no phone given). Re-run with --phone later."
+        )
     else:
         # Name/email are optional and never prompted for — pass --first-name /
         # --email if you want them sent to the dashboard.
@@ -194,7 +213,8 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         email = args.email
         try:
             user, created = photon_auth.register_user_if_absent(
-                spectrum_id, secret,
+                spectrum_id,
+                secret,
                 phone_number=phone,
                 first_name=first_name,
                 last_name=args.last_name,
@@ -231,13 +251,28 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             print(f"      (could not fetch the assigned line: {e})", file=sys.stderr)
     if agent_number:
         print()
-        print(color("┌─ Your agent's iMessage number ───────────────────────────────", Colors.GREEN))
+        print(
+            color(
+                "┌─ Your agent's iMessage number ───────────────────────────────",
+                Colors.GREEN,
+            )
+        )
         print(
             color("│  📱 ", Colors.GREEN)
             + color(str(agent_number), Colors.GREEN, Colors.BOLD)
         )
-        print(color("│  Text this number from your phone to talk to your agent.", Colors.GREEN))
-        print(color("└──────────────────────────────────────────────────────────────", Colors.GREEN))
+        print(
+            color(
+                "│  Text this number from your phone to talk to your agent.",
+                Colors.GREEN,
+            )
+        )
+        print(
+            color(
+                "└──────────────────────────────────────────────────────────────",
+                Colors.GREEN,
+            )
+        )
     else:
         print("      No iMessage line assigned yet — check the Photon dashboard.")
     if registered_phone:
@@ -249,7 +284,9 @@ def _cmd_setup(args: argparse.Namespace) -> int:
                 dashboard_project_id=dashboard_id,
             )
         except Exception as e:
-            print(f"      (could not save Photon status metadata: {e})", file=sys.stderr)
+            print(
+                f"      (could not save Photon status metadata: {e})", file=sys.stderr
+            )
 
     # 6. Sidecar deps + runtime import check.
     if args.skip_sidecar_install:
@@ -480,6 +517,7 @@ def _install_sidecar() -> int:
 # project + user + sidecar flow as ``hermes photon setup`` with interactive
 # defaults (phone is prompted when stdin is a TTY).
 
+
 def gateway_setup() -> None:
     """Run Photon first-time setup from the `hermes gateway setup` wizard."""
     args = argparse.Namespace(
@@ -499,6 +537,7 @@ def gateway_setup() -> None:
 
 # ---------------------------------------------------------------------------
 # Small interactive helpers
+
 
 def _prompt(prompt: str, *, secret: bool = False) -> str:
     if not sys.stdin.isatty():
