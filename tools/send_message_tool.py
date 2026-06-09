@@ -804,6 +804,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_qqbot(pconfig, chat_id, chunk)
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
+        elif platform == Platform.CARBONVOICE:
+            result = await _send_carbonvoice(pconfig, chat_id, chunk)
         else:
             # Plugin platform: route through the gateway's live adapter if
             # available, otherwise the plugin's standalone_sender_fn.
@@ -1776,6 +1778,30 @@ async def _send_yuanbao(chat_id, message, media_files=None):
         return await send_yuanbao_direct(adapter, chat_id, message, media_files=media_files)
     except Exception as e:
         return _error(f"Yuanbao send failed: {e}")
+
+
+async def _send_carbonvoice(pconfig, chat_id, message):
+    """Send via Carbon Voice using a one-shot REST call (no persistent client).
+
+    Carbon Voice is HTTP-based for sends (POST /v5/messages/text), so we can
+    use the standalone sender directly — handy for cron delivery and any
+    out-of-process send. chat_id is the Carbon Voice ``conversation_id``
+    (channel_guid).
+    """
+    try:
+        from gateway.platforms.carbonvoice import standalone_send
+        from gateway.platforms.carbonvoice.constants import DEFAULT_BASE_URL
+    except ImportError:
+        return _error("Carbon Voice adapter module not available.")
+
+    pat = pconfig.token or (pconfig.extra or {}).get("pat") or ""
+    if not pat:
+        return _error("Carbon Voice PAT not configured (CARBONVOICE_PAT).")
+    base_url = (pconfig.extra or {}).get("base_url") or DEFAULT_BASE_URL
+    try:
+        return await standalone_send(pat, base_url, chat_id, message)
+    except Exception as e:
+        return _error(f"Carbon Voice send failed: {e}")
 
 
 # --- Registry ---
