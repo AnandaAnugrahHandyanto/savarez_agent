@@ -69,6 +69,12 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
 
     for platform, adapter in adapters.items():
         try:
+            list_channels = getattr(adapter, "list_channels", None)
+            if callable(list_channels):
+                platform_channels = await list_channels()
+                if platform_channels is not None:
+                    platforms[platform.value] = _normalize_adapter_channels(platform_channels)
+                    continue
             if platform == Platform.DISCORD:
                 platforms["discord"] = _build_discord(adapter)
             elif platform == Platform.SLACK:
@@ -143,6 +149,32 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
 
     # Merge any DMs from session history
     channels.extend(_build_from_sessions("discord"))
+    return channels
+
+
+def _normalize_adapter_channels(raw_channels: Any) -> List[Dict[str, Any]]:
+    channels: List[Dict[str, Any]] = []
+    seen_ids = set()
+    if not isinstance(raw_channels, list):
+        return channels
+    for raw in raw_channels:
+        if not isinstance(raw, dict):
+            continue
+        channel_id = str(raw.get("id") or "").strip()
+        name = str(raw.get("name") or channel_id).strip()
+        if not channel_id or not name or channel_id in seen_ids:
+            continue
+        entry: Dict[str, Any] = {
+            "id": channel_id,
+            "name": name,
+            "type": str(raw.get("type") or "dm"),
+        }
+        if raw.get("thread_id"):
+            entry["thread_id"] = str(raw.get("thread_id"))
+        if raw.get("guild"):
+            entry["guild"] = str(raw.get("guild"))
+        channels.append(entry)
+        seen_ids.add(channel_id)
     return channels
 
 
