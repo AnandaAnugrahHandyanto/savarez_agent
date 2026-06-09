@@ -1,6 +1,44 @@
-import { setYoloActive } from '@/store/session'
+import { setApprovalMode, setYoloActive } from '@/store/session'
+import type { ApprovalMode } from '@/types/hermes'
 
 export type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+
+const APPROVAL_MODES: ReadonlySet<string> = new Set(['manual', 'smart', 'off'])
+
+export function normalizeApprovalMode(value: unknown): ApprovalMode | null {
+  const mode = String(value ?? '')
+    .trim()
+    .toLowerCase()
+
+  return APPROVAL_MODES.has(mode) ? (mode as ApprovalMode) : null
+}
+
+export async function getGlobalApprovalMode(requestGateway: GatewayRequester): Promise<ApprovalMode> {
+  const result = await requestGateway<{ value?: string }>('config.get', {
+    key: 'approvals.mode'
+  })
+  const mode = normalizeApprovalMode(result?.value) ?? 'manual'
+
+  setApprovalMode(mode)
+
+  return mode
+}
+
+export async function setGlobalApprovalMode(
+  requestGateway: GatewayRequester,
+  mode: ApprovalMode
+): Promise<ApprovalMode> {
+  const result = await requestGateway<{ value?: string }>('config.set', {
+    key: 'approvals.mode',
+    value: mode
+  })
+  const activeMode = normalizeApprovalMode(result?.value) ?? mode
+
+  setApprovalMode(activeMode)
+  setYoloActive(activeMode === 'off')
+
+  return activeMode
+}
 
 /**
  * Toggle per-session YOLO (approval bypass) via gateway `config.set` — the same

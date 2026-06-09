@@ -7,6 +7,7 @@ import { $desktopActionTasks } from '@/store/activity'
 import { $previewServerRestart } from '@/store/preview'
 import {
   $activeSessionId,
+  $approvalMode,
   $busy,
   $connection,
   $currentFastMode,
@@ -147,6 +148,7 @@ describe('useStatusbarItems', () => {
     $backendUpdateStatus.set(null)
     $desktopVersion.set(null)
     $workingSessionIds.set([])
+    $approvalMode.set('manual')
     $yoloActive.set(false)
   })
 
@@ -215,7 +217,7 @@ describe('useStatusbarItems', () => {
     expect(rowText.indexOf('Approve for me')).toBeLessThan(rowText.indexOf('client v0.16.0 (+49)'))
   })
 
-  it('opens a Codex-like approval mode menu and enables full access for the active session', async () => {
+  it('opens a Codex-like approval mode menu and enables full access globally', async () => {
     $activeSessionId.set('sess-1')
     $currentModel.set('gpt-5.5')
     $currentProvider.set('openai-codex')
@@ -244,12 +246,34 @@ describe('useStatusbarItems', () => {
 
     await waitFor(() => {
       expect(requestGateway).toHaveBeenCalledWith('config.set', {
-        key: 'yolo',
-        session_id: 'sess-1',
-        value: '1'
+        key: 'approvals.mode',
+        value: 'off'
       })
     })
     expect($yoloActive.get()).toBe(true)
+  })
+
+  it('sets ask-every-time as the manual approval mode', async () => {
+    $activeSessionId.set('sess-1')
+    $currentModel.set('gpt-5.5')
+    $currentProvider.set('openai-codex')
+    const requestGateway = vi.fn(async (_method, params) => ({ value: params?.value })) as RequestGateway
+
+    renderStatusbar({ requestGateway })
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: /Approve for me/i }), {
+      button: 0,
+      ctrlKey: false
+    })
+    fireEvent.click(await screen.findByRole('menuitemradio', { name: /Ask every time/i }))
+
+    await waitFor(() => {
+      expect(requestGateway).toHaveBeenCalledWith('config.set', {
+        key: 'approvals.mode',
+        value: 'manual'
+      })
+    })
+    expect($yoloActive.get()).toBe(false)
   })
 
   it('keeps the approval mode menu visible between active sessions', () => {

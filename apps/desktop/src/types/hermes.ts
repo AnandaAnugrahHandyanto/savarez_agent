@@ -342,7 +342,10 @@ export interface SessionResumeResponse {
   session_id: string
 }
 
+export type ApprovalMode = 'manual' | 'smart' | 'off'
+
 export interface SessionRuntimeInfo {
+  approval_mode?: ApprovalMode
   branch?: string
   config_warning?: string
   credential_warning?: string

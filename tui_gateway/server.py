@@ -1422,6 +1422,7 @@ def _write_config_key(key_path: str, value):
 
 
 _STATUSBAR_MODES = frozenset({"off", "top", "bottom"})
+_APPROVAL_MODES = frozenset({"manual", "smart", "off"})
 
 
 def _coerce_statusbar(raw) -> str:
@@ -2058,6 +2059,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
     # per-session flag. Reporting only the per-session flag here would lie to
     # the desktop status bar (it would show YOLO "off" while approvals.mode=off
     # silently auto-approves every dangerous command).
+    approval_mode = "manual"
     yolo = False
     try:
         from tools.approval import (
@@ -2068,14 +2070,19 @@ def _session_info(agent, session: dict | None = None) -> dict:
 
         session_key = (session or {}).get("session_key")
         session_yolo = bool(is_session_yolo_enabled(session_key)) if session_key else False
-        yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or _get_approval_mode() == "off"
+        approval_mode = _get_approval_mode()
+        if approval_mode not in _APPROVAL_MODES:
+            approval_mode = "manual"
+        yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or approval_mode == "off"
     except Exception:
+        approval_mode = "manual"
         yolo = False
     info: dict = {
         "model": getattr(agent, "model", ""),
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
+        "approval_mode": approval_mode,
         "yolo": yolo,
         "tools": {},
         "skills": {},
@@ -6287,6 +6294,22 @@ def _(rid, params: dict) -> dict:
                 agent.verbose_logging = nv == "verbose"
         return _ok(rid, {"key": key, "value": nv})
 
+    if key in {"approval_mode", "approvals.mode"}:
+        raw = str(value or "").strip().lower()
+        if raw not in _APPROVAL_MODES:
+            return _err(
+                rid,
+                4002,
+                f"unknown approval mode: {value}; pick one of manual|smart|off",
+            )
+
+        _write_config_key("approvals.mode", raw)
+        for sid, sess in list(_sessions.items()):
+            agent = sess.get("agent")
+            if agent is not None:
+                _emit("session.info", sid, _session_info(agent, sess))
+        return _ok(rid, {"key": "approvals.mode", "value": raw})
+
     if key == "yolo":
         # Approval bypass. Two scopes:
         #   scope="session" (default) — same as the TUI's Shift+Tab. Toggles
@@ -6678,6 +6701,20 @@ def _(rid, params: dict) -> dict:
         )
     if key == "busy":
         return _ok(rid, {"value": _load_busy_input_mode()})
+    if key in {"approval_mode", "approvals.mode"}:
+        try:
+            from tools.approval import _normalize_approval_mode
+
+            cfg = _load_cfg()
+            appr = cfg.get("approvals") if isinstance(cfg, dict) else None
+            raw = appr.get("mode", "manual") if isinstance(appr, dict) else "manual"
+            mode = _normalize_approval_mode(raw)
+            return _ok(
+                rid,
+                {"value": mode if mode in _APPROVAL_MODES else "manual"},
+            )
+        except Exception as e:
+            return _err(rid, 5001, str(e))
     if key == "details_mode":
         allowed_dm = frozenset({"hidden", "collapsed", "expanded"})
         raw = (

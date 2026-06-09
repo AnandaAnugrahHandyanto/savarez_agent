@@ -33,6 +33,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setApprovalMode,
   setFreshDraftReady,
   setIntroSeed,
   setMessages,
@@ -257,6 +258,10 @@ function applyRuntimeInfo(
 
   if (typeof info.fast === 'boolean') {
     setCurrentFastMode(info.fast)
+  }
+
+  if (info.approval_mode === 'manual' || info.approval_mode === 'smart' || info.approval_mode === 'off') {
+    setApprovalMode(info.approval_mode)
   }
 
   if (typeof info.yolo === 'boolean') {

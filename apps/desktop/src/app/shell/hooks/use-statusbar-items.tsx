@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
-import { useCallback, useMemo } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
@@ -27,11 +27,12 @@ import { formatModelStatusLabel } from '@/lib/model-status-label'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
-import { setGlobalYolo, setSessionYolo } from '@/lib/yolo-session'
+import { getGlobalApprovalMode, setGlobalApprovalMode, setSessionYolo } from '@/lib/yolo-session'
 import { $desktopActionTasks } from '@/store/activity'
 import { $previewServerRestartStatus } from '@/store/preview'
 import {
   $activeSessionId,
+  $approvalMode,
   $busy,
   $currentFastMode,
   $currentModel,
@@ -42,6 +43,7 @@ import {
   $turnStartedAt,
   $workingSessionIds,
   $yoloActive,
+  setApprovalMode,
   setModelPickerOpen,
   setYoloActive
 } from '@/store/session'
@@ -54,10 +56,10 @@ import {
   $updateStatus,
   openUpdateOverlayFor
 } from '@/store/updates'
-import type { StatusResponse } from '@/types/hermes'
+import type { ApprovalMode, StatusResponse } from '@/types/hermes'
 
 import { CRON_ROUTE } from '../../routes'
-import type { StatusbarItem, StatusbarSelectModifiers } from '../statusbar-controls'
+import type { StatusbarItem } from '../statusbar-controls'
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
@@ -93,6 +95,7 @@ export function useStatusbarItems({
 }: StatusbarItemsOptions) {
   const { t } = useI18n()
   const copy = t.shell.statusbar
+  const approvalMode = useStore($approvalMode)
   const yoloActive = useStore($yoloActive)
   const busy = useStore($busy)
   const currentFastMode = useStore($currentFastMode)
@@ -114,43 +117,40 @@ export function useStatusbarItems({
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
 
-  // Per-session approval bypass (same scope as the TUI's Shift+Tab). On a
-  // new-chat draft (no runtime session yet) we arm locally; the session-create
-  // path applies it once the backend session exists.
-  //
-  // Passing shiftKey flips the GLOBAL approvals.mode instead — a persistent,
-  // all-sessions/CLI/TUI/cron bypass that survives restarts.
-  const setApprovalBypass = useCallback(
-    async (next: boolean, modifiers?: StatusbarSelectModifiers) => {
-      const previous = $yoloActive.get()
-      setYoloActive(next)
+  useEffect(() => {
+    if (gatewayState !== 'open') {
+      return
+    }
 
-      if (modifiers?.shiftKey) {
-        try {
-          await setGlobalYolo(requestGateway, next)
-        } catch {
-          setYoloActive(previous)
-        }
+    void getGlobalApprovalMode(requestGateway).catch(() => undefined)
+  }, [gatewayState, requestGateway])
 
-        return
-      }
-
+  const applyApprovalMode = useCallback(
+    async (next: ApprovalMode) => {
+      const previousMode = $approvalMode.get()
+      const previousYolo = $yoloActive.get()
       const sid = $activeSessionId.get()
 
-      if (!sid) {
-        return
-      }
+      setApprovalMode(next)
+      setYoloActive(next === 'off')
 
       try {
-        await setSessionYolo(requestGateway, sid, next)
+        const activeMode = await setGlobalApprovalMode(requestGateway, next)
+
+        if (activeMode !== 'off' && previousYolo && sid) {
+          await setSessionYolo(requestGateway, sid, false).catch(() => undefined)
+        }
       } catch {
-        setYoloActive(previous)
+        setApprovalMode(previousMode)
+        setYoloActive(previousYolo)
       }
     },
     [requestGateway]
   )
 
   const showApprovalMenu = gatewayState === 'open'
+  const fullAccessActive = yoloActive || approvalMode === 'off'
+  const approvalMenuValue: ApprovalMode = fullAccessActive ? 'off' : approvalMode
 
   const approvalMenuContent = useMemo(
     () => (
@@ -160,18 +160,18 @@ export function useStatusbarItems({
         </DropdownMenuLabel>
         <DropdownMenuSeparator className="mx-0" />
         <DropdownMenuRadioGroup
-          value={yoloActive ? 'full' : 'smart'}
+          value={approvalMenuValue}
           onValueChange={value => {
-            void setApprovalBypass(value === 'full')
+            void applyApprovalMode(value as ApprovalMode)
           }}
         >
-          <ApprovalModeItem description={copy.approvalAskDescription} label={copy.approvalAsk} value="ask" />
+          <ApprovalModeItem description={copy.approvalAskDescription} label={copy.approvalAsk} value="manual" />
           <ApprovalModeItem description={copy.approvalSmartDescription} label={copy.approvalSmart} value="smart" />
-          <ApprovalModeItem description={copy.approvalFullDescription} label={copy.approvalFull} value="full" />
+          <ApprovalModeItem description={copy.approvalFullDescription} label={copy.approvalFull} value="off" />
         </DropdownMenuRadioGroup>
       </div>
     ),
-    [copy, setApprovalBypass, yoloActive]
+    [approvalMenuValue, applyApprovalMode, copy]
   )
 
   const gatewayMenuContent = useMemo(
@@ -441,9 +441,9 @@ export function useStatusbarItems({
             })
       },
       {
-        className: cn(yoloActive && 'bg-(--chrome-action-hover)'),
+        className: cn(fullAccessActive && 'bg-(--chrome-action-hover)'),
         hidden: !showApprovalMenu,
-        icon: yoloActive ? (
+        icon: fullAccessActive ? (
           <ZapFilled className="size-3.5 shrink-0" />
         ) : (
           <Zap className="size-3.5 shrink-0 opacity-70" />
@@ -453,7 +453,7 @@ export function useStatusbarItems({
         menuAlign: 'end',
         menuClassName: 'w-80',
         menuContent: approvalMenuContent,
-        title: yoloActive ? copy.yoloOn : copy.yoloOff,
+        title: fullAccessActive ? copy.yoloOn : copy.yoloOff,
         variant: 'menu'
       },
       clientVersionItem,
@@ -474,7 +474,7 @@ export function useStatusbarItems({
       turnStartedAt,
       clientVersionItem,
       backendVersionItem,
-      yoloActive,
+      fullAccessActive,
       approvalMenuContent
     ]
   )
