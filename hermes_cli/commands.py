@@ -63,9 +63,9 @@ class CommandDef:
 
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
-    CommandDef("start", "Acknowledge platform start pings without a reply", "Session",
+    CommandDef("start", "Internal: acknowledge Telegram bot launch pings (not a user command)", "Session",
                gateway_only=True),
-    CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
+    CommandDef("new", "Discard current conversation and start fresh (clears history + session ID)", "Session",
                aliases=("reset",), args_hint="[name]"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
                gateway_only=True, args_hint="[off|help|session-id]"),
