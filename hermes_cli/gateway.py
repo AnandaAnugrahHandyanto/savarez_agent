@@ -3067,12 +3067,35 @@ def get_launchd_label() -> str:
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 
+def _launchd_manager_name() -> str | None:
+    """Return launchd's current manager name when available (Aqua, Background, etc.)."""
+    try:
+        proc = subprocess.Popen(
+            ["launchctl", "managername"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        stdout, _ = proc.communicate(timeout=10)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    manager = stdout.strip()
+    return manager or None
+
+
 def _launchd_domain() -> str:
-    # The `user/<uid>` domain (vs the older `gui/<uid>`) is reachable from
-    # non-Aqua/background sessions (SSH, headless, login items) and is the only
-    # one that supports service management on macOS 26+. `gui/<uid>` returns
-    # error 125 ("Domain does not support specified action") there. See #23387.
-    return f"user/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    # LaunchAgents installed from an interactive macOS login session live in
+    # gui/<uid>. Background/non-Aqua sessions on macOS 26+ need user/<uid>.
+    # Pick from the live launchd manager instead of hardcoding either side;
+    # hardcoding user/<uid> broke Aqua upgrades where the existing gateway was
+    # still loaded under gui/<uid> (#40831, #42524), while hardcoding gui/<uid>
+    # breaks the non-Aqua case fixed by #40581.
+    uid = os.getuid()  # windows-footgun: ok — POSIX launchd helper, never invoked on Windows
+    if _launchd_manager_name() == "Aqua":
+        return f"gui/{uid}"
+    return f"user/{uid}"
 
 
 # On macOS, exit code 125 ("Domain does not support specified action") and

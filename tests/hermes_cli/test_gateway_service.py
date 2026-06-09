@@ -679,9 +679,34 @@ class TestLaunchdServiceRecovery:
         assert "stale" in output.lower()
         assert "not loaded" in output.lower()
 
-    def test_launchd_domain_uses_user_domain(self):
-        # The user/<uid> domain (not gui/<uid>) is the one reachable from
-        # non-Aqua/background sessions on macOS 26+ (issue #23387).
+    def test_launchd_domain_uses_gui_domain_in_aqua_session(self, monkeypatch):
+        class FakePopen:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "Aqua\n", ""
+
+        monkeypatch.setattr(gateway_cli.subprocess, "Popen", lambda *args, **kwargs: FakePopen())
+
+        assert gateway_cli._launchd_domain() == f"gui/{os.getuid()}"
+
+    def test_launchd_domain_uses_user_domain_outside_aqua(self, monkeypatch):
+        class FakePopen:
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "Background\n", ""
+
+        monkeypatch.setattr(gateway_cli.subprocess, "Popen", lambda *args, **kwargs: FakePopen())
+
+        assert gateway_cli._launchd_domain() == f"user/{os.getuid()}"
+
+    def test_launchd_domain_defaults_to_user_when_manager_unknown(self, monkeypatch):
+        def fake_popen(*args, **kwargs):
+            raise FileNotFoundError("launchctl")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "Popen", fake_popen)
+
         assert gateway_cli._launchd_domain() == f"user/{os.getuid()}"
 
     def test_launchctl_domain_unsupported_recognizes_macos26_codes(self):
