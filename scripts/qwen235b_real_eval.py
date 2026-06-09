@@ -85,7 +85,9 @@ def create_system_prompt(skills):
     return prompt
 
 def call_qwen235b(api_key, system_prompt, user_message, conversation_history=None):
-    """调用Qwen235B模型"""
+    """调用Qwen235B模型，返回(response_content, elapsed_seconds)"""
+    import time
+    
     messages = []
     
     messages.append({
@@ -101,6 +103,7 @@ def call_qwen235b(api_key, system_prompt, user_message, conversation_history=Non
         "content": user_message
     })
     
+    start_time = time.time()
     result = call_qwen_api_via_powershell(
         api_key=api_key,
         model="Qwen3-235B-A22B-w8a8",
@@ -108,6 +111,7 @@ def call_qwen235b(api_key, system_prompt, user_message, conversation_history=Non
         max_tokens=2000,
         temperature=0.7
     )
+    elapsed = time.time() - start_time
     
     if result["success"]:
         response_data = result["data"]
@@ -115,11 +119,11 @@ def call_qwen235b(api_key, system_prompt, user_message, conversation_history=Non
             content = response_data["choices"][0]["message"]["content"]
             if isinstance(content, bytes):
                 content = content.decode('utf-8')
-            return content
+            return content, elapsed
         else:
-            return f"API响应格式错误: {response_data}"
+            return f"API响应格式错误: {response_data}", elapsed
     else:
-        return f"API调用失败: {result['error']}"
+        return f"API调用失败: {result['error']}", elapsed
 
 def evaluate_by_mimo(api_key, system_prompt, user_message, model_response, turn_number, scenario):
     """
@@ -237,8 +241,9 @@ def main():
     print(f"用户消息长度: {len(user_message_1)} 字符")
     print("调用Qwen235B模型...")
     
-    response_1 = call_qwen235b(api_key, system_prompt, user_message_1)
+    response_1, elapsed_1 = call_qwen235b(api_key, system_prompt, user_message_1)
     print(f"\n模型响应长度: {len(response_1)} 字符")
+    print(f"模型响应耗时: {elapsed_1:.1f}秒")
     print(f"模型响应前500字符:\n{response_1[:500]}...")
     
     # 由mimoV2.5-pro评估
@@ -258,6 +263,7 @@ def main():
         "scenario": "定时巡检触发",
         "user_message": user_message_1,
         "model_response": response_1,
+        "elapsed_seconds": elapsed_1,
         "evaluation": eval_1
     })
     
@@ -308,8 +314,9 @@ def main():
     print(f"用户消息长度: {len(user_message_2)} 字符")
     print("调用Qwen235B模型...")
     
-    response_2 = call_qwen235b(api_key, system_prompt, user_message_2, conversation_history)
+    response_2, elapsed_2 = call_qwen235b(api_key, system_prompt, user_message_2, conversation_history)
     print(f"\n模型响应长度: {len(response_2)} 字符")
+    print(f"模型响应耗时: {elapsed_2:.1f}秒")
     print(f"模型响应前500字符:\n{response_2[:500]}...")
     
     # 由mimoV2.5-pro评估
@@ -329,6 +336,7 @@ def main():
         "scenario": "Agent调用skill获取更多信息",
         "user_message": user_message_2,
         "model_response": response_2,
+        "elapsed_seconds": elapsed_2,
         "evaluation": eval_2
     })
     
@@ -376,8 +384,9 @@ PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
     print(f"用户消息长度: {len(user_message_3)} 字符")
     print("调用Qwen235B模型...")
     
-    response_3 = call_qwen235b(api_key, system_prompt, user_message_3, conversation_history)
+    response_3, elapsed_3 = call_qwen235b(api_key, system_prompt, user_message_3, conversation_history)
     print(f"\n模型响应长度: {len(response_3)} 字符")
+    print(f"模型响应耗时: {elapsed_3:.1f}秒")
     print(f"模型响应前500字符:\n{response_3[:500]}...")
     
     # 由mimoV2.5-pro评估
@@ -397,6 +406,7 @@ PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
         "scenario": "Agent继续深入分析",
         "user_message": user_message_3,
         "model_response": response_3,
+        "elapsed_seconds": elapsed_3,
         "evaluation": eval_3
     })
     
@@ -419,8 +429,9 @@ PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
     print(f"用户消息长度: {len(user_message_4)} 字符")
     print("调用Qwen235B模型...")
     
-    response_4 = call_qwen235b(api_key, system_prompt, user_message_4, conversation_history)
+    response_4, elapsed_4 = call_qwen235b(api_key, system_prompt, user_message_4, conversation_history)
     print(f"\n模型响应长度: {len(response_4)} 字符")
+    print(f"模型响应耗时: {elapsed_4:.1f}秒")
     print(f"模型响应前500字符:\n{response_4[:500]}...")
     
     # 由mimoV2.5-pro评估
@@ -440,6 +451,7 @@ PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
         "scenario": "Agent总结分析结果",
         "user_message": user_message_4,
         "model_response": response_4,
+        "elapsed_seconds": elapsed_4,
         "evaluation": eval_4
     })
     
