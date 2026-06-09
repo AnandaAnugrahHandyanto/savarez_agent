@@ -8679,7 +8679,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             )
             self._invalidate()
 
-    def _on_tool_start(self, tool_call_id: str, function_name: str, function_args: dict):
+    def _on_tool_start(self, tool_call_id: str, function_name: str, function_args: dict, **kwargs):
         """Capture local before-state for write-capable tools."""
         try:
             from agent.display import capture_local_edit_snapshot
@@ -8690,7 +8690,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             logger.debug("Edit snapshot capture failed for %s", function_name, exc_info=True)
 
-    def _on_tool_complete(self, tool_call_id: str, function_name: str, function_args: dict, function_result: str):
+    def _on_tool_complete(self, tool_call_id: str, function_name: str, function_args: dict, function_result: str, **kwargs):
         """Render file edits with inline diff after write-capable tools complete."""
         snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)
         try:
