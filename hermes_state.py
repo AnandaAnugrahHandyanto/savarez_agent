@@ -511,8 +511,7 @@ class SessionDB:
 
     @staticmethod
     def _rebuild_fts_indexes(cursor: sqlite3.Cursor) -> None:
-        for table_name in ("messages_fts", "messages_fts_trigram"):
-            cursor.execute(f"DELETE FROM {table_name}")
+        cursor.execute("DELETE FROM messages_fts")
         cursor.execute(
             "INSERT INTO messages_fts(rowid, content) "
             "SELECT id, "
@@ -521,6 +520,10 @@ class SessionDB:
             "COALESCE(tool_calls, '') "
             "FROM messages"
         )
+
+    @staticmethod
+    def _rebuild_fts_trigram_indexes(cursor: sqlite3.Cursor) -> None:
+        cursor.execute("DELETE FROM messages_fts_trigram")
         cursor.execute(
             "INSERT INTO messages_fts_trigram(rowid, content) "
             "SELECT id, "
@@ -929,8 +932,12 @@ class SessionDB:
                 trigram_enabled = self._ensure_fts_schema(
                     cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
                 )
-                if trigram_enabled and triggers_need_repair:
+                # Rebuild indexes that need repair independently.
+                # Previously, trigram failure prevented main FTS rebuild.
+                if triggers_need_repair:
                     self._rebuild_fts_indexes(cursor)
+                if trigram_enabled and triggers_need_repair:
+                    self._rebuild_fts_trigram_indexes(cursor)
 
         self._conn.commit()
 
