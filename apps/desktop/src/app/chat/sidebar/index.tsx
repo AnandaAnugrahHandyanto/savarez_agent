@@ -166,8 +166,11 @@ function reconcileOrderIds(currentIds: string[], orderIds: string[]): string[] {
     return []
   }
 
+  // No saved manual order means keep the natural API/recency order.
+  // Do not seed localStorage on app start, otherwise future new sessions
+  // are appended after the stale persisted list instead of appearing first.
   if (!orderIds.length) {
-    return currentIds
+    return []
   }
 
   const current = new Set(currentIds)
