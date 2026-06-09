@@ -544,10 +544,6 @@ def _normalize_command_for_detection(command: str) -> str:
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
-    # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
-    command = re.sub(r'\\([^\n])', r'\1', command)
-    # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
-    command = re.sub(r"''|\"\"", '', command)
     # Fold the resolved absolute active-profile home path into the canonical
     # ~/.hermes/ form so the Hermes config/env patterns catch it. In Docker and
     # gateway deployments the agent often references the resolved absolute path
@@ -563,9 +559,10 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
     """Rewrite the resolved absolute Hermes home prefix to ``~/.hermes/``.
 
     Resolves the active ``HERMES_HOME`` at call time (and its symlink-resolved
-    form) and replaces an occurrence of ``<home>/`` in *command* with
-    ``~/.hermes/`` so the static ``_HERMES_CONFIG_PATH`` / ``_HERMES_ENV_PATH``
-    patterns match. No-op when the path can't be resolved or doesn't appear.
+    form) and replaces an occurrence of ``<home>/`` or ``<home>\`` in *command*
+    with ``~/.hermes/`` so the static ``_HERMES_CONFIG_PATH`` /
+    ``_HERMES_ENV_PATH`` patterns match. No-op when the path can't be resolved
+    or doesn't appear.
     """
     try:
         from hermes_constants import get_hermes_home
@@ -584,11 +581,27 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
         # Guard against a degenerate HERMES_HOME (e.g. "/" or "") rewriting
         # unrelated paths: require an absolute path with at least one non-root
         # component. The active profile home is always a real directory like
-        # /home/hermes/.hermes or a per-test tempdir, never a bare root.
-        normalized = path.rstrip("/")
-        if not normalized.startswith("/") or normalized.count("/") < 2:
+        # /home/hermes/.hermes, C:\Users\me\.hermes, or a per-test tempdir,
+        # never a bare root.
+        normalized = path.rstrip("/\\")
+        normalized_posix = normalized.replace("\\", "/")
+        is_posix_absolute = (
+            normalized_posix.startswith("/") and normalized_posix.count("/") >= 2
+        )
+        is_windows_absolute = bool(
+            re.match(r"^[A-Za-z]:/.+/.+", normalized_posix)
+        )
+        if not (is_posix_absolute or is_windows_absolute):
             continue
-        command = command.replace(normalized + "/", "~/.hermes/")
+        for prefix in {
+            normalized,
+            normalized.replace("\\", "/"),
+            normalized.replace("/", "\\"),
+        }:
+            if not prefix:
+                continue
+            command = command.replace(prefix + "/", "~/.hermes/")
+            command = command.replace(prefix + "\\", "~/.hermes/")
     return command
 
 
@@ -898,6 +911,9 @@ def _command_detection_variants(command: str):
     normalized = _normalize_command_for_detection(command)
     seen = {normalized}
     yield normalized
+    # Shell quoting/escaping can spell a dangerous executable name in pieces
+    # (for example r\m or r''m). Keep that deobfuscation scoped to command
+    # words so similarly shaped arguments do not become false positives.
     for word_start, word_end, word in _iter_shell_command_word_spans(normalized):
         deobfuscated = _deobfuscate_shell_word_for_detection(word)
         if not deobfuscated or deobfuscated == word:
