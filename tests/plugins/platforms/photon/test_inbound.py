@@ -380,6 +380,45 @@ async def test_inbound_video_extracts_frames_and_audio(
     assert not any(u.endswith(".mp4") for u in event.media_urls)
 
 
+@pytest.mark.asyncio
+async def test_inbound_too_large_attachment_note(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An oversized attachment (sidecar skipped the download, tooLarge=True)
+    surfaces an actionable note so the agent replies promptly instead of the
+    message blocking on a huge download."""
+    adapter = _make_adapter(monkeypatch)
+    captured: List[MessageEvent] = []
+
+    async def fake_handle(event: MessageEvent) -> None:
+        captured.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+
+    payload = {
+        "event": "messages",
+        "message": {
+            "id": "spc-msg-big",
+            "timestamp": "2026-05-14T19:06:32.000Z",
+            "sender": {"id": "+15551234567"},
+            "space": {"id": "any;-;+15551234567"},
+            "content": {
+                "type": "attachment",
+                "name": "ScreenRecording.mov",
+                "mimeType": "video/quicktime",
+                "size": 60 * 1024 * 1024,
+                "localPath": None,
+                "tooLarge": True,
+            },
+        },
+    }
+    await adapter._dispatch_inbound(payload)
+    event = captured[0]
+    assert event.media_urls == []
+    assert "too large" in event.text.lower()
+    assert "60 MB" in event.text
+
+
 def test_is_duplicate_window(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _make_adapter(monkeypatch)
     assert adapter._is_duplicate("id-1") is False

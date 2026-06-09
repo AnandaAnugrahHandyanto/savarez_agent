@@ -575,6 +575,14 @@ class PhotonAdapter(BasePlatformAdapter):
                     media_urls.append(local_path)
                     media_types.append(mime)
                 text = ""  # attachments usually arrive without caption text
+            elif content.get("tooLarge"):
+                _mb = (content.get("size") or 0) / (1024 * 1024)
+                text = (
+                    f'[The user sent a {mime or "media"} attachment "{name}" '
+                    f"(~{_mb:.0f} MB) that is too large to download and analyze "
+                    "here. Acknowledge it and suggest a shorter clip or a "
+                    "screenshot.]"
+                )
             else:
                 text = (
                     f"[Photon attachment received: {name} ({mime}) "

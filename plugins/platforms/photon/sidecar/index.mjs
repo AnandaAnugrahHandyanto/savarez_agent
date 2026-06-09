@@ -145,6 +145,13 @@ const ALLOW = new Set(
     .filter(Boolean)
 );
 const DOWNLOAD_DIR = path.join(os.tmpdir(), "photon-attachments");
+// Cap inbound attachment downloads so a large video (downloaded over a slow
+// gRPC stream) can't block the message — and the agent's ack/reply — for
+// minutes. Oversized attachments forward as metadata-only with a note.
+const MAX_ATTACH_BYTES =
+  parseInt(process.env.PHOTON_MAX_ATTACHMENT_MB || "32", 10) * 1024 * 1024;
+const DOWNLOAD_TIMEOUT_MS =
+  parseInt(process.env.PHOTON_DOWNLOAD_TIMEOUT_MS || "120000", 10);
 
 const senderId = (m) =>
   typeof m?.sender?.id === "string"
@@ -217,6 +224,8 @@ async function downloadAttachmentToFile(content) {
   const finalPath = path.join(DOWNLOAD_DIR, `${guid}-${safeName}`);
   const partPath = `${finalPath}.part`;
   let received = 0;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), DOWNLOAD_TIMEOUT_MS);
   try {
     // `stream()` yields a WHATWG ReadableStream of the primaryChunk bytes.
     const webStream = await content.stream();
@@ -224,7 +233,9 @@ async function downloadAttachmentToFile(content) {
     nodeReadable.on("data", (c) => {
       received += c.length;
     });
-    await pipeline(nodeReadable, fs.createWriteStream(partPath));
+    await pipeline(nodeReadable, fs.createWriteStream(partPath), {
+      signal: ac.signal,
+    });
     if (
       typeof content.size === "number" &&
       content.size > 0 &&
@@ -239,6 +250,8 @@ async function downloadAttachmentToFile(content) {
   } catch (e) {
     await fsp.rm(partPath, { force: true }).catch(() => {});
     throw e;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -285,13 +298,25 @@ async function handleInbound(space, message) {
     // Download here — the read()/stream() closures cannot survive JSON.
     let localPath = null;
     let bytes = null;
-    try {
-      ({ localPath, bytes } = await downloadAttachmentToFile(content));
-    } catch (e) {
+    let tooLarge = false;
+    if (typeof content.size === "number" && content.size > MAX_ATTACH_BYTES) {
+      // Skip the download entirely so a huge clip never blocks the agent's
+      // ack/reply; forward metadata-only with a flag so the user still gets a
+      // prompt response.
+      tooLarge = true;
       console.error(
-        `photon-sidecar: attachment download failed for ${id}: ` +
-          (e && e.message ? e.message : e)
+        `photon-sidecar: attachment ${id} too large ` +
+          `(${content.size} > ${MAX_ATTACH_BYTES}) — forwarding metadata only`
       );
+    } else {
+      try {
+        ({ localPath, bytes } = await downloadAttachmentToFile(content));
+      } catch (e) {
+        console.error(
+          `photon-sidecar: attachment download failed for ${id}: ` +
+            (e && e.message ? e.message : e)
+        );
+      }
     }
     return forwardInbound({
       ...message,
@@ -303,6 +328,7 @@ async function handleInbound(space, message) {
         size: content.size,
         localPath,
         bytes,
+        tooLarge,
       },
     });
   }
