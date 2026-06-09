@@ -46,7 +46,7 @@ That does not stop Savarez from working well as a phone-native CLI agent — it 
 Savarez now ships a Termux-aware installer path:
 
 ```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+curl -fsSL https://savarez-agent.nousresearch.com/install.sh | bash
 ```
 
 On Termux, the installer automatically:

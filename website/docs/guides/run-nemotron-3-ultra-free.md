@@ -59,10 +59,10 @@ curl -fsSL https://savarez-agent.nousresearch.com/install.sh | bash
 On Windows, run
 
 ```powershell
-iex (irm https://hermes-agent.nousresearch.com/install.ps1)
+iex (irm https://savarez-agent.nousresearch.com/install.ps1)
 ```
 
-Prefer to review first? Download [`install.sh`](https://hermes-agent.nousresearch.com/install.sh), inspect it, then run it.
+Prefer to review first? Download [`install.sh`](https://savarez-agent.nousresearch.com/install.sh), inspect it, then run it.
 
 After it finishes, reload your shell:
 

@@ -20,7 +20,7 @@ Savarez 可在 Windows 10 和 Windows 11 上原生运行——无需 WSL、Cygwi
 打开 **PowerShell**（或 Windows Terminal）并运行：
 
 ```powershell
-iex (irm https://hermes-agent.nousresearch.com/install.ps1)
+iex (irm https://savarez-agent.nousresearch.com/install.ps1)
 ```
 
 无需管理员权限。安装程序会写入 `%LOCALAPPDATA%\savarez\`，并将 `savarez` 添加到你的**用户 PATH**——安装完成后打开新终端即可使用。
@@ -28,7 +28,7 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 **安装程序选项**（需要使用 scriptblock 形式传递参数）：
 
 ```powershell
-& ([scriptblock]::Create((irm https://hermes-agent.nousresearch.com/install.ps1))) -NoVenv -SkipSetup -Branch main
+& ([scriptblock]::Create((irm https://savarez-agent.nousresearch.com/install.ps1))) -NoVenv -SkipSetup -Branch main
 ```
 
 | 参数          | 默认值                               | 用途                                            |
@@ -39,7 +39,7 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 | `-NoVenv`     | 关闭                                 | 跳过 venv 创建（高级用法——由你自行管理 Python） |
 | `-SkipSetup`  | 关闭                                 | 跳过安装后的 `hermes setup` 向导                |
 | `-SavarezHome` | `%LOCALAPPDATA%\hermes`              | 覆盖数据目录                                    |
-| `-InstallDir` | `%LOCALAPPDATA%\hermes\hermes-agent` | 覆盖代码存放位置                                |
+| `-InstallDir` | `%LOCALAPPDATA%\hermes\savarez-agent` | 覆盖代码存放位置                                |
 
 安装程序会自动重试不稳定的 git 拉取，并剥离下载的 `install.ps1` 内容中的 BOM，因此 HTTP 传输中携带的 UTF-8 BOM 不再会破坏 `[scriptblock]::Create((irm ...))` 形式。
 
@@ -202,7 +202,7 @@ savarez gateway uninstall   # 移除 schtasks 条目、Startup 快捷方式、pi
 
 | 路径                                  | 内容                                                            |
 | ------------------------------------- | --------------------------------------------------------------- |
-| `%LOCALAPPDATA%\hermes\hermes-agent\` | Git 检出 + venv。可安全执行 `Remove-Item -Recurse` 后重新安装。 |
+| `%LOCALAPPDATA%\hermes\savarez-agent\` | Git 检出 + venv。可安全执行 `Remove-Item -Recurse` 后重新安装。 |
 | `%LOCALAPPDATA%\hermes\git\`          | PortableGit（仅在安装程序配置时存在）。                         |
 | `%LOCALAPPDATA%\hermes\node\`         | 便携式 Node.js（仅在安装程序配置时存在）。                      |
 | `%LOCALAPPDATA%\hermes\bin\`          | `hermes.cmd` 垫片，已添加到用户 PATH。                          |

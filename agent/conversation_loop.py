@@ -88,7 +88,7 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
     tool_count = len(getattr(agent, "tools", None) or [])
 
     logger.warning(
-        "Ollama runtime context too small for Hermes tool use: "
+        "Ollama runtime context too small for Savarez tool use: "
         "model=%s provider=%s base_url=%s runtime_context=%d "
         "minimum_context=%d estimated_request_tokens=%d tool_count=%d "
         "session=%s",
@@ -104,11 +104,11 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
 
     return (
         f"Ollama loaded `{model}` with only {runtime_ctx:,} tokens of runtime "
-        f"context, but Hermes needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens "
+        f"context, but Savarez needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens "
         "for reliable tool use.\n\n"
         "Increase the Ollama context for this model and restart/reload the "
         "model before trying again. A known-good starting point is 65,536 "
-        "tokens. In Hermes config, set `model.ollama_num_ctx: 65536` "
+        "tokens. In Savarez config, set `model.ollama_num_ctx: 65536` "
         "(and `model.context_length: 65536` if you also override the displayed "
         "model context). If you manage the model through an Ollama Modelfile, "
         "set `PARAMETER num_ctx 65536` there instead."
@@ -759,7 +759,7 @@ def run_conversation(
             failed = True
             _turn_exit_reason = "ollama_runtime_context_too_small"
             messages.append({"role": "assistant", "content": final_response})
-            agent._emit_status("❌ Ollama runtime context is too small for Hermes tool use")
+            agent._emit_status("❌ Ollama runtime context is too small for Savarez tool use")
             api_call_count -= 1
             agent._api_call_count = api_call_count
             try:

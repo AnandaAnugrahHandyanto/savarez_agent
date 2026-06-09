@@ -226,7 +226,7 @@ def test_user_default_headers_win_over_provider_defaults(mock_openai):
 
     headers = agent._client_kwargs["default_headers"]
     assert headers["X-Title"] == "MyApp"  # user override wins
-    assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"  # default preserved
+    assert headers["HTTP-Referer"] == "https://savarez-agent.nousresearch.com"  # default preserved
 
 
 @patch("run_agent.OpenAI")
@@ -245,7 +245,7 @@ def test_no_user_default_headers_leaves_provider_defaults_untouched(mock_openai)
         agent._apply_client_headers_for_base_url("https://openrouter.ai/api/v1")
 
     headers = agent._client_kwargs["default_headers"]
-    assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
+    assert headers["HTTP-Referer"] == "https://savarez-agent.nousresearch.com"
     assert "User-Agent" not in headers  # nothing injected when unconfigured
 
 

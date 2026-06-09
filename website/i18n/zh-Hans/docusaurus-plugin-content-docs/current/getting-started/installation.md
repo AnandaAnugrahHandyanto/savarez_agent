@@ -15,7 +15,7 @@ description: "在 Linux、macOS、WSL2、原生 Windows 或通过 Termux 在 And
 基于 git 的安装方式，跟踪 `main` 分支，可立即获取最新变更：
 
 ```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+curl -fsSL https://savarez-agent.nousresearch.com/install.sh | bash
 ```
 
 ### Windows（原生，PowerShell）
@@ -25,7 +25,7 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 打开 PowerShell 并运行：
 
 ```powershell
-iex (irm https://hermes-agent.nousresearch.com/install.ps1)
+iex (irm https://savarez-agent.nousresearch.com/install.ps1)
 ```
 
 安装程序处理**一切**：`uv`、Python 3.11、Node.js 22、`ripgrep`、`ffmpeg`，**以及一个便携式 Git Bash**（PortableGit——一个自包含的 Git-for-Windows 发行版，附带 `bash.exe` 和 Savarez 用于 shell 命令的完整 POSIX 工具链；在 32 位 Windows 上安装程序会回退到 MinGit，后者缺少 bash，终端工具和 agent 浏览器功能将被禁用）。它将仓库克隆到 `%LOCALAPPDATA%\savarez\savarez-agent`，创建虚拟环境，并将 `savarez` 添加到**用户 PATH**。安装完成后请重启终端（或打开新的 PowerShell 窗口）以使 PATH 生效。
@@ -48,7 +48,7 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 Savarez 现在也提供 Termux 感知的安装路径：
 
 ```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+curl -fsSL https://savarez-agent.nousresearch.com/install.sh | bash
 ```
 
 安装程序会自动检测 Termux 并切换到经过测试的 Android 流程：
@@ -86,8 +86,8 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 | 安装方式                                | 代码位置                       | `hermes` 二进制                          | 数据目录                              |
 | --------------------------------------- | ------------------------------ | ---------------------------------------- | ------------------------------------- |
 | pip install                             | Python site-packages           | `~/.local/bin/hermes`（console_scripts） | `~/.hermes/`                          |
-| 用户级（git 安装程序）                  | `~/.hermes/hermes-agent/`      | `~/.local/bin/hermes`（符号链接）        | `~/.hermes/`                          |
-| Root 模式（`sudo curl … \| sudo bash`） | `/usr/local/lib/hermes-agent/` | `/usr/local/bin/hermes`                  | `/root/.hermes/`（或 `$HERMES_HOME`） |
+| 用户级（git 安装程序）                  | `~/.hermes/savarez-agent/`      | `~/.local/bin/hermes`（符号链接）        | `~/.hermes/`                          |
+| Root 模式（`sudo curl … \| sudo bash`） | `/usr/local/lib/savarez-agent/` | `/usr/local/bin/hermes`                  | `/root/.hermes/`（或 `$HERMES_HOME`） |
 
 Root 模式的 **FHS 布局**（`/usr/local/lib/…`、`/usr/local/bin/savarez`）与其他系统级开发工具在 Linux 上的安装位置一致。适用于共享机器部署场景，一次系统安装可服务所有用户。每个用户的个人配置（认证、技能、会话）仍位于各自的 `~/.savarez/` 或显式指定的 `SAVAREZ_HOME` 下。
 
@@ -167,13 +167,13 @@ savarez setup --portal
 2. **以非特权服务用户身份**，运行常规安装程序。它会检测到缺少 sudo，跳过 `--with-deps`，并将 Chromium 安装到用户本地的 Playwright 缓存中：
 
    ```bash
-   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+   curl -fsSL https://savarez-agent.nousresearch.com/install.sh | bash
    ```
 
    如果想完全跳过 Playwright 步骤——例如在无头环境中运行且不需要浏览器自动化——传入 `--skip-browser`：
 
    ```bash
-   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-browser
+   curl -fsSL https://savarez-agent.nousresearch.com/install.sh | bash -s -- --skip-browser
    ```
 
 3. **使 `hermes` 对服务用户的 shell 可用。** 安装程序将启动器写入 `~/.local/bin/hermes`。系统服务账户通常具有不包含 `~/.local/bin` 的最小 PATH。可以将其添加到用户环境，或将启动器符号链接到系统位置：
@@ -204,4 +204,4 @@ savarez setup --portal
 
 ## 安装方式自动检测
 
-Savarez 会自动检测安装方式（`pip`、git 安装程序、Homebrew 或 NixOS），`hermes update` 会打印对应路径的更新命令。无需设置任何环境变量——检测基于安装目录结构（Python site-packages、`~/.hermes/hermes-agent/`、Homebrew 前缀或 Nix store 路径）。`hermes doctor` 也会在其环境摘要中显示检测到的安装方式。
+Savarez 会自动检测安装方式（`pip`、git 安装程序、Homebrew 或 NixOS），`hermes update` 会打印对应路径的更新命令。无需设置任何环境变量——检测基于安装目录结构（Python site-packages、`~/.hermes/savarez-agent/`、Homebrew 前缀或 Nix store 路径）。`hermes doctor` 也会在其环境摘要中显示检测到的安装方式。

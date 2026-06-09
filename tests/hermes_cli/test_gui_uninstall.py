@@ -16,7 +16,7 @@ import hermes_cli.gui_uninstall as gu
 
 def _make_agent(hermes_home: Path) -> Path:
     """Create a fake agent install: source package + venv."""
-    agent_root = hermes_home / "hermes-agent"
+    agent_root = hermes_home / "savarez-agent"
     (agent_root / "hermes_cli").mkdir(parents=True)
     (agent_root / "hermes_cli" / "__init__.py").write_text("")
     (agent_root / "venv" / "bin").mkdir(parents=True)
@@ -25,12 +25,12 @@ def _make_agent(hermes_home: Path) -> Path:
 
 def _make_gui_build(hermes_home: Path) -> None:
     """Create the source-built GUI artifacts a `hermes desktop` run produces."""
-    desktop = hermes_home / "hermes-agent" / "apps" / "desktop"
+    desktop = hermes_home / "savarez-agent" / "apps" / "desktop"
     (desktop / "dist").mkdir(parents=True)
     (desktop / "dist" / "index.html").write_text("<html>")
     (desktop / "release" / "linux-unpacked").mkdir(parents=True)
     (desktop / "node_modules").mkdir(parents=True)
-    (hermes_home / "hermes-agent" / "node_modules").mkdir(parents=True)
+    (hermes_home / "savarez-agent" / "node_modules").mkdir(parents=True)
     (hermes_home / "desktop-build-stamp.json").write_text("{}")
 
 
@@ -51,7 +51,7 @@ def test_agent_is_installed_detects_source_and_venv(tmp_path):
 def test_agent_is_installed_venv_only(tmp_path):
     """A checkout with only a venv (no package dir yet) still counts."""
     hermes_home = tmp_path / ".hermes"
-    (hermes_home / "hermes-agent" / "venv").mkdir(parents=True)
+    (hermes_home / "savarez-agent" / "venv").mkdir(parents=True)
     assert gu.agent_is_installed(hermes_home) is True
 
 
@@ -228,7 +228,7 @@ def test_run_uninstall_yes_keep_data_is_non_interactive(tmp_path, monkeypatch):
     import hermes_cli.uninstall as uninstall
 
     hermes_home = tmp_path / ".hermes"
-    agent_root = hermes_home / "hermes-agent"
+    agent_root = hermes_home / "savarez-agent"
     (agent_root / "hermes_cli").mkdir(parents=True)
     (hermes_home / "config.yaml").write_text("x: 1\n")
     desktop = agent_root / "apps" / "desktop"
@@ -268,7 +268,7 @@ def test_run_uninstall_yes_full_wipes_home(tmp_path, monkeypatch):
     import hermes_cli.uninstall as uninstall
 
     hermes_home = tmp_path / ".hermes"
-    (hermes_home / "hermes-agent" / "hermes_cli").mkdir(parents=True)
+    (hermes_home / "savarez-agent" / "hermes_cli").mkdir(parents=True)
     (hermes_home / "config.yaml").write_text("x: 1\n")
     fake_code = tmp_path / "checkout"
     fake_code.mkdir()
@@ -301,7 +301,7 @@ def test_uninstall_module_main_gui_mode(tmp_path, monkeypatch):
     import hermes_cli.uninstall as uninstall
 
     hermes_home = tmp_path / ".hermes"
-    agent_root = hermes_home / "hermes-agent"
+    agent_root = hermes_home / "savarez-agent"
     (agent_root / "hermes_cli").mkdir(parents=True)
     desktop = agent_root / "apps" / "desktop"
     (desktop / "release").mkdir(parents=True)

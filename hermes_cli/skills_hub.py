@@ -634,8 +634,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         c.print()
         if bundle.source == "official":
             c.print(Panel(
-                "[bold bright_cyan]This is an official optional skill maintained by Nous Research.[/]\n\n"
-                "It ships with hermes-agent but is not activated by default.\n"
+                "[bold bright_cyan]This is an official optional skill maintained by Ananda Anugrah Handyanto.[/]\n\n"
+                "It ships with savarez-agent but is not activated by default.\n"
                 "Installing will copy it to your skills directory where the agent can use it.\n\n"
                 f"Files will be at: [cyan]{display_hermes_home()}/skills/{category + '/' if category else ''}{bundle.name}/[/]",
                 title="Official Skill",

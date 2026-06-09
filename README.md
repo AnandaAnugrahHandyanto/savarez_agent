@@ -212,7 +212,7 @@ scripts/run_tests.sh
 
 ## Credits
 
-Savarez AI Agent is a fork of [Savarez AI Agent](https://hermes-agent.nousresearch.com) by [Ananda Anugrah Handyanto](https://nousresearch.com).
+Savarez AI Agent is a fork of [Savarez AI Agent](https://savarez-agent.nousresearch.com) by [Ananda Anugrah Handyanto](https://nousresearch.com).
 Original Savarez AI Agent is a self-improving AI agent designed to run anywhere — on a $5 VPS, a GPU cluster, or serverless infrastructure.
 This fork is maintained independently under the **Savarez** brand.
 

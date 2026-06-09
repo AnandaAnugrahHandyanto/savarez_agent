@@ -191,7 +191,7 @@ def test_dev_extra_excluded_from_all():
 
     assert "dev" in optional_dependencies
     assert not any(
-        spec == "hermes-agent[dev]"
+        spec == "savarez-agent[dev]"
         for spec in optional_dependencies["all"]
     )
 

@@ -6,7 +6,7 @@ remove the artifacts of both, on Linux, macOS, and Windows, WITHOUT touching
 the Python agent or the user's config/data:
 
   1. Source-built GUI (``hermes desktop`` / ``hermes gui``)
-     Built inside the agent checkout under ``$HERMES_HOME/hermes-agent/``:
+     Built inside the agent checkout under ``$HERMES_HOME/savarez-agent/``:
        - ``apps/desktop/dist``      (compiled renderer)
        - ``apps/desktop/release``   (electron-builder unpacked app + installers)
        - ``apps/desktop/node_modules`` and the workspace-root ``node_modules``
@@ -64,7 +64,7 @@ def log_warn(msg: str):
 
 def _agent_root(hermes_home: Path) -> Path:
     """The agent checkout root — same layout install.sh / install.ps1 use."""
-    return hermes_home / "hermes-agent"
+    return hermes_home / "savarez-agent"
 
 
 def desktop_userdata_dir() -> Path:
@@ -91,7 +91,7 @@ def source_built_gui_artifacts(hermes_home: Path) -> "list[Path]":
     """GUI build artifacts produced by ``hermes desktop`` inside the checkout.
 
     These are removable on a GUI uninstall without harming the agent: the
-    Python agent runs from ``hermes-agent/`` source + ``venv/`` and never
+    Python agent runs from ``savarez-agent/`` source + ``venv/`` and never
     needs the Electron build output or node_modules.
     """
     agent_root = _agent_root(hermes_home)
@@ -234,7 +234,7 @@ def uninstall_gui(hermes_home: "Path | None" = None, *, remove_userdata: bool = 
         system package manager and are reported, not force-removed)
       - the Electron ``userData`` directory (unless ``remove_userdata=False``)
 
-    Never touches ``hermes-agent/hermes_cli`` (agent source), ``venv/``, or any
+    Never touches ``savarez-agent/hermes_cli`` (agent source), ``venv/``, or any
     config / sessions / .env under ``$HERMES_HOME``.
 
     Returns the list of paths actually removed.

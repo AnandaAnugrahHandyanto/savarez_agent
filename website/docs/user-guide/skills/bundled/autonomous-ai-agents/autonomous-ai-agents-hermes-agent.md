@@ -52,7 +52,7 @@ People use Savarez for software development, research, system administration, da
 
 ```bash
 # Install
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+curl -fsSL https://savarez-agent.nousresearch.com/install.sh | bash
 
 # Interactive chat (default)
 savarez

@@ -429,7 +429,7 @@ class TestInstallDeps:
 
         assert module.install_deps() is False
         out = capsys.readouterr().out
-        assert "hermes-agent[google]" in out
+        assert "savarez-agent[google]" in out
 
     def test_returns_false_when_uv_fallback_also_fails(self, monkeypatch, capsys):
         """uv present but its install fails → failure surfaced (not swallowed)."""

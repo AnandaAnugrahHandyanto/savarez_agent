@@ -52,7 +52,7 @@ Savarez 的差异化特性：
 
 ```bash
 # 安装
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+curl -fsSL https://savarez-agent.nousresearch.com/install.sh | bash
 
 # 交互式聊天（默认）
 savarez

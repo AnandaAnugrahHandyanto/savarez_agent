@@ -72,7 +72,7 @@ DEFAULT_DASHBOARD_HOST = "https://app.photon.codes"
 DEFAULT_SPECTRUM_HOST = "https://spectrum.photon.codes"
 
 # Default name of the project Hermes provisions for the operator.
-DEFAULT_PROJECT_NAME = "Hermes Agent"
+DEFAULT_PROJECT_NAME = "Savarez"
 
 # Polling defaults per RFC 8628.  Photon overrides via `interval` /
 # `expires_in` in the device-code response — those win.
@@ -83,7 +83,7 @@ E164_RE = re.compile(r"^\+[1-9]\d{6,14}$")
 
 
 # ---------------------------------------------------------------------------
-# auth.json helpers — share the file with the rest of hermes-agent.
+# auth.json helpers — share the file with the rest of savarez-agent.
 
 def _auth_json_path() -> Path:
     """Resolve ``~/.hermes/auth.json`` honouring the active Hermes profile."""
