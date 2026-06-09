@@ -844,6 +844,22 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_gc.add_argument("--log-retention-days", type=int, default=30,
                       help="Delete worker log files older than N days (default: 30)")
 
+    # --- issue-cloud-token ---
+    p_token = sub.add_parser(
+        "issue-cloud-token",
+        help="Generate and store a bearer token for cloud kanban access (~/.hermes/cloud-token, mode 600)",
+    )
+    p_token.add_argument(
+        "--rotate",
+        action="store_true",
+        help="Rotate the existing token (invalidates old token, generates new one)",
+    )
+    p_token.add_argument(
+        "--print",
+        action="store_true",
+        help="Print the token to stdout (default: only prints when newly created)",
+    )
+
     kanban_parser.set_defaults(_kanban_parser=kanban_parser)
     return kanban_parser
 
@@ -959,6 +975,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "specify":  _cmd_specify,
             "decompose":  _cmd_decompose,
             "gc":       _cmd_gc,
+            "issue-cloud-token": _cmd_issue_cloud_token,
         }
         handler = handlers.get(action)
         if not handler:
@@ -2723,6 +2740,46 @@ def _cmd_gc(args: argparse.Namespace) -> int:
     print(f"GC complete: {removed_ws} workspace(s), "
           f"{removed_events} event row(s), {removed_logs} log file(s) removed")
     return 0
+
+
+def _cmd_issue_cloud_token(args: argparse.Namespace) -> int:
+    """Generate and store a bearer token for cloud kanban access.
+
+    Token is written to ~/.hermes/cloud-token (mode 600).
+    Supports --rotate to invalidate the old token and generate a new one.
+    Supports --print to output the token to stdout.
+    """
+    import secrets
+    from pathlib import Path
+
+    token_path = Path(os.path.expanduser("~/.hermes/cloud-token"))
+
+    # Check if we should rotate or if token exists
+    rotate = getattr(args, "rotate", False)
+    print_token = getattr(args, "print", False)
+
+    if rotate or not token_path.exists():
+        # Generate new token (URL-safe, 32 bytes = 43 chars)
+        token = secrets.token_urlsafe(32)
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text(token + "\n")
+        # Secure the file: mode 600 (owner read/write only)
+        try:
+            token_path.chmod(0o600)
+        except Exception:
+            pass  # Best effort on all platforms
+        print(f"Token generated and stored at {token_path} (mode 600)")
+        if print_token or rotate:
+            print(token)
+        return 0
+    else:
+        # Token exists, just read and optionally print
+        token = token_path.read_text().strip()
+        if print_token:
+            print(token)
+        else:
+            print(f"Token already exists at {token_path}. Use --rotate to regenerate.")
+        return 0
 
 
 # ---------------------------------------------------------------------------
