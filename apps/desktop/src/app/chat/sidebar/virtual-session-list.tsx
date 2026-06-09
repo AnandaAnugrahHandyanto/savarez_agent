@@ -4,7 +4,6 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { type FC, useCallback, useMemo, useRef } from 'react'
 
 import type { SessionInfo } from '@/hermes'
-import { resolveDeviceNickname } from '@/lib/device-nickname'
 import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
 import type { SessionPresenceRecord } from '@/types/hermes'
@@ -32,11 +31,7 @@ interface VirtualSessionListProps {
   sessions: SessionInfo[]
   sortable: boolean
   workingSessionIdSet: Set<string>
-  /** Show device/source info on line 2 of each row. */
-  showSourceBadge?: boolean
-  /** Show device name on line 2 of each row. */
-  showDeviceBadge?: boolean
-  /** Presence lookup map for device nicknames. */
+  /** Presence lookup map — flags rows live on another device/client. */
   presenceBySession?: Map<string, SessionPresenceRecord>
 }
 
@@ -54,8 +49,6 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   sessions,
   sortable,
   workingSessionIdSet,
-  showSourceBadge = false,
-  showDeviceBadge = false,
   presenceBySession
 }) => {
   const scrollerRef = useRef<HTMLDivElement | null>(null)
@@ -94,7 +87,6 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     }
 
     const presence = presenceBySession?.get(session.id)
-    const deviceNickname = presence?.host ? resolveDeviceNickname(presence.host) : null
 
     return sortable ? (
       <VirtualSortableRow
@@ -104,8 +96,6 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
         presence={presence}
         rowProps={commonProps}
         session={session}
-        showDeviceBadge={showDeviceBadge}
-        showSourceBadge={showSourceBadge}
       />
     ) : (
       <SidebarSessionRow
@@ -115,8 +105,6 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
         presence={presence}
         ref={virtualizer.measureElement}
         session={session}
-        showDeviceBadge={showDeviceBadge}
-        showSourceBadge={showSourceBadge}
       />
     )
   })
@@ -143,12 +131,10 @@ interface VirtualSortableRowProps {
   measureRef: (node: Element | null) => void
   rowProps: SessionRowCommonProps
   session: SessionInfo
-  showSourceBadge?: boolean
-  showDeviceBadge?: boolean
   presence?: SessionPresenceRecord
 }
 
-function VirtualSortableRow({ index, measureRef, rowProps, session, showSourceBadge, showDeviceBadge, presence }: VirtualSortableRowProps) {
+function VirtualSortableRow({ index, measureRef, rowProps, session, presence }: VirtualSortableRowProps) {
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id: session.id })
 
   // Merge dnd-kit's setNodeRef with the virtualizer's measureElement so
@@ -172,8 +158,6 @@ function VirtualSortableRow({ index, measureRef, rowProps, session, showSourceBa
       ref={refMerged}
       reorderable
       session={session}
-      showSourceBadge={showSourceBadge}
-      showDeviceBadge={showDeviceBadge}
       style={{ transform: CSS.Transform.toString(transform), transition }}
     />
   )
