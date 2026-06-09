@@ -231,7 +231,7 @@ def _format_beast_namespace_result(parse: Any) -> dict[str, str]:
             f"class={command_class}\n"
             f"This command is recognised as {detail}. No state was changed."
         )
-        return {"decision": "handled", "message": message}
+        return {"decision": "handled", "message": message, "is_read_only": True}
 
     if bool(_parse_value(parse, "is_proposal_only", False)):
         message = (
