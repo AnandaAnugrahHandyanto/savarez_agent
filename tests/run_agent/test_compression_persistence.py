@@ -100,8 +100,14 @@ class TestFlushAfterCompression:
                 f"Compression persistence bug: messages not written to SQLite."
             )
 
-    def test_flush_with_stale_history_loses_messages(self):
-        """Demonstrates the bug condition: stale conversation_history causes data loss."""
+    def test_flush_with_stale_history_after_compression_preserves_messages(self):
+        """A compression split invalidates the caller's old conversation_history offset.
+
+        The gateway passes the pre-compression history into run_conversation().
+        After _compress_context() rotates to a child session, that history
+        belongs to the parent.  The next DB flush must ignore it once so the
+        child receives the compressed summary and protected tail.
+        """
         from hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -114,23 +120,74 @@ class TestFlushAfterCompression:
             agent.session_id = "new-session"
             db.create_session(session_id="new-session", source="test")
             agent._last_flushed_db_idx = 0
+            agent._ignore_conversation_history_on_next_flush = True
 
             compressed = [
                 {"role": "user", "content": "summary"},
                 {"role": "assistant", "content": "continuing..."},
             ]
 
-            # Bug: passing a conversation_history longer than compressed messages
+            # Stale pre-compression history is longer than the child transcript.
             stale_history = [{"role": "user", "content": f"msg{i}"} for i in range(100)]
             agent._flush_messages_to_session_db(compressed, stale_history)
 
             rows = db.get_messages("new-session")
-            # With the stale history, flush_from = max(100, 0) = 100
-            # But compressed only has 2 entries → messages[100:] = empty
-            assert len(rows) == 0, (
-                "Expected 0 messages with stale conversation_history "
-                "(this test verifies the bug condition exists)"
+            assert len(rows) == 2, (
+                "Expected compressed child messages to be flushed even when "
+                "the caller supplied stale parent conversation_history."
             )
+            assert [row["content"] for row in rows] == ["summary", "continuing..."]
+            assert agent._ignore_conversation_history_on_next_flush is False
+
+    def test_stale_flush_cursor_is_clamped_after_external_transcript_rewrite(self):
+        """Cached agents must not skip turns after another path rewrites history.
+
+        Manual /compress, /retry, /undo, and hygiene compression can replace the
+        transcript outside the cached AIAgent instance.  If the old in-memory
+        _last_flushed_db_idx is larger than the freshly loaded message list,
+        max(start_idx, _last_flushed_db_idx) skips the current user turn and the
+        later assistant reply.  The gateway then sets skip_db=True because a
+        SessionDB exists, so the delivered assistant reply vanishes from the next
+        turn's conversation_history.
+        """
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = SessionDB(db_path=db_path)
+
+            agent = self._make_agent(db)
+            db.create_session(session_id="rewritten-session", source="test")
+            agent.session_id = "rewritten-session"
+
+            rewritten_history = [
+                {"role": "user", "content": "compacted summary"},
+                {"role": "assistant", "content": "tail reply"},
+            ]
+            db.replace_messages("rewritten-session", rewritten_history)
+
+            # Stale cursor from the pre-rewrite, much longer transcript.
+            agent._last_flushed_db_idx = 100
+
+            # Early turn-start persistence: history + the new user message.
+            early_messages = rewritten_history + [
+                {"role": "user", "content": "follow-up after rewrite"},
+            ]
+            agent._flush_messages_to_session_db(early_messages, rewritten_history)
+
+            # Final turn persistence: same history + user + delivered assistant.
+            final_messages = early_messages + [
+                {"role": "assistant", "content": "assistant reply after rewrite"},
+            ]
+            agent._flush_messages_to_session_db(final_messages, rewritten_history)
+
+            rows = db.get_messages("rewritten-session")
+            assert [row["content"] for row in rows] == [
+                "compacted summary",
+                "tail reply",
+                "follow-up after rewrite",
+                "assistant reply after rewrite",
+            ]
 
 
 # ---------------------------------------------------------------------------

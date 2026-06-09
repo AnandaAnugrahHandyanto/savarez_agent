@@ -3666,12 +3666,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # successful steer — the text already landed inside the run and
         # must NOT also be replayed as a next-turn user message.
         if not steered:
-            merge_pending_message_event(
-                adapter._pending_messages,
-                session_key,
-                event,
-                merge_text=event.message_type == MessageType.TEXT,
-            )
+            self._queue_or_replace_pending_event(session_key, event)
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
@@ -8629,6 +8624,73 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # _flush_messages_to_session_db(), so skip the DB write here
             # to prevent the duplicate-write bug (#860 / #42039).
             agent_persisted = self._session_db is not None
+            session_db_for_agent_persistence = self._session_db
+
+            def _message_content_for_db_compare(content: Any) -> Any:
+                if isinstance(content, list):
+                    parts = []
+                    for part in content:
+                        if not isinstance(part, dict):
+                            continue
+                        if part.get("type") == "text":
+                            parts.append(str(part.get("text", "")))
+                        elif part.get("type") in {"image", "image_url", "input_image"}:
+                            parts.append("[screenshot]")
+                    return "\n".join(parts) if parts else None
+                return content
+
+            def _agent_db_has_current_turn(expected_entries: list[dict]) -> bool:
+                if not agent_persisted or session_db_for_agent_persistence is None or not expected_entries:
+                    return agent_persisted
+                try:
+                    persisted = session_db_for_agent_persistence.get_messages(session_entry.session_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Session DB get_messages failed while verifying agent persistence "
+                        "for %s; gateway will mirror current turn to SQLite: %s",
+                        session_entry.session_id,
+                        exc,
+                    )
+                    return False
+                if not isinstance(persisted, list):
+                    # Unknown/mock DB implementation: preserve the historical
+                    # duplicate-write guard rather than guessing.
+                    return agent_persisted
+
+                expected = [
+                    {
+                        "role": entry.get("role"),
+                        "content": _message_content_for_db_compare(entry.get("content")),
+                    }
+                    for entry in expected_entries
+                    if entry.get("role") not in {"system", "session_meta"}
+                ]
+                if not expected:
+                    return agent_persisted
+                if len(persisted) < len(expected):
+                    logger.warning(
+                        "Agent session DB persistence missing current turn for %s "
+                        "(db_rows=%d expected_tail=%d); gateway will mirror to SQLite.",
+                        session_entry.session_id,
+                        len(persisted),
+                        len(expected),
+                    )
+                    return False
+
+                tail = persisted[-len(expected):]
+                tail_matches = all(
+                    stored.get("role") == want.get("role")
+                    and stored.get("content") == want.get("content")
+                    for stored, want in zip(tail, expected)
+                )
+                if not tail_matches:
+                    logger.warning(
+                        "Agent session DB persistence did not include current turn for %s; "
+                        "gateway will mirror to SQLite to prevent response loss.",
+                        session_entry.session_id,
+                    )
+                    return False
+                return True
 
             # Find only the NEW messages from this turn (skip history we loaded).
             # Use the filtered history length (history_offset) that was actually
@@ -8644,10 +8706,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
                 if event.message_id:
                     _user_entry["message_id"] = str(event.message_id)
+                _skip_db = _agent_db_has_current_turn([_user_entry])
                 self.session_store.append_to_transcript(
                     session_entry.session_id,
                     _user_entry,
-                    skip_db=agent_persisted,
+                    skip_db=_skip_db,
                 )
             else:
                 history_len = agent_result.get("history_offset", len(history))
@@ -8658,16 +8721,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
                     if event.message_id:
                         _user_entry["message_id"] = str(event.message_id)
+                    _entries = [_user_entry]
+                    if response:
+                        _entries.append({"role": "assistant", "content": response, "timestamp": ts})
+                    _skip_db = _agent_db_has_current_turn(_entries)
                     self.session_store.append_to_transcript(
                         session_entry.session_id,
                         _user_entry,
-                        skip_db=agent_persisted,
+                        skip_db=_skip_db,
                     )
-                    if response:
+                    if len(_entries) > 1:
                         self.session_store.append_to_transcript(
                             session_entry.session_id,
-                            {"role": "assistant", "content": response, "timestamp": ts},
-                            skip_db=agent_persisted,
+                            _entries[1],
+                            skip_db=_skip_db,
                         )
                 else:
                     # Attach the inbound platform message_id to the first user
@@ -8675,6 +8742,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # (e.g. Yuanbao QuoteContextMiddleware's transcript fallback)
                     # can find earlier @bot messages by their original message_id.
                     _user_msg_id_attached = False
+                    _entries = []
                     for msg in new_messages:
                         # Skip system messages (they're rebuilt each run)
                         if msg.get("role") == "system":
@@ -8689,9 +8757,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         ):
                             entry["message_id"] = str(event.message_id)
                             _user_msg_id_attached = True
+                        _entries.append(entry)
+
+                    _skip_db = _agent_db_has_current_turn(_entries)
+                    for entry in _entries:
                         self.session_store.append_to_transcript(
                             session_entry.session_id, entry,
-                            skip_db=agent_persisted,
+                            skip_db=_skip_db,
                         )
             
             # Token counts and model are now persisted by the agent directly.
