@@ -1787,15 +1787,19 @@ class FeishuAdapter(BasePlatformAdapter):
         last_response = None
 
         try:
-            for chunk in chunks:
+            for chunk_index, chunk in enumerate(chunks):
                 msg_type, payload = self._build_outbound_payload(chunk)
+                chunk_metadata = metadata
+                if metadata and metadata.get("delivery_uuid") and len(chunks) > 1:
+                    chunk_metadata = dict(metadata)
+                    chunk_metadata["delivery_uuid"] = f"{metadata['delivery_uuid']}-{chunk_index}"
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type=msg_type,
                         payload=payload,
                         reply_to=reply_to,
-                        metadata=metadata,
+                        metadata=chunk_metadata,
                     )
                 except Exception as exc:
                     if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
@@ -1806,7 +1810,7 @@ class FeishuAdapter(BasePlatformAdapter):
                         msg_type="text",
                         payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
                         reply_to=reply_to,
-                        metadata=metadata,
+                        metadata=chunk_metadata,
                     )
                 if (
                     msg_type == "post"
@@ -1819,7 +1823,7 @@ class FeishuAdapter(BasePlatformAdapter):
                         msg_type="text",
                         payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
                         reply_to=reply_to,
-                        metadata=metadata,
+                        metadata=chunk_metadata,
                     )
                 last_response = response
 
@@ -4459,6 +4463,7 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
         effective_reply_to = reply_to
+        delivery_uuid = str((metadata or {}).get("delivery_uuid") or uuid.uuid4())
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
         reply_in_thread = bool((metadata or {}).get("thread_id"))
@@ -4467,7 +4472,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 content=payload,
                 msg_type=msg_type,
                 reply_in_thread=reply_in_thread,
-                uuid_value=str(uuid.uuid4()),
+                uuid_value=delivery_uuid,
             )
             request = self._build_reply_message_request(effective_reply_to, body)
             return await asyncio.to_thread(self._client.im.v1.message.reply, request)
@@ -4481,7 +4486,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 receive_id=_thread_id,
                 msg_type=msg_type,
                 content=payload,
-                uuid_value=str(uuid.uuid4()),
+                uuid_value=delivery_uuid,
             )
             request = self._build_create_message_request("thread_id", body)
         else:
@@ -4497,7 +4502,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 receive_id=receive_id,
                 msg_type=msg_type,
                 content=payload,
-                uuid_value=str(uuid.uuid4()),
+                uuid_value=delivery_uuid,
             )
             request = self._build_create_message_request(receive_id_type, body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)

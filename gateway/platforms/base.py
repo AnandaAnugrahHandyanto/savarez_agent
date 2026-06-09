@@ -4057,7 +4057,7 @@ class BasePlatformAdapter(ABC):
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
-        _keep_typing_kwargs = {"metadata": _thread_metadata}
+        _keep_typing_kwargs: dict[str, Any] = {"metadata": _thread_metadata}
         try:
             _keep_typing_sig = inspect.signature(self._keep_typing)
         except (TypeError, ValueError):
@@ -4233,18 +4233,71 @@ class BasePlatformAdapter(ABC):
                     # response triggers a push notification.
                     # Clone to avoid mutating the metadata shared with the
                     # typing-indicator task (which must remain unmarked).
+                    delivery_uuid = str(uuid.uuid4())
                     if _thread_metadata is not None:
                         _thread_metadata = dict(_thread_metadata)
                         _thread_metadata["notify"] = True
+                        _thread_metadata["delivery_uuid"] = delivery_uuid
                     else:
-                        _thread_metadata = {"notify": True}
-                    result = await self._send_with_retry(
-                        chat_id=event.source.chat_id,
-                        content=text_content,
-                        reply_to=_reply_anchor,
-                        metadata=_thread_metadata,
+                        _thread_metadata = {"notify": True, "delivery_uuid": delivery_uuid}
+                    send_task = asyncio.create_task(
+                        self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=text_content,
+                            reply_to=_reply_anchor,
+                            metadata=_thread_metadata,
+                        )
                     )
+                    try:
+                        result = await asyncio.shield(send_task)
+                    except asyncio.CancelledError:
+                        drain_timeout = _float_env("HERMES_GATEWAY_SEND_CANCEL_DRAIN_SECONDS", 5.0)
+                        logger.warning(
+                            "[%s] Final response send cancelled while in flight for %s; "
+                            "waiting up to %.1fs for delivery result delivery_uuid=%s",
+                            self.name,
+                            event.source.chat_id,
+                            drain_timeout,
+                            delivery_uuid,
+                        )
+                        try:
+                            result = await asyncio.wait_for(asyncio.shield(send_task), timeout=drain_timeout)
+                        except asyncio.TimeoutError:
+                            logger.error(
+                                "[%s] Final response delivery result unavailable after cancellation "
+                                "for %s delivery_uuid=%s",
+                                self.name,
+                                event.source.chat_id,
+                                delivery_uuid,
+                            )
+                            raise
                     _record_delivery(result)
+                    if getattr(result, "success", False):
+                        message_id = getattr(result, "message_id", None)
+                        if self.platform == Platform.FEISHU and not message_id:
+                            logger.warning(
+                                "[%s] Feishu response send returned success without message_id "
+                                "chat_id=%s delivery_uuid=%s",
+                                self.name,
+                                event.source.chat_id,
+                                delivery_uuid,
+                            )
+                        else:
+                            logger.info(
+                                "[%s] Response sent to %s message_id=%s delivery_uuid=%s",
+                                self.name,
+                                event.source.chat_id,
+                                message_id or "<none>",
+                                delivery_uuid,
+                            )
+                    else:
+                        logger.error(
+                            "[%s] Response send failed to %s delivery_uuid=%s: %s",
+                            self.name,
+                            event.source.chat_id,
+                            delivery_uuid,
+                            getattr(result, "error", None) or "unknown error",
+                        )
 
                     # Schedule auto-deletion of system-notice replies.
                     # Detached so the handler returns immediately; errors
