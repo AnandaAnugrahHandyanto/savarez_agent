@@ -1259,6 +1259,10 @@ def init_agent(
     agent._compression_min_threshold = float(
         _compression_cfg.get("min_threshold", 0.0)
     )
+    # Enforce min_threshold floor — prevents model overrides or stale cached
+    # values from lowering the threshold below the configured minimum.
+    if agent._compression_min_threshold > 0:
+        compression_threshold = max(compression_threshold, agent._compression_min_threshold)
     # protect_first_n is the number of non-system messages to protect at
     # the head, in addition to the system prompt (which is always
     # implicitly protected by the compressor).  Floor at 0 — a value of
