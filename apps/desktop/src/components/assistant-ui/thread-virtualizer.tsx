@@ -1,4 +1,4 @@
-import { ThreadPrimitive, useAuiEvent, useAuiState } from '@assistant-ui/react'
+import { ThreadPrimitive, useAuiState } from '@assistant-ui/react'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
 import {
   type ComponentProps,
@@ -77,8 +77,6 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
     s.thread.messages.map((message, index) => `${index}:${message.id}:${message.role}`).join('\n')
   )
 
-  const isRunning = useAuiState(s => s.thread.isRunning)
-
   const groups = useMemo(() => buildGroups(messageSignature), [messageSignature])
   const renderEmpty = groups.length === 0 && Boolean(emptyPlaceholder)
   const scrollerRef = useRef<HTMLDivElement | null>(null)
@@ -125,7 +123,6 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
   useThreadScrollAnchor({
     enabled: !renderEmpty,
     groupCount: groups.length,
-    isRunning,
     scrollerRef,
     sessionKey: sessionKey ?? null,
     stickyBottomRef,
@@ -221,7 +218,6 @@ function scrollElementToBottom(el: HTMLDivElement) {
 interface ScrollAnchorOptions {
   enabled: boolean
   groupCount: number
-  isRunning: boolean
   scrollerRef: React.RefObject<HTMLDivElement | null>
   sessionKey: string | null
   stickyBottomRef: React.MutableRefObject<boolean>
@@ -231,7 +227,6 @@ interface ScrollAnchorOptions {
 function useThreadScrollAnchor({
   enabled,
   groupCount,
-  isRunning,
   scrollerRef,
   sessionKey,
   stickyBottomRef,
@@ -433,12 +428,15 @@ function useThreadScrollAnchor({
     }
 
     if (groupCount > prevGroupCountForLayoutRef.current && stickyBottomRef.current) {
-      // Defer to rAF so that browser scroll/wheel events from the current
-      // frame are processed first.  Without this deferral, a trackpad
-      // scroll-up during streaming can race with this effect: the wheel
-      // event hasn't fired yet so stickyBottomRef is still true, and the
-      // immediate pinToBottom() would snap the viewport back to bottom
-      // against the user's intent.
+      // Pin immediately so a freshly submitted turn lands at its final bottom
+      // position in the same commit. Without this synchronous pin, the
+      // runStart jump can leave the viewport parked at an estimated midpoint
+      // until the next frame, which is visible as a brief upward jump.
+      pinToBottom()
+
+      // Re-pin on the next frame after layout settles. The second pin catches
+      // follow-up measurements from the just-mounted turn without reviving
+      // streaming auto-follow.
       requestAnimationFrame(() => {
         if (stickyBottomRef.current) {
           pinToBottom()
@@ -456,10 +454,4 @@ function useThreadScrollAnchor({
   // though the user is reading earlier content — the opposite of what's
   // wanted. The one-time submit / new-turn jump already covers landing a
   // fresh message in view.
-  const prevIsRunningForLayoutRef = useRef(isRunning)
-  useLayoutEffect(() => {
-    prevIsRunningForLayoutRef.current = isRunning
-  }, [isRunning])
-
-  useAuiEvent('thread.runStart', jumpToBottom)
 }
