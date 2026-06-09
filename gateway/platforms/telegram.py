@@ -5104,8 +5104,11 @@ class TelegramAdapter(BasePlatformAdapter):
         mentioning the bot (``@botname /command``), both of which are
         recognised as mentions by :meth:`_message_mentions_bot`.
         """
-        if not self._is_group_chat(message):
-            # Apply TELEGRAM_ALLOWED_USERS to DMs (wildcard '*' = allow all)
+        chat = getattr(message, "chat", None)
+        chat_type = str(getattr(chat, "type", "")).split(".")[-1].lower() if chat else ""
+
+        # Apply TELEGRAM_ALLOWED_USERS only to private DMs, not channel posts
+        if chat_type == "private":
             from_user = getattr(message, "from_user", None)
             if from_user is None:
                 logger.debug("[Telegram] DM with no from_user; rejecting (fail-closed)")
@@ -5117,6 +5120,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 if "*" not in allowed_ids and user_id_str not in allowed_ids:
                     logger.debug("[Telegram] DM user %s not in TELEGRAM_ALLOWED_USERS; rejecting", user_id_str)
                     return False
+            return True
+
+        if not self._is_group_chat(message):
             return True
 
         thread_id = getattr(message, "message_thread_id", None)
