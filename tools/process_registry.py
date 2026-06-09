@@ -58,6 +58,7 @@ CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # Keep finished processes for 30 minutes
 MAX_PROCESSES = 64              # Max concurrent tracked processes (LRU pruning)
+REDACTION_CONTEXT_CHARS = 8192  # Extra raw context for secrets split near tail boundaries
 
 # Watch pattern rate limiting — PER SESSION.
 # Hard rule: at most ONE watch-match notification every WATCH_MIN_INTERVAL_SECONDS.
@@ -84,6 +85,38 @@ def format_uptime_short(seconds: int) -> str:
         return f"{mins}m {secs}s"
     hours, mins = divmod(mins, 60)
     return f"{hours}h {mins}m"
+
+
+def _redact_process_output(text: str) -> str:
+    """Strip terminal escapes and redact secrets before exposing process output."""
+    if not text:
+        return ""
+    from agent.redact import redact_sensitive_text
+    from tools.ansi_strip import strip_ansi
+
+    return redact_sensitive_text(strip_ansi(text))
+
+
+def _tail_redacted_process_output(text: str, chars: int) -> str:
+    """Redact a full process buffer before taking a tail slice."""
+    redacted = _redact_process_output(text)
+    return redacted[-chars:] if redacted else ""
+
+
+def _store_process_output(session: "ProcessSession", text: str, *, append: bool) -> None:
+    """Store raw process output in the rolling buffer.
+
+    User-visible process output is redacted before tailing/pagination. The
+    internal raw buffer keeps a little extra context so secrets split across
+    reader chunks or near display-tail boundaries can still be matched intact.
+    """
+    if append:
+        session.output_buffer += text
+    else:
+        session.output_buffer = text
+    max_buffer_chars = session.max_output_chars + REDACTION_CONTEXT_CHARS
+    if len(session.output_buffer) > max_buffer_chars:
+        session.output_buffer = session.output_buffer[-max_buffer_chars:]
 
 
 @dataclass
@@ -291,8 +324,9 @@ class ProcessRegistry:
                 })
             return
 
-        # Trim matched output to a reasonable size
-        output = "\n".join(matched_lines[:20])
+        # Trim matched output to a reasonable size. Redact before truncating so
+        # watch notifications cannot split a secret across the cutoff.
+        output = _redact_process_output("\n".join(matched_lines[:20]))
         if len(output) > 2000:
             output = output[:2000] + "\n...(truncated)"
 
@@ -472,6 +506,7 @@ class ProcessRegistry:
                     text=True,
                     timeout=10,
                     creationflags=windows_hide_flags(),
+                    stdin=subprocess.DEVNULL,
                 )
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
                 try:
@@ -718,7 +753,7 @@ class ProcessRegistry:
                 session.exit_code = int(result.get("returncode", -1))
                 if session.exit_code == 0:
                     session.exit_code = -1
-                session.output_buffer = result.get("output", "").strip()
+                session.output_buffer = _redact_process_output(result.get("output", "").strip())
         except Exception as e:
             session.exited = True
             session.exit_code = -1
@@ -759,9 +794,7 @@ class ProcessRegistry:
                     chunk = self._clean_shell_noise(chunk)
                     first_chunk = False
                 with session._lock:
-                    session.output_buffer += chunk
-                    if len(session.output_buffer) > session.max_output_chars:
-                        session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                    _store_process_output(session, chunk, append=True)
                 self._check_watch_patterns(session, chunk)
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
@@ -794,9 +827,7 @@ class ProcessRegistry:
                     delta = new_output[prev_output_len:] if len(new_output) > prev_output_len else ""
                     prev_output_len = len(new_output)
                     with session._lock:
-                        session.output_buffer = new_output
-                        if len(session.output_buffer) > session.max_output_chars:
-                            session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                        _store_process_output(session, new_output, append=False)
                     if delta:
                         self._check_watch_patterns(session, delta)
 
@@ -839,9 +870,7 @@ class ProcessRegistry:
                         # ptyprocess returns bytes
                         text = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
                         with session._lock:
-                            session.output_buffer += text
-                            if len(session.output_buffer) > session.max_output_chars:
-                                session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                            _store_process_output(session, text, append=True)
                         self._check_watch_patterns(session, text)
                 except EOFError:
                     break
@@ -875,8 +904,7 @@ class ProcessRegistry:
         # this guard, kill_process() and the reader thread can both call
         # _move_to_finished(), producing duplicate [IMPORTANT: ...] messages.
         if was_running and session.notify_on_complete:
-            from tools.ansi_strip import strip_ansi
-            output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
+            output_tail = _tail_redacted_process_output(session.output_buffer, 2000)
             self.completion_queue.put({
                 "type": "completion",
                 "session_id": session.id,
@@ -978,9 +1006,7 @@ class ProcessRegistry:
 
         with session._lock:
             if drained:
-                session.output_buffer += drained
-                if len(session.output_buffer) > session.max_output_chars:
-                    session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                _store_process_output(session, drained, append=True)
             session.exited = True
             session.exit_code = rc
         logger.info(
@@ -992,8 +1018,6 @@ class ProcessRegistry:
 
     def poll(self, session_id: str) -> dict:
         """Check status and get new output for a background process."""
-        from tools.ansi_strip import strip_ansi
-
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
@@ -1003,7 +1027,7 @@ class ProcessRegistry:
         self._reconcile_local_exit(session)
 
         with session._lock:
-            output_preview = strip_ansi(session.output_buffer[-1000:]) if session.output_buffer else ""
+            output_preview = _tail_redacted_process_output(session.output_buffer, 1000)
 
         result = {
             "session_id": session.id,
@@ -1023,14 +1047,12 @@ class ProcessRegistry:
 
     def read_log(self, session_id: str, offset: int = 0, limit: int = 200) -> dict:
         """Read the full output log with optional pagination by lines."""
-        from tools.ansi_strip import strip_ansi
-
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
         with session._lock:
-            full_output = strip_ansi(session.output_buffer)
+            full_output = _redact_process_output(session.output_buffer)
 
         lines = full_output.splitlines()
         total_lines = len(lines)
@@ -1064,7 +1086,6 @@ class ProcessRegistry:
             dict with status ("exited", "timeout", "interrupted", "not_found")
             and output snapshot.
         """
-        from tools.ansi_strip import strip_ansi
         from tools.interrupt import is_interrupted as _is_interrupted
 
         try:
@@ -1101,7 +1122,7 @@ class ProcessRegistry:
                 result = {
                     "status": "exited",
                     "exit_code": session.exit_code,
-                    "output": strip_ansi(session.output_buffer[-2000:]),
+                    "output": _tail_redacted_process_output(session.output_buffer, 2000),
                 }
                 if timeout_note:
                     result["timeout_note"] = timeout_note
@@ -1110,7 +1131,7 @@ class ProcessRegistry:
             if _is_interrupted():
                 result = {
                     "status": "interrupted",
-                    "output": strip_ansi(session.output_buffer[-1000:]),
+                    "output": _tail_redacted_process_output(session.output_buffer, 1000),
                     "note": "User sent a new message -- wait interrupted",
                 }
                 if timeout_note:
@@ -1121,7 +1142,7 @@ class ProcessRegistry:
 
         result = {
             "status": "timeout",
-            "output": strip_ansi(session.output_buffer[-1000:]),
+            "output": _tail_redacted_process_output(session.output_buffer, 1000),
         }
         if timeout_note:
             result["timeout_note"] = timeout_note
@@ -1207,10 +1228,14 @@ class ProcessRegistry:
         if session.exited:
             return {"status": "already_exited", "error": "Process has already finished"}
 
-        # PTY mode -- write through pty handle (expects bytes)
+        # PTY mode -- write through pty handle.
         if hasattr(session, '_pty') and session._pty:
             try:
-                pty_data = data.encode("utf-8") if isinstance(data, str) else data
+                # pywinpty expects str on Windows; ptyprocess expects bytes on POSIX.
+                if _IS_WINDOWS:
+                    pty_data = data.decode("utf-8") if isinstance(data, bytes) else str(data)
+                else:
+                    pty_data = data.encode("utf-8") if isinstance(data, str) else data
                 session._pty.write(pty_data)
                 return {"status": "ok", "bytes_written": len(data)}
             except Exception as e:
@@ -1286,7 +1311,7 @@ class ProcessRegistry:
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(s.started_at)),
                 "uptime_seconds": int(time.time() - s.started_at),
                 "status": "exited" if s.exited else "running",
-                "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
+                "output_preview": _tail_redacted_process_output(s.output_buffer, 200),
             }
             if s.exited:
                 entry["exit_code"] = s.exit_code
