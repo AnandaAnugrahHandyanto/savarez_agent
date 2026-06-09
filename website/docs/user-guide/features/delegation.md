@@ -129,6 +129,70 @@ When you provide a `tasks` array, subagents run in **parallel** using a thread p
 
 Single-task delegation runs directly without thread pool overhead.
 
+## Result structure
+
+`delegate_task` returns a JSON envelope with a `results` array — one entry per task, in input order. Each entry is a flat dict with the following fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `task_index` | `int` | Position of this task in the input batch (0-indexed). Results are always sorted by this field regardless of completion order. |
+| `status` | `str` | One of `"completed"`, `"failed"`, `"interrupted"`, `"timeout"`. See below. |
+| `summary` | `str \| None` | The child's final output. Always non-null when `status="completed"`. May be `None` for any other status — the child either produced nothing usable, was cut off, or was killed before responding. **Do not treat `summary=None` as "the child never ran"** — check `status` and `api_calls` first. |
+| `error` | `str \| None` | Human-readable error description. Set for `failed`/`timeout`/`interrupted`; `None` for `completed`. |
+| `exit_reason` | `str` | The finer-grained termination cause. One of `"completed"`, `"max_iterations"`, `"timeout"`, `"error"`, `"interrupted"`. |
+| `api_calls` | `int` | Number of LLM API calls the child made before returning. Useful for diagnosing a 0-call timeout (provider/auth failure) vs. a 50-call timeout (slow reasoning or stuck network). |
+| `duration_seconds` | `float` | Wall-clock time the child ran, in seconds (rounded to 2 decimals). |
+| `diagnostic_path` | `str \| None` | Absolute path to a diagnostic dump file. Set only when a subagent timed out with **zero** API calls (see the tip under [Child Timeout](#child-timeout)). `None` for all other cases. |
+| `tokens` | `dict` | `{"input": int, "output": int}` — token counts billed to the child's session. |
+| `tool_trace` | `list[dict]` | Per-tool-call entries with `tool` name, `args_bytes`, `result_bytes`, and `status` (`"ok"` or `"error"`). Useful for post-hoc review. |
+| `model` | `str \| None` | The model the child actually used (after `delegation.model` override resolved). |
+| `stale_paths` | `list[str]` | Files the child modified that the parent had previously read — re-read them before editing. Only present when relevant. |
+
+### `status` field values
+
+| Status | Meaning | `summary` populated? |
+|--------|---------|---------------------|
+| `"completed"` | Child produced a final response within its iteration budget. | Yes — always non-null. |
+| `"failed"` | Child ran but did not produce a usable final response (e.g. hit `max_iterations` without converging, or returned an empty result). | Often `None`. |
+| `"interrupted"` | Parent was interrupted (new message, `/stop`, `/new`) and the child was cancelled. | `None` — work was discarded. |
+| `"timeout"` | Child exceeded `delegation.child_timeout_seconds` wall-clock without making progress. | `None`. |
+
+### `exit_reason` values
+
+- `"completed"` — child finished naturally with a final response.
+- `"max_iterations"` — child hit `delegation.max_iterations` (default 50) without producing a final response. `status` will be `"failed"` in this case.
+- `"timeout"` — child hit `child_timeout_seconds`. `status` will be `"timeout"`.
+- `"error"` — child raised an unexpected exception. `status` will be `"timeout"` (if the executor caught a timeout) or `"failed"` (if the child itself errored).
+- `"interrupted"` — parent was interrupted. `status` will be `"interrupted"`.
+
+### Example: reading a batch result
+
+```python
+import json
+result = delegate_task(tasks=[...])
+envelope = json.loads(result)
+for entry in envelope["results"]:
+    if entry["status"] == "completed":
+        print(f"Task {entry['task_index']}: {entry['summary']}")
+    else:
+        # Don't assume summary is None means the child didn't run.
+        # Check api_calls and exit_reason to understand what happened.
+        print(
+            f"Task {entry['task_index']} ended with "
+            f"status={entry['status']} exit_reason={entry['exit_reason']} "
+            f"after {entry['api_calls']} API calls "
+            f"({entry['duration_seconds']}s)"
+        )
+        if entry.get("error"):
+            print(f"  error: {entry['error']}")
+        if entry.get("diagnostic_path"):
+            print(f"  diagnostic: {entry['diagnostic_path']}")
+```
+
+:::tip Common pitfall
+A parent agent often sees `summary is None` after a long-running child and concludes "the child never ran" — but on `status="interrupted"`, `"timeout"`, or `"failed"` the summary is legitimately absent even though the child may have made many API calls, modified files, or spent real cost. Always branch on `status` before reading `summary`.
+:::
+
 ## Model Override
 
 You can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
