@@ -32,6 +32,7 @@ import logging
 import mimetypes
 import os
 import re
+import stat
 import time
 from dataclasses import dataclass
 
@@ -935,15 +936,45 @@ class MatrixAdapter(BasePlatformAdapter):
                     if own_xsign is None:
                         try:
                             new_recovery_key = await olm.generate_recovery_key()
-                            logger.warning(
-                                "Matrix: bootstrapped cross-signing for %s. "
-                                "SAVE THIS RECOVERY KEY — set "
-                                "MATRIX_RECOVERY_KEY for future restarts so "
-                                "the bot can re-sign its device after key "
-                                "rotation: %s",
-                                client.mxid,
-                                new_recovery_key,
-                            )
+                            # Write the key to a one-time secret file instead
+                            # of logging it — recovery keys are account-level
+                            # cryptographic material that should not persist in
+                            # ordinary logs, diagnostics, or support bundles.
+                            try:
+                                secret_file = _STORE_DIR / ".recovery_key_once"
+                                secret_file.parent.mkdir(parents=True, exist_ok=True)
+                                secret_file.write_text(new_recovery_key)
+                                secret_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+                            except OSError as write_exc:
+                                logger.warning(
+                                    "Matrix: could not write recovery key to "
+                                    "file (%s). Printing to stderr as fallback.",
+                                    write_exc,
+                                )
+                                import sys
+                                print(
+                                    f"\nMatrix RECOVERY KEY for {client.mxid}: "
+                                    f"{new_recovery_key}\nSet MATRIX_RECOVERY_KEY "
+                                    f"and delete this output from your terminal.\n",
+                                    file=sys.stderr,
+                                )
+                            else:
+                                logger.warning(
+                                    "Matrix: bootstrapped cross-signing for %s. "
+                                    "Recovery key written to %s — store it as "
+                                    "MATRIX_RECOVERY_KEY, then delete the file. "
+                                    "The raw key is not printed in logs.",
+                                    client.mxid,
+                                    secret_file,
+                                )
+                            # Escape hatch: print to stderr if explicitly opted in
+                            if os.environ.get("HERMES_PRINT_GENERATED_SECRETS_ONCE"):
+                                import sys
+                                print(
+                                    f"\nMatrix RECOVERY KEY for {client.mxid}: "
+                                    f"{new_recovery_key}\n",
+                                    file=sys.stderr,
+                                )
                         except Exception as exc:
                             logger.warning(
                                 "Matrix: cross-signing bootstrap failed "
