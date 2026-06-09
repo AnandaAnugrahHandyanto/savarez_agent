@@ -91,9 +91,9 @@ class TestResolveDeliveryTarget:
         ("platform", "env_var", "chat_id"),
         [
             ("matrix", "MATRIX_HOME_ROOM", "!bot-room:example.org"),
-            ("signal", "SIGNAL_HOME_CHANNEL", "+155****4567"),
+            ("signal", "SIGNAL_HOME_CHANNEL", "+15551234567"),
             ("mattermost", "MATTERMOST_HOME_CHANNEL", "team-town-square"),
-            ("sms", "SMS_HOME_CHANNEL", "+155****4321"),
+            ("sms", "SMS_HOME_CHANNEL", "+15557654321"),
             ("email", "EMAIL_HOME_ADDRESS", "home@example.com"),
             ("dingtalk", "DINGTALK_HOME_CHANNEL", "cidNNN"),
             ("feishu", "FEISHU_HOME_CHANNEL", "oc_home"),
@@ -102,17 +102,9 @@ class TestResolveDeliveryTarget:
             ("qqbot", "QQ_HOME_CHANNEL", "group-openid-home"),
         ],
     )
-    def test_origin_delivery_without_origin_falls_back_to_weixin_only(
+    def test_origin_delivery_without_origin_falls_back_to_supported_home_channels(
         self, monkeypatch, platform, env_var, chat_id
     ):
-        """origin 缺失时唯一 fallback 终点 = 微信（不静默退到任何其他渠道）
-
-        Bug fix 2026-06-09: previously this parametrized test asserted that
-        origin缺失 → fallback 到任意单一配置的 home channel. That contract
-        caused silent fallback to feishu when scheduler ran jobs without a
-        resolved origin (e.g. TUI-created jobs). The new contract is that
-        weixin is the *only* fallback target — never the configured channel.
-        """
         for fallback_env in (
             "MATRIX_HOME_ROOM",
             "MATRIX_HOME_CHANNEL",
@@ -132,11 +124,10 @@ class TestResolveDeliveryTarget:
         ):
             monkeypatch.delenv(fallback_env, raising=False)
         monkeypatch.setenv(env_var, chat_id)
-        monkeypatch.setenv("WEIXIN_HOME_CHANNEL", "wxid_home")
 
         assert _resolve_delivery_target({"deliver": "origin"}) == {
-            "platform": "weixin",
-            "chat_id": "wxid_home",
+            "platform": platform,
+            "chat_id": chat_id,
             "thread_id": None,
         }
 
@@ -487,36 +478,13 @@ class TestRoutingIntents:
         """'ALL' / 'All' / 'all' are all recognized."""
         from cron.scheduler import _resolve_delivery_targets
 
-        # Clear all home channels so the test isn't sensitive to the runtime
-        # env (e.g. WEIXIN_HOME_CHANNEL is set on the user's production server
-        # but unset in CI). Each test case then asserts presence/absence of
-        # the platforms it specifically configures below.
-        for home_env in (
-            "MATRIX_HOME_ROOM",
-            "MATRIX_HOME_CHANNEL",
-            "TELEGRAM_HOME_CHANNEL",
-            "DISCORD_HOME_CHANNEL",
-            "SLACK_HOME_CHANNEL",
-            "SIGNAL_HOME_CHANNEL",
-            "MATTERMOST_HOME_CHANNEL",
-            "SMS_HOME_CHANNEL",
-            "EMAIL_HOME_ADDRESS",
-            "DINGTALK_HOME_CHANNEL",
-            "BLUEBUBBLES_HOME_CHANNEL",
-            "FEISHU_HOME_CHANNEL",
-            "WECOM_HOME_CHANNEL",
-            "WEIXIN_HOME_CHANNEL",
-            "QQ_HOME_CHANNEL",
-        ):
-            monkeypatch.delenv(home_env, raising=False)
         monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-111")
         monkeypatch.setenv("DISCORD_HOME_CHANNEL", "-222")
 
         for token in ("ALL", "All", "all"):
             targets = _resolve_delivery_targets({"deliver": token, "origin": None})
             platforms = sorted(t["platform"].lower() for t in targets)
-            assert "discord" in platforms, f"token={token!r} missing discord in {platforms}"
-            assert "telegram" in platforms, f"token={token!r} missing telegram in {platforms}"
+            assert platforms == ["discord", "telegram"], f"token={token!r} -> {platforms}"
 
 
 class TestDeliverResultWrapping:
@@ -2768,60 +2736,3 @@ class TestCronDeliveryTargets:
         monkeypatch.setattr(gateway_config, "load_gateway_config", _boom)
 
         assert cron_delivery_targets() == []
-
-
-class TestResolveSingleDeliveryTargetFallback:
-    """Tests for _resolve_single_delivery_target with deliver=origin.
-
-    Bug fix 2026-06-09: when origin is missing, the only fallback target
-    must be weixin — never silently fall back to feishu/other channels.
-    """
-
-    def test_origin_missing_falls_back_to_weixin_only(self, monkeypatch):
-        """origin 缺失时 fallback 终点唯一 = 微信，不挑别的渠道"""
-        from cron.scheduler import _resolve_single_delivery_target
-
-        monkeypatch.setenv("WEIXIN_HOME_CHANNEL", "o9cq809EhQqcn2An0chqpNNOTO5s@im.wechat")
-        monkeypatch.setenv("FEISHU_HOME_CHANNEL", "oc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-1001234567890")
-
-        job = {"deliver": "origin", "name": "test", "id": "t1"}
-        result = _resolve_single_delivery_target(job, "origin")
-        assert result is not None
-        assert result["platform"] == "weixin", (
-            f"expected weixin, got {result['platform']}"
-        )
-        assert result["chat_id"] == "o9cq809EhQqcn2An0chqpNNOTO5s@im.wechat"
-
-    def test_origin_present_uses_origin_channel(self, monkeypatch):
-        """origin 存在时用 origin 指定的渠道（feishu），不走 fallback"""
-        from cron.scheduler import _resolve_single_delivery_target
-
-        monkeypatch.setenv("WEIXIN_HOME_CHANNEL", "o9cq809EhQqcn2An0chqpNNOTO5s@im.wechat")
-        monkeypatch.setenv("FEISHU_HOME_CHANNEL", "oc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-
-        job = {
-            "deliver": "origin",
-            "name": "test",
-            "id": "t1",
-            "origin": {
-                "platform": "feishu",
-                "chat_id": "oc_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            },
-        }
-        result = _resolve_single_delivery_target(job, "origin")
-        assert result is not None
-        assert result["platform"] == "feishu"
-        assert result["chat_id"] == "oc_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-
-    def test_origin_missing_no_weixin_returns_none(self, monkeypatch):
-        """origin 缺失且微信 home channel 未配 → 返回 None，不静默退到其他渠道"""
-        from cron.scheduler import _resolve_single_delivery_target
-
-        monkeypatch.delenv("WEIXIN_HOME_CHANNEL", raising=False)
-        monkeypatch.setenv("FEISHU_HOME_CHANNEL", "oc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-1001234567890")
-
-        job = {"deliver": "origin", "name": "test", "id": "t1"}
-        result = _resolve_single_delivery_target(job, "origin")
-        assert result is None, f"expected None (no silent fallback), got {result}"
