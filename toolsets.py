@@ -90,7 +90,13 @@ TOOLSETS = {
         "tools": ["image_generate"],
         "includes": []
     },
-    
+
+    "ektro_mv": {
+        "description": "EKTRO-MV: turn one sentence into a finished music video (song + video + render) via the open-source ektro-mv CLI",
+        "tools": ["ektro_mv_create"],
+        "includes": []
+    },
+
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],
