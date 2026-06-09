@@ -133,6 +133,16 @@ async function markRead(space, message) {
 // `app.space(id)`).
 // ---------------------------------------------------------------------------
 const spaceCache = new Map();
+const _SPACE_CACHE_MAX = 1000;
+function setSpace(id, space) {
+  if (!id || !space) return;
+  // Bound the cache so a long-running process with many conversations can't
+  // grow it without limit (evict oldest, insertion-order).
+  if (spaceCache.size >= _SPACE_CACHE_MAX && !spaceCache.has(id)) {
+    spaceCache.delete(spaceCache.keys().next().value);
+  }
+  spaceCache.set(id, space);
+}
 
 const WEBHOOK_HOST = "127.0.0.1"; // sidecar -> adapter is always loopback
 const WEBHOOK_PORT = parseInt(process.env.PHOTON_WEBHOOK_PORT || "8788", 10);
@@ -144,7 +154,8 @@ const ALLOW = new Set(
     .map((s) => s.trim())
     .filter(Boolean)
 );
-const DOWNLOAD_DIR = path.join(os.tmpdir(), "photon-attachments");
+const DOWNLOAD_DIR =
+  process.env.PHOTON_DOWNLOAD_DIR || path.join(os.tmpdir(), "photon-attachments");
 // Cap inbound attachment downloads so a large video (downloaded over a slow
 // gRPC stream) can't block the message — and the agent's ack/reply — for
 // minutes. Oversized attachments forward as metadata-only with a note.
@@ -219,9 +230,13 @@ function pump() {
 // rename into place. Partial files are unlinked on any failure.
 async function downloadAttachmentToFile(content) {
   await fsp.mkdir(DOWNLOAD_DIR, { recursive: true });
-  const guid = content.id || crypto.randomUUID();
-  const safeName = String(content.name || guid).replace(/[^\w.\-]+/g, "_");
-  const finalPath = path.join(DOWNLOAD_DIR, `${guid}-${safeName}`);
+  // Sanitize BOTH the guid and the name before they reach the filesystem path —
+  // `content.id` is attacker-controlled, so an unsanitized `../` could escape
+  // DOWNLOAD_DIR via path.join. The allowlist regex keeps the path a basename.
+  const safeGuid =
+    String(content.id || "").replace(/[^\w.\-]+/g, "_") || crypto.randomUUID();
+  const safeName = String(content.name || safeGuid).replace(/[^\w.\-]+/g, "_");
+  const finalPath = path.join(DOWNLOAD_DIR, `${safeGuid}-${safeName}`);
   const partPath = `${finalPath}.part`;
   let received = 0;
   const ac = new AbortController();
@@ -232,6 +247,9 @@ async function downloadAttachmentToFile(content) {
     const nodeReadable = Readable.fromWeb(webStream);
     nodeReadable.on("data", (c) => {
       received += c.length;
+      // Streaming cap: a sender can under-declare `size`, so enforce the
+      // ceiling on actual bytes too — abort before exhausting disk.
+      if (received > MAX_ATTACH_BYTES) ac.abort();
     });
     await pipeline(nodeReadable, fs.createWriteStream(partPath), {
       signal: ac.signal,
@@ -352,8 +370,8 @@ async function handleInbound(space, message) {
 (async () => {
   try {
     for await (const [space, message] of app.messages) {
-      if (space?.id) spaceCache.set(space.id, space);
-      if (message?.space?.id && space) spaceCache.set(message.space.id, space);
+      if (space?.id) setSpace(space.id, space);
+      if (message?.space?.id && space) setSpace(message.space.id, space);
       schedule(() => handleInbound(space, message));
     }
   } catch (e) {
@@ -441,7 +459,7 @@ async function resolveSpace(spaceId) {
   const dm = spaceId.match(/;-;(\+\d+)/);
   if (dm) {
     const space = await provider.space(await provider.user({ phone: dm[1] }));
-    spaceCache.set(spaceId, space);
+    setSpace(spaceId, space);
     return space;
   }
   throw new Error(`unable to resolve space id ${spaceId}`);
@@ -599,7 +617,12 @@ const server = http.createServer(async (req, res) => {
       // `messages.setReaction(...)`; native tapbacks (❤️👍👎😂‼️❓) map to
       // Apple's tapback kinds, any other emoji is sent as an emoji reaction
       // (iOS 18+). `targetMessageId` is the guid of the message to react to.
-      const { spaceId, targetMessageId, reaction: emoji } = body || {};
+      const { spaceId, targetMessageId, reaction: rawEmoji } = body || {};
+      // Strip control characters and cap length on the reaction.
+      const emoji =
+        typeof rawEmoji === "string"
+          ? rawEmoji.replace(/\p{Cc}/gu, "").slice(0, 16)
+          : "";
       if (!spaceId || !targetMessageId || !emoji) {
         return badRequest(
           res,

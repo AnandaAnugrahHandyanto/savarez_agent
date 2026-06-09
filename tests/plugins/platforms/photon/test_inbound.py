@@ -130,6 +130,7 @@ async def test_dispatch_attachment_with_local_path(
     """When the sidecar has downloaded the bytes and forwarded ``localPath``,
     the adapter surfaces the real file via ``media_urls`` (vision-tool access)
     instead of the metadata-only marker."""
+    monkeypatch.setenv("PHOTON_DOWNLOAD_DIR", str(tmp_path))
     adapter = _make_adapter(monkeypatch)
     captured: List[MessageEvent] = []
 
@@ -240,6 +241,7 @@ async def test_inbound_audio_maps_to_voice(
 ) -> None:
     """A voice memo (audio/*) must map to VOICE so the gateway transcribes it
     (AUDIO is the never-STT bucket)."""
+    monkeypatch.setenv("PHOTON_DOWNLOAD_DIR", str(tmp_path))
     adapter = _make_adapter(monkeypatch)
     captured: List[MessageEvent] = []
 
@@ -292,6 +294,7 @@ async def test_inbound_caf_voice_transcoded_to_wav(
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
     )
 
+    monkeypatch.setenv("PHOTON_DOWNLOAD_DIR", str(tmp_path))
     adapter = _make_adapter(monkeypatch)
     captured: List[MessageEvent] = []
 
@@ -347,6 +350,7 @@ async def test_inbound_video_extracts_frames_and_audio(
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
     )
 
+    monkeypatch.setenv("PHOTON_DOWNLOAD_DIR", str(tmp_path))
     adapter = _make_adapter(monkeypatch)
     captured: List[MessageEvent] = []
 
@@ -417,6 +421,42 @@ async def test_inbound_too_large_attachment_note(
     assert event.media_urls == []
     assert "too large" in event.text.lower()
     assert "60 MB" in event.text
+
+
+@pytest.mark.asyncio
+async def test_inbound_rejects_out_of_scope_localpath(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A forged localPath outside the sidecar download dir must NOT be handed to
+    the agent (no arbitrary-file read via media_urls)."""
+    adapter = _make_adapter(monkeypatch)
+    captured: List[MessageEvent] = []
+
+    async def fake_handle(event: MessageEvent) -> None:
+        captured.append(event)
+
+    monkeypatch.setattr(adapter, "handle_message", fake_handle)
+
+    payload = {
+        "event": "messages",
+        "message": {
+            "id": "spc-msg-evil",
+            "timestamp": "2026-05-14T19:06:32.000Z",
+            "sender": {"id": "+15551234567"},
+            "space": {"id": "any;-;+15551234567"},
+            "content": {
+                "type": "attachment",
+                "name": "passwd",
+                "mimeType": "text/plain",
+                "size": 100,
+                "localPath": "/etc/passwd",
+            },
+        },
+    }
+    await adapter._dispatch_inbound(payload)
+    event = captured[0]
+    assert event.media_urls == []
+    assert "/etc/passwd" not in (event.text or "")
 
 
 def test_is_duplicate_window(monkeypatch: pytest.MonkeyPatch) -> None:

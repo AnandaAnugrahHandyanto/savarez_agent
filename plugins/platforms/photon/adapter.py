@@ -528,6 +528,12 @@ class PhotonAdapter(BasePlatformAdapter):
             name = content.get("name") or "(unnamed)"
             mime = (content.get("mimeType") or "").lower()
             local_path = content.get("localPath")
+            if local_path and not _is_within_download_dir(local_path):
+                # Defence-in-depth against a forged loopback webhook.
+                logger.warning(
+                    "[photon] rejecting out-of-scope localPath: %r", local_path
+                )
+                local_path = None
             mtype = _attachment_message_type(mime)
             # iMessage voice memos are .caf and often arrive WITHOUT an audio/*
             # mime (so the mime-only check above types them DOCUMENT, which the
@@ -1036,6 +1042,26 @@ def _attachment_message_type(mime: str) -> MessageType:
 
 _FFMPEG = shutil.which("ffmpeg")
 _FFPROBE = shutil.which("ffprobe")
+
+# The sidecar downloads inbound attachments into this directory (same default,
+# overridable via PHOTON_DOWNLOAD_DIR on both sides). The forwarded `localPath`
+# is only trusted if it resolves inside it — otherwise a forged loopback webhook
+# could point the agent at an arbitrary file (/etc/shadow, ~/.ssh/id_rsa, …) and
+# exfiltrate it via media_urls.
+def _download_dir() -> str:
+    return os.path.realpath(
+        os.environ.get("PHOTON_DOWNLOAD_DIR")
+        or os.path.join(tempfile.gettempdir(), "photon-attachments")
+    )
+
+
+def _is_within_download_dir(p: str) -> bool:
+    try:
+        base = _download_dir()
+        rp = os.path.realpath(p)
+        return rp == base or rp.startswith(base + os.sep)
+    except Exception:
+        return False
 
 # Voice-memo file extensions — iMessage records voice messages as CoreAudio
 # (.caf); these should always route to STT even when the mime is non-audio.
