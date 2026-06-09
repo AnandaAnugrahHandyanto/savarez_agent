@@ -38,6 +38,17 @@ declare global {
       requestMicrophoneAccess: () => Promise<boolean>
       readFileDataUrl: (filePath: string) => Promise<string>
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
+      gitFileDiff: (
+        path: string,
+        originalPath?: string
+      ) => Promise<{ diff: string; status: 'untracked' | 'modified' | 'staged' | ''; fileContent: string; headContent: string }>
+      gitStage: (cwd: string, filePath: string) => Promise<{ success: boolean; error?: string }>
+      gitUnstage: (cwd: string, filePath: string) => Promise<{ success: boolean; error?: string }>
+      gitDiscard: (cwd: string, filePath: string) => Promise<{ success: boolean; error?: string }>
+      gitCommit: (cwd: string, message: string) => Promise<{ success: boolean; error?: string; output?: string }>
+      gitLog: (cwd: string, count?: number) => Promise<HermesGitLogEntry[]>
+      gitStatus: (cwd: string) => Promise<HermesGitStatusResult>
+      writeFileText: (filePath: string, content: string) => Promise<{ success: boolean; error?: string }>
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
       writeClipboard: (text: string) => Promise<boolean>
       saveImageFromUrl: (url: string) => Promise<boolean>
@@ -60,6 +71,7 @@ declare global {
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
+      openPath: (path: string) => Promise<{ error?: string; ok: boolean }>
       terminal: {
         dispose: (id: string) => Promise<boolean>
         onData: (id: string, callback: (payload: string) => void) => () => void
@@ -105,6 +117,50 @@ export interface HermesTerminalSession {
 export interface HermesTerminalExit {
   code: number | null
   signal: string | null
+}
+
+export type HermesGitFileStatus =
+  | 'added'
+  | 'conflicted'
+  | 'copied'
+  | 'deleted'
+  | 'modified'
+  | 'renamed'
+  | 'type-changed'
+  | ''
+
+export interface HermesGitStatusEntry {
+  absolutePath: string
+  conflicted: boolean
+  index: HermesGitFileStatus
+  indexCode: string
+  originalPath?: string
+  path: string
+  untracked: boolean
+  worktree: HermesGitFileStatus
+  worktreeCode: string
+}
+
+export interface HermesGitStatusResult {
+  branch: {
+    ahead: number
+    behind: number
+    detached: boolean
+    name: string
+    oid: string
+    upstream: string
+  }
+  entries: HermesGitStatusEntry[]
+  error?: string
+  root: string | null
+}
+
+export interface HermesGitLogEntry {
+  oid: string
+  shortOid: string
+  message: string
+  author: string
+  timestamp: number
 }
 
 export interface DesktopVersionInfo {
@@ -371,6 +427,7 @@ export interface HermesNotification {
 export interface HermesPreviewTarget {
   binary?: boolean
   byteSize?: number
+  gitOriginalPath?: string
   kind: 'file' | 'url'
   label: string
   large?: boolean
@@ -378,7 +435,7 @@ export interface HermesPreviewTarget {
   mimeType?: string
   path?: string
   previewKind?: 'binary' | 'html' | 'image' | 'text'
-  renderMode?: 'preview' | 'source'
+  renderMode?: 'diff' | 'preview' | 'source'
   source: string
   url: string
 }

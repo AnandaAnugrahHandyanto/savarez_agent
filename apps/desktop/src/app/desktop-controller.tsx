@@ -14,6 +14,7 @@ import { useSkinCommand } from '@/themes/use-skin-command'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { workspaceKey } from '../lib/workspace-key'
 import { setCronFocusJobId, setCronJobs } from '../store/cron'
 import {
   $panesFlipped,
@@ -125,7 +126,9 @@ const CRON_POLL_INTERVAL_MS = 30_000
 // Cheap signature compare so the poll only swaps the atom (and re-renders the
 // sidebar) when the visible cron rows actually changed.
 function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
-  if (a.length !== b.length) {return false}
+  if (a.length !== b.length) {
+    return false
+  }
 
   return a.every((session, i) => session.id === b[i]?.id && session.title === b[i]?.title)
 }
@@ -352,7 +355,10 @@ export function DesktopController() {
 
     const keep = sessionsToKeep(key)
 
-    setSessions(prev => [...prev.filter(s => !inKey(s)), ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)])
+    setSessions(prev => [
+      ...prev.filter(s => !inKey(s)),
+      ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)
+    ])
 
     const total = result.profile_totals?.[key] ?? result.total ?? result.sessions.length
     setSessionProfileTotals(prev => ({ ...prev, [key]: Math.max(total, result.sessions.length) }))
@@ -613,19 +619,19 @@ export function DesktopController() {
     submitText,
     transcribeVoiceAudio
   } = usePromptActions({
-      activeSessionId,
-      activeSessionIdRef,
-      branchCurrentSession: branchInNewChat,
-      busyRef,
-      createBackendSessionForSend,
-      handleSkinCommand,
-      refreshSessions,
-      requestGateway,
-      selectedStoredSessionIdRef,
-      startFreshSessionDraft,
-      sttEnabled,
-      updateSessionState
-    })
+    activeSessionId,
+    activeSessionIdRef,
+    branchCurrentSession: branchInNewChat,
+    busyRef,
+    createBackendSessionForSend,
+    handleSkinCommand,
+    refreshSessions,
+    requestGateway,
+    selectedStoredSessionIdRef,
+    startFreshSessionDraft,
+    sttEnabled,
+    updateSessionState
+  })
 
   useGatewayBoot({
     handleGatewayEvent: handleDesktopGatewayEvent,
@@ -651,10 +657,14 @@ export function DesktopController() {
   // in the background (advancing next-run/state and creating runs), so poll the
   // job list on an interval (and on tab re-focus) while connected.
   useEffect(() => {
-    if (gatewayState !== 'open') {return}
+    if (gatewayState !== 'open') {
+      return
+    }
 
     const tick = () => {
-      if (document.visibilityState === 'visible') {void refreshCronJobs()}
+      if (document.visibilityState === 'visible') {
+        void refreshCronJobs()
+      }
     }
 
     const intervalId = window.setInterval(tick, CRON_POLL_INTERVAL_MS)
@@ -726,7 +736,11 @@ export function DesktopController() {
       <DesktopInstallOverlay />
       {/* One PTY-backed terminal mounted forever; <TerminalSlot /> placeholders
           decide where it shows. Toggling fullscreen never rebuilds the shell. */}
-      <PersistentTerminal cwd={currentCwd} onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
+      <PersistentTerminal
+        cwd={currentCwd}
+        onAddSelectionToChat={composer.addTerminalSelectionAttachment}
+        workspaceId={workspaceKey(currentCwd)}
+      />
       <DesktopOnboardingOverlay
         enabled={gatewayState === 'open'}
         onCompleted={() => {
