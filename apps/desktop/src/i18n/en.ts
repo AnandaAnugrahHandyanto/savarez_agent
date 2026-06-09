@@ -1517,7 +1517,9 @@ export const en: Translations = {
     loadingFiles: 'Loading files',
     terminalFocus: 'Focus terminal view',
     terminalSplit: 'Return to split view',
-    addToChat: 'Add to chat'
+    addToChat: 'Add to chat',
+    copyPath: 'Copy path',
+    copyRelativePath: 'Copy relative path'
   },
 
   preview: {

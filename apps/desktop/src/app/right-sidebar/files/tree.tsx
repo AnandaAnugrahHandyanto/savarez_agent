@@ -7,6 +7,7 @@ import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
+import { FileTreeContextMenu } from './file-tree-context-menu'
 import type { TreeNode } from './use-project-tree'
 
 const ROW_HEIGHT = 22
@@ -24,6 +25,12 @@ interface ProjectTreeProps {
   openState: Record<string, boolean>
 }
 
+export interface ContextMenuTarget {
+  nodeId: string
+  nodeName: string
+  isDirectory: boolean
+}
+
 export function ProjectTree({
   collapseNonce,
   cwd,
@@ -38,6 +45,7 @@ export function ProjectTree({
   const containerRef = useRef<HTMLDivElement | null>(null)
   const treeRef = useRef<TreeApi<TreeNode> | null>(null)
   const [size, setSize] = useState({ height: 0, width: 0 })
+  const [contextMenuTarget, setContextMenuTarget] = useState<ContextMenuTarget | null>(null)
 
   const syncTreeSize = useCallback(() => {
     const el = containerRef.current
@@ -85,36 +93,52 @@ export function ProjectTree({
     [onPreviewFile]
   )
 
+  const handleContextMenu = useCallback(
+    (nodeId: string, nodeName: string, isDirectory: boolean, event: React.MouseEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+      setContextMenuTarget({ nodeId, nodeName, isDirectory })
+    },
+    []
+  )
+
   return (
     <div className="min-h-0 flex-1 overflow-hidden" ref={containerRef}>
       {size.height > 0 && size.width > 0 ? (
-        <Tree<TreeNode>
-          childrenAccessor={node => (node?.isDirectory ? (node.children ?? []) : null)}
-          data={data}
-          disableDrag
-          disableDrop
-          disableEdit
-          height={size.height}
-          indent={INDENT}
-          initialOpenState={openState}
-          key={`${cwd}:${collapseNonce}`}
-          onActivate={handleActivate}
-          onToggle={handleToggle}
-          openByDefault={false}
-          padding={0}
-          ref={treeRef}
-          rowHeight={ROW_HEIGHT}
-          width={size.width}
-        >
-          {props => (
-            <ProjectTreeRow
-              {...props}
-              onAttachFile={onActivateFile}
-              onAttachFolder={onActivateFolder}
-              onPreviewFile={onPreviewFile}
-            />
-          )}
-        </Tree>
+        <FileTreeContextMenu cwd={cwd} target={contextMenuTarget} onOpenChange={open => {
+          if (!open) {
+            setContextMenuTarget(null)
+          }
+        }}>
+          <Tree<TreeNode>
+            childrenAccessor={node => (node?.isDirectory ? (node.children ?? []) : null)}
+            data={data}
+            disableDrag
+            disableDrop
+            disableEdit
+            height={size.height}
+            indent={INDENT}
+            initialOpenState={openState}
+            key={`${cwd}:${collapseNonce}`}
+            onActivate={handleActivate}
+            onToggle={handleToggle}
+            openByDefault={false}
+            padding={0}
+            ref={treeRef}
+            rowHeight={ROW_HEIGHT}
+            width={size.width}
+          >
+            {props => (
+              <ProjectTreeRow
+                {...props}
+                onActivateFile={onActivateFile}
+                onActivateFolder={onActivateFolder}
+                onContextMenu={handleContextMenu}
+                onPreviewFile={onPreviewFile}
+              />
+            )}
+          </Tree>
+        </FileTreeContextMenu>
       ) : (
         <TreeSizingState />
       )}
@@ -131,13 +155,15 @@ function TreeSizingState() {
 function ProjectTreeRow({
   dragHandle,
   node,
-  onAttachFile,
-  onAttachFolder,
+  onActivateFile,
+  onActivateFolder,
+  onContextMenu,
   onPreviewFile,
   style
 }: NodeRendererProps<TreeNode> & {
-  onAttachFile: (path: string) => void
-  onAttachFolder: (path: string) => void
+  onActivateFile: (path: string) => void
+  onActivateFolder: (path: string) => void
+  onContextMenu: (nodeId: string, nodeName: string, isDirectory: boolean, event: React.MouseEvent) => void
   onPreviewFile?: (path: string) => void
 }) {
   if (!node.data) {
@@ -165,7 +191,7 @@ function ProjectTreeRow({
         }
 
         if (event.shiftKey) {
-          ;(isFolder ? onAttachFolder : onAttachFile)(node.data.id)
+          ;(isFolder ? onActivateFolder : onActivateFile)(node.data.id)
 
           return
         }
@@ -175,6 +201,13 @@ function ProjectTreeRow({
         } else {
           node.select()
         }
+      }}
+      onContextMenu={event => {
+        if (isPlaceholder || !node.data) {
+          return
+        }
+
+        onContextMenu(node.data.id, node.data.name, node.data.isDirectory, event)
       }}
       onDoubleClick={event => {
         event.stopPropagation()
