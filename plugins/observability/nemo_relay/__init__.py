@@ -833,6 +833,8 @@ def _value(obj: Any, key: str, default: Any = None) -> Any:
 
 
 def _original_downstream_error(exc: Exception) -> BaseException:
+    # Hermes wraps downstream execution failures in a local/private exception
+    # class, so detect the wrapper by shape instead of importing it here.
     original = getattr(exc, "original", None)
     if exc.__class__.__name__ == "_DownstreamExecutionError" and isinstance(original, BaseException):
         return original
