@@ -262,7 +262,8 @@ class TestBuildSkillsSystemPrompt:
         )
         result = build_skills_system_prompt()
         assert "python-debug" in result
-        assert "Debug Python scripts" in result
+        # Names-only mode: descriptions are NOT emitted to avoid OAuth Max 400
+        assert "Debug Python scripts" not in result
         assert "available_skills" in result
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
@@ -370,7 +371,8 @@ class TestBuildSkillsSystemPrompt:
             result = build_skills_system_prompt()
 
         assert "imessage" in result
-        assert "Send iMessages" in result
+        # Names-only mode: descriptions are NOT emitted to avoid OAuth Max 400
+        assert "Send iMessages" not in result
 
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):
         """Skills in the user's disabled list should not appear in the system prompt."""
@@ -1277,6 +1279,124 @@ class TestBuildSkillsSystemPromptConditional:
             available_toolsets=set(),
         )
         assert "nested-null" in result
+
+
+class TestSkillsNamesOnlyMode:
+    """Tests for the names-only skills catalog mode.
+
+    Anthropic OAuth Max 400s when skill descriptions are included in the
+    system prompt.  The default is names-only; a config flag re-enables
+    descriptions for providers that support longer prompts.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
+    def _make_skill(self, tmp_path, category, name, desc):
+        skill_dir = tmp_path / "skills" / category / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {desc}\n---\n"
+        )
+
+    def test_default_names_only(self, monkeypatch, tmp_path):
+        """By default, descriptions are NOT emitted."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skill(tmp_path, "coding", "python-lint", "Lint Python code")
+        result = build_skills_system_prompt()
+        assert "- python-lint" in result
+        assert "Lint Python code" not in result
+
+    def test_config_reenables_descriptions(self, monkeypatch, tmp_path):
+        """skills.include_descriptions_in_prompt: true re-enables descriptions."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skill(tmp_path, "coding", "python-lint", "Lint Python code")
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  include_descriptions_in_prompt: true\n"
+        )
+        result = build_skills_system_prompt()
+        assert "- python-lint: Lint Python code" in result
+
+    def test_config_false_explicit_names_only(self, monkeypatch, tmp_path):
+        """Explicit false also produces names-only."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skill(tmp_path, "coding", "python-lint", "Lint Python code")
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  include_descriptions_in_prompt: false\n"
+        )
+        result = build_skills_system_prompt()
+        assert "- python-lint" in result
+        assert "Lint Python code" not in result
+
+    def test_empty_description_always_names_only(self, monkeypatch, tmp_path):
+        """Even with config true, empty descriptions produce names-only."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skill(tmp_path, "coding", "bare-skill", "")
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  include_descriptions_in_prompt: true\n"
+        )
+        result = build_skills_system_prompt()
+        assert "- bare-skill" in result
+        assert "- bare-skill:" not in result
+
+    def test_multiple_categories_names_only(self, monkeypatch, tmp_path):
+        """All categories use names-only mode."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skill(tmp_path, "coding", "py-lint", "Lint Python")
+        self._make_skill(tmp_path, "search", "web-find", "Find on web")
+        result = build_skills_system_prompt()
+        assert "- py-lint" in result
+        assert "- web-find" in result
+        assert "Lint Python" not in result
+        assert "Find on web" not in result
+
+    def test_category_descriptions_always_included(self, monkeypatch, tmp_path):
+        """Category-level descriptions are always included (not affected by names-only)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cat_dir = tmp_path / "skills" / "coding"
+        cat_dir.mkdir(parents=True)
+        (cat_dir / "DESCRIPTION.md").write_text(
+            "---\ndescription: Code quality tools\n---\n"
+        )
+        self._make_skill(tmp_path, "coding", "py-lint", "Lint Python")
+        result = build_skills_system_prompt()
+        assert "coding: Code quality tools" in result
+        assert "- py-lint" in result
+        assert "Lint Python" not in result
+
+    def test_names_only_log_message(self, monkeypatch, tmp_path, caplog):
+        """Debug log is emitted when descriptions are omitted."""
+        import logging
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skill(tmp_path, "coding", "py-lint", "Lint Python")
+        with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
+            build_skills_system_prompt()
+        assert "names-only mode" in caplog.text
+
+    def test_no_log_when_descriptions_enabled(self, monkeypatch, tmp_path, caplog):
+        """No names-only log when descriptions are re-enabled."""
+        import logging
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skill(tmp_path, "coding", "py-lint", "Lint Python")
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  include_descriptions_in_prompt: true\n"
+        )
+        with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
+            build_skills_system_prompt()
+        assert "names-only mode" not in caplog.text
+
+    def test_config_missing_file_graceful(self, monkeypatch, tmp_path):
+        """Missing config.yaml defaults to names-only (no crash)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skill(tmp_path, "coding", "py-lint", "Lint Python")
+        # No config.yaml written
+        result = build_skills_system_prompt()
+        assert "- py-lint" in result
+        assert "Lint Python" not in result
 
 
 # =========================================================================
