@@ -189,8 +189,8 @@ export function SidebarSessionRow({
                 'self-center'
               )}
             >
-            <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
-          </span>
+              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
+            </span>
           )}
           <div className="min-w-0 flex-1">
             <span className="block truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">{title}</span>
