@@ -58,7 +58,7 @@ hermes gateway setup
 …or run the Photon setup directly (the wizard calls the same flow):
 
 ```bash
-# Device-code login + project + user + sidecar deps, all in one
+# Device-code login + project + user + sidecar runtime check
 hermes photon setup --phone +155****4567
 ```
 
@@ -181,6 +181,7 @@ Photon iMessage status
   assigned number     : +162****9185
   node binary         : /usr/bin/node
   sidecar deps        : ✓ installed
+  sidecar runtime     : ✓ import OK
 ```
 
 Common issues:
@@ -199,12 +200,13 @@ Common issues:
 - **Sidecar won't start** — confirm `node --version` is 18.17+ and that
   `hermes photon install-sidecar` completed without errors.
 
-## Limits today
+## Attachments & limits
 
-- **Inbound attachments are metadata-only.** Inbound events carry the
-  filename + MIME type; the agent sees a marker but can't yet read the
-  bytes. The SDK exposes attachment bytes via `content.read()`, so this
-  is a sidecar follow-up.
+- **Inbound attachments and voice notes are downloaded.** The sidecar reads
+  the bytes with `content.read()` and base64-inlines them on the NDJSON event;
+  the adapter caches them to Hermes' media cache so the agent can see images,
+  files, and voice notes. Media larger than `PHOTON_MAX_INLINE_ATTACHMENT_BYTES`
+  (default 20 MB), or any byte read that fails, falls back to a text marker.
 - **Outbound attachments are supported.** Hermes sends images, voice
   notes, video, and documents through spectrum-ts' `attachment()` /
   `voice()` content builders via the sidecar's `/send-attachment`
@@ -223,7 +225,8 @@ Common issues:
 | `PHOTON_SIDECAR_PORT`     | `8789`             | Loopback port for the sidecar control + inbound channel |
 | `PHOTON_SIDECAR_AUTOSTART`| `true`             | Whether the adapter spawns the sidecar     |
 | `PHOTON_NODE_BIN`         | `which node`       | Override the Node binary path              |
-| `PHOTON_HOME_CHANNEL`     | (unset)            | Default space id for cron / notifications  |
+| `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` | `20971520` | Max inbound attachment/voice bytes the sidecar reads and inlines |
+| `PHOTON_HOME_CHANNEL`     | (unset)            | Default cron/notification target: Spectrum space id, DM GUID, or bare E.164 number |
 | `PHOTON_HOME_CHANNEL_NAME`| (unset)            | Human label for the home channel           |
 | `PHOTON_ALLOWED_USERS`    | (unset)            | Comma-separated E.164 allowlist            |
 | `PHOTON_ALLOW_ALL_USERS`  | `false`            | Dev only — accept any sender               |

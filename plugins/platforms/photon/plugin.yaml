@@ -39,8 +39,12 @@ optional_env:
     prompt: "Auto-start the sidecar?"
     password: false
   - name: PHOTON_NODE_BIN
-    description: "Path to the node binary (default: shutil.which('node'))"
+    description: "Path to the Node binary used by the sidecar and setup/status runtime probes (default: shutil.which('node'))"
     prompt: "Node executable path"
+    password: false
+  - name: PHOTON_MAX_INLINE_ATTACHMENT_BYTES
+    description: "Maximum inbound attachment/voice bytes the sidecar reads and base64-inlines on the NDJSON event (default 20 MB)"
+    prompt: "Max inline Photon attachment bytes"
     password: false
   - name: PHOTON_DASHBOARD_HOST
     description: "Photon Dashboard API host (default https://app.photon.codes)"

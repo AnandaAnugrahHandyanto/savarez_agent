@@ -9,9 +9,10 @@ The sidecar:
 - runs `Spectrum({ projectId, projectSecret, providers: [imessage.config()] })`
 - exposes a loopback-only HTTP control channel for the Python adapter
   to push send/typing requests (auth via `X-Hermes-Sidecar-Token`)
-- drains the inbound message stream so `spectrum-ts` keeps its
-  reconnect/heartbeat machinery alive (real inbound delivery is via
-  Photon's signed webhook hitting our Python aiohttp server)
+- streams inbound `app.messages` events to the Python adapter over
+  loopback `GET /inbound` (NDJSON); there is no Photon webhook in this
+  installed path
+- polyfills `globalThis.File` on Node 18 before importing `spectrum-ts`
 
 ## Install
 
@@ -20,8 +21,9 @@ cd plugins/platforms/photon/sidecar
 npm install
 ```
 
-The Hermes plugin's `hermes photon setup` command runs `npm install`
-here automatically.
+The Hermes plugin's `hermes photon setup` and `hermes photon install-sidecar`
+commands run `npm install` here, then verify that `index.mjs` and the
+`spectrum-ts` imports load under the active Node runtime.
 
 ## Run standalone
 
@@ -39,14 +41,7 @@ it by hand.
 
 ## Why a sidecar at all?
 
-Photon publishes webhooks (inbound) but their docs state explicitly:
-
-> Pass `space.id` to `Space.send(...)` from a separate `spectrum-ts`
-> SDK instance to reply.  No public HTTP send endpoint exists today.
-
-— https://photon.codes/docs/webhooks/events
-
-When Photon ships an HTTP send endpoint, the plan is to retire this
-sidecar entirely and call it directly from Python.  The plugin's
-outbound code path is already isolated behind a single helper
-(`_sidecar_send` in `adapter.py`) to make that swap a one-file change.
+Photon's `spectrum-ts` SDK is TypeScript-only and exposes the long-lived
+`app.messages` stream plus `space.send(...)` APIs Hermes needs. The Python
+gateway therefore supervises this sidecar and uses loopback HTTP for both
+directions instead of exposing a public webhook or direct HTTP send endpoint.

@@ -4,9 +4,9 @@
 
 Subcommands:
 
-    setup              full first-time setup (device login + project + user + sidecar)
-    status             show login + project + sidecar dep state
-    install-sidecar    npm install inside plugins/platforms/photon/sidecar/
+    setup              first-time setup + sidecar runtime verification
+    status             show login + project + sidecar runtime state
+    install-sidecar    npm install + sidecar runtime verification
 
 The device-code login runs automatically as the first step of ``setup``;
 there is no standalone ``login`` verb (matching how every other Hermes
@@ -41,7 +41,7 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
 
     p_setup = subs.add_parser(
         "setup",
-        help="First-time setup (device login + project + user + sidecar)",
+        help="First-time setup (device login + project + user + sidecar runtime check)",
     )
     p_setup.add_argument("--project-name", default=None,
                          help="Project name (default: 'Hermes Agent')")
@@ -55,8 +55,8 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     p_setup.add_argument("--skip-sidecar-install", action="store_true",
                          help="Skip `npm install` inside the sidecar directory")
 
-    subs.add_parser("status", help="Show login + project + sidecar dep state")
-    subs.add_parser("install-sidecar", help="Run npm install inside the sidecar directory")
+    subs.add_parser("status", help="Show login + project + sidecar runtime state")
+    subs.add_parser("install-sidecar", help="Run npm install and verify the sidecar runtime")
 
     parser.set_defaults(func=dispatch)
 

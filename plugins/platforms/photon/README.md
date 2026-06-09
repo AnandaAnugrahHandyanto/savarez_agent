@@ -41,8 +41,8 @@ talks to it over loopback.
 ## First-time setup
 
 ```bash
-# One-shot setup: device login (opens browser) + project + user + sidecar deps
-hermes photon setup --phone +15551234567
+# One-shot setup: device login + project + user + sidecar runtime check
+hermes photon setup --phone +155****4567
 
 # Start the gateway
 hermes gateway start --platform photon
@@ -59,7 +59,9 @@ hermes gateway start --platform photon
    a user with that number already exists).
 5. **Print the assigned iMessage line** — the number you text to reach your
    agent.
-6. **Install the sidecar deps** (`spectrum-ts`).
+6. **Install and verify the sidecar deps** (`spectrum-ts`) under the
+   current Node runtime. If the import check fails, setup exits non-zero
+   instead of claiming Photon is ready.
 
 There is no separate `login` command; like every other Hermes channel,
 onboarding goes through one setup surface. Re-running `setup` reuses an
@@ -110,6 +112,7 @@ All env vars are documented in `plugin.yaml`. The most important:
 | `PHOTON_PROJECT_SECRET`   | from .env / auth.json      | Project secret                       |
 | `PHOTON_SIDECAR_PORT`     | 8789                       | Loopback port for the sidecar        |
 | `PHOTON_SIDECAR_AUTOSTART`| true                       | Spawn the sidecar on connect         |
+| `PHOTON_NODE_BIN`         | `which node`               | Override the Node binary used by the sidecar and setup/status probes |
 | `PHOTON_DASHBOARD_HOST`   | https://app.photon.codes   | Dashboard API host                   |
 | `PHOTON_SPECTRUM_HOST`    | https://spectrum.photon.codes | Spectrum API host                 |
 | `PHOTON_HOME_CHANNEL`     | your number (set by setup) | Default space for cron delivery — a space id, or a bare E.164 number (resolved to a DM) |
