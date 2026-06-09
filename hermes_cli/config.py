@@ -1122,6 +1122,7 @@ DEFAULT_CONFIG = {
     "compression": {
         "enabled": True,
         "threshold": 0.85,            # compress when context usage exceeds this ratio
+        "min_threshold": 0.0,         # floor for auto-lowered threshold (0.0 = allow any aux-model-safe value)
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count
