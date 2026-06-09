@@ -69,10 +69,19 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
 
       try {
         if (activeSessionId) {
-          await requestGateway('slash.exec', {
+          const result = await requestGateway<{ error?: string }>('slash.exec', {
             session_id: activeSessionId,
             command: `/model ${selection.model} --provider ${selection.provider}${selection.persistGlobal ? ' --global' : ''}`
           })
+
+          // slash.exec resolves _ok even when the backend rejected the live
+          // switch — the failure rides in `result.error` (see slash.exec in
+          // tui_gateway/server.py). Funnel it into the catch below so the
+          // optimistic model is rolled back and the reason surfaced, rather
+          // than leaving the UI on a model the backend never selected.
+          if (result?.error) {
+            throw new Error(result.error)
+          }
 
           if (selection.persistGlobal) {
             void refreshCurrentModel()

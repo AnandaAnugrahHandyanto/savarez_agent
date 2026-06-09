@@ -1708,6 +1708,18 @@ def list_authenticated_providers(
             # available, unless the provider explicitly opts out via
             # discover_models: false (e.g. dedicated endpoints that expose
             # the entire aggregator catalog via /models).
+            #
+            # Local endpoints (ollama, llama.cpp, LM Studio, …) need no
+            # api_key, so an api_key-only gate would never refresh a BARE
+            # local endpoint — leaving models that were ``ollama rm``'d
+            # lingering. Treat a keyless local endpoint as discoverable, but
+            # ONLY when the user has not pinned an explicit ``models:`` subset
+            # (an explicit list signals an intentional narrowing we must
+            # preserve, not overwrite with the full live catalog — parity with
+            # section 4's should_probe). fetch_api_models() sends an
+            # unauthenticated GET when the key is empty, which ollama's
+            # /v1/models accepts. ``discover_models: false`` still pins the
+            # static list for users who intentionally narrow a local endpoint.
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
@@ -1715,7 +1727,15 @@ def list_authenticated_providers(
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
-            if api_url and api_key and discover:
+            try:
+                from agent.model_metadata import is_local_endpoint
+                _live_ok = bool(api_url) and discover and (
+                    bool(api_key)
+                    or (is_local_endpoint(api_url) and not models_list)
+                )
+            except Exception:
+                _live_ok = bool(api_url) and bool(api_key) and discover
+            if _live_ok:
                 try:
                     from hermes_cli.models import fetch_api_models
                     live_models = fetch_api_models(api_key, api_url)

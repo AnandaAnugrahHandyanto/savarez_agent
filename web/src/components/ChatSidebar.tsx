@@ -27,6 +27,9 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Card } from "@nous-research/ui/ui/components/card";
 
+import { Toast } from "@nous-research/ui/ui/components/toast";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
+
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ToolCall, type ToolEntry } from "@/components/ToolCall";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
@@ -89,6 +92,9 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   const [tools, setTools] = useState<ToolEntry[]>([]);
   const [modelOpen, setModelOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Toast for non-blocking model-switch advisories (a successful switch can
+  // still carry a warning, e.g. an auto-corrected or non-recommended model).
+  const { toast, showToast } = useToast();
 
   useEffect(() => {
     let cancelled = false;
@@ -289,21 +295,41 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   }, []);
 
   // Picker hands us a fully-formed slash command (e.g. "/model anthropic/...").
-  // Fire-and-forget through `slash.exec`; the TUI pane will render the result
-  // via PTY, so the sidebar doesn't need to surface output of its own.
+  // We AWAIT slash.exec and surface failures instead of firing-and-forgetting:
+  //   - the WS rejects (not connected / timeout) or the RPC returns an error
+  //     → the promise rejects;
+  //   - the switch is rejected by the backend (e.g. an unavailable model) →
+  //     it resolves with a structured `error` field (the live-agent sync
+  //     failed even though the RPC itself succeeded — see slash.exec in
+  //     tui_gateway/server.py).
+  // In both cases we throw so the picker keeps the dialog open and shows the
+  // reason; on success the badge updates from the `session.info` event the
+  // backend emits, and any benign `warning` is shown as a toast. Returning the
+  // promise lets ModelPickerDialog.confirm() await + catch it.
   const onModelSubmit = useCallback(
-    (slashCommand: string) => {
+    async (slashCommand: string) => {
       if (!sessionId) {
-        return;
+        throw new Error("no active session — reconnect and try again");
       }
 
-      void gw.request("slash.exec", {
+      const result = await gw.request<{
+        output?: string;
+        warning?: string;
+        error?: string;
+      }>("slash.exec", {
         session_id: sessionId,
         command: slashCommand,
       });
-      setModelOpen(false);
+
+      if (result?.error) {
+        throw new Error(result.error);
+      }
+
+      if (result?.warning) {
+        showToast(result.warning, "success");
+      }
     },
-    [gw, sessionId],
+    [gw, sessionId, showToast],
   );
 
   const canPickModel = state === "open" && !!sessionId;
@@ -389,6 +415,8 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
           onSubmit={onModelSubmit}
         />
       )}
+
+      <Toast toast={toast} />
     </aside>
   );
 }

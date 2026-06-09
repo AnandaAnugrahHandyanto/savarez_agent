@@ -5,7 +5,7 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import type { GatewayClient } from "@/lib/gatewayClient";
-import { Check, Search, X } from "lucide-react";
+import { AlertCircle, Check, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn, themedBody } from "@/lib/utils";
@@ -48,10 +48,12 @@ interface ModelOptionsResponse {
 }
 
 interface Props {
-  /** Chat-mode: when present, picker emits a slash command via onSubmit. */
+  /** Chat-mode: when present, picker emits a slash command via onSubmit.
+   *  May return a promise — when it does, confirm() awaits it and surfaces a
+   *  rejection inline (dialog stays open) instead of closing as if it worked. */
   gw?: GatewayClient;
   sessionId?: string;
-  onSubmit?(slashCommand: string): void;
+  onSubmit?(slashCommand: string): Promise<void> | void;
 
   /** Standalone-mode: when present (and onSubmit absent), picker calls onApply. */
   loader?(): Promise<ModelOptionsResponse>;
@@ -84,7 +86,11 @@ export function ModelPickerDialog(props: Props) {
   const [currentModel, setCurrentModel] = useState("");
   const [currentProviderSlug, setCurrentProviderSlug] = useState("");
   const [loading, setLoading] = useState(true);
+  // `error` covers the initial provider-load failure (shown in the provider
+  // column); `submitError` covers a confirm/apply failure (shown in the footer
+  // next to the action buttons so it's visible right where the user clicked).
   const [error, setError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [selectedSlug, setSelectedSlug] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
   const [query, setQuery] = useState("");
@@ -179,28 +185,35 @@ export function ModelPickerDialog(props: Props) {
 
   const canConfirm = !!selectedProvider && !!selectedModel && !applying;
 
+  // Both modes funnel through one await/try-catch so a failed switch surfaces
+  // the same way: standalone awaits onApply (REST), chat-mode awaits onSubmit
+  // (which runs the `/model` slash command through the gateway and rejects on a
+  // rejected switch / RPC error). On failure the dialog stays open with the
+  // error shown inline; it only closes once the switch actually took effect.
   const confirm = async () => {
     if (!canConfirm || !selectedProvider) return;
-    if (standalone && onApply) {
-      setApplying(true);
-      try {
+    if (!onApply && !onSubmit) return;
+
+    setSubmitError(null);
+    setApplying(true);
+    try {
+      if (standalone && onApply) {
         await onApply({
           provider: selectedProvider.slug,
           model: selectedModel,
           persistGlobal,
         });
-        onClose();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        setApplying(false);
+      } else if (onSubmit) {
+        const global = persistGlobal ? " --global" : "";
+        await onSubmit(
+          `/model ${selectedModel} --provider ${selectedProvider.slug}${global}`,
+        );
       }
-    } else if (onSubmit) {
-      const global = persistGlobal ? " --global" : "";
-      onSubmit(
-        `/model ${selectedModel} --provider ${selectedProvider.slug}${global}`,
-      );
       onClose();
+    } catch (e) {
+      setSubmitError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setApplying(false);
     }
   };
 
@@ -287,6 +300,16 @@ export function ModelPickerDialog(props: Props) {
         </div>
 
         <footer className="border-t border-border p-3 flex items-center justify-between gap-3 flex-wrap">
+          {submitError && (
+            <div
+              role="alert"
+              className="basis-full flex items-start gap-2 border border-destructive/40 bg-destructive/5 px-2.5 py-1.5 text-xs text-destructive"
+            >
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span className="min-w-0 wrap-break-word">{submitError}</span>
+            </div>
+          )}
+
           {alwaysGlobal ? (
             <span className="text-xs text-muted-foreground">
               Saves to config.yaml — applies to new sessions.

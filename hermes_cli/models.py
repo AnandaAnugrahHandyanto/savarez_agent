@@ -2276,6 +2276,29 @@ def _provider_models_cache_path() -> Path:
     return get_hermes_home() / "provider_models_cache.json"
 
 
+def _should_bypass_provider_model_cache(provider: str) -> bool:
+    """Return True when the provider should always use a live model list.
+
+    Local/custom endpoints can change their installed model set at any time.
+    Keeping them on the disk cache is exactly how removed models end up
+    lingering in the picker after the machine changes underneath us.
+    """
+    if provider == "custom":
+        return True
+
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(provider)
+        base_url = getattr(profile, "base_url", "") if profile else ""
+        if not base_url:
+            return False
+
+        from agent.model_metadata import is_local_endpoint
+        return is_local_endpoint(base_url)
+    except Exception:
+        return False
+
+
 def _credential_fingerprint(provider: str) -> str:
     """Return a short hash representing the credentials that
     ``provider_model_ids(provider)`` would see right now.
@@ -2385,6 +2408,16 @@ def cached_provider_model_ids(
     normalized = normalize_provider(provider) or (provider or "")
     if not normalized:
         return []
+
+    if _should_bypass_provider_model_cache(normalized):
+        # Local/custom endpoints can change their installed model set at any
+        # time, so never trust the disk cache's freshness window for them —
+        # force a live refresh. Fall through to the shared live path below
+        # (rather than returning the live result directly) so a transiently
+        # unreachable endpoint still falls back to the last-known-good list
+        # instead of an empty picker row, and a successful probe persists a
+        # fallback for next time.
+        force_refresh = True
 
     cache = _load_provider_models_cache()
     fp = _credential_fingerprint(normalized)

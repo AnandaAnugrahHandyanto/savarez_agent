@@ -176,6 +176,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gemini": 1048576,
     # Gemma (open models served via AI Studio)
     "gemma-4": 256000,  # Gemma 4 family
+    # Local Gemma 4 26B variants are typically run with a 64k Modelfile
+    # override. Keep the specific slug above the generic family fallback.
+    "gemma4:26b": 64000,
     "gemma4": 256000,  # Ollama-style naming (e.g. gemma4:31b-cloud)
     "gemma-4-31b": 256000,
     "gemma-3": 131072,
@@ -1156,6 +1159,19 @@ def _model_name_suggests_grok_4_3(model: str) -> bool:
     return "grok-4.3" in model.lower()
 
 
+# Local Gemma 4 26B variants are served with a 64k num_ctx Modelfile override.
+# Ollama's /api/show reports the GGUF training max (e.g. 131072) instead of the
+# served num_ctx, so the context window must be pinned explicitly for these
+# slugs (see the local-pin in get_model_context_length).
+_GEMMA4_26B_CONTEXT = 64_000
+
+
+def _model_name_suggests_gemma4_26b(model: str) -> bool:
+    """Return True if the model name looks like a Gemma 4 26B variant."""
+    name = model.lower()
+    return "gemma4:26b" in name or "gemma4-26b" in name
+
+
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx
@@ -1593,6 +1609,14 @@ def get_model_context_length(
                     model, base_url, f"{cached:,}",
                 )
                 _invalidate_cached_context_length(model, base_url)
+            # Gemma 4 26B (local): never trust the cached value — it may be a
+            # stale GGUF training-max persisted by the /api/show probe. Fall
+            # through to the authoritative 64k pin below. A bare invalidate
+            # would just re-probe the GGUF max and thrash the cache on every
+            # call (the live /api/show probe always wins over the hardcoded
+            # default, so the cache could never converge to 64k).
+            elif _model_name_suggests_gemma4_26b(model) and is_local_endpoint(base_url):
+                pass  # fall through to the Gemma4-26B local pin below
             # Nous Portal: the portal /v1/models endpoint is authoritative.
             # Bypass the persistent cache so step 5b can always reconcile
             # against it — this corrects pre-fix entries seeded from the
@@ -1609,6 +1633,22 @@ def get_model_context_length(
                 # Fall through; step 5b reconciles and overwrites if portal responds.
             else:
                 return cached
+
+    # Gemma 4 26B (local) pin — Ollama's /api/show probe (steps 2b/5e) reports
+    # the GGUF training max instead of the served 64k num_ctx, which would
+    # over-budget the window and silently truncate. Pin authoritatively here,
+    # ahead of the probe, and reconcile a stale cache entry in place so the
+    # value converges (no re-probe thrash). Local-only: hosted Gemma servers
+    # the user can't reconfigure are left to the normal probe path.
+    if (
+        base_url
+        and provider != "lmstudio"
+        and is_local_endpoint(base_url)
+        and _model_name_suggests_gemma4_26b(model)
+    ):
+        if get_cached_context_length(model, base_url) != _GEMMA4_26B_CONTEXT:
+            save_context_length(model, base_url, _GEMMA4_26B_CONTEXT)
+        return _GEMMA4_26B_CONTEXT
 
     # 1b. AWS Bedrock — use static context length table.
     # Bedrock's ListFoundationModels API doesn't expose context window sizes,
