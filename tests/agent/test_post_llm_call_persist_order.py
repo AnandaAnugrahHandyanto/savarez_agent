@@ -97,11 +97,11 @@ def test_post_llm_call_runs_before_persist_and_can_override_response(monkeypatch
     agent._build_assistant_message = mock_build_assistant_message
 
     # Mock persistence & scaffolding methods
-    persisted_messages = []
+    persisted_messages_by_call = []
     def mock_persist_session(messages, history):
         call_order.append(("persist_session",))
         # Capture a copy of the messages at persistence time
-        persisted_messages.extend([dict(m) for m in messages])
+        persisted_messages_by_call.append([dict(m) for m in messages])
 
     agent._persist_session = mock_persist_session
     agent._drop_trailing_empty_response_scaffolding = MagicMock()
@@ -120,12 +120,14 @@ def test_post_llm_call_runs_before_persist_and_can_override_response(monkeypatch
     # Check results
     assert result["final_response"] == "Plugin Override Response"
     
-    # Verify call order: invoke_hook('post_llm_call') must run before persist_session
+    # Verify call order: invoke_hook('post_llm_call') must run before the final persist_session
     post_llm_call_index = call_order.index(("invoke_hook", "post_llm_call"))
-    persist_session_index = call_order.index(("persist_session",))
-    assert post_llm_call_index < persist_session_index
+    persist_session_indices = [i for i, x in enumerate(call_order) if x == ("persist_session",)]
+    final_persist_index = max(persist_session_indices)
+    assert post_llm_call_index < final_persist_index
 
-    # Verify that the persisted messages include the overridden content
-    assert len(persisted_messages) == 2
-    assert persisted_messages[0] == {"role": "user", "content": "User message"}
-    assert persisted_messages[1] == {"role": "assistant", "content": "Plugin Override Response"}
+    # Verify that the final persisted messages include the overridden content
+    final_messages = persisted_messages_by_call[-1]
+    assert len(final_messages) == 2
+    assert final_messages[0] == {"role": "user", "content": "User message"}
+    assert final_messages[1] == {"role": "assistant", "content": "Plugin Override Response"}

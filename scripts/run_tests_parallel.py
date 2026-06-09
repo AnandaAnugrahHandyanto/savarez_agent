@@ -52,10 +52,24 @@ from typing import Dict, List, Tuple
 # Default test discovery roots.
 _DEFAULT_ROOTS = ["tests"]
 
-# Directories to skip during discovery — the e2e + integration suites
-# require real services and are run separately. Match exactly the
-# ``--ignore=`` flags the previous CI command used.
-_SKIP_PARTS = {"integration", "e2e"}
+# Directories to skip during discovery — these suites require real
+# external services (a model gateway, a docker daemon with a prebuilt
+# image, etc.) and are run in their own dedicated CI jobs:
+#
+#   tests/e2e/         — .github/workflows/tests.yml :: e2e job
+#   tests/integration/ — historical; legacy --ignore flags
+#   tests/docker/      — .github/workflows/docker-publish.yml ::
+#                        build-amd64 job (runs against the freshly-loaded
+#                        nousresearch/hermes-agent:test image, via
+#                        ``HERMES_TEST_IMAGE`` so the fixture skips
+#                        rebuild). The full pytest-shard runner can't
+#                        host these because the session-scoped
+#                        ``built_image`` fixture would do a 3-7min
+#                        ``docker build`` inside a 180s per-test
+#                        pytest-timeout cap (set by tests/docker/conftest.py),
+#                        so the build is guaranteed to die in fixture
+#                        setup. The dedicated job sidesteps both costs.
+_SKIP_PARTS = {"integration", "e2e", "docker"}
 
 # Per-file wall-clock cap. Generous default — pytest-timeout still
 # enforces per-test caps inside each subprocess; this is just an outer
@@ -136,7 +150,10 @@ def _discover_files(roots: List[Path]) -> List[Path]:
 
     Exclude any file whose path contains a component in ``_SKIP_PARTS``,
     UNLESS the user explicitly named it as a root (in which case the
-    user's intent overrides the skip filter).
+    user's intent overrides the skip filter). This makes
+    ``scripts/run_tests.sh tests/docker/`` work locally the same way
+    ``pytest tests/docker/`` does — the CI-level skip exists to keep
+    the sharded matrix from blowing up, not to block targeted runs.
     """
     seen: set[Path] = set()
     out: List[Path] = []
@@ -151,8 +168,17 @@ def _discover_files(roots: List[Path]) -> List[Path]:
                 seen.add(real)
                 out.append(root)
             continue
+        # If the explicit root itself sits inside a skipped dir (e.g.
+        # the user said ``tests/docker``), the user has overridden the
+        # skip for that subtree. Compute the set of skip-parts the user
+        # opted into, and only filter files whose path crosses a
+        # skip-part *outside* that opt-in.
+        root_skip_overrides = {
+            part for part in root.parts if part in _SKIP_PARTS
+        }
+        effective_skips = _SKIP_PARTS - root_skip_overrides
         for path in root.rglob("test_*.py"):
-            if any(part in _SKIP_PARTS for part in path.parts):
+            if any(part in effective_skips for part in path.parts):
                 continue
             real = path.resolve()
             if real in seen:
@@ -308,6 +334,50 @@ def _run_one_file(
         # well-behaved is not universal — kill the group anyway. Already-
         # dead processes are a no-op.
         _kill_tree(proc, pgid=pgid)
+
+    if rc == 4 and Path(file).exists():
+        # pytest exit 4 = "file or directory not found" at exec time, yet the
+        # file is present on disk now. On loaded shared CI runners we have seen
+        # the planner enumerate a file (its tests counted via --collect-only)
+        # but the per-file subprocess fail to stat it moments later — a
+        # transient the deterministic LPT slicer otherwise reproduces on every
+        # rerun (same file set → same shard). Retry the file ONCE before
+        # surfacing it as a hard failure. We do NOT widen the exit-5 rule:
+        # exit 4 on a file that genuinely does not exist must still fail.
+        retry_proc = subprocess.Popen(
+            cmd,
+            cwd=repo_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+        retry_pgid: int | None = None
+        if sys.platform != "win32":
+            try:
+                retry_pgid = os.getpgid(retry_proc.pid)
+            except (ProcessLookupError, PermissionError):
+                retry_pgid = None
+        try:
+            retry_output, _ = retry_proc.communicate(timeout=file_timeout)
+            retry_rc = retry_proc.returncode
+        except subprocess.TimeoutExpired:
+            _kill_tree(retry_proc, pgid=retry_pgid)
+            try:
+                retry_output, _ = retry_proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                retry_output = "(file timeout exceeded on retry; output unavailable)"
+            retry_rc = 124
+            retry_output = (
+                f"(per-file timeout on exit-4 retry: {file_timeout:.0f}s exceeded; "
+                f"process tree SIGKILL'd)\n{retry_output}"
+            )
+        except BaseException:
+            _kill_tree(retry_proc, pgid=retry_pgid)
+            raise
+        else:
+            _kill_tree(retry_proc, pgid=retry_pgid)
+        rc, output = retry_rc, retry_output
 
     if rc == 5:
         # No tests collected — every test in the file was filtered out.
