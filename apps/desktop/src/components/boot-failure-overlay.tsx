@@ -173,11 +173,14 @@ export function BootFailureOverlay() {
   })
 
   return (
-    <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-(--ui-chat-surface-background) p-6">
-      <div className="w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
-        <div className="flex items-start gap-3 px-5 py-4">
+    <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-(--sentinel-bg-main) p-6">
+      <div className="w-full max-w-[40rem] overflow-hidden rounded-[1.25rem] border border-(--sentinel-border-soft) bg-(--sentinel-bg-panel)/96 shadow-[0_30px_80px_-40px_rgba(0,0,0,0.85)] backdrop-blur-[4px]">
+        <div className="flex items-start gap-3 border-b border-(--sentinel-border-soft) px-5 py-4">
           <ErrorIcon className="mt-0.5" size="1.25rem" />
           <div>
+            <div className="mb-1 inline-flex items-center gap-1 rounded-full border border-(--sentinel-border-soft) bg-(--sentinel-bg-main)/80 px-2 py-0.5 text-[0.625rem] uppercase tracking-[0.18em] text-(--sentinel-text-muted)">
+              HermesOps Sentinel
+            </div>
             <h2 className="text-[0.9375rem] font-semibold tracking-tight">
               {remoteReauth ? copy.remoteTitle : copy.title}
             </h2>
@@ -188,7 +191,7 @@ export function BootFailureOverlay() {
         </div>
 
         <div className="grid gap-4 p-5">
-          <div className="rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-xs text-destructive">
+          <div className="rounded-2xl border border-(--sentinel-danger)/35 bg-(--sentinel-danger)/10 px-4 py-3 text-xs text-(--sentinel-text-main)">
             {boot.error}
           </div>
 

@@ -1,0 +1,47 @@
+{
+  "capturedAt": "2026-06-09T16:56:56-03:00",
+  "overlayVisible": false,
+  "attempts": [
+    {
+      "target": "Settings",
+      "method": "click aria-label=Open settings",
+      "result": "No dialog/modal heading surfaced in the DOM text; the main shell stayed visible."
+    },
+    {
+      "target": "Command Center",
+      "method": "search DOM for the label",
+      "result": "No distinct Command Center control was exposed in the current DOM snapshot."
+    },
+    {
+      "target": "Skills & Tools",
+      "method": "click top nav button",
+      "result": "Click succeeded; no runtime error or boot overlay returned."
+    },
+    {
+      "target": "Messaging",
+      "method": "click top nav button",
+      "result": "Click succeeded; no runtime error or boot overlay returned."
+    },
+    {
+      "target": "Artifacts",
+      "method": "click top nav button",
+      "result": "Click succeeded; no runtime error or boot overlay returned."
+    },
+    {
+      "target": "Cron",
+      "method": "click footer button",
+      "result": "Click succeeded; no runtime error or boot overlay returned."
+    },
+    {
+      "target": "Profiles",
+      "method": "click profile pill labeled default",
+      "result": "Profile pill was selected; no modal/dialog appeared."
+    },
+    {
+      "target": "Agents",
+      "method": "click footer button",
+      "result": "Click succeeded; no runtime error or boot overlay returned."
+    }
+  ],
+  "note": "The renderer stayed on the main shell/session workspace; no overlay reappeared during navigation attempts."
+}

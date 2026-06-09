@@ -4,9 +4,9 @@ import type { ReactNode } from 'react'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { useI18n } from '@/i18n'
 import { Loader } from '@/components/ui/loader'
 import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
@@ -103,7 +103,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
     <aside
       aria-label={r.aria}
       className={cn(
-        'before:pointer-events-none relative flex h-full w-full min-w-0 flex-col overflow-hidden border-(--ui-stroke-secondary) bg-(--ui-sidebar-surface-background) pt-(--titlebar-height) text-(--ui-text-tertiary)',
+        'before:pointer-events-none relative flex h-full w-full min-w-0 flex-col overflow-hidden border-(--sentinel-border-soft) bg-(--sentinel-bg-panel) pt-(--titlebar-height) text-(--ui-text-tertiary)',
         panesFlipped
           ? 'border-r shadow-[inset_-0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
           : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
@@ -151,7 +151,7 @@ function RightSidebarChrome({
   const r = t.rightSidebar
 
   return (
-    <header className="shrink-0 bg-transparent text-[0.75rem]">
+    <header className="shrink-0 border-b border-(--sentinel-border-soft) bg-(--sentinel-bg-main)/75 text-[0.75rem] backdrop-blur-[2px]">
       <div className="flex items-center gap-2 px-2.5 py-1">
         <nav aria-label={r.panelsAria} className="flex min-w-0 items-center gap-1">
           {tabs.map(tab => {
@@ -163,8 +163,8 @@ function RightSidebarChrome({
                   aria-label={label}
                   aria-pressed={tab.id === activeTab}
                   className={cn(
-                    'text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
-                    tab.id === activeTab && 'bg-(--ui-control-active-background) text-foreground'
+                    'text-(--ui-text-tertiary) hover:border-(--sentinel-border-soft) hover:bg-(--ui-control-hover-background) hover:text-foreground',
+                    tab.id === activeTab && 'border-(--sentinel-border-active) bg-(--ui-control-active-background) text-foreground shadow-[var(--sentinel-glow-primary)]'
                   )}
                   onClick={() => setRightSidebarTab(tab.id)}
                   size="icon-xs"
