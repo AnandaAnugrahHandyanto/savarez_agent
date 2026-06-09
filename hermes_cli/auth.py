@@ -614,10 +614,17 @@ def _resolve_api_key_provider_secret(
 
 ZAI_ENDPOINTS = [
     # (id, base_url, probe_models, label)
-    ("global",        "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global"),
-    ("cn",            "https://open.bigmodel.cn/api/paas/v4", ["glm-5"],   "China"),
+    # Coding-plan endpoints MUST be listed before generic (pay-as-you-go)
+    # ones.  Coding-plan API keys also authenticate against the generic
+    # endpoints, so probing generic first would match a Coding Plan user
+    # to the pay-as-you-go tier — silently charging their wallet balance
+    # instead of the subscription quota.  By trying coding-plan endpoints
+    # first, Coding Plan subscribers are routed correctly; generic keys
+    # fail the coding-plan probe and fall through to the generic tier.
     ("coding-global", "https://api.z.ai/api/coding/paas/v4",  ["glm-5.1", "glm-5v-turbo", "glm-4.7"], "Global (Coding Plan)"),
     ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", ["glm-5.1", "glm-5v-turbo", "glm-4.7"], "China (Coding Plan)"),
+    ("global",        "https://api.z.ai/api/paas/v4",        ["glm-5"],   "Global"),
+    ("cn",            "https://open.bigmodel.cn/api/paas/v4", ["glm-5"],   "China"),
 ]
 
 
