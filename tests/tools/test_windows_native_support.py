@@ -1007,3 +1007,508 @@ class TestGatewayDetachedWatcherWindowsFlags:
             "CreateProcess and retry without the breakaway bit, matching "
             "gateway_windows._spawn_detached's fallback pattern."
         )
+
+    def test_gateway_run_restart_watcher_inlined_respawn_uses_breakaway(self):
+        """Behavioral regression guard for the inlined respawn watcher in
+        ``GatewayRunner._launch_detached_restart_command``.
+
+        Uses AST parsing + runtime exec with a mocked ``subprocess.Popen``
+        to verify the inlined watcher's breakaway bit is set AND the
+        OSError fallback retries without the bit.  Catches 12+ stealth
+        attack patterns that pure static-text substring checks miss —
+        including const-after-use NameError, const-in-comment, const=0
+        with bit in comment, name typo, missing except handler, tuple
+        spread in `**`, removed bit-clear, wrong constant value, primary
+        wrapped in `if False:`, no-op Popen (docstring-only), lambda
+        wrapper around `_flags_full`, and Popen moved outside try.
+
+        Strategy:
+        1. Parse gateway/run.py with ast, find the inlined watcher
+           string via `textwrap.dedent(<str>)` structural match.
+        2. textwrap.dedent the extracted string so it compiles.
+        3. compile() it to catch syntax errors / TypeErrors.
+        4. Walk the AST to verify:
+           - Popen calls are NOT inside `if False:`, while, or for blocks
+           - PRIMARY Popen uses `creationflags=_flags_full`
+           - FALLBACK Popen uses `creationflags=_flags_fallback`
+           - PRIMARY Popen is inside a try/except OSError (parent-map walk)
+           - The except handler catches OSError
+           - `_CREATE_BREAKAWAY_FROM_JOB = 0x01000000` is defined
+           - `_flags_full` is a BinOp (not a Lambda/Call/Name wrapper)
+           - `_flags_full` BitOr chain includes the breakaway Name
+           - `_flags_fallback = _flags_full & ~_CREATE_BREAKAWAY_FROM_JOB`
+             (Invert op, not USub)
+        5. exec the inlined script with `subprocess.Popen` mocked to
+           raise OSError(5) on the FIRST call and with
+           `ctypes.windll.kernel32.OpenProcess` mocked to return NULL
+           (so the test is platform-portable — on real Windows, PID
+           1234 may or may not exist; the ctypes mock makes the
+           wait-loop exit deterministically). Verify the SECOND
+           Popen call's creationflags differs from the FIRST and that
+           the SECOND does NOT have the breakaway bit set (the actual
+           bit-cleared semantics at runtime, not just at the AST
+           level).
+        """
+        import ast as _ast
+        import textwrap as _textwrap
+        root = Path(__file__).resolve().parents[2]
+        text = (root / "gateway" / "run.py").read_text(encoding="utf-8")
+        tree = _ast.parse(text)
+        # Find textwrap.dedent(<str>) inside _launch_detached_restart_command
+        # (handles both sync FunctionDef and async AsyncFunctionDef).
+        candidate_blocks = []
+
+        def _walk(node):
+            if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and node.name == "_launch_detached_restart_command":
+                for child in _ast.walk(node):
+                    if isinstance(child, _ast.Call) and child.args and isinstance(child.args[0], _ast.Constant) and isinstance(child.args[0].value, str):
+                        func = child.func
+                        if (
+                            isinstance(func, _ast.Attribute)
+                            and func.attr == "dedent"
+                            and isinstance(func.value, _ast.Name)
+                            and func.value.id == "textwrap"
+                        ):
+                            candidate_blocks.append(child.args[0].value)
+            for child in _ast.iter_child_nodes(node):
+                _walk(child)
+
+        _walk(tree)
+        assert candidate_blocks, (
+            "Could not find `textwrap.dedent(<str>)` call inside "
+            "_launch_detached_restart_command. The function may have "
+            "been refactored to no longer use an inlined string-literal "
+            "watcher; if so, this test needs updating."
+        )
+        # The inlined watcher is the largest string literal in the function.
+        watcher_script = max(candidate_blocks, key=len)
+        # textwrap.dedent the string so it compiles to valid Python.
+        watcher_script = _textwrap.dedent(watcher_script)
+        # compile-check: catches syntax errors and gross structural bugs.
+        try:
+            compile(watcher_script, "<inlined-watcher>", "exec")
+        except SyntaxError as e:
+            raise AssertionError(
+                f"Inlined watcher script has a syntax error: {e}. "
+                f"It must be a valid Python program exec'd by `python -c`."
+            ) from e
+        watcher_tree = _ast.parse(watcher_script)
+        # Locate primary and fallback Popen calls by their creationflags
+        # name (NOT by position — positions vary by edits).
+        popen_calls = [
+            n for n in _ast.walk(watcher_tree)
+            if isinstance(n, _ast.Call)
+            and isinstance(n.func, _ast.Attribute)
+            and n.func.attr == "Popen"
+        ]
+        assert popen_calls, "Inlined watcher has no subprocess.Popen call"
+        primary_cf, fallback_cf = None, None
+        for pc in popen_calls:
+            kw = {k.arg: k.value for k in pc.keywords if k.arg}
+            cf = kw.get("creationflags")
+            if isinstance(cf, _ast.Name):
+                if cf.id == "_flags_full":
+                    primary_cf = pc
+                elif cf.id == "_flags_fallback":
+                    fallback_cf = pc
+        assert primary_cf is not None, (
+            "Inlined watcher's PRIMARY Popen must use `creationflags=_flags_full`. "
+            f"Found {len(popen_calls)} Popen call(s) but none reference `_flags_full`."
+        )
+        assert fallback_cf is not None, (
+            "Inlined watcher's FALLBACK Popen must use `creationflags=_flags_fallback`. "
+            f"Found {len(popen_calls)} Popen call(s) but none reference `_flags_fallback`."
+        )
+        # Both Popens must be at module scope (not inside `if False:`, while, for).
+        for label, pc in [("primary", primary_cf), ("fallback", fallback_cf)]:
+            for stmt in watcher_tree.body:
+                if isinstance(stmt, _ast.If):
+                    for sub in _ast.walk(stmt):
+                        if sub is pc:
+                            if isinstance(stmt.test, _ast.Constant) and stmt.test.value is False:
+                                raise AssertionError(
+                                    f"Inlined watcher's {label} Popen is wrapped in `if False:` — "
+                                    f"it never runs."
+                                )
+                if isinstance(stmt, (_ast.While, _ast.For)):
+                    for sub in _ast.walk(stmt):
+                        if sub is pc:
+                            raise AssertionError(
+                                f"Inlined watcher's {label} Popen is inside a "
+                                f"{type(stmt).__name__.lower()} block at line {stmt.lineno}."
+                            )
+        # PRIMARY Popen must be inside a try/except OSError. The
+        # fallback path catches the OSError and retries without
+        # breakaway. A Popen that raises OSError unhandled would
+        # crash the watcher at runtime.
+        # Build a parent map for the inlined watcher_tree.
+        inline_parent_map = {}
+        for parent in _ast.walk(watcher_tree):
+            for child in _ast.iter_child_nodes(parent):
+                inline_parent_map[id(child)] = parent
+        primary_in_try = False
+        primary_handler_catches_oserror = False
+        node = primary_cf
+        while id(node) in inline_parent_map:
+            parent = inline_parent_map[id(node)]
+            if isinstance(parent, _ast.Try) and any(n is primary_cf for n in _ast.walk(parent)):
+                primary_in_try = True
+                for h in parent.handlers:
+                    if h.type is None:
+                        primary_handler_catches_oserror = True  # bare except catches OSError
+                        break
+                    if isinstance(h.type, _ast.Name) and h.type.id == "OSError":
+                        primary_handler_catches_oserror = True
+                        break
+                    if isinstance(h.type, _ast.Tuple):
+                        for elt in h.type.elts:
+                            if isinstance(elt, _ast.Name) and elt.id == "OSError":
+                                primary_handler_catches_oserror = True
+                                break
+                break
+            node = parent
+        assert primary_in_try, (
+            "Inlined watcher's PRIMARY Popen is NOT inside a try/except. "
+            "If the parent job object refuses CREATE_BREAKAWAY_FROM_JOB, "
+            "CreateProcess raises OSError — without a try/except wrapper, "
+            "the watcher crashes and the respawn never happens."
+        )
+        assert primary_handler_catches_oserror, (
+            "Inlined watcher's PRIMARY Popen's try/except handler does NOT "
+            "catch OSError. CreateProcess can raise OSError on breakaway "
+            "denial; the handler must catch it."
+        )
+        # _CREATE_BREAKAWAY_FROM_JOB must be defined as 0x01000000.
+        breakaway_const_defs = [
+            n for n in watcher_tree.body
+            if isinstance(n, _ast.Assign)
+            and len(n.targets) == 1
+            and isinstance(n.targets[0], _ast.Name)
+            and n.targets[0].id == "_CREATE_BREAKAWAY_FROM_JOB"
+            and isinstance(n.value, _ast.Constant)
+            and n.value.value == 0x01000000
+        ]
+        assert breakaway_const_defs, (
+            "Inlined watcher must define `_CREATE_BREAKAWAY_FROM_JOB = 0x01000000` "
+            "as a symbolic constant (greppable intent)."
+        )
+        # Verify _flags_full must be a BitOr expression that includes
+        # _CREATE_BREAKAWAY_FROM_JOB. The right-hand side of the
+        # assignment must be a BitOp(BitOr, ...) — NOT a lambda, a
+        # function call, a Name, or a constant (which would all
+        # bypass the bitwise-OR check at runtime).
+        flags_full_defs = [
+            n for n in watcher_tree.body
+            if isinstance(n, _ast.Assign)
+            and len(n.targets) == 1
+            and isinstance(n.targets[0], _ast.Name)
+            and n.targets[0].id == "_flags_full"
+        ]
+        assert flags_full_defs, "Inlined watcher must define `_flags_full`"
+        for fa in flags_full_defs:
+            # Reject Lambda/Call wrappers — the value must be a
+            # bitwise expression. Lambdas would pass the Name-walk
+            # check but fail at runtime (the variable would be a
+            # function, not an int).
+            if not isinstance(fa.value, _ast.BinOp):
+                raise AssertionError(
+                    f"Inlined watcher's `_flags_full` assignment value is "
+                    f"{type(fa.value).__name__} — must be a bitwise "
+                    f"expression (BinOp with BitOr). Lambdas/calls/Names "
+                    f"would produce a non-int at runtime and break the "
+                    f"`creationflags=` call."
+                )
+            if any(
+                isinstance(sub, _ast.Name) and sub.id == "_CREATE_BREAKAWAY_FROM_JOB"
+                for sub in _ast.walk(fa)
+            ):
+                break
+        else:
+            raise AssertionError(
+                "Inlined watcher's `_flags_full` BitOr chain does NOT include "
+                "`_CREATE_BREAKAWAY_FROM_JOB` (or its bit was set to 0)."
+            )
+        # _flags_fallback must be `_flags_full & ~_CREATE_BREAKAWAY_FROM_JOB`.
+        flags_fb_defs = [
+            n for n in watcher_tree.body
+            if isinstance(n, _ast.Assign)
+            and len(n.targets) == 1
+            and isinstance(n.targets[0], _ast.Name)
+            and n.targets[0].id == "_flags_fallback"
+        ]
+        assert flags_fb_defs, "Inlined watcher must define `_flags_fallback`"
+        for fa in flags_fb_defs:
+            v = fa.value
+            if (
+                isinstance(v, _ast.BinOp)
+                and isinstance(v.op, _ast.BitAnd)
+                and isinstance(v.left, _ast.Name)
+                and v.left.id == "_flags_full"
+                and isinstance(v.right, _ast.UnaryOp)
+                and isinstance(v.right.op, _ast.Invert)
+                and isinstance(v.right.operand, _ast.Name)
+                and v.right.operand.id == "_CREATE_BREAKAWAY_FROM_JOB"
+            ):
+                break
+        else:
+            raise AssertionError(
+                "Inlined watcher's `_flags_fallback` is NOT `_flags_full & ~_CREATE_BREAKAWAY_FROM_JOB`."
+            )
+        # RUNTIME: exec the inlined script with subprocess.Popen mocked
+        # to raise OSError(5) on the first call (simulating breakaway
+        # denied by the parent job object).  Verify the SECOND call
+        # uses a different creationflags that EXCLUDES the breakaway bit.
+        from unittest.mock import patch as _patch
+        popen_calls_log = []
+        call_count = [0]
+
+        class _MockPopen:
+            def __init__(self, *args, **kwargs):
+                popen_calls_log.append((args, kwargs))
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise OSError(5, "Access is denied (simulated breakaway denial)")
+                self.pid = 99999
+                self.returncode = None
+
+        def _mock_sleep(seconds):
+            pass
+
+        # time.monotonic must return a value past the 120s deadline so
+        # the wait loop exits on first iteration.
+        def _mock_monotonic():
+            return 100000.0
+
+        # Mock the ctypes kernel32 path on Windows. The inlined
+        # watcher's `_alive(pid)` calls ctypes.windll.kernel32.OpenProcess
+        # to check if the parent process is still alive. Without this
+        # mock, the test would hit the real Win32 API, which on a real
+        # Windows host could either (a) return NULL with GetLastError=87
+        # for a non-existent PID (test passes by accident), or (b)
+        # return a valid handle for PID 1234 if that PID happens to
+        # be a long-lived system process, causing the test to hang
+        # forever (because the while loop is `while time.monotonic() <
+        # deadline` and our mock makes time.monotonic a constant).
+        # Mocking ctypes.windll.kernel32.OpenProcess to return 0 (NULL)
+        # deterministically exits the while loop on the first iteration,
+        # making the test platform-portable.
+        # Use a custom class whose methods support `.restype` attribute
+        # assignment (the inlined watcher's `_alive` does
+        # `k32.OpenProcess.restype = ctypes.c_void_p` and similar).
+        class _K32Method:
+            def __init__(self, fn, default_restype=0):
+                self._fn = fn
+                self.restype = default_restype
+            def __call__(self, *args, **kwargs):
+                return self._fn(*args, **kwargs)
+
+        _k32_open_process = _K32Method(lambda access, inherit, pid: 0, default_restype=0)  # NULL handle
+        _k32_wait_for_single_object = _K32Method(lambda h, ms: 0x102, default_restype=0)  # WAIT_TIMEOUT
+        _k32_get_last_error = _K32Method(lambda: 87, default_restype=0)  # ERROR_INVALID_PARAMETER
+        _k32_close_handle = _K32Method(lambda h: True, default_restype=0)
+
+        class _FakeK32:
+            def __init__(self):
+                self.OpenProcess = _k32_open_process
+                self.WaitForSingleObject = _k32_wait_for_single_object
+                self.GetLastError = _k32_get_last_error
+                self.CloseHandle = _k32_close_handle
+
+        real_argv = sys.argv
+        try:
+            sys.argv = ["python", "1234", "hermes", "gateway", "restart"]
+            with _patch("subprocess.Popen", _MockPopen), \
+                 _patch("subprocess.DEVNULL", -3), \
+                 _patch("time.sleep", _mock_sleep), \
+                 _patch("time.monotonic", _mock_monotonic), \
+                 _patch("ctypes.windll.kernel32", _FakeK32()):
+                exec(watcher_script, {"__name__": "__main__"})
+        finally:
+            sys.argv = real_argv
+        # Verify the call sequence: 1st call raises OSError, 2nd call
+        # succeeds with different creationflags.
+        assert len(popen_calls_log) == 2, (
+            f"Inlined watcher should call subprocess.Popen exactly twice "
+            f"(primary + fallback on OSError). Got {len(popen_calls_log)} call(s). "
+            f"If the watcher doesn't retry on OSError, the fallback pattern is broken."
+        )
+        first_args, first_kwargs = popen_calls_log[0]
+        second_args, second_kwargs = popen_calls_log[1]
+        assert "creationflags" in first_kwargs, (
+            f"Primary Popen has no creationflags kwarg. "
+            f"Args: {first_args}, kwargs: {list(first_kwargs.keys())}"
+        )
+        assert "creationflags" in second_kwargs, (
+            f"Fallback Popen has no creationflags kwarg. "
+            f"Args: {second_args}, kwargs: {list(second_kwargs.keys())}"
+        )
+        # The two creationflags values must DIFFER — the fallback must
+        # clear at least one bit (the breakaway bit).
+        first_cf = first_kwargs["creationflags"]
+        second_cf = second_kwargs["creationflags"]
+        assert first_cf != second_cf, (
+            f"Primary and fallback creationflags are equal ({first_cf}). "
+            f"The fallback must clear at least the breakaway bit; if both calls "
+            f"use the same value, the breakaway-denied case would just raise "
+            f"OSError again."
+        )
+        # Primary MUST have the breakaway bit set; fallback MUST NOT.
+        assert first_cf & 0x01000000, (
+            f"Primary creationflags ({first_cf:#010x}) does NOT have "
+            f"CREATE_BREAKAWAY_FROM_JOB (0x01000000). Respawned gateway "
+            f"would be reaped with the parent."
+        )
+        assert not (second_cf & 0x01000000), (
+            f"Fallback creationflags ({second_cf:#010x}) still has "
+            f"CREATE_BREAKAWAY_FROM_JOB (0x01000000) — would raise OSError "
+            f"again. No actual recovery."
+        )
+        # The cmd list (first positional arg) must be identical between
+        # the two calls. If the fallback passes [] or a different list,
+        # the gateway won't actually restart.
+        assert first_args[0] == second_args[0], (
+            f"Fallback cmd list differs from primary: "
+            f"primary={list(first_args[0])!r}, fallback={list(second_args[0])!r}. "
+            f"The fallback would launch a different command."
+        )
+
+    def test_gateway_run_restart_watcher_outer_popen_has_access_denied_fallback(self):
+        """Behavioral regression guard for the outer watcher Popen in
+        ``GatewayRunner._launch_detached_restart_command``.
+
+        Uses AST parsing to verify the outer Popen's structure: must
+        be wrapped in try/except OSError, must use `**`-spread kwargs
+        (not a tuple), and the argv list must include `*cmd_argv` so
+        the watcher gets the restart command.
+
+        Catches the D1/D2/D3 attack patterns the static-text check
+        misses: missing `*cmd_argv`, `**(call(),)` tuple spread (in
+        EITHER the primary or fallback outer Popen), missing
+        try/except on the outer Popen, and `popens[-1]` vs `popens[-2]`
+        positional misses when the function has BOTH a primary and a
+        fallback outer Popen.
+        """
+        import ast as _ast
+        root = Path(__file__).resolve().parents[2]
+        text = (root / "gateway" / "run.py").read_text(encoding="utf-8")
+        tree = _ast.parse(text)
+
+        def _find_function(tree, name):
+            for node in _ast.walk(tree):
+                if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef)) and node.name == name:
+                    return node
+            return None
+
+        fn = _find_function(tree, "_launch_detached_restart_command")
+        assert fn is not None, "_launch_detached_restart_command not found"
+        # Find all Popen calls in the function (both inlined-string's
+        # primary/fallback AND the outer watcher Popen).
+        popens = [
+            n for n in _ast.walk(fn)
+            if isinstance(n, _ast.Call)
+            and isinstance(n.func, _ast.Attribute)
+            and n.func.attr == "Popen"
+        ]
+        assert len(popens) >= 3, (
+            f"Expected at least 3 Popen calls in _launch_detached_restart_command "
+            f"(inlined primary + inlined fallback + outer watcher). "
+            f"Found {len(popens)}."
+        )
+        # The OUTER watcher Popen is the LAST one in the function body
+        # (after the inlined string's Popens). It takes
+        # `[sys.executable, "-c", watcher, str(current_pid), *cmd_argv]`
+        # — note the `*cmd_argv` Starred element.
+        # NOTE: there are TWO outer Popens (primary + fallback in the
+        # try/except OSError wrapper). `popens[-1]` is the fallback,
+        # `popens[-2]` is the primary. We verify BOTH because each
+        # must independently pass the structural checks.
+        outer_primary_popen = popens[-2] if len(popens) >= 2 else None
+        outer_fallback_popen = popens[-1]
+        assert outer_primary_popen is not None, (
+            "Expected at least 2 outer Popen calls (primary + fallback) "
+            "in _launch_detached_restart_command. Found fewer."
+        )
+        for label, outer_popen in [
+            ("outer-primary", outer_primary_popen),
+            ("outer-fallback", outer_fallback_popen),
+        ]:
+            # Verify the outer Popen's argv is a List with a Starred element
+            # wrapping a Name "cmd_argv" (NOT the inlined-string's `cmd`).
+            assert outer_popen.args, f"{label} Popen has no positional args"
+            first_arg = outer_popen.args[0]
+            assert isinstance(first_arg, _ast.List), (
+                f"{label} Popen's first arg is {type(first_arg).__name__}, not a List. "
+                f"Should be `[sys.executable, '-c', watcher, str(current_pid), *cmd_argv]`."
+            )
+            has_cmd_argv_star = any(
+                isinstance(el, _ast.Starred)
+                and isinstance(el.value, _ast.Name)
+                and el.value.id == "cmd_argv"
+                for el in first_arg.elts
+            )
+            assert has_cmd_argv_star, (
+                f"{label} Popen's argv list has no `*cmd_argv` Starred element. "
+                f"The watcher would be spawned without the 'gateway restart' "
+                f"command — it would wait for the parent to die, then exit "
+                f"without restarting the gateway."
+            )
+            # Verify the outer Popen uses `**`-spread kwargs (not a tuple
+            # `**(call(),)`). The `**`-spread has `kw.arg is None` in AST.
+            spread_kws = [kw for kw in outer_popen.keywords if kw.arg is None]
+            assert spread_kws, (
+                f"{label} Popen has no `**` kwargs spread. Found "
+                f"{len(outer_popen.keywords)} kwarg(s): "
+                f"{[kw.arg for kw in outer_popen.keywords]}. "
+                f"Without a `**` spread, the creationflags dict is passed as "
+                f"a single positional kwarg (Popen will raise TypeError). "
+                f"The correct pattern is `subprocess.Popen(..., "
+                f"stdout=..., stderr=..., **windows_detach_popen_kwargs())`."
+            )
+            for spread_kw in spread_kws:
+                v = spread_kw.value
+                if isinstance(v, (_ast.Call, _ast.Name)):
+                    continue  # acceptable
+                # Tuple spread `**(expr,)` would also raise TypeError at call
+                raise AssertionError(
+                    f"{label} Popen's `**` kwargs spread value is "
+                    f"{type(v).__name__} — expected Call or Name. "
+                    f"Pattern `**(expr,)` is a tuple spread and would raise TypeError."
+                )
+        # Verify the outer Popen is wrapped in a try/except OSError.
+        # Build a parent map.
+        parent_map = {}
+        for parent in _ast.walk(tree):
+            for child in _ast.iter_child_nodes(parent):
+                parent_map[id(child)] = parent
+        enclosing_try = None
+        node = outer_popen
+        while id(node) in parent_map:
+            parent = parent_map[id(node)]
+            if isinstance(parent, _ast.Try) and any(n is outer_popen for n in _ast.walk(parent)):
+                enclosing_try = parent
+                break
+            node = parent
+        assert enclosing_try is not None, (
+            "Outer watcher Popen is NOT wrapped in a try/except. On Windows, "
+            "the parent's job may refuse CREATE_BREAKAWAY_FROM_JOB, raising "
+            "OSError — the user gets an unhandled exception."
+        )
+        # Verify the except handler catches OSError (or a subclass).
+        assert enclosing_try.handlers, "Outer Popen's try/except has no except handler"
+        oserror_caught = False
+        for handler in enclosing_try.handlers:
+            if handler.type is None:
+                continue
+            if isinstance(handler.type, _ast.Name) and handler.type.id == "OSError":
+                oserror_caught = True
+                break
+            if isinstance(handler.type, _ast.Tuple):
+                for elt in handler.type.elts:
+                    if isinstance(elt, _ast.Name) and elt.id == "OSError":
+                        oserror_caught = True
+                        break
+        assert oserror_caught, (
+            "Outer Popen's except handler does NOT catch OSError. "
+            "CreateProcess can raise OSError/PermissionError on breakaway "
+            "denial; the handler must catch them."
+        )
