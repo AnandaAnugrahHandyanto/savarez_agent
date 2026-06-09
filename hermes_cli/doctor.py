@@ -181,14 +181,6 @@ def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool
 
 
 _STATE_FTS_TABLES = ("messages_fts", "messages_fts_trigram")
-_STATE_FTS_TRIGGERS = (
-    "messages_fts_insert",
-    "messages_fts_delete",
-    "messages_fts_update",
-    "messages_fts_trigram_insert",
-    "messages_fts_trigram_delete",
-    "messages_fts_trigram_update",
-)
 
 
 def _check_state_db_fts_integrity(conn) -> tuple[bool, str, bool]:
@@ -202,7 +194,12 @@ def _check_state_db_fts_integrity(conn) -> tuple[bool, str, bool]:
     try:
         rows = conn.execute("PRAGMA integrity_check").fetchall()
     except Exception as exc:
-        return False, f"integrity_check failed: {exc}", False
+        try:
+            from hermes_state import is_state_db_fts_repairable_error
+            repairable = is_state_db_fts_repairable_error(exc)
+        except Exception:
+            repairable = False
+        return False, f"integrity_check failed: {exc}", repairable
 
     problems = [
         str(row[0]) for row in rows
@@ -251,59 +248,11 @@ def _check_state_db_fts_integrity(conn) -> tuple[bool, str, bool]:
     return True, "FTS indexes healthy", False
 
 
-def _backup_state_db_for_doctor(db_path: Path) -> Path:
-    """Create a consistent sqlite backup before mutating state.db."""
-    import datetime
-    import sqlite3
-
-    backup_path = db_path.with_name(
-        f"{db_path.name}.doctor-backup-"
-        f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    )
-    src = sqlite3.connect(str(db_path))
-    try:
-        dst = sqlite3.connect(str(backup_path))
-        try:
-            src.backup(dst)
-        finally:
-            dst.close()
-    finally:
-        src.close()
-    return backup_path
-
-
 def _rebuild_state_db_fts_indexes(db_path: Path) -> None:
     """Rebuild derived state.db FTS5 indexes from the canonical messages table."""
-    import sqlite3
-    from hermes_state import FTS_SQL, FTS_TRIGRAM_SQL
+    from hermes_state import repair_state_db_fts_schema
 
-    conn = sqlite3.connect(str(db_path), isolation_level=None)
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        for trigger in _STATE_FTS_TRIGGERS:
-            conn.execute(f'DROP TRIGGER IF EXISTS "{trigger}"')
-        for table in _STATE_FTS_TABLES:
-            conn.execute(f'DROP TABLE IF EXISTS "{table}"')
-        conn.executescript(FTS_SQL)
-        conn.executescript(FTS_TRIGRAM_SQL)
-        backfill_sql = (
-            "SELECT id, "
-            "COALESCE(content, '') || ' ' || "
-            "COALESCE(tool_name, '') || ' ' || "
-            "COALESCE(tool_calls, '') "
-            "FROM messages"
-        )
-        conn.execute(f"INSERT INTO messages_fts(rowid, content) {backfill_sql}")
-        conn.execute(f"INSERT INTO messages_fts_trigram(rowid, content) {backfill_sql}")
-        conn.commit()
-    except BaseException:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        raise
-    finally:
-        conn.close()
+    repair_state_db_fts_schema(db_path, backup=False)
 
 
 def check_ok(text: str, detail: str = ""):
@@ -1287,8 +1236,9 @@ def run_doctor(args):
                 )
                 if fts_repairable:
                     if should_fix:
-                        backup_path = _backup_state_db_for_doctor(state_db_path)
-                        _rebuild_state_db_fts_indexes(state_db_path)
+                        from hermes_state import repair_state_db_fts_schema
+
+                        result = repair_state_db_fts_schema(state_db_path)
                         conn = sqlite3.connect(str(state_db_path))
                         try:
                             repaired_ok, repaired_detail, _ = _check_state_db_fts_integrity(conn)
@@ -1297,7 +1247,8 @@ def run_doctor(args):
                         if repaired_ok:
                             check_ok(
                                 "Rebuilt state.db FTS indexes",
-                                f"(backup: {backup_path.name}; {repaired_detail})",
+                                f"(backup: {result.backup_path.name if result.backup_path else 'none'}; "
+                                f"{result.messages_indexed} messages indexed; {repaired_detail})",
                             )
                             fixed_count += 1
                         else:
@@ -1318,6 +1269,35 @@ def run_doctor(args):
                     )
         except Exception as e:
             check_warn(f"{_DHH}/state.db exists but has issues: {e}")
+            try:
+                from hermes_state import (
+                    is_state_db_fts_repairable_error,
+                    repair_state_db_fts_schema,
+                )
+
+                repairable_schema = is_state_db_fts_repairable_error(e)
+            except Exception:
+                repairable_schema = False
+            if repairable_schema:
+                if should_fix:
+                    try:
+                        result = repair_state_db_fts_schema(state_db_path)
+                        check_ok(
+                            "Rebuilt state.db FTS schema",
+                            f"(backup: {result.backup_path.name if result.backup_path else 'none'}; "
+                            f"{result.messages_indexed} messages indexed)",
+                        )
+                        fixed_count += 1
+                    except Exception as repair_exc:
+                        check_warn(
+                            "state.db FTS schema repair failed",
+                            f"({repair_exc})",
+                        )
+                        issues.append(
+                            "state.db FTS schema repair failed — inspect or restore from backup"
+                        )
+                else:
+                    issues.append("state.db FTS schema needs rebuild — run 'hermes doctor --fix'")
     else:
         check_info(f"{_DHH}/state.db not created yet (will be created on first session)")
 

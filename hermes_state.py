@@ -14,6 +14,7 @@ Key design decisions:
 - Session source tagging ('cli', 'telegram', 'discord', etc.) for filtering
 """
 
+import contextlib
 import json
 import logging
 import random
@@ -21,6 +22,7 @@ import re
 import sqlite3
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -373,6 +375,167 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON message
 END;
 """
 
+_STATE_FTS_TABLES = ("messages_fts", "messages_fts_trigram")
+
+
+@dataclass(frozen=True)
+class StateDbFtsRepairResult:
+    """Result from rebuilding state.db's derived FTS schema."""
+
+    repaired: bool
+    backup_path: Optional[Path]
+    messages_indexed: int
+    trigram_messages_indexed: int
+    detail: str = ""
+
+
+def is_state_db_fts_repairable_error(exc_or_message: object) -> bool:
+    """Return True when an error points at derived state.db FTS schema/indexes.
+
+    The canonical transcript data is stored in ``messages``. The
+    ``messages_fts*`` objects are derived indexes and can be rebuilt. This
+    intentionally does NOT claim arbitrary SQLite corruption is repairable.
+    """
+    text = str(exc_or_message).lower()
+    return "messages_fts" in text and (
+        "malformed database schema" in text
+        or "database disk image is malformed" in text
+        or "malformed inverted index" in text
+        or "fts5" in text
+    )
+
+
+def _state_db_repair_backup_path(db_path: Path) -> Path:
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    return db_path.with_name(f"{db_path.name}.fts-repair-backup-{timestamp}")
+
+
+def _backup_sqlite_db_for_fts_repair(db_path: Path) -> Path:
+    """Create a best-effort consistent backup before FTS schema repair."""
+    import shutil
+
+    backup_path = _state_db_repair_backup_path(db_path)
+    try:
+        src = sqlite3.connect(str(db_path))
+        try:
+            dst = sqlite3.connect(str(backup_path))
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
+        finally:
+            src.close()
+    except sqlite3.Error:
+        # If schema parsing is too broken for sqlite3.Connection.backup(), fall
+        # back to byte copies. Copy WAL/SHM sidecars too so committed frames are
+        # not lost in the backup of a live WAL-mode database.
+        shutil.copy2(db_path, backup_path)
+        for suffix in ("-wal", "-shm"):
+            sidecar = db_path.with_name(f"{db_path.name}{suffix}")
+            if sidecar.exists():
+                shutil.copy2(sidecar, backup_path.with_name(f"{backup_path.name}{suffix}"))
+    return backup_path
+
+
+def repair_state_db_fts_schema(
+    db_path: Path = None,
+    *,
+    backup: bool = True,
+) -> StateDbFtsRepairResult:
+    """Drop and rebuild derived state.db FTS objects from ``messages``.
+
+    This repair path is intentionally lower-level than :class:`SessionDB`:
+    errors like ``malformed database schema (messages_fts) - table
+    messages_fts already exists`` happen while SQLite parses the schema, so
+    normal ``SessionDB()`` startup, ``PRAGMA integrity_check``, and ordinary
+    SELECTs cannot even prepare.  Opening with ``PRAGMA writable_schema=ON``
+    lets us remove only the derived FTS rows, recreate the virtual tables and
+    triggers, then backfill from canonical ``messages`` rows.
+    """
+    db_path = Path(db_path or DEFAULT_DB_PATH)
+    if not db_path.exists():
+        raise FileNotFoundError(db_path)
+
+    backup_path = _backup_sqlite_db_for_fts_repair(db_path) if backup else None
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        conn.execute("PRAGMA writable_schema=ON")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            messages_exists = conn.execute(
+                "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='messages'"
+            ).fetchone()
+            if not messages_exists:
+                raise sqlite3.DatabaseError("state.db messages table not found")
+
+            for trigger in _FTS_TRIGGERS:
+                conn.execute(f'DROP TRIGGER IF EXISTS "{trigger}"')
+
+            # Drop virtual tables through SQLite when possible. With
+            # writable_schema enabled, this also works for the duplicate
+            # messages_fts schema-row failure reported by users.
+            for table_name in _STATE_FTS_TABLES:
+                try:
+                    conn.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+                except sqlite3.DatabaseError as exc:
+                    logger.warning(
+                        "state.db FTS repair: DROP TABLE %s failed, falling "
+                        "back to sqlite_schema cleanup: %s",
+                        table_name,
+                        exc,
+                    )
+
+            # Defensive cleanup for malformed/duplicate schema rows and orphaned
+            # FTS shadow rows that a failed DROP TABLE could not remove.
+            trigger_placeholders = ",".join("?" for _ in _FTS_TRIGGERS)
+            conn.execute(
+                "DELETE FROM sqlite_schema "
+                "WHERE name LIKE 'messages_fts%' "
+                f"OR name IN ({trigger_placeholders})",
+                _FTS_TRIGGERS,
+            )
+            schema_version = conn.execute("PRAGMA schema_version").fetchone()[0]
+            conn.execute(f"PRAGMA schema_version = {int(schema_version) + 1}")
+            conn.execute("PRAGMA writable_schema=OFF")
+
+            conn.executescript(FTS_SQL)
+            conn.executescript(FTS_TRIGRAM_SQL)
+            backfill_sql = (
+                "SELECT id, "
+                "COALESCE(content, '') || ' ' || "
+                "COALESCE(tool_name, '') || ' ' || "
+                "COALESCE(tool_calls, '') "
+                "FROM messages"
+            )
+            conn.execute(f"INSERT INTO messages_fts(rowid, content) {backfill_sql}")
+            conn.execute(
+                f"INSERT INTO messages_fts_trigram(rowid, content) {backfill_sql}"
+            )
+            messages_indexed = int(
+                conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+            )
+            trigram_indexed = int(
+                conn.execute("SELECT COUNT(*) FROM messages_fts_trigram").fetchone()[0]
+            )
+            conn.commit()
+        except BaseException:
+            try:
+                conn.rollback()
+            finally:
+                with contextlib.suppress(Exception):
+                    conn.execute("PRAGMA writable_schema=OFF")
+            raise
+
+        return StateDbFtsRepairResult(
+            repaired=True,
+            backup_path=backup_path,
+            messages_indexed=messages_indexed,
+            trigram_messages_indexed=trigram_indexed,
+            detail="rebuilt messages_fts and messages_fts_trigram from messages",
+        )
+    finally:
+        conn.close()
+
 
 class SessionDB:
     """
@@ -439,10 +602,32 @@ class SessionDB:
                 isolation_level=None,
             )
             self._conn.row_factory = sqlite3.Row
-            apply_wal_with_fallback(self._conn, db_label="state.db")
-            self._conn.execute("PRAGMA foreign_keys=ON")
+            try:
+                apply_wal_with_fallback(self._conn, db_label="state.db")
+                self._conn.execute("PRAGMA foreign_keys=ON")
 
-            self._init_schema()
+                self._init_schema()
+            except sqlite3.DatabaseError as exc:
+                if not is_state_db_fts_repairable_error(exc):
+                    raise
+                logger.warning(
+                    "state.db has repairable FTS schema/index damage (%s); "
+                    "rebuilding derived FTS indexes from messages",
+                    exc,
+                )
+                with contextlib.suppress(Exception):
+                    self._conn.close()
+                repair_state_db_fts_schema(self.db_path)
+                self._conn = sqlite3.connect(
+                    str(self.db_path),
+                    check_same_thread=False,
+                    timeout=1.0,
+                    isolation_level=None,
+                )
+                self._conn.row_factory = sqlite3.Row
+                apply_wal_with_fallback(self._conn, db_label="state.db")
+                self._conn.execute("PRAGMA foreign_keys=ON")
+                self._init_schema()
         except Exception as exc:
             # Capture the cause so /resume and friends can surface WHY the
             # session DB is unavailable instead of a bare "Session database

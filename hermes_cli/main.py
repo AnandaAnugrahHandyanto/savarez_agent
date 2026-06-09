@@ -11138,7 +11138,7 @@ def main():
     # =========================================================================
     sessions_parser = subparsers.add_parser(
         "sessions",
-        help="Manage session history (list, rename, export, prune, delete)",
+        help="Manage session history (list, rename, export, prune, delete, repair)",
         description="View and manage the SQLite session store",
     )
     sessions_subparsers = sessions_parser.add_subparsers(dest="sessions_action")
@@ -11187,6 +11187,16 @@ def main():
 
     sessions_subparsers.add_parser("stats", help="Show session store statistics")
 
+    sessions_repair = sessions_subparsers.add_parser(
+        "repair",
+        help="Detect and repair state.db FTS schema/index issues",
+    )
+    sessions_repair.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Check repairability without changing state.db",
+    )
+
     sessions_rename = sessions_subparsers.add_parser(
         "rename", help="Set or change a session's title"
     )
@@ -11213,6 +11223,61 @@ def main():
 
     def cmd_sessions(args):
         import json as _json
+        import sqlite3
+
+        action = args.sessions_action
+
+        if action == "repair":
+            from hermes_state import (
+                SessionDB,
+                is_state_db_fts_repairable_error,
+                repair_state_db_fts_schema,
+            )
+            from hermes_cli.doctor import _check_state_db_fts_integrity
+
+            db_path = get_hermes_home() / "state.db"
+            if not db_path.exists():
+                print("No state.db found yet.")
+                return
+            check_only = getattr(args, "check_only", False)
+
+            try:
+                with sqlite3.connect(str(db_path)) as conn:
+                    ok, detail, repairable = _check_state_db_fts_integrity(conn)
+            except Exception as e:
+                ok = False
+                detail = str(e)
+                repairable = is_state_db_fts_repairable_error(e)
+
+            if ok:
+                db = SessionDB(db_path=db_path)
+                try:
+                    print(
+                        f"state.db OK: {db.session_count()} sessions, "
+                        f"{db.message_count()} messages ({detail})"
+                    )
+                finally:
+                    db.close()
+                return
+
+            print(f"FTS issue: {detail}")
+            repairable = repairable or is_state_db_fts_repairable_error(detail)
+            if check_only:
+                if repairable:
+                    print("Repair needed; no changes made (--check-only).")
+                else:
+                    print("This does not look like a repairable FTS-only issue.")
+                return
+            if not repairable:
+                print("This does not look like a repairable FTS-only issue.")
+                return
+            result = repair_state_db_fts_schema(db_path)
+            print(
+                "Rebuilt FTS schema: "
+                f"{result.messages_indexed} messages indexed "
+                f"(backup: {result.backup_path.name if result.backup_path else 'none'})"
+            )
+            return
 
         try:
             from hermes_state import SessionDB
@@ -11221,8 +11286,6 @@ def main():
         except Exception as e:
             print(f"Error: Could not open session database: {e}")
             return
-
-        action = args.sessions_action
 
         # Hide third-party tool sessions by default, but honour explicit --source
         _source = getattr(args, "source", None)
