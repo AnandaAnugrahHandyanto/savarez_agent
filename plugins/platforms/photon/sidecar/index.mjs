@@ -131,15 +131,43 @@ function ok(res, data) {
 }
 
 async function resolveSpace(spaceId) {
-  // spectrum-ts exposes the same Space methods via `app.space(spaceId)` /
-  // narrowed helpers; we fall back through a few accessor shapes to
-  // tolerate small SDK API drift.
+  // Existing inbound iMessage chats arrive as Apple chat GUIDs
+  // (`any;-;+1555...`).  Prefer Spectrum's generic resolver first because it
+  // can resolve existing chats without attempting a new-conversation create.
   if (typeof app.space === "function") {
-    return await app.space(spaceId);
+    try {
+      return await app.space(spaceId);
+    } catch {
+      /* fall through */
+    }
   }
   if (app.spaces && typeof app.spaces.get === "function") {
-    return await app.spaces.get(spaceId);
+    try {
+      return await app.spaces.get(spaceId);
+    } catch {
+      /* fall through */
+    }
   }
+  // If the generic resolver cannot reopen the inbound chat GUID, reconstruct
+  // one-on-one iMessage DMs from the E.164 address embedded in `any;-;+...`.
+  // This is the same path used for first outbound sends to a phone number.
+  if (imessage) {
+    const im = imessage(app);
+    if (typeof im.space === "function") {
+      const dmPrefix = "any;-;";
+      if (typeof spaceId === "string" && spaceId.startsWith(dmPrefix)) {
+        const address = spaceId.slice(dmPrefix.length);
+        if (address) {
+          try {
+            return await im.space([{ id: address }]);
+          } catch {
+            /* fall through */
+          }
+        }
+      }
+    }
+  }
+
   // Last resort — the platform-narrowed helper.
   if (imessage) {
     const im = imessage(app);
@@ -178,9 +206,12 @@ const server = http.createServer(async (req, res) => {
         return badRequest(res, "spaceId and text are required");
       }
       const space = await resolveSpace(spaceId);
-      const result = replyTo
-        ? await space.send(text, { replyTo })
-        : await space.send(text);
+      // spectrum-ts does not accept a raw options object as a second argument
+      // to `space.send`; that path treats `{ replyTo }` as another content
+      // builder and throws `c.build is not a function`. Until we build a
+      // proper message-reference resolver for Photon replies, send plain text
+      // to the same chat and ignore replyTo rather than dropping the response.
+      const result = await space.send(text);
       return ok(res, { messageId: result?.id || result?.messageId || null });
     }
     if (req.url === "/send-attachment") {
@@ -202,10 +233,7 @@ const server = http.createServer(async (req, res) => {
           ? voice(path, Object.keys(opts).length ? opts : undefined)
           : attachment(path, Object.keys(opts).length ? opts : undefined);
 
-      const sendOpts = replyTo ? { replyTo } : undefined;
-      const result = sendOpts
-        ? await space.send(builder, sendOpts)
-        : await space.send(builder);
+      const result = await space.send(builder);
 
       // iMessage delivers the caption as a separate bubble; send it
       // after the media so the attachment renders first.

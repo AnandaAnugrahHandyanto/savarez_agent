@@ -566,6 +566,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 f"Photon sidecar deps not installed. Run: "
                 f"cd {_SIDECAR_DIR} && npm install   (or `hermes photon setup`)"
             )
+        await self._clear_stale_sidecar_port()
         env = os.environ.copy()
         env["PHOTON_PROJECT_ID"] = self._project_id
         env["PHOTON_PROJECT_SECRET"] = self._project_secret
@@ -610,6 +611,106 @@ class PhotonAdapter(BasePlatformAdapter):
         raise RuntimeError(
             f"Photon sidecar did not become ready within 15s: {last_err}"
         )
+
+    async def _clear_stale_sidecar_port(self) -> None:
+        """Remove orphaned Photon sidecars that survived a hard gateway kill.
+
+        launchd may SIGKILL the Python gateway before ``disconnect()`` runs.
+        Because the Node sidecar is intentionally started in a new process
+        group, it can become an orphan and keep the loopback port occupied.
+        The next gateway start then spawns a fresh sidecar with a fresh bearer
+        token, hits EADDRINUSE, and Photon never reconnects.  Only kill a
+        listener when it is this exact Photon sidecar script; otherwise leave
+        the port alone and let the normal startup error surface.
+        """
+        if sys.platform == "win32":
+            return
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "lsof",
+                "-nP",
+                f"-iTCP:{self._sidecar_port}",
+                "-sTCP:LISTEN",
+                "-Fpca",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+        except Exception:
+            return
+        if not stdout:
+            return
+
+        current_pid: Optional[int] = None
+        commands: Dict[int, str] = {}
+        args: Dict[int, list[str]] = {}
+        for raw in stdout.decode("utf-8", "replace").splitlines():
+            if not raw:
+                continue
+            tag, value = raw[0], raw[1:]
+            if tag == "p":
+                try:
+                    current_pid = int(value)
+                except ValueError:
+                    current_pid = None
+            elif tag == "c" and current_pid is not None:
+                commands[current_pid] = value
+            elif tag == "a" and current_pid is not None:
+                args.setdefault(current_pid, []).append(value)
+
+        sidecar_path = str(_SIDECAR_DIR / "index.mjs")
+        for pid in set(commands) | set(args):
+            # On macOS, ``lsof -F a`` may emit only access-mode records such as
+            # ``au`` rather than the listener's full argv. Fall back to ``ps``
+            # so hard-killed gateway restarts can actually identify and clear
+            # orphaned Photon sidecars instead of looping on EADDRINUSE.
+            cmdline = "\x00".join(args.get(pid, []))
+            if sidecar_path not in cmdline:
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        "ps",
+                        "-p",
+                        str(pid),
+                        "-o",
+                        "command=",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    ps_stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+                    cmdline = ps_stdout.decode("utf-8", "replace")
+                except Exception:
+                    cmdline = ""
+            if sidecar_path not in cmdline:
+                continue
+            logger.warning(
+                "[photon] clearing stale sidecar pid=%s on port %s",
+                pid,
+                self._sidecar_port,
+            )
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except ProcessLookupError:
+                continue
+            except Exception:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except Exception:
+                    continue
+            deadline = time.time() + 3.0
+            while time.time() < deadline:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                await asyncio.sleep(0.1)
+            else:
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                except Exception:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except Exception:
+                        pass
 
     async def _supervise_sidecar(self, proc: subprocess.Popen) -> None:
         """Pump the sidecar's stdout/stderr into our logger."""
