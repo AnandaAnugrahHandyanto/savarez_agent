@@ -21,7 +21,7 @@ import {
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
-import { setSessionYolo } from '@/lib/yolo-session'
+import { setDesktopYoloMode } from '@/lib/yolo-session'
 import {
   $composerAttachments,
   addComposerAttachment,
@@ -41,8 +41,7 @@ import {
   setBusy,
   setMessages,
   setModelPickerOpen,
-  setSessions,
-  setYoloActive
+  setSessions
 } from '@/store/session'
 
 import type {
@@ -605,16 +604,14 @@ export function usePromptActions({
           const sid = sessionHint || activeSessionIdRef.current
           const next = !$yoloActive.get()
 
-          if (!sid) {
-            setYoloActive(next)
-            notify({ kind: 'success', message: next ? copy.yoloArmed : copy.yoloOff })
-
-            return
-          }
-
           try {
-            const active = await setSessionYolo(requestGateway, sid, next)
-            appendSessionTextMessage(sid, 'system', copy.yoloSystem(active))
+            const active = await setDesktopYoloMode(requestGateway, sid, next)
+
+            if (sid) {
+              appendSessionTextMessage(sid, 'system', copy.yoloSystem(active))
+            } else {
+              notify({ kind: 'success', message: active ? copy.yoloArmed : copy.yoloOff })
+            }
           } catch {
             notify({ kind: 'error', title: copy.yoloTitle, message: copy.yoloToggleFailed })
           }
