@@ -78,6 +78,7 @@ import {
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 
 import { ChatView } from './chat'
+import { requestComposerInsert } from './chat/composer/focus'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
 import {
   ChatPreviewRail,
@@ -281,6 +282,20 @@ export function DesktopController() {
     return () => {
       unsubscribe?.()
       window.removeEventListener('keydown', onKeyDown, { capture: true })
+    }
+  }, [])
+
+  // Right-click "Send Selection to Composer" — appends selected text from
+  // non-editable surfaces (chat content, file preview) into the composer draft.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onComposerAppendSelection?.(text => {
+      if (text?.trim()) {
+        requestComposerInsert(text, { mode: 'block', target: 'main' })
+      }
+    })
+
+    return () => {
+      unsubscribe?.()
     }
   }, [])
 
