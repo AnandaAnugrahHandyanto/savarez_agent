@@ -55,6 +55,8 @@ def _mock_handle_function_call(function_name, function_args, task_id=None, user_
     """Minimal mock dispatcher reused across tests."""
     if function_name == "terminal":
         return json.dumps({"output": "mock", "exit_code": 0})
+    if function_name == "web_search":
+        return json.dumps({"output": "mock", "exit_code": 0})
     if function_name == "read_file":
         return json.dumps({"content": "line1\n", "total_lines": 1})
     return json.dumps({"error": f"Unknown tool: {function_name}"})
