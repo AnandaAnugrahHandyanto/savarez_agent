@@ -15,6 +15,7 @@ import time
 from email.utils import formatdate
 
 from agent.redact import redact_sensitive_text
+from gateway.platforms.whatsapp_location import parse_whatsapp_location_directive
 
 logger = logging.getLogger(__name__)
 
@@ -65,45 +66,6 @@ _GENERIC_SECRET_ASSIGN_RE = re.compile(
     r"\b(access_token|api[_-]?key|auth[_-]?token|signature|sig)\s*=\s*([^\s,;]+)",
     re.IGNORECASE,
 )
-
-
-def _parse_whatsapp_location_directive(message: str) -> dict | None:
-    """Parse a full-message WhatsApp native location directive.
-
-    Supported format:
-        LOCATION:<lat>,<lon>|optional name|optional address
-
-    The directive must occupy the whole message.  That keeps ordinary prose
-    containing the word ``LOCATION:`` from being treated as a native send.
-    """
-    stripped = (message or "").strip()
-    if not stripped.startswith("LOCATION:"):
-        return None
-
-    body = stripped[len("LOCATION:"):]
-    parts = body.split("|", 2)
-    coord_text = parts[0].strip()
-    if "," not in coord_text:
-        raise ValueError("LOCATION directive must use '<latitude>,<longitude>'")
-
-    lat_text, lon_text = [piece.strip() for piece in coord_text.split(",", 1)]
-    try:
-        latitude = float(lat_text)
-        longitude = float(lon_text)
-    except ValueError as exc:
-        raise ValueError("LOCATION directive latitude/longitude must be numeric") from exc
-
-    if not (-90 <= latitude <= 90):
-        raise ValueError("LOCATION directive latitude must be between -90 and 90")
-    if not (-180 <= longitude <= 180):
-        raise ValueError("LOCATION directive longitude must be between -180 and 180")
-
-    location: dict[str, object] = {"latitude": latitude, "longitude": longitude}
-    if len(parts) > 1 and parts[1].strip():
-        location["name"] = parts[1].strip()
-    if len(parts) > 2 and parts[2].strip():
-        location["address"] = parts[2].strip()
-    return location
 
 
 def _sanitize_error_text(text) -> str:
@@ -1133,7 +1095,7 @@ async def _send_whatsapp(extra, chat_id, message):
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         bridge_port = extra.get("bridge_port", 3000)
-        location = _parse_whatsapp_location_directive(message)
+        location = parse_whatsapp_location_directive(message)
         async with aiohttp.ClientSession() as session:
             if location is not None:
                 payload = {"chatId": chat_id, **location}

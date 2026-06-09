@@ -26,10 +26,10 @@ def _reset_signal_scheduler():
     _reset_scheduler()
 
 from gateway.config import Platform
+from gateway.platforms.whatsapp_location import parse_whatsapp_location_directive
 from tools.send_message_tool import (
     _is_telegram_thread_not_found,
     _parse_target_ref,
-    _parse_whatsapp_location_directive,
     _send_matrix_via_adapter,
     _send_signal,
     _send_telegram,
@@ -867,7 +867,7 @@ class TestSendToPlatformWhatsapp:
         async_mock.assert_awaited_once_with({"bridge_port": 3000}, chat_id, "hello from hermes")
 
     def test_location_directive_parser_accepts_native_pin_format(self):
-        parsed = _parse_whatsapp_location_directive(
+        parsed = parse_whatsapp_location_directive(
             "LOCATION:37.7749,-122.4194|San Francisco City Hall|1 Dr Carlton B Goodlett Pl"
         )
 
@@ -880,7 +880,7 @@ class TestSendToPlatformWhatsapp:
 
     def test_location_directive_parser_rejects_out_of_range_coordinates(self):
         with pytest.raises(ValueError, match="latitude"):
-            _parse_whatsapp_location_directive("LOCATION:118.0,-69.0|Bad")
+            parse_whatsapp_location_directive("LOCATION:118.0,-69.0|Bad")
 
     @staticmethod
     def _build_whatsapp_mock(response_status=200, response_data=None, response_text="error body"):
