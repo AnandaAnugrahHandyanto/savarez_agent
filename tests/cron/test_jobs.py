@@ -991,3 +991,68 @@ class TestSaveJobOutput:
         with pytest.raises(ValueError, match="output path"):
             save_job_output(str(tmp_cron_dir / "outside"), "# Results")
         assert not (tmp_cron_dir / "outside").exists()
+
+
+# =========================================================================
+# _jobs_file_lock coverage for CRUD operations
+# =========================================================================
+
+class TestJobsFileLock:
+    """create_job, update_job, and remove_job must hold _jobs_file_lock."""
+
+    def _make_tracking_lock(self, original_lock):
+        counts = {"enter": 0, "exit": 0}
+
+        class TrackingLock:
+            def __enter__(self):
+                counts["enter"] += 1
+                return original_lock.__enter__()
+
+            def __exit__(self, *args):
+                counts["exit"] += 1
+                return original_lock.__exit__(*args)
+
+        return TrackingLock(), counts
+
+    def test_create_job_holds_lock(self, tmp_cron_dir, monkeypatch):
+        """create_job must hold _jobs_file_lock during load→append→save."""
+        import cron.jobs as jobs_mod
+
+        tracking, counts = self._make_tracking_lock(jobs_mod._jobs_file_lock)
+        monkeypatch.setattr(jobs_mod, "_jobs_file_lock", tracking)
+
+        job = create_job(prompt="Lock test", schedule="30m")
+
+        assert job is not None
+        assert counts["enter"] >= 1, f"Lock never acquired (enter={counts['enter']})"
+        assert counts["enter"] == counts["exit"], "Lock acquire/release mismatch"
+
+    def test_update_job_holds_lock(self, tmp_cron_dir, monkeypatch):
+        """update_job must hold _jobs_file_lock during load→modify→save."""
+        import cron.jobs as jobs_mod
+
+        job = create_job(prompt="Update me", schedule="every 1h")
+
+        tracking, counts = self._make_tracking_lock(jobs_mod._jobs_file_lock)
+        monkeypatch.setattr(jobs_mod, "_jobs_file_lock", tracking)
+
+        updated = update_job(job["id"], {"name": "Updated"})
+
+        assert updated is not None
+        assert counts["enter"] >= 1, f"Lock never acquired (enter={counts['enter']})"
+        assert counts["enter"] == counts["exit"], "Lock acquire/release mismatch"
+
+    def test_remove_job_holds_lock(self, tmp_cron_dir, monkeypatch):
+        """remove_job must hold _jobs_file_lock during load→filter→save."""
+        import cron.jobs as jobs_mod
+
+        job = create_job(prompt="To remove", schedule="30m")
+
+        tracking, counts = self._make_tracking_lock(jobs_mod._jobs_file_lock)
+        monkeypatch.setattr(jobs_mod, "_jobs_file_lock", tracking)
+
+        result = remove_job(job["id"])
+
+        assert result is True
+        assert counts["enter"] >= 1, f"Lock never acquired (enter={counts['enter']})"
+        assert counts["enter"] == counts["exit"], "Lock acquire/release mismatch"
