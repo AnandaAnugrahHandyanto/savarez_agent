@@ -943,8 +943,16 @@ class MatrixAdapter(BasePlatformAdapter):
                             try:
                                 secret_file = _STORE_DIR / ".recovery_key_once"
                                 secret_file.parent.mkdir(parents=True, exist_ok=True)
-                                secret_file.write_text(new_recovery_key)
-                                secret_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+                                # Atomic create+write with 0600 — O_EXCL fails if
+                                # the path exists (including as a symlink), closing
+                                # both the TOCTOU race and symlink attack vectors.
+                                fd = os.open(
+                                    str(secret_file),
+                                    os.O_CREAT | os.O_WRONLY | os.O_EXCL,
+                                    0o600,
+                                )
+                                with os.fdopen(fd, "w") as fh:
+                                    fh.write(new_recovery_key)
                             except OSError as write_exc:
                                 logger.warning(
                                     "Matrix: could not write recovery key to "

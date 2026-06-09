@@ -157,15 +157,19 @@ class TestRecoveryKeySecurity:
         adapter, _, _, fake_mautrix = _setup_adapter_and_stubs(tmp_path)
         from gateway.platforms import matrix as matrix_mod
 
-        def raise_os_error(*args, **kwargs):
-            raise OSError("Permission denied")
+        real_open = os.open
+
+        def raise_os_error(path, flags, mode=0o666):
+            if ".recovery_key_once" in str(path):
+                raise OSError("Permission denied")
+            return real_open(path, flags, mode)
 
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True), \
              patch.dict("sys.modules", fake_mautrix), \
              patch.object(matrix_mod, "_STORE_DIR", tmp_path), \
              patch.object(adapter, "_refresh_dm_cache", AsyncMock()), \
              patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)), \
-             patch("pathlib.Path.write_text", side_effect=raise_os_error), \
+             patch("os.open", side_effect=raise_os_error), \
              patch("gateway.platforms.matrix.logger") as mock_logger:
             await adapter.connect()
 
@@ -173,6 +177,37 @@ class TestRecoveryKeySecurity:
         warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
         key_in_logs = any("test-recovery-key-abc123" in c for c in warning_calls)
         assert not key_in_logs, "Recovery key leaked into logs on file write failure"
+
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_symlink_attack_blocked_by_o_excl(self, tmp_path):
+        """O_EXCL prevents writing recovery key through a symlink."""
+        adapter, _, _, fake_mautrix = _setup_adapter_and_stubs(tmp_path)
+        from gateway.platforms import matrix as matrix_mod
+
+        # Create a symlink at the expected path pointing to a sensitive target
+        secret_file = tmp_path / ".recovery_key_once"
+        target = tmp_path / "sensitive.txt"
+        target.write_text("original")
+        secret_file.symlink_to(target)
+
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True), \
+             patch.dict("sys.modules", fake_mautrix), \
+             patch.object(matrix_mod, "_STORE_DIR", tmp_path), \
+             patch.object(adapter, "_refresh_dm_cache", AsyncMock()), \
+             patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)), \
+             patch("gateway.platforms.matrix.logger") as mock_logger:
+            # Should not crash — falls through to stderr fallback
+            await adapter.connect()
+
+        # The symlink target must NOT be overwritten
+        assert target.read_text() == "original"
+
+        # Warning should mention the write failure
+        warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
+        file_failure = any("could not write" in c.lower() or "recovery key" in c.lower() for c in warning_calls)
+        assert file_failure, "Expected warning about file write failure"
 
         await adapter.disconnect()
 
