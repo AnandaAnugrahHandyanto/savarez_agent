@@ -48,6 +48,9 @@ class TestIsLocalProvider:
     def test_ipv6_loopback(self):
         assert self.is_local("custom", "http://[::1]:8080/v1") is True
 
+    def test_all_interfaces_base_url(self):
+        assert self.is_local("custom", "http://0.0.0.0:11434/v1") is True
+
     def test_mdns_hostname(self):
         assert self.is_local("custom", "http://myserver.local:8080/v1") is True
 

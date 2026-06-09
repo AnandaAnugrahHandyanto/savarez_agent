@@ -3093,7 +3093,7 @@ def _is_local_provider(provider: str, base_url: str) -> bool:
         return True
     if base_url:
         _b = base_url.lower()
-        for host in ("localhost", "127.0.0.1", "::1", "0.0.0.1"):
+        for host in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
             if host in _b:
                 return True
         # mDNS / .local hostnames (common for LAN model servers)
