@@ -1162,7 +1162,7 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
                 current_model=ctx.current_model,
                 user_providers=ctx.user_providers,
                 custom_providers=ctx.custom_providers,
-                max_models=50,
+                max_models=200,
             )
         except Exception:
             # Best-effort warmup — never surface errors into the session.
@@ -1180,7 +1180,7 @@ def list_authenticated_providers(
     custom_providers: list | None = None,
     *,
     force_fresh_nous_tier: bool = False,
-    max_models: int = 8,
+    max_models: int = 200,
     current_model: str = "",
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
@@ -1968,7 +1968,7 @@ def list_picker_providers(
     current_base_url: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
-    max_models: int = 8,
+    max_models: int = 200,
     current_model: str = "",
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
