@@ -189,9 +189,13 @@ export function SidebarSessionRow({
           </div>
         </button>
         <div className="flex items-center justify-end px-1.5">
-          <span className="pointer-events-none min-w-6 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary)">
-            {age}
-          </span>
+          {/* An active session announces itself via the pulsing dot; the
+              timestamp only matters once it goes idle. */}
+          {!isWorking && (
+            <span className="pointer-events-none min-w-6 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary)">
+              {age}
+            </span>
+          )}
         </div>
         <div className="grid w-[1.375rem] place-items-center">
           <SessionActionsMenu
@@ -252,7 +256,7 @@ function SidebarRowDot({
       className={cn(
         'rounded-full',
         isWorking
-          ? "relative size-1.5 bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] before:absolute before:inset-0 before:animate-ping before:rounded-full before:bg-(--ui-accent) before:opacity-70 before:content-['']"
+          ? "relative size-1.5 bg-orange-500 shadow-[0_0_0.625rem_color-mix(in_srgb,#f97316_60%,transparent)] before:absolute before:inset-0 before:animate-ping before:rounded-full before:bg-orange-500 before:opacity-70 before:content-['']"
           : 'size-1 bg-(--ui-text-quaternary) opacity-80',
         className
       )}
