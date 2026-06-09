@@ -69,14 +69,14 @@ export function useGatewayBoot({
 
   useEffect(() => {
     let cancelled = false
-    const desktop = window.hermesDesktop
+    const desktopBridge = window.hermesDesktop
 
     const publish = (next: HermesConnection | null) => {
       callbacksRef.current.onConnectionReady(next)
       setConnection(next)
     }
 
-    if (!desktop) {
+    if (!desktopBridge) {
       failDesktopBoot('Desktop IPC bridge is unavailable.')
       setSessionsLoading(false)
 
@@ -125,9 +125,9 @@ export function useGatewayBoot({
         // whose 'exit' would clear the main process's cached descriptor — without
         // this the renderer re-dials the same dead endpoint forever and stays on
         // "Starting Hermes…". The probe is a no-op for a healthy or local backend.
-        await desktop.revalidateConnection?.().catch(() => undefined)
+        await desktopBridge.revalidateConnection?.().catch(() => undefined)
 
-        const conn = await desktop.getConnection($activeGatewayProfile.get())
+        const conn = await desktopBridge.getConnection($activeGatewayProfile.get())
 
         if (cancelled) {
           return
@@ -141,7 +141,7 @@ export function useGatewayBoot({
         // mints a fresh ticket (or throws a reauth error in OAuth mode rather
         // than connecting with a stale one). For local/token gateways the URL
         // carries a long-lived token and the re-mint is a cheap no-op.
-        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        const wsUrl = await resolveGatewayWsUrl(desktopBridge, conn)
         await gateway.connect(wsUrl)
 
         if (cancelled) {
@@ -198,8 +198,8 @@ export function useGatewayBoot({
       }
     }
 
-    const offBootProgress = desktop.onBootProgress(payload => applyDesktopBootProgress(payload))
-    void desktop
+    const offBootProgress = desktopBridge.onBootProgress(payload => applyDesktopBootProgress(payload))
+    void desktopBridge
       .getBootProgress()
       .then(snapshot => applyDesktopBootProgress(snapshot))
       .catch(() => undefined)
@@ -245,7 +245,7 @@ export function useGatewayBoot({
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.
-    const offPowerResume = desktop.onPowerResume?.(() => reconnectNow())
+    const offPowerResume = desktopBridge.onPowerResume?.(() => reconnectNow())
 
     const onOnline = () => reconnectNow()
 
@@ -286,7 +286,7 @@ export function useGatewayBoot({
     const offAttention = $attentionSessionIds.subscribe(() => recomputeKeptGateways())
     const offActiveProfile = $activeGatewayProfile.subscribe(() => recomputeKeptGateways())
 
-    const offWindowState = desktop.onWindowStateChanged?.(payload => {
+    const offWindowState = desktopBridge.onWindowStateChanged?.(payload => {
       const current = $connection.get()
 
       if (current) {
@@ -294,7 +294,7 @@ export function useGatewayBoot({
       }
     })
 
-    const offExit = desktop.onBackendExit(() => {
+    const offExit = desktopBridge.onBackendExit(() => {
       if ($desktopBoot.get().running || $desktopBoot.get().visible) {
         failDesktopBoot(translateNow('boot.errors.backgroundExitedDuringStartup'))
       }
@@ -309,7 +309,7 @@ export function useGatewayBoot({
 
     async function boot() {
       try {
-        const conn = await desktop.getConnection()
+        const conn = await desktopBridge.getConnection()
 
         if (cancelled) {
           return
@@ -326,7 +326,7 @@ export function useGatewayBoot({
         // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it and, on
         // failure, throws a reauth error rather than connecting with a dead
         // ticket (which would surface as an opaque "connection closed").
-        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        const wsUrl = await resolveGatewayWsUrl(desktopBridge, conn)
         await gateway.connect(wsUrl)
 
         if (cancelled) {
@@ -337,7 +337,7 @@ export function useGatewayBoot({
         // same-profile resumes are no-op swaps and any reconnect targets the
         // right backend. Best-effort: a missing preference means "default".
         try {
-          const pref = await desktop.profile?.get?.()
+          const pref = await desktopBridge.profile?.get?.()
           const profileKey = (pref?.profile ?? '').trim() || 'default'
           $activeGatewayProfile.set(profileKey)
           setPrimaryGateway(gateway, profileKey)

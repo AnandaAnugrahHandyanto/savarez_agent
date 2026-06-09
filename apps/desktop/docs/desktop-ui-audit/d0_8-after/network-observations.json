@@ -1,0 +1,20 @@
+{
+  "capturedAt": "2026-06-09T16:56:56-03:00",
+  "origin": "http://127.0.0.1:5174",
+  "resourceCount": 250,
+  "origins": [
+    "http://127.0.0.1:5174"
+  ],
+  "externalOrigins": [],
+  "firstResources": [
+    "http://127.0.0.1:5174/@vite/client",
+    "http://127.0.0.1:5174/src/main.tsx?t=1781034784780",
+    "http://127.0.0.1:5174/@react-refresh",
+    "http://127.0.0.1:5174/node_modules/vite/dist/client/env.mjs",
+    "http://127.0.0.1:5174/node_modules/.vite/deps/react.js?v=aa02b2af",
+    "http://127.0.0.1:5174/node_modules/.vite/deps/@tanstack_react-query.js?v=aa02b2af",
+    "http://127.0.0.1:5174/src/styles.css?t=1781034784780",
+    "http://127.0.0.1:5174/src/app/index.tsx?t=1781034784780"
+  ],
+  "note": "Only the local Vite origin appeared in the resource list; no external network origins were observed."
+}

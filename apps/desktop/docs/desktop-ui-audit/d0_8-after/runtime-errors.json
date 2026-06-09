@@ -1,0 +1,6 @@
+{
+  "capturedAt": "2026-06-09T16:56:56-03:00",
+  "source": "electron-cdp",
+  "runtimeErrors": [],
+  "note": "The renderer DOM contained no active boot-overlay/runtime error strings at the time of inspection."
+}

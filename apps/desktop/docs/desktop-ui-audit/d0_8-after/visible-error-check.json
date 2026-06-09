@@ -1,0 +1,13 @@
+{
+  "capturedAt": "2026-06-09T16:56:56-03:00",
+  "checks": [
+    { "text": "Desktop IPC bridge is unavailable", "found": false },
+    { "text": "Desktop boot failed", "found": false },
+    { "text": "Should have a queue", "found": false },
+    { "text": "calling Hooks conditionally", "found": false },
+    { "text": "Hermes couldn't start", "found": false },
+    { "text": "Hermes couldn’t start", "found": false },
+    { "text": "desktop variable redeclared", "found": false },
+    { "text": "It can not be redeclared here", "found": false }
+  ]
+}
