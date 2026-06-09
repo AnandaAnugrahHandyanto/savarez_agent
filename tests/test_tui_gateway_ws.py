@@ -87,3 +87,65 @@ def test_ws_disconnect_preserves_and_repoints_reconnectable_session(monkeypatch)
         assert server._sessions["plain"]["transport"] is server._detached_ws_transport
     finally:
         server._sessions.clear()
+
+
+def test_ws_orphan_reap_uses_long_grace_for_sessions_with_history(monkeypatch):
+    delays = []
+
+    class FakeTimer:
+        daemon = False
+
+        def __init__(self, delay, fn):
+            self.delay = delay
+            self.fn = fn
+            delays.append(delay)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20)
+    monkeypatch.setattr(server, "_WS_ACTIVE_ORPHAN_REAP_GRACE_S", 1800)
+    monkeypatch.setattr(server.threading, "Timer", FakeTimer)
+
+    server._sessions.clear()
+    try:
+        server._sessions["active"] = {
+            "transport": server._detached_ws_transport,
+            "running": False,
+            "history": [{"role": "user", "content": "keep me"}],
+        }
+        server._schedule_ws_orphan_reap("active")
+        assert delays == [1800]
+    finally:
+        server._sessions.clear()
+
+
+def test_ws_orphan_reap_keeps_short_grace_for_empty_draft(monkeypatch):
+    delays = []
+
+    class FakeTimer:
+        daemon = False
+
+        def __init__(self, delay, fn):
+            self.delay = delay
+            self.fn = fn
+            delays.append(delay)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20)
+    monkeypatch.setattr(server, "_WS_ACTIVE_ORPHAN_REAP_GRACE_S", 1800)
+    monkeypatch.setattr(server.threading, "Timer", FakeTimer)
+
+    server._sessions.clear()
+    try:
+        server._sessions["draft"] = {
+            "transport": server._detached_ws_transport,
+            "running": False,
+            "history": [],
+        }
+        server._schedule_ws_orphan_reap("draft")
+        assert delays == [20]
+    finally:
+        server._sessions.clear()

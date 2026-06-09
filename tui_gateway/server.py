@@ -149,9 +149,12 @@ _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
 # ``session.create`` (new sid + a fresh _SlashWorker via _deferred_build) and
 # never reattaches the OLD sid, so the old session's slash-worker subprocess
 # lingers forever — one leaked python process per refresh (#38591 fallout).
-# After this grace window, an orphaned (transport-detached, not-running) WS
-# session is reaped: its _SlashWorker is closed and the session finalized.
-# Set to 0 to disable (park forever, pre-fix behaviour).
+# After this grace window, an orphaned EMPTY (transport-detached, not-running)
+# WS session is reaped: its _SlashWorker is closed and the session finalized.
+# Set to 0 to disable (park forever, pre-fix behaviour). Sessions that already
+# have conversation history get a much longer window below: refresh/draft leaks
+# should be cleaned quickly, but a real local chat must survive an app/dashboard
+# restart without being finalized out from under the user.
 try:
     _ws_orphan_reap_grace = float(
         os.environ.get("HERMES_TUI_WS_ORPHAN_REAP_GRACE_S") or "20"
@@ -159,6 +162,13 @@ try:
 except (ValueError, TypeError):
     _ws_orphan_reap_grace = 20.0
 _WS_ORPHAN_REAP_GRACE_S = max(0.0, _ws_orphan_reap_grace)
+try:
+    _ws_active_orphan_reap_grace = float(
+        os.environ.get("HERMES_TUI_WS_ACTIVE_ORPHAN_REAP_GRACE_S") or "1800"
+    )
+except (ValueError, TypeError):
+    _ws_active_orphan_reap_grace = 1800.0
+_WS_ACTIVE_ORPHAN_REAP_GRACE_S = max(0.0, _ws_active_orphan_reap_grace)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 
@@ -512,7 +522,17 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
     reconnect (or a ``session.resume`` that reattaches the transport) cancel
     the reap by re-binding a live transport. Disabled when the grace is 0.
     """
-    if _WS_ORPHAN_REAP_GRACE_S <= 0:
+    delay = _WS_ORPHAN_REAP_GRACE_S
+    session = _sessions.get(sid)
+    if session is not None:
+        try:
+            has_history = bool(session.get("history"))
+        except Exception:
+            has_history = False
+        if has_history:
+            delay = _WS_ACTIVE_ORPHAN_REAP_GRACE_S
+
+    if delay <= 0:
         return
 
     def _reap() -> None:
@@ -530,7 +550,7 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
                 return
             _close_session_by_id(sid, end_reason="ws_orphan_reap")
 
-    timer = threading.Timer(_WS_ORPHAN_REAP_GRACE_S, _reap)
+    timer = threading.Timer(delay, _reap)
     timer.daemon = True
     timer.start()
 
