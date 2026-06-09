@@ -4398,6 +4398,47 @@ _PLATFORMS = [
             },
         ],
     },
+    {
+        "key": "carbonvoice",
+        "label": "Carbon Voice",
+        "emoji": "📞",
+        "token_var": "CARBONVOICE_PAT",
+        "setup_instructions": [
+            "1. Get a Carbon Voice Personal Access Token (cv_pat_...) at",
+            "   https://www.developer.carbonvoice.app/",
+            "2. Paste it below — Hermes connects over Socket.IO automatically",
+            "   (REST polling fallback, no public webhook needed).",
+            "3. Optionally set a home channel for cron/notification delivery and",
+            "   to approve unknown senders (deny-by-default access control).",
+        ],
+        "vars": [
+            {
+                "name": "CARBONVOICE_PAT",
+                "prompt": "Carbon Voice PAT",
+                "password": True,
+                "help": "Your Carbon Voice Personal Access Token (cv_pat_...).",
+            },
+            {
+                "name": "CARBONVOICE_ALLOWED_USERS",
+                "prompt": "Allowed user_guids (comma-separated, leave empty for owner-only)",
+                "password": False,
+                "is_allowlist": True,
+                "help": (
+                    "Optional — extra Carbon Voice user_guids allowed beyond the "
+                    "auto-detected owner. Access is deny-by-default."
+                ),
+            },
+            {
+                "name": "CARBONVOICE_HOME_CHANNEL",
+                "prompt": "Home channel guid (for cron delivery + approving senders, or empty)",
+                "password": False,
+                "help": (
+                    "channel_guid where cron results are delivered and where the "
+                    "bot asks you to approve unknown senders."
+                ),
+            },
+        ],
+    },
 ]
 
 
