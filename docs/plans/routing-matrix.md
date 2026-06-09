@@ -18,6 +18,10 @@
 
 **Blocker for live smart lanes:** Config has `smart_model_routing.enabled: true` but the **running** gateway/CLI checkout (`/home/khall/.hermes/hermes-agent`) does not ship `hermes_cli/smart_routing.py` on `main`. Until that module is merged/reinstalled, turns fail closed to the primary model per `build_turn_route` semantics.
 
+## Operator policy (2026-06-09)
+
+All **coding** lanes default to **Grok Composer 2.5 Fast** (`interactive_default`). Smart Codex lanes remain documented as config-only / deferred; do not route coding to `gpt-5.3-codex` / `gpt-5.5` without explicit operator override.
+
 ## Lane matrix
 
 | Lane | Provider / model | Cost tier | Toolsets (intent) | Network | Workdir | Timeout / budget | Fallback | Smoke (no-network) | Escalation |
