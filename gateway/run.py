@@ -5952,7 +5952,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 
             self._draining = False
-            self._update_runtime_status("stopped", self._exit_reason)
+            # When an external signal (Docker SIGTERM, container runtime
+            # kill) initiated the shutdown, do NOT persist
+            # gateway_state=stopped.  The state file is read by
+            # container_boot.py on the next container boot to decide
+            # whether to auto-start the gateway.  Persisting "stopped"
+            # here would suppress auto-start after container restarts
+            # and image upgrades (issue #42675).
+            if not getattr(self, "_was_signal_initiated_shutdown", False):
+                self._update_runtime_status("stopped", self._exit_reason)
+            else:
+                logger.info(
+                    "Skipping gateway_state=stopped persist — "
+                    "signal-initiated shutdown; container_boot will "
+                    "auto-start on next boot"
+                )
             logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
 
         self._stop_task = asyncio.create_task(_stop_impl())
@@ -15711,6 +15725,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             )
         else:
             _signal_initiated_shutdown = True
+            # Flag the runner so _stop_impl knows this was an external
+            # signal (e.g. Docker SIGTERM for container restart) rather
+            # than an explicit user stop.  When the shutdown is
+            # signal-initiated, we must NOT persist gateway_state=stopped
+            # — doing so prevents container_boot from auto-starting the
+            # gateway on the next container boot (issue #42675).
+            runner._was_signal_initiated_shutdown = True
             logger.info(
                 "Received %s — initiating shutdown",
                 _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM/SIGINT",
