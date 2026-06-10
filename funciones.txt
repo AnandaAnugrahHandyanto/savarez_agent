@@ -1,0 +1,17 @@
+# funciones.txt — Hermes Agent
+
+## OpenViking memory cost controls
+- Estado: implementado
+- Descripción: controles para reducir coste Gemini/OpenViking manteniendo búsqueda explícita (`viking_search`, `viking_read`, `viking_browse`) y permitiendo desactivar captura automática de turnos, prefetch automático y commits automáticos por perfil mediante variables de entorno.
+- Variables: `OPENVIKING_AUTO_SYNC`, `OPENVIKING_AUTO_PREFETCH`, `OPENVIKING_AUTO_COMMIT`, `OPENVIKING_MIN_COMMIT_TURNS`, `OPENVIKING_PREFETCH_TOP_K`, `OPENVIKING_SYNC_USER_CHAR_LIMIT`, `OPENVIKING_SYNC_ASSISTANT_CHAR_LIMIT`.
+- Notas: aplicado en `ancora-web` y `ancora-2-web` con auto-sync/prefetch/commit desactivados para mantener búsqueda manual y recortar gasto automático.
+
+## Telegram attachment delivery for generated .md files
+- Estado: implementado
+- Descripción: cuando un perfil opere por Telegram y genere un fichero `.md`, se le indica que lo envíe como `MEDIA:/absolute/path/to/file.md` para que el gateway lo entregue como documento descargable en lugar de dejar solo la ruta en el chat.
+- Notas: la mejora aplica a todos los perfiles que usen el hint de plataforma Telegram.
+
+## Shared Codex auth for profile-isolated Hermes
+- Estado: implementado
+- Descripción: los perfiles que no tengan `providers.openai-codex` local pueden usar el auth Codex del root/global como credencial compartida; si el token necesita refresh, se actualiza el auth global bajo un lock del propio fichero en vez de clonar tokens rotados al `auth.json` aislado del perfil.
+- Notas: `HERMES_CODEX_SHARED_AUTH=0` fuerza auth Codex estrictamente por perfil. `get_codex_auth_status()` expone `auth_scope/auth_store` para diagnosticar si se usa perfil o shared.
