@@ -15,6 +15,27 @@ source .venv/bin/activate   # or: source venv/bin/activate
 `$HOME/.hermes/hermes-agent/venv` (for worktrees that share a venv with the
 main checkout).
 
+## Operating Workflow
+
+- Track Hermes-specific work in the Linear `Hermes` team using `HERMES-*`
+  issues. Update the active Linear issue as work starts, meaningful findings
+  appear, code changes, tests run, blockers surface, and work finishes.
+- Add useful Linear labels while working. Always include `Hermes`; add domain
+  labels such as `Telegram`, `Fantastical`, `MCP`, `Models`, `YouTube`,
+  `Spotify`, `Apple Music`, `Vapi`, `Dashboard`, `UI`, `Bug`, `Feature`,
+  or `Improvement` when they describe the work.
+- Link every Hermes code PR to its Linear issue. Branch names, commit messages,
+  PR titles, and PR bodies should include the relevant `HERMES-*` identifier
+  when practical, and the Linear issue must get a short comment with the PR URL,
+  commit SHA, files changed, tests run, and remaining risks.
+- Prefer Linear's GitHub integration or native PR attachments when available,
+  but keep the human-readable Linear handoff comment even when auto-linking
+  works.
+- Do not design a new subsystem until you have reported the reuse scan. Before
+  implementing new behavior, search existing Hermes mechanisms, nearby tests,
+  and docs; then state what is reused, what new code/config is necessary, and
+  why it does not duplicate existing behavior.
+
 ## Project Structure
 
 File counts shift constantly — don't treat the tree below as exhaustive.
