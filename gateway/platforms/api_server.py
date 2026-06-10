@@ -3121,6 +3121,33 @@ class APIServerAdapter(BasePlatformAdapter):
         "workdir",
         "profile",
     }
+    _CREATE_ALLOWED_FIELDS = {
+        "name",
+        "schedule",
+        "prompt",
+        "deliver",
+        "skills",
+        "skill",
+        "repeat",
+        "workdir",
+        "profile",
+    }
+    _READONLY_IGNORED_JOB_FIELDS = {
+        "id",
+        "job_id",
+        "state",
+        "created_at",
+        "updated_at",
+        "schedule_display",
+        "next_run_at",
+        "last_run_at",
+        "last_status",
+        "last_error",
+        "last_delivery_error",
+        "origin",
+        "paused_at",
+        "paused_reason",
+    }
     _MAX_NAME_LENGTH = 200
     _MAX_PROMPT_LENGTH = 5000
 
@@ -3147,6 +3174,28 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         return job_id, None
 
+    @classmethod
+    def _filter_job_body(cls, body: Dict[str, Any], allowed_fields: set) -> tuple:
+        """Return mutable cron fields or an error response for unsupported input.
+
+        Recognized read-only fields are ignored so clients can PATCH common
+        GET-response echoes. Unsupported mutable fields fail closed instead of
+        being silently dropped and producing false-success responses.
+        """
+        if not isinstance(body, dict):
+            return None, web.json_response(
+                {"error": "JSON body must be an object"}, status=400,
+            )
+        unsupported = sorted(
+            set(body) - allowed_fields - cls._READONLY_IGNORED_JOB_FIELDS
+        )
+        if unsupported:
+            return None, web.json_response(
+                {"error": f"Unsupported field(s): {', '.join(unsupported)}"},
+                status=400,
+            )
+        return {k: v for k, v in body.items() if k in allowed_fields}, None
+
     async def _handle_list_jobs(self, request: "web.Request") -> "web.Response":
         """GET /api/jobs — list all cron jobs."""
         auth_err = self._check_auth(request)
@@ -3172,10 +3221,14 @@ class APIServerAdapter(BasePlatformAdapter):
             return cron_err
         try:
             body = await request.json()
+            body, field_err = self._filter_job_body(body, self._CREATE_ALLOWED_FIELDS)
+            if field_err:
+                return field_err
             name = (body.get("name") or "").strip()
             schedule = (body.get("schedule") or "").strip()
             prompt = body.get("prompt", "")
             deliver = body.get("deliver", "local")
+            skill = body.get("skill")
             skills = body.get("skills")
             repeat = body.get("repeat")
             workdir = body.get("workdir") if "workdir" in body else None
@@ -3207,6 +3260,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "deliver": deliver,
                 "origin": self._cron_origin_from_request(request),
             }
+            if "skill" in body:
+                kwargs["skill"] = skill
             if skills:
                 kwargs["skills"] = skills
             if repeat is not None:
@@ -3255,8 +3310,12 @@ class APIServerAdapter(BasePlatformAdapter):
             return id_err
         try:
             body = await request.json()
-            # Whitelist allowed fields to prevent arbitrary key injection
-            sanitized = {k: v for k, v in body.items() if k in self._UPDATE_ALLOWED_FIELDS}
+            # Whitelist allowed fields to prevent arbitrary key injection while
+            # rejecting unsupported mutable fields instead of silently dropping
+            # them and returning false-success responses.
+            sanitized, field_err = self._filter_job_body(body, self._UPDATE_ALLOWED_FIELDS)
+            if field_err:
+                return field_err
             if not sanitized:
                 return web.json_response({"error": "No valid fields to update"}, status=400)
             # Validate lengths if present

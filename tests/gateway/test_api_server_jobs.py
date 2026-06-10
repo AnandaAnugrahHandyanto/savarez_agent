@@ -199,6 +199,74 @@ class TestCreateJob:
                 assert call_kwargs["profile"] == "ju3-dev"
 
     @pytest.mark.asyncio
+    async def test_create_job_allows_legacy_skill_field(self, adapter):
+        """POST /api/jobs preserves legacy singular skill field."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_create", mock_create
+            ):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "test-job",
+                    "schedule": "*/5 * * * *",
+                    "prompt": "do something",
+                    "skill": "egnis-brand-analytics",
+                })
+                assert resp.status == 200
+                call_kwargs = mock_create.call_args[1]
+                assert call_kwargs["skill"] == "egnis-brand-analytics"
+
+    @pytest.mark.asyncio
+    async def test_create_job_ignores_readonly_echo_fields(self, adapter):
+        """POST /api/jobs tolerates read-only fields from GET response echoes."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_create", mock_create
+            ):
+                resp = await cli.post("/api/jobs", json={
+                    "id": VALID_JOB_ID,
+                    "created_at": "2026-06-01T00:00:00Z",
+                    "next_run_at": "2026-06-02T00:00:00Z",
+                    "name": "test-job",
+                    "schedule": "*/5 * * * *",
+                    "prompt": "do something",
+                })
+                assert resp.status == 200
+                call_kwargs = mock_create.call_args[1]
+                assert call_kwargs["name"] == "test-job"
+                assert "id" not in call_kwargs
+                assert "created_at" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_create_job_enabled_field_returns_400(self, adapter):
+        """POST /api/jobs rejects enabled because disabled creation is unsupported."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_create", mock_create
+            ):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "test-job",
+                    "schedule": "*/5 * * * *",
+                    "prompt": "do something",
+                    "enabled": False,
+                })
+                assert resp.status == 400
+                data = await resp.json()
+                assert "enabled" in data["error"]
+                mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_create_job_runtime_context_value_error_returns_400(self, adapter):
         """POST /api/jobs maps cron runtime-context validation errors to 400."""
         app = _create_app(adapter)
@@ -220,6 +288,46 @@ class TestCreateJob:
                 assert resp.status == 400
                 data = await resp.json()
                 assert "absolute path" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_create_job_unsupported_field_returns_400(self, adapter):
+        """POST /api/jobs rejects unsupported cron fields instead of dropping them."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_create", mock_create
+            ):
+                resp = await cli.post("/api/jobs", json={
+                    "name": "test-job",
+                    "schedule": "*/5 * * * *",
+                    "prompt": "do something",
+                    "script": "collector.py",
+                })
+                assert resp.status == 400
+                data = await resp.json()
+                assert "Unsupported field" in data["error"]
+                assert "script" in data["error"]
+                mock_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_create_job_requires_json_object(self, adapter):
+        """POST /api/jobs with a non-object JSON body returns 400."""
+        app = _create_app(adapter)
+        mock_create = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_create", mock_create
+            ):
+                resp = await cli.post("/api/jobs", json=[])
+                assert resp.status == 400
+                data = await resp.json()
+                assert "JSON body" in data["error"]
+                mock_create.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_create_job_missing_name(self, adapter):
@@ -425,6 +533,30 @@ class TestUpdateJob:
                 assert sanitized["profile"] == "ju3-dev"
 
     @pytest.mark.asyncio
+    async def test_update_job_allows_control_fields(self, adapter):
+        """PATCH /api/jobs/{id} preserves mutable control fields despite echo ignores."""
+        app = _create_app(adapter)
+        updated_job = {**SAMPLE_JOB, "enabled": False, "skill": "egnis-brand-analytics"}
+        mock_update = MagicMock(return_value=updated_job)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_update", mock_update
+            ):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}",
+                    json={"enabled": False, "skill": "egnis-brand-analytics"},
+                )
+                assert resp.status == 200
+                call_args = mock_update.call_args
+                sanitized = call_args[0][1]
+                assert sanitized == {
+                    "enabled": False,
+                    "skill": "egnis-brand-analytics",
+                }
+
+    @pytest.mark.asyncio
     async def test_update_job_runtime_context_value_error_returns_400(self, adapter):
         """PATCH /api/jobs/{id} maps cron runtime-context validation errors to 400."""
         app = _create_app(adapter)
@@ -447,14 +579,9 @@ class TestUpdateJob:
 
     @pytest.mark.asyncio
     async def test_update_job_rejects_unknown_fields(self, adapter):
-        """PATCH /api/jobs/{id} — only allowed fields pass through."""
+        """PATCH /api/jobs/{id} rejects unsupported fields instead of dropping them."""
         app = _create_app(adapter)
-        updated_job = {
-            **SAMPLE_JOB,
-            "name": "new-name",
-            "workdir": "/Users/seiyeong/sywork",
-        }
-        mock_update = MagicMock(return_value=updated_job)
+        mock_update = MagicMock(return_value=SAMPLE_JOB)
         async with TestClient(TestServer(app)) as cli:
             with patch(
                 f"{_MOD}._CRON_AVAILABLE", True
@@ -470,23 +597,87 @@ class TestUpdateJob:
                         "__proto__": "hack",
                     },
                 )
+                assert resp.status == 400
+                data = await resp.json()
+                assert "Unsupported field" in data["error"]
+                assert "__proto__" in data["error"]
+                assert "evil_field" in data["error"]
+                mock_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_job_unsupported_known_cron_field_returns_400(self, adapter):
+        """PATCH /api/jobs/{id} rejects unsupported cron fields instead of false-success."""
+        app = _create_app(adapter)
+        mock_update = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_update", mock_update
+            ):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}",
+                    json={"name": "new-name", "model": "haiku"},
+                )
+                assert resp.status == 400
+                data = await resp.json()
+                assert "Unsupported field" in data["error"]
+                assert "model" in data["error"]
+                mock_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_job_requires_json_object(self, adapter):
+        """PATCH /api/jobs/{id} with a non-object JSON body returns 400."""
+        app = _create_app(adapter)
+        mock_update = MagicMock(return_value=SAMPLE_JOB)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_update", mock_update
+            ):
+                resp = await cli.patch(f"/api/jobs/{VALID_JOB_ID}", json=[])
+                assert resp.status == 400
+                data = await resp.json()
+                assert "JSON body" in data["error"]
+                mock_update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_job_ignores_readonly_echo_fields(self, adapter):
+        """PATCH /api/jobs/{id} tolerates read-only fields from GET response echoes."""
+        app = _create_app(adapter)
+        updated_job = {**SAMPLE_JOB, "name": "new-name"}
+        mock_update = MagicMock(return_value=updated_job)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(
+                f"{_MOD}._CRON_AVAILABLE", True
+            ), patch(
+                f"{_MOD}._cron_update", mock_update
+            ):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}",
+                    json={
+                        "id": VALID_JOB_ID,
+                        "created_at": "2026-06-01T00:00:00Z",
+                        "next_run_at": "2026-06-02T00:00:00Z",
+                        "last_run_at": None,
+                        "name": "new-name",
+                    },
+                )
                 assert resp.status == 200
                 call_args = mock_update.call_args
                 sanitized = call_args[0][1]
-                assert "name" in sanitized
-                assert sanitized["workdir"] == "/Users/seiyeong/sywork"
-                assert "evil_field" not in sanitized
-                assert "__proto__" not in sanitized
+                assert sanitized == {"name": "new-name"}
 
     @pytest.mark.asyncio
     async def test_update_job_no_valid_fields(self, adapter):
-        """PATCH /api/jobs/{id} with only unknown fields returns 400."""
+        """PATCH /api/jobs/{id} with no mutable fields returns 400."""
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch(f"{_MOD}._CRON_AVAILABLE", True):
                 resp = await cli.patch(
                     f"/api/jobs/{VALID_JOB_ID}",
-                    json={"evil_field": "malicious"},
+                    json={"id": VALID_JOB_ID, "created_at": "2026-06-01T00:00:00Z"},
                 )
                 assert resp.status == 400
                 data = await resp.json()
