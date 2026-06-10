@@ -1185,6 +1185,7 @@ export const zhHant = defineLocale({
       unpin: '取消釘選',
       copyId: '複製 ID',
       export: '匯出',
+      shareToCloud: '分享到雲端',
       rename: '重新命名',
       archive: '封存',
       restore: '還原',
