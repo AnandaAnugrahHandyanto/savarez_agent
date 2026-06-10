@@ -395,6 +395,36 @@ async def test_post_stream_json_embedded_file_url_not_attached(tmp_path, monkeyp
     adapter.send_document.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_post_stream_html_data_src_not_delivered(tmp_path, monkeypatch):
+    """HTML img with data-src pointing to a real file must NOT trigger upload."""
+    event = _event()
+    png = _allowed_media_path(tmp_path, monkeypatch, "hidden.png")
+    response = f'<img data-src="file://{png.as_posix()}">'
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_multiple_images=AsyncMock(return_value=SendResult(success=True, message_id="batch")),
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner(None),
+        response,
+        event,
+        adapter,
+    )
+
+    adapter.send_multiple_images.assert_not_awaited()
+    adapter.send_image_file.assert_not_awaited()
+    adapter.send_document.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # send_multiple_images round-trip: verifies file:// path integrity
 # ---------------------------------------------------------------------------

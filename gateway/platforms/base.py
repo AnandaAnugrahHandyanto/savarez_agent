@@ -2763,19 +2763,35 @@ class BasePlatformAdapter(ABC):
 
         # Match HTML img tags, case-insensitive, with optional extra
         # attributes before or after ``src`` (e.g. ``<img width="200" src="...">``).
-        html_pattern = (
-            r'<img\s+[^>]*?src=(["\']?)((?i:https?|file)://[^\s"\'<>]+)\1'
-            r'[^>]*?/?>\s*(?:</img>)?'
+        # Uses proper attribute parsing so ``data-src``, ``notsrc``, and
+        # ``src`` inside a quoted attribute *value* (e.g.
+        # ``alt="example src=file://..."``) are all rejected.
+        _html_img_tag_re = re.compile(
+            r'<img\s+[^>]*/?>\s*(?:</img>)?', re.IGNORECASE
         )
-        html_re = re.compile(html_pattern, re.IGNORECASE)
-        for match in html_re.finditer(scan_content):
+        _html_attr_re = re.compile(
+            r'([a-zA-Z_][-a-zA-Z0-9_]*)\s*=\s*(?:'
+            r'"([^"]*)"|\'([^\']*)\'|([^\s>]+))',
+            re.IGNORECASE,
+        )
+        for match in _html_img_tag_re.finditer(scan_content):
             # Reject matches in masked regions
             if not match.group(0).lower().startswith('<img'):
                 continue
-            real_match = html_re.match(content[match.start():])
-            if not real_match:
+            real_tag = content[match.start():match.end()]
+            src_url = ""
+            for attr_m in _html_attr_re.finditer(real_tag):
+                if attr_m.group(1).lower() == "src":
+                    src_url = (
+                        attr_m.group(2)
+                        or attr_m.group(3)
+                        or attr_m.group(4)
+                        or ""
+                    )
+                    break
+            if not src_url:
                 continue
-            url = real_match.group(2)
+            url = src_url
             if url.lower().startswith('file://'):
                 local_path = BasePlatformAdapter._normalize_file_url(url)
                 if local_path and os.path.splitext(local_path)[1].lower() in FILE_LIKE_EXTS:
@@ -2960,8 +2976,10 @@ class BasePlatformAdapter(ABC):
         # Build list of (start, end) spans to mask
         spans: list = []
 
-        # Fenced code blocks: ```...```
-        for m in re.finditer(r'```[^\n]*\n.*?```', content, re.DOTALL):
+        # Fenced code blocks: ```...``` or ~~~...~~~ (same open/close pair,
+        # unclosed fences are masked to end of content).
+        fence_re = re.compile(r'(```|~~~)[^\n]*\n.*?(?:\1|$)', re.DOTALL)
+        for m in fence_re.finditer(content):
             spans.append((m.start(), m.end()))
 
         # Inline code: `...` but NOT backtick-quoted paths in MEDIA: tags
@@ -2973,8 +2991,9 @@ class BasePlatformAdapter(ABC):
                 continue  # This is a MEDIA path quote, not inline code
             spans.append((start, m.end()))
 
-        # Blockquote lines: > at line start
-        for m in re.finditer(r'^>.*$', content, re.MULTILINE):
+        # Blockquote lines: > at line start, with 0-3 leading spaces
+        # (CommonMark spec). Four or more spaces = indented code, not quote.
+        for m in re.finditer(r'^ {0,3}>.*$', content, re.MULTILINE):
             spans.append((m.start(), m.end()))
 
         # Apply masking

@@ -479,6 +479,91 @@ Example code:
         assert len(images) == 1
         assert str(img) in images[0][0]
 
+    # ---- Blocker 1: HTML img negative tests ----
+
+    def test_html_img_data_src_not_matched(self):
+        """data-src attribute is NOT recognized as src."""
+        content = '<img data-src="file:///tmp/x.png">'
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "data-src" in cleaned
+
+    def test_html_img_notsrc_not_matched(self):
+        """notsrc attribute is NOT recognized as src."""
+        content = '<img notsrc="file:///tmp/x.png">'
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "notsrc" in cleaned
+
+    def test_html_img_src_in_alt_not_matched(self):
+        """src= pattern inside alt text is NOT recognized."""
+        content = '<img alt="example src=file:///tmp/x.png">'
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "alt=" in cleaned
+
+    def test_html_img_data_src_plus_real_src_still_matches(self, tmp_path):
+        """data-src + real src only extracts real src."""
+        img = tmp_path / "real.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        content = f'<img data-src="file:///fake/x.png" src="file://{f}">'
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert str(img) in images[0][0]
+
+    # ---- Blocker 2: protected span tests ----
+
+    def test_blockquote_with_spaces_still_masked(self, tmp_path):
+        """file:// image inside blockquote with 2 leading spaces is masked."""
+        img = tmp_path / "bq.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        content = f"  > ![x](file://{f})"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "![x]" in cleaned
+
+    def test_blockquote_three_spaces_masked(self, tmp_path):
+        """file:// image inside blockquote with 3 leading spaces is masked."""
+        img = tmp_path / "bq3.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        content = f"   > ![x](file://{f})"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "![x]" in cleaned
+
+    def test_tilde_fenced_code_masked(self, tmp_path):
+        """file:// image inside ~~~ fenced code is masked."""
+        img = tmp_path / "tilde.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        content = f"text\n~~~\n![x](file://{f})\n~~~\nmore"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "![x]" in cleaned or "file://" in cleaned
+
+    def test_unclosed_fenced_code_masked(self, tmp_path):
+        """file:// image after unclosed ``` fence is masked."""
+        img = tmp_path / "unclosed.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        content = f"text\n```\n![x](file://{f})"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "![x]" in cleaned or "file://" in cleaned
+
+    def test_unclosed_tilde_fence_masked(self, tmp_path):
+        """file:// image after unclosed ~~~ fence is masked."""
+        img = tmp_path / "tild.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        content = f"text\n~~~\n![x](file://{f})"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "![x]" in cleaned or "file://" in cleaned
+
     # ---- JSON string value blocking ----
 
     def test_json_embedded_file_url_markdown_blocked(self, tmp_path):
