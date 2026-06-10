@@ -48,16 +48,18 @@ website/i18n/ja/docusaurus-plugin-content-docs/current/<path>.md
 - [x] `user-guide/features/tool-gateway.md`（zh-Hans と揃える）
 - [x] `user-guide/features/image-generation.md`（zh-Hans と揃える）
 
-### Phase 3: 基本機能ドキュメントの翻訳（中優先）
+### Phase 3: 基本機能ドキュメントの翻訳（中優先） ✅ 完了
 
-- [ ] `getting-started/learning-path.md`
-- [ ] `getting-started/updating.md`
-- [ ] `user-guide/cli.md`
-- [ ] `user-guide/configuration.md`
-- [ ] `user-guide/configuring-models.md`
-- [ ] `user-guide/features/skills.md`
-- [ ] `user-guide/features/memory.md`
-- [ ] `reference/faq.md`
+- [x] `getting-started/learning-path.md`
+- [x] `getting-started/updating.md`
+- [x] `user-guide/cli.md`
+- [x] `user-guide/configuration.md`
+- [x] `user-guide/configuring-models.md`
+- [x] `user-guide/features/skills.md`
+- [x] `user-guide/features/memory.md`
+- [x] `reference/faq.md`
+
+ビルド検証済み（`npm run build -- --locale ja` → `[SUCCESS]`、全 8 ページ日本語 title 反映）。
 
 ### Phase 4: 検証 ✅ 完了
 
