@@ -220,6 +220,8 @@ export interface Translations {
       themeTitle: string
       themeDesc: string
       themeProfileNote: (profile: string) => string
+      notificationTitle: string
+      notificationDesc: string
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
