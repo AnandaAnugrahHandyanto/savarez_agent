@@ -3122,6 +3122,11 @@ def get_launchd_label() -> str:
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 
+# Cached launchd domain result — probing is cheap but should only run once per
+# process invocation (each ``hermes gateway start/stop/status`` call).
+_resolved_launchd_domain: str | None = None
+
+
 def _launchd_domain() -> str:
     # The `user/<uid>` domain (vs the older `gui/<uid>`) is reachable from
     # non-Aqua/background sessions (SSH, headless, login items) and is the only

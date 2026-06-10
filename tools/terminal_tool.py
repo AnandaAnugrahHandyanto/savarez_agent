@@ -798,7 +798,8 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     the password in the command string themselves; see their execute()
     methods for how they handle the non-None sudo_stdin case.
 
-    If SUDO_PASSWORD is not set and in interactive mode (HERMES_INTERACTIVE=1):
+    If SUDO_PASSWORD is not set and an interactive UI is available
+    (HERMES_INTERACTIVE=1 or a registered sudo password callback):
       Prompts user for password with 45s timeout, caches for session.
 
     If SUDO_PASSWORD is not set and NOT interactive:
@@ -2648,7 +2649,7 @@ def check_terminal_requirements() -> bool:
                     "Docker executable not found in PATH or common install locations"
                 )
                 return False
-            result = subprocess.run([docker, "version"], capture_output=True, timeout=5)
+            result = subprocess.run([docker, "version"], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
             return result.returncode == 0
 
         elif env_type == "singularity":
