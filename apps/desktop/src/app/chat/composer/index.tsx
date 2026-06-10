@@ -59,6 +59,7 @@ import {
 } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
+import { isImeComposingKeyEvent } from './ime'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useVoiceConversation } from './hooks/use-voice-conversation'
 import { useVoiceRecorder } from './hooks/use-voice-recorder'
@@ -672,11 +673,10 @@ export function ChatBar({
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     // IME composition: Enter confirms composed text, not a message submission.
-    // We check both composingRef (set by compositionstart/compositionend, robust
-    // across browsers) and nativeEvent.isComposing (Chromium fallback).  Without
-    // this guard, pressing Enter to finalise a Korean/Japanese/Chinese IME
-    // preedit fires submitDraft() and splits the message mid-word.
-    if (composingRef.current || event.nativeEvent.isComposing) {
+    // Check React's composition ref, native isComposing, and Chromium's
+    // IME-processing keyCode 229 fallback. Some Electron/macOS/CJK paths flip
+    // isComposing false before the Enter keydown reaches React.
+    if (composingRef.current || isImeComposingKeyEvent(event)) {
       return
     }
 

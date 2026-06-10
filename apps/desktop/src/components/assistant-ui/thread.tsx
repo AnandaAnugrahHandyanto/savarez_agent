@@ -36,6 +36,7 @@ import {
   onComposerInsertRequest
 } from '@/app/chat/composer/focus'
 import { useAtCompletions } from '@/app/chat/composer/hooks/use-at-completions'
+import { isImeComposingKeyEvent } from '@/app/chat/composer/ime'
 import { useSlashCompletions } from '@/app/chat/composer/hooks/use-slash-completions'
 import {
   dragHasAttachments,
@@ -1401,6 +1402,12 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   )
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // IME Enter confirms the composed text in the edit composer. Do not let it
+    // select trigger items or submit the edited message.
+    if (isImeComposingKeyEvent(event)) {
+      return
+    }
+
     if (trigger && triggerItems.length > 0) {
       if (event.key === 'ArrowDown') {
         event.preventDefault()

@@ -2,6 +2,8 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { useRef, useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { isImeComposingKeyEvent } from './ime'
+
 // No global setupFiles registers auto-cleanup, so unmount between tests —
 // otherwise a second render() leaks the first editor and getByTestId('editor')
 // matches multiple nodes.
@@ -78,6 +80,10 @@ function Harness({
   }
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (isImeComposingKeyEvent(event)) {
+      return
+    }
+
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
 
@@ -130,6 +136,21 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
     })
 
     expect(onSubmit).toHaveBeenCalledWith('hello world')
+  })
+
+  it('does not submit when Chromium reports IME Enter as keyCode 229', async () => {
+    const onSubmit = vi.fn()
+    const { getByTestId } = render(
+      <Harness onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />
+    )
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      editor.textContent = '你好'
+      fireEvent.keyDown(editor, { key: 'Enter', keyCode: 229 })
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
   })
 
   it('queues a fast-typed message while busy instead of draining the queue or cancelling', async () => {
