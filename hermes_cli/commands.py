@@ -608,7 +608,6 @@ _TELEGRAM_MENU_BLOCKLIST = frozenset(
         "open",
         "newsession",
         "bindtopic",
-        "beast",
     }
 )
 """Commands intentionally hidden from Telegram's bot-command catalogue.
