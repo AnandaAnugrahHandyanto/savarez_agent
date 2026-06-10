@@ -262,9 +262,17 @@ if [ -d "$SAVAREZ_HOME/profiles" ]; then
     chown -R savarez:savarez "$SAVAREZ_HOME/profiles" 2>/dev/null || true
 fi
 
-# Reset ownership of savarez-owned top-level state files on every boot.
-# The targeted data-volume chown above only covers savarez-owned
-# *subdirectories*; loose state files living directly under $SAVAREZ_HOME
+# Always reset ownership of $HERMES_HOME/cron on every boot for the same
+# docker-exec/root-write reason as profiles/. The cron scheduler state
+# (jobs.json) must stay readable by the unprivileged hermes runtime even
+# after root-context maintenance commands or scheduler writes.
+if [ -d "$HERMES_HOME/cron" ]; then
+    chown -R hermes:hermes "$HERMES_HOME/cron" 2>/dev/null || true
+fi
+
+# Reset ownership of hermes-owned top-level state files on every boot.
+# The targeted data-volume chown above only covers hermes-owned
+# *subdirectories*; loose state files living directly under $HERMES_HOME
 # are missed. When those files are created or rewritten by
 # `docker exec <container> savarez …` (root unless `-u` is passed) they
 # land root-owned, and the unprivileged savarez runtime then hits
