@@ -495,7 +495,7 @@ Replace the two disconnected tracking structures with a single **`AgentTaskRegis
 
 ### Proposed data model
 
-**`AgentTaskRecord`** (new, in `action_runtime/task_registry.py` or `tools/delegate_tool.py`):
+**`AgentTaskRecord`** (new, in `action_runtime/task_registry.py` — Step 1 landed):
 
 ```python
 @dataclass
@@ -506,7 +506,7 @@ class AgentTaskRecord:
     goal: str
     model: Optional[str]
     started_at: float
-    status: Status                # RUNNING (new enum value) | SUCCEEDED | FAILED | PARTIAL | BLOCKED | NEEDS_INPUT
+    status: TaskStatus            # RUNNING | SUCCEEDED | FAILED | PARTIAL | BLOCKED | NEEDS_INPUT
     agent_ref: Optional[Any]      # weakref to AIAgent — excluded from serialization
     tool_count: int
     last_tool: Optional[str]
@@ -514,7 +514,7 @@ class AgentTaskRecord:
     idempotency_key: Optional[str]
 ```
 
-**`Status`** in `contract.py` gains one value: `RUNNING = "running"` (in-flight; not a terminal state). The existing terminal states cover all exit cases: `SUCCEEDED`, `FAILED`, `PARTIAL`, `BLOCKED`, `NEEDS_INPUT`. Interrupted subagents map to `FAILED` with `ErrorType.TRANSPORT` (retryable=False, message="interrupted").
+**`TaskStatus`** (Q3 ruling, option B): a **separate enum on the record** in `task_registry.py` — `RUNNING` plus mirrors of the five terminal values. `contract.py`'s `Status` is **untouched**: every `ExecutionResult` stays a terminal answer, so all existing adapters/clients/replay logic keep their invariant. Interrupted subagents map to `FAILED` with `ErrorType.TRANSPORT` (retryable=False, message="interrupted").
 
 ---
 
@@ -591,7 +591,7 @@ This means Core issues one `task.submit` RPC and observes N `ExecutionResult` ob
 Files: new `action_runtime/task_registry.py` (or `tools/agent_task_registry.py`).
 
 - Define `AgentTaskRecord` dataclass and `AgentTaskRegistry` class with `register`, `complete`, `interrupt`, `list_active`, `pause_spawns`, `get`.
-- Add `Status.RUNNING` to `action_runtime/contract.py`.
+- Define `TaskStatus` enum (RUNNING + terminal mirrors) in `task_registry.py` — `action_runtime/contract.py` is untouched per the Q3 ruling (option B).
 - Write unit tests: register/complete/interrupt round-trip, pause flag, TTL eviction for idempotency keys.
 - **Verify**: tests green; no handler touched; grep confirms `_active_subagents` still used in production path.
 
@@ -690,7 +690,7 @@ Current `task.submit` with `intent="slash"` is milliseconds. With `intent="deleg
 
 `BrainHost` (`agent/brain_host.py`, flag-gated `HERMES_BRAIN_HOST=1`) is the planned singleton factory for AIAgent construction. The `AgentTaskRegistry` is a natural tenant for BrainHost (it needs process-global scope, one instance per process). But BrainHost is still feature-flagged and off by default. Should `AgentTaskRegistry` live there (accepting the `HERMES_BRAIN_HOST` dependency), or in a standalone module that both BrainHost and the current path can import? The answer affects Step 1 and all subsequent steps.
 
-> **ตัดสินแล้ว (2026-06-10): standalone module** (`agent/task_registry.py`). เหตุผลชี้ขาด: dual-write ใน Step 2 ต้องเขียนจาก default path ที่ flag ปิดอยู่ — ถ้า registry อยู่ใน BrainHost จะถูกล็อกหลัง `HERMES_BRAIN_HOST=1` ทำให้ default path มอง subagent ไม่เห็น. BrainHost ถือ reference ภายหลังได้.
+> **ตัดสินแล้ว (2026-06-10): standalone module** (`action_runtime/task_registry.py`). เหตุผลชี้ขาด: dual-write ใน Step 2 ต้องเขียนจาก default path ที่ flag ปิดอยู่ — ถ้า registry อยู่ใน BrainHost จะถูกล็อกหลัง `HERMES_BRAIN_HOST=1` ทำให้ default path มอง subagent ไม่เห็น. BrainHost ถือ reference ภายหลังได้.
 
 ### Q2 — Persist idempotency keys across gateway restarts?
 
@@ -747,7 +747,7 @@ The current registry is in-process. If two gateway processes serve the same `HER
 |---|---|
 | 2026-06-09 | สร้างเอกสาร v1 — สำรวจโค้ด, เสนอโมเดล Central Brain + OpenClaw |
 | 2026-06-10 | **v2**: §10-Q1 = **(ข)** native Action Runtime, ยืมแค่ OpenClaw messaging-bridge compatibility · ล็อกศัพท์ **Orchestration Core** / **Action Runtime**; "OpenClaw" = reference/compat เท่านั้น · ล็อกลำดับ phase (0→1a→2/1b→3→4→5) · Phase 0 = doc-only, ไม่สร้างโฟลเดอร์เปล่า · เพิ่ม cross-cutting (compat/test-first/observability/idempotency) + acceptance criteria ต่อ phase |
-| 2026-06-10 | **Phase 5 open questions ตัดสินแล้ว 5/6 (maintainer ruling).** Q1=**standalone module** (`agent/task_registry.py` — dual-write ต้องทำงานบน default path ที่ flag ปิด) · Q2=**ephemeral** (persist task records ไม่ใช่ replay store; crash แล้วไม่รู้ side effects → replay = โกหก) · Q4=**`Status.PARTIAL`** + per-child breakdown (FAILED ทิ้งงานจริง+เสี่ยง side-effect ซ้ำ) · Q5=**dual-write ชั่วคราว + sunset criteria** (record ครบ field + list เสิร์ฟจาก registry 100% → deprecate, no-op compat 1 release) · Q6=**ตัดออก** (API ออกแบบให้ backing store สลับได้; state.db-backed = Phase 6 candidate). **Q3 รอ impact sweep** — maintainer ขอหลักฐาน consumer census + พิสูจน์ว่า visibility ของงานค้างไม่หายก่อนตัดสิน |
+| 2026-06-10 | **Phase 5 open questions ตัดสินแล้ว 5/6 (maintainer ruling).** Q1=**standalone module** (`action_runtime/task_registry.py` — dual-write ต้องทำงานบน default path ที่ flag ปิด) · Q2=**ephemeral** (persist task records ไม่ใช่ replay store; crash แล้วไม่รู้ side effects → replay = โกหก) · Q4=**`Status.PARTIAL`** + per-child breakdown (FAILED ทิ้งงานจริง+เสี่ยง side-effect ซ้ำ) · Q5=**dual-write ชั่วคราว + sunset criteria** (record ครบ field + list เสิร์ฟจาก registry 100% → deprecate, no-op compat 1 release) · Q6=**ตัดออก** (API ออกแบบให้ backing store สลับได้; state.db-backed = Phase 6 candidate). **Q3 รอ impact sweep** — maintainer ขอหลักฐาน consumer census + พิสูจน์ว่า visibility ของงานค้างไม่หายก่อนตัดสิน |
 | 2026-06-10 | **BrainHost migration complete (ทุก construction site) + Phase 3 Step 4 landed.** เพิ่ม `agent/brain_host_gate.py` — `build_agent(intent, **kwargs)` helper แบบบรรทัดเดียว (module แยกเบา import แค่ `os` → คง invariant "flag off ไม่ import `agent.brain_host`" ที่ test ยึดอยู่ + lazy-import `run_agent` ตอน call เหมือน site เดิม). Migrate 14 sites ที่เหลือ + ยุบ inline gate เดิม 3 จุดเป็น `build_agent` call เดียว — รวม **20 intents / 16 ไฟล์**: tui_gateway (tui_gateway, tui-background, preview-restart), gateway (gateway-run, history-hygiene, gateway-background, compress, api-server, feishu-comment), hermes_cli (cli, cli-background, oneshot, prompt-size), agent (background-review, curator), acp, cron, batch, run-agent-cli, delegate. **ตั้งใจไม่แตะ:** `cli.py` lazy wrapper (re-export shim), `scripts/tool_search_livetest.py`, ทุกอย่างรอบ `_active_subagents`/spawn-tree/interrupt ใน delegate_tool (R2). Step 4: เพิ่ม 10 accessors (attached_images, pending_title, image_counter, show_reasoning, tool_progress_mode, tool_started_at, personality, model_override, explicit_cwd, edit_snapshots) + แปลง subscript ที่เหลือทั้งหมดใน server.py — ยกเว้น 2 จุดโดยตั้งใจ: `model_override` ใน `_apply_model_switch` (caller ส่ง plain dict บน no-session path, มี isinstance guard อยู่แล้ว) และ `_finalized` (private marker จุดเดียว). Tests: gate helper 4 + site-table parametrized (แทน grep-test เดิม) + accessor sync; suites เขียว 164 (brain_host+tui_gateway+action_runtime) + 252 server + 171 (delegate/batch/prompt_size/curator/cron); commit กลาง bisect-green. ทำด้วย workflow 5 Sonnet agents บนกลุ่มไฟล์ disjoint ใน working tree ตรง (ไม่ใช้ harness worktree — บทเรียน base ผิด) |
 | 2026-06-10 | **Phase 3 design delivered (ยังไม่ implement).** Scoping fan-out 3 agents → `SessionState` dataclass (lock เป็น field) + MutableMapping-shim incremental adoption (Step1 = zero handler churn) + `BrainHost` (`agent/brain_host.py`, flag-gated `HERMES_BRAIN_HOST`, additive) + map 20 AIAgent sites (first=`_make_agent`) + documented dual-path + parity test. เก็บใน §11 "Phase 3 — design detail". **Implementation ถือไว้เป็น cycle เฉพาะ** — decompose live session-state + locks ที่ 74 handlers + concurrency model พึ่ง (gap #1, เสี่ยงสุดในแผน) ไม่ควรรีบท้าย session |
 | 2026-06-10 | **BrainHost sites #2-3 + Phase 5 design (Sonnet sub-agents).** gateway/run.py `_run_agent` LRU-miss site (intent="gateway-run") + api_server `_create_agent` (intent="api-server") gate ผ่าน `HERMES_BRAIN_HOST` แบบเดียวกับ `_make_agent` (+7 gate tests; 114 api_server failures ยืนยัน pre-existing ผ่าน stash round-trip). Phase 5 design ลงเอกสารแล้ว (§11 "Phase 5 — design detail"): `AgentTaskRegistry` + dual-write migration 6 steps + risks R1-R7 (สำคัญ: R2 — ห้ามแตะ `_active_children` interrupt chain) + open questions Q1-Q6. หมายเหตุ: live install ถูกอัปเดตไป main แล้ว — งาน dev ทำใน worktrees จาก branch refs |
