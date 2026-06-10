@@ -661,6 +661,22 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     _close_request_client_once("stale_call_kill")
             except Exception:
                 pass
+            _base_url = getattr(agent, "base_url", "") or ""
+            if _base_url and is_local_endpoint(_base_url):
+                try:
+                    from agent.local_backend_recovery import maybe_recover_local_backend
+
+                    maybe_recover_local_backend(
+                        agent,
+                        reason="local_non_stream_stale_timeout",
+                        model=api_kwargs.get("model") or agent.model,
+                        base_url=_base_url,
+                        context_tokens=_est_ctx,
+                        elapsed=_elapsed,
+                        threshold=_stale_timeout,
+                    )
+                except Exception:
+                    logger.exception("Local backend recovery hook failed")
             agent._touch_activity(
                 f"stale non-streaming call killed after {int(_elapsed)}s"
             )
@@ -2635,6 +2651,20 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     "model": _local_first_chunk_model,
                     "context_tokens": _est_ctx,
                 }
+                try:
+                    from agent.local_backend_recovery import maybe_recover_local_backend
+
+                    maybe_recover_local_backend(
+                        agent,
+                        reason="local_first_chunk_timeout",
+                        model=_local_first_chunk_model,
+                        base_url=getattr(agent, "base_url", "") or "",
+                        context_tokens=_est_ctx,
+                        elapsed=_first_elapsed,
+                        threshold=_local_first_chunk_timeout,
+                    )
+                except Exception:
+                    logger.exception("Local backend recovery hook failed")
                 try:
                     _close_request_client_once("local_first_chunk_kill")
                 except Exception:
