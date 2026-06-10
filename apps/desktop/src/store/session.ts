@@ -114,6 +114,9 @@ export const $busy = atom(false)
 export const $awaitingResponse = atom(false)
 export const $currentModel = atom('')
 export const $currentProvider = atom('')
+
+const LAST_MODEL_KEY = 'hermes.desktop.lastModel'
+const LAST_PROVIDER_KEY = 'hermes.desktop.lastProvider'
 export const $currentReasoningEffort = atom('')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(false)
@@ -157,8 +160,22 @@ export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($message
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 export const setBusy = (next: Updater<boolean>) => updateAtom($busy, next)
 export const setAwaitingResponse = (next: Updater<boolean>) => updateAtom($awaitingResponse, next)
-export const setCurrentModel = (next: Updater<string>) => updateAtom($currentModel, next)
-export const setCurrentProvider = (next: Updater<string>) => updateAtom($currentProvider, next)
+export const setCurrentModel = (next: Updater<string>) => {
+  updateAtom($currentModel, next)
+  persistString(LAST_MODEL_KEY, $currentModel.get() || null)
+}
+export const setCurrentProvider = (next: Updater<string>) => {
+  updateAtom($currentProvider, next)
+  persistString(LAST_PROVIDER_KEY, $currentProvider.get() || null)
+}
+
+export function getLastSelectedModel(): string | null {
+  return storedString(LAST_MODEL_KEY)
+}
+
+export function getLastSelectedProvider(): string | null {
+  return storedString(LAST_PROVIDER_KEY)
+}
 export const setCurrentReasoningEffort = (next: Updater<string>) => updateAtom($currentReasoningEffort, next)
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
 export const setCurrentFastMode = (next: Updater<boolean>) => updateAtom($currentFastMode, next)

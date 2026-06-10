@@ -4,7 +4,7 @@ import { useCallback } from 'react'
 import { getGlobalModelInfo, setGlobalModel } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
-import { $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
+import { $currentModel, $currentProvider, getLastSelectedModel, getLastSelectedProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 interface ModelSelection {
@@ -39,12 +39,26 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
     try {
       const result = await getGlobalModelInfo()
 
-      if (typeof result.model === 'string') {
+      if (typeof result.model === 'string' && result.model) {
         setCurrentModel(result.model)
+      } else {
+        // Backend has no explicit model configured — restore the last
+        // user-selected model from localStorage so the Desktop doesn't
+        // default to the first custom_providers entry on restart.
+        const lastModel = getLastSelectedModel()
+        const lastProvider = getLastSelectedProvider()
+        if (lastModel && lastProvider) {
+          setCurrentModel(lastModel)
+        }
       }
 
-      if (typeof result.provider === 'string') {
+      if (typeof result.provider === 'string' && result.provider) {
         setCurrentProvider(result.provider)
+      } else {
+        const lastProvider = getLastSelectedProvider()
+        if (lastProvider) {
+          setCurrentProvider(lastProvider)
+        }
       }
     } catch {
       // The delayed session.info event still updates this once the agent is ready.
