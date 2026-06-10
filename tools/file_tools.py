@@ -1093,6 +1093,19 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     return None
 
 
+def _write_file_unified_diff(path: str, new_content: str, *, max_lines: int = 800) -> str:
+    """Return no persisted before/after diff for write_file tool results.
+
+    A write_file result is stored in session history/state.db. Building a
+    unified diff here requires reading the old file and would persist removed
+    lines, which can leak historical secrets from files such as `.env` even
+    when normal read_file guards would block that path. The Changes UI can still
+    infer a write happened from `files_created`/`files_modified` and the original
+    tool-call arguments; do not add old file contents to the tool response.
+    """
+    return ""
+
+
 def write_file_tool(path: str, content: str, task_id: str = "default",
                     cross_profile: bool = False) -> str:
     """Write content to a file.
@@ -1126,9 +1139,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
 
         if _resolved is None:
             stale_warning = _check_file_staleness(path, task_id)
+            write_diff = _write_file_unified_diff(path, content)
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(path, content)
             result_dict = result.to_dict()
+            if not result_dict.get("error") and write_diff:
+                result_dict["diff"] = write_diff
             if stale_warning:
                 result_dict["_warning"] = stale_warning
             _update_read_timestamp(path, task_id)
@@ -1145,9 +1161,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # Workspace-divergence warning: relative path resolving outside the
             # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
             cwd_warning = _path_resolution_warning(path, Path(_resolved), task_id)
+            write_diff = _write_file_unified_diff(_resolved, content)
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(_resolved, content)
             result_dict = result.to_dict()
+            if not result_dict.get("error") and write_diff:
+                result_dict["diff"] = write_diff
             effective_warning = cross_warning or stale_warning or cwd_warning
             if effective_warning:
                 result_dict["_warning"] = effective_warning

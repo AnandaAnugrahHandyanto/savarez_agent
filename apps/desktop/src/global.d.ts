@@ -406,16 +406,22 @@ export interface HermesNotification {
 export interface HermesPreviewTarget {
   binary?: boolean
   byteSize?: number
+  diffLines?: HermesPreviewDiffLine[]
   kind: 'file' | 'url'
   label: string
   large?: boolean
   language?: string
   mimeType?: string
   path?: string
-  previewKind?: 'binary' | 'html' | 'image' | 'text'
+  previewKind?: 'binary' | 'diff' | 'html' | 'image' | 'text'
   renderMode?: 'preview' | 'source'
   source: string
   url: string
+}
+
+export interface HermesPreviewDiffLine {
+  type: 'added' | 'context' | 'hunk' | 'meta' | 'removed'
+  text: string
 }
 
 export interface HermesReadFileTextResult {

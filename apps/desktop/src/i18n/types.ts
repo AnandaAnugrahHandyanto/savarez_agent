@@ -1213,6 +1213,29 @@ export interface Translations {
     loadingFiles: string
     terminalHide: string
     addToChat: string
+    explorer: string
+    changes: string
+    refreshChanges: string
+    loadingChanges: string
+    changesLoadFailed: string
+    changesNoProjectTitle: string
+    changesNoProjectBody: string
+    changesNotGitTitle: string
+    changesNotGitBody: string
+    changesCleanTitle: string
+    changesCleanBody: string
+    changedFiles: string
+    addedLines: string
+    removedLines: string
+    binaryDiff: string
+    untrackedDiff: string
+    noDiffPreview: string
+    sessionChanges: string
+    changesNoSessionTitle: string
+    changesNoSessionBody: string
+    changedTurns: string
+    filesChangedInline: string
+    turnLabel: (index: number) => string
   }
 
   preview: {

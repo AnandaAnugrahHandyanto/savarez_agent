@@ -312,6 +312,54 @@ function PreviewToggle({ asSource, onToggle }: { asSource: boolean; onToggle: ()
   )
 }
 
+function diffLineClass(type: string) {
+  switch (type) {
+    case 'added':
+      return 'border-emerald-400/30 bg-emerald-400/[0.09] text-emerald-100'
+
+    case 'removed':
+      return 'border-red-400/30 bg-red-400/[0.09] text-red-100'
+
+    case 'hunk':
+      return 'border-blue-400/25 bg-blue-400/[0.10] text-blue-100'
+
+    case 'meta':
+      return 'border-border/80 bg-muted/35 text-muted-foreground'
+
+    default:
+      return 'border-transparent text-muted-foreground/90'
+  }
+}
+
+function DiffPreview({ target }: { target: PreviewTarget }) {
+  const { t } = useI18n()
+  const lines = target.diffLines ?? []
+
+  if (target.binary) {
+    return <PreviewEmptyState body={target.label} title="Binary file — line diff is not available." />
+  }
+
+  if (!lines.length) {
+    return <PreviewEmptyState body={target.label} title="No line-level diff preview for this file." />
+  }
+
+  return (
+    <div className="h-full overflow-auto bg-transparent">
+      <div className="sticky top-0 z-10 border-b border-border/50 bg-(--ui-editor-surface-background)/95 px-3 py-2 backdrop-blur">
+        <div className="truncate font-mono text-[0.72rem] font-medium text-foreground">{target.path || target.label}</div>
+        <div className="mt-0.5 text-[0.62rem] text-muted-foreground">{t.rightSidebar.sessionChanges} · diff</div>
+      </div>
+      <pre className="min-w-max p-0 font-mono text-xs leading-relaxed">
+        {lines.map((line, index) => (
+          <div className={cn('whitespace-pre border-l-2 px-3', diffLineClass(line.type))} key={`${target.url}-${index}`}>
+            {line.text || ' '}
+          </div>
+        ))}
+      </pre>
+    </div>
+  )
+}
+
 // Gutter and Shiki output share `font-mono text-xs leading-relaxed py-3` so
 // each line aligns vertically. The selection overlay relies on the same
 // `text-xs * leading-relaxed = 1.21875rem` line-height to position itself.
@@ -417,19 +465,26 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   const [forcePreview, setForcePreview] = useState(false)
   const [renderMarkdownAsSource, setRenderMarkdownAsSource] = useState(false)
   const filePath = filePathForTarget(target)
+  const isDiff = target.previewKind === 'diff'
   const isImage = target.previewKind === 'image'
 
   // HTML files are rendered as source code, not in a webview - so they take
   // the same path as plain text files. `previewKind === 'binary'` arrives
   // when the file is forcibly previewed past the binary refusal screen.
-  const isText = target.previewKind === 'text' || target.previewKind === 'binary' || target.previewKind === 'html'
+  const isText = !isDiff && (target.previewKind === 'text' || target.previewKind === 'binary' || target.previewKind === 'html')
 
-  const blockedByTarget = !isImage && !forcePreview && (target.binary || target.large)
+  const blockedByTarget = !isDiff && !isImage && !forcePreview && (target.binary || target.large)
 
   useEffect(() => {
     let active = true
 
     async function load() {
+      if (isDiff) {
+        setState({ loading: false })
+
+        return
+      }
+
       if (blockedByTarget) {
         setState({ loading: false })
 
@@ -486,7 +541,11 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     return () => {
       active = false
     }
-  }, [blockedByTarget, filePath, forcePreview, isImage, isText, reloadKey, target.dataUrl, target.language])
+  }, [blockedByTarget, filePath, forcePreview, isDiff, isImage, isText, reloadKey, target.dataUrl, target.language])
+
+  if (isDiff) {
+    return <DiffPreview target={target} />
+  }
 
   if (state.loading) {
     return <PageLoader label={t.preview.loading} />
