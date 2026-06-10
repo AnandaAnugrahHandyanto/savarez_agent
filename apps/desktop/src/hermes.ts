@@ -498,9 +498,15 @@ export function testMessagingPlatform(platformId: string): Promise<MessagingPlat
   })
 }
 
-export function getCronJobs(): Promise<CronJob[]> {
+// Cron jobs are stored per-profile (<HERMES_HOME>/cron/jobs.json). Pass a
+// concrete profile key to list just that profile's jobs, or 'all' for the
+// unified cross-profile view. Omitting the arg keeps the backend's legacy
+// 'all' default, so non-profile callers are unaffected.
+export function getCronJobs(profile?: string): Promise<CronJob[]> {
+  const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+
   return window.hermesDesktop.api<CronJob[]>({
-    path: '/api/cron/jobs'
+    path: `/api/cron/jobs${suffix}`
   })
 }
 
@@ -518,9 +524,14 @@ export async function getCronJobRuns(jobId: string, limit = 20): Promise<Session
   return runs ?? []
 }
 
-export function createCronJob(body: CronJobCreatePayload): Promise<CronJob> {
+// Create in a specific profile's store. Omitting `profile` lets the backend
+// default to 'default' (~/.hermes). Callers viewing a concrete profile pass it
+// so the new job lands in — and shows up under — the profile being viewed.
+export function createCronJob(body: CronJobCreatePayload, profile?: string): Promise<CronJob> {
+  const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+
   return window.hermesDesktop.api<CronJob>({
-    path: '/api/cron/jobs',
+    path: `/api/cron/jobs${suffix}`,
     method: 'POST',
     body
   })

@@ -355,13 +355,17 @@ export function DesktopController() {
   // next-run/state fresh as the scheduler advances them.
   const refreshCronJobs = useCallback(async () => {
     try {
-      const jobs = await getCronJobs()
+      // Scope to the active profile (cron jobs live per-profile on disk) so the
+      // sidebar shows only this profile's jobs; ALL_PROFILES → 'all' for the
+      // unified browse view. Single-profile users resolve to 'default'.
+      const cronProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+      const jobs = await getCronJobs(cronProfile)
 
       setCronJobs(jobs)
     } catch {
       // Non-fatal: the cron section just keeps its last-known jobs.
     }
-  }, [])
+  }, [profileScope])
 
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1

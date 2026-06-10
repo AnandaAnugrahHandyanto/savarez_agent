@@ -34,6 +34,7 @@ import { AlertTriangle, Clock } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs, updateCronJobs } from '@/store/cron'
 import { notify, notifyError } from '@/store/notifications'
+import { $profileScope, ALL_PROFILES } from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { OverlayMain, OverlayNewButton, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
@@ -251,6 +252,12 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   // sidebar and this overlay never drift — a delete here clears the sidebar row
   // immediately. `loading` only gates the first paint before the atom is filled.
   const jobs = useStore($cronJobs)
+  // Cron jobs are per-profile; follow the same scope as the sidebar. A concrete
+  // profile lists (and creates) just that profile's jobs; ALL_PROFILES shows the
+  // unified view and creates fall back to the backend 'default'.
+  const profileScope = useStore($profileScope)
+  const cronListProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+  const cronCreateProfile = profileScope === ALL_PROFILES ? undefined : profileScope
   const [loading, setLoading] = useState(jobs.length === 0)
   const [query, setQuery] = useState('')
   const [busyJobId, setBusyJobId] = useState<null | string>(null)
@@ -267,13 +274,13 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
   const refresh = useCallback(async () => {
     try {
-      setCronJobs(await getCronJobs())
+      setCronJobs(await getCronJobs(cronListProfile))
     } catch (err) {
       notifyError(err, c.failedLoad)
     } finally {
       setLoading(false)
     }
-  }, [c])
+  }, [c, cronListProfile])
 
   useRefreshHotkey(refresh)
 
@@ -377,12 +384,15 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
   async function handleEditorSave(values: EditorValues) {
     if (editor.mode === 'create') {
-      const created = await createCronJob({
-        prompt: values.prompt,
-        schedule: values.schedule,
-        name: values.name || undefined,
-        deliver: values.deliver || DEFAULT_DELIVER
-      })
+      const created = await createCronJob(
+        {
+          prompt: values.prompt,
+          schedule: values.schedule,
+          name: values.name || undefined,
+          deliver: values.deliver || DEFAULT_DELIVER
+        },
+        cronCreateProfile
+      )
 
       updateCronJobs(rows => [...rows, created])
       notify({ kind: 'success', title: c.created, message: truncate(jobTitle(created), 60) })
