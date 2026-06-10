@@ -617,6 +617,14 @@ def run_conversation(
 
     # Add user message
     user_msg = {"role": "user", "content": user_message}
+    # F-003 sender attribution: a remote client (different device attached to
+    # this gateway) declares who typed this prompt. The key rides the message
+    # dict into session persistence (the flush passes it through; the API
+    # builder strips it) and overrides the local-device auto-stamp.
+    _pending_sender = getattr(agent, "_pending_user_sender_device", None)
+    if _pending_sender:
+        user_msg["sender_device"] = _pending_sender
+        agent._pending_user_sender_device = None
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
@@ -1044,6 +1052,9 @@ def run_conversation(
                 api_msg.pop("finish_reason")
             # Strip internal thinking-prefill marker
             api_msg.pop("_thinking_prefill", None)
+            # Strip sender attribution — persistence-only metadata, rejected
+            # by strict APIs that validate unknown message fields.
+            api_msg.pop("sender_device", None)
             # Strip Codex Responses API fields (call_id, response_item_id) for
             # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
             # Uses new dicts so the internal messages list retains the fields

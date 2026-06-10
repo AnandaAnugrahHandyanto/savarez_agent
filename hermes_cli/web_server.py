@@ -8239,6 +8239,39 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 
+def _primary_lan_ip() -> str:
+    """Best-effort primary outbound IPv4 of this machine, or ''.
+
+    The UDP-connect trick never sends a packet; it just asks the kernel
+    which source address it would route from. Works without DNS and
+    without any mesh/tailnet tooling installed.
+    """
+    import socket as _socket
+
+    try:
+        with _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM) as s:
+            s.connect(("10.255.255.255", 1))
+            return s.getsockname()[0] or ""
+    except Exception:
+        return ""
+
+
+def _presence_advertise_endpoint(host: str, port: int) -> str:
+    """Dialable ws endpoint to advertise in session-presence records.
+
+    Loopback binds advertise nothing (the address is meaningless from
+    another device). Wildcard binds advertise the primary LAN IP; an
+    explicit non-loopback bind (LAN/Tailscale address) advertises itself.
+    """
+    bound = (host or "").strip().lower()
+    if not bound or bound in _LOOPBACK_HOSTS:
+        return ""
+    if bound in {"0.0.0.0", "::"}:
+        lan_ip = _primary_lan_ip()
+        return f"ws://{lan_ip}:{port}/api/ws" if lan_ip else ""
+    return f"ws://{host.strip()}:{port}/api/ws"
+
+
 def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
     """Return a rejection reason for the client IP, or None when allowed.
 
@@ -9987,6 +10020,16 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+
+    # Advertise a dialable ws endpoint in session-presence records when the
+    # dashboard is reachable beyond loopback, so other devices that discover
+    # a live session here (synced presence folder, future registry) know
+    # where to attach. setdefault keeps an operator-configured
+    # HERMES_SESSION_PRESENCE_ENDPOINT authoritative; loopback binds
+    # advertise nothing — the address would be meaningless off-machine.
+    _adv_endpoint = _presence_advertise_endpoint(host, port)
+    if _adv_endpoint:
+        os.environ.setdefault("HERMES_SESSION_PRESENCE_ENDPOINT", _adv_endpoint)
 
     if open_browser:
         import webbrowser
