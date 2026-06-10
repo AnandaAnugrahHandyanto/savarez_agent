@@ -64,6 +64,7 @@ const TranscriptPane = memo(function TranscriptPane({
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
   const ui = useStore($uiState)
   const liveTodoCount = useTurnSelector(state => state.todos.length)
+
   const tailSlots = transcriptTailSlots({
     queue: composer.queuedDisplay.length > 0,
     todos: liveTodoCount > 0
@@ -81,8 +82,10 @@ const TranscriptPane = memo(function TranscriptPane({
             t={ui.theme}
           />
         )
+
       case 'todos':
         return <LiveTodoPanel key="todos" />
+
       case 'assistant':
         return (
           <StreamingAssistant
@@ -98,6 +101,7 @@ const TranscriptPane = memo(function TranscriptPane({
         )
       default: {
         const exhaustive: never = slot
+
         return exhaustive
       }
     }
