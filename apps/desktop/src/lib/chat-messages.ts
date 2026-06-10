@@ -68,6 +68,9 @@ export type GatewayEventPayload = {
   kind?: string
   // gateway.ready (the emitting gateway's resolved device name)
   device_name?: string
+  // session.participants (channels Phase 3: who's viewing this session, deduped
+  // by device name with a live-client count). Shape mirrors SessionParticipant.
+  participants?: { device: string; count: number }[]
 }
 
 export function textPart(text: string): ChatMessagePart {
