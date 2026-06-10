@@ -123,6 +123,7 @@ except Exception:
 from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
+_cron_runtime_id_map: dict[str, str] = {}
 _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
@@ -3551,8 +3552,6 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                     except (json.JSONDecodeError, TypeError):
                         args = {}
                     tool_call_args[tc_id] = (fn["name"], args)
-            if not content_text.strip():
-                continue
         if role == "tool":
             tc_id = m.get("tool_call_id", "")
             tc_info = tool_call_args.get(tc_id) if tc_id else None
@@ -3562,7 +3561,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                 {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
             )
             continue
-        if not content_text.strip():
+        if not content_text.strip() and not (role == "assistant" and m.get("tool_calls")):
             continue
         msg = {"role": role, "text": content_text}
         if role == "assistant":
@@ -3574,6 +3573,8 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             ):
                 if key in m and m.get(key) is not None:
                     msg[key] = m.get(key)
+            if m.get("tool_calls"):
+                msg["tool_calls"] = m["tool_calls"]
         messages.append(msg)
 
     return messages
@@ -4041,7 +4042,11 @@ def _(rid, params: dict) -> dict:
         set_hermes_home_override(str(profile_home)) if profile_home is not None else None
     )
     try:
-        db.reopen_session(target)
+        # Don't reopen cron sessions — they are read-only completed reports.
+        # reopen_session clears ended_at which makes the session disappear
+        # from the sidebar (ended_at IS NOT NULL filter) after first click.
+        if not target.startswith("cron_"):
+            db.reopen_session(target)
         history = db.get_messages_as_conversation(target)
         display_history = db.get_messages_as_conversation(
             target, include_ancestors=True
@@ -4112,6 +4117,18 @@ def _(rid, params: dict) -> dict:
                 if profile_home is not None:
                     _sessions[sid]["profile_home"] = str(profile_home)
                 _sessions[sid]["active_session_lease"] = lease
+            # Register the runtime ID mapping so cron agent callbacks emit with the
+            # correct session ID. No need to alias _sessions[target] — _resolve_sid()
+            # uses _cron_runtime_id_map to translate stored → runtime, and _emit
+            # finds the runtime session's transport directly.
+            if target.startswith("cron_"):
+                _cron_runtime_id_map[target] = sid
+                # Also reset running state in case the session was previously
+                # interrupted mid-turn (prompt.submit sets running=True, and if
+                # the agent thread crashed before clearing it, the flag stays
+                # stuck — making the session appear "busy" forever).
+                if sid in _sessions:
+                    _sessions[sid]["running"] = False
         except Exception as e:
             if lease is not None:
                 lease.release()

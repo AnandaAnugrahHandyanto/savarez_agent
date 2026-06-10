@@ -513,6 +513,14 @@ export function useSessionActions({
 
   const resumeSession = useCallback(
     async (storedSessionId: string, replaceRoute = false) => {
+      // Remove stale cron runtime-ID mappings from previous sessions so a fresh
+      // resume doesn't route events through a stale runtime ID.
+      for (const [k] of runtimeIdByStoredSessionIdRef.current) {
+        if (k.startsWith('cron_')) {
+          runtimeIdByStoredSessionIdRef.current.delete(k)
+        }
+      }
+
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
 
@@ -650,7 +658,7 @@ export function useSessionActions({
         )
         // Keep the local snapshot when resume would only reshuffle runtime projection.
         const preferredMessages =
-          localSnapshot.length > 0
+          localSnapshot.length > resumedMessages.length
             ? localSnapshot
             : chatMessageArraysEquivalent(currentMessages, resumedMessages)
               ? currentMessages
