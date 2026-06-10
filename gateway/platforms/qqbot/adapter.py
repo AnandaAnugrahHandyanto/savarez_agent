@@ -2466,7 +2466,12 @@ class QQAdapter(BasePlatformAdapter):
             content: str,
             reply_to: Optional[str] = None,
     ) -> SendResult:
-        """Send a single chunk with retry + exponential backoff."""
+        """Send a single chunk with retry + exponential backoff.
+
+        When the original ``reply_to`` message has expired (QQ Bot API
+        rejects it), falls back to sending as a standalone message so the
+        response still reaches the user.  See #43467.
+        """
         last_exc: Optional[Exception] = None
         chat_type = self._guess_chat_type(chat_id)
 
@@ -2485,11 +2490,24 @@ class QQAdapter(BasePlatformAdapter):
             except Exception as exc:
                 last_exc = exc
                 err = str(exc).lower()
-                # Permanent errors — don't retry
+                # Permanent errors — don't retry.  But if the error is
+                # about an expired/invalid msg_id, fall back to a
+                # standalone (non-reply) send so the response still
+                # reaches the user (#43467).
                 if any(
                         k in err
                         for k in ("invalid", "forbidden", "not found", "bad request")
                 ):
+                    if reply_to and (
+                        "msg_id" in err or "message" in err and "not found" in err
+                    ):
+                        logger.warning(
+                            "[%s] Reply target expired/invalid (%s), "
+                            "falling back to standalone message",
+                            self._log_tag, err,
+                        )
+                        reply_to = None
+                        continue
                     break
                 # Transient — back off and retry
                 if attempt < 2:
