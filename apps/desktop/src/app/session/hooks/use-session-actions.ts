@@ -26,6 +26,7 @@ import {
   setBusy,
   setCurrentBranch,
   setCurrentCwd,
+  setCurrentCwdFromRuntime,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
@@ -238,7 +239,7 @@ function applyRuntimeInfo(info: SessionCreateResponse['info'] | undefined): Part
   }
 
   if (info.cwd) {
-    setCurrentCwd(info.cwd)
+    setCurrentCwdFromRuntime(info.cwd)
     sessionState.cwd = info.cwd
   }
 
@@ -472,7 +473,7 @@ export function useSessionActions({
         setActiveSessionId(cachedRuntimeId)
         activeSessionIdRef.current = cachedRuntimeId
         syncSessionStateToView(cachedRuntimeId, cachedState)
-        setCurrentCwd(cachedState.cwd)
+        setCurrentCwdFromRuntime(cachedState.cwd)
         setCurrentBranch(cachedState.branch)
         setSessionStartedAt(Date.now())
         clearComposerDraft()
