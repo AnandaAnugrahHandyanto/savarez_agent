@@ -751,6 +751,193 @@ class TestCronSchedulerBashResolution:
         assert "bash not found" in source.lower()
 
 
+class TestCronSchedulerWindowsDetachFlags:
+    """``cron/scheduler.py`` must use the platform-aware detach helper
+    (``windows_detach_popen_kwargs()`` + ``windows_detach_flags_without_breakaway()``
+    nested fallback) instead of the legacy ``windows_hide_flags()`` pattern.
+
+    Mirrors the canonical pattern at ``hermes_cli/gateway.py:716-742`` (the
+    already-shipped helper).
+
+    Without the fix, the cron-spawned script stays in the parent Hermes job
+    object on Windows (because the legacy ``windows_hide_flags()`` only
+    sets CREATE_NO_WINDOW) and is silently reaped when the parent job is
+    torn down by the OS — typically 30-60s after the user closes their terminal
+    or the Electron Desktop window. The new code sets all 4 detach flags
+    including CREATE_BREAKAWAY_FROM_JOB, with a fallback to no-breakaway
+    if the parent job refuses breakaway.
+    """
+
+    def test_cron_scheduler_uses_windows_detach_popen_kwargs(self):
+        """The ``subprocess.run`` for the cron job's script must use
+        ``windows_detach_popen_kwargs()`` — NOT ``windows_hide_flags()``.
+
+        Catches the static-text regression: a future maintainer reverting
+        to ``{"creationflags": windows_hide_flags()}`` would break the
+        Windows detached-spawn contract for cron jobs.
+        """
+        root = Path(__file__).resolve().parents[2]
+        source = (root / "cron" / "scheduler.py").read_text(encoding="utf-8")
+        # The new helper must be imported AND called inside the run.
+        assert "windows_detach_popen_kwargs" in source, (
+            "cron/scheduler.py must import and use windows_detach_popen_kwargs() "
+            "instead of the legacy windows_hide_flags() pattern. The legacy "
+            "helper only sets CREATE_NO_WINDOW (no DETACHED_PROCESS, no "
+            "CREATE_BREAKAWAY_FROM_JOB) so cron-spawned scripts on Windows "
+            "stay in the parent job and are reaped when it tears down."
+        )
+        # The legacy helper must NOT be called in cron/scheduler.py.
+        assert "windows_hide_flags()" not in source, (
+            "cron/scheduler.py still references windows_hide_flags() — this "
+            "is the legacy single-flag helper that PR #42993 brought the "
+            "other call sites off of. cron/scheduler.py is the next site."
+        )
+        # The legacy single-flag dict literal must NOT appear in cron/scheduler.py.
+        assert "windows_hide_flags" not in source, (
+            "cron/scheduler.py still imports or references windows_hide_flags. "
+            "Remove the import and use windows_detach_popen_kwargs() instead."
+        )
+
+    def test_cron_scheduler_subprocess_run_is_wrapped_in_oserror_try(self):
+        """The ``subprocess.run`` call must be inside a ``try/except OSError``
+        block with a nested ``try/except OSError`` retry that uses
+        ``windows_detach_flags_without_breakaway()``.
+
+        Without the fallback, on a restrictive job object the user's cron
+        run crashes with an unhandled ``PermissionError`` — strictly worse
+        than the pre-fix state. This is the same fall-back pattern that
+        PR #40909 added to ``hermes_cli/gateway.py`` and PR #42993 mirrored
+        in ``gateway/run.py``.
+        """
+        import ast as _ast
+        root = Path(__file__).resolve().parents[2]
+        text = (root / "cron" / "scheduler.py").read_text(encoding="utf-8")
+        tree = _ast.parse(text)
+        # Find every ``subprocess.run(...)`` call inside the module.
+        run_calls = [
+            n for n in _ast.walk(tree)
+            if isinstance(n, _ast.Call)
+            and isinstance(n.func, _ast.Attribute)
+            and n.func.attr == "run"
+            and isinstance(n.func.value, _ast.Name)
+            and n.func.value.id == "subprocess"
+        ]
+        # The cron-spawned script invocation must use subprocess.run
+        # (not Popen). Find the one that's inside the script-execution
+        # function (not e.g. the systemd helper or a logging call).
+        # Heuristic: the cron-spawned subprocess.run is the one whose
+        # kwargs include a `timeout=` kwarg AND a `**popen_kwargs`
+        # `**`-spread AND a `cwd=` kwarg. The spread has kw.arg == None
+        # in the AST.
+        target_run = None
+        for rc in run_calls:
+            kw_names = {k.arg for k in rc.keywords if k.arg is not None}
+            spread_names = {k.value.id for k in rc.keywords if k.arg is None and isinstance(k.value, _ast.Name)}
+            if (
+                "timeout" in kw_names
+                and "popen_kwargs" in spread_names
+                and "cwd" in kw_names
+            ):
+                target_run = rc
+                break
+        assert target_run is not None, (
+            "Could not find the cron-spawned subprocess.run call in "
+            "cron/scheduler.py. The expected pattern is "
+            "subprocess.run(argv, capture_output=True, text=True, "
+            "timeout=script_timeout, cwd=str(path.parent), env=run_env, "
+            "**popen_kwargs). The Popen-spread call may have been refactored "
+            "away — if so, update this test."
+        )
+        # Walk the parent chain to find an enclosing try/except OSError
+        # with a handler that catches OSError.
+        parent_map = {}
+        for parent in _ast.walk(tree):
+            for child in _ast.iter_child_nodes(parent):
+                parent_map[id(child)] = parent
+        enclosing_try = None
+        node = target_run
+        while id(node) in parent_map:
+            parent = parent_map[id(node)]
+            if isinstance(parent, _ast.Try) and any(n is target_run for n in _ast.walk(parent)):
+                enclosing_try = parent
+                break
+            node = parent
+        assert enclosing_try is not None, (
+            "The cron-spawned subprocess.run is NOT inside a try/except. "
+            "On a restrictive Windows job object, CreateProcess raises "
+            "OSError — without a try/except wrapper, the cron run crashes "
+            "with an unhandled PermissionError. The pattern must mirror "
+            "hermes_cli/gateway.py:716-742 (nested try/except OSError with "
+            "windows_detach_flags_without_breakaway() fallback)."
+        )
+        # Verify the except handler catches OSError.
+        oserror_caught = False
+        for handler in enclosing_try.handlers:
+            if handler.type is None:
+                continue  # bare except
+            if isinstance(handler.type, _ast.Name) and handler.type.id == "OSError":
+                oserror_caught = True
+                break
+            if isinstance(handler.type, _ast.Tuple):
+                for elt in handler.type.elts:
+                    if isinstance(elt, _ast.Name) and elt.id == "OSError":
+                        oserror_caught = True
+                        break
+        assert oserror_caught, (
+            "The cron-spawned subprocess.run's try/except handler does NOT "
+            "catch OSError. CreateProcess can raise OSError on breakaway "
+            "denial; the handler must catch it."
+        )
+
+    def test_cron_scheduler_fallback_uses_windows_detach_flags_without_breakaway(self):
+        """The OSError retry path in cron/scheduler.py must use
+        ``windows_detach_flags_without_breakaway()`` — the helper that
+        returns the 3 other detach flags but NOT the breakaway bit.
+
+        Mirrors the canonical pattern at hermes_cli/gateway.py:716-742.
+        """
+        import ast as _ast
+        root = Path(__file__).resolve().parents[2]
+        text = (root / "cron" / "scheduler.py").read_text(encoding="utf-8")
+        tree = _ast.parse(text)
+        # Find every call to windows_detach_flags_without_breakaway.
+        calls = []
+        for n in _ast.walk(tree):
+            if (
+                isinstance(n, _ast.Call)
+                and isinstance(n.func, _ast.Name)
+                and n.func.id == "windows_detach_flags_without_breakaway"
+            ):
+                calls.append(n)
+        assert calls, (
+            "cron/scheduler.py must call windows_detach_flags_without_breakaway() "
+            "in the OSError retry path. Without it, the fallback reuses "
+            "the same CREATE_BREAKAWAY_FROM_JOB bit that was just rejected "
+            "and crashes again on the same restrictive job object."
+        )
+        # Every call must be inside a try block (the OSError retry path).
+        # At least one call must be passed as a dict value to {"creationflags": ...}
+        # to be useful as a creationflag bundle.
+        # Verify the call result is used as a "creationflags" value SOMEWHERE.
+        creationflags_pass = False
+        for n in _ast.walk(tree):
+            if isinstance(n, _ast.Dict):
+                for k, v in zip(n.keys, n.values):
+                    if (
+                        isinstance(v, _ast.Call)
+                        and isinstance(v.func, _ast.Name)
+                        and v.func.id == "windows_detach_flags_without_breakaway"
+                    ):
+                        creationflags_pass = True
+                        break
+        assert creationflags_pass, (
+            "cron/scheduler.py must pass the windows_detach_flags_without_breakaway() "
+            "result as the 'creationflags' value of a dict (e.g. "
+            "{'creationflags': windows_detach_flags_without_breakaway()}). "
+            "A bare call without using the result is not a fix."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Node-ecosystem launcher resolution (npm / npx / node)
 # ---------------------------------------------------------------------------
