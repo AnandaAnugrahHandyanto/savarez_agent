@@ -49,6 +49,9 @@ _RECONNECT_BASE_DELAY = 2.0
 _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
 
+# In-thread auto-response parameter (Slack parity).
+_MENTIONED_THREADS_MAX = 5000
+
 
 def check_mattermost_requirements() -> bool:
     """Return True if the Mattermost adapter can be used."""
@@ -98,6 +101,9 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
+
+        # In-thread auto-response (Slack parity): threads where the bot was @mentioned.
+        self._mentioned_threads: set[str] = set()
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -688,6 +694,55 @@ class MattermostAdapter(BasePlatformAdapter):
                 logger.info("Mattermost: WebSocket closed (%s)", raw_msg.type)
                 break
 
+    def _strict_mention(self) -> bool:
+        """Return True when every turn requires a fresh @mention (in-thread auto-response opt-out)."""
+        configured = self.config.extra.get("strict_mention") if self.config.extra else None
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("MATTERMOST_STRICT_MENTION", "false").lower() in {
+            "true", "1", "yes", "on",
+        }
+
+    def _has_active_session_for_thread(
+        self, channel_id: str, thread_id: str, chat_type: str, user_id: str
+    ) -> bool:
+        """Return True when a gateway session already exists for this thread."""
+        session_store = getattr(self, "_session_store", None)
+        if not session_store:
+            return False
+        try:
+            from gateway.session import SessionSource, build_session_key
+
+            source = SessionSource(
+                platform=Platform.MATTERMOST,
+                chat_id=channel_id,
+                chat_type=chat_type,
+                user_id=user_id,
+                thread_id=thread_id,
+            )
+            store_cfg = getattr(session_store, "config", None)
+            gspu = (
+                getattr(store_cfg, "group_sessions_per_user", True)
+                if store_cfg
+                else True
+            )
+            tspu = (
+                getattr(store_cfg, "thread_sessions_per_user", False)
+                if store_cfg
+                else False
+            )
+            session_key = build_session_key(
+                source,
+                group_sessions_per_user=gspu,
+                thread_sessions_per_user=tspu,
+            )
+            session_store._ensure_loaded()
+            return session_key in session_store._entries
+        except Exception:
+            return False
+
     async def _handle_ws_event(self, event: Dict[str, Any]) -> None:
         """Process a single WebSocket event."""
         event_type = event.get("event")
@@ -725,12 +780,21 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # For DMs, user_id is sufficient.  For channels, check for @mention.
         message_text = post.get("message", "")
+        sender_id = post.get("user_id", "")
+        sender_name = data.get("sender_name", "").lstrip("@") or sender_id
+        thread_id = post.get("root_id") or None
+        # Mattermost root posts have an empty root_id; in thread mode the bot
+        # nests replies under the root, so seed thread_id from the post's own id
+        # to keep the root and its replies on one session (and one mentioned thread).
+        if thread_id is None and self._reply_mode == "thread":
+            thread_id = post.get("id") or None
 
         # Mention-gating for non-DM channels.
         # Config (config.yaml `mattermost.*` with env-var fallback):
         #   require_mention / MATTERMOST_REQUIRE_MENTION: Require @mention in channels (default: true)
         #   free_response_channels / MATTERMOST_FREE_RESPONSE_CHANNELS: Channel IDs where bot responds without mention
         #   allowed_channels / MATTERMOST_ALLOWED_CHANNELS: If set, bot ONLY responds in these channels (whitelist)
+        #   strict_mention / MATTERMOST_STRICT_MENTION: Require a fresh @mention every turn (disables in-thread auto-response)
         if channel_type_raw != "D":
             # allowed_channels check (whitelist — must pass before other gating).
             # When set, messages from channels NOT in this list are silently
@@ -759,6 +823,8 @@ class MattermostAdapter(BasePlatformAdapter):
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
             is_free_channel = channel_id in free_channels
 
+            strict_mention = self._strict_mention()
+
             mention_patterns = [
                 f"@{self._bot_username}",
                 f"@{self._bot_user_id}",
@@ -768,12 +834,38 @@ class MattermostAdapter(BasePlatformAdapter):
                 for pattern in mention_patterns
             )
 
-            if require_mention and not is_free_channel and not has_mention:
+            in_mentioned_thread = False
+            has_session = False
+            if thread_id and not strict_mention:
+                in_mentioned_thread = thread_id in self._mentioned_threads
+                if not in_mentioned_thread:
+                    has_session = self._has_active_session_for_thread(
+                        channel_id=channel_id,
+                        thread_id=thread_id,
+                        chat_type=chat_type,
+                        user_id=sender_id,
+                    )
+
+            if is_free_channel or not require_mention:
+                pass
+            elif has_mention:
+                pass
+            elif in_mentioned_thread or has_session:
+                pass
+            else:
                 logger.debug(
-                    "Mattermost: skipping non-DM message without @mention (channel=%s)",
+                    "Mattermost: skipping non-DM message (no mention / not in "
+                    "mentioned thread / no session) channel=%s thread=%s",
                     channel_id,
+                    thread_id,
                 )
                 return
+
+            if has_mention and thread_id and not strict_mention:
+                self._mentioned_threads.add(thread_id)
+                if len(self._mentioned_threads) > _MENTIONED_THREADS_MAX:
+                    for stale in list(self._mentioned_threads)[: _MENTIONED_THREADS_MAX // 2]:
+                        self._mentioned_threads.discard(stale)
 
             # Strip @mention from the message text so the agent sees clean input.
             if has_mention:
@@ -781,13 +873,6 @@ class MattermostAdapter(BasePlatformAdapter):
                     message_text = re.sub(
                         re.escape(pattern), "", message_text, flags=re.IGNORECASE
                     ).strip()
-
-        # Resolve sender info.
-        sender_id = post.get("user_id", "")
-        sender_name = data.get("sender_name", "").lstrip("@") or sender_id
-
-        # Thread support: if the post is in a thread, use root_id.
-        thread_id = post.get("root_id") or None
 
         # Determine message type.
         file_ids = post.get("file_ids") or []

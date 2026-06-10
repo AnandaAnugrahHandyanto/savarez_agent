@@ -81,6 +81,16 @@ def _make_adapter():
     return adapter
 
 
+def _posted_event(message="hi", *, post_id="p1", root_id="", user_id="user_123",
+                  channel_type="O", channel_id="chan_456", sender_name="@alice"):
+    """Build a Mattermost 'posted' WebSocket event with a double-encoded post."""
+    post = {"id": post_id, "user_id": user_id, "channel_id": channel_id, "message": message}
+    if root_id:
+        post["root_id"] = root_id
+    return {"event": "posted", "data": {
+        "post": json.dumps(post), "channel_type": channel_type, "sender_name": sender_name}}
+
+
 class TestMattermostFormatMessage:
     def setup_method(self):
         self.adapter = _make_adapter()
@@ -750,3 +760,142 @@ class TestMattermostMediaTypes:
         assert msg.media_types == ["application/pdf"]
         assert not msg.media_types[0].startswith("image/")
         assert not msg.media_types[0].startswith("audio/")
+
+
+class TestMattermostThreadSessionContinuity:
+    """A thread's root post and its replies must resolve to one session."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter.handle_message = AsyncMock()
+
+    def _event(self, post_id, root_id="", channel_type="D"):
+        return _posted_event(post_id=post_id, root_id=root_id, channel_type=channel_type)
+
+    async def _thread_id_for(self, **kwargs):
+        self.adapter.handle_message.reset_mock()
+        await self.adapter._handle_ws_event(self._event(**kwargs))
+        assert self.adapter.handle_message.called
+        return self.adapter.handle_message.call_args[0][0].source.thread_id
+
+    @pytest.mark.asyncio
+    async def test_thread_mode_root_post_seeds_thread_id_from_own_id(self):
+        self.adapter._reply_mode = "thread"
+        assert await self._thread_id_for(post_id="root_1", root_id="") == "root_1"
+
+    @pytest.mark.asyncio
+    async def test_thread_mode_reply_keeps_root_id(self):
+        self.adapter._reply_mode = "thread"
+        assert await self._thread_id_for(post_id="reply_9", root_id="root_1") == "root_1"
+
+    @pytest.mark.asyncio
+    async def test_off_mode_root_post_has_no_thread_id(self):
+        self.adapter._reply_mode = "off"
+        assert await self._thread_id_for(post_id="root_1", root_id="") is None
+
+    @pytest.mark.asyncio
+    async def test_root_and_reply_share_thread_id_in_thread_mode(self):
+        self.adapter._reply_mode = "thread"
+        root_tid = await self._thread_id_for(post_id="root_1", root_id="")
+        reply_tid = await self._thread_id_for(post_id="reply_9", root_id="root_1")
+        assert root_tid == reply_tid == "root_1"
+
+
+class TestMattermostInThreadAutoResponse:
+    """In-thread auto-response + MATTERMOST_STRICT_MENTION (Slack parity)."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter.handle_message = AsyncMock()
+        self.adapter._api_get = AsyncMock(return_value={})
+
+    def _thread_event(self, message, root_id="root_1", post_id="p2",
+                      user_id="user_123", channel_type="O"):
+        return _posted_event(message, post_id=post_id, root_id=root_id,
+                             user_id=user_id, channel_type=channel_type)
+
+    def test_strict_mention_default_false(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_STRICT_MENTION", None)
+            assert self.adapter._strict_mention() is False
+
+    def test_strict_mention_env_true(self):
+        with patch.dict(os.environ, {"MATTERMOST_STRICT_MENTION": "true"}):
+            assert self.adapter._strict_mention() is True
+
+    def test_strict_mention_config_override_wins(self):
+        self.adapter.config.extra["strict_mention"] = True
+        try:
+            with patch.dict(os.environ, {"MATTERMOST_STRICT_MENTION": "false"}):
+                assert self.adapter._strict_mention() is True
+        finally:
+            del self.adapter.config.extra["strict_mention"]
+
+    @pytest.mark.asyncio
+    async def test_auto_response_in_mentioned_thread_without_mention(self):
+        await self.adapter._handle_ws_event(
+            self._thread_event("@hermes-bot start", root_id="root_1", post_id="p1")
+        )
+        assert "root_1" in self.adapter._mentioned_threads
+        await self.adapter._handle_ws_event(
+            self._thread_event("a follow-up with no mention", root_id="root_1", post_id="p2")
+        )
+        assert self.adapter.handle_message.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_root_post_mention_in_thread_mode_enables_autoresponse(self):
+        self.adapter._reply_mode = "thread"
+        await self.adapter._handle_ws_event(
+            self._thread_event("@hermes-bot kick off", root_id="", post_id="root_1")
+        )
+        assert "root_1" in self.adapter._mentioned_threads
+        await self.adapter._handle_ws_event(
+            self._thread_event("follow-up no mention", root_id="root_1", post_id="reply_2")
+        )
+        assert self.adapter.handle_message.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_strict_mention_requires_mention_every_turn(self):
+        with patch.dict(os.environ, {"MATTERMOST_STRICT_MENTION": "true"}):
+            await self.adapter._handle_ws_event(
+                self._thread_event("@hermes-bot start", root_id="root_1", post_id="p1")
+            )
+            assert self.adapter._mentioned_threads == set()
+            await self.adapter._handle_ws_event(
+                self._thread_event("no mention follow-up", root_id="root_1", post_id="p2")
+            )
+        assert self.adapter.handle_message.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_non_thread_message_without_mention_still_skipped(self):
+        post = {"id": "p_flat", "user_id": "user_123", "channel_id": "chan_456",
+                "message": "just chatting, no mention"}
+        event = {"event": "posted", "data": {
+            "post": json.dumps(post), "channel_type": "O", "sender_name": "@alice"}}
+        await self.adapter._handle_ws_event(event)
+        assert not self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_has_active_session_uses_correct_chat_type(self):
+        from gateway.session import SessionSource, build_session_key
+        source = SessionSource(
+            platform=Platform.MATTERMOST, chat_id="chan_456",
+            chat_type="channel", user_id="user_123", thread_id="root_1",
+        )
+        key = build_session_key(source, group_sessions_per_user=True,
+                                thread_sessions_per_user=False)
+        store = MagicMock()
+        store.config = MagicMock(group_sessions_per_user=True,
+                                 thread_sessions_per_user=False)
+        store._entries = {key: object()}
+        store._ensure_loaded = MagicMock()
+        self.adapter._session_store = store
+        await self.adapter._handle_ws_event(
+            self._thread_event("no mention but session exists",
+                                root_id="root_1", post_id="p9")
+        )
+        assert self.adapter.handle_message.called
