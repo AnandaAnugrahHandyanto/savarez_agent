@@ -91,6 +91,27 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         help="Skip confirmation prompt (needed in TUI mode)",
     )
 
+    skills_setup = skills_subparsers.add_parser(
+        "setup",
+        help="Run an installed skill's setup script / dependency check",
+        description=(
+            "Run scripts/setup.sh for an installed skill when present. "
+            "Without a setup script, reports declared prerequisite commands/env vars."
+        ),
+    )
+    skills_setup.add_argument("name", help="Installed skill name or category/name")
+    skills_setup.add_argument(
+        "--check",
+        action="store_true",
+        help="Only report setup script and prerequisite status; do not run anything",
+    )
+    skills_setup.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip confirmation prompt before running the setup script",
+    )
+
     skills_inspect = skills_subparsers.add_parser(
         "inspect", help="Preview a skill without installing"
     )

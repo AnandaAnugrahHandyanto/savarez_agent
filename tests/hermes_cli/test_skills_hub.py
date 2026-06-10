@@ -5,7 +5,14 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import (
+    do_check,
+    do_install,
+    do_list,
+    do_setup,
+    do_update,
+    handle_skills_slash,
+)
 
 
 class _DummyLockFile:
@@ -247,6 +254,85 @@ def test_do_update_reinstalls_outdated_skills(monkeypatch):
 
     assert installs == [("skills-sh/example/repo/hub-skill", "category", True)]
     assert "Updated 1 skill" in output
+
+
+def test_do_setup_check_reports_installed_skill_script_and_prereqs(monkeypatch, tmp_path):
+    import tools.skills_hub as hub
+
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "creative" / "hyperframes"
+    (skill_dir / "scripts").mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: hyperframes\n"
+        "description: Video composition\n"
+        "prerequisites:\n"
+        "  commands: [definitely-missing-hyperframes-test-command]\n"
+        "  env_vars: [HYPERFRAMES_TEST_KEY]\n"
+        "---\n"
+        "# HyperFrames\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "scripts" / "setup.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    monkeypatch.setattr(hub, "SKILLS_DIR", skills_dir)
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_setup("hyperframes", console=console, check_only=True)
+    output = sink.getvalue()
+
+    assert "Skill:" in output
+    assert "hyperframes" in output
+    assert "scripts/setup.sh" in output
+    assert "definitely-missing-hyperframes-test-command" in output
+    assert "HYPERFRAMES_TEST_KEY" in output
+    assert "Check only" in output
+
+
+def test_do_setup_runs_installed_skill_setup_script(monkeypatch, tmp_path):
+    import tools.skills_hub as hub
+    import hermes_cli.skills_hub as cli_hub
+
+    skills_dir = tmp_path / "skills"
+    skill_dir = skills_dir / "creative" / "hyperframes"
+    (skill_dir / "scripts").mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: hyperframes\ndescription: Video composition\n---\n# HyperFrames\n",
+        encoding="utf-8",
+    )
+    setup_script = skill_dir / "scripts" / "setup.sh"
+    setup_script.write_text("#!/usr/bin/env bash\necho setup\n", encoding="utf-8")
+    monkeypatch.setattr(hub, "SKILLS_DIR", skills_dir)
+
+    calls = []
+
+    def fake_run(cmd, cwd, text, capture_output):
+        calls.append((cmd, cwd, text, capture_output))
+        return type("R", (), {"returncode": 0, "stdout": "setup ok\n", "stderr": ""})()
+
+    monkeypatch.setattr(cli_hub.subprocess, "run", fake_run)
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_setup("creative/hyperframes", console=console, skip_confirm=True)
+    output = sink.getvalue()
+
+    assert calls == [(["bash", str(setup_script)], str(skill_dir), True, True)]
+    assert "setup ok" in output
+    assert "Setup complete" in output
+
+
+def test_handle_skills_slash_setup_skips_prompt(monkeypatch):
+    import hermes_cli.skills_hub as cli_hub
+
+    seen = {}
+
+    def fake_setup(name, console=None, check_only=False, skip_confirm=False):
+        seen.update({"name": name, "check_only": check_only, "skip_confirm": skip_confirm})
+
+    monkeypatch.setattr(cli_hub, "do_setup", fake_setup)
+    handle_skills_slash("/skills setup hyperframes --check")
+
+    assert seen == {"name": "hyperframes", "check_only": True, "skip_confirm": True}
 
 
 def test_handle_skills_slash_search_accepts_chatconsole_without_status_errors():
