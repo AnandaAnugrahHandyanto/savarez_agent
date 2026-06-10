@@ -295,7 +295,10 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         _invoke_hook(
             "on_session_start",
             session_id=agent.session_id,
+            parent_session_id=getattr(agent, "_parent_session_id", None) or "",
+            resume_from=getattr(agent, "_parent_session_id", None) or "",
             model=agent.model,
+            provider=getattr(agent, "provider", None) or "",
             platform=getattr(agent, "platform", None) or "",
         )
     except Exception as exc:
@@ -3583,6 +3586,8 @@ def run_conversation(
                         turn_id=turn_id,
                         api_request_id=api_request_id,
                         session_id=agent.session_id or "",
+                        parent_session_id=getattr(agent, "_parent_session_id", None) or "",
+                        resume_from=getattr(agent, "_parent_session_id", None) or "",
                         platform=agent.platform or "",
                         model=agent.model,
                         provider=agent.provider,
@@ -4703,6 +4708,8 @@ def run_conversation(
                 user_message=original_user_message,
                 assistant_response=final_response,
                 conversation_history=list(messages),
+                parent_session_id=getattr(agent, "_parent_session_id", None) or "",
+                resume_from=getattr(agent, "_parent_session_id", None) or "",
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
             )
