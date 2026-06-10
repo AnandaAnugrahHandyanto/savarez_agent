@@ -12,6 +12,8 @@ import json
 import re
 from typing import Optional
 
+from hermes_cli.loop_verify import VerifyCommandError, split_verify_command
+
 
 # Interval token: matches "5m", "2h", "30m", "1d" (the cron engine's floor is
 # 1 minute, so seconds are intentionally excluded — see _SUBMINUTE_RE).
@@ -19,6 +21,23 @@ _INTERVAL_RE = re.compile(r"^\d+[mhd]$", re.IGNORECASE)
 # Sub-minute tokens ("30s") — detected only to reject with a clear error,
 # since the scheduler has no sub-minute granularity.
 _SUBMINUTE_RE = re.compile(r"^\d+s$", re.IGNORECASE)
+
+
+def _validate_verify_command(command: Optional[str]) -> Optional[str]:
+    """Return an error string when a --verify command is unsafe/invalid."""
+    if not command:
+        return None
+    try:
+        split_verify_command(command)
+    except VerifyCommandError as exc:
+        message = str(exc)
+        if "shell metacharacters" in message:
+            return (
+                "--verify runs without a shell; shell metacharacters are not "
+                "allowed. Use a simple command like: --verify 'python -m pytest tests/foo.py'"
+            )
+        return f"Invalid --verify command: {message}"
+    return None
 
 
 def handle_loop_command(
@@ -205,6 +224,11 @@ def _parse_create_args(text: str) -> dict:
             result["verify"] = verify_match.group(1).strip()
             text = text[:verify_match.start()]
 
+    verify_error = _validate_verify_command(result["verify"])
+    if verify_error:
+        result["error"] = verify_error
+        return result
+
     text = text.strip()
     if not text:
         result["error"] = "Missing prompt text"
@@ -334,7 +358,7 @@ def _handle_status() -> str:
 def _handle_pause_resume(job_ref: str, action: str) -> str:
     """Pause or resume a loop job."""
     try:
-        from cron.jobs import pause_job, resume_job
+        from cron.jobs import AmbiguousJobReference, pause_job, resume_job
         if action == "pause":
             job = pause_job(job_ref, reason="user-paused")
         else:
@@ -350,6 +374,9 @@ def _handle_pause_resume(job_ref: str, action: str) -> str:
             "state": job.get("state"),
             "message": f"{'⏸' if action == 'pause' else '▶'} Loop {action}d: {job['id']}",
         })
+    except AmbiguousJobReference as exc:
+        matches = ", ".join(j.get("id", "?") for j in exc.matches)
+        return json.dumps({"success": False, "error": f"Ambiguous job reference '{job_ref}'. Matches: {matches}. Use a longer ID prefix."})
     except Exception as exc:
         return json.dumps({"success": False, "error": str(exc)})
 
@@ -357,7 +384,7 @@ def _handle_pause_resume(job_ref: str, action: str) -> str:
 def _handle_stop(job_ref: str) -> str:
     """Stop (remove) a loop job."""
     try:
-        from cron.jobs import remove_job
+        from cron.jobs import AmbiguousJobReference, remove_job
         removed = remove_job(job_ref)
         if removed:
             return json.dumps({
@@ -366,5 +393,8 @@ def _handle_stop(job_ref: str) -> str:
                 "message": f"🗑 Loop stopped and removed: {job_ref}",
             })
         return json.dumps({"success": False, "error": f"Job not found: {job_ref}"})
+    except AmbiguousJobReference as exc:
+        matches = ", ".join(j.get("id", "?") for j in exc.matches)
+        return json.dumps({"success": False, "error": f"Ambiguous job reference '{job_ref}'. Matches: {matches}. Use a longer ID prefix."})
     except Exception as exc:
         return json.dumps({"success": False, "error": str(exc)})

@@ -85,6 +85,16 @@ class TestParseCreateArgsTimed:
         r = _parse_create_args("5m fix tests --verify 'pytest -x -v'")
         assert r["verify"] == "pytest -x -v"
 
+    def test_verify_rejects_shell_pipeline(self):
+        r = _parse_create_args("5m fix tests --verify 'pytest | tee out.log'")
+        assert r["error"] is not None
+        assert "shell metacharacters" in r["error"]
+
+    def test_verify_rejects_command_substitution(self):
+        r = _parse_create_args("5m fix tests --verify 'echo $(whoami)'")
+        assert r["error"] is not None
+        assert "shell metacharacters" in r["error"]
+
     def test_skills_and_verify_combined(self):
         r = _parse_create_args("1h review PRs --skills github-code-review --verify 'gh pr checks'")
         assert r["schedule"] == "every 1h"
@@ -235,7 +245,7 @@ class TestRunLoopVerify:
         job = {"loop_verify": "echo ok"}
         assert _run_loop_verify(job) is None
         mock_run.assert_called_once_with(
-            "echo ok", shell=True, capture_output=True, text=True, timeout=60,
+            ["echo", "ok"], shell=False, capture_output=True, text=True, timeout=60,
         )
 
     @patch("cron.scheduler.subprocess.run")
@@ -259,6 +269,14 @@ class TestRunLoopVerify:
         assert "exit 2" in result
         assert "FAIL: 3 tests" in result
         assert "stderr" not in result
+
+    @patch("cron.scheduler.subprocess.run")
+    def test_verify_rejects_shell_metacharacters(self, mock_run):
+        job = {"loop_verify": "pytest | tee out.log"}
+        result = _run_loop_verify(job)
+        assert result is not None
+        assert "shell metacharacters" in result
+        mock_run.assert_not_called()
 
     @patch("cron.scheduler.subprocess.run")
     def test_verify_timeout(self, mock_run):
@@ -317,9 +335,10 @@ class TestEvaluateLoopTickIntegration:
         assert updates["loop_last_output_hash"] is not None
         assert updates["loop_no_progress_count"] == 0
 
+    @patch("hermes_cli.goals.judge_goal")
     @patch("cron.jobs.update_job")
     @patch("cron.jobs.pause_job")
-    def test_same_output_increments_count(self, mock_pause, mock_update):
+    def test_same_output_increments_count_once_and_skips_judge(self, mock_pause, mock_update, mock_judge):
         response_hash = hashlib.sha256(b"same output").hexdigest()[:16]
         job = _make_loop_job(loop_last_output_hash=response_hash)
         alert, skip = _evaluate_loop_tick(job, "same output")
@@ -327,6 +346,7 @@ class TestEvaluateLoopTickIntegration:
         assert skip is False
         updates = mock_update.call_args[0][1]
         assert updates["loop_no_progress_count"] == 1
+        mock_judge.assert_not_called()
         mock_pause.assert_not_called()
 
     @patch("cron.jobs.update_job")
@@ -372,10 +392,9 @@ class TestEvaluateLoopTickIntegration:
     @patch("cron.jobs.update_job")
     @patch("cron.jobs.pause_job")
     def test_judge_done_threshold_triggers_pause(self, mock_pause, mock_update, mock_judge):
-        response_hash = hashlib.sha256(b"everything done").hexdigest()[:16]
         job = _make_loop_job(
-            loop_last_output_hash=response_hash,
-            loop_no_progress_count=1,
+            loop_last_output_hash="different_previous_hash",
+            loop_no_progress_count=2,
         )
         alert, skip = _evaluate_loop_tick(job, "everything done")
         assert alert is not None
@@ -444,6 +463,16 @@ class TestEvaluateLoopTickIntegration:
         assert alert is None
         updates = mock_update.call_args[0][1]
         assert updates["loop_last_output_hash"] is not None
+        assert "loop_last_delivered_hash" not in updates
+
+    @patch("cron.jobs.update_job")
+    @patch("cron.jobs.pause_job")
+    def test_delivery_hash_not_recorded_before_delivery(self, mock_pause, mock_update):
+        job = _make_loop_job()
+        alert, skip = _evaluate_loop_tick(job, "deliverable output")
+        assert alert is None
+        assert skip is False
+        updates = mock_update.call_args[0][1]
         assert "loop_last_delivered_hash" not in updates
 
 
@@ -603,6 +632,18 @@ class TestCreatePathRecurring:
         result = json.loads(handle_loop_command("30s check deploy"))
         assert result["success"] is False
         assert "Sub-minute" in result["error"]
+
+    @patch("hermes_cli.goals.judge_goal", return_value=("continue", "still useful", False))
+    def test_loop_evaluation_persists_state_in_real_store(self, mock_judge, isolated_cron):
+        result = json.loads(handle_loop_command("5m check the deploy"))
+        assert result["success"] is True
+        job = isolated_cron.resolve_job_ref(result["job_id"])
+        alert, skip = _evaluate_loop_tick(job, "first output")
+        assert alert is None
+        assert skip is False
+        stored = isolated_cron.resolve_job_ref(result["job_id"])
+        assert stored["loop_last_output_hash"] == hashlib.sha256(b"first output").hexdigest()[:16]
+        assert stored["loop_last_response"] == "first output"
 
 
 # =========================================================================

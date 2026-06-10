@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
+from hermes_cli.loop_verify import VerifyCommandError, split_verify_command
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
@@ -1047,14 +1048,23 @@ def _format_loop_alert(job: dict, job_id: str, reason: str) -> str:
     return "\n".join(parts)
 
 
+def _hash_loop_response(final_response: str) -> str:
+    """Return the stable short hash used for loop output/delivery dedupe."""
+    return hashlib.sha256((final_response or "").encode("utf-8")).hexdigest()[:16]
+
+
 def _run_loop_verify(job: dict) -> Optional[str]:
     """Run a loop job's --verify command and return error context or None."""
     verify_cmd = job.get("loop_verify")
     if not verify_cmd:
         return None
     try:
+        argv = split_verify_command(str(verify_cmd))
+    except VerifyCommandError as exc:
+        return f"verify command rejected: {exc}"
+    try:
         result = subprocess.run(
-            verify_cmd, shell=True, capture_output=True,
+            argv, shell=False, capture_output=True,
             text=True, timeout=60,
         )
         if result.returncode != 0:
@@ -1067,7 +1077,7 @@ def _run_loop_verify(job: dict) -> Optional[str]:
                 parts.append(f"stdout: {stdout}")
             return "\n".join(parts)
     except subprocess.TimeoutExpired:
-        return f"verify command timed out after 60s: {verify_cmd}"
+        return "verify command timed out after 60s"
     except Exception as exc:
         return f"verify command error: {exc}"
     return None
@@ -1114,11 +1124,11 @@ def _evaluate_loop_tick(job: dict, final_response: str) -> tuple[Optional[str], 
     last_delivered_hash = job.get("loop_last_delivered_hash")
 
     # Hash the final_response (sha256, truncated to 16 hex chars)
-    response_hash = hashlib.sha256(
-        (final_response or "").encode("utf-8")
-    ).hexdigest()[:16]
+    response_hash = _hash_loop_response(final_response)
 
-    # Compare to previous output hash — identical output = no progress
+    # Compare to previous output hash — identical output = no progress.  Count
+    # at most once per tick: if the output is unchanged, skip the model judge
+    # because the hash already proved this tick did not produce fresh signal.
     output_changed = (response_hash != last_hash)
     if not output_changed:
         no_progress_count += 1
@@ -1127,51 +1137,37 @@ def _evaluate_loop_tick(job: dict, final_response: str) -> tuple[Optional[str], 
             job_id, response_hash, no_progress_count, threshold,
         )
     else:
-        no_progress_count = 0
         logger.info(
-            "Job '%s' loop: output changed (%s → %s), resetting count",
+            "Job '%s' loop: output changed (%s → %s), evaluating progress",
             job_id, last_hash, response_hash,
         )
+        verdict = None
+        try:
+            from hermes_cli.goals import judge_goal
+            verdict, reason, parse_failed = judge_goal(
+                job.get("prompt", ""), final_response,
+            )
+            logger.info(
+                "Job '%s' loop judge: verdict=%s reason=%s parse_failed=%s",
+                job_id, verdict, reason, parse_failed,
+            )
+        except Exception as exc:
+            logger.debug("Job '%s' loop judge failed: %s", job_id, exc)
+
+        # For loops: verdict='done' means NOT useful (goal is satisfied,
+        # nothing more to do). verdict='continue' means useful progress.
+        if verdict == "done":
+            no_progress_count += 1
+            logger.info(
+                "Job '%s' loop: judge says done (no progress), count=%d/%d",
+                job_id, no_progress_count, threshold,
+            )
+        else:
+            no_progress_count = 0
 
     # Adaptive interval for dynamic loops: halve on change, double on stability.
     schedule_update = _adapt_loop_interval(job, output_changed)
 
-    # Early exit: hash-based threshold hit — skip judge to save a model call
-    if no_progress_count >= threshold:
-        alert = _format_loop_alert(
-            job, job_id,
-            f"{threshold} consecutive identical outputs detected (no progress)",
-        )
-        update_job(job_id, {
-            "loop_no_progress_count": no_progress_count,
-            "loop_last_output_hash": response_hash,
-            "loop_last_response": final_response,
-        })
-        pause_job(job_id, reason="no progress detected")
-        return alert, True
-
-    # Judge-based evaluation
-    verdict = None
-    try:
-        from hermes_cli.goals import judge_goal
-        verdict, reason, parse_failed = judge_goal(
-            job.get("prompt", ""), final_response,
-        )
-        logger.info(
-            "Job '%s' loop judge: verdict=%s reason=%s parse_failed=%s",
-            job_id, verdict, reason, parse_failed,
-        )
-    except Exception as exc:
-        logger.debug("Job '%s' loop judge failed: %s", job_id, exc)
-
-    # For loops: verdict='done' means NOT useful (goal is satisfied,
-    # nothing more to do). verdict='continue' means useful progress.
-    if verdict == "done":
-        no_progress_count += 1
-        logger.info(
-            "Job '%s' loop: judge says done (no progress), count=%d/%d",
-            job_id, no_progress_count, threshold,
-        )
 
     # Unified auto-pause check (handles both hash and judge paths)
     if no_progress_count >= threshold:
@@ -1201,9 +1197,9 @@ def _evaluate_loop_tick(job: dict, final_response: str) -> tuple[Optional[str], 
         "loop_last_verify_error": verify_error,
         **schedule_update,
     }
-    # Track last delivered hash only when we actually deliver
-    if not skip_delivery and (final_response or "").strip():
-        updates["loop_last_delivered_hash"] = response_hash
+    # Do not update loop_last_delivered_hash here: delivery happens after this
+    # evaluation step and may fail.  The scheduler records that hash only after
+    # a successful platform delivery.
     update_job(job_id, updates)
 
     return None, skip_delivery
@@ -2307,6 +2303,20 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+                if (
+                    job.get("loop")
+                    and success
+                    and should_deliver
+                    and not delivery_error
+                    and job.get("deliver", "local") != "local"
+                ):
+                    try:
+                        from cron.jobs import update_job
+                        delivered_hash = _hash_loop_response(final_response)
+                        update_job(job["id"], {"loop_last_delivered_hash": delivered_hash})
+                    except Exception as de:
+                        logger.warning("Loop delivery hash update failed for job %s: %s", job["id"], de)
 
                 # Deliver loop alert (auto-pause notification) as a separate message
                 if loop_alert_msg:
