@@ -2486,7 +2486,7 @@ class TestNewEndpoints:
         assert data["hub_installs"] == [{"identifier": "someuser/some-skill", "pid": 4321}]
 
         # Hub install was scoped to the new profile.
-        assert spawned == [(["-p", "builder", "skills", "install", "someuser/some-skill"], "skills-install")]
+        assert spawned == [(["-p", "builder", "skills", "install", "someuser/some-skill", "--yes"], "skills-install")]
 
         # Verify the writes landed in the NEW profile's config, not the root.
         prof_dir = get_hermes_home() / "profiles" / "builder"
@@ -2501,6 +2501,30 @@ class TestNewEndpoints:
             assert "keep-me" not in disabled
         finally:
             reset_hermes_home_override(token)
+
+    def test_skill_hub_install_spawns_with_yes(self, monkeypatch):
+        """Dashboard hub installs must skip the TTY confirmation prompt (#43829)."""
+        import hermes_cli.web_server as web_server
+
+        spawned = []
+
+        class _FakeProc:
+            pid = 9999
+
+        monkeypatch.setattr(
+            web_server,
+            "_spawn_hermes_action",
+            lambda args, name: spawned.append((args, name)) or _FakeProc(),
+        )
+
+        resp = self.client.post(
+            "/api/skills/hub/install",
+            json={"identifier": "someuser/some-skill"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["name"] == "skills-install"
+        assert spawned == [(["skills", "install", "someuser/some-skill", "--yes"], "skills-install")]
 
     def test_profile_open_terminal_uses_macos_terminal(self, monkeypatch):
         from hermes_constants import get_hermes_home
