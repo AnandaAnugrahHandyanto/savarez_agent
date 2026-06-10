@@ -2857,14 +2857,22 @@ class MediaResolveMiddleware(InboundMiddleware):
         if not history:
             return [], []
 
-        start = max(0, len(history) - OBSERVED_MEDIA_BACKFILL_LOOKBACK)
+        # Walk the most recent LOOKBACK messages newest→oldest so that when we
+        # hit the per-turn resolve cap we keep the *latest* media references,
+        # not the oldest ones in the window. Within a single message, also
+        # iterate matches in reverse so the last-added image wins on ties.
+        # Final ``order`` is reversed back to chronological (old→new) before
+        # handing off to ``_resolve_ybres_refs`` so downstream prompt insertion
+        # preserves natural reading order.
+        window = history[-OBSERVED_MEDIA_BACKFILL_LOOKBACK:]
         order: List[Tuple[str, str, str]] = []  # (rid, kind, filename)
         seen: set = set()
-        for msg in history[start:]:
+        for msg in reversed(window):
             content = msg.get("content")
             if not isinstance(content, str) or "|ybres:" not in content:
                 continue
-            for m in _YB_RES_REF_RE.finditer(content):
+            matches = list(_YB_RES_REF_RE.finditer(content))
+            for m in reversed(matches):
                 head = m.group(1)  # "image" | "file:<name>" | "voice" | "video"
                 rid = m.group(2)
                 kind, _, filename = head.partition(":")
@@ -2879,6 +2887,9 @@ class MediaResolveMiddleware(InboundMiddleware):
                     break
             if len(order) >= OBSERVED_MEDIA_BACKFILL_MAX_RESOLVE_PER_TURN:
                 break
+
+        # Restore chronological order (oldest→newest) for downstream resolution.
+        order.reverse()
 
         if not order:
             return [], []
