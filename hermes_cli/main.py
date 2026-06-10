@@ -11126,9 +11126,15 @@ def main():
     # provider command (parser built in hermes_cli/subcommands/provider.py)
     # =========================================================================
     # 1. Önce fonksiyonu burada tanımla veya main içinde olduğunu garantile
+    # =========================================================================
+    # provider command (parser built in hermes_cli/subcommands/provider.py)
+    # =========================================================================
+    from hermes_cli.provider_diagnose import run_diagnose
+
     def cmd_provider_diagnose(args):
-        from hermes_cli.provider_diagnose import run_diagnose
+        """Bridge to call the provider diagnose function."""
         run_diagnose(args.name)
+
     build_provider_parser(subparsers, cmd_provider_diagnose=cmd_provider_diagnose)
     # =========================================================================
     # debug command  (parser built in hermes_cli/subcommands/debug.py)
@@ -11899,6 +11905,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-def cmd_provider_diagnose(args):
-    from hermes_cli.provider_diagnose import run_diagnose
-    run_diagnose(args.name)
+
+    

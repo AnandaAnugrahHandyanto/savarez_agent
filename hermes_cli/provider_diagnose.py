@@ -3,12 +3,17 @@ import os
 import requests
 from hermes_cli.config import load_config
 from hermes_cli.providers import resolve_provider_full
+
 def run_diagnose(provider_name: str):
+    """
+    Performs a diagnostic check on the specified provider's configuration 
+    and network connectivity.
+    """
     config = load_config()
     pdef = resolve_provider_full(provider_name, config.get("providers"), config.get("custom_providers"))
     
     if not pdef:
-        print(f"Error: Provider '{provider_name}' bulunamadı.")
+        print(f"Error: Provider '{provider_name}' not found in configuration.")
         return
 
     print(f"═══ Provider: {provider_name} ═══")
@@ -19,12 +24,15 @@ def run_diagnose(provider_name: str):
     # 2. Env Var Check
     env_vars = getattr(pdef, 'api_key_env_vars', [])
     key_val = next((os.environ.get(v) for v in env_vars if os.environ.get(v)), None)
+    
     if key_val:
-        print(f"✓ API key env var found (len: {len(key_val)} chars)")
+        print(f"✓ API key environment variable found (length: {len(key_val)} chars)")
     else:
-        print("✗ API key env var not set")
+        print("✗ API key environment variable not set")
 
-    # 3. Connectivity Test (Ping)
+    # 3. Connectivity Test
+    # Performs a shallow network reachability check to the provider's base URL.
+    # Does not authenticate or verify model availability.
     if getattr(pdef, 'base_url', None):
         try:
             resp = requests.get(pdef.base_url, timeout=5)
@@ -34,10 +42,13 @@ def run_diagnose(provider_name: str):
     else:
         print("! Base URL not defined (using SDK default)")
 
-# Summary kısmını bu şekilde değiştirelim
+    # 4. Summary
     print("─── Summary ───")
-    # Eğer tüm kontroller geçildiyse "READY", geçilemediyse "ACTION REQUIRED" yazsın
     status = "READY" if key_val else "ACTION REQUIRED"
     print(f"Status: {status}")
+    
     if not key_val:
-        print("Tip: Lütfen GEMINI_API_KEY ortam değişkenini tanımlayın.")
+        # Dynamically suggest the required env var(s)
+        hint = " or ".join(env_vars) if env_vars else f"{provider_name.upper()}_API_KEY"
+        print(f"Tip: Please set one of these environment variables: {hint}")
+        
