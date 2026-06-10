@@ -649,7 +649,7 @@ class GatewayStreamConsumer:
         except asyncio.CancelledError:
             # Best-effort final edit on cancellation.  finalize=True so
             # REQUIRES_EDIT_FINALIZE platforms (Telegram) apply final
-            # formatting — a plain edit here would leave the entire reply
+            # formatting; a plain edit here would leave the entire reply
             # rendered as a raw streaming preview while the success flags
             # below suppress the gateway's formatted re-send.
             # is_turn_final=False keeps _try_fresh_final from setting

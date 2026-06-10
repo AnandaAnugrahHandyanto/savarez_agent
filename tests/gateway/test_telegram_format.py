@@ -904,7 +904,7 @@ class TestEditMessageStreamingSafety:
         assert sent_kwargs[0]["reply_to_message_id"] == 456
 
 # =========================================================================
-# _edit_overflow_split — finalize formatting (bound-topic raw markdown fix)
+# _edit_overflow_split: finalize formatting (bound-topic raw markdown fix)
 # =========================================================================
 
 

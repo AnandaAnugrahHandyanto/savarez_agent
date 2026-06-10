@@ -353,8 +353,8 @@ class TestCancelledBestEffortDeliveryFinalizes:
     The gateway cancels the consumer shortly after finish(). The
     CancelledError handler re-delivers the accumulated text; previously it
     did so with finalize=False, so REQUIRES_EDIT_FINALIZE platforms
-    (Telegram) kept the plain streaming preview — the whole final reply
-    rendered with raw markdown markers — while the success flags still
+    (Telegram) kept the plain streaming preview (the whole final reply
+    rendered with raw markdown markers) while the success flags still
     suppressed the gateway's formatted re-send.
     """
 

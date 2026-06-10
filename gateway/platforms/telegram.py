@@ -173,6 +173,15 @@ def _escape_mdv2(text: str) -> str:
     return _MDV2_ESCAPE_RE.sub(r'\\\1', text)
 
 
+def _escape_chunk_indicator(chunk: str) -> str:
+    """Escape the raw ``" (1/2)"`` suffix ``truncate_message`` appends.
+
+    The parentheses are MarkdownV2-special; left unescaped they make
+    Telegram reject the whole chunk and fall back to plain text.
+    """
+    return re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
+
+
 def _strip_mdv2(text: str) -> str:
     """Strip MarkdownV2 escape backslashes to produce clean plain text.
 
@@ -1875,14 +1884,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
             )
             if len(chunks) > 1:
-                # truncate_message appends a raw " (1/2)" suffix. Escape the
-                # MarkdownV2-special parentheses so Telegram doesn't reject the
-                # chunk and fall back to plain text.
-                chunks = [
-                    re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
-                    for chunk in chunks
-                ]
-            
+                chunks = [_escape_chunk_indicator(chunk) for chunk in chunks]
+
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
             requested_thread_id = self._message_thread_id_for_send(thread_id)
@@ -2347,13 +2350,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 len_fn=utf16_len,
             )
             if len(chunks) > 1:
-                # truncate_message appends a raw " (1/2)" suffix after the
-                # formatting pass. Escape the MarkdownV2-special parentheses
-                # exactly as send() does so Telegram doesn't reject the chunk.
-                chunks = [
-                    re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
-                    for chunk in chunks
-                ]
+                chunks = [_escape_chunk_indicator(chunk) for chunk in chunks]
         else:
             chunks = self.truncate_message(
                 content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
@@ -2425,12 +2422,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     if use_markdown:
                         # Chunks are pre-formatted on the finalize path.
                         text = chunk
-                    elif finalize:
-                        # MarkdownV2 attempt failed — degrade to clean
-                        # stripped plain text, never the raw chunk.
-                        text = _strip_mdv2(chunk)
                     else:
-                        text = chunk
+                        # Plain attempt: on finalize the MarkdownV2 attempt
+                        # failed, so degrade to clean stripped text, never
+                        # the raw chunk; streaming previews stay raw.
+                        text = _strip_mdv2(chunk) if finalize else chunk
                     sent_msg = await self._bot.send_message(
                         chat_id=int(chat_id),
                         text=text,
