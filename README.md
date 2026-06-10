@@ -197,6 +197,8 @@ uv pip install -e ".[all,dev]"
 scripts/run_tests.sh
 ```
 
+If your system `pip` points to a different Python than your active venv, stick to `uv pip` (or `python -m pip`) to avoid cross-interpreter installs.
+
 ---
 
 ## Community

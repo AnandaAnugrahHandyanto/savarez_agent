@@ -182,6 +182,8 @@ uv pip install -e ".[all,dev]"
 python -m pytest tests/ -q
 ```
 
+如果系统里的 `pip` 指向了与当前虚拟环境不同的 Python，请优先使用 `uv pip`（或 `python -m pip`），避免把依赖装到错误的解释器中。
+
 ---
 
 ## 社区
