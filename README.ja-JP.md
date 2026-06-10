@@ -3,19 +3,22 @@
 </p>
 
 # Hermes Agent ☤
-
+<p align="center">
+  <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>
+</p>
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
   <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
   <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
   <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
-  <a href="README.md"><img src="https://img.shields.io/badge/Lang-English-blue?style=for-the-badge" alt="English"></a>
+  <a href="README.md"><img src="https://img.shields.io/badge/Lang-English-lightgrey?style=for-the-badge" alt="English"></a>
   <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
+  <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Lang-اردو-green?style=for-the-badge" alt="اردو"></a>
 </p>
 
 **[Nous Research](https://nousresearch.com)が構築した、自己改善型のAIエージェントです。** 学習ループを組み込んだ唯一のエージェントであり、経験からスキルを生成し、使用中にそれらを改善し、自身に知識の永続化を促し、過去の会話を自ら検索し、セッションをまたいであなたという人物への理解を深めていきます。月5ドルのVPSでも、GPUクラスタでも、アイドル時にはほぼゼロコストのサーバーレス基盤でも動作します。ノートPCに縛られることはなく、Telegramから話しかけている間にクラウドVM上で作業を進めさせることもできます。
 
-どんなモデルでも使用できます — [Nous Portal](https://portal.nousresearch.com)、[OpenRouter](https://openrouter.ai)（200以上のモデル）、[NVIDIA NIM](https://build.nvidia.com)（Nemotron）、[Xiaomi MiMo](https://platform.xiaomimimo.com)、[z.ai/GLM](https://z.ai)、[Kimi/Moonshot](https://platform.moonshot.ai)、[MiniMax](https://www.minimax.io)、[Hugging Face](https://huggingface.co)、OpenAI、または独自のエンドポイント。`hermes model`で切り替え可能 — コード変更もロックインも不要です。
+どんなモデルでも使用できます — [Nous Portal](https://portal.nousresearch.com)、[OpenRouter](https://openrouter.ai)（200以上のモデル）、[NovitaAI](https://novita.ai)（Model API、Agent Sandbox、GPU Cloud向けのAIネイティブクラウド）、[NVIDIA NIM](https://build.nvidia.com)（Nemotron）、[Xiaomi MiMo](https://platform.xiaomimimo.com)、[z.ai/GLM](https://z.ai)、[Kimi/Moonshot](https://platform.moonshot.ai)、[MiniMax](https://www.minimax.io)、[Hugging Face](https://huggingface.co)、OpenAI、または独自のエンドポイント。`hermes model`で切り替え可能 — コード変更もロックインも不要です。
 
 <table>
 <tr><td><b>本格的なターミナルインターフェース</b></td><td>マルチライン編集、スラッシュコマンドの自動補完、会話履歴、割り込みとリダイレクト、ストリーミングツール出力に対応したフル機能のTUI。</td></tr>
@@ -23,8 +26,8 @@
 <tr><td><b>閉じた学習ループ</b></td><td>エージェント自身が管理し、定期的にナッジを行うメモリ。複雑なタスク完了後の自律的なスキル生成。使用中に自己改善するスキル。LLM要約を活用したクロスセッション想起のためのFTS5セッション検索。<a href="https://github.com/plastic-labs/honcho">Honcho</a>による弁証法的ユーザーモデリング。<a href="https://agentskills.io">agentskills.io</a>のオープン標準と互換。</td></tr>
 <tr><td><b>スケジュール自動化</b></td><td>任意のプラットフォームへの配信に対応した、組み込みcronスケジューラ。日次レポート、深夜バックアップ、週次監査 — すべて自然言語で指示し、無人で実行できます。</td></tr>
 <tr><td><b>委譲と並列化</b></td><td>独立したサブエージェントを生成し、並列ワークストリームを実行。RPC経由でツールを呼び出すPythonスクリプトを書くことで、複数ステップのパイプラインをコンテキストコストゼロのターンに圧縮します。</td></tr>
-<tr><td><b>ノートPCだけでなく、どこでも動作</b></td><td>7つのターミナルバックエンド — local、Docker、SSH、Singularity、Modal、Daytona、Vercel Sandbox。DaytonaとModalはサーバーレス永続性を提供し、エージェントの環境はアイドル時に休止し、必要に応じて目覚めるため、セッション間のコストはほぼゼロです。月5ドルのVPSでもGPUクラスタでも動かせます。</td></tr>
-<tr><td><b>研究にすぐ使える</b></td><td>バッチでの軌跡生成、Atropos強化学習環境、次世代のツール呼び出しモデル訓練のための軌跡圧縮。</td></tr>
+<tr><td><b>ノートPCだけでなく、どこでも動作</b></td><td>6つのターミナルバックエンド — local、Docker、SSH、Singularity、Modal、Daytona。DaytonaとModalはサーバーレス永続性を提供し、エージェントの環境はアイドル時に休止し、必要に応じて目覚めるため、セッション間のコストはほぼゼロです。月5ドルのVPSでもGPUクラスタでも動かせます。</td></tr>
+<tr><td><b>研究にすぐ使える</b></td><td>バッチでの軌跡生成、次世代のツール呼び出しモデルを訓練するための軌跡圧縮。</td></tr>
 </table>
 
 ---
@@ -34,17 +37,17 @@
 ### Linux、macOS、WSL2、Termux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-### Windows（ネイティブ、PowerShell） — アーリーベータ
+### Windows（ネイティブ、PowerShell）
 
-> **ご注意:** Windowsネイティブサポートは**アーリーベータ**です。インストールと動作は確認できていますが、Linux/macOS/WSL2と同等のテストはまだ行われていません。問題が発生した場合は[Issueを起票](https://github.com/NousResearch/hermes-agent/issues)してください。現時点でもっとも実績のあるWindowsセットアップは、**WSL2**内で上記のLinux/macOS用ワンライナーを実行する方法です。
+> **ご注意:** WindowsネイティブはWSLなしでHermesを実行します — CLI、ゲートウェイ、TUI、ツールはすべてネイティブで動作します。WSL2を使いたい場合は、上記のLinux/macOS用ワンライナーもそのまま使えます。バグを見つけたら[Issueを起票](https://github.com/NousResearch/hermes-agent/issues)してください。
 
 PowerShellで以下を実行します:
 
 ```powershell
-irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
+iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
 インストーラはすべてを処理します: uv、Python 3.11、Node.js、ripgrep、ffmpeg、**ポータブル版Git Bash**（MinGit、`%LOCALAPPDATA%\hermes\git`に展開 — 管理者権限不要、システムのGitインストールから完全に隔離されます）。Hermesはこのバンドル版Git Bashを使ってシェルコマンドを実行します。
@@ -53,7 +56,7 @@ irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/ins
 
 > **Android / Termux:** テスト済みの手動インストール手順は[Termuxガイド](https://hermes-agent.nousresearch.com/docs/getting-started/termux)に記載されています。Termux上では、`.[all]`エクストラがAndroid非対応の音声関連依存を引き込むため、Hermesはキュレートされた`.[termux]`エクストラをインストールします。
 >
-> **Windows:** Windowsネイティブは**アーリーベータ**としてサポートされています — 上記のPowerShellワンライナーがすべてをインストールしますが、粗削りな部分があり、問題に遭遇したらIssueを起票してください。WSL2（もっとも実績のあるWindows経路）を使いたい場合は、Linuxコマンドがそのまま使えます。Windowsネイティブのインストール先は`%LOCALAPPDATA%\hermes`、WSL2のインストール先はLinuxと同じく`~/.hermes`です。現状でWSL2が必須なHermes機能は、ブラウザベースのダッシュボードチャットペインのみ（POSIX PTYを利用しているため。クラシックCLIとゲートウェイはいずれもネイティブで動作します）。
+> **Windows:** Windowsネイティブは完全にサポートされています — 上記のPowerShellワンライナーがすべてをインストールします。WSL2を使いたい場合は、Linuxコマンドがそのまま使えます。Windowsネイティブのインストール先は`%LOCALAPPDATA%\hermes`、WSL2のインストール先はLinuxと同じく`~/.hermes`です。
 
 インストール後:
 
@@ -79,6 +82,27 @@ hermes doctor       # 問題を診断
 ```
 
 📖 **[完全なドキュメント →](https://hermes-agent.nousresearch.com/docs/)**
+
+---
+
+## APIキー集めをスキップ — Nous Portal
+
+Hermesは好きなプロバイダで動作します — それは変わりません。ただ、モデル、ウェブ検索、画像生成、TTS、クラウドブラウザのために5つもの個別APIキーを集めたくないのであれば、**[Nous Portal](https://portal.nousresearch.com)**が1つのサブスクリプションでそのすべてをカバーします:
+
+- **300以上のモデル** — `/model <name>`でいずれも選択可能
+- **Tool Gateway** — ウェブ検索（Firecrawl）、画像生成（FAL）、テキスト読み上げ（OpenAI）、クラウドブラウザ（Browser Use）をすべてあなたのサブスクリプション経由でルーティング。追加アカウントは不要です。
+
+新規インストールから1コマンド:
+
+```bash
+hermes setup --portal
+```
+
+これでOAuthによるログイン、Nousのプロバイダ設定、Tool Gatewayの有効化が行われます。何が構成されているかは`hermes portal info`でいつでも確認できます。詳細は[Tool Gatewayドキュメントページ](https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-gateway)を参照してください。
+
+ツールごとに独自のキーを使うこともいつでも可能です — ゲートウェイはバックエンド単位であり、全か無かではありません。
+
+---
 
 ## CLIとメッセージングのクイックリファレンス
 
@@ -140,6 +164,7 @@ hermes claw migrate --overwrite  # 既存の競合を上書き
 ```
 
 インポート対象:
+
 - **SOUL.md** — ペルソナファイル
 - **メモリ** — MEMORY.mdとUSER.mdのエントリ
 - **スキル** — ユーザー作成スキル → `~/.hermes/skills/openclaw-imports/`
@@ -176,8 +201,6 @@ uv pip install -e ".[all,dev]"
 scripts/run_tests.sh
 ```
 
-> **RLトレーニング（任意）:** RL/Atropos統合（`environments/`） — 完全なセットアップは[`CONTRIBUTING.md`](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md#development-setup)を参照してください。
-
 ---
 
 ## コミュニティ
@@ -185,6 +208,7 @@ scripts/run_tests.sh
 - 💬 [Discord](https://discord.gg/NousResearch)
 - 📚 [Skills Hub](https://agentskills.io)
 - 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
+- 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Hermesや他のMCPホスト向けのLinuxデスクトップ制御MCPサーバー。AT-SPIアクセシビリティツリー、Wayland/X11入力、スクリーンショット、コンポジタのウィンドウターゲティングに対応。
 - 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — コミュニティ製WeChatブリッジ: 同じWeChatアカウントでHermes AgentとOpenClawを動かせます。
 
 ---
