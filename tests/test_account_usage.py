@@ -56,11 +56,8 @@ def test_fetch_account_usage_codex(monkeypatch):
             "provider": "openai-codex",
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "access-token",
+            "account_id": "acct_123",
         },
-    )
-    monkeypatch.setattr(
-        "agent.account_usage._read_codex_tokens",
-        lambda: {"tokens": {"account_id": "acct_123"}},
     )
     monkeypatch.setattr(
         "agent.account_usage.httpx.Client",
