@@ -26,8 +26,6 @@ import {
   $sessionsTotal,
   $workingSessionIds,
   $yoloActive,
-  getRememberedWorkspaceCwd,
-  workspaceCwdForNewSession,
   sessionPinId,
   setActiveSessionId,
   setAwaitingResponse,
@@ -49,7 +47,8 @@ import {
   setSessionStartedAt,
   setSessionsTotal,
   setTurnStartedAt,
-  setYoloActive
+  setYoloActive,
+  workspaceCwdForNewSession
 } from '@/store/session'
 import { reportBackendContract } from '@/store/updates'
 import type {
@@ -72,6 +71,16 @@ function viewerDeviceParams(): { viewer_device?: string } {
   const name = $localDeviceName.get()
 
   return name ? { viewer_device: name } : {}
+}
+
+// A delete that fails with 404 "Session not found" means the row is ALREADY
+// gone server-side — deleted on another device, or a remote profile's session
+// this device only remembers via a pin. That outcome is success for the user's
+// intent, not an error to roll back.
+export function isSessionGoneError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+
+  return /session not found/i.test(message)
 }
 
 interface SessionActionsOptions {
@@ -943,6 +952,15 @@ export function useSessionActions({
           clearQueuedPrompts(closingRuntimeId)
         }
       } catch (err) {
+        // Already gone server-side: rolling back would resurrect a ghost row
+        // (pinned but undeletable — every retry 404s again). Keep the
+        // optimistic removal; the user's intent is satisfied.
+        if (isSessionGoneError(err)) {
+          clearQueuedPrompts(storedSessionId)
+
+          return
+        }
+
         if (removed) {
           setSessions(prev => [removed, ...prev])
           setSessionsTotal(prev => prev + 1)
