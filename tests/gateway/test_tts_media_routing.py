@@ -393,3 +393,94 @@ async def test_post_stream_json_embedded_file_url_not_attached(tmp_path, monkeyp
     adapter.send_multiple_images.assert_not_awaited()
     adapter.send_image_file.assert_not_awaited()
     adapter.send_document.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# send_multiple_images round-trip: verifies file:// path integrity
+# ---------------------------------------------------------------------------
+
+
+class _RoundtripAdapter(BasePlatformAdapter):
+    """Minimal adapter that calls the base send_multiple_images."""
+
+    def __init__(self):
+        super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+        self.send_image_file = AsyncMock(return_value=SendResult(success=True, message_id="img"))
+
+    async def connect(self):
+        return True
+
+    async def disconnect(self):
+        pass
+
+    async def send(self, chat_id, content=None, **kwargs):
+        return SendResult(success=True, message_id="text")
+
+    async def get_chat_info(self, chat_id):
+        return {"id": chat_id, "type": "dm"}
+
+
+@pytest.mark.asyncio
+async def test_send_multiple_images_roundtrip_space_path(tmp_path):
+    """file:// URI with %20-encoded space => send_image_file receives decoded path."""
+    import urllib.parse
+
+    adapter = _RoundtripAdapter()
+    validated = str((tmp_path / "sub folder" / "shot.png").resolve())
+    norm_url = "file://" + urllib.parse.quote(validated, safe="/:\\")
+
+    await adapter.send_multiple_images(
+        chat_id="chat-1",
+        images=[(norm_url, "alt")],
+    )
+
+    adapter.send_image_file.assert_awaited_once()
+    _, kwargs = adapter.send_image_file.call_args
+    received_path = kwargs.get("image_path")
+    assert received_path == validated, (
+        f"send_image_file received {received_path!r}, expected {validated!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_multiple_images_roundtrip_literal_percent(tmp_path):
+    """Filename containing literal % => send_image_file receives exact path."""
+    import urllib.parse
+
+    adapter = _RoundtripAdapter()
+    validated = str((tmp_path / "100%25done.png").resolve())
+    norm_url = "file://" + urllib.parse.quote(validated, safe="/:\\")
+
+    await adapter.send_multiple_images(
+        chat_id="chat-1",
+        images=[(norm_url, "")],
+    )
+
+    adapter.send_image_file.assert_awaited_once()
+    _, kwargs = adapter.send_image_file.call_args
+    received_path = kwargs.get("image_path")
+    assert received_path == validated, (
+        f"send_image_file received {received_path!r}, expected {validated!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_multiple_images_roundtrip_normal_path(tmp_path):
+    """Simple path without encoding — no change."""
+    import urllib.parse
+
+    adapter = _RoundtripAdapter()
+    validated = str((tmp_path / "normal.png").resolve())
+    norm_url = "file://" + urllib.parse.quote(validated, safe="/:\\")
+
+    await adapter.send_multiple_images(
+        chat_id="chat-1",
+        images=[(norm_url, "")],
+    )
+
+    adapter.send_image_file.assert_awaited_once()
+    _, kwargs = adapter.send_image_file.call_args
+    received_path = kwargs.get("image_path")
+    assert received_path == validated, (
+        f"send_image_file received {received_path!r}, expected {validated!r}"
+    )
