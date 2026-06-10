@@ -90,8 +90,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Ensure only nix files were modified — prevents accidental
-          # self-triggering if fix-lockfiles ever touches package files.
+          # Ensure only nix/lib.nix (home of the single npmDepsHash) was
+          # modified — prevents accidental self-triggering if fix-lockfiles
+          # ever touches package files.
           unexpected="$(git diff --name-only | grep -Ev '^nix/lib\.nix$' || true)"
           if [ -n "$unexpected" ]; then
             echo "::error::Unexpected modified files: $unexpected"

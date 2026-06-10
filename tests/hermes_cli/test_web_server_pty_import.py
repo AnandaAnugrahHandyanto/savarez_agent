@@ -78,9 +78,6 @@ def test_pty_bridge_import_block_is_platform_branched():
     #       try:
     #           from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
     #       ...
-    assert (
-        'sys.platform.startswith("win")' in src
-        or "sys.platform.startswith('win')" in src
-    )
+    assert 'sys.platform.startswith("win")' in src or "sys.platform.startswith('win')" in src
     assert "from hermes_cli.win_pty_bridge import" in src
     assert "from hermes_cli.pty_bridge import" in src

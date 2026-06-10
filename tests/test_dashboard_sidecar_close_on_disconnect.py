@@ -1,9 +1,7 @@
 import re
 from pathlib import Path
 
-CHAT_SIDEBAR = (
-    Path(__file__).resolve().parent.parent / "web/src/components/ChatSidebar.tsx"
-)
+CHAT_SIDEBAR = Path(__file__).resolve().parent.parent / "web/src/components/ChatSidebar.tsx"
 
 
 def test_sidecar_session_create_requests_close_on_disconnect():

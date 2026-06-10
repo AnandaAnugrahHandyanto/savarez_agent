@@ -1505,12 +1505,14 @@ def _recent_upstream_commits(n: int = 20) -> List[Dict[str, Any]]:
                 continue
             parts = (line.split("\x1f") + ["", "", "", "0"])[:4]
             sha, summary, author, at = parts
-            rows.append({
-                "sha": sha[:7],
-                "summary": summary,
-                "author": author,
-                "at": int(at or 0),
-            })
+            rows.append(
+                {
+                    "sha": sha[:7],
+                    "summary": summary,
+                    "author": author,
+                    "at": int(at or 0),
+                }
+            )
         return rows
     except Exception:
         return []
@@ -8586,11 +8588,7 @@ async def get_models_analytics(days: int = 30):
 # so the /api/pty WebSocket handler needs no platform guards.
 if sys.platform.startswith("win"):
     try:
-        from hermes_cli.win_pty_bridge import (
-            WinPtyBridge as PtyBridge,
-            PtyUnavailableError,
-        )
-
+        from hermes_cli.win_pty_bridge import WinPtyBridge as PtyBridge, PtyUnavailableError
         _PTY_BRIDGE_AVAILABLE = True
     except ImportError:  # pragma: no cover - pywinpty missing
         PtyBridge = None  # type: ignore[assignment]
@@ -8598,13 +8596,10 @@ if sys.platform.startswith("win"):
 
         class PtyUnavailableError(RuntimeError):  # type: ignore[no-redef]
             """Stub when win_pty_bridge cannot be imported."""
-
             pass
-
 else:
     try:
         from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
-
         _PTY_BRIDGE_AVAILABLE = True
     except ImportError:  # pragma: no cover - dev env without ptyprocess
         PtyBridge = None  # type: ignore[assignment]
@@ -8612,9 +8607,7 @@ else:
 
         class PtyUnavailableError(RuntimeError):  # type: ignore[no-redef]
             """Stub on platforms where pty_bridge can't be imported."""
-
             pass
-
 
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2

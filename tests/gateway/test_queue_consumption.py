@@ -464,10 +464,7 @@ class TestBusyInputModeQueueFifo:
             )
 
         # Single merged head event with all three media URLs.
-        assert (
-            session_key not in runner._queued_events
-            or not runner._queued_events[session_key]
-        )
+        assert session_key not in runner._queued_events or not runner._queued_events[session_key]
         head = adapter._pending_messages[session_key]
         assert head.message_type == MessageType.PHOTO
         assert len(head.media_urls) == 3

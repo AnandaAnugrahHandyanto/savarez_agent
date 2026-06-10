@@ -340,6 +340,10 @@ def _prepare_gateway_status_message(
     text = str(message or "").strip()
     if not text:
         return None
+    # lifecycle notices (e.g. Codex gpt-5.5 compression autoraise) are CLI-only.
+    # Sending them as regular messages on LINE/Discord/etc. breaks conversations.
+    if event_type == "lifecycle":
+        return None
     if _gateway_platform_value(platform) != "telegram":
         return text
 
@@ -1979,9 +1983,7 @@ async def _dispose_unused_adapter(adapter: "BasePlatformAdapter | None") -> None
         )
 
 
-class GatewayRunner(
-    GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin
-):
+class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, GatewaySlashCommandsMixin):
     """
     Main gateway controller.
 
@@ -3647,9 +3649,7 @@ class GatewayRunner(
     # still small enough to never threaten memory.
     _BUSY_QUEUE_MAX_PENDING = 32
 
-    def _queue_or_replace_pending_event(
-        self, session_key: str, event: MessageEvent
-    ) -> None:
+    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
             return
@@ -3662,9 +3662,7 @@ class GatewayRunner(
         # the head slot via ``merge_pending_message_event`` (album
         # semantics); everything else appends to the overflow tail.
         pending_slot = getattr(adapter, "_pending_messages", None)
-        existing = (
-            pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
-        )
+        existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
         if existing is not None and (
             getattr(existing, "message_type", None) == MessageType.PHOTO
             or event.message_type == MessageType.PHOTO
@@ -3679,6 +3677,16 @@ class GatewayRunner(
                 merge_text=event.message_type == MessageType.TEXT,
             )
             return
+
+        if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
+            logger.warning(
+                "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
+                session_key,
+                self._BUSY_QUEUE_MAX_PENDING,
+            )
+            return
+
+        self._enqueue_fifo(session_key, event, adapter)
 
         if (
             self._queue_depth(session_key, adapter=adapter)
@@ -5590,9 +5598,7 @@ class GatewayRunner(
                         _pending_approvals = getattr(self, "_pending_approvals", None)
                         if isinstance(_pending_approvals, dict):
                             _pending_approvals.pop(key, None)
-                        _update_prompt_pending = getattr(
-                            self, "_update_prompt_pending", None
-                        )
+                        _update_prompt_pending = getattr(self, "_update_prompt_pending", None)
                         if isinstance(_update_prompt_pending, dict):
                             _update_prompt_pending.pop(key, None)
                         with self.session_store._lock:
@@ -6554,6 +6560,10 @@ class GatewayRunner(
             return YuanbaoAdapter(config)
 
         return None
+
+
+
+
 
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
@@ -7945,10 +7955,7 @@ class GatewayRunner(
                     )
 
             if audio_paths:
-                (
-                    message_text,
-                    _successful_transcripts,
-                ) = await self._enrich_message_with_transcription(
+                message_text, _successful_transcripts = await self._enrich_message_with_transcription(
                     message_text,
                     audio_paths,
                 )
@@ -7957,9 +7964,7 @@ class GatewayRunner(
                 # in real-time and see the raw whisper output verbatim.
                 if _successful_transcripts:
                     _echo_adapter = self.adapters.get(source.platform)
-                    _echo_meta = self._thread_metadata_for_source(
-                        source, self._reply_anchor_for_event(event)
-                    )
+                    _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                     if _echo_adapter:
                         for _tx in _successful_transcripts:
                             try:
@@ -7970,8 +7975,7 @@ class GatewayRunner(
                                 )
                             except Exception as _echo_exc:
                                 logger.debug(
-                                    "Transcript echo failed (non-fatal): %s",
-                                    _echo_exc,
+                                    "Transcript echo failed (non-fatal): %s", _echo_exc,
                                 )
                 _stt_fail_markers = (
                     "No STT provider",
@@ -9614,6 +9618,9 @@ class GatewayRunner(
 
         return "\n".join(lines)
 
+
+
+
     def _check_slash_access(
         self, source: SessionSource, canonical_cmd: str
     ) -> Optional[str]:
@@ -9656,193 +9663,11 @@ class GatewayRunner(
             )
         return f"⛔ /{canonical_cmd} is admin-only here. {suffix}"
 
-    async def _handle_status_command(self, event: MessageEvent) -> str:
-        """Handle /status command."""
-        source = event.source
-        session_entry = self.session_store.get_or_create_session(source)
 
-        connected_platforms = [p.value for p in self.adapters.keys()]
 
-        # Check if there's an active agent
-        session_key = session_entry.session_key
-        is_running = session_key in self._running_agents
 
-        # Count pending /queue follow-ups (slot + overflow).
-        adapter = self.adapters.get(source.platform) if source else None
-        queue_depth = self._queue_depth(session_key, adapter=adapter)
 
-        title = None
-        # Pull token totals from the SQLite session DB rather than the
-        # in-memory SessionStore.  The agent's per-turn token deltas are
-        # persisted into sessions_db (run_agent.py), not into SessionEntry,
-        # so session_entry.total_tokens is always 0.  SessionDB is the
-        # single source of truth; reading it here keeps /status accurate
-        # without duplicating token writes into two stores.
-        db_total_tokens = 0
-        if self._session_db:
-            try:
-                title = self._session_db.get_session_title(session_entry.session_id)
-            except Exception:
-                title = None
-            try:
-                row = self._session_db.get_session(session_entry.session_id)
-                if row:
-                    db_total_tokens = (
-                        (row.get("input_tokens") or 0)
-                        + (row.get("output_tokens") or 0)
-                        + (row.get("cache_read_tokens") or 0)
-                        + (row.get("cache_write_tokens") or 0)
-                        + (row.get("reasoning_tokens") or 0)
-                    )
-            except Exception:
-                db_total_tokens = 0
 
-        lines = [
-            t("gateway.status.header"),
-            "",
-            t("gateway.status.session_id", session_id=session_entry.session_id),
-        ]
-        if title:
-            lines.append(t("gateway.status.title", title=title))
-        lines.extend([
-            t(
-                "gateway.status.created",
-                timestamp=session_entry.created_at.strftime("%Y-%m-%d %H:%M"),
-            ),
-            t(
-                "gateway.status.last_activity",
-                timestamp=session_entry.updated_at.strftime("%Y-%m-%d %H:%M"),
-            ),
-            t("gateway.status.tokens", tokens=f"{db_total_tokens:,}"),
-            t(
-                "gateway.status.agent_running",
-                state=t("gateway.status.state_yes")
-                if is_running
-                else t("gateway.status.state_no"),
-            ),
-        ])
-        if queue_depth:
-            lines.append(t("gateway.status.queued", count=queue_depth))
-        lines.extend([
-            "",
-            t("gateway.status.platforms", platforms=", ".join(connected_platforms)),
-        ])
-
-        # Session recap: pure local compute, no LLM call, no prompt-cache impact.
-        # Useful when juggling multiple gateway sessions and you want a one-glance
-        # reminder of where this one left off.
-        try:
-            from hermes_cli.session_recap import build_recap
-
-            history = self.session_store.load_transcript(session_entry.session_id)
-            recap = build_recap(
-                history,
-                session_title=title,
-                session_id=session_entry.session_id,
-                platform=source.platform.value if source else None,
-            )
-            if recap:
-                lines.extend(["", recap])
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("build_recap failed in /status: %s", exc)
-
-        return "\n".join(lines)
-
-    async def _handle_agents_command(self, event: MessageEvent) -> str:
-        """Handle /agents command - list active agents and running tasks."""
-        from tools.process_registry import format_uptime_short, process_registry
-
-        now = time.time()
-        current_session_key = self._session_key_for_source(event.source)
-
-        running_agents: dict = getattr(self, "_running_agents", {}) or {}
-        running_started: dict = getattr(self, "_running_agents_ts", {}) or {}
-
-        agent_rows: list[dict] = []
-        for session_key, agent in running_agents.items():
-            started = float(running_started.get(session_key, now))
-            elapsed = max(0, int(now - started))
-            is_pending = agent is _AGENT_PENDING_SENTINEL
-            agent_rows.append({
-                "session_key": session_key,
-                "elapsed": elapsed,
-                "state": t("gateway.agents.state_starting")
-                if is_pending
-                else t("gateway.agents.state_running"),
-                "session_id": ""
-                if is_pending
-                else str(getattr(agent, "session_id", "") or ""),
-                "model": "" if is_pending else str(getattr(agent, "model", "") or ""),
-            })
-
-        agent_rows.sort(key=lambda row: row["elapsed"], reverse=True)
-
-        running_processes: list[dict] = []
-        try:
-            running_processes = [
-                p
-                for p in process_registry.list_sessions()
-                if p.get("status") == "running"
-            ]
-        except Exception:
-            running_processes = []
-
-        background_tasks = [
-            t
-            for t in (getattr(self, "_background_tasks", set()) or set())
-            if hasattr(t, "done") and not t.done()
-        ]
-
-        lines = [
-            t("gateway.agents.header"),
-            "",
-            t("gateway.agents.active_agents", count=len(agent_rows)),
-        ]
-
-        if agent_rows:
-            for idx, row in enumerate(agent_rows[:12], 1):
-                current = (
-                    t("gateway.agents.this_chat")
-                    if row["session_key"] == current_session_key
-                    else ""
-                )
-                sid = f" · `{row['session_id']}`" if row["session_id"] else ""
-                model = f" · `{row['model']}`" if row["model"] else ""
-                lines.append(
-                    f"{idx}. `{row['session_key']}` · {row['state']} · "
-                    f"{format_uptime_short(row['elapsed'])}{sid}{model}{current}"
-                )
-            if len(agent_rows) > 12:
-                lines.append(t("gateway.agents.more", count=len(agent_rows) - 12))
-
-        lines.extend([
-            "",
-            t("gateway.agents.running_processes", count=len(running_processes)),
-        ])
-        if running_processes:
-            for proc in running_processes[:12]:
-                cmd = " ".join(str(proc.get("command", "")).split())
-                if len(cmd) > 90:
-                    cmd = cmd[:87] + "..."
-                lines.append(
-                    f"- `{proc.get('session_id', '?')}` · "
-                    f"{format_uptime_short(int(proc.get('uptime_seconds', 0)))} · `{cmd}`"
-                )
-            if len(running_processes) > 12:
-                lines.append(
-                    t("gateway.agents.more", count=len(running_processes) - 12)
-                )
-
-        lines.extend([
-            "",
-            t("gateway.agents.async_jobs", count=len(background_tasks)),
-        ])
-
-        if not agent_rows and not running_processes and not background_tasks:
-            lines.append("")
-            lines.append(t("gateway.agents.none"))
-
-        return "\n".join(lines)
 
     def _sibling_thread_run_keys(self, source: SessionSource, own_key: str) -> list:
         """Find running-agent keys for OTHER participants in the same thread.
@@ -9886,6 +9711,9 @@ class GatewayRunner(
             if key == prefix or key.startswith(prefix + ":"):
                 matches.append(key)
         return matches
+
+
+
 
     def _is_stale_restart_redelivery(self, event: MessageEvent) -> bool:
         """Return True if this /restart is a Telegram re-delivery we already handled.
@@ -9936,6 +9764,14 @@ class GatewayRunner(
                 return False
         return event.platform_update_id <= recorded_uid
 
+
+
+
+
+
+
+
+
     # ────────────────────────────────────────────────────────────────
     # /goal — persistent cross-turn goals (Ralph-style loop)
     # ────────────────────────────────────────────────────────────────
@@ -9981,6 +9817,8 @@ class GatewayRunner(
             return None, None
         max_turns = self._goal_max_turns_from_config()
         return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
+
+
 
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
         """Send a /goal judge status line back to the originating chat/thread."""
@@ -10126,6 +9964,8 @@ class GatewayRunner(
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
 
+
+
     @staticmethod
     def _get_guild_id(event: MessageEvent) -> Optional[int]:
         """Extract Discord guild_id from the raw message object."""
@@ -10139,6 +9979,7 @@ class GatewayRunner(
         if hasattr(raw, "guild") and raw.guild:
             return raw.guild.id
         return None
+
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""
@@ -10630,6 +10471,8 @@ class GatewayRunner(
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
 
+
+
     async def _run_background_task(
         self,
         prompt: str,
@@ -10845,6 +10688,12 @@ class GatewayRunner(
                 )
             except Exception:
                 pass
+
+
+
+
+
+
 
     async def _get_telegram_topic_capabilities(self, source: SessionSource) -> dict:
         """Read Telegram private-topic capability flags via Bot API getMe."""
@@ -11219,6 +11068,7 @@ class GatewayRunner(
             "normal Hermes chat again. Run /topic to re-enable later."
         )
 
+
     def _telegram_topic_root_status_message(self, source: SessionSource) -> str:
         lines = [
             "Telegram multi-session topics are enabled.",
@@ -11323,595 +11173,11 @@ class GatewayRunner(
             response += f"\n\nLast Hermes message:\n{last_assistant}"
         return response
 
-        source = event.source
-        session_key = self._session_key_for_source(source)
-        name = event.get_command_args().strip()
 
-        # Strip common outer brackets/quotes users may type literally from the
-        # usage hint (e.g. ``/resume <abc123>``). Mirrors the CLI behavior.
-        if len(name) >= 2 and (
-            (name[0] == "<" and name[-1] == ">")
-            or (name[0] == "[" and name[-1] == "]")
-            or (name[0] == '"' and name[-1] == '"')
-            or (name[0] == "'" and name[-1] == "'")
-        ):
-            name = name[1:-1].strip()
 
-        def _list_titled_sessions() -> list[dict]:
-            user_source = source.platform.value if source.platform else None
-            sessions = self._session_db.list_sessions_rich(source=user_source, limit=50)
-            return [
-                s
-                for s in sessions
-                if s.get("title") and s.get("user_id") in (None, source.user_id)
-            ][:10]
 
-        if not name:
-            # List recent titled sessions for this user/platform
-            try:
-                titled = _list_titled_sessions()
-                if not titled:
-                    return t("gateway.resume.no_named_sessions")
-                lines = [t("gateway.resume.list_header")]
-                for idx, s in enumerate(titled[:10], start=1):
-                    title = s["title"]
-                    preview = s.get("preview", "")[:40]
-                    preview_part = (
-                        t("gateway.resume.list_preview_suffix", preview=preview)
-                        if preview
-                        else ""
-                    )
-                    lines.append(
-                        t(
-                            "gateway.resume.list_item_numbered",
-                            index=idx,
-                            title=title,
-                            preview_part=preview_part,
-                        )
-                    )
-                lines.append(t("gateway.resume.list_footer_numbered"))
-                return "\n".join(lines)
-            except Exception as e:
-                logger.debug("Failed to list titled sessions: %s", e)
-                return t("gateway.resume.list_failed", error=e)
 
-        user_source = source.platform.value if source.platform else None
-        user_id = source.user_id
-        # Resolve a numbered choice or a title to a session ID.
-        if name.isdigit():
-            try:
-                titled = _list_titled_sessions()
-            except Exception as e:
-                logger.debug("Failed to list titled sessions for numeric resume: %s", e)
-                return t("gateway.resume.list_failed", error=e)
-            index = int(name)
-            if index < 1 or index > len(titled):
-                return t("gateway.resume.out_of_range", index=index)
-            target = titled[index - 1]
-            target_id = target.get("id")
-            name = target.get("title") or name
-        else:
-            # Try direct session ID lookup first (so `/resume <session_id>`
-            # works in the gateway, not just `/resume <title>`).
-            session = self._session_db.get_session(name)
-            session_source = session.get("source") if session else None
-            session_user_id = session.get("user_id") if session else None
-            if (
-                session
-                and session_source == user_source
-                and (user_id is None or session_user_id in (None, user_id))
-            ):
-                target_id = session["id"]
-            else:
-                target_id = self._session_db.resolve_session_by_title(
-                    name, source=user_source, user_id=user_id
-                )
-        if not target_id:
-            return t("gateway.resume.not_found", name=name)
-        # Compression creates child continuations that hold the live transcript.
-        # Follow that chain so gateway /resume matches CLI behavior (#15000).
-        try:
-            target_id = self._session_db.resolve_resume_session_id(target_id)
-        except Exception as e:
-            logger.debug(
-                "Failed to resolve resume continuation for %s: %s", target_id, e
-            )
 
-        # Check if already on that session
-        current_entry = self.session_store.get_or_create_session(source)
-        if current_entry.session_id == target_id:
-            return t("gateway.resume.already_on", name=name)
-
-        # Clear any running agent for this session key
-        self._release_running_agent_state(session_key)
-
-        # Switch the session entry to point at the old session
-        new_entry = self.session_store.switch_session(session_key, target_id)
-        if not new_entry:
-            return t("gateway.resume.switch_failed")
-        self._clear_session_boundary_security_state(session_key)
-
-        # Evict any cached agent for this session so the next message
-        # rebuilds with the correct session_id end-to-end — mirrors
-        # /branch and /reset. Without this, the cached AIAgent (and its
-        # memory provider, which cached `_session_id` during initialize())
-        # keeps writing into the wrong session's record. See #6672.
-        self._evict_cached_agent(session_key)
-
-        # Get the title for confirmation
-        title = self._session_db.get_session_title(target_id) or name
-
-        # Count messages for context
-        history = self.session_store.load_transcript(target_id)
-        msg_count = (
-            len([m for m in history if m.get("role") == "user"]) if history else 0
-        )
-        if not msg_count:
-            return t("gateway.resume.resumed_no_count", title=title)
-        if msg_count == 1:
-            return t("gateway.resume.resumed_one", title=title, count=msg_count)
-        return t("gateway.resume.resumed_many", title=title, count=msg_count)
-
-    async def _handle_branch_command(self, event: MessageEvent) -> str:
-        """Handle /branch [name] — fork the current session into a new independent copy.
-
-        Copies conversation history to a new session so the user can explore
-        a different approach without losing the original.
-        Inspired by Claude Code's /branch command.
-        """
-        import uuid as _uuid
-
-        if not self._session_db:
-            from hermes_state import format_session_db_unavailable
-
-            return format_session_db_unavailable(
-                prefix=t("gateway.shared.session_db_unavailable_prefix")
-            )
-
-        source = event.source
-        session_key = self._session_key_for_source(source)
-
-        # Load the current session and its transcript
-        current_entry = self.session_store.get_or_create_session(source)
-        history = self.session_store.load_transcript(current_entry.session_id)
-        if not history:
-            return t("gateway.branch.no_conversation")
-
-        branch_name = event.get_command_args().strip()
-
-        # Generate the new session ID
-        from datetime import datetime as _dt
-
-        now = _dt.now()
-        timestamp_str = now.strftime("%Y%m%d_%H%M%S")
-        short_uuid = _uuid.uuid4().hex[:6]
-        new_session_id = f"{timestamp_str}_{short_uuid}"
-
-        # Determine branch title
-        if branch_name:
-            branch_title = branch_name
-        else:
-            current_title = self._session_db.get_session_title(current_entry.session_id)
-            base = current_title or "branch"
-            branch_title = self._session_db.get_next_title_in_lineage(base)
-
-        parent_session_id = current_entry.session_id
-
-        # Create the new session with parent link.
-        # Persist a stable ``_branched_from`` marker in model_config so
-        # list_sessions_rich() keeps the branch visible in /resume and
-        # /sessions even after the parent is reopened and re-ended with a
-        # different end_reason (e.g. tui_shutdown overwriting 'branched').
-        try:
-            self._session_db.create_session(
-                session_id=new_session_id,
-                source=source.platform.value if source.platform else "gateway",
-                user_id=source.user_id,
-                model=(self.config.get("model", {}) or {}).get("default")
-                if isinstance(self.config, dict)
-                else None,
-                model_config={"_branched_from": parent_session_id},
-                parent_session_id=parent_session_id,
-            )
-        except Exception as e:
-            logger.error("Failed to create branch session: %s", e)
-            return t("gateway.branch.create_failed", error=e)
-
-        # Copy conversation history to the new session
-        for msg in history:
-            try:
-                self._session_db.append_message(
-                    session_id=new_session_id,
-                    role=msg.get("role", "user"),
-                    content=msg.get("content"),
-                    tool_name=msg.get("tool_name") or msg.get("name"),
-                    tool_calls=msg.get("tool_calls"),
-                    tool_call_id=msg.get("tool_call_id"),
-                    finish_reason=msg.get("finish_reason"),
-                    reasoning=msg.get("reasoning"),
-                    reasoning_content=msg.get("reasoning_content"),
-                    reasoning_details=msg.get("reasoning_details"),
-                    codex_reasoning_items=msg.get("codex_reasoning_items"),
-                    codex_message_items=msg.get("codex_message_items"),
-                )
-            except Exception:
-                pass  # Best-effort copy
-
-        # Set title
-        try:
-            self._session_db.set_session_title(new_session_id, branch_title)
-        except Exception:
-            pass
-
-        # Switch the session store entry to the new session
-        new_entry = self.session_store.switch_session(session_key, new_session_id)
-        if not new_entry:
-            return t("gateway.branch.switch_failed")
-        self._clear_session_boundary_security_state(session_key)
-
-        # Evict any cached agent for this session
-        self._evict_cached_agent(session_key)
-
-        msg_count = len([m for m in history if m.get("role") == "user"])
-        key = (
-            "gateway.branch.branched_one"
-            if msg_count == 1
-            else "gateway.branch.branched_many"
-        )
-        return t(
-            key,
-            title=branch_title,
-            count=msg_count,
-            parent=parent_session_id,
-            new=new_session_id,
-        )
-
-    async def _handle_usage_command(self, event: MessageEvent) -> str:
-        """Handle /usage command -- show token usage for the current session.
-
-        Checks both _running_agents (mid-turn) and _agent_cache (between turns)
-        so that rate limits, cost estimates, and detailed token breakdowns are
-        available whenever the user asks, not only while the agent is running.
-        """
-        return await GatewaySlashCommandsMixin._handle_usage_command(self, event)
-
-        source = event.source
-        session_key = self._session_key_for_source(source)
-
-        # Try running agent first (mid-turn), then cached agent (between turns)
-        agent = self._running_agents.get(session_key)
-        if not agent or agent is _AGENT_PENDING_SENTINEL:
-            _cache_lock = getattr(self, "_agent_cache_lock", None)
-            _cache = getattr(self, "_agent_cache", None)
-            if _cache_lock and _cache is not None:
-                with _cache_lock:
-                    cached = _cache.get(session_key)
-                    if cached:
-                        agent = cached[0]
-
-        # Resolve provider/base_url/api_key for the account-usage fetch.
-        # Prefer the live agent; fall back to persisted billing data on the
-        # SessionDB row so `/usage` still returns account info between turns
-        # when no agent is resident.
-        provider = (
-            getattr(agent, "provider", None)
-            if agent and agent is not _AGENT_PENDING_SENTINEL
-            else None
-        )
-        base_url = (
-            getattr(agent, "base_url", None)
-            if agent and agent is not _AGENT_PENDING_SENTINEL
-            else None
-        )
-        api_key = (
-            getattr(agent, "api_key", None)
-            if agent and agent is not _AGENT_PENDING_SENTINEL
-            else None
-        )
-        if not provider and getattr(self, "_session_db", None) is not None:
-            try:
-                _entry_for_billing = self.session_store.get_or_create_session(source)
-                persisted = (
-                    self._session_db.get_session(_entry_for_billing.session_id) or {}
-                )
-            except Exception:
-                persisted = {}
-            provider = provider or persisted.get("billing_provider")
-            base_url = base_url or persisted.get("billing_base_url")
-
-        # Fetch account usage off the event loop so slow provider APIs don't
-        # block the gateway. Failures are non-fatal -- account_lines stays [].
-        account_lines: list[str] = []
-        credits_lines: list[str] = []
-        if provider:
-            try:
-                account_snapshot = await asyncio.to_thread(
-                    fetch_account_usage,
-                    provider,
-                    base_url=base_url,
-                    api_key=api_key,
-                )
-            except Exception:
-                account_snapshot = None
-            if account_snapshot:
-                account_lines = render_account_usage_lines(
-                    account_snapshot, markdown=True
-                )
-
-        # ── Nous credits magnitudes + monthly-grant % gauge ─────────────
-        # Shared with the CLI / TUI /usage block via nous_credits_lines(): a single
-        # auth-gate + portal-fetch + render path (which also honors the dev fixture).
-        # Run off the event loop. The helper gates on "a Nous account is logged in"
-        # — NOT the inference provider and NOT nested under `if provider:` — so a
-        # Nous-credentialled user running inference elsewhere (or with none resident)
-        # still sees their balance. NO recovery trigger: messaging binds no notice
-        # consumer, so /usage only displays. Fail-open: never break /usage.
-        try:
-            from agent.account_usage import nous_credits_lines
-
-            credits_lines = await asyncio.to_thread(nous_credits_lines, markdown=True)
-        except Exception:
-            credits_lines = []  # fail-open: never break /usage
-
-        if (
-            agent
-            and hasattr(agent, "session_total_tokens")
-            and agent.session_api_calls > 0
-        ):
-            lines = []
-
-            # Rate limits (when available from provider headers)
-            rl_state = agent.get_rate_limit_state()
-            if rl_state and rl_state.has_data:
-                from agent.rate_limit_tracker import format_rate_limit_compact
-
-                lines.append(
-                    t(
-                        "gateway.usage.rate_limits",
-                        state=format_rate_limit_compact(rl_state),
-                    )
-                )
-                lines.append("")
-
-            # Session token usage — detailed breakdown matching CLI
-            input_tokens = getattr(agent, "session_input_tokens", 0) or 0
-            output_tokens = getattr(agent, "session_output_tokens", 0) or 0
-            cache_read = getattr(agent, "session_cache_read_tokens", 0) or 0
-            cache_write = getattr(agent, "session_cache_write_tokens", 0) or 0
-
-            lines.append(t("gateway.usage.header_session"))
-            lines.append(t("gateway.usage.label_model", model=agent.model))
-            lines.append(
-                t("gateway.usage.label_input_tokens", count=f"{input_tokens:,}")
-            )
-            if cache_read:
-                lines.append(
-                    t("gateway.usage.label_cache_read", count=f"{cache_read:,}")
-                )
-            if cache_write:
-                lines.append(
-                    t("gateway.usage.label_cache_write", count=f"{cache_write:,}")
-                )
-            lines.append(
-                t("gateway.usage.label_output_tokens", count=f"{output_tokens:,}")
-            )
-            lines.append(
-                t("gateway.usage.label_total", count=f"{agent.session_total_tokens:,}")
-            )
-            lines.append(
-                t("gateway.usage.label_api_calls", count=agent.session_api_calls)
-            )
-
-            # Cost estimation
-            try:
-                from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
-
-                cost_result = estimate_usage_cost(
-                    agent.model,
-                    CanonicalUsage(
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        cache_read_tokens=cache_read,
-                        cache_write_tokens=cache_write,
-                    ),
-                    provider=getattr(agent, "provider", None),
-                    base_url=getattr(agent, "base_url", None),
-                )
-                if cost_result.amount_usd is not None:
-                    prefix = "~" if cost_result.status == "estimated" else ""
-                    lines.append(
-                        t(
-                            "gateway.usage.label_cost",
-                            prefix=prefix,
-                            amount=f"{float(cost_result.amount_usd):.4f}",
-                        )
-                    )
-                elif cost_result.status == "included":
-                    lines.append(t("gateway.usage.label_cost_included"))
-            except Exception:
-                pass
-
-            # Context window and compressions
-            ctx = agent.context_compressor
-            if ctx.last_prompt_tokens:
-                pct = (
-                    min(100, ctx.last_prompt_tokens / ctx.context_length * 100)
-                    if ctx.context_length
-                    else 0
-                )
-                lines.append(
-                    t(
-                        "gateway.usage.label_context",
-                        used=f"{ctx.last_prompt_tokens:,}",
-                        total=f"{ctx.context_length:,}",
-                        pct=f"{pct:.0f}",
-                    )
-                )
-            if ctx.compression_count:
-                lines.append(
-                    t("gateway.usage.label_compressions", count=ctx.compression_count)
-                )
-
-            if account_lines:
-                lines.append("")
-                lines.extend(account_lines)
-            if credits_lines:
-                lines.append("")
-                lines.extend(credits_lines)
-
-            return "\n".join(lines)
-
-        # No agent at all -- check session history for a rough count
-        session_entry = self.session_store.get_or_create_session(source)
-        history = self.session_store.load_transcript(session_entry.session_id)
-        if history:
-            from agent.model_metadata import estimate_messages_tokens_rough
-
-            msgs = [
-                m
-                for m in history
-                if m.get("role") in {"user", "assistant"} and m.get("content")
-            ]
-            approx = estimate_messages_tokens_rough(msgs)
-            lines = [
-                t("gateway.usage.header_session_info"),
-                t("gateway.usage.label_messages", count=len(msgs)),
-                t("gateway.usage.label_estimated_context", count=f"{approx:,}"),
-                t("gateway.usage.detailed_after_first"),
-            ]
-            if account_lines:
-                lines.append("")
-                lines.extend(account_lines)
-            if credits_lines:
-                lines.append("")
-                lines.extend(credits_lines)
-            return "\n".join(lines)
-        if account_lines or credits_lines:
-            # account-only, credits-only, or both — joined with a blank divider.
-            parts = list(account_lines)
-            if credits_lines:
-                if parts:
-                    parts.append("")
-                parts.extend(credits_lines)
-            return "\n".join(parts)
-        return t("gateway.usage.no_data")
-
-    async def _handle_insights_command(self, event: MessageEvent) -> str:
-        """Handle /insights command -- show usage insights and analytics."""
-        args = event.get_command_args().strip()
-
-        # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
-        args = re.sub(r"[\u2012\u2013\u2014\u2015](days|source)", r"--\1", args)
-
-        days = 30
-        source = None
-
-        # Parse simple args: /insights 7  or  /insights --days 7
-        if args:
-            parts = args.split()
-            i = 0
-            while i < len(parts):
-                if parts[i] == "--days" and i + 1 < len(parts):
-                    try:
-                        days = int(parts[i + 1])
-                    except ValueError:
-                        return t("gateway.insights.invalid_days", value=parts[i + 1])
-                    i += 2
-                elif parts[i] == "--source" and i + 1 < len(parts):
-                    source = parts[i + 1]
-                    i += 2
-                elif parts[i].isdigit():
-                    days = int(parts[i])
-                    i += 1
-                else:
-                    i += 1
-
-        try:
-            from hermes_state import SessionDB
-            from agent.insights import InsightsEngine
-
-            loop = asyncio.get_running_loop()
-
-            def _run_insights():
-                db = SessionDB()
-                engine = InsightsEngine(db)
-                report = engine.generate(days=days, source=source)
-                result = engine.format_gateway(report)
-                db.close()
-                return result
-
-            return await loop.run_in_executor(None, _run_insights)
-        except Exception as e:
-            logger.error("Insights command error: %s", e, exc_info=True)
-            return t("gateway.insights.error", error=e)
-
-    async def _handle_reload_mcp_command(self, event: MessageEvent) -> Optional[str]:
-        """Handle /reload-mcp — reconnect MCP servers and rebuild the cached agent.
-
-        Reloading MCP tools invalidates the provider prompt cache for the
-        active session (tool schemas are baked into the system prompt).  The
-        next message re-sends full input tokens, which is expensive on
-        long-context or high-reasoning models.
-
-        To surface that cost, the command routes through the slash-confirm
-        primitive: users get an Approve Once / Always Approve / Cancel
-        prompt before the reload actually runs.  "Always Approve" persists
-        ``approvals.mcp_reload_confirm: false`` so the prompt is silenced
-        for subsequent reloads in any session.
-
-        Users can also skip the confirm by flipping the config key directly.
-        """
-        source = event.source
-        session_key = self._session_key_for_source(source)
-
-        # Read the gate fresh from disk so a prior "always" click takes
-        # effect on the next invocation without restarting the gateway.
-        user_config = self._read_user_config()
-        approvals = (
-            user_config.get("approvals") if isinstance(user_config, dict) else None
-        )
-        confirm_required = True
-        if isinstance(approvals, dict):
-            confirm_required = bool(approvals.get("mcp_reload_confirm", True))
-
-        if not confirm_required:
-            return await self._execute_mcp_reload(event)
-
-        # Route through slash-confirm.  The primitive sends the prompt and
-        # stores the resume handler; the button/text response triggers
-        # ``_resolve_slash_confirm`` which invokes the handler with the
-        # chosen outcome.
-        async def _on_confirm(choice: str) -> Optional[str]:
-            if choice == "cancel":
-                return t("gateway.reload_mcp.cancelled")
-            if choice == "always":
-                # Persist the opt-out and run the reload.
-                try:
-                    from cli import save_config_value
-
-                    save_config_value("approvals.mcp_reload_confirm", False)
-                    logger.info(
-                        "User opted out of /reload-mcp confirmation (session=%s)",
-                        session_key,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to persist mcp_reload_confirm=false: %s", exc
-                    )
-            # once / always → run the reload
-            result = await self._execute_mcp_reload(event)
-            if choice == "always":
-                return f"{result}\n\n" + t("gateway.reload_mcp.always_followup")
-            return result
-
-        prompt_message = t("gateway.reload_mcp.confirm_prompt")
-        return await self._request_slash_confirm(
-            event=event,
-            command="reload-mcp",
-            title="/reload-mcp",
-            message=prompt_message,
-            handler=_on_confirm,
-        )
 
     async def _execute_mcp_reload(self, event: MessageEvent) -> str:
         """Actually disconnect, reconnect, and notify MCP tool changes.
@@ -12053,6 +11319,8 @@ class GatewayRunner(
         except Exception as e:
             logger.warning("MCP reload failed: %s", e)
             return t("gateway.reload_mcp.failed", error=e)
+
+
 
     # ------------------------------------------------------------------
     # Slash-command confirmation primitive (generic)
@@ -12342,6 +11610,8 @@ class GatewayRunner(
 
     _APPROVAL_TIMEOUT_SECONDS = 300  # 5 minutes
 
+
+
     # Built-in messaging platforms where the ``/update`` command is allowed.
     # ACP, API server, and webhooks are programmatic interfaces that should
     # not trigger system updates.  Plugin-migrated platforms (discord,
@@ -12365,6 +11635,8 @@ class GatewayRunner(
         Platform.QQBOT,
         Platform.LOCAL,
     })
+
+
 
     def _schedule_update_notification_watch(self) -> None:
         """Ensure a background task is watching for update completion."""
@@ -13174,27 +12446,22 @@ class GatewayRunner(
         media_types = getattr(event, "media_types", None) or []
         for i, path in enumerate(media_urls):
             mtype = media_types[i] if i < len(media_types) else ""
-            is_audio = mtype.startswith("audio/") or getattr(
-                event, "message_type", None
-            ) in (MessageType.VOICE, MessageType.AUDIO)
+            is_audio = (
+                mtype.startswith("audio/")
+                or getattr(event, "message_type", None) in (MessageType.VOICE, MessageType.AUDIO)
+            )
             if is_audio:
                 audio_paths.append(path)
 
         if audio_paths:
-            (
-                enriched_text,
-                successful_transcripts,
-            ) = await self._enrich_message_with_transcription(
-                text,
-                audio_paths,
+            enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
+                text, audio_paths,
             )
             # Echo raw transcripts back to the user so voice interrupts
             # feel identical to fresh voice messages.
             if successful_transcripts:
                 echo_adapter = self.adapters.get(source.platform)
-                echo_meta = (
-                    {"thread_id": source.thread_id} if source.thread_id else None
-                )
+                echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
                 if echo_adapter:
                     for tx in successful_transcripts:
                         try:
@@ -13205,8 +12472,7 @@ class GatewayRunner(
                             )
                         except Exception as echo_exc:
                             logger.debug(
-                                "Transcript echo failed (non-fatal): %s",
-                                echo_exc,
+                                "Transcript echo failed (non-fatal): %s", echo_exc,
                             )
             return enriched_text or None
 
@@ -16341,40 +15607,25 @@ class GatewayRunner(
                                 # (or file-path placeholder). Matches the UX
                                 # of fresh voice messages including the
                                 # 🎙️ echo back to the user.
-                                _media_urls = (
-                                    getattr(_peek_event, "media_urls", None) or []
-                                )
-                                _media_types = (
-                                    getattr(_peek_event, "media_types", None) or []
-                                )
+                                _media_urls = getattr(_peek_event, "media_urls", None) or []
+                                _media_types = getattr(_peek_event, "media_types", None) or []
                                 _audio_paths = []
                                 for _i, _path in enumerate(_media_urls):
-                                    _mtype = (
-                                        _media_types[_i]
-                                        if _i < len(_media_types)
-                                        else ""
+                                    _mtype = _media_types[_i] if _i < len(_media_types) else ""
+                                    _is_audio = (
+                                        _mtype.startswith("audio/")
+                                        or getattr(_peek_event, "message_type", None) in (MessageType.VOICE, MessageType.AUDIO)
                                     )
-                                    _is_audio = _mtype.startswith("audio/") or getattr(
-                                        _peek_event, "message_type", None
-                                    ) in (MessageType.VOICE, MessageType.AUDIO)
                                     if _is_audio:
                                         _audio_paths.append(_path)
                                 if _audio_paths:
                                     try:
-                                        (
-                                            _enriched,
-                                            _transcripts,
-                                        ) = await self._enrich_message_with_transcription(
-                                            pending_text,
-                                            _audio_paths,
+                                        _enriched, _transcripts = await self._enrich_message_with_transcription(
+                                            pending_text, _audio_paths,
                                         )
                                         pending_text = _enriched
                                         if _transcripts:
-                                            _echo_meta = (
-                                                {"thread_id": source.thread_id}
-                                                if source.thread_id
-                                                else None
-                                            )
+                                            _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
                                             for _tx in _transcripts:
                                                 try:
                                                     await _adapter.send(
@@ -16389,14 +15640,11 @@ class GatewayRunner(
                                                     )
                                     except Exception as _trans_exc:
                                         logger.warning(
-                                            "Voice-interrupt transcription failed: %s",
-                                            _trans_exc,
+                                            "Voice-interrupt transcription failed: %s", _trans_exc,
                                         )
                                 elif not pending_text and _media_urls:
                                     pending_text = _build_media_placeholder(_peek_event)
-                            logger.debug(
-                                "Interrupt detected from adapter, signaling agent..."
-                            )
+                            logger.debug("Interrupt detected from adapter, signaling agent...")
                             agent.interrupt(pending_text)
                             _interrupt_detected.set()
                             break
@@ -16767,27 +16015,20 @@ class GatewayRunner(
                     _audio_paths = []
                     for _i, _path in enumerate(_media_urls):
                         _mtype = _media_types[_i] if _i < len(_media_types) else ""
-                        _is_audio = _mtype.startswith("audio/") or getattr(
-                            pending_event, "message_type", None
-                        ) in (MessageType.VOICE, MessageType.AUDIO)
+                        _is_audio = (
+                            _mtype.startswith("audio/")
+                            or getattr(pending_event, "message_type", None) in (MessageType.VOICE, MessageType.AUDIO)
+                        )
                         if _is_audio:
                             _audio_paths.append(_path)
                     if _audio_paths:
                         try:
-                            (
-                                _enriched,
-                                _transcripts,
-                            ) = await self._enrich_message_with_transcription(
-                                _pending_text,
-                                _audio_paths,
+                            _enriched, _transcripts = await self._enrich_message_with_transcription(
+                                _pending_text, _audio_paths,
                             )
                             pending = _enriched or None
                             if _transcripts:
-                                _echo_meta = (
-                                    {"thread_id": source.thread_id}
-                                    if source.thread_id
-                                    else None
-                                )
+                                _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
                                 for _tx in _transcripts:
                                     try:
                                         await adapter.send(
@@ -16797,26 +16038,17 @@ class GatewayRunner(
                                         )
                                     except Exception as _echo_exc:
                                         logger.debug(
-                                            "Voice-drain echo failed (non-fatal): %s",
-                                            _echo_exc,
+                                            "Voice-drain echo failed (non-fatal): %s", _echo_exc,
                                         )
                         except Exception as _trans_exc:
                             logger.warning(
-                                "Voice-drain transcription failed: %s",
-                                _trans_exc,
+                                "Voice-drain transcription failed: %s", _trans_exc,
                             )
-                            pending = _pending_text or _build_media_placeholder(
-                                pending_event
-                            )
+                            pending = _pending_text or _build_media_placeholder(pending_event)
                     else:
-                        pending = _pending_text or _build_media_placeholder(
-                            pending_event
-                        )
+                        pending = _pending_text or _build_media_placeholder(pending_event)
                     if pending:
-                        logger.debug(
-                            "Processing queued message after agent completion: '%s...'",
-                            pending[:40],
-                        )
+                        logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
 
             # Leftover /steer: if a steer arrived after the last tool batch
             # (e.g. during the final API call), the agent couldn't inject it
@@ -17471,7 +16703,6 @@ async def start_gateway(
             # ``os.kill(pid, 0)`` on Windows is NOT a no-op — use the
             # handle-based existence check instead.
             from gateway.status import _pid_exists
-
             old_gateway_exited = False
             for _ in range(20):
                 if not _pid_exists(existing_pid):
@@ -17510,7 +16741,6 @@ async def start_gateway(
                     )
                     try:
                         from gateway.status import clear_takeover_marker
-
                         clear_takeover_marker()
                     except Exception:
                         pass

@@ -289,15 +289,11 @@ class TestCliEnsureRuntimeCredentialsCallable:
 
     def test_callable_predicate_present_in_cli_runtime_validation(self):
         from pathlib import Path
-
         # ``_ensure_runtime_credentials`` was extracted from cli.py into the
         # ``CLIAgentSetupMixin`` (god-file decomposition Phase 4). Read the
         # module the method actually lives in now.
-        src = (
-            Path(__file__).resolve().parent.parent.parent
-            / "hermes_cli"
-            / "cli_agent_setup_mixin.py"
-        ).read_text()
+        src = (Path(__file__).resolve().parent.parent.parent
+               / "hermes_cli" / "cli_agent_setup_mixin.py").read_text()
         # The fix introduces ``_is_callable_provider`` which gates the
         # string-only check so callable token providers survive.
         assert "_is_callable_provider = callable(api_key)" in src, (

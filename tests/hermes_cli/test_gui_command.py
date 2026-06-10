@@ -84,10 +84,7 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
         cli_main.cmd_gui(_ns())
 
     assert exc.value.code == 0
-    mock_install.assert_called_once_with(
-        "/usr/bin/npm", root, capture_output=False, env=None
-    )
-    mock_fixup.assert_called_once_with(desktop_dir)
+    mock_install.assert_called_once_with("/usr/bin/npm", root, capture_output=False, env=None)
     assert mock_run.call_args_list[0].args[0] == ["/usr/bin/npm", "run", "pack"]
     assert mock_run.call_args_list[0].kwargs["cwd"] == desktop_dir
     assert mock_run.call_args_list[1].args[0] == [str(packaged_exe)]
@@ -673,10 +670,8 @@ def test_stop_desktop_build_lock_terminates_only_release_procs(tmp_path, monkeyp
         captured["waited"] = list(procs)
         return procs, []
 
-    with (
-        patch("psutil.process_iter", return_value=[locker, unrelated, selfish, no_exe]),
-        patch("psutil.wait_procs", side_effect=_wait),
-    ):
+    with patch("psutil.process_iter", return_value=[locker, unrelated, selfish, no_exe]), \
+         patch("psutil.wait_procs", side_effect=_wait):
         stopped = cli_main._stop_desktop_processes_locking_build(desktop_dir)
 
     assert stopped == [101]

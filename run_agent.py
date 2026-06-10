@@ -4130,7 +4130,6 @@ class AIAgent:
         # api_mode-flip race (the Anthropic SDK raises a non-retryable
         # TypeError on them). See #31673.
         from agent.anthropic_adapter import sanitize_anthropic_kwargs
-
         sanitize_anthropic_kwargs(
             api_kwargs, log_prefix=getattr(self, "log_prefix", "")
         )

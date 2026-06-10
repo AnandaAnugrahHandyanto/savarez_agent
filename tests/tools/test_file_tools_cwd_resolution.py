@@ -187,9 +187,7 @@ def test_no_warning_when_no_live_cwd(_isolated_cwd, monkeypatch):
 
 
 @pytest.mark.parametrize("sentinel", ["", ".", "./", "auto", "cwd", "CWD", "Auto"])
-def test_sentinel_terminal_cwd_is_treated_as_unset(
-    _isolated_cwd, monkeypatch, sentinel
-):
+def test_sentinel_terminal_cwd_is_treated_as_unset(_isolated_cwd, monkeypatch, sentinel):
     """Sentinel TERMINAL_CWD values are NOT used as a directory anchor.
 
     They fall through to the (absolute) process cwd, exactly as if unset —
@@ -238,9 +236,7 @@ def test_absolute_terminal_cwd_anchors_with_empty_registry(_isolated_cwd, monkey
     assert not str(resolved).startswith(str(decoy))
 
 
-def test_warning_fires_from_terminal_cwd_when_registry_empty(
-    _isolated_cwd, monkeypatch
-):
+def test_warning_fires_from_terminal_cwd_when_registry_empty(_isolated_cwd, monkeypatch):
     """Divergence warning must fire even before any terminal command runs.
 
     PR #35399's warning required a live terminal cwd; a fresh worktree session
@@ -269,9 +265,7 @@ def test_live_cwd_still_wins_over_absolute_terminal_cwd(_isolated_cwd, monkeypat
     other = decoy.parent / "other"
     other.mkdir()
     # Live cwd = workspace; TERMINAL_CWD points elsewhere — live must win.
-    monkeypatch.setattr(
-        ft, "_get_live_tracking_cwd", lambda task_id="default": str(workspace)
-    )
+    monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(workspace))
     monkeypatch.setenv("TERMINAL_CWD", str(other))
 
     resolved = ft._resolve_path_for_task("target.py", task_id="default")

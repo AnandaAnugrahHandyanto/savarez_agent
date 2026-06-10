@@ -1011,9 +1011,7 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         # updates the originating session's env.
         container_id = _resolve_container_task_id(task_id)
         with _env_lock:
-            env = _active_environments.get(task_id) or _active_environments.get(
-                container_id
-            )
+            env = _active_environments.get(task_id) or _active_environments.get(container_id)
         if env is not None and getattr(env, "cwd", None) is not None:
             env.cwd = new_cwd
 
@@ -1052,11 +1050,8 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     backend-specific image keys or ``env_type`` trigger isolation.
     """
     _ISOLATION_KEYS = frozenset({
-        "docker_image",
-        "modal_image",
-        "singularity_image",
-        "daytona_image",
-        "env_type",
+        "docker_image", "modal_image", "singularity_image",
+        "daytona_image", "env_type",
     })
     if task_id and task_id in _task_env_overrides:
         overrides = _task_env_overrides[task_id]
@@ -1984,8 +1979,9 @@ def terminal_tool(
         # overrides (registered under an id that equals their container id) keep
         # resolving as before.
         overrides = (
-            _task_env_overrides.get(task_id) if task_id else None
-        ) or _task_env_overrides.get(effective_task_id, {})
+            (_task_env_overrides.get(task_id) if task_id else None)
+            or _task_env_overrides.get(effective_task_id, {})
+        )
 
         # Select image based on env type, with per-task override support
         if env_type == "docker":
@@ -2046,8 +2042,7 @@ def terminal_tool(
             # sharing, yet an env may already be cached under the originating
             # task_id; honor it instead of spawning a duplicate.
             _existing_key = (
-                effective_task_id
-                if effective_task_id in _active_environments
+                effective_task_id if effective_task_id in _active_environments
                 else (task_id if task_id and task_id in _active_environments else None)
             )
             if _existing_key is not None:
@@ -2068,13 +2063,8 @@ def terminal_tool(
                 # Double-check after acquiring the per-task lock
                 with _env_lock:
                     _existing_key = (
-                        effective_task_id
-                        if effective_task_id in _active_environments
-                        else (
-                            task_id
-                            if task_id and task_id in _active_environments
-                            else None
-                        )
+                        effective_task_id if effective_task_id in _active_environments
+                        else (task_id if task_id and task_id in _active_environments else None)
                     )
                     if _existing_key is not None:
                         _last_activity[_existing_key] = time.time()

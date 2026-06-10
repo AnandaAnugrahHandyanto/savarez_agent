@@ -173,7 +173,9 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 
 ## Local Fallback (llama.cpp + TurboQuant)
 
-When OpenCode free models are exhausted or offline, Hermes fails over to `llama-cpp` at `http://127.0.0.1:8080/v1`.
+> **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
+>
+> **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.
 
 **RTX 3080 manual start:**
 

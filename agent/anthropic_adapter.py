@@ -2379,12 +2379,9 @@ def build_anthropic_kwargs(
 # Keys that belong exclusively to the OpenAI Responses / Codex API shape.
 # The Anthropic Messages SDK (``messages.create()`` / ``messages.stream()``)
 # raises ``TypeError: ... got an unexpected keyword argument`` on any of them.
-_RESPONSES_ONLY_KWARGS = frozenset({
-    "instructions",
-    "input",
-    "store",
-    "parallel_tool_calls",
-})
+_RESPONSES_ONLY_KWARGS = frozenset(
+    {"instructions", "input", "store", "parallel_tool_calls"}
+)
 
 
 def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:

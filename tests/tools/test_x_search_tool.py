@@ -350,9 +350,8 @@ def test_x_search_prefers_oauth_when_both_available(monkeypatch):
     assert captured["headers"]["Authorization"] == "Bearer oauth-bearer-token"
 
 
-def test_x_search_returns_tool_error_for_non_url_search_when_no_credentials(monkeypatch):
-    """No xAI creds: tool still registers for Jina URL reads; broad search errors cleanly."""
-
+def test_x_search_returns_tool_error_when_no_credentials(monkeypatch):
+    """No credentials anywhere: tool returns a clear error, not a 401 from xAI."""
     from tools.registry import invalidate_check_fn_cache
     from tools.x_search_tool import check_x_search_requirements, x_search_tool
 
@@ -370,17 +369,17 @@ def test_x_search_returns_tool_error_for_non_url_search_when_no_credentials(monk
     )
     invalidate_check_fn_cache()
 
-    assert check_x_search_requirements() is True
+    assert check_x_search_requirements() is False
 
-    # Broad search still needs xAI credentials; only direct status URLs use Jina.
+    # If a model somehow invokes the tool despite a False check_fn, the call
+    # surfaces a friendly error rather than an HTTP exception.
     result = x_search_tool(query="anything")
     assert "No xAI credentials available" in result
     assert "hermes auth add xai-oauth" in result
 
 
-def test_x_search_check_fn_true_when_resolver_raises(monkeypatch):
-    """Resolver failures no longer gate out direct Jina URL reads."""
-
+def test_x_search_check_fn_false_when_resolver_raises(monkeypatch):
+    """Resolver exceptions (e.g. expired token + failed refresh) gate the tool out."""
     from tools.registry import invalidate_check_fn_cache
     from tools.x_search_tool import check_x_search_requirements
 
@@ -394,7 +393,7 @@ def test_x_search_check_fn_true_when_resolver_raises(monkeypatch):
     )
     invalidate_check_fn_cache()
 
-    assert check_x_search_requirements() is True
+    assert check_x_search_requirements() is False
 
 
 def test_x_search_honors_config_model_and_timeout(monkeypatch, tmp_path):
@@ -435,79 +434,8 @@ def test_x_search_registered_in_registry_with_check_fn():
     assert entry.toolset == "x_search"
     assert entry.check_fn is not None
     assert entry.check_fn.__name__ == "check_x_search_requirements"
-    assert entry.requires_env == []
+    assert "XAI_API_KEY" in entry.requires_env
     assert entry.emoji == "🐦"
-
-
-def test_x_search_reads_status_url_via_jina_without_xai_credentials(monkeypatch):
-    """Direct tweet URLs should be readable through r.jina.ai without xAI auth."""
-    from tools.registry import invalidate_check_fn_cache
-    from tools.x_search_tool import check_x_search_requirements, x_search_tool
-
-    _no_xai_env(monkeypatch)
-
-    def _fake_resolve():
-        return {"provider": "xai", "api_key": "", "base_url": "https://api.x.ai/v1"}
-
-    monkeypatch.setattr("tools.x_search_tool.resolve_xai_http_credentials", _fake_resolve)
-    invalidate_check_fn_cache()
-
-    captured = {}
-
-    def _fake_get(url, headers=None, timeout=None):
-        captured["url"] = url
-        captured["headers"] = headers
-        captured["timeout"] = timeout
-        return _FakeResponse(
-            None,
-            text=(
-                "Title: Bob on X\n\n"
-                "URL Source: https://x.com/zapabob_ouj/status/123\n\n"
-                "ボブにゃん posted a useful Hermes update."
-            ),
-        )
-
-    monkeypatch.setattr("requests.get", _fake_get)
-
-    assert check_x_search_requirements() is True
-
-    result = json.loads(x_search_tool(query="https://x.com/zapabob_ouj/status/123"))
-
-    assert result["success"] is True
-    assert result["provider"] == "jina"
-    assert result["tool"] == "x_jina_reader"
-    assert captured["url"] == "https://r.jina.ai/http://https://x.com/zapabob_ouj/status/123"
-    assert "ボブにゃん posted" in result["answer"]
-    assert result["citations"] == [
-        {"url": "https://x.com/zapabob_ouj/status/123", "title": "X status via r.jina.ai"}
-    ]
-
-
-def test_x_search_uses_jina_when_query_mentions_status_url_inside_text(monkeypatch):
-    from tools.x_search_tool import x_search_tool
-
-    def _fake_get(url, headers=None, timeout=None):
-        return _FakeResponse(None, text="tweet body from reader")
-
-    monkeypatch.setattr("requests.get", _fake_get)
-
-    result = json.loads(
-        x_search_tool(query="このツイート読んで https://twitter.com/example/status/456?s=20")
-    )
-
-    assert result["success"] is True
-    assert result["provider"] == "jina"
-    assert result["query"] == "https://x.com/example/status/456"
-
-
-def test_x_search_jina_status_url_extractor_rejects_non_x_handle_shapes():
-    """Only canonical X/Twitter status URLs should reach the public reader."""
-    from tools.x_search_tool import _extract_x_status_url
-
-    assert _extract_x_status_url("https://x.com/good_handle/status/123") == "https://x.com/good_handle/status/123"
-    assert _extract_x_status_url("https://x.com/evil.com@x/status/123") is None
-    assert _extract_x_status_url("https://x.com/%2f/status/123") is None
-    assert _extract_x_status_url("https://x.com/too_long_handle_123/status/123") is None
 
 
 # ---------------------------------------------------------------------------

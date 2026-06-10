@@ -841,7 +841,6 @@ def _discover_all_plugins() -> list:
 
     # Bundled (<repo>/plugins/<name>/), excluding memory/ and context_engine/
     from hermes_cli.plugins import get_bundled_plugins_dir
-
     repo_plugins = get_bundled_plugins_dir()
     for base, source, skip in (
         (repo_plugins, "bundled", {"memory", "context_engine"}),
@@ -869,8 +868,7 @@ def _filter_plugin_entries(
         filtered = [entry for entry in filtered if entry[3] != "bundled"]
     if getattr(args, "enabled", False):
         filtered = [
-            entry
-            for entry in filtered
+            entry for entry in filtered
             if _plugin_status(entry[0], enabled, disabled, key=entry[5]) == "enabled"
         ]
     return filtered
@@ -1146,11 +1144,7 @@ def cmd_toggle() -> None:
         plugin_names.append(name)
         plugin_labels.append(label)
         # Selected (enabled) when in enabled-set AND not in disabled-set
-        if (
-            (name in enabled_set or key in enabled_set)
-            and name not in disabled_set
-            and key not in disabled_set
-        ):
+        if (name in enabled_set or key in enabled_set) and name not in disabled_set and key not in disabled_set:
             plugin_selected.add(i)
 
     # -- Provider categories --

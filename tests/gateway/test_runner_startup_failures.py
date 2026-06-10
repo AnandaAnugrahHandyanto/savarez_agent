@@ -221,7 +221,6 @@ async def test_start_gateway_replace_force_uses_terminate_pid(monkeypatch, tmp_p
         "gateway.status.release_all_scoped_locks",
         lambda **kwargs: 0,
     )
-
     # force-kill reaps the process: terminate_pid(force=True) flips it dead,
     # and the post-kill re-poll via _pid_exists then sees it gone so the
     # replacement proceeds.
@@ -229,9 +228,10 @@ async def test_start_gateway_replace_force_uses_terminate_pid(monkeypatch, tmp_p
         calls.append((pid, force))
         if force:
             _pid_state["alive"] = False
-
     monkeypatch.setattr("gateway.status.terminate_pid", _mock_terminate_pid)
-    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: _pid_state["alive"])
+    monkeypatch.setattr(
+        "gateway.status._pid_exists", lambda pid: _pid_state["alive"]
+    )
     monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
     monkeypatch.setattr("gateway.run.os.kill", lambda pid, sig: None)
     monkeypatch.setattr("time.sleep", lambda _: None)
@@ -297,12 +297,8 @@ async def test_start_gateway_replace_aborts_when_force_killed_pid_still_alive(
     monkeypatch.setattr("gateway.run.os.kill", lambda pid, sig: None)
     monkeypatch.setattr("time.sleep", lambda _: None)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
-    monkeypatch.setattr(
-        "hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path
-    )
-    monkeypatch.setattr(
-        "hermes_logging._add_rotating_handler", lambda *args, **kwargs: None
-    )
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
     monkeypatch.setattr("gateway.run.GatewayRunner", _RunnerShouldNotStart)
 
     from gateway.run import start_gateway

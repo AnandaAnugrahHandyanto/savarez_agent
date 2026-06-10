@@ -1207,12 +1207,12 @@ class ProcessRegistry:
         if session.exited:
             return {"status": "already_exited", "error": "Process has already finished"}
 
-        # PTY mode -- write through pty handle. pywinpty expects str, while
-        # ptyprocess.PtyProcess expects bytes.
+        # PTY mode -- write through pty handle.
         if hasattr(session, '_pty') and session._pty:
             try:
+                # pywinpty expects str on Windows; ptyprocess expects bytes on POSIX.
                 if _IS_WINDOWS:
-                    pty_data = data
+                    pty_data = data.decode("utf-8") if isinstance(data, bytes) else str(data)
                 else:
                     pty_data = data.encode("utf-8") if isinstance(data, str) else data
                 session._pty.write(pty_data)

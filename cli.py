@@ -3215,7 +3215,6 @@ def save_config_value(key_path: str, value: any) -> bool:
 # HermesCLI Class
 # ============================================================================
 
-
 class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     """
     Interactive CLI for the Hermes Agent.
@@ -3444,8 +3443,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         else:
             self.max_turns = 90
 
-        # Auto-start Hypura Harness if enabled
-        ensure_harness_running()
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
         self.disabled_toolsets = CLI_CONFIG["agent"].get("disabled_toolsets") or []
@@ -3459,9 +3456,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 t for t in toolsets if not validate_toolset(t) and t not in mcp_names
             ]
             if invalid:
-                self._console_print(
-                    f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]"
-                )
+                self._console_print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
 
         # Filesystem checkpoints: CLI flag > config
         cp_cfg = CLI_CONFIG.get("checkpoints", {})
@@ -5214,6 +5209,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cprint(f"{_DIM}Failed to open external editor: {exc}{_RST}")
             return False
 
+
+
     def _install_tool_callbacks(self) -> None:
         """Install tool callbacks that need the live prompt UI."""
         if getattr(self, "_tool_callbacks_installed", False):
@@ -5248,6 +5245,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     )
         except Exception:
             pass
+
 
     def _show_security_advisories(self):
         """Show a startup banner if any unacked security advisories match.
@@ -5296,9 +5294,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._show_status()
         else:
             # Get tools for display
-            tools = get_tool_definitions(
-                enabled_toolsets=self.enabled_toolsets, quiet_mode=True
-            )
+            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
 
             # Get terminal working directory (where commands will execute)
             cwd = os.getenv("TERMINAL_CWD", os.getcwd())
@@ -5419,6 +5415,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         else:
             self._console_print(f"[dim]{_escape(msg)}[/dim]")
 
+
+
     def _render_resume_history_panel_lines(self, panel) -> list[str]:
         """Render the resume panel at the current terminal width for resize replay."""
         from io import StringIO
@@ -5455,6 +5453,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._image_counter -= 1
         return False
 
+
     def _resolve_checkpoint_ref(self, ref: str, checkpoints: list) -> str | None:
         """Resolve a checkpoint number or hash to a full commit hash."""
         try:
@@ -5467,6 +5466,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except ValueError:
             # Treat as a git hash
             return ref
+
+
+
+
 
     def _write_osc52_clipboard(self, text: str) -> None:
         """Copy *text* to terminal clipboard via OSC 52."""
@@ -5516,9 +5519,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 f"If this repeats, run /new or restart this tab.{_RST}"
             )
 
-    def _preprocess_images_with_vision(
-        self, text: str, images: list, *, announce: bool = True
-    ) -> str:
+
+
+    def _preprocess_images_with_vision(self, text: str, images: list, *, announce: bool = True) -> str:
         """Analyze attached images via the vision tool and return enriched text.
 
         Instead of embedding raw base64 ``image_url`` content parts in the
@@ -5796,9 +5799,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
-        tools = get_tool_definitions(
-            enabled_toolsets=self.enabled_toolsets, quiet_mode=True
-        )
+        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
 
         if not tools:
             print("(;_;) No tools available")
@@ -5838,6 +5839,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print(f"  Total: {len(tools)} tools  ヽ(^o^)ノ")
         print()
 
+
     def show_toolsets(self):
         """Display available toolsets with kawaii ASCII art."""
         all_toolsets = get_all_toolsets()
@@ -5873,6 +5875,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print("  Example: python cli.py --toolsets web,terminal")
         print()
 
+
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
         # Get terminal config from environment (which was set from cli-config.yaml)
@@ -5880,8 +5883,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
         terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
 
-        user_config_path = _hermes_home / "config.yaml"
-        project_config_path = Path(__file__).parent / "cli-config.yaml"
+        user_config_path = _hermes_home / 'config.yaml'
+        project_config_path = Path(__file__).parent / 'cli-config.yaml'
         if user_config_path.exists():
             config_path = user_config_path
         else:
@@ -6181,6 +6184,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             else:
                 print("(^_^)v New session started!")
 
+
+
     def _consume_pending_resume_selection(self, text: str) -> bool:
         """Resolve a bare numeric reply that follows a bare ``/resume`` prompt.
 
@@ -6218,6 +6223,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         self._handle_resume_command(f"/resume {index}")
         return True
+
+
 
     def save_conversation(self):
         """Save the current conversation to a JSON snapshot under ~/.hermes/sessions/saved/.
@@ -6287,9 +6294,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         last_message = self.conversation_history[last_user_idx].get("content", "")
         self.conversation_history = self.conversation_history[:last_user_idx]
 
-        print(
-            f'(^_^)b Retrying: "{last_message[:60]}{"..." if len(last_message) > 60 else ""}"'
-        )
+        print(f"(^_^)b Retrying: \"{last_message[:60]}{'...' if len(last_message) > 60 else ''}\"")
         return last_message
 
     def undo_last(self, n: int = 1, prefill: bool = True):
@@ -6443,9 +6448,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception as e:
             logger.debug("undo: prefill buffer failed: %s", e)
 
-    def _run_curses_picker(
-        self, title: str, items: list[str], default_index: int = 0
-    ) -> int | None:
+    def _run_curses_picker(self, title: str, items: list[str], default_index: int = 0) -> int | None:
         """Run curses_single_select via run_in_terminal so prompt_toolkit handles terminal ownership cleanly."""
         import threading
         from hermes_cli.curses_ui import curses_single_select
@@ -7341,6 +7344,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return "\n".join(p for p in parts if p)
         return str(value)
 
+
+
+
+
+
+
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
         from gateway.config import load_gateway_config, Platform
@@ -8011,249 +8020,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         return True
 
-    def _handle_evolve_command(self, cmd: str):
-        """Handle the /evolve (growth pulse) command."""
-        from agent.display import write_tty
-        from model_tools import handle_function_call
-
-        parts = cmd.split()
-        task_dir = parts[1] if len(parts) > 1 else "templates/hermes_self_evolve"
-        generations = int(parts[2]) if len(parts) > 2 else 5
-
-        write_tty(
-            "\n  \033[1;35m🧬 Initiating Growth Pulse (Autonomous Self-Evolution)...\033[0m\n"
-        )
-        write_tty(f"  Target: {task_dir}\n")
-        write_tty(f"  Generations: {generations}\n")
-        write_tty("  Compute: RTX 3060 (Active)\n\n")
-
-        # Set task defaults based on naming
-        tool_name = (
-            "shinka_run" if "template" not in task_dir else "ai_scientist_research"
-        )
-        args = {"task_dir": task_dir, "num_generations": generations, "use_gpu": True}
-        if "template" in task_dir:
-            exp_name = task_dir.split("/")[-1]
-            args = {"experiment": exp_name, "num_ideas": 2, "use_gpu": True}
-            tool_name = "ai_scientist_research"
-
-        write_tty(f"  \033[2mDispatching substrate request to {tool_name}...\033[0m\n")
-
-        try:
-            result_json = handle_function_call(tool_name, args, task_id=self.session_id)
-            result = json.loads(result_json)
-
-            if result.get("success"):
-                write_tty("\n  \033[32m✓ Growth Pulse Completed Successfully!\033[0m\n")
-                write_tty(f"  Results saved to: {result.get('results_dir')}\n")
-                write_tty(
-                    "  \033[2mAudit and patching will be performed automatically upon user request.\033[0m\n"
-                )
-            else:
-                write_tty(
-                    f"\n  \033[31m✗ Growth Pulse Failed: {result.get('error', 'Unknown error')}\033[0m\n"
-                )
-                if "stderr_tail" in result:
-                    write_tty(f"  \033[2m{result['stderr_tail']}\033[0m\n")
-        except Exception as e:
-            write_tty(f"\n  \033[31m✗ Dispatch Error: {e}\033[0m\n")
-
-    def _handle_plan_command(self, cmd: str):
-        """Handle /plan [request] — load the bundled plan skill."""
-        parts = cmd.strip().split(maxsplit=1)
-        user_instruction = parts[1].strip() if len(parts) > 1 else ""
-
-        plan_path = build_plan_path(user_instruction)
-        msg = build_skill_invocation_message(
-            "/plan",
-            user_instruction,
-            task_id=self.session_id,
-            runtime_note=(
-                "Save the markdown plan with write_file to this exact relative path "
-                f"inside the active workspace/backend cwd: {plan_path}"
-            ),
-        )
-
-        if not msg:
-            self.console.print("[bold red]Failed to load the bundled /plan skill[/]")
-            return
-
-        _cprint(f"  📝 Plan mode queued via skill. Markdown plan target: {plan_path}")
-        if hasattr(self, "_pending_input"):
-            self._pending_input.put(msg)
-        else:
-            self.console.print(
-                "[bold red]Plan mode unavailable: input queue not initialized[/]"
-            )
-
-    def _handle_background_command(self, cmd: str):
-        """Handle /background <prompt> — run a prompt in a separate background session.
-
-        Spawns a new AIAgent in a background thread with its own session.
-        When it completes, prints the result to the CLI without modifying
-        the active session's conversation history.
-        """
-        parts = cmd.strip().split(maxsplit=1)
-        if len(parts) < 2 or not parts[1].strip():
-            _cprint("  Usage: /background <prompt>")
-            _cprint("  Example: /background Summarize the top HN stories today")
-            _cprint(
-                "  The task runs in a separate session and results display here when done."
-            )
-            return
-
-        prompt = parts[1].strip()
-        self._background_task_counter += 1
-        task_num = self._background_task_counter
-        task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
-
-        # Make sure we have valid credentials
-        if not self._ensure_runtime_credentials():
-            _cprint("  (>_<) Cannot start background task: no valid credentials.")
-            return
-
-        _cprint(
-            f'  🔄 Background task #{task_num} started: "{prompt[:60]}{"..." if len(prompt) > 60 else ""}"'
-        )
-        _cprint(f"  Task ID: {task_id}")
-        _cprint("  You can continue chatting — results will appear when done.\n")
-
-        turn_route = self._resolve_turn_agent_config(prompt)
-
-        def run_background():
-            set_sudo_password_callback(self._sudo_password_callback)
-            set_approval_callback(self._approval_callback)
-            try:
-                set_secret_capture_callback(self._secret_capture_callback)
-            except Exception:
-                pass
-            try:
-                bg_agent = AIAgent(
-                    model=turn_route["model"],
-                    api_key=turn_route["runtime"].get("api_key"),
-                    base_url=turn_route["runtime"].get("base_url"),
-                    provider=turn_route["runtime"].get("provider"),
-                    api_mode=turn_route["runtime"].get("api_mode"),
-                    acp_command=turn_route["runtime"].get("command"),
-                    acp_args=turn_route["runtime"].get("args"),
-                    max_tokens=turn_route["runtime"].get("max_tokens"),
-                    max_iterations=self.max_turns,
-                    enabled_toolsets=self.enabled_toolsets,
-                    quiet_mode=True,
-                    verbose_logging=False,
-                    session_id=task_id,
-                    platform="cli",
-                    session_db=self._session_db,
-                    reasoning_config=self.reasoning_config,
-                    service_tier=self.service_tier,
-                    request_overrides=turn_route.get("request_overrides"),
-                    providers_allowed=self._providers_only,
-                    providers_ignored=self._providers_ignore,
-                    providers_order=self._providers_order,
-                    provider_sort=self._provider_sort,
-                    provider_require_parameters=self._provider_require_params,
-                    provider_data_collection=self._provider_data_collection,
-                    openrouter_min_coding_score=self._openrouter_min_coding_score,
-                    fallback_model=self._fallback_model,
-                )
-                # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
-                bg_agent._print_fn = lambda *_a, **_kw: None
-
-                def _bg_thinking(text: str) -> None:
-                    # Concurrent bg tasks may race on _spinner_text; acceptable for best-effort UI.
-                    if not self._agent_running:
-                        self._spinner_text = text
-                        if self._app:
-                            self._app.invalidate()
-
-                bg_agent.thinking_callback = _bg_thinking
-
-                result = bg_agent.run_conversation(
-                    user_message=prompt,
-                    task_id=task_id,
-                )
-
-                response = result.get("final_response", "") if result else ""
-                if not response and result and result.get("error"):
-                    response = f"Error: {result['error']}"
-
-                # Display result in the CLI (thread-safe via patch_stdout).
-                # Force a TUI refresh first so spinner/status bar don't overlap
-                # with the output (fixes #2718).
-                if self._app:
-                    self._app.invalidate()
-                    time.sleep(0.05)  # brief pause for refresh
-                print()
-                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-                _cprint(f"  ✅ Background task #{task_num} complete")
-                _cprint(f'  Prompt: "{prompt[:60]}{"..." if len(prompt) > 60 else ""}"')
-                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-                if response:
-                    try:
-                        from hermes_cli.skin_engine import get_active_skin
-
-                        _skin = get_active_skin()
-                        label = _skin.get_branding("response_label", "⚕ Hermes")
-                        _resp_color = _maybe_remap_for_light_mode(
-                            _skin.get_color("response_border", "#CD7F32")
-                        )
-                        _resp_text = _maybe_remap_for_light_mode(
-                            _skin.get_color("banner_text", "#FFF8DC")
-                        )
-                    except Exception:
-                        label = "⚕ Hermes"
-                        _resp_color = "#CD7F32"
-                        _resp_text = "#FFF8DC"
-
-                    _chat_console = ChatConsole()
-                    _chat_console.print(
-                        Panel(
-                            _render_final_assistant_content(
-                                response, mode=self.final_response_markdown
-                            ),
-                            title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
-                            title_align="left",
-                            border_style=_resp_color,
-                            style=_resp_text,
-                            box=rich_box.HORIZONTALS,
-                            padding=(1, 4),
-                            width=self._scrollback_box_width(),
-                        )
-                    )
-                else:
-                    _cprint("  (No response generated)")
-
-                # Play bell if enabled
-                if self.bell_on_complete:
-                    sys.stdout.write("\a")
-                    sys.stdout.flush()
-
-            except Exception as e:
-                # Same TUI refresh pattern as success path (#2718)
-                if self._app:
-                    self._app.invalidate()
-                    time.sleep(0.05)
-                print()
-                _cprint(f"  ❌ Background task #{task_num} failed: {e}")
-            finally:
-                try:
-                    set_sudo_password_callback(None)
-                    set_approval_callback(None)
-                    set_secret_capture_callback(None)
-                except Exception:
-                    pass
-                self._background_tasks.pop(task_id, None)
-                # Clear spinner only if no foreground agent owns it
-                if not self._agent_running:
-                    self._spinner_text = ""
-                if self._app:
-                    self._invalidate(min_interval=0)
-
-        thread = threading.Thread(
-            target=run_background, daemon=True, name=f"bg-task-{task_id}"
-        )
-        self._background_tasks[task_id] = thread
-        thread.start()
 
     @staticmethod
     def _try_launch_chrome_debug(port: int, system: str) -> bool:
@@ -8265,6 +8031,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         Returns True if a launch command was executed (doesn't guarantee success).
         """
         return try_launch_chrome_debug(port, system)
+
+
 
     # ────────────────────────────────────────────────────────────────
     # /goal — persistent cross-turn goals (Ralph-style loop)
@@ -8301,6 +8069,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
         self._goal_manager = mgr
         return mgr
+
+
 
     def _maybe_continue_goal_after_turn(self) -> None:
         """Hook run after every CLI turn. Judges + maybe re-queues.
@@ -8418,6 +8188,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self._pending_input.put(prompt)
                 except Exception as exc:
                     logging.debug("goal continuation enqueue failed: %s", exc)
+
+
 
     def _toggle_verbose(self):
         """Cycle tool progress mode: off → new → all → verbose → off.
@@ -8547,6 +8319,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 f"  ⚡ YOLO mode {_Colors.BOLD}{_Colors.GREEN}ON{_Colors.RESET}"
                 " — all commands auto-approved. Use with caution."
             )
+
+
+
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""
@@ -8717,6 +8492,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             except Exception as e:
                 print(f"  ❌ Compression failed: {e}")
+
+
 
     def _show_usage(self):
         """Rate limits + session token usage (when a live agent exists) + Nous credits.
@@ -9847,6 +9624,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         finally:
             self._voice_tts_done.set()
 
+
     def _voice_beeps_enabled(self) -> bool:
         """Return whether CLI voice mode should play record start/stop beeps."""
         try:
@@ -10054,9 +9832,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._clarify_freetext = False
         self._clarify_deadline = 0
         self._paint_now()
-        _cprint(
-            f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}"
-        )
+        _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
         return (
             "The user did not provide a response within the time limit. "
             "Use your best judgement to make the choice and proceed."
@@ -12015,7 +11791,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         _bind_prompt_submit_keys(kb, handle_enter)
 
-        @kb.add("escape", "enter")
+        @kb.add('escape', 'enter')
         def handle_alt_enter(event):
             """Alt+Enter inserts a newline for multi-line input.
 
@@ -13318,7 +13094,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 elif other_num == 10:
                     other_num_prefix = "0"
                 else:
-                    other_num_prefix = " "
+                    other_num_prefix = ' '
 
                 if selected == other_idx and not cli_ref._clarify_freetext:
                     other_style = "class:clarify-selected"
@@ -13892,9 +13668,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             _strip_leaked_terminal_responses_with_meta(user_input)
                         )
                         if _had_mouse_reports:
-                            self._recover_terminal_input_modes(
-                                reason="mouse reports leaked into submitted input"
-                            )
+                            self._recover_terminal_input_modes(reason="mouse reports leaked into submitted input")
 
                     # Check for commands — but detect dragged/pasted file paths first.
                     # See _detect_file_drop() for details.
@@ -13950,16 +13724,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             # to the outer prompt_toolkit loop and the session dies.
                             _cprint("\n[dim]Command interrupted.[/dim]")
                         continue
-
-                    if (
-                        not _file_drop
-                        and not submit_images
-                        and isinstance(user_input, str)
-                    ):
-                        bare_hint = _bare_command_hint(user_input)
-                        if bare_hint:
-                            _cprint(f"  {_DIM}{bare_hint}{_RST}")
-                            continue
 
                     # Expand paste references back to full content
                     _paste_ref_re = re.compile(
@@ -14047,9 +13811,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             pass  # Non-fatal — don't break the main loop
 
                 except Exception as e:
-                    logger.warning(
-                        "process_loop unhandled error (msg may be lost): %s", e
-                    )
+                    logger.warning("process_loop unhandled error (msg may be lost): %s", e)
 
         # Start processing thread
         process_thread = threading.Thread(target=process_loop, daemon=True)

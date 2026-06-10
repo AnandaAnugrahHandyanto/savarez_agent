@@ -250,9 +250,7 @@ class TestPtyBridgeClose:
         assert sent == [(67890, signal.SIGHUP)]
         assert bridge._closed is True
 
-    def test_close_falls_back_to_single_process_signal_when_group_unknown(
-        self, monkeypatch
-    ):
+    def test_close_falls_back_to_single_process_signal_when_group_unknown(self, monkeypatch):
         sent: list[signal.Signals] = []
 
         class _FakeProc:

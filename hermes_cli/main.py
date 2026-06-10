@@ -267,40 +267,44 @@ from pathlib import Path
 from typing import Optional
 
 
-_MIN_PYTHON = (3, 11)
-
-
-def _ensure_runtime_python() -> None:
-    """Fail fast on unsupported interpreters."""
-    if sys.version_info >= _MIN_PYTHON:
-        return
-    need = f"{_MIN_PYTHON[0]}.{_MIN_PYTHON[1]}"
-    found = (
-        f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    )
-    print(
-        f"Error: Hermes requires Python {need}+ (this interpreter is {found}).\n"
-        "Use a newer Python or activate a 3.11+ venv, then retry.",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-
-_ensure_runtime_python()
-
-
-def _add_accept_hooks_flag(parser) -> None:
-    """Attach the ``--accept-hooks`` flag.  Shared across every agent
-    subparser so the flag works regardless of CLI position."""
-    parser.add_argument(
-        "--accept-hooks",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help=(
-            "Auto-approve unseen shell hooks without a TTY prompt "
-            "(equivalent to HERMES_ACCEPT_HOOKS=1 / hooks_auto_accept: true)."
-        ),
-    )
+from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
+from hermes_cli.subcommands.cron import build_cron_parser
+from hermes_cli.subcommands.gateway import build_gateway_parser
+from hermes_cli.subcommands.profile import build_profile_parser
+from hermes_cli.subcommands.model import build_model_parser
+from hermes_cli.subcommands.setup import build_setup_parser
+from hermes_cli.subcommands.postinstall import build_postinstall_parser
+from hermes_cli.subcommands.whatsapp import build_whatsapp_parser
+from hermes_cli.subcommands.slack import build_slack_parser
+from hermes_cli.subcommands.login import build_login_parser
+from hermes_cli.subcommands.logout import build_logout_parser
+from hermes_cli.subcommands.auth import build_auth_parser
+from hermes_cli.subcommands.status import build_status_parser
+from hermes_cli.subcommands.webhook import build_webhook_parser
+from hermes_cli.subcommands.hooks import build_hooks_parser
+from hermes_cli.subcommands.doctor import build_doctor_parser
+from hermes_cli.subcommands.security import build_security_parser
+from hermes_cli.subcommands.dump import build_dump_parser
+from hermes_cli.subcommands.debug import build_debug_parser
+from hermes_cli.subcommands.backup import build_backup_parser
+from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
+from hermes_cli.subcommands.config import build_config_parser
+from hermes_cli.subcommands.version import build_version_parser
+from hermes_cli.subcommands.update import build_update_parser
+from hermes_cli.subcommands.uninstall import build_uninstall_parser
+from hermes_cli.subcommands.dashboard import build_dashboard_parser
+from hermes_cli.subcommands.gui import build_gui_parser
+from hermes_cli.subcommands.logs import build_logs_parser
+from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
+from hermes_cli.subcommands.memory import build_memory_parser
+from hermes_cli.subcommands.acp import build_acp_parser
+from hermes_cli.subcommands.tools import build_tools_parser
+from hermes_cli.subcommands.insights import build_insights_parser
+from hermes_cli.subcommands.skills import build_skills_parser
+from hermes_cli.subcommands.pairing import build_pairing_parser
+from hermes_cli.subcommands.plugins import build_plugins_parser
+from hermes_cli.subcommands.mcp import build_mcp_parser
+from hermes_cli.subcommands.claw import build_claw_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -557,7 +561,6 @@ from hermes_cli.model_setup_flows import (
     _model_flow_api_key_provider,
     _model_flow_anthropic,
 )
-
 logger = logging.getLogger(__name__)
 
 
@@ -3449,15 +3452,29 @@ def _prompt_provider_choice(choices, *, default=0):
             return None
 
 
+
+
+
+
+
+
+
+
 _DEFAULT_QWEN_PORTAL_MODELS = [
     "qwen3-coder-plus",
     "qwen3-coder",
 ]
 
 
-def _prompt_custom_api_mode_selection(
-    base_url: str, current_api_mode: str = ""
-) -> Optional[str]:
+
+
+
+
+
+
+
+
+def _prompt_custom_api_mode_selection(base_url: str, current_api_mode: str = "") -> Optional[str]:
     """Prompt for a custom provider API mode.
 
     Returns an explicit mode string, or None to keep auto-detect behavior.
@@ -3631,6 +3648,8 @@ def _save_custom_provider(
     print(f'  💾 Saved to custom providers as "{name}" (edit in config.yaml)')
 
 
+
+
 def _remove_custom_provider(config):
     """Let the user remove a saved custom provider from config.yaml."""
     from hermes_cli.config import load_config, save_config
@@ -3687,6 +3706,8 @@ def _remove_custom_provider(config):
         removed.get("name", "unnamed") if isinstance(removed, dict) else str(removed)
     )
     print(f'✅ Removed "{removed_name}" from custom providers.')
+
+
 
 
 # Lazy-export the model catalog at module level. Tests and a handful of
@@ -3808,6 +3829,10 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
             return None
 
 
+
+
+
+
 def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
     """Shared API-key entry point for ``hermes setup`` / ``hermes model``.
 
@@ -3891,6 +3916,8 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
     return existing_key, False
 
 
+
+
 def _infer_stepfun_region(base_url: str) -> str:
     """Infer the current StepFun region from the configured endpoint."""
     normalized = (base_url or "").strip().lower()
@@ -3910,6 +3937,14 @@ def _stepfun_base_url_for_region(region: str) -> str:
         if region == "china"
         else STEPFUN_STEP_PLAN_INTL_BASE_URL
     )
+
+
+
+
+
+
+
+
 
 
 def _run_anthropic_oauth_flow(save_env_value):
@@ -4003,6 +4038,8 @@ def _run_anthropic_oauth_flow(save_env_value):
             return True
         print("  Cancelled — install Claude Code and try again.")
         return False
+
+
 
 
 def cmd_login(args):
@@ -4572,10 +4609,7 @@ def _nixos_build_env() -> dict[str, str] | None:
     try:
         result = subprocess.run(
             ["nix-shell", "-p", "python3", "--run", "which python3"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=15,
+            capture_output=True, text=True, check=False, timeout=15,
         )
         if result.returncode == 0:
             python3_path = result.stdout.strip()
@@ -4585,8 +4619,6 @@ def _nixos_build_env() -> dict[str, str] | None:
         pass  # nix-shell not available — caller will get None
 
     return None
-
-
 def _run_npm_install_deterministic(
     npm: str,
     cwd: Path,
@@ -5285,9 +5317,7 @@ def cmd_gui(args: argparse.Namespace):
         else:
             print("→ Installing desktop workspace dependencies...")
             nixos_env = _nixos_build_env()
-            install_result = _run_npm_install_deterministic(
-                npm, PROJECT_ROOT, capture_output=False, env=nixos_env
-            )
+            install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)
             if install_result.returncode != 0:
                 print("✗ Desktop dependency install failed")
                 print(f"  Run manually:  cd {PROJECT_ROOT} && npm ci")
@@ -5304,12 +5334,8 @@ def cmd_gui(args: argparse.Namespace):
                 # headless --update rebuild — succeeds instead of failing cryptically.
                 stopped = _stop_desktop_processes_locking_build(desktop_dir)
                 if stopped:
-                    print(
-                        f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})"
-                    )
-            build_result = subprocess.run(
-                [npm, "run", build_script], cwd=desktop_dir, env=env, check=False
-            )
+                    print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
+            build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if build_result.returncode != 0 and not source_mode:
                 # A corrupt cached Electron zip makes `pack` fail with an ENOENT
                 # on the final `electron` -> `Hermes` rename: unpack-electron
@@ -5334,17 +5360,12 @@ def cmd_gui(args: argparse.Namespace):
                     # The purge can't remove a win-unpacked tree whose Hermes.exe
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
-                    build_result = subprocess.run(
-                        [npm, "run", build_script],
-                        cwd=desktop_dir,
-                        env=env,
-                        check=False,
-                    )
+                    build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
                 if sys.platform == "win32":
-                    print('  If this says "Access is denied" on Hermes.exe, close any')
+                    print("  If this says \"Access is denied\" on Hermes.exe, close any")
                     print("  running Hermes desktop window and retry.")
                 sys.exit(build_result.returncode or 1)
             packaged_executable = _desktop_packaged_executable(desktop_dir)
@@ -6362,12 +6383,14 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             _mark_skip_upstream_prompt()
             return
 
-    # Fetch upstream
+    # Fetch upstream main only. This sync compares upstream/main with
+    # origin/main, so there's no reason to pull every upstream ref — and a bare
+    # fetch drags in thousands of auto-generated branches.
     print()
     print("→ Fetching upstream...")
     try:
         subprocess.run(
-            git_cmd + ["fetch", "upstream", "--quiet"],
+            git_cmd + ["fetch", "upstream", "main", "--quiet"],
             cwd=cwd,
             capture_output=True,
             check=True,
@@ -7607,14 +7630,16 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-    # Fetch both origin and upstream; prefer upstream as the canonical reference.
+    # Fetch only the branch we compare against; prefer upstream as the canonical
+    # reference. A bare `git fetch <remote>` pulls every ref, and this repo has
+    # thousands of auto-generated branches, so scope the fetch to <branch>.
     # Note: upstream/<branch> may not exist for non-main branches (a fork's
     # bb/gui has no upstream counterpart), so when the caller picks a
     # non-default branch we skip the upstream probe and use origin directly.
     if branch == "main":
         print("→ Fetching from upstream...")
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "upstream"],
+            git_cmd + ["fetch", "upstream", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -7623,7 +7648,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             # Fallback to origin if upstream doesn't exist
             print("→ Fetching from origin...")
             fetch_result = subprocess.run(
-                git_cmd + ["fetch", "origin"],
+                git_cmd + ["fetch", "origin", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
@@ -7637,7 +7662,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         # Non-default branch: compare against origin/<branch> directly.
         print("→ Fetching from origin...")
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin"],
+            git_cmd + ["fetch", "origin", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -8147,9 +8172,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     # Fetch and pull
     try:
+
+        # Resolve the target branch up front so the fetch can be scoped to it.
+        # A bare `git fetch origin` pulls every ref, and this repo carries
+        # thousands of auto-generated branches — an unscoped fetch can stall for
+        # minutes on a non-single-branch checkout. Fetch only what we update
+        # against.
+        branch = _resolve_update_branch(args)
+
         print("→ Fetching updates...")
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin"],
+            git_cmd + ["fetch", "origin", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -8180,11 +8213,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
             check=True,
         )
         current_branch = result.stdout.strip()
-
-        # Determine the target branch. Default is "main" (the long-standing
-        # CLI behavior); --branch overrides for callers that want to update
-        # against a non-default channel.
-        branch = _resolve_update_branch(args)
 
         # If user is on a different branch than the update target, switch
         # to the target. When the target is "main" this is the historical
@@ -10729,7 +10757,9 @@ def cmd_memory(args):
             files_to_reset.append(("USER.md", "user profile"))
 
         # Check what exists
-        existing = [(f, desc) for f, desc in files_to_reset if (mem_dir / f).exists()]
+        existing = [
+            (f, desc) for f, desc in files_to_reset if (mem_dir / f).exists()
+        ]
         if not existing:
             print(
                 f"\n  Nothing to reset — no memory files found in {display_hermes_home()}/memories/\n"
@@ -10756,7 +10786,9 @@ def cmd_memory(args):
             (mem_dir / f).unlink()
             print(f"  ✓ Deleted {f} ({desc})")
 
-        print(f"\n  Memory reset complete. New sessions will start with a blank slate.")
+        print(
+            f"\n  Memory reset complete. New sessions will start with a blank slate."
+        )
         print(f"  Files were in: {display_hermes_home()}/memories/\n")
     else:
         from hermes_cli.memory_setup import memory_command

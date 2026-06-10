@@ -5743,20 +5743,17 @@ def call_llm(
         # session-search, vision) shares. (PR #16587)
         try:
             return _validate_llm_response(
-                client.chat.completions.create(**kwargs), task
-            )
+                client.chat.completions.create(**kwargs), task)
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
             logger.info(
                 "Auxiliary %s: transient transport error; retrying once on "
                 "the same provider before fallback: %s",
-                task or "call",
-                transient_err,
+                task or "call", transient_err,
             )
             return _validate_llm_response(
-                client.chat.completions.create(**kwargs), task
-            )
+                client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)
@@ -6299,20 +6296,17 @@ async def async_call_llm(
         # for the rationale. (PR #16587)
         try:
             return _validate_llm_response(
-                await client.chat.completions.create(**kwargs), task
-            )
+                await client.chat.completions.create(**kwargs), task)
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
             logger.info(
                 "Auxiliary %s (async): transient transport error; retrying "
                 "once on the same provider before fallback: %s",
-                task or "call",
-                transient_err,
+                task or "call", transient_err,
             )
             return _validate_llm_response(
-                await client.chat.completions.create(**kwargs), task
-            )
+                await client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
         if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
             retry_kwargs = dict(kwargs)

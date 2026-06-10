@@ -25,25 +25,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 INSTALL_PS1 = REPO_ROOT / "scripts" / "install.ps1"
 
-def _bash_usable() -> bool:
-    bash = shutil.which("bash")
-    if bash is None:
-        return False
-    try:
-        return (
-            subprocess.run(
-                [bash, "-lc", "true"],
-                capture_output=True,
-                timeout=5,
-            ).returncode
-            == 0
-        )
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
-bash_required = pytest.mark.skipif(not _bash_usable(), reason="needs usable bash")
+pytestmark = pytest.mark.skipif(
+    shutil.which("git") is None or shutil.which("bash") is None,
+    reason="needs git and bash",
+)
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -70,17 +55,15 @@ def _extract_no_commit_guard() -> str:
 
 def _run_guard(install_dir: Path) -> None:
     block = _extract_no_commit_guard()
-    shell_install_dir = install_dir.as_posix()
     script = (
-        'log_warn() { echo "WARN: $*"; }\n'
-        f"INSTALL_DIR={shlex.quote(shell_install_dir)}\n"
+        "log_warn() { echo \"WARN: $*\"; }\n"
+        f"INSTALL_DIR={shlex.quote(str(install_dir))}\n"
         f"{block}\n"
     )
     res = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     assert res.returncode == 0, res.stderr
 
 
-@bash_required
 def test_install_sh_guard_moves_commitless_checkout_aside(tmp_path: Path) -> None:
     install_dir = tmp_path / "hermes-agent"
     install_dir.mkdir()
@@ -103,7 +86,6 @@ def test_install_sh_guard_moves_commitless_checkout_aside(tmp_path: Path) -> Non
     assert (backups[0] / "leftover.txt").read_text() == "partial download"
 
 
-@bash_required
 def test_install_sh_guard_keeps_repo_with_commits(tmp_path: Path) -> None:
     install_dir = tmp_path / "hermes-agent"
     install_dir.mkdir()
@@ -120,7 +102,6 @@ def test_install_sh_guard_keeps_repo_with_commits(tmp_path: Path) -> None:
     )
 
 
-@bash_required
 def test_install_sh_guard_ignores_non_repo_dir(tmp_path: Path) -> None:
     install_dir = tmp_path / "hermes-agent"
     install_dir.mkdir()

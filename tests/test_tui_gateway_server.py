@@ -160,14 +160,11 @@ def test_write_json_drops_detached_ws_frames(monkeypatch):
     monkeypatch.setattr(server, "_real_stdout", out)
     server._sessions["detached-sid"] = {"transport": server._detached_ws_transport}
     try:
-        assert (
-            server.write_json({
-                "jsonrpc": "2.0",
-                "method": "event",
-                "params": {"session_id": "detached-sid", "type": "message.delta"},
-            })
-            is False
-        )
+        assert server.write_json({
+            "jsonrpc": "2.0",
+            "method": "event",
+            "params": {"session_id": "detached-sid", "type": "message.delta"},
+        }) is False
         assert out.parts == []
     finally:
         server._sessions.pop("detached-sid", None)
@@ -4504,7 +4501,6 @@ def test_session_active_list_excludes_finalized_sessions(monkeypatch):
     until a gateway restart. A live session on the real stdio transport (the
     standalone ``hermes --tui`` case) must still be reported.
     """
-
     class _DB:
         def get_session_title(self, key):
             return {"key-live": "Live", "key-dead": "Dead"}.get(key, "")
@@ -4529,17 +4525,20 @@ def test_session_active_list_excludes_finalized_sessions(monkeypatch):
     dead["_finalized"] = True
     server._sessions["sid-dead"] = dead
     try:
-        resp = server.handle_request({
-            "id": "1",
-            "method": "session.active_list",
-            "params": {},
-        })
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.active_list",
+                "params": {},
+            }
+        )
     finally:
         server._sessions.clear()
         server._sessions.update(previous_sessions)
 
     session_rows = resp["result"]["sessions"]
     assert [row["id"] for row in session_rows] == ["sid-live"]
+
 
 
 def test_session_activate_returns_inflight_stream_before_completion(monkeypatch):
@@ -6180,8 +6179,7 @@ def test_close_session_by_id_is_idempotent_and_full(monkeypatch):
     monkeypatch.setattr(server, "_finalize_session", _fake_finalize)
     monkeypatch.setattr(
         "tools.approval.unregister_gateway_notify",
-        lambda key: calls.__setitem__("unreg", calls["unreg"] + 1),
-        raising=False,
+        lambda key: calls.__setitem__("unreg", calls["unreg"] + 1), raising=False,
     )
     server._sessions["sid-1"] = {"session_key": "k1", "agent": A(), "slash_worker": W()}
 
@@ -6266,15 +6264,12 @@ def test_restart_slash_worker_stores_on_live_session(monkeypatch):
 def test_session_close_rpc_delegates_to_close_session_by_id(monkeypatch):
     seen = []
     monkeypatch.setattr(
-        server,
-        "_close_session_by_id",
+        server, "_close_session_by_id",
         lambda sid, *, end_reason: bool(seen.append((sid, end_reason))) or True,
     )
-    resp = server.handle_request({
-        "id": "1",
-        "method": "session.close",
-        "params": {"session_id": "s9"},
-    })
+    resp = server.handle_request(
+        {"id": "1", "method": "session.close", "params": {"session_id": "s9"}}
+    )
     assert resp["result"] == {"closed": True}
     assert seen == [("s9", "tui_close")]
 
@@ -6282,8 +6277,7 @@ def test_session_close_rpc_delegates_to_close_session_by_id(monkeypatch):
 def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     seen = []
     monkeypatch.setattr(
-        server,
-        "_close_session_by_id",
+        server, "_close_session_by_id",
         lambda sid, *, end_reason: bool(seen.append((sid, end_reason))) or True,
     )
     # Detached session "b" would schedule a real grace-reap threading.Timer that
@@ -6296,9 +6290,7 @@ def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     try:
         server._close_sessions_for_transport(transport, end_reason="ws_disconnect")
         assert seen == [("a", "ws_disconnect")]  # only the flagged one closed
-        assert (
-            server._sessions["b"]["transport"] is server._detached_ws_transport
-        )  # re-pointed
+        assert server._sessions["b"]["transport"] is server._detached_ws_transport  # re-pointed
     finally:
         server._sessions.clear()
 
@@ -6307,16 +6299,12 @@ def test_session_create_records_close_on_disconnect_flag(monkeypatch):
     monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
     server._sessions.clear()
     try:
-        on = server.handle_request({
-            "id": "1",
-            "method": "session.create",
-            "params": {"close_on_disconnect": True},
-        })["result"]["session_id"]
-        off = server.handle_request({
-            "id": "2",
-            "method": "session.create",
-            "params": {},
-        })["result"]["session_id"]
+        on = server.handle_request(
+            {"id": "1", "method": "session.create", "params": {"close_on_disconnect": True}}
+        )["result"]["session_id"]
+        off = server.handle_request(
+            {"id": "2", "method": "session.create", "params": {}}
+        )["result"]["session_id"]
         assert server._sessions[on]["close_on_disconnect"]
         assert not server._sessions[off]["close_on_disconnect"]
     finally:
@@ -6326,8 +6314,7 @@ def test_session_create_records_close_on_disconnect_flag(monkeypatch):
 def test_shutdown_sessions_closes_every_session_via_helper(monkeypatch):
     seen = []
     monkeypatch.setattr(
-        server,
-        "_close_session_by_id",
+        server, "_close_session_by_id",
         lambda sid, *, end_reason: seen.append((sid, end_reason)),
     )
     server._sessions.clear()
@@ -6391,8 +6378,7 @@ def test_reap_idle_sessions_closes_only_evictable(monkeypatch):
     closed = []
     monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
     monkeypatch.setattr(
-        server,
-        "_close_session_by_id",
+        server, "_close_session_by_id",
         lambda sid, *, end_reason: closed.append((sid, end_reason)),
     )
     now = time.time()

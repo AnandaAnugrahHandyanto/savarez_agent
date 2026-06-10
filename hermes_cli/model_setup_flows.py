@@ -86,7 +86,6 @@ def _model_flow_openrouter(config, current_model=""):
     else:
         print("No change.")
 
-
 def _model_flow_nous(config, current_model="", args=None):
     """Nous Portal provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
@@ -240,18 +239,14 @@ def _model_flow_nous(config, current_model="", args=None):
         except Exception:
             unavailable_message = ""
         model_ids, pricing = union_with_portal_free_recommendations(
-            model_ids,
-            pricing,
-            _nous_portal_url,
+            model_ids, pricing, _nous_portal_url,
         )
         model_ids, unavailable_models = partition_nous_models_by_tier(
             model_ids, pricing, free_tier=True
         )
     else:
         model_ids, pricing = union_with_portal_paid_recommendations(
-            model_ids,
-            pricing,
-            _nous_portal_url,
+            model_ids, pricing, _nous_portal_url,
         )
 
     if not model_ids and not unavailable_models:
@@ -308,7 +303,6 @@ def _model_flow_nous(config, current_model="", args=None):
         prompt_enable_tool_gateway(config)
     else:
         print("No change.")
-
 
 def _model_flow_openai_codex(config, current_model=""):
     """OpenAI Codex provider: ensure logged in, then pick model."""
@@ -399,7 +393,6 @@ def _model_flow_openai_codex(config, current_model=""):
     else:
         print("No change.")
 
-
 def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     """xAI Grok OAuth (SuperGrok / Premium+) provider: ensure logged in, then pick model."""
     from hermes_cli.auth import (
@@ -454,9 +447,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         elif choice == "3":
             return
     else:
-        print(
-            "Not logged into xAI Grok OAuth (SuperGrok / Premium+). Starting login..."
-        )
+        print("Not logged into xAI Grok OAuth (SuperGrok / Premium+). Starting login...")
         print()
         try:
             mock_args = argparse.Namespace(
@@ -485,21 +476,14 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     except Exception:
         pass
 
-    models = list(
-        _PROVIDER_MODELS.get("xai-oauth") or _PROVIDER_MODELS.get("xai") or []
-    )
-    selected = _prompt_model_selection(
-        models, current_model=current_model or (models[0] if models else "grok-4.3")
-    )
+    models = list(_PROVIDER_MODELS.get("xai-oauth") or _PROVIDER_MODELS.get("xai") or [])
+    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.3"))
     if selected:
         _save_model_choice(selected)
         _update_config_for_provider("xai-oauth", base_url)
-        print(
-            f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)"
-        )
+        print(f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
     else:
         print("No change.")
-
 
 def _model_flow_qwen_oauth(_config, current_model=""):
     """Qwen OAuth provider: reuse local Qwen CLI login, then pick model."""
@@ -543,7 +527,6 @@ def _model_flow_qwen_oauth(_config, current_model=""):
         print(f"Default model set to: {selected} (via Qwen OAuth)")
     else:
         print("No change.")
-
 
 def _model_flow_minimax_oauth(config, current_model="", args=None):
     """MiniMax OAuth provider: ensure logged in, then pick model."""
@@ -592,7 +575,6 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
     _save_model_choice(selected)
     _update_config_for_provider("minimax-oauth", creds["base_url"])
     print(f"\u2713 Using MiniMax model: {selected}")
-
 
 def _model_flow_google_gemini_cli(_config, current_model=""):
     """Google Gemini OAuth (PKCE) via Cloud Code Assist — supports free AND paid tiers.
@@ -668,18 +650,13 @@ def _model_flow_google_gemini_cli(_config, current_model=""):
     else:
         print("No change.")
 
-
 def _model_flow_custom(config):
     """Custom endpoint: collect URL, API key, and model name.
 
     Automatically saves the endpoint to ``custom_providers`` in config.yaml
     so it appears in the provider menu on subsequent runs.
     """
-    from hermes_cli.main import (
-        _auto_provider_name,
-        _prompt_custom_api_mode_selection,
-        _save_custom_provider,
-    )
+    from hermes_cli.main import _auto_provider_name, _prompt_custom_api_mode_selection, _save_custom_provider
     from hermes_cli.auth import _save_model_choice, deactivate_provider
     from hermes_cli.config import get_env_value, load_config, save_config
     from hermes_cli.secret_prompt import masked_secret_prompt
@@ -826,8 +803,7 @@ def _model_flow_custom(config):
     if context_length_str:
         try:
             context_length = int(
-                context_length_str
-                .replace(",", "")
+                context_length_str.replace(",", "")
                 .replace("k", "000")
                 .replace("K", "000")
             )
@@ -893,7 +869,6 @@ def _model_flow_custom(config):
         api_mode=api_mode,
     )
 
-
 def _model_flow_azure_foundry(config, current_model=""):
     """Azure Foundry provider: configure endpoint, auth mode, API mode, and model.
 
@@ -941,9 +916,7 @@ def _model_flow_azure_foundry(config, current_model=""):
     if isinstance(model_cfg, dict) and model_cfg.get("provider") == "azure-foundry":
         current_base_url = str(model_cfg.get("base_url", "") or "")
         current_api_mode = str(model_cfg.get("api_mode", "") or "")
-        current_auth_mode = (
-            str(model_cfg.get("auth_mode") or "api_key").strip().lower() or "api_key"
-        )
+        current_auth_mode = str(model_cfg.get("auth_mode") or "api_key").strip().lower() or "api_key"
         _cur_entra = model_cfg.get("entra") or {}
         current_entra = _cur_entra if isinstance(_cur_entra, dict) else {}
     else:
@@ -984,9 +957,11 @@ def _model_flow_azure_foundry(config, current_model=""):
         _placeholder = (
             current_base_url
             or "e.g. https://<resource>.openai.azure.com/openai/v1 "
-            "or https://<resource>.services.ai.azure.com/anthropic"
+              "or https://<resource>.services.ai.azure.com/anthropic"
         )
-        base_url = input(f"API endpoint URL [{_placeholder}]: ").strip()
+        base_url = input(
+            f"API endpoint URL [{_placeholder}]: "
+        ).strip()
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return
@@ -1003,12 +978,8 @@ def _model_flow_azure_foundry(config, current_model=""):
     print()
     print("Authentication:")
     print("  1. API key                  (AZURE_FOUNDRY_API_KEY in .env)")
-    print(
-        "  2. Microsoft Entra ID       (managed identity / workload identity / az login)"
-    )
-    print(
-        "     Recommended by Microsoft. Works for both OpenAI-style and Anthropic-style endpoints."
-    )
+    print("  2. Microsoft Entra ID       (managed identity / workload identity / az login)")
+    print("     Recommended by Microsoft. Works for both OpenAI-style and Anthropic-style endpoints.")
     print("     Requires the 'Azure AI User' role on the Foundry resource.")
     try:
         _auth_default = "2" if current_auth_mode == "entra_id" else "1"
@@ -1083,11 +1054,7 @@ def _model_flow_azure_foundry(config, current_model=""):
             print(f"⚠ {err}")
             print(f"  Hint: {hint}")
             try:
-                ans = (
-                    input("Save Entra config anyway and validate later? [Y/n]: ")
-                    .strip()
-                    .lower()
-                )
+                ans = input("Save Entra config anyway and validate later? [Y/n]: ").strip().lower()
             except (KeyboardInterrupt, EOFError):
                 print("\nCancelled.")
                 return
@@ -1254,7 +1221,9 @@ def _model_flow_azure_foundry(config, current_model=""):
         save_env_value("OPENAI_API_KEY", "")
 
     mode_label = "OpenAI-style" if api_mode == "chat_completions" else "Anthropic-style"
-    auth_label = "Microsoft Entra ID (keyless)" if use_entra else "API key"
+    auth_label = (
+        "Microsoft Entra ID (keyless)" if use_entra else "API key"
+    )
     print()
     print("✓ Azure Foundry configured:")
     print(f"    Endpoint:       {effective_url}")
@@ -1267,7 +1236,6 @@ def _model_flow_azure_foundry(config, current_model=""):
         print("    Context length: not auto-detected (will fall back at runtime)")
     print()
 
-
 def _model_flow_named_custom(config, provider_info):
     """Handle a named custom provider from config.yaml custom_providers list.
 
@@ -1275,11 +1243,7 @@ def _model_flow_named_custom(config, provider_info):
     If a model was previously saved, it is pre-selected in the menu.
     Falls back to the saved model if probing fails.
     """
-    from hermes_cli.main import (
-        _custom_provider_api_key_config_value,
-        _custom_provider_base_url_config_value,
-        _save_custom_provider,
-    )
+    from hermes_cli.main import _custom_provider_api_key_config_value, _custom_provider_base_url_config_value, _save_custom_provider
     from hermes_cli.auth import _save_model_choice, deactivate_provider
     from hermes_cli.config import load_config, save_config
     from hermes_cli.models import fetch_api_models
@@ -1324,9 +1288,7 @@ def _model_flow_named_custom(config, provider_info):
 
     if not discover and configured_models:
         # Discovery disabled with an explicit list — use it verbatim, no probe.
-        print(
-            f"Using configured models (discover_models: false): {len(configured_models)}"
-        )
+        print(f"Using configured models (discover_models: false): {len(configured_models)}")
         models = configured_models
     else:
         print("Fetching available models...")
@@ -1466,14 +1428,9 @@ def _model_flow_named_custom(config, provider_info):
     print(f"\n✅ Model set to: {model_name}")
     print(f"   Provider: {name} ({base_url})")
 
-
 def _model_flow_copilot(config, current_model=""):
     """GitHub Copilot flow using env vars, gh CLI, or OAuth device code."""
-    from hermes_cli.main import (
-        _current_reasoning_effort,
-        _prompt_reasoning_effort_selection,
-        _set_reasoning_effort,
-    )
+    from hermes_cli.main import _current_reasoning_effort, _prompt_reasoning_effort_selection, _set_reasoning_effort
     from hermes_cli.auth import (
         PROVIDER_REGISTRY,
         _prompt_model_selection,
@@ -1539,9 +1496,7 @@ def _model_flow_copilot(config, current_model=""):
             from hermes_cli.secret_prompt import masked_secret_prompt
 
             try:
-                new_key = masked_secret_prompt(
-                    "  Token (COPILOT_GITHUB_TOKEN): "
-                ).strip()
+                new_key = masked_secret_prompt("  Token (COPILOT_GITHUB_TOKEN): ").strip()
             except (KeyboardInterrupt, EOFError):
                 print()
                 return
@@ -1571,7 +1526,6 @@ def _model_flow_copilot(config, current_model=""):
     else:
         if source in {"GITHUB_TOKEN", "GH_TOKEN"}:
             from hermes_cli.env_loader import format_secret_source_suffix
-
             bw_suffix = format_secret_source_suffix(source)
             print(f"  GitHub token: {api_key[:8]}... ✓ ({source}{bw_suffix})")
         elif source == "gh auth token":
@@ -1667,7 +1621,6 @@ def _model_flow_copilot(config, current_model=""):
                 print(f"Reasoning effort set to: {selected_effort}")
     else:
         print("No change.")
-
 
 def _model_flow_copilot_acp(config, current_model=""):
     """GitHub Copilot ACP flow using the local Copilot CLI."""
@@ -1782,7 +1735,6 @@ def _model_flow_copilot_acp(config, current_model=""):
 
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
-
 def _model_flow_kimi(config, current_model=""):
     """Kimi / Moonshot model selection with automatic endpoint routing.
 
@@ -1880,15 +1832,9 @@ def _model_flow_kimi(config, current_model=""):
     else:
         print("No change.")
 
-
 def _model_flow_stepfun(config, current_model=""):
     """StepFun Step Plan flow with region-specific endpoints."""
-    from hermes_cli.main import (
-        _infer_stepfun_region,
-        _prompt_api_key,
-        _prompt_provider_choice,
-        _stepfun_base_url_for_region,
-    )
+    from hermes_cli.main import _infer_stepfun_region, _prompt_api_key, _prompt_provider_choice, _stepfun_base_url_for_region
     from hermes_cli.auth import (
         PROVIDER_REGISTRY,
         _prompt_model_selection,
@@ -1993,7 +1939,6 @@ def _model_flow_stepfun(config, current_model=""):
     else:
         print("No change.")
 
-
 def _model_flow_bedrock_api_key(config, region, current_model=""):
     """Bedrock API Key mode — uses the OpenAI-compatible bedrock-mantle endpoint.
 
@@ -2019,7 +1964,6 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     existing_key = get_env_value("AWS_BEARER_TOKEN_BEDROCK") or ""
     if existing_key:
         from hermes_cli.env_loader import format_secret_source_suffix
-
         source_suffix = format_secret_source_suffix("AWS_BEARER_TOKEN_BEDROCK")
         print(f"  Bedrock API Key: {existing_key[:12]}... ✓{source_suffix}")
     else:
@@ -2083,7 +2027,6 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         print(f"  Endpoint: {mantle_base_url}")
     else:
         print("  No change.")
-
 
 def _model_flow_bedrock(config, current_model=""):
     """AWS Bedrock provider: verify credentials, pick region, discover models.
@@ -2266,7 +2209,6 @@ def _model_flow_bedrock(config, current_model=""):
         print(f"  Default model set to: {selected} (via AWS Bedrock, {region})")
     else:
         print("  No change.")
-
 
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
@@ -2552,7 +2494,6 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     else:
         print("No change.")
 
-
 def _model_flow_anthropic(config, current_model=""):
     """Flow for Anthropic provider — OAuth subscription, API key, or Claude Code creds."""
     from hermes_cli.main import _run_anthropic_oauth_flow
@@ -2613,7 +2554,9 @@ def _model_flow_anthropic(config, current_model=""):
                     source_suffix = format_secret_source_suffix(var)
                     if source_suffix:
                         break
-            print(f"  Anthropic credentials: {existing_key[:12]}... ✓{source_suffix}")
+            print(
+                f"  Anthropic credentials: {existing_key[:12]}... ✓{source_suffix}"
+            )
         elif cc_available:
             print("  Claude Code credentials: ✓ (auto-detected)")
         print()

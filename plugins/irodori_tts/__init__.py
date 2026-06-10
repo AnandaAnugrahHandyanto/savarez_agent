@@ -6,7 +6,7 @@ from typing import Any
 from .core import IrodoriScriptTTSProvider, synthesize_text, status_payload
 
 
-def _status_handler(**_: Any) -> str:
+def _status_handler(_: Any = None) -> str:
     return json.dumps(status_payload(), ensure_ascii=False, indent=2)
 
 

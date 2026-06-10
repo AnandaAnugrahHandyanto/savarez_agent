@@ -314,9 +314,7 @@ class TestMemoryManager:
             {"role": "tool", "tool_call_id": "call-1", "content": "ok"},
         ]
 
-        mgr.sync_all(
-            "user msg", "assistant msg", session_id="sess-1", messages=messages
-        )
+        mgr.sync_all("user msg", "assistant msg", session_id="sess-1", messages=messages)
         mgr.flush_pending(timeout=5)
         assert p.synced_turns == [("user msg", "assistant msg", "sess-1", messages)]
 

@@ -2357,9 +2357,7 @@ class TestTransientTransportRetry:
         ]
         p1, p2, p3 = self._patches(client)
         with p1, p2, p3:
-            result = call_llm(
-                task="compression", messages=[{"role": "user", "content": "hi"}]
-            )
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
         assert result == {"ok": True}
         # Same client called twice — no provider fallback needed.
         assert client.chat.completions.create.call_count == 2
@@ -2373,9 +2371,7 @@ class TestTransientTransportRetry:
         client.chat.completions.create.side_effect = [_Err503("upstream"), {"ok": True}]
         p1, p2, p3 = self._patches(client)
         with p1, p2, p3:
-            result = call_llm(
-                task="compression", messages=[{"role": "user", "content": "hi"}]
-            )
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
         assert result == {"ok": True}
         assert client.chat.completions.create.call_count == 2
 
@@ -2407,9 +2403,7 @@ class TestTransientTransportRetry:
 
         p1, p2, p3 = self._patches(primary)
         with (
-            p1,
-            p2,
-            p3,
+            p1, p2, p3,
             patch(
                 "agent.auxiliary_client._try_configured_fallback_chain",
                 return_value=(None, None, ""),
@@ -2419,9 +2413,7 @@ class TestTransientTransportRetry:
                 return_value=(fb_client, "fb-model", "openai"),
             ),
         ):
-            result = call_llm(
-                task="compression", messages=[{"role": "user", "content": "hi"}]
-            )
+            result = call_llm(task="compression", messages=[{"role": "user", "content": "hi"}])
         assert result == {"fallback": True}
         # Primary tried twice (initial + same-target retry), then fallback.
         assert primary.chat.completions.create.call_count == 2

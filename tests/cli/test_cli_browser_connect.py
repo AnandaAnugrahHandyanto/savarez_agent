@@ -328,15 +328,10 @@ class TestChromeDebugLaunch:
         cli._pending_input = Queue()
         monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
 
-        with (
-            patch(
-                "hermes_cli.cli_commands_mixin.is_browser_debug_ready",
-                return_value=True,
-            ),
-            patch("tools.browser_tool.cleanup_all_browsers"),
-            patch("tools.browser_tool._ensure_cdp_supervisor"),
-            redirect_stdout(StringIO()),
-        ):
+        with patch("hermes_cli.cli_commands_mixin.is_browser_debug_ready", return_value=True), \
+             patch("tools.browser_tool.cleanup_all_browsers"), \
+             patch("tools.browser_tool._ensure_cdp_supervisor"), \
+             redirect_stdout(StringIO()):
             cli._handle_browser_command("/browser connect")
 
         note = cli._pending_input.get_nowait()

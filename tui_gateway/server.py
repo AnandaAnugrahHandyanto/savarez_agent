@@ -130,9 +130,7 @@ _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
-_sessions_lock = (
-    threading.RLock()
-)  # reentrant: _close_session_by_id may run under callers that already hold it
+_sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
 _prompt_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
@@ -456,6 +454,7 @@ def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
     return True
 
 
+
 def _ws_session_is_orphaned(session: dict | None) -> bool:
     """True if a WS session has no live transport and no in-flight turn.
 
@@ -517,9 +516,7 @@ def _close_sessions_for_transport(
 
     Returns ``(reaped, detached)`` counts for disconnect-path observability."""
     with _sessions_lock:
-        owned = [
-            (sid, s) for sid, s in _sessions.items() if s.get("transport") is transport
-        ]
+        owned = [(sid, s) for sid, s in _sessions.items() if s.get("transport") is transport]
     reaped = 0
     detached = 0
     for sid, session in owned:
@@ -583,9 +580,7 @@ def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
 def _reap_idle_sessions() -> None:
     now = time.time()
     with _sessions_lock:
-        victims = [
-            sid for sid, s in _sessions.items() if _session_is_evictable(sid, s, now)
-        ]
+        victims = [sid for sid, s in _sessions.items() if _session_is_evictable(sid, s, now)]
     for sid in victims:
         _close_session_by_id(sid, end_reason="idle_timeout")
 
@@ -3321,9 +3316,7 @@ def _(rid, params: dict) -> dict:
             "agent_error": None,
             "agent_ready": ready,
             "attached_images": [],
-            "close_on_disconnect": is_truthy_value(
-                params.get("close_on_disconnect", False)
-            ),
+            "close_on_disconnect": is_truthy_value(params.get("close_on_disconnect", False)),
             "cols": cols,
             "created_at": now,
             "edit_snapshots": {},

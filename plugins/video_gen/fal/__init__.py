@@ -310,7 +310,6 @@ def _load_fal_client() -> Any:
         if _fal_client is not None:  # re-check inside the lock
             return _fal_client
         from tools.fal_common import import_fal_client
-
         _fal_client = import_fal_client()
         return _fal_client
 

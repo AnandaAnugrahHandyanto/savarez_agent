@@ -695,26 +695,17 @@ class TestWebServerEndpoints:
         db = SessionDB()
         try:
             db.create_session(session_id="desktop-root", source="cli")
-            db.append_message(
-                session_id="desktop-root", role="user", content="before compression"
-            )
+            db.append_message(session_id="desktop-root", role="user", content="before compression")
             db.end_session("desktop-root", "compression")
             now = _time.time()
             db._conn.execute(
                 "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
                 (now - 10, now - 5, "desktop-root"),
             )
-            db.create_session(
-                session_id="desktop-tip", source="cli", parent_session_id="desktop-root"
-            )
-            db._conn.execute(
-                "UPDATE sessions SET started_at = ? WHERE id = ?",
-                (now - 4, "desktop-tip"),
-            )
+            db.create_session(session_id="desktop-tip", source="cli", parent_session_id="desktop-root")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 4, "desktop-tip"))
             db.replace_messages("desktop-root", [])
-            db.append_message(
-                session_id="desktop-tip", role="user", content="after compression"
-            )
+            db.append_message(session_id="desktop-tip", role="user", content="after compression")
             db._conn.commit()
         finally:
             db.close()

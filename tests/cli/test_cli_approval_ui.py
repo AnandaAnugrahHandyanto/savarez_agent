@@ -377,8 +377,8 @@ def _make_real_paint_cli_stub():
     # Real methods, not mocks.
     cli._paint_now = HermesCLI._paint_now.__get__(cli, HermesCLI)
     cli._invalidate = HermesCLI._invalidate.__get__(cli, HermesCLI)
-    cli._resize_recovery_pending = True  # gate 1: resize in flight
-    cli._last_invalidate = time.monotonic()  # gate 2: inside throttle window
+    cli._resize_recovery_pending = True       # gate 1: resize in flight
+    cli._last_invalidate = time.monotonic()   # gate 2: inside throttle window
     cli._app = SimpleNamespace(invalidate=MagicMock(), current_buffer=_FakeBuffer())
     return cli
 
@@ -428,9 +428,8 @@ class TestModalPaintNow:
             # (the panel must clear at once, not be held by the throttle).
             cli._app.invalidate.reset_mock()
             getattr(cli, state_attr)["response_queue"].put(
-                "deny"
-                if state_attr == "_approval_state"
-                else ("a" if state_attr == "_clarify_state" else "pw")
+                "deny" if state_attr == "_approval_state" else
+                ("a" if state_attr == "_clarify_state" else "pw")
             )
             thread.join(timeout=2)
             # clarify returns immediately on a response (no teardown repaint);
@@ -445,8 +444,7 @@ class TestModalPaintNow:
     def test_approval_prompt_paints_under_both_gates(self):
         cli = _make_real_paint_cli_stub()
         value = self._drive(
-            cli,
-            lambda: cli._approval_callback("rm -rf /tmp/scratch", "danger"),
+            cli, lambda: cli._approval_callback("rm -rf /tmp/scratch", "danger"),
             "_approval_state",
         )
         assert value == "deny"
@@ -454,8 +452,7 @@ class TestModalPaintNow:
     def test_clarify_prompt_paints_under_both_gates(self):
         cli = _make_real_paint_cli_stub()
         value = self._drive(
-            cli,
-            lambda: cli._clarify_callback("Pick one", ["a", "b"]),
+            cli, lambda: cli._clarify_callback("Pick one", ["a", "b"]),
             "_clarify_state",
         )
         assert value == "a"

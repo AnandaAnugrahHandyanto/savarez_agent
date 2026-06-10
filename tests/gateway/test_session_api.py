@@ -154,12 +154,8 @@ async def test_session_messages_follow_compression_tip(adapter, session_db):
 
 
 @pytest.mark.asyncio
-async def test_session_fork_uses_current_sessiondb_branch_primitives(
-    adapter, session_db
-):
-    source_id = session_db.create_session(
-        "source-session", "api_server", model="test-model"
-    )
+async def test_session_fork_uses_current_sessiondb_branch_primitives(adapter, session_db):
+    source_id = session_db.create_session("source-session", "api_server", model="test-model")
     session_db.set_session_title(source_id, "Original")
     session_db.append_message(source_id, "user", "first path")
     session_db.append_message(source_id, "assistant", "answer")

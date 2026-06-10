@@ -96,25 +96,32 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path:
     return _resolve_path_for_task(filepath, task_id)
 
 
-def _msys_path_to_windows(filepath: str) -> str:
-    """Convert Git Bash/MSYS absolute paths like /c/Users/x on Windows."""
-    if os.name != "nt" or not filepath:
-        return filepath
-    match = re.match(r"^/mnt/([a-zA-Z])(?:/(.*))?$", filepath)
-    if match:
-        drive = match.group(1).upper()
-        tail = (match.group(2) or "").replace("/", "\\")
-        if tail:
-            return f"{drive}:\\{tail}"
-        return f"{drive}:\\"
-    match = re.match(r"^/([a-zA-Z])(?:/(.*))?$", filepath)
-    if not match:
-        return filepath
-    drive = match.group(1).upper()
-    tail = (match.group(2) or "").replace("/", "\\")
-    if tail:
-        return f"{drive}:\\{tail}"
-    return f"{drive}:\\"
+# Sentinel ``TERMINAL_CWD`` values that mean "not configured", NOT a literal
+# directory to resolve against. A stale config / .env commonly leaves the
+# literal "." here; "auto"/"cwd" are setup-wizard placeholders. Treating any of
+# these as a real relative base silently anchors edits to the agent PROCESS cwd
+# (e.g. the main repo while a worktree session is active), routing writes to the
+# wrong checkout. The gateway sanitizes the same set at import time
+# (gateway/run.py); the file/terminal-tool layer must do likewise so CLI
+# sessions get the same protection. See references/worktree-cwd-discipline.md.
+_TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
+
+
+def _configured_terminal_cwd() -> str | None:
+    """Return ``$TERMINAL_CWD`` only when it names a real directory anchor.
+
+    Sentinel values (see ``_TERMINAL_CWD_SENTINELS``) and relative paths are
+    rejected — a relative anchor is meaningless without knowing which cwd it is
+    relative to, which is exactly the ambiguity that misroutes worktree edits.
+    Only an absolute, sentinel-free value is honored.
+    """
+    raw = (os.environ.get("TERMINAL_CWD") or "").strip()
+    if raw.lower() in _TERMINAL_CWD_SENTINELS:
+        return None
+    expanded = os.path.expanduser(raw)
+    if not os.path.isabs(expanded):
+        return None
+    return expanded
 
 
 def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
@@ -149,17 +156,6 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
         pass
 
     return None
-
-
-def _configured_terminal_cwd() -> str | None:
-    """Return a reliable absolute TERMINAL_CWD anchor, if one is configured."""
-    raw = (os.environ.get("TERMINAL_CWD") or "").strip()
-    if not raw or raw.lower() in {"auto", "cwd"} or raw in {".", "./"}:
-        return None
-    path = Path(_msys_path_to_windows(raw)).expanduser()
-    if not path.is_absolute():
-        return None
-    return str(path.resolve())
 
 
 def _authoritative_workspace_root(task_id: str = "default") -> str | None:

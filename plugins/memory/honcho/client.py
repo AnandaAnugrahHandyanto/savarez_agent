@@ -781,7 +781,6 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         # the "go run hermes honcho setup" hint they used to.
         try:
             from tools.lazy_deps import FeatureUnavailable, ensure as _lazy_ensure
-
             _lazy_ensure("memory.honcho", prompt=False)
         except ImportError:
             # lazy_deps module missing — fall through to the raw import below.
@@ -808,14 +807,11 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         if not resolved_base_url or resolved_timeout is None:
             try:
                 from hermes_cli.config import load_config
-
                 hermes_cfg = load_config()
                 honcho_cfg = hermes_cfg.get("honcho", {})
                 if isinstance(honcho_cfg, dict):
                     if not resolved_base_url:
-                        resolved_base_url = (
-                            honcho_cfg.get("base_url", "").strip() or None
-                        )
+                        resolved_base_url = honcho_cfg.get("base_url", "").strip() or None
                     if resolved_timeout is None:
                         resolved_timeout = _resolve_optional_float(
                             honcho_cfg.get("timeout"),
@@ -830,17 +826,9 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             resolved_timeout = _DEFAULT_HTTP_TIMEOUT
 
         if resolved_base_url:
-            logger.info(
-                "Initializing Honcho client (base_url: %s, workspace: %s)",
-                resolved_base_url,
-                config.workspace_id,
-            )
+            logger.info("Initializing Honcho client (base_url: %s, workspace: %s)", resolved_base_url, config.workspace_id)
         else:
-            logger.info(
-                "Initializing Honcho client (host: %s, workspace: %s)",
-                config.host,
-                config.workspace_id,
-            )
+            logger.info("Initializing Honcho client (host: %s, workspace: %s)", config.host, config.workspace_id)
 
         # Local Honcho instances don't require an API key, but the SDK
         # expects a non-empty string.  Use a placeholder for local URLs.
@@ -874,7 +862,6 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         # SDK then appends its own versioned paths correctly.
         if resolved_base_url:
             import re as _re
-
             resolved_base_url = _re.sub(r"/v\d+/*$", "", resolved_base_url).rstrip("/")
 
         kwargs: dict = {
