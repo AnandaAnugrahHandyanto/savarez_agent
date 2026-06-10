@@ -84,6 +84,56 @@ class TestRunConversationCodexPath:
         assert result["codex_thread_id"] == "thread-stub-1"
         assert result["codex_turn_id"] == "turn-stub-1"
 
+    def test_codex_app_server_token_usage_updates_session_accounting(self, monkeypatch):
+        def fake_run_turn(self, user_input: str, **kwargs):
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-usage-1",
+                thread_id="thread-usage-1",
+                token_usage_last={
+                    "totalTokens": 130,
+                    "inputTokens": 80,
+                    "cachedInputTokens": 20,
+                    "outputTokens": 25,
+                    "reasoningOutputTokens": 5,
+                },
+                model_context_window=200000,
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "thread-usage-1"
+        )
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hello")
+
+        assert result["api_calls"] == 1
+        assert result["prompt_tokens"] == 100
+        assert result["completion_tokens"] == 25
+        assert result["total_tokens"] == 130
+        assert result["input_tokens"] == 80
+        assert result["output_tokens"] == 25
+        assert result["cache_read_tokens"] == 20
+        assert result["cache_write_tokens"] == 0
+        assert result["reasoning_tokens"] == 5
+        assert result["last_prompt_tokens"] == 100
+
+        assert agent.session_api_calls == 1
+        assert agent.session_prompt_tokens == 100
+        assert agent.session_completion_tokens == 25
+        assert agent.session_total_tokens == 130
+        assert agent.session_input_tokens == 80
+        assert agent.session_output_tokens == 25
+        assert agent.session_cache_read_tokens == 20
+        assert agent.session_cache_write_tokens == 0
+        assert agent.session_reasoning_tokens == 5
+        assert agent.context_compressor.last_prompt_tokens == 100
+        assert agent.context_compressor.last_completion_tokens == 25
+        assert agent.context_compressor.last_total_tokens == 130
+        assert agent.context_compressor.context_length == 200000
+
     def test_projected_messages_are_spliced(self, fake_session):
         agent = _make_codex_agent()
         with patch.object(agent, "_spawn_background_review", return_value=None):
@@ -342,3 +392,77 @@ class TestErrorHandling:
         assert result["completed"] is False
         assert result["partial"] is True
         assert result["error"] == "user interrupted"
+
+
+class TestSessionRetirementOnRunAgent:
+    """run_agent.py side: when run_turn returns should_retire=True, the
+    AIAgent must close + null _codex_session so the next turn respawns."""
+
+    def test_should_retire_drops_session(self, monkeypatch):
+        closes = {"count": 0}
+
+        def fake_run_turn(self, user_input, **kwargs):
+            return TurnResult(
+                final_text="",
+                projected_messages=[],
+                tool_iterations=0,
+                interrupted=True,
+                error="turn timed out after 600.0s",
+                turn_id="tu1",
+                thread_id="th1",
+                should_retire=True,
+            )
+
+        def fake_close(self):
+            closes["count"] += 1
+
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started",
+                            lambda self: "th1")
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        monkeypatch.setattr(CodexAppServerSession, "close", fake_close)
+
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hi")
+
+        # The session was closed and cleared
+        assert closes["count"] == 1
+        assert getattr(agent, "_codex_session", "MISSING") is None
+        # Partial result was still returned (caller still sees the error)
+        assert result["partial"] is True
+        assert result["error"] == "turn timed out after 600.0s"
+
+    def test_normal_turn_keeps_session(self, fake_session):
+        """fake_session fixture returns should_retire=False (default).
+        The session must stay attached for the next turn to reuse."""
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hi")
+        # Session was lazily created and still attached.
+        assert getattr(agent, "_codex_session", None) is not None
+
+    def test_exception_path_also_drops_session(self, monkeypatch):
+        """Even if run_turn raises (not just sets should_retire), we must
+        drop the session — a thrown exception is the strongest possible
+        signal the process is dead."""
+        closes = {"count": 0}
+
+        def boom_run_turn(self, user_input, **kwargs):
+            raise RuntimeError("codex segfaulted")
+
+        def fake_close(self):
+            closes["count"] += 1
+
+        monkeypatch.setattr(CodexAppServerSession, "ensure_started",
+                            lambda self: "th1")
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", boom_run_turn)
+        monkeypatch.setattr(CodexAppServerSession, "close", fake_close)
+
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            result = agent.run_conversation("hi")
+
+        assert closes["count"] == 1
+        assert agent._codex_session is None
+        assert result["completed"] is False
+        assert "codex segfaulted" in result["error"]
