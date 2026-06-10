@@ -87,7 +87,7 @@ hermes -w -q "Fix issue #123"     # ワークツリーで単発クエリ
 
 以前のセッションを再開すると（`hermes -c` または `hermes --resume <id>`）、バナーと入力プロンプトの間に「Previous Conversation」パネルが表示され、対話履歴のコンパクトな要約が示されます。詳細と設定については [セッション — 再開時の対話要約](sessions.md#conversation-recap-on-resume) をご覧ください。
 
-## キーバインド
+## キーバインド {#keybindings}
 
 | キー | 動作 |
 |-----|--------|
