@@ -702,7 +702,15 @@ R5 above: should `_TASK_RESULTS` / idempotency replay be durable (written to `_t
 
 R7 above: adding `RUNNING` to the contract enum changes the invariant that every `ExecutionResult` is a terminal answer. The cleaner option is a separate `TaskStatus` enum on `AgentTaskRecord` that includes `RUNNING`, while `ExecutionResult.Status` stays terminal-only. This is a design decision for `contract.py` that affects how the Core interprets results from `task.status`.
 
-> **สถานะ (2026-06-10): รอ impact sweep** — maintainer ขอหลักฐานเพิ่มก่อนตัดสิน: นับ consumer ของ `Status`/`ExecutionResult` ทั้งหมด + พิสูจน์ว่า option B (TaskStatus แยกบน record) ไม่ทำให้ visibility ของงานที่ค้างอยู่หายไปเมื่อเทียบ option A. ข้อกังวลหลักของ maintainer: "จะรู้ได้อย่างไรว่าอะไรกำลังทำอยู่ / อะไรยังไม่เสร็จ".
+> **Impact sweep เสร็จแล้ว (2026-06-10, fan-out 3 agents) — หลักฐานชี้ option B เด็ดขาด; รอ maintainer ยืนยัน.**
+>
+> **Census (consumer ทั้งหมดของ Status/ExecutionResult):** มีแค่ 4 ไฟล์ Python ที่แตะ action_runtime (`__init__`, `adapters`, `server.py` ผ่าน 5 deferred imports, test). **Option A ต้องแก้ ~8 จุด + พัง 1 จุดจริง**: idempotency replay store (`server.py:8478-8500`) cache ผลแบบ immutable ไม่มี update path — ถ้า cache `status:"running"` จะ replay เป็นคำตอบถาวร 600s แล้วกันการ re-execute; legacy wire (output/warning/error) ไม่มีช่อง status → RUNNING จะ render เป็น success เงียบๆ ใน 4 client (slashExec.ts:74, use-model-controls.ts:104, use-prompt-actions.ts:782, useSubmission.ts:170); `ExecutionResult.ok == (status is SUCCEEDED)` ทำให้ RUNNING อ่านเป็น "ล้มเหลว". **Option B แตะ 0 จุดเดิม** — โค้ดใหม่ล้วน.
+>
+> **Visibility (ตอบข้อกังวล "จะรู้ได้ไงว่าอะไรค้างอยู่"):** ทุกช่องทางที่ผู้ใช้เห็นงาน in-flight วันนี้ (`delegation.status` บน `_active_subagents` → TUI /agents overlay, event stream `subagent.*`/`tool.*` → desktop agents view, bg-task counters) **อยู่นอก ExecutionResult ทั้งหมด** — enum ถูกอ่านเฉพาะตอนผลจบแล้ว. Visibility ใน Phase 5 มาจาก `task.status`/`task.list` RPC ใหม่ ซึ่งให้ข้อมูลเดียวกันทั้งสอง option; option B record ยัง carry live state ได้ rich กว่า (option A ต้อง fabricate ExecutionResult เกือบเปล่าๆ สำหรับงานที่ยังรัน). **ช่องโหว่จริงที่พบ:** `bg_*` (prompt.background) query ไม่ได้เลยหลัง client restart → แก้โดยให้ bg_*/preview_* ลงทะเบียนใน registry — ไม่เกี่ยวกับว่า RUNNING อยู่ enum ไหน.
+>
+> **Lifecycle:** delegate_tool.py:1515 มี precedent record-level `"status": "running"` อยู่แล้ว; crash recovery ภายใต้ option B = flip record เป็น BLOCKED โดยไม่แตะ stored result ใดๆ; ภายใต้ option A ต้องมี terminal-only guard + write path ที่สอง + reconciliation sweep. หมายเหตุ: doc บรรทัด ~509/517/594 ร่างไว้แบบ option A — ต้อง amend เมื่อตัดสิน B.
+>
+> **ข้อเสนอตามหลักฐาน: option B** — `TaskStatus` enum แยกบน `AgentTaskRecord` (มี RUNNING), `ExecutionResult.Status` คง terminal-only; `task.status` ฝัง terminal ExecutionResult เมื่อจบ; bg_*/preview_* ต้องลงทะเบียนใน registry.
 
 ### Q4 — What does `intent="delegate"` return for a partially-interrupted batch?
 
