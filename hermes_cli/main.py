@@ -2501,6 +2501,17 @@ def cmd_model(args):
     select_provider_and_model(args=args)
 
 
+def cmd_provider_diagnose(args):
+    """Run connectivity diagnostics for a provider."""
+    from hermes_cli.provider_diagnose import diagnose_provider
+
+    provider = getattr(args, "name", "")
+    if not provider:
+        print("Usage: hermes provider diagnose <provider-name>")
+        sys.exit(1)
+    sys.exit(diagnose_provider(provider))
+
+
 def _is_profile_api_key_provider(provider_id: str) -> bool:
     """Return True when provider_id maps to a profile with auth_type='api_key'.
 
@@ -10733,6 +10744,26 @@ def main():
         help="Remove all fallback entries",
     )
     fallback_parser.set_defaults(func=cmd_fallback)
+
+    # =========================================================================
+    # provider command — diagnose provider connectivity
+    # =========================================================================
+    provider_parser = subparsers.add_parser(
+        "provider",
+        help="Manage and diagnose inference providers",
+        description="Validate provider configuration and test connectivity.",
+    )
+    provider_subparsers = provider_parser.add_subparsers(dest="provider_command")
+    provider_diagnose_parser = provider_subparsers.add_parser(
+        "diagnose",
+        help="Check a provider's config, credentials, and endpoint health",
+    )
+    provider_diagnose_parser.add_argument(
+        "name",
+        help="Provider slug to diagnose (e.g. openai, anthropic, openrouter, ollama)",
+    )
+    provider_diagnose_parser.set_defaults(func=cmd_provider_diagnose)
+    provider_parser.set_defaults(func=lambda _args: provider_parser.print_help() or 0)
 
     # =========================================================================
     # secrets command — external secret managers (currently: Bitwarden)
