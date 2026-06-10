@@ -15,7 +15,8 @@ import {
   collapseModelFamilies,
   effectiveVisibleKeys,
   modelVisibilityKey,
-  setVisibleModels
+  setVisibleModels,
+  toggleVisibleModelKey
 } from '@/store/model-visibility'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
@@ -59,16 +60,7 @@ export function ModelVisibilityDialog({
   const visible = effectiveVisibleKeys(stored, providers)
 
   const toggle = (provider: ModelOptionProvider, model: string) => {
-    const next = new Set(effectiveVisibleKeys($visibleModels.get(), providers))
-    const key = modelVisibilityKey(provider.slug, model)
-
-    if (next.has(key)) {
-      next.delete(key)
-    } else {
-      next.add(key)
-    }
-
-    setVisibleModels(next)
+    setVisibleModels(toggleVisibleModelKey($visibleModels.get(), providers, provider, model))
   }
 
   const q = search.trim().toLowerCase()

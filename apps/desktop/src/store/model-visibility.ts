@@ -9,9 +9,17 @@ const STORAGE_KEY = 'hermes.desktop.visible-models'
  *  customized the list. Backend `models` are already relevance-ordered. */
 export const DEFAULT_VISIBLE_PER_PROVIDER = 50
 
+const PROVIDER_HIDDEN_MARKER = '__hermes_provider_hidden__'
+
 /** Stable key for a provider/model pair (`::` avoids colliding with model ids
  *  that contain a single colon, e.g. `model:tag`). */
 export const modelVisibilityKey = (provider: string, model: string): string => `${provider}::${model}`
+
+/** Marker stored when a provider has been explicitly customized down to zero
+ *  visible models. Without this, an empty provider is indistinguishable from a
+ *  newly configured provider and `effectiveVisibleKeys()` re-adds defaults. */
+export const providerHiddenVisibilityKey = (provider: string): string =>
+  modelVisibilityKey(provider, PROVIDER_HIDDEN_MARKER)
 
 /** A model and its optional `…-fast` sibling, collapsed into one logical row.
  *  `id` is the canonical (base) model; `fastId` is the fast variant if present. */
@@ -80,6 +88,34 @@ export function setVisibleModels(keys: Set<string>): void {
 
 export function setModelVisibilityOpen(open: boolean): void {
   $modelVisibilityOpen.set(open)
+}
+
+export function toggleVisibleModelKey(
+  stored: Set<string> | null,
+  providers: readonly ModelOptionProvider[],
+  provider: ModelOptionProvider,
+  model: string
+): Set<string> {
+  const next = new Set(effectiveVisibleKeys(stored, providers))
+  const key = modelVisibilityKey(provider.slug, model)
+  const hiddenKey = providerHiddenVisibilityKey(provider.slug)
+
+  if (next.has(key)) {
+    next.delete(key)
+
+    const hasVisibleProviderModel = collapseModelFamilies(provider.models ?? []).some(family =>
+      next.has(modelVisibilityKey(provider.slug, family.id))
+    )
+
+    if (!hasVisibleProviderModel) {
+      next.add(hiddenKey)
+    }
+  } else {
+    next.delete(hiddenKey)
+    next.add(key)
+  }
+
+  return next
 }
 
 /** The default-visible key set: the curated top-N per provider. Used both as
