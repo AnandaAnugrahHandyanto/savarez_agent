@@ -2629,7 +2629,21 @@ TERMINAL_SCHEMA = {
 
 
 def _handle_terminal(args=None, **kw):
-    """Normalize terminal tool arguments before dispatching to terminal_tool."""
+    """Normalize terminal tool arguments before dispatching to terminal_tool.
+
+    Defensively coerces the argument shape (None / bare string / non-dict) and
+    then enforces the schema-``required`` ``command`` field, which is otherwise
+    never validated on the dispatch path. A terminal call arriving with empty
+    or absent arguments is normalized upstream to ``{}`` (see
+    ``conversation_loop`` empty-args handling and ``handle_function_call``
+    non-dict coercion), which previously reached ``terminal_tool`` as
+    ``command=None`` and surfaced the cryptic ``expected string, got NoneType``
+    error. We return an explicit, model-actionable error here instead.
+
+    Execution-control identity (``task_id``) is read ONLY from the trusted
+    dispatch kwargs, never from model-supplied args — ``task_id`` selects the
+    container/sandbox isolation key and must not be influenced by tool input.
+    """
     if isinstance(args, str):
         args = {"command": args}
     elif args is None:
@@ -2645,23 +2659,27 @@ def _handle_terminal(args=None, **kw):
             "status": "error",
         }, ensure_ascii=False)
 
-    command = args.get("command") or kw.get("command")
+    command = args.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return json.dumps({
+            "output": "",
+            "exit_code": -1,
+            "error": (
+                "terminal: missing required 'command' string argument. "
+                "Provide a non-empty shell command to run."
+            ),
+            "status": "error",
+        }, ensure_ascii=False)
 
     return terminal_tool(
         command=command,
-        background=args.get("background", kw.get("background", False)),
-        timeout=args.get("timeout", kw.get("timeout")),
-        task_id=kw.get("task_id", args.get("task_id")),
-        workdir=args.get("workdir", kw.get("workdir")),
-        pty=args.get("pty", kw.get("pty", False)),
-        notify_on_complete=args.get(
-            "notify_on_complete",
-            kw.get("notify_on_complete", False),
-        ),
-        watch_patterns=args.get(
-            "watch_patterns",
-            kw.get("watch_patterns"),
-        ),
+        background=args.get("background", False),
+        timeout=args.get("timeout"),
+        task_id=kw.get("task_id"),
+        workdir=args.get("workdir"),
+        pty=args.get("pty", False),
+        notify_on_complete=args.get("notify_on_complete", False),
+        watch_patterns=args.get("watch_patterns"),
     )
 
 
