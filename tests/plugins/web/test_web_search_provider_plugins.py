@@ -508,3 +508,86 @@ class TestErrorResponseShapes:
         assert isinstance(result, dict)
         assert result.get("success") is False
         assert "error" in result
+
+
+class TestYoudotcomSearchErrors:
+    """You.com search free-tier failures return actionable errors."""
+
+    class _Response:
+        def __init__(self, status_code: int, payload: dict) -> None:
+            self.status_code = status_code
+            self._payload = payload
+            self.text = str(payload)
+            self.is_success = 200 <= status_code < 300
+
+        def json(self) -> dict:
+            return self._payload
+
+    def test_free_tier_limit_error_prompts_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from plugins.web.youdotcom import provider as youdotcom_provider
+
+        def fake_get(*args, **kwargs):
+            return self._Response(
+                402,
+                {
+                    "error": "free_tier_limit_exceeded",
+                    "message": "You've used all your free searches.",
+                    "limit": 100,
+                    "used": 100,
+                    "period": "day",
+                    "reset_at": "2026-06-11T00:00:00+00:00",
+                },
+            )
+
+        monkeypatch.setattr("httpx.get", fake_get)
+
+        result = youdotcom_provider._ydc_search("test", limit=5)
+
+        assert result["success"] is False
+        assert result["error_code"] == "free_tier_limit_exceeded"
+        assert result["limit"] == 100
+        assert result["used"] == 100
+        assert result["period"] == "day"
+        assert result["reset_at"] == "2026-06-11T00:00:00+00:00"
+        assert "free search limit reached" in result["error"]
+        assert "YDC_API_KEY" in result["error"]
+        assert "https://you.com/platform" in result["error"]
+
+    def test_free_tier_search_caps_count_at_50(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from plugins.web.youdotcom import provider as youdotcom_provider
+
+        captured = {}
+
+        def fake_get(*args, **kwargs):
+            captured.update(kwargs)
+            return self._Response(200, {"results": {"web": []}})
+
+        monkeypatch.setattr("httpx.get", fake_get)
+
+        result = youdotcom_provider._ydc_search("test", limit=100)
+
+        assert result["success"] is True
+        assert captured["params"]["count"] == 50
+        assert "X-API-Key" not in captured["headers"]
+
+    def test_authenticated_search_uses_requested_count_and_livecrawl(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from plugins.web.youdotcom import provider as youdotcom_provider
+
+        captured = {}
+
+        def fake_get(*args, **kwargs):
+            captured.update(kwargs)
+            return self._Response(200, {"results": {"web": []}})
+
+        monkeypatch.setenv("YDC_API_KEY", "ydc-test")
+        monkeypatch.setattr("httpx.get", fake_get)
+
+        result = youdotcom_provider._ydc_search("test", limit=100)
+
+        assert result["success"] is True
+        assert captured["params"]["count"] == 100
+        assert captured["params"]["livecrawl"] == "web"
+        assert captured["headers"]["X-API-Key"] == "ydc-test"

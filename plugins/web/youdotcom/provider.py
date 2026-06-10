@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 _YDC_SEARCH_BASE_URL = "https://api.you.com"
 _YDC_CONTENTS_BASE_URL = "https://ydc-index.io"
+_YDC_PLATFORM_URL = "https://you.com/platform"
 
 
 def _env_value(name: str) -> str:
@@ -40,6 +41,56 @@ def _ydc_headers() -> Dict[str, str]:
     return headers
 
 
+def _ydc_search_error(resp: Any, *, has_api_key: bool) -> Dict[str, Any]:
+    """Return a user-actionable error dict for You.com Search failures."""
+    try:
+        payload = resp.json()
+    except Exception:  # noqa: BLE001
+        payload = {}
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    error_code = str(payload.get("error") or "")
+    message = str(payload.get("message") or resp.text or "").strip()
+    details: Dict[str, Any] = {
+        key: payload[key]
+        for key in ("limit", "used", "period", "reset_at")
+        if payload.get(key) is not None
+    }
+
+    if resp.status_code == 402 and error_code == "free_tier_limit_exceeded":
+        reset_at = details.get("reset_at")
+        reset_hint = f" Free searches reset at {reset_at}." if reset_at else ""
+        return {
+            "success": False,
+            "error": (
+                f"You.com free search limit reached. {message}{reset_hint} "
+                f"Set YDC_API_KEY from {_YDC_PLATFORM_URL} to continue with authenticated search."
+            ).strip(),
+            "error_code": error_code,
+            **details,
+        }
+
+    if resp.status_code == 402 and not has_api_key:
+        return {
+            "success": False,
+            "error": (
+                f"You.com free tier error: {message or error_code or 'upgrade required'}. "
+                f"Set YDC_API_KEY from {_YDC_PLATFORM_URL} to continue with authenticated search."
+            ),
+            "error_code": error_code or "payment_required",
+            **details,
+        }
+
+    return {
+        "success": False,
+        "error": f"You.com Search API error {resp.status_code}: {message or resp.text}",
+        "error_code": error_code or f"http_{resp.status_code}",
+        **details,
+    }
+
+
 def _ydc_search(query: str, limit: int = 10) -> Dict[str, Any]:
     """Search via the You.com Search API and return normalized results."""
     import httpx
@@ -52,7 +103,11 @@ def _ydc_search(query: str, limit: int = 10) -> Dict[str, Any]:
     has_api_key = bool(_ydc_api_key())
     logger.info("You.com search: '%s' (limit=%d, livecrawl=%s)", query, limit, has_api_key)
 
-    params: Dict[str, Any] = {"query": query, "count": limit}
+    count = max(1, int(limit))
+    if not has_api_key:
+        count = min(count, 50)
+
+    params: Dict[str, Any] = {"query": query, "count": count}
     if has_api_key:
         params["livecrawl"] = "web"
         params["livecrawl_formats"] = ["markdown"]
@@ -64,7 +119,7 @@ def _ydc_search(query: str, limit: int = 10) -> Dict[str, Any]:
         timeout=30,
     )
     if not resp.is_success:
-        raise RuntimeError(f"You.com Search API error {resp.status_code}: {resp.text}")
+        return _ydc_search_error(resp, has_api_key=has_api_key)
 
     data = resp.json()
     results_data = data.get("results", {}) if isinstance(data, dict) else {}
