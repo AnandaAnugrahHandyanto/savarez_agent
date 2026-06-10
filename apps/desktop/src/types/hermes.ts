@@ -477,6 +477,8 @@ export interface ProfileCreatePayload {
 }
 
 export interface ProfileInfo {
+  avatar_updated_at: null | number
+  has_avatar: boolean
   has_env: boolean
   is_default: boolean
   model: null | string
@@ -484,6 +486,11 @@ export interface ProfileInfo {
   path: string
   provider: null | string
   skill_count: number
+}
+
+export interface ProfileAvatar {
+  data_url: null | string
+  exists: boolean
 }
 
 export interface ProfileSetupCommand {

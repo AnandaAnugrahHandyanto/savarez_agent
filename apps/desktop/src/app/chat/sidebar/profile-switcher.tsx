@@ -33,6 +33,7 @@ import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/p
 import { cn } from '@/lib/utils'
 import {
   $activeGatewayProfile,
+  $profileAvatars,
   $profileColors,
   $profileCreateRequest,
   $profileOrder,
@@ -357,9 +358,20 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
   const { t } = useI18n()
   const p = t.profiles
   const hue = color ?? 'var(--ui-text-quaternary)'
+  const avatars = useStore($profileAvatars)
+  const avatarUrl = avatars[normalizeProfileKey(label)]
+  // With a picture the color no longer paints the square's face (only the thin
+  // active ring), so the color affordances — long-press picker and the
+  // context-menu item — are hidden as long as the picture is set.
+  const recolorable = !avatarUrl
   const [pickerOpen, setPickerOpen] = useState(false)
   const pressTimer = useRef<null | number>(null)
   const suppressClick = useRef(false)
+  // Set when "Color..." is picked from the context menu; the picker opens in
+  // the menu's onCloseAutoFocus (i.e. after the menu has fully unwound).
+  // Opening it any earlier races the menu's dismissal — its outside-pointer /
+  // focus-restore events land on the just-opened popover and close it again.
+  const pickerPending = useRef(false)
 
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
     id: label,
@@ -408,7 +420,7 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
                     )}
                     ref={setNodeRef}
                     style={{
-                      backgroundColor: profileColorSoft(hue, active ? 30 : 22),
+                      backgroundColor: avatarUrl ? undefined : profileColorSoft(hue, active ? 30 : 22),
                       boxShadow: [ring, lift].filter(Boolean).join(', ') || undefined,
                       color: color ?? undefined,
                       // Glide the dragged square between snapped cells with a little
@@ -443,6 +455,11 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
 
                       suppressClick.current = false
                       clearPress()
+
+                      if (!recolorable) {
+                        return
+                      }
+
                       pressTimer.current = window.setTimeout(() => {
                         suppressClick.current = true
                         triggerHaptic('success')
@@ -452,7 +469,16 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
                     onPointerLeave={clearPress}
                     onPointerUp={clearPress}
                   >
-                    {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+                    {avatarUrl ? (
+                      <img
+                        alt=""
+                        className="size-full rounded-[3px] object-cover"
+                        draggable={false}
+                        src={avatarUrl}
+                      />
+                    ) : (
+                      label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'
+                    )}
                   </button>
                 </TooltipTrigger>
               </ContextMenuTrigger>
@@ -467,11 +493,26 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
           aria-label={p.actionsFor(label)}
           className="w-40"
           collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
+          onCloseAutoFocus={event => {
+            if (pickerPending.current) {
+              pickerPending.current = false
+              // Keep the menu from restoring focus to the square — that focus
+              // shift would count as "outside" the picker and dismiss it.
+              event.preventDefault()
+              setPickerOpen(true)
+            }
+          }}
         >
-          <ContextMenuItem onSelect={() => setPickerOpen(true)}>
-            <Codicon name="symbol-color" size="0.875rem" />
-            <span>{p.color}</span>
-          </ContextMenuItem>
+          {recolorable && (
+            <ContextMenuItem
+              onSelect={() => {
+                pickerPending.current = true
+              }}
+            >
+              <Codicon name="symbol-color" size="0.875rem" />
+              <span>{p.color}</span>
+            </ContextMenuItem>
+          )}
           <ContextMenuItem onSelect={onRename}>
             <Codicon name="edit" size="0.875rem" />
             <span>{p.rename}</span>
