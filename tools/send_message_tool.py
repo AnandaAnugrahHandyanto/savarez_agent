@@ -66,6 +66,29 @@ _GENERIC_SECRET_ASSIGN_RE = re.compile(
     re.IGNORECASE,
 )
 
+_hermes_env_loaded = False
+
+
+def _ensure_hermes_env_loaded() -> None:
+    """Bridge ~/.hermes/.env and top-level config.yaml keys into os.environ.
+
+    The CLI path (hermes send) already calls _load_hermes_env() from
+    send_cmd.py.  When the tool is invoked from the gateway's MCP path,
+    that bridge doesn't run, so load_gateway_config() misses env-only
+    settings like TELEGRAM_HOME_CHANNEL.  This function is a lightweight
+    no-op-safe equivalent that runs at most once per process.
+    """
+    global _hermes_env_loaded
+    if _hermes_env_loaded:
+        return
+    _hermes_env_loaded = True
+
+    try:
+        from hermes_cli.send_cmd import _load_hermes_env
+        _load_hermes_env()
+    except Exception:
+        pass
+
 
 def _sanitize_error_text(text) -> str:
     """Redact secrets from error text before surfacing it to users/models."""
@@ -213,6 +236,12 @@ def _handle_send(args):
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return tool_error("Interrupted")
+
+    # Ensure ~/.hermes/.env and top-level config.yaml keys are bridged into
+    # os.environ so load_gateway_config() sees TELEGRAM_HOME_CHANNEL etc.
+    # when the tool is invoked from the gateway MCP path (the CLI path
+    # already calls _load_hermes_env via send_cmd.cmd_send).
+    _ensure_hermes_env_loaded()
 
     try:
         from gateway.config import load_gateway_config, Platform
