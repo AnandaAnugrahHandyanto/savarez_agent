@@ -1555,6 +1555,103 @@ class SendResult:
     continuation_message_ids: tuple = ()
 
 
+_TELEGRAM_GROUP_NO_ACTION_REASON = "casual/no-action Telegram group message"
+
+_TELEGRAM_NO_ACTION_EXPLICIT_HEADERS = (
+    "JIMMY:",
+    "REQUEST:",
+    "ACTION:",
+    "REVIEW:",
+    "APPROVAL:",
+    "BLOCKER:",
+    "ROUTE:",
+    "CODEX READ-ONLY:",
+    "TIMMY:",
+    "BEBE:",
+    "DECISION:",
+    "GATE:",
+    "ESCALATION:",
+    "CLOSEOUT:",
+    "QUESTION FOR JIMMY:",
+)
+
+_TELEGRAM_NO_ACTION_PRESERVE_KEYWORDS = (
+    "approval",
+    "approve",
+    "auto-approve",
+    "read-only",
+    "readonly",
+    "codex",
+    "timmy",
+    "bebe",
+    "blocker",
+    "blocked",
+    "review",
+    "correction",
+    "correct",
+    "gate",
+    "escalat",
+    "closeout",
+    "decision",
+    "route",
+    "implement",
+    "implementation",
+    "evidence",
+    "qa",
+    "test",
+)
+
+_TELEGRAM_APPROVED_NO_ACTION_TEST_RE = re.compile(
+    r"^\s*(?:fgd-123\s*)?test\s*1\s*(?:[-:–—]\s*casual/no-action(?:\s+message)?)?\s*$",
+    re.IGNORECASE,
+)
+
+_TELEGRAM_ZERO_OUTPUT_QA_RE = re.compile(
+    r"^\s*just\s+testing\s+whether\s+this\s+casual\s+message\s+stays\s+quiet\.?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _is_telegram_group_no_action_event(event: "MessageEvent") -> bool:
+    """Return True for Telegram non-DM chatter that should be hard-silent.
+
+    This is a routing/send-path guard, not prompt guidance: if it returns True,
+    the gateway must not dispatch to the agent and adapters must not send a
+    substitute acknowledgement if a caller accidentally returns one.
+    """
+    source = getattr(event, "source", None)
+    platform = str(getattr(getattr(source, "platform", None), "value", getattr(source, "platform", "")) or "").strip().lower()
+    if platform != "telegram":
+        return False
+
+    chat_type = str(getattr(source, "chat_type", "") or "").strip().lower()
+    if chat_type in {"dm", "private"}:
+        return False
+    if chat_type not in {"group", "supergroup", "channel", "thread", "forum"}:
+        return False
+
+    text = str(getattr(event, "text", "") or "").strip()
+    if not text:
+        return False
+    if _TELEGRAM_APPROVED_NO_ACTION_TEST_RE.match(text):
+        return True
+    if _TELEGRAM_ZERO_OUTPUT_QA_RE.match(text):
+        return True
+
+    upper = text.upper()
+    lower = text.lower()
+    if any(header in upper for header in _TELEGRAM_NO_ACTION_EXPLICIT_HEADERS):
+        return False
+    if re.search(r"\bjimmy\b", lower):
+        return False
+    if "?" in text:
+        return False
+    if any(keyword in lower for keyword in _TELEGRAM_NO_ACTION_PRESERVE_KEYWORDS):
+        return False
+
+    return True
+
+
 class EphemeralReply(str):
     """System-notice reply that auto-deletes after a TTL.
 
@@ -4095,6 +4192,14 @@ class BasePlatformAdapter(ABC):
                 pass
         
         try:
+            if _is_telegram_group_no_action_event(event):
+                logger.info(
+                    "[%s] Telegram group no-action message suppressed before handler dispatch for %s",
+                    self.name,
+                    event.source.chat_id,
+                )
+                return
+
             await self._run_processing_hook("on_processing_start", event)
 
             # Call the handler (this can take a while with tool calls)

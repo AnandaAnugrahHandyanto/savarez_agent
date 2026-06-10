@@ -1197,6 +1197,7 @@ from gateway.platforms.base import (
     EphemeralReply,
     MessageEvent,
     MessageType,
+    _is_telegram_group_no_action_event,
     _reply_anchor_for_event,
     merge_pending_message_event,
 )
@@ -6253,6 +6254,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         7. Return response
         """
         source = event.source
+
+        if _is_telegram_group_no_action_event(event):
+            logger.info(
+                "Telegram group no-action message suppressed before agent dispatch: platform=%s chat=%s",
+                source.platform.value if source.platform else "unknown",
+                source.chat_id or "unknown",
+            )
+            return None
 
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
