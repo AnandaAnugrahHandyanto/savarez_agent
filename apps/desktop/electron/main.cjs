@@ -4861,6 +4861,27 @@ async function startHermes() {
       childAlive: () => hermesProcess !== null && hermesProcess.exitCode === null && !hermesProcess.killed,
       rememberLog
     })
+
+    // Auto-boot the gateway if any messaging platform is enabled.
+    // This ensures users who have configured a messaging platform
+    // get the gateway running without a manual /cron intervention.
+    if (!remote) {
+      try {
+        const platformsResp = await fetchJson(`${baseUrl}/api/messaging/platforms`, token)
+        const platforms = Array.isArray(platformsResp) ? platformsResp : (platformsResp?.platforms || [])
+        const hasEnabled = platforms.some(p => p.enabled)
+        if (hasEnabled) {
+          rememberLog('Auto-starting gateway — enabled messaging platform(s) detected')
+          await fetchJson(`${baseUrl}/api/gateway/start`, token, { method: 'POST' })
+        }
+      } catch (e) {
+        // Best-effort — gateway may already be running, or the endpoint might
+        // not exist (older backend). Either way, the cron health-check will
+        // pick it up soon.
+        rememberLog(`Gateway auto-start skipped (non-critical): ${e.message}`)
+      }
+    }
+
     updateBootProgress({
       phase: 'backend.ready',
       message: 'Hermes backend is ready. Finalizing desktop startup',

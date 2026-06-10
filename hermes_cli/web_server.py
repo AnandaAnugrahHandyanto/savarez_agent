@@ -2080,6 +2080,23 @@ def _tail_lines(path: Path, n: int) -> List[str]:
     return lines[-n:] if n > 0 else lines
 
 
+def _read_gateway_state() -> Dict[str, Any]:
+    """Read gateway_state.json, returning {} on any error."""
+    try:
+        return json.loads((get_hermes_home() / "gateway_state.json").read_text(encoding="utf-8"))  # type: ignore[union-attr]
+    except Exception:
+        return {}
+
+
+def _write_gateway_state(state: Dict[str, Any]) -> None:
+    """Atomically write gateway_state.json."""
+    home = get_hermes_home()
+    tmp = home / "gateway_state.json.tmp"
+    target = home / "gateway_state.json"
+    tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    tmp.replace(target)
+
+
 def _spawn_gateway_restart() -> Tuple[subprocess.Popen, bool]:
     """Spawn ``hermes gateway restart``, reusing an in-flight restart.
 
@@ -7505,8 +7522,19 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle):
 
 @app.post("/api/gateway/start")
 async def start_gateway():
+    """Start Hermes Gateway (called from Desktop toggle and auto-boot).
+
+    Also writes gateway_state.json to signal that the gateway is
+    desktop-managed, so the cron health-check knows to keep it alive."""
     try:
         proc = _spawn_hermes_action(["gateway", "start"], "gateway-start")
+        # Signal to cron health-check that this gateway is under Desktop management
+        try:
+            gw_state = _read_gateway_state()
+            gw_state["desktop_managed"] = True
+            _write_gateway_state(gw_state)
+        except Exception:
+            pass  # best-effort; gateway start is the critical path
     except Exception as exc:
         _log.exception("Failed to spawn gateway start")
         raise HTTPException(status_code=500, detail=f"Failed to start gateway: {exc}")
@@ -7515,8 +7543,18 @@ async def start_gateway():
 
 @app.post("/api/gateway/stop")
 async def stop_gateway():
+    """Stop Hermes Gateway (called from Desktop toggle).
+
+    Also clears the desktop_managed flag so the cron health-check
+    does not attempt to restart a gateway the user explicitly stopped."""
     try:
         proc = _spawn_hermes_action(["gateway", "stop"], "gateway-stop")
+        try:
+            gw_state = _read_gateway_state()
+            gw_state.pop("desktop_managed", None)
+            _write_gateway_state(gw_state)
+        except Exception:
+            pass
     except Exception as exc:
         _log.exception("Failed to spawn gateway stop")
         raise HTTPException(status_code=500, detail=f"Failed to stop gateway: {exc}")

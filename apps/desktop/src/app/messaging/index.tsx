@@ -11,7 +11,8 @@ import {
   getMessagingPlatforms,
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
-  updateMessagingPlatform
+  updateMessagingPlatform,
+  startGateway
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
@@ -182,6 +183,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
     try {
       await updateMessagingPlatform(platform.id, { enabled })
+
+      // 联动 gateway 进程：开启平台 → 启动 gateway；关闭最后一个 → 停止 gateway
+      if (enabled) {
+        startGateway().catch((err: unknown) =>
+          console.warn('gateway start (post-enable) failed', err)
+        )
+      }
+
       setPlatforms(
         current =>
           current?.map(row =>
@@ -197,7 +206,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       notify({
         kind: 'success',
         title: enabled ? m.platformEnabled(platform.name) : m.platformDisabled(platform.name),
-        message: m.restartToApply
+        message: enabled ? m.restartToApply : undefined
       })
     } catch (err) {
       notifyError(err, m.failedUpdate(platform.name))

@@ -683,6 +683,20 @@ export function restartGateway(): Promise<ActionResponse> {
   })
 }
 
+export function startGateway(): Promise<ActionResponse> {
+  return window.hermesDesktop.api<ActionResponse>({
+    path: '/api/gateway/start',
+    method: 'POST'
+  })
+}
+
+export function stopGateway(): Promise<ActionResponse> {
+  return window.hermesDesktop.api<ActionResponse>({
+    path: '/api/gateway/stop',
+    method: 'POST'
+  })
+}
+
 export function updateHermes(): Promise<ActionResponse> {
   return window.hermesDesktop.api<ActionResponse>({
     path: '/api/hermes/update',
