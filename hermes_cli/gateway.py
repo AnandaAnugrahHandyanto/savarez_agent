@@ -6780,7 +6780,6 @@ def _gateway_command_inner(args):
         remove_legacy_hermes_units(interactive=not yes, dry_run=dry_run)
 
 # --- OpenRC support -------------------------------------------------------
-import shutil
 
 def supports_openrc_services() -> bool:
     """Return True when OpenRC’s rc-service is available."""
@@ -6791,7 +6790,6 @@ def supports_openrc_services() -> bool:
 
 def openrc_is_running() -> bool:
     """Check whether the hermes-gateway OpenRC service is up."""
-    import subprocess
     result = subprocess.run(
         ["rc-service", "hermes-gateway", "status"],
         capture_output=True,
@@ -6800,15 +6798,12 @@ def openrc_is_running() -> bool:
     return result.returncode == 0
 
 def openrc_start() -> None:
-    import subprocess
     subprocess.run(["rc-service", "hermes-gateway", "start"], check=True)
 
 def openrc_stop() -> None:
-    import subprocess
     subprocess.run(["rc-service", "hermes-gateway", "stop"], check=True)
 
 def openrc_restart() -> None:
-    import subprocess
     subprocess.run(["rc-service", "hermes-gateway", "restart"], check=True)
 
 def openrc_install(
@@ -6817,10 +6812,6 @@ def openrc_install(
     system: bool = False,
 ) -> None:
     """Install an OpenRC init script for the Hermes gateway."""
-    import os
-    import subprocess
-    import sys
-    from pathlib import Path
 
     if os.geteuid() != 0:
         print(
