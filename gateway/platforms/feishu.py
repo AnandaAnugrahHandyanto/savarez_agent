@@ -3862,8 +3862,12 @@ class FeishuAdapter(BasePlatformAdapter):
         open_id = getattr(sender_id, "open_id", None) or None
         user_id = getattr(sender_id, "user_id", None) or None
         union_id = getattr(sender_id, "union_id", None) or None
-        # Prefer tenant-scoped user_id; fall back to app-scoped open_id.
-        primary_id = user_id or open_id
+        # Always prefer open_id as the primary identifier for auth —
+        # it's always available and won't suddenly change when the bot
+        # gains or loses the contact:user.employee_id:readonly scope.
+        # Putting the tenant-scoped user_id in user_id_alt preserves
+        # session-key stability without breaking pairing auth.
+        primary_id = open_id or user_id
         # bot/v3/bots/basic_batch only accepts open_id.
         name_lookup_id = open_id if is_bot else (primary_id or union_id)
         display_name = await self._resolve_sender_name_from_api(
@@ -3872,7 +3876,7 @@ class FeishuAdapter(BasePlatformAdapter):
         return {
             "user_id": primary_id,
             "user_name": display_name,
-            "user_id_alt": union_id,
+            "user_id_alt": union_id or user_id,
         }
 
     def _get_cached_sender_name(self, sender_id: Optional[str]) -> Optional[str]:
