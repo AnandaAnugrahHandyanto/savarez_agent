@@ -29,6 +29,7 @@ import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -56,6 +57,17 @@ const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
 const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
+
+// HTTPS proxy support for environments behind a proxy.
+// Reads standard proxy environment variables (HTTPS_PROXY, https_proxy,
+// HTTP_PROXY, http_proxy) and passes an agent to Baileys for WebSocket
+// connections.  See https://github.com/NousResearch/hermes-agent/issues/43603
+function getProxyUrl() {
+  return process.env.HTTPS_PROXY || process.env.https_proxy ||
+    process.env.HTTP_PROXY || process.env.http_proxy || '';
+}
+const PROXY_URL = getProxyUrl();
+const PROXY_AGENT = PROXY_URL ? new HttpsProxyAgent(PROXY_URL) : undefined;
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
 // Per-call timeout for sock.sendMessage(). Baileys occasionally hangs forever
 // when uploading media to WhatsApp servers (and, less often, on text sends),
@@ -189,6 +201,7 @@ async function startSocket() {
     browser: ['Hermes Agent', 'Chrome', '120.0'],
     syncFullHistory: false,
     markOnlineOnConnect: false,
+    agent: PROXY_AGENT,
     // Required for Baileys 7.x: without this, incoming messages that need
     // E2EE session re-establishment are silently dropped (msg.message === null)
     getMessage: async (key) => {
