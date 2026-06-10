@@ -149,7 +149,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai", "cascade"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -158,6 +158,7 @@ def _get_backend() -> str:
     # Free-tier backends (searxng / brave-free / ddgs) trail the paid ones so
     # existing paid setups are unaffected.
     backend_candidates = (
+        ("cascade", _is_backend_available("cascade")),
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
@@ -237,6 +238,9 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
+    if backend == "cascade":
+        script = os.path.expanduser(os.getenv("HERMES_WEB_EXTRACT_CASCADE", "~/scripts/web-extract-cascade.py"))
+        return os.path.isfile(script)
     return False
 
 
@@ -1026,6 +1030,15 @@ async def web_extract_tool(
             logger.info(
                 "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
             )
+
+            # Cascade already returns bounded local-first extraction. Keep it raw
+            # unless explicitly enabled, otherwise cron jobs can drift into slow
+            # auxiliary summarization after extraction succeeds.
+            if provider.name == "cascade" and use_llm_processing:
+                cascade_llm = bool(_load_web_config().get("cascade_llm_processing", False))
+                if not cascade_llm:
+                    logger.info("Skipping LLM post-processing for cascade web_extract output")
+                    use_llm_processing = False
 
             # Async-or-sync dispatch: parallel + firecrawl have async
             # extract(); exa + tavily are sync.
