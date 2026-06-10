@@ -1,0 +1,52 @@
+[project]
+name = "hermes-agent"
+language = "python"
+
+[llm]
+model = "gpt-5.4"
+temperature = 0.2
+
+[context]
+files = [
+   "AGENTS.md",
+   "README.md",
+   "pyproject.toml",
+   "tui_gateway/**/*.py",
+   "hermes_cli/**/*.py",
+   "agent/**/*.py",
+   "tests/**/*.py",
+   "ui-tui/src/**/*.ts",
+   "ui-tui/src/**/*.tsx",
+   "ui-tui/package.json",
+   "docs/**/*.md",
+   ".serena/memories/project_overview.md",
+   ".serena/memories/upstream_sync_policy.md",
+   ".serena/memories/testing_and_validation.md",
+]
+
+[system_prompt]
+content = """
+You are working on hermes-agent, a fork maintained for Leonidas integration work.
+
+Use AGENTS.md as the primary repo guidance. Keep changes narrow and scoped to the active task.
+Treat upstream Hermes as the sync source and keep fork-specific patches minimal.
+The TUI gateway and its tests are the primary patch surface for fork work.
+
+Prefer targeted reads, focused validation, and small edits.
+Do not copy Leonidas Core governance or Coding Profile policy into this repository.
+"""
+
+[validation]
+
+[[validation.rules]]
+name = "large-source-warning"
+description = "Large source files may need decomposition or local documentation"
+max_lines = 1000
+action = "warn"
+
+[[validation.rules]]
+name = "gateway-surface-review"
+description = "Gateway, TUI, and profile-specific changes need a focused boundary review"
+pattern = "(?i)(tui_gateway|gateway|profile|plugin|worktree|fork)"
+action = "warn"
+

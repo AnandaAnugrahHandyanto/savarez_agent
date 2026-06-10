@@ -1,0 +1,48 @@
+# the name by which the project can be referenced within Serena
+project_name: "hermes-agent"
+
+# list of languages for which language servers are started; choose from:
+#   al                  angular             ansible             bash                clojure
+#   cpp                 cpp_ccls            crystal             csharp              csharp_omnisharp
+#   dart                elixir              elm                 erlang              fortran
+#   fsharp              go                 groovy              haskell             haxe
+#   hlsl                html                java                json                julia
+#   kotlin              lean4               lua                 luau                markdown
+#   matlab             msl                 nix                 ocaml               pascal
+#   perl                php                 php_phpactor        powershell          python
+#   python_jedi         python_ty           r                   rego                ruby
+#   ruby_solargraph     rust                scala               scss                solidity
+#   svelte              swift               systemverilog       terraform           toml
+#   typescript          typescript_vts      vue                 yaml                zig
+languages:
+   - python
+   - markdown
+   - toml
+   - yaml
+   - json
+   - typescript
+
+encoding: "utf-8"
+line_ending:
+language_backend:
+ignore_all_files_in_gitignore: true
+ls_specific_settings: {}
+ignored_paths: []
+read_only: false
+excluded_tools: []
+included_optional_tools:
+   - get_diagnostics_for_symbol
+   - restart_language_server
+fixed_tools: []
+default_modes:
+added_modes:
+initial_prompt: |
+   Hermes Agent is a Python-first upstream project forked for Leonidas integration work.
+   Keep changes narrow and additive.
+   Treat the upstream Hermes repo as the sync source.
+   Keep Leonidas Core governance and Coding Profile policy out of this fork.
+symbol_info_budget:
+read_only_memory_patterns:
+   - "^(project_overview|upstream_sync_policy|testing_and_validation)$"
+ignored_memory_patterns: []
+additional_workspace_folders: []
