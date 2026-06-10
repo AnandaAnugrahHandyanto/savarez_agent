@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ComposerAttachment } from '@/store/composer'
 
-import { coerceThinkingText, optimisticAttachmentRef } from './chat-runtime'
+import { coerceThinkingText, optimisticAttachmentRef, parseCommandDispatch } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 
@@ -50,5 +50,54 @@ describe('coerceThinkingText', () => {
         "◉_◉ processing... I don't see any current rewritten thinking or next thinking to process. Could you provide the thinking content you'd like me to rewrite?"
       )
     ).toBe('')
+  })
+})
+
+describe('parseCommandDispatch', () => {
+  it('returns null for non-object input', () => {
+    expect(parseCommandDispatch(null)).toBeNull()
+    expect(parseCommandDispatch(undefined)).toBeNull()
+    expect(parseCommandDispatch('string')).toBeNull()
+  })
+
+  it('parses exec type with output', () => {
+    expect(parseCommandDispatch({ type: 'exec', output: 'result' })).toEqual({ type: 'exec', output: 'result' })
+  })
+
+  it('parses alias type with target', () => {
+    expect(parseCommandDispatch({ type: 'alias', target: 'other' })).toEqual({ type: 'alias', target: 'other' })
+  })
+
+  it('parses skill type with name and message', () => {
+    expect(parseCommandDispatch({ type: 'skill', name: 'foo', message: 'bar' })).toEqual({
+      type: 'skill',
+      name: 'foo',
+      message: 'bar'
+    })
+  })
+
+  it('parses send type with message only', () => {
+    expect(parseCommandDispatch({ type: 'send', message: 'hello' })).toEqual({ type: 'send', message: 'hello' })
+  })
+
+  it('parses send type with message and notice', () => {
+    const result = parseCommandDispatch({
+      type: 'send',
+      message: 'fix the login bug',
+      notice: '⊙ Goal set (20-turn budget): fix the login bug'
+    })
+    expect(result).toEqual({
+      type: 'send',
+      message: 'fix the login bug',
+      notice: '⊙ Goal set (20-turn budget): fix the login bug'
+    })
+  })
+
+  it('returns null for send type without message', () => {
+    expect(parseCommandDispatch({ type: 'send', notice: 'hi' })).toBeNull()
+  })
+
+  it('returns null for unknown type', () => {
+    expect(parseCommandDispatch({ type: 'unknown' })).toBeNull()
   })
 })
