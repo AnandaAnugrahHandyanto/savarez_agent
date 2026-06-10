@@ -1729,6 +1729,24 @@ def list_authenticated_providers(
                 except Exception:
                     pass
 
+            # Inject user-defined aliases that target this provider into the
+            # picker model list, so model aliases appear alongside the live
+            # /v3/models list.  Users can then select them from the TUI picker
+            # without remembering the alias name.
+            # Prepend aliases (insert at front) so they aren't buried below the
+            # live /v3/models catalog — the picker only shows the first N models
+            # (max_models=50), and a large catalog would push aliases off-screen.
+            if models_list:
+                try:
+                    _ensure_direct_aliases()
+                    seen_models = set(models_list)
+                    for alias_key, alias in DIRECT_ALIASES.items():
+                        if alias.provider == ep_name and alias_key not in seen_models:
+                            models_list.insert(0, alias_key)
+                            seen_models.add(alias_key)
+                except Exception:
+                    pass
+
             results.append({
                 "slug": ep_name,
                 "name": display_name,

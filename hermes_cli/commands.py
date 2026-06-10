@@ -167,12 +167,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("skills", "Search, install, inspect, or manage skills",
                "Tools & Skills", cli_only=True,
-               subcommands=("search", "browse", "inspect", "install", "audit",
-                            "pending", "approve", "reject", "diff", "mode")),
-    CommandDef("memory", "Review pending memory writes / set write mode",
-               "Tools & Skills",
-               args_hint="[pending|approve|reject|mode] [id|on|off|approve]",
-               subcommands=("pending", "approve", "reject", "mode")),
+               subcommands=("search", "browse", "inspect", "install", "audit")),
     CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
                "Tools & Skills"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
@@ -1571,6 +1566,23 @@ class SlashCommandCompleter(Completer):
         except Exception:
             pass
 
+    @staticmethod
+    def _model_completions(sub_text: str, sub_lower: str):
+        """Yield completions for /model from aliases."""
+        try:
+            from hermes_cli.model_switch import _ensure_direct_aliases, DIRECT_ALIASES
+            _ensure_direct_aliases()
+            for alias_key in DIRECT_ALIASES:
+                if alias_key.startswith(sub_lower) and alias_key != sub_lower:
+                    yield Completion(
+                        alias_key,
+                        start_position=-len(sub_text),
+                        display=alias_key,
+                        display_meta=f"alias → {DIRECT_ALIASES[alias_key].provider}/{DIRECT_ALIASES[alias_key].model}",
+                    )
+        except Exception:
+            pass
+
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if not text.startswith("/"):
@@ -1599,6 +1611,9 @@ class SlashCommandCompleter(Completer):
                     return
                 if base_cmd == "/personality":
                     yield from self._personality_completions(sub_text, sub_lower)
+                    return
+                if base_cmd == "/model":
+                    yield from self._model_completions(sub_text, sub_lower)
                     return
 
             # Static subcommand completions
