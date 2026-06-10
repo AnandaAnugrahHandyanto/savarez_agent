@@ -207,7 +207,10 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
        (spend is forced to 0 for ``:free`` ids).
     2. A peek into the in-process pricing cache in ``hermes_cli.models``
        (populated when the model picker fetched ``/v1/models`` pricing for
-       *base_url*). PEEK ONLY — a cache miss never triggers a fetch.
+       *base_url*). PEEK ONLY — a cache miss never triggers a fetch. This is
+       CLI/TUI-session best-effort: gateway sessions never run the picker's
+       pricing fetch, so suppression there rests entirely on the ``:free``
+       suffix (which all Nous free SKUs carry).
 
     Fail-open to False (the depleted notice still shows) on any error: wrongly
     showing the warning is recoverable noise; wrongly hiding it on a paid model
@@ -222,7 +225,13 @@ def is_free_tier_model(model: str, base_url: str = "") -> bool:
     try:
         from hermes_cli.models import _is_model_free, _pricing_cache
 
-        pricing = _pricing_cache.get(base_url.rstrip("/"))
+        # Mirror get_pricing_for_provider's key normalization: the agent's
+        # Nous base_url is /v1-suffixed (https://inference-api.nousresearch.com/v1)
+        # but the picker keys _pricing_cache on the pre-/v1 root.
+        key = base_url.rstrip("/")
+        if key.endswith("/v1"):
+            key = key[:-3].rstrip("/")
+        pricing = _pricing_cache.get(key)
         if not pricing:
             return False
         return _is_model_free(model, pricing)

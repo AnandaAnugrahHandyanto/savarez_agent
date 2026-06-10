@@ -355,6 +355,8 @@ class TestIsFreeTierModel:
         from agent.credits_tracker import is_free_tier_model
         import hermes_cli.models as models_mod
 
+        # The picker keys the cache on the pre-/v1 root (get_pricing_for_provider
+        # strips a trailing /v1 before fetch_models_with_pricing).
         monkeypatch.setattr(
             models_mod,
             "_pricing_cache",
@@ -365,9 +367,14 @@ class TestIsFreeTierModel:
                 }
             },
         )
-        base = "https://inference-api.nousresearch.com/"  # trailing slash normalized
+        # The agent holds the /v1-suffixed URL (DEFAULT_NOUS_INFERENCE_URL) —
+        # the helper must normalize it down to the picker's cache key.
+        base = "https://inference-api.nousresearch.com/v1"
         assert is_free_tier_model("some/zero-priced", base) is True
         assert is_free_tier_model("some/paid", base) is False
+        # Pre-stripped and trailing-slash variants resolve to the same key.
+        assert is_free_tier_model("some/zero-priced", "https://inference-api.nousresearch.com/") is True
+        assert is_free_tier_model("some/zero-priced", "https://inference-api.nousresearch.com/v1/") is True
 
     def test_cache_miss_is_not_free_and_no_fetch(self, monkeypatch):
         from agent.credits_tracker import is_free_tier_model
@@ -381,7 +388,7 @@ class TestIsFreeTierModel:
         import urllib.request
 
         monkeypatch.setattr(urllib.request, "urlopen", _boom)
-        assert is_free_tier_model("some/model", "https://inference-api.nousresearch.com") is False
+        assert is_free_tier_model("some/model", "https://inference-api.nousresearch.com/v1") is False
 
     def test_exception_fails_open_to_false(self, monkeypatch):
         from agent.credits_tracker import is_free_tier_model
