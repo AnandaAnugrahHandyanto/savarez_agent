@@ -508,6 +508,51 @@ export interface SpawnTreeLoadResponse {
   subagents?: unknown[]
 }
 
+// ── Agent task registry (task.status / task.cancel / task.list) ──────
+
+export interface AgentTaskResultError {
+  message?: string
+  retryable?: boolean
+  type?: string
+}
+
+export interface AgentTaskResult {
+  error?: AgentTaskResultError | null
+  outputs?: Record<string, unknown>
+  side_effects?: { applied?: boolean; detail?: string; kind?: string; target?: null | string }[]
+  status?: string
+  task_id?: string
+}
+
+export interface AgentTaskSnapshot {
+  depth?: number
+  finished_at?: null | number
+  goal?: string
+  intent?: string
+  last_tool?: null | string
+  model?: null | string
+  parent_task_id?: null | string
+  result?: AgentTaskResult | null
+  session_id?: string
+  started_at?: number
+  status?: string
+  task_id: string
+  tool_count?: number
+}
+
+export interface TaskCancelResponse {
+  found?: boolean
+  task_id?: string
+}
+
+export interface TaskListResponse {
+  tasks?: AgentTaskSnapshot[]
+}
+
+export interface TaskStatusResponse extends Partial<AgentTaskSnapshot> {
+  found?: boolean
+}
+
 export type GatewayEvent =
   | { payload?: { skin?: GatewaySkin }; session_id?: string; type: 'gateway.ready' }
   | { payload?: GatewaySkin; session_id?: string; type: 'skin.changed' }

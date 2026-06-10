@@ -1,4 +1,6 @@
+import { fmtDuration } from '../../../domain/messages.js'
 import type {
+  AgentTaskResult,
   BrowserManageResponse,
   CommandsCatalogResponse,
   DelegationPauseResponse,
@@ -11,6 +13,9 @@ import type {
   SlashExecResponse,
   SpawnTreeListResponse,
   SpawnTreeLoadResponse,
+  TaskCancelResponse,
+  TaskListResponse,
+  TaskStatusResponse,
   ToolsConfigureResponse
 } from '../../../gatewayTypes.js'
 import type { PanelSection } from '../../../types.js'
@@ -59,6 +64,45 @@ interface SkillsBrowseResponse {
 
 interface SkillsReloadResponse {
   output?: string
+}
+
+// ── /tasks rendering helpers (exported for unit tests) ──────────────
+
+/** Collapse whitespace and cap at `max` chars (ellipsis when cut). */
+export const truncateTaskText = (text: string, max: number): string => {
+  const flat = text.replace(/\s+/g, ' ').trim()
+
+  return flat.length > max ? `${flat.slice(0, Math.max(0, max - 1))}…` : flat
+}
+
+/** Registry ids are short (`sa-0-1a2b3c4d`, `bg_…`); cap pathological ones. */
+export const shortTaskId = (id: string): string => truncateTaskText(id, 18)
+
+/** Humanized age from an epoch-seconds start (same `fmtDuration` as the HUD). */
+export const taskAge = (startedAt?: number, finishedAt?: null | number): string => {
+  if (!startedAt) {
+    return '?'
+  }
+
+  const endMs = finishedAt ? finishedAt * 1000 : Date.now()
+
+  return fmtDuration(endMs - startedAt * 1000)
+}
+
+/** Best-effort text from a rich ExecutionResult wire dict: error first, then
+ *  the conventional output keys (`output`, `text`, `stdout`). */
+export const taskResultText = (result: AgentTaskResult): string => {
+  if (result.error?.message) {
+    return `error: ${result.error.message}`
+  }
+
+  const outputs = result.outputs ?? {}
+
+  const text = [outputs['output'], outputs['text'], outputs['stdout']].find(
+    v => typeof v === 'string' && v.trim()
+  )
+
+  return typeof text === 'string' ? text.trim() : ''
 }
 
 export const opsCommands: SlashCommand[] = [
@@ -284,7 +328,8 @@ export const opsCommands: SlashCommand[] = [
   },
 
   {
-    aliases: ['tasks'],
+    // `tasks` used to be an alias here; it is now its own registry-backed
+    // command below, so the overlay stays reachable via /agents only.
     help: 'open the spawn-tree dashboard (live audit + kill/pause controls)',
     name: 'agents',
     run: (arg, ctx) => {
@@ -316,6 +361,126 @@ export const opsCommands: SlashCommand[] = [
       }
 
       patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
+    }
+  },
+
+  {
+    help: 'agent task board · `/tasks [status <id>|cancel <id>]` (registry-backed)',
+    name: 'tasks',
+    run: (arg, ctx) => {
+      const [sub = '', ...rest] = arg.trim().split(/\s+/).filter(Boolean)
+      const lower = sub.toLowerCase()
+      const { rpc } = ctx.gateway
+      const { panel, sys } = ctx.transcript
+
+      // ── /tasks status <task_id> ──────────────────────────────────
+      if (lower === 'status') {
+        const taskId = rest[0]
+
+        if (!taskId) {
+          return sys('usage: /tasks status <task_id>')
+        }
+
+        rpc<TaskStatusResponse>('task.status', { task_id: taskId })
+          .then(
+            ctx.guarded<TaskStatusResponse>(r => {
+              if (!r.found) {
+                return sys(`task not found: ${taskId}`)
+              }
+
+              const rows: [string, string][] = [
+                ['Task', r.task_id ?? taskId],
+                ['Status', r.status ?? '?'],
+                ['Intent', r.intent || '?']
+              ]
+
+              if (r.parent_task_id) {
+                rows.push(['Parent', `${r.parent_task_id} · depth ${r.depth ?? '?'}`])
+              }
+
+              if (r.model) {
+                rows.push(['Model', r.model])
+              }
+
+              rows.push([r.finished_at ? 'Ran for' : 'Age', taskAge(r.started_at, r.finished_at)])
+
+              if (r.tool_count) {
+                rows.push(['Tools', `${r.tool_count}${r.last_tool ? ` · last: ${r.last_tool}` : ''}`])
+              }
+
+              if (r.session_id) {
+                rows.push(['Session', r.session_id])
+              }
+
+              const sections: PanelSection[] = [{ rows }]
+
+              if (r.result) {
+                const body = taskResultText(r.result)
+
+                sections.push({
+                  text: `result: ${r.result.status ?? '?'}${body ? ` · ${truncateTaskText(body, 300)}` : ''}`
+                })
+              }
+
+              panel(`Task ${shortTaskId(taskId)}`, sections)
+            })
+          )
+          .catch(ctx.guardedErr)
+
+        return
+      }
+
+      // ── /tasks cancel <task_id> ──────────────────────────────────
+      if (lower === 'cancel') {
+        const taskId = rest[0]
+
+        if (!taskId) {
+          return sys('usage: /tasks cancel <task_id>')
+        }
+
+        rpc<TaskCancelResponse>('task.cancel', { task_id: taskId })
+          .then(
+            ctx.guarded<TaskCancelResponse>(r =>
+              sys(
+                r.found
+                  ? `cancel signalled for ${taskId}`
+                  : `nothing to cancel for ${taskId} — already finished, unknown, or a bg_*/preview_* run (those don't accept cancel yet)`
+              )
+            )
+          )
+          .catch(ctx.guardedErr)
+
+        return
+      }
+
+      if (lower) {
+        return sys('usage: /tasks [status <task_id>|cancel <task_id>]')
+      }
+
+      // ── /tasks (no args): board of RUNNING registry tasks ────────
+      rpc<TaskListResponse>('task.list', {})
+        .then(
+          ctx.guarded<TaskListResponse>(r => {
+            const tasks = r.tasks ?? []
+
+            if (!tasks.length) {
+              return sys('no active tasks — the agent task registry is idle')
+            }
+
+            const rows: [string, string][] = tasks.map(t => {
+              const tools = t.tool_count ? ` · ${t.tool_count} tools${t.last_tool ? ` (${t.last_tool})` : ''}` : ''
+              const goal = truncateTaskText(t.goal ?? '', 80) || '(no goal)'
+
+              return [
+                `${shortTaskId(t.task_id)} · ${t.status ?? '?'}`,
+                `${t.intent || '?'} · ${taskAge(t.started_at)}${tools}\n  ${goal}`
+              ]
+            })
+
+            panel('Agent tasks', [{ rows }, { text: '/tasks status <id> · /tasks cancel <id>' }])
+          })
+        )
+        .catch(ctx.guardedErr)
     }
   },
 
