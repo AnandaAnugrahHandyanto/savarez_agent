@@ -1994,6 +1994,21 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
 
         if compress_start >= compress_end:
+            # No compressable window — the entire transcript fits within
+            # the tail budget (soft_ceiling).  Without recording this as
+            # an ineffective compression the anti-thrashing guard in
+            # should_compress() never fires and every subsequent turn
+            # re-triggers a no-op compression loop.  (#40803)
+            self._ineffective_compression_count += 1
+            self._last_compression_savings_pct = 0.0
+            if not self.quiet_mode:
+                logger.warning(
+                    "Compression skipped: compress_start (%d) >= compress_end (%d) "
+                    "— transcript fits within tail budget, nothing to compress. "
+                    "ineffective_compression_count=%d",
+                    compress_start, compress_end,
+                    self._ineffective_compression_count,
+                )
             return messages
 
         turns_to_summarize = messages[compress_start:compress_end]
