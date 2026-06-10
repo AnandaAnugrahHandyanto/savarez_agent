@@ -2705,22 +2705,28 @@ class BasePlatformAdapter(ABC):
 
         # Mask protected spans so file:// examples in code/sample text
         # are not promoted to real attachments.  Scan against the masked
-        # copy; only matches that survived masking (still begin with `![`)
-        # emit source-paths from the original content.
+        # copy; only matches that survived masking (still begin with `![`
+        # or `<img`) emit source-paths from the original content.
         scan_content = BasePlatformAdapter._mask_protected_spans(content)
         scan_content = BasePlatformAdapter._mask_json_string_media(scan_content)
-        
+
+        # Accepted tag spans for cleanup — (start, end) in original content
+        # coordinates (masking is offset-preserving).
+        accepted_spans: list = []
+
+        FILE_LIKE_EXTS = frozenset({
+            '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.tiff',
+        })
+
         # Match markdown images: ![alt](url)
         md_pattern = r'!\[([^\]]*)\]\(((?:https?|file)://[^\s\)]+)\)'
-        for match in re.finditer(md_pattern, scan_content):
-            # Reject matches that landed in a masked region (code fence,
-            # inline code, blockquote, or JSON-embedded text).
+        md_re = re.compile(md_pattern)
+        for match in md_re.finditer(scan_content):
+            # Reject matches that landed in a masked region
             if not match.group(0).startswith('!['):
                 continue
-            # Resolve the real text from the *original* content at the
-            # same offset so backtick-quoting / json-string masking in
-            # the scan copy doesn't alter the path.
-            real_match = re.match(md_pattern, content[match.start():])
+            # Resolve real text from *original* content at same offset
+            real_match = md_re.match(content[match.start():])
             if not real_match:
                 continue
             alt_text = real_match.group(1)
@@ -2730,11 +2736,9 @@ class BasePlatformAdapter(ABC):
                 if local_path and os.path.splitext(local_path)[1].lower() in FILE_LIKE_EXTS:
                     validated = validate_media_delivery_path(local_path)
                     if validated:
-                        # Store normalised file:// URI so downstream
-                        # send_multiple_images can strip file:// and get
-                        # the correct local path.
                         norm_url = f'file://{validated}'
                         images.append((norm_url, alt_text))
+                        accepted_spans.append(match.span())
                         continue
                 logger.debug(
                     "Skipping file:// image candidate (not found/unsafe): %s",
@@ -2743,17 +2747,23 @@ class BasePlatformAdapter(ABC):
             elif any(url.lower().endswith(ext) or ext in url.lower() for ext in
                    ['.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery']):
                 images.append((url, alt_text))
-        
-        # Match HTML img tags: <img src="url"> or <img src="url"></img> or <img src="url"/>
-        html_pattern = r'<img\s+src=["\']?((?:https?|file)://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
-        for match in re.finditer(html_pattern, scan_content):
+                accepted_spans.append(match.span())
+
+        # Match HTML img tags, case-insensitive, with optional extra
+        # attributes before or after ``src`` (e.g. ``<img width="200" src="...">``).
+        html_pattern = (
+            r'<img\s+[^>]*?src=(["\']?)((?:https?|file)://[^\s"\'<>]+)\1'
+            r'[^>]*?/?>\s*(?:</img>)?'
+        )
+        html_re = re.compile(html_pattern, re.IGNORECASE)
+        for match in html_re.finditer(scan_content):
             # Reject matches in masked regions
-            if not match.group(0).startswith('<img'):
+            if not match.group(0).lower().startswith('<img'):
                 continue
-            real_match = re.match(html_pattern, content[match.start():])
+            real_match = html_re.match(content[match.start():])
             if not real_match:
                 continue
-            url = real_match.group(1)
+            url = real_match.group(2)
             if url.startswith('file://'):
                 local_path = BasePlatformAdapter._normalize_file_url(url)
                 if local_path and os.path.splitext(local_path)[1].lower() in FILE_LIKE_EXTS:
@@ -2761,6 +2771,7 @@ class BasePlatformAdapter(ABC):
                     if validated:
                         norm_url = f'file://{validated}'
                         images.append((norm_url, ""))
+                        accepted_spans.append(match.span())
                         continue
                 logger.debug(
                     "Skipping file:// image candidate (not found/unsafe): %s",
@@ -2768,40 +2779,22 @@ class BasePlatformAdapter(ABC):
                 )
             else:
                 images.append((url, ""))
-        
-        # Remove only the matched image tags from content (not all markdown images).
-        # For file:// URIs the extracted URL may differ from the original text
-        # (after normalisation), so we track original-text URLs separately.
-        if images:
-            # Build the original-text URL set from the raw regex captures
-            _original_urls: set = set()
-            for m in re.finditer(md_pattern, content):
-                _original_urls.add(m.group(2))
-            for m in re.finditer(html_pattern, content):
-                _original_urls.add(m.group(1))
-            # Filter to only the ones that ended up in ``images`` by matching
-            # normalised forms against original forms
-            _image_keys = {}
-            for orig_url in _original_urls:
-                if orig_url.startswith('file://'):
-                    local_path = BasePlatformAdapter._normalize_file_url(orig_url)
-                    if local_path:
-                        validated = validate_media_delivery_path(local_path)
-                        if validated:
-                            _image_keys[orig_url] = f'file://{validated}'
-                elif any(orig_url.lower().endswith(ext) or ext in orig_url.lower()
-                         for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp',
-                                     'fal.media', 'fal-cdn', 'replicate.delivery']):
-                    _image_keys[orig_url] = orig_url
-            _to_remove = set(_image_keys.keys())
-            def _remove_if_extracted(match):
-                url = match.group(2) if match.lastindex >= 2 else match.group(1)
-                return '' if url in _to_remove else match.group(0)
-            cleaned = re.sub(md_pattern, _remove_if_extracted, cleaned)
-            cleaned = re.sub(html_pattern, _remove_if_extracted, cleaned)
+                accepted_spans.append(match.span())
+
+        # Delete only the spans that were accepted during the first scan.
+        # This is precise: a non-image tag (e.g. PDF) is never deleted, and
+        # a tag whose file:// validation failed is not deleted either. A tag
+        # that appears both in normal text AND in fenced code will have only
+        # the normal-text span recorded (the fenced-code span was masked in
+        # scan_content and never visited), so the code example survives.
+        if accepted_spans:
+            chars = list(cleaned)
+            for start, end in sorted(accepted_spans, reverse=True):
+                del chars[start:end]
+            cleaned = ''.join(chars)
             # Clean up leftover blank lines
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
-        
+
         return images, cleaned
     
     async def send_voice(

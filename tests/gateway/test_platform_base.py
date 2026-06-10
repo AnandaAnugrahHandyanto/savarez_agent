@@ -377,6 +377,83 @@ More"""
         assert images == []
         assert "![doc]" in cleaned
 
+    # ---- Fix 2 regression: precise span-based deletion ----
+
+    def test_png_and_pdf_side_by_side_only_png_extracted(self, tmp_path):
+        """A valid image (png) next to a non-image (pdf) — only png is extracted,
+        pdf tag preserved."""
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"PNG")
+        f_png = img.as_posix()
+        content = f"![img](file://{f_png}) ![doc](file:///tmp/report.pdf)"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert images[0][0] == f"file://{f_png}"
+        # PDF tag must survive intact
+        assert "![doc](file:///tmp/report.pdf)" in cleaned, "PDF tag was removed"
+        # PNG tag must be removed
+        assert "![img]" not in cleaned
+
+    def test_valid_png_and_missing_png_none_extracted(self, tmp_path):
+        """One valid png and one missing png — neither is extracted because the
+        missing png appears in the same match, but the deletion is span-based.
+        Actually two separate tags so only valid one is extracted."""
+        img = tmp_path / "real.png"
+        img.write_bytes(b"PNG")
+        valid_path = img.as_posix()
+        content = f"![a](file://{valid_path}) ![b](file:///nope.png)"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert "real.png" in images[0][0]
+        assert "![b]" in cleaned, "Missing-file tag was deleted"
+
+    def test_png_in_text_and_same_png_in_code_same_text(self, tmp_path):
+        """Same file:// URI in both normal text and fenced code:
+        only the normal-text span is deleted; the code example survives."""
+        img = tmp_path / "diagram.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        content = f"""See the diagram: ![img](file://{f})
+
+Example code:
+```
+![img](file://{f})
+```"""
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        # Normal-text tag removed
+        assert "See the diagram:" in cleaned
+        assert cleaned.count("![img]") == 1  # only code example survives
+        assert "```" in cleaned
+
+    def test_html_img_extra_attrs_case_insensitive(self, tmp_path):
+        """HTML img with extra attrs, case variants."""
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        tests = [
+            f'<img width="200" src="file://{f}">',
+            f'<img WIDTH=200 SRC="file://{f}">',
+            f'<img width=\'200\' height=\'100\' src="file://{f}" alt="x">',
+            f'<img src="file://{f}" width="200">',
+            f'<IMG SRC="file://{f}">',
+            f"<img src=file://{f}>",
+        ]
+        for html in tests:
+            images, cleaned = BasePlatformAdapter.extract_images(html)
+            assert len(images) == 1, f"Failed for: {html}"
+            assert "<img" not in cleaned or cleaned.strip() == "", \
+                f"Tag not removed for: {html}"
+            assert images[0][0] == f"file://{f}"
+
+    def test_html_img_extra_attrs_https(self):
+        """Extra attrs before src still work for HTTPS."""
+        content = '<img width="200" src="https://example.com/img.png">'
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert images[0][0] == "https://example.com/img.png"
+        assert "<img" not in cleaned
+
 
 class TestNormalizeFileUrl:
     """Tests for BasePlatformAdapter._normalize_file_url."""

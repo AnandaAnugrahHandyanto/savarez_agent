@@ -261,3 +261,105 @@ async def test_streaming_delivery_blocks_media_path_outside_allowed_roots(tmp_pa
 
     adapter.send_document.assert_not_awaited()
     adapter.send_voice.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Post-stream regression tests for explicit file:// image tags (PR #43332)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_post_stream_file_url_image_goes_to_send_multiple_images(tmp_path, monkeypatch):
+    """file:// URI in explicit markdown image tag reaches send_multiple_images."""
+    event = _event()
+    img = _allowed_media_path(tmp_path, monkeypatch, "screenshot.png")
+    response = f"See: ![shot](file://{img.as_posix()})"
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_multiple_images=AsyncMock(return_value=SendResult(success=True, message_id="batch")),
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner(None),
+        response,
+        event,
+        adapter,
+    )
+
+    adapter.send_multiple_images.assert_awaited_once()
+    kwargs = adapter.send_multiple_images.call_args.kwargs
+    images = kwargs.get("images")
+    assert images is not None, "images kwarg missing"
+    assert len(images) == 1
+    file_uri = images[0][0]
+    assert file_uri.startswith("file://")
+    assert str(img) in file_uri
+
+
+@pytest.mark.asyncio
+async def test_post_stream_media_tag_still_delivers(tmp_path, monkeypatch):
+    """MEDIA:/path/a.png in post-stream still reaches send_multiple_images."""
+    event = _event()
+    img = _allowed_media_path(tmp_path, monkeypatch, "media.png")
+    response = f"MEDIA:{img}"
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_multiple_images=AsyncMock(return_value=SendResult(success=True, message_id="batch")),
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner(None),
+        response,
+        event,
+        adapter,
+    )
+
+    adapter.send_multiple_images.assert_awaited_once()
+    kwargs = adapter.send_multiple_images.call_args.kwargs
+    images = kwargs.get("images")
+    assert images is not None, "images kwarg missing"
+    assert len(images) == 1
+
+
+@pytest.mark.asyncio
+async def test_post_stream_bare_local_path_not_attached(tmp_path, monkeypatch):
+    """Bare local file path in response text must NOT be auto-promoted to attachment."""
+    event = _event()
+    img = _allowed_media_path(tmp_path, monkeypatch, "bare.png")
+    response = f"Here is your file: {img}"
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_multiple_images=AsyncMock(return_value=SendResult(success=True, message_id="batch")),
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner(None),
+        response,
+        event,
+        adapter,
+    )
+
+    adapter.send_multiple_images.assert_not_awaited()
+    adapter.send_image_file.assert_not_awaited()
+    adapter.send_document.assert_not_awaited()
