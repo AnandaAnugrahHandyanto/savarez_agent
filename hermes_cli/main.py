@@ -63,7 +63,8 @@ except ModuleNotFoundError:
 
 import os
 import sys
-
+from typing import Callable
+from hermes_cli.subcommands.provider import build_provider_parser
 
 def _set_process_title() -> None:
     """Set the process title to 'hermes' so tools like 'ps', 'top', and
@@ -11121,7 +11122,14 @@ def main():
     # dump command  (parser built in hermes_cli/subcommands/dump.py)
     # =========================================================================
     build_dump_parser(subparsers, cmd_dump=cmd_dump)
-
+    # =========================================================================
+    # provider command (parser built in hermes_cli/subcommands/provider.py)
+    # =========================================================================
+    # 1. Önce fonksiyonu burada tanımla veya main içinde olduğunu garantile
+    def cmd_provider_diagnose(args):
+        from hermes_cli.provider_diagnose import run_diagnose
+        run_diagnose(args.name)
+    build_provider_parser(subparsers, cmd_provider_diagnose=cmd_provider_diagnose)
     # =========================================================================
     # debug command  (parser built in hermes_cli/subcommands/debug.py)
     # =========================================================================
@@ -11891,3 +11899,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+def cmd_provider_diagnose(args):
+    from hermes_cli.provider_diagnose import run_diagnose
+    run_diagnose(args.name)
