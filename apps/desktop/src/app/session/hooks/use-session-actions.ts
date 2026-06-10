@@ -460,7 +460,7 @@ export function useSessionActions({
 
       try {
         await ensureGatewayForEndpoint(target)
-        const cwd = $currentCwd.get().trim() || getRememberedWorkspaceCwd()
+        const cwd = $currentCwd.get().trim() || workspaceCwdForNewSession()
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
           ...(cwd && { cwd })
