@@ -899,3 +899,112 @@ class TestMattermostInThreadAutoResponse:
                                 root_id="root_1", post_id="p9")
         )
         assert self.adapter.handle_message.called
+
+
+class TestMattermostThreadContext:
+    """Thread-context seeding, allowlist filter, and MATTERMOST_THREAD_CONTEXT."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter.handle_message = AsyncMock()
+
+    def _thread_event(self, message, root_id="root_1", post_id="p_trigger",
+                      user_id="user_123", channel_type="O"):
+        return _posted_event(message, post_id=post_id, root_id=root_id,
+                             user_id=user_id, channel_type=channel_type)
+
+    def _thread_payload(self):
+        return {
+            "order": ["root_1", "r_other", "r_bot", "p_trigger"],
+            "posts": {
+                "root_1": {"id": "root_1", "user_id": "user_123",
+                           "message": "Original question about X", "create_at": 1},
+                "r_other": {"id": "r_other", "user_id": "user_999",
+                            "message": "unrelated chatter", "create_at": 2},
+                "r_bot": {"id": "r_bot", "user_id": "bot_user_id",
+                          "message": "earlier bot reply", "create_at": 3},
+                "p_trigger": {"id": "p_trigger", "user_id": "user_123",
+                              "message": "@hermes-bot follow up", "create_at": 4},
+            },
+        }
+
+    def test_thread_context_mode_default_allowlisted(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_THREAD_CONTEXT", None)
+            assert self.adapter._thread_context_mode() == "allowlisted"
+
+    def test_thread_context_mode_off_and_all(self):
+        with patch.dict(os.environ, {"MATTERMOST_THREAD_CONTEXT": "off"}):
+            assert self.adapter._thread_context_mode() == "off"
+        with patch.dict(os.environ, {"MATTERMOST_THREAD_CONTEXT": "all"}):
+            assert self.adapter._thread_context_mode() == "all"
+        with patch.dict(os.environ, {"MATTERMOST_THREAD_CONTEXT": "bogus"}):
+            assert self.adapter._thread_context_mode() == "allowlisted"
+
+    @pytest.mark.asyncio
+    async def test_first_mention_in_thread_fetches_context(self):
+        self.adapter._api_get = AsyncMock(return_value=self._thread_payload())
+        with patch.dict(os.environ, {"MATTERMOST_ALLOWED_USERS": "user_123"}):
+            await self.adapter._handle_ws_event(self._thread_event("@hermes-bot follow up"))
+        ctx = self.adapter.handle_message.call_args[0][0].channel_context
+        assert ctx is not None and "Original question about X" in ctx
+
+    @pytest.mark.asyncio
+    async def test_thread_context_filters_non_allowlisted_authors(self):
+        self.adapter._api_get = AsyncMock(return_value=self._thread_payload())
+        with patch.dict(os.environ, {"MATTERMOST_ALLOWED_USERS": "user_123"}):
+            await self.adapter._handle_ws_event(self._thread_event("@hermes-bot follow up"))
+        ctx = self.adapter.handle_message.call_args[0][0].channel_context
+        assert "Original question about X" in ctx
+        assert "unrelated chatter" not in ctx
+        assert "earlier bot reply" not in ctx
+        assert "follow up" not in ctx
+
+    @pytest.mark.asyncio
+    async def test_allow_all_users_includes_non_listed(self):
+        self.adapter._api_get = AsyncMock(return_value=self._thread_payload())
+        with patch.dict(os.environ, {"MATTERMOST_ALLOW_ALL_USERS": "true"}):
+            os.environ.pop("MATTERMOST_ALLOWED_USERS", None)
+            await self.adapter._handle_ws_event(self._thread_event("@hermes-bot follow up"))
+        ctx = self.adapter.handle_message.call_args[0][0].channel_context
+        assert "unrelated chatter" in ctx and "earlier bot reply" not in ctx
+
+    @pytest.mark.asyncio
+    async def test_thread_context_off_skips_fetch(self):
+        self.adapter._api_get = AsyncMock(return_value=self._thread_payload())
+        with patch.dict(os.environ, {"MATTERMOST_THREAD_CONTEXT": "off",
+                                     "MATTERMOST_ALLOWED_USERS": "user_123"}):
+            await self.adapter._handle_ws_event(self._thread_event("@hermes-bot follow up"))
+        assert self.adapter.handle_message.call_args[0][0].channel_context is None
+        self.adapter._api_get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_thread_context_all_decouples_from_allowlist(self):
+        self.adapter._api_get = AsyncMock(return_value=self._thread_payload())
+        with patch.dict(os.environ, {"MATTERMOST_THREAD_CONTEXT": "all"}):
+            os.environ.pop("MATTERMOST_ALLOWED_USERS", None)
+            os.environ.pop("MATTERMOST_ALLOW_ALL_USERS", None)
+            await self.adapter._handle_ws_event(self._thread_event("@hermes-bot follow up"))
+        ctx = self.adapter.handle_message.call_args[0][0].channel_context
+        assert "Original question about X" in ctx and "unrelated chatter" in ctx
+        assert "earlier bot reply" not in ctx
+
+    @pytest.mark.asyncio
+    async def test_thread_context_fetch_failure_fails_open(self):
+        self.adapter._api_get = AsyncMock(return_value={})
+        with patch.dict(os.environ, {"MATTERMOST_ALLOWED_USERS": "user_123"}):
+            await self.adapter._handle_ws_event(self._thread_event("@hermes-bot hi"))
+        assert self.adapter.handle_message.called
+        assert self.adapter.handle_message.call_args[0][0].channel_context is None
+
+    @pytest.mark.asyncio
+    async def test_dm_thread_does_not_fetch_context(self):
+        self.adapter._api_get = AsyncMock(return_value=self._thread_payload())
+        await self.adapter._handle_ws_event(
+            self._thread_event("hi in a dm", channel_type="D", post_id="p_dm")
+        )
+        assert self.adapter.handle_message.called
+        assert self.adapter.handle_message.call_args[0][0].channel_context is None
+        self.adapter._api_get.assert_not_called()

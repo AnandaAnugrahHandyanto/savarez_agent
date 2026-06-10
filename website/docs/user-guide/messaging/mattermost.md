@@ -18,7 +18,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 |---------|----------|
 | **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
 | **Public/private channels** | Hermes responds when you `@mention` it. Without a mention, Hermes ignores the message. |
-| **Threads** | After you `@mention` Hermes in a thread, it keeps answering follow-ups in that thread without a new `@mention` — disable with `MATTERMOST_STRICT_MENTION=true`. With `MATTERMOST_REPLY_MODE=thread`, replies nest under your message. |
+| **Threads** | When you `@mention` Hermes inside an existing thread, it seeds the prior thread history as context (filtered to allowlisted authors). After that first mention, it keeps answering follow-ups without a new `@mention` — disable with `MATTERMOST_STRICT_MENTION=true`. With `MATTERMOST_REPLY_MODE=thread`, replies nest under your message. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
 
 :::tip
@@ -230,7 +230,17 @@ When the bot is `@mentioned`, the mention is automatically stripped from the mes
 
 Once the bot is `@mentioned` in a thread, it stays engaged: every subsequent message in that thread is answered without a new mention, so a back-and-forth feels natural. This matches the Slack adapter's behavior. To opt out and require a mention each turn, set `MATTERMOST_STRICT_MENTION=true`.
 
-Auto-response does **not** bypass the user allowlist: every message is still authorized by author, so a non-allowlisted user posting in an engaged thread is ignored.
+On the **first** turn in a pre-existing thread, Hermes also seeds the prior messages of that thread as context, so it understands the conversation it was pulled into — not just the single message it was tagged in. `MATTERMOST_THREAD_CONTEXT` controls this:
+
+| Value | Behavior |
+|-------|----------|
+| `allowlisted` (default) | Seed only messages from authors in `MATTERMOST_ALLOWED_USERS` |
+| `off` | Never seed thread history |
+| `all` | Seed the full thread regardless of author, without widening who may invoke the bot |
+
+:::warning Allowlist applies to thread context
+Neither auto-response nor context seeding bypasses the user allowlist. Every message is still authorized by author, so a non-allowlisted user posting in an engaged thread is ignored. And because seeded thread history is injected as context (which the authz layer does not re-check), it only includes messages from authors in `MATTERMOST_ALLOWED_USERS` (or everyone when `MATTERMOST_ALLOW_ALL_USERS=true`, or `MATTERMOST_THREAD_CONTEXT=all`) — a non-allowlisted participant's posts never reach the model as context.
+:::
 
 ## Channel allowlist (`allowed_channels`)
 

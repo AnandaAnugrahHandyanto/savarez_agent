@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -49,7 +50,10 @@ _RECONNECT_BASE_DELAY = 2.0
 _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
 
-# In-thread auto-response parameter (Slack parity).
+# Thread-context / in-thread auto-response parameters (Slack parity).
+_THREAD_CONTEXT_MAX_MESSAGES = 30
+_THREAD_CONTEXT_MAX_CHARS = 1000
+_THREAD_CONTEXT_TTL = 60.0
 _MENTIONED_THREADS_MAX = 5000
 
 
@@ -102,8 +106,10 @@ class MattermostAdapter(BasePlatformAdapter):
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
 
-        # In-thread auto-response (Slack parity): threads where the bot was @mentioned.
+        # In-thread auto-response (Slack parity): threads where the bot was
+        # @mentioned, and a TTL cache of fetched thread context.
         self._mentioned_threads: set[str] = set()
+        self._thread_context_cache: Dict[str, Tuple[str, float]] = {}
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -705,6 +711,40 @@ class MattermostAdapter(BasePlatformAdapter):
             "true", "1", "yes", "on",
         }
 
+    def _thread_context_mode(self) -> str:
+        """Return the thread-context policy: 'off', 'allowlisted' (default), or 'all'."""
+        configured = self.config.extra.get("thread_context") if self.config.extra else None
+        raw = configured if configured is not None else os.getenv(
+            "MATTERMOST_THREAD_CONTEXT", "allowlisted"
+        )
+        mode = str(raw).strip().lower()
+        return mode if mode in {"off", "allowlisted", "all"} else "allowlisted"
+
+    def _thread_context_author_allowed(self, user_id: str) -> bool:
+        """Return True when a thread author may contribute to injected context.
+
+        authz only checks the triggering author; injected thread context bypasses
+        it, so non-allowlisted authors' posts are filtered here to avoid leaking
+        unauthorized content into the model. MATTERMOST_THREAD_CONTEXT=all opts
+        out of this filter without widening who may invoke the bot.
+        """
+        if self._thread_context_mode() == "all":
+            return True
+
+        def _truthy(value: str) -> bool:
+            return str(value).lower() in {"true", "1", "yes", "on"}
+
+        if _truthy(os.getenv("MATTERMOST_ALLOW_ALL_USERS", "")) or _truthy(
+            os.getenv("GATEWAY_ALLOW_ALL_USERS", "")
+        ):
+            return True
+        allowed = {
+            u.strip()
+            for u in os.getenv("MATTERMOST_ALLOWED_USERS", "").split(",")
+            if u.strip()
+        }
+        return bool(user_id) and user_id in allowed
+
     def _has_active_session_for_thread(
         self, channel_id: str, thread_id: str, chat_type: str, user_id: str
     ) -> bool:
@@ -742,6 +782,66 @@ class MattermostAdapter(BasePlatformAdapter):
             return session_key in session_store._entries
         except Exception:
             return False
+
+    async def _fetch_thread_context(
+        self, thread_root_id: str, current_post_id: str
+    ) -> str:
+        """Fetch prior thread messages to seed context on the first turn.
+
+        Fails open: returns an empty string on error or when nothing qualifies,
+        leaving the agent with just the triggering message.
+        """
+        now = time.monotonic()
+        cached = self._thread_context_cache.get(thread_root_id)
+        if cached and (now - cached[1]) < _THREAD_CONTEXT_TTL:
+            return cached[0]
+
+        data = await self._api_get(f"posts/{thread_root_id}/thread")
+        if not data:
+            return ""
+        order = data.get("order") or []
+        posts = data.get("posts") or {}
+        if not order or not posts:
+            return ""
+
+        post_objs = [posts[pid] for pid in order if pid in posts]
+        post_objs.sort(key=lambda p: p.get("create_at", 0))
+
+        parts: List[str] = []
+        for post in post_objs:
+            if post.get("id", "") == current_post_id:
+                continue
+            author = post.get("user_id", "")
+            if author == self._bot_user_id:
+                continue
+            if post.get("type"):
+                continue
+            if not self._thread_context_author_allowed(author):
+                continue
+            text = (post.get("message") or "").strip()
+            for pattern in (f"@{self._bot_username}", f"@{self._bot_user_id}"):
+                text = re.sub(re.escape(pattern), "", text, flags=re.IGNORECASE).strip()
+            if not text:
+                continue
+            if len(text) > _THREAD_CONTEXT_MAX_CHARS:
+                text = text[:_THREAD_CONTEXT_MAX_CHARS] + "..."
+            parts.append(f"[{author or 'unknown'}]: {text}")
+
+        if len(parts) > _THREAD_CONTEXT_MAX_MESSAGES:
+            parts = parts[-_THREAD_CONTEXT_MAX_MESSAGES:]
+
+        content = ""
+        if parts:
+            content = (
+                "[Thread context - prior messages in this thread:]\n"
+                + "\n".join(parts)
+                + "\n[End of thread context]"
+            )
+
+        if len(self._thread_context_cache) > _MENTIONED_THREADS_MAX:
+            self._thread_context_cache.clear()
+        self._thread_context_cache[thread_root_id] = (content, now)
+        return content
 
     async def _handle_ws_event(self, event: Dict[str, Any]) -> None:
         """Process a single WebSocket event."""
@@ -942,6 +1042,27 @@ class MattermostAdapter(BasePlatformAdapter):
             self.config.extra, channel_id, None,
         )
 
+        # On the first turn of a thread (no session yet), seed prior thread
+        # history so the agent sees the whole conversation, not just the
+        # triggering message. Later turns already carry it in the transcript.
+        channel_context: Optional[str] = None
+        if thread_id and channel_type_raw != "D" and self._thread_context_mode() != "off":
+            already_active = self._has_active_session_for_thread(
+                channel_id=channel_id,
+                thread_id=thread_id,
+                chat_type=chat_type,
+                user_id=sender_id,
+            )
+            if not already_active:
+                try:
+                    channel_context = await self._fetch_thread_context(
+                        thread_root_id=thread_id,
+                        current_post_id=post_id,
+                    ) or None
+                except Exception as exc:
+                    logger.debug("Mattermost: thread context fetch failed: %s", exc)
+                    channel_context = None
+
         msg_event = MessageEvent(
             text=message_text,
             message_type=msg_type,
@@ -951,6 +1072,7 @@ class MattermostAdapter(BasePlatformAdapter):
             media_urls=media_urls if media_urls else None,
             media_types=media_types if media_types else None,
             channel_prompt=_channel_prompt,
+            channel_context=channel_context,
         )
 
         await self.handle_message(msg_event)
