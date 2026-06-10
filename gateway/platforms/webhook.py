@@ -621,6 +621,31 @@ class WebhookAdapter(BasePlatformAdapter):
             delivery_id,
         )
 
+        # ── Route-level model/provider override ──────────────────
+        # If the webhook route config specifies model/provider/base_url/api_key,
+        # inject them into the gateway runner session model overrides so the agent
+        # uses them instead of the profile default.
+        _route_model_keys = ("model", "provider", "base_url", "api_key", "api_mode")
+        _route_override = {k: route_config[k] for k in _route_model_keys if route_config.get(k)}
+        if _route_override and self.gateway_runner is not None:
+            # Derive the same session key the runner will use so the override is found.
+            _resolved_key = session_chat_id
+            try:
+                _resolved_key = self.gateway_runner._session_key_for_source(source)
+            except Exception:
+                pass
+            self.gateway_runner._session_model_overrides[_resolved_key] = _route_override
+            # Also store under the raw chat_id as fallback
+            if _resolved_key != session_chat_id:
+                self.gateway_runner._session_model_overrides[session_chat_id] = _route_override
+            logger.info(
+                "[webhook] Route model override: route=%s session=%s resolved_key=%s override=%s",
+                route_name,
+                session_chat_id,
+                _resolved_key,
+                {k: ("***" if k == "api_key" else v) for k, v in _route_override.items()},
+            )
+
         # Non-blocking — return 202 Accepted immediately
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)
