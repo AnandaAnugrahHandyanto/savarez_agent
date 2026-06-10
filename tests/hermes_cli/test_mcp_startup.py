@@ -164,3 +164,19 @@ def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
     monkeypatch.setattr(cli_mod, "AIAgent", _fake_agent)
 
     assert cli._init_agent() is True
+
+
+def test_default_discovery_wait_catches_slow_npx_mcp_servers():
+    """Regression test: npx-driven MCP servers (e.g. ``npx -y @griches/...``)
+    typically take 2-4s to install and spawn on first launch.  The default
+    wait must be long enough to let a slow-but-reachable server land before
+    the agent snapshots its tool list, otherwise its tools are silently
+    dropped for the whole session.  A 0.75s default (the previous value)
+    races; we require >= 2.0s."""
+    import inspect
+    sig = inspect.signature(mcp_startup.wait_for_mcp_discovery)
+    default = sig.parameters["timeout"].default
+    assert default >= 2.0, (
+        f"default MCP discovery wait is {default}s; npx cold start races "
+        f"and slow-but-reachable servers are dropped from the tool list"
+    )
