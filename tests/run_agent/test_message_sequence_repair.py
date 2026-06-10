@@ -199,3 +199,127 @@ def test_repair_preserves_system_messages():
     AIAgent._repair_message_sequence(agent, messages)
 
     assert messages == original
+
+
+# ── #24187: repair must not desync SessionDB persistence ───────────────────
+#
+# repair_message_sequence() used to run on the canonical ``messages`` list
+# before the API call. Shrinking that list in place left the positional
+# persistence cursor in _flush_messages_to_session_db() pointing past the
+# end, so the current turn's assistant/tool rows were silently never
+# written to SessionDB. Gateway-style integrations (fresh AIAgent per
+# inbound message, history reloaded from SessionDB each turn) then kept
+# re-loading the same stale history: every lost assistant reply created a
+# new user/user alternation violation, which made the next repair shrink
+# the list further — a self-reinforcing replay loop that persisted until a
+# manual session reset.
+#
+# The fix runs repair on the per-call ``api_messages`` copy only (same
+# pattern as sanitize_api_messages / drop_thinking_only_and_merge_users).
+# These tests pin both halves of the contract.
+
+
+class _FakeSessionDB:
+    def __init__(self):
+        self.rows = []
+
+    def append_message(self, **kwargs):
+        self.rows.append(kwargs)
+
+
+def _flushing_agent(db):
+    agent = _bare_agent()
+    agent._session_db = db
+    agent._session_db_created = True
+    agent._last_flushed_db_idx = 0
+    agent.session_id = "test_24187"
+    return agent
+
+
+def test_repair_on_api_copy_leaves_canonical_transcript_intact():
+    """Repairing the per-call copy must not mutate or shrink the canonical list."""
+    agent = _bare_agent()
+    canonical = [
+        {"role": "user", "content": "question one"},
+        {"role": "user", "content": "question two"},
+        {"role": "user", "content": "question three"},
+    ]
+    api_messages = [m.copy() for m in canonical]
+
+    repairs = AIAgent._repair_message_sequence(agent, api_messages)
+
+    # Wire copy: merged to a single alternation-legal user turn.
+    assert repairs == 2
+    assert len(api_messages) == 1
+    assert "question one" in api_messages[0]["content"]
+    assert "question three" in api_messages[0]["content"]
+    # Canonical transcript: untouched, in length and content.
+    assert len(canonical) == 3
+    assert [m["content"] for m in canonical] == [
+        "question one", "question two", "question three",
+    ]
+
+
+def test_current_turn_persists_when_history_has_violations():
+    """#24187 regression: the current turn must reach SessionDB even when
+    the loaded history contains user/user alternation violations.
+
+    Mirrors the conversation-loop flow: history loaded from SessionDB,
+    current user message appended, repair applied to the API copy (not
+    the canonical list), assistant reply appended, then flush.
+    """
+    db = _FakeSessionDB()
+    agent = _flushing_agent(db)
+
+    # History as reloaded from SessionDB: three orphaned user turns
+    # (their assistant replies were lost by the pre-fix bug).
+    conversation_history = [
+        {"role": "user", "content": "old question A"},
+        {"role": "user", "content": "old question B"},
+        {"role": "user", "content": "old question C"},
+    ]
+    messages = list(conversation_history)
+    messages.append({"role": "user", "content": "current question"})
+
+    # Conversation loop: repair the wire copy only.
+    api_messages = [m.copy() for m in messages]
+    AIAgent._repair_message_sequence(agent, api_messages)
+
+    # Model replies; reply is appended to the canonical list.
+    messages.append({"role": "assistant", "content": "current answer"})
+
+    AIAgent._flush_messages_to_session_db(agent, messages, conversation_history)
+
+    # The current turn (user + assistant) must be persisted. Before the
+    # fix, repair shrank ``messages`` to 2 entries while the flush cursor
+    # stayed at len(conversation_history)=3, so messages[3:] was empty
+    # and ZERO rows were written.
+    flushed = [(r["role"], r["content"]) for r in db.rows]
+    assert ("user", "current question") in flushed
+    assert ("assistant", "current answer") in flushed
+    assert len(db.rows) == 2
+
+
+def test_old_in_place_repair_would_have_dropped_the_turn():
+    """Documents the pre-fix failure shape: repairing the canonical list
+    desyncs the positional flush cursor and silently drops the turn."""
+    db = _FakeSessionDB()
+    agent = _flushing_agent(db)
+
+    conversation_history = [
+        {"role": "user", "content": "old question A"},
+        {"role": "user", "content": "old question B"},
+        {"role": "user", "content": "old question C"},
+    ]
+    messages = list(conversation_history)
+    messages.append({"role": "user", "content": "current question"})
+
+    # The bug: repair applied to the canonical list (4 users -> 1).
+    AIAgent._repair_message_sequence(agent, messages)
+    messages.append({"role": "assistant", "content": "current answer"})
+
+    AIAgent._flush_messages_to_session_db(agent, messages, conversation_history)
+
+    # messages[3:] == [] -> nothing persisted. This is the silent data
+    # loss the fix removes; kept as executable documentation.
+    assert db.rows == []

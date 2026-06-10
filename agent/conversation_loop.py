@@ -588,21 +588,6 @@ def run_conversation(
                 agent.session_id or "-",
             )
 
-        # Defensive: repair malformed role-alternation before API call.
-        # Catches cases where the history got wedged into a
-        # ``tool → user`` or ``user → user`` tail (e.g. after empty-
-        # response scaffolding was stripped and a new user message
-        # landed after an orphan tool result). Most providers return
-        # empty content on malformed sequences, which would otherwise
-        # retrigger the empty-retry loop indefinitely.
-        repaired_seq = agent._repair_message_sequence(messages)
-        if repaired_seq > 0:
-            request_logger.info(
-                "Repaired %s message-alternation violations before request (session=%s)",
-                repaired_seq,
-                agent.session_id or "-",
-            )
-
         api_messages = []
         for idx, msg in enumerate(messages):
             api_msg = msg.copy()
@@ -704,6 +689,31 @@ def run_conversation(
         # stored conversation history keeps the reasoning block for the
         # UI transcript and session persistence.
         api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
+
+        # Defensive: repair malformed role-alternation before the API call.
+        # Catches cases where the history got wedged into a
+        # ``tool → user`` or ``user → user`` tail (e.g. after empty-
+        # response scaffolding was stripped and a new user message
+        # landed after an orphan tool result). Most providers return
+        # empty content on malformed sequences, which would otherwise
+        # retrigger the empty-retry loop indefinitely.
+        #
+        # Runs on the per-call ``api_messages`` copy only — same
+        # API-call-time-only pattern as the sanitizer and thinking-only
+        # passes above. The canonical ``messages`` list keeps the raw
+        # event sequence (consecutive user turns are legal there).
+        # Mutating ``messages`` in place here shrank the list under the
+        # positional persistence cursor in
+        # ``_flush_messages_to_session_db``, silently dropping the
+        # current turn's assistant/tool rows from SessionDB and causing
+        # a self-reinforcing replay loop (#24187).
+        repaired_seq = agent._repair_message_sequence(api_messages)
+        if repaired_seq > 0:
+            request_logger.info(
+                "Repaired %s message-alternation violations in API copy (session=%s)",
+                repaired_seq,
+                agent.session_id or "-",
+            )
 
         # Normalize message whitespace and tool-call JSON for consistent
         # prefix matching.  Ensures bit-perfect prefixes across turns,

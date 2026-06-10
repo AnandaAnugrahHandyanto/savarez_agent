@@ -345,7 +345,7 @@ def sanitize_tool_call_arguments(
 
 
 def repair_message_sequence(agent, messages: List[Dict]) -> int:
-    """Collapse malformed role-alternation left in the live history.
+    """Collapse malformed role-alternation in the given message list.
 
     Providers (OpenAI, OpenRouter, Anthropic) expect strict alternation:
     after the system message, user/tool alternates with assistant, with
@@ -358,6 +358,16 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     most shapes, but external callers (gateway multi-queue replay,
     session resume, cron, explicit conversation_history passed in by
     host code) can feed in already-broken histories.
+
+    IMPORTANT: mutates the list it is handed (and, when merging user
+    turns, the ``content`` key of the surviving dict). Callers must pass
+    the per-call ``api_messages`` copy, never the canonical transcript:
+    shrinking the canonical list desynchronizes the positional
+    persistence cursor in ``_flush_messages_to_session_db``, silently
+    dropping the current turn's assistant/tool rows from SessionDB and
+    triggering a self-reinforcing replay loop (#24187). Consecutive
+    user turns are legal in the canonical transcript; only the wire
+    copy needs strict alternation.
 
     Repairs applied:
       1. Stray ``tool`` messages whose ``tool_call_id`` doesn't match
@@ -438,8 +448,9 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
         merged.append(msg)
 
     if repairs > 0:
-        # Rewrite in place so downstream paths (persistence, return
-        # value, session DB flush) see the repaired sequence.
+        # Rewrite the given list in place so the caller's reference sees
+        # the repaired sequence. The caller passes the per-call API copy
+        # (never the canonical transcript — see docstring / #24187).
         messages[:] = merged
 
     return repairs
