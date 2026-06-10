@@ -2731,35 +2731,44 @@ class BasePlatformAdapter(ABC):
         accepted_spans: list = []
 
         # Match markdown images: ![alt](url)
-        md_pattern = r'!\[([^\]]*)\]\(((?i:https?|file)://[^\s\)]+)\)'
-        md_re = re.compile(md_pattern)
-        for match in md_re.finditer(scan_content):
-            # Reject matches that landed in a masked region
-            if not match.group(0).startswith('!['):
-                continue
-            # Resolve real text from *original* content at same offset
-            real_match = md_re.match(content[match.start():])
-            if not real_match:
-                continue
-            alt_text = real_match.group(1)
-            url = real_match.group(2)
-            if url.lower().startswith('file://'):
-                local_path = BasePlatformAdapter._normalize_file_url(url)
-                if local_path and os.path.splitext(local_path)[1].lower() in FILE_LIKE_EXTS:
-                    validated = validate_media_delivery_path(local_path)
-                    if validated:
-                        norm_url = 'file://' + _urllib_parse.quote(validated, safe='/:\\')
-                        images.append((norm_url, alt_text))
-                        accepted_spans.append(match.span())
-                        continue
-                logger.debug(
-                    "Skipping file:// image candidate (not found/unsafe): %s",
-                    _log_safe_path(url),
-                )
-            elif any(url.lower().endswith(ext) or ext in url.lower() for ext in
-                   ['.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery']):
-                images.append((url, alt_text))
-                accepted_spans.append(match.span())
+        # HTTPS variant: space-delimited (unchanged).
+        # file:// variant: allows bare spaces in the path so that
+        # ``![shot](file:///C:/Users/Alice/Desktop/screen shot.png)``
+        # is correctly captured.
+        md_http_re = re.compile(
+            r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
+        )
+        md_file_re = re.compile(
+            r'!\[([^\]]*)\]\((file://[^\)]+)\)', re.IGNORECASE
+        )
+        for md_re, is_file_pattern in [(md_http_re, False), (md_file_re, True)]:
+            for match in md_re.finditer(scan_content):
+                # Reject matches that landed in a masked region
+                if not match.group(0).startswith('!['):
+                    continue
+                # Resolve real text from *original* content at same offset
+                real_match = md_re.match(content[match.start():])
+                if not real_match:
+                    continue
+                alt_text = real_match.group(1)
+                url = real_match.group(2)
+                if is_file_pattern or url.lower().startswith('file://'):
+                    local_path = BasePlatformAdapter._normalize_file_url(url)
+                    if local_path and os.path.splitext(local_path)[1].lower() in FILE_LIKE_EXTS:
+                        validated = validate_media_delivery_path(local_path)
+                        if validated:
+                            norm_url = 'file://' + _urllib_parse.quote(validated, safe='/:\\')
+                            images.append((norm_url, alt_text))
+                            accepted_spans.append(match.span())
+                            continue
+                    logger.debug(
+                        "Skipping file:// image candidate (not found/unsafe): %s",
+                        _log_safe_path(url),
+                    )
+                elif any(url.lower().endswith(ext) or ext in url.lower() for ext in
+                       ['.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery']):
+                    images.append((url, alt_text))
+                    accepted_spans.append(match.span())
 
         # Match HTML img tags, case-insensitive, with optional extra
         # attributes before or after ``src`` (e.g. ``<img width="200" src="...">``).
@@ -2790,6 +2799,11 @@ class BasePlatformAdapter(ABC):
                     )
                     break
             if not src_url:
+                continue
+            # Only handle http(s):// and file:// values. Bare Windows
+            # paths (``C:\...``), bare POSIX paths (``/tmp/...``),
+            # and other schemes are left in the response text.
+            if not src_url.lower().startswith(('http://', 'https://', 'file://')):
                 continue
             url = src_url
             if url.lower().startswith('file://'):

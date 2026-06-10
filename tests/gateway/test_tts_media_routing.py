@@ -514,3 +514,37 @@ async def test_send_multiple_images_roundtrip_normal_path(tmp_path):
     assert received_path == validated, (
         f"send_image_file received {received_path!r}, expected {validated!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_post_stream_html_src_bare_path_not_delivered(tmp_path, monkeypatch):
+    """HTML img with bare Windows/POSIX path must NOT trigger upload."""
+    event = _event()
+    png = _allowed_media_path(tmp_path, monkeypatch, "barepath.png")
+    for response in [
+        f'<img src="C:\\Users\\test\\file.png">',
+        f'<img src="/tmp/file.png">',
+        f'<img src="smb://server/share/file.png">',
+    ]:
+        adapter = SimpleNamespace(
+            name="test",
+            extract_media=BasePlatformAdapter.extract_media,
+            extract_images=BasePlatformAdapter.extract_images,
+            extract_local_files=BasePlatformAdapter.extract_local_files,
+            send_multiple_images=AsyncMock(return_value=SendResult(success=True, message_id="batch")),
+            send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+            send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+            send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+            send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+        )
+
+        await GatewayRunner._deliver_media_from_response(
+            _fake_runner(None),
+            response,
+            event,
+            adapter,
+        )
+
+        adapter.send_multiple_images.assert_not_awaited()
+        adapter.send_image_file.assert_not_awaited()
+        adapter.send_document.assert_not_awaited()

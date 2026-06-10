@@ -564,6 +564,73 @@ Example code:
         assert images == []
         assert "![x]" in cleaned or "file://" in cleaned
 
+    # ---- Blocker 1: file:// bare spaces ----
+
+    def test_markdown_file_url_bare_space_in_path(self, tmp_path):
+        """file:// path with bare spaces is extracted."""
+        import urllib.parse
+        d = tmp_path / "my folder"
+        d.mkdir()
+        img = d / "screen shot.png"
+        img.write_bytes(b"PNG")
+        fp = img.as_posix()
+        content = f"![shot](file://{fp})"
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        decoded = urllib.parse.unquote(images[0][0][7:])
+        assert decoded == fp, f"Round-trip broken: {decoded!r} != {fp!r}"
+
+    def test_markdown_file_url_bare_space_roundtrip(self, tmp_path):
+        """file:// bare space path + %20 both resolve to same validated path."""
+        import urllib.parse
+        d = tmp_path / "my folder"
+        d.mkdir()
+        img = d / "screen shot.png"
+        img.write_bytes(b"PNG")
+        fp = img.as_posix()
+        # Bare space
+        content1 = f"![shot](file://{fp})"
+        imgs1, _ = BasePlatformAdapter.extract_images(content1)
+        assert len(imgs1) == 1
+        decoded1 = urllib.parse.unquote(imgs1[0][0][7:])
+        # %20
+        encoded = fp.replace(" ", "%20")
+        content2 = f"![shot](file://{encoded})"
+        imgs2, _ = BasePlatformAdapter.extract_images(content2)
+        assert len(imgs2) == 1
+        decoded2 = urllib.parse.unquote(imgs2[0][0][7:])
+        assert decoded1 == decoded2 == fp
+
+    # ---- Blocker 2: HTML src scheme tightening ----
+
+    def test_html_src_bare_windows_path_not_extracted(self):
+        """HTML img src with raw Windows drive path is NOT extracted."""
+        content = '<img src="C:\\Users\\test\\file.png">'
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert cleaned == content
+
+    def test_html_src_bare_posix_path_not_extracted(self):
+        """<img src="/tmp/file.png"> bare POSIX path is NOT extracted."""
+        content = '<img src="/tmp/file.png">'
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert cleaned == content
+
+    def test_html_src_other_scheme_not_extracted(self):
+        """<img src="smb://server/..."> other scheme is NOT extracted."""
+        content = '<img src="smb://server/share/file.png">'
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert cleaned == content
+
+    def test_html_src_relative_path_not_extracted(self):
+        """<img src="../../file.png"> relative path is NOT extracted."""
+        content = '<img src="../../file.png">'
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert cleaned == content
+
     # ---- JSON string value blocking ----
 
     def test_json_embedded_file_url_markdown_blocked(self, tmp_path):
