@@ -758,6 +758,29 @@ class PhotonAdapter(BasePlatformAdapter):
             chat_id, animation_url, caption, reply_to, metadata,
         )
 
+    async def send_reaction(
+        self,
+        chat_id: str,
+        message_id: str,
+        emoji: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a native iMessage reaction/tapback to a Photon message."""
+        if not message_id.strip() or not emoji.strip():
+            return SendResult(success=False, error="message_id and emoji are required")
+        try:
+            await self._sidecar_call(
+                "/react",
+                {
+                    "spaceId": chat_id,
+                    "messageId": message_id.strip(),
+                    "emoji": emoji.strip(),
+                },
+            )
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        return SendResult(success=True)
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         try:
             await self._sidecar_call(

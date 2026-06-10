@@ -131,7 +131,9 @@ All env vars are documented in `plugin.yaml`. The most important:
   documents are sent via `space.send(attachment(...))` /
   `space.send(voice(...))` through the sidecar's `/send-attachment`
   endpoint; a caption is delivered as a separate text bubble after the media.
-- **Reactions, message effects, polls** — supported by `spectrum-ts` but not
-  yet exposed; the sidecar is the natural place to add them.
+- **Reactions/tapbacks are supported.** Hermes sends native reactions through
+  `spectrum-ts`' `reaction(...)` builder via the sidecar's `/react` endpoint.
+- **Message effects and polls** — supported by `spectrum-ts` but not yet
+  exposed; the sidecar is the natural place to add them.
 
 [photon]: https://photon.codes/

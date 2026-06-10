@@ -183,6 +183,34 @@ async def test_send_image_url_fetch_failure_falls_back_to_text(
 
 
 @pytest.mark.asyncio
+async def test_send_reaction_hits_react_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    result = await adapter.send_reaction("any;-;+1", " msg-abc ", " 👍 ")
+
+    assert result.success is True
+    assert calls == [
+        (
+            "/react",
+            {"spaceId": "any;-;+1", "messageId": "msg-abc", "emoji": "👍"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_send_reaction_requires_target_and_emoji(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    result = await adapter.send_reaction("any;-;+1", "", "👍")
+
+    assert result.success is False
+    assert "required" in (result.error or "")
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_send_attachment_rejects_unsafe_path(
     monkeypatch: pytest.MonkeyPatch
 ) -> None:
