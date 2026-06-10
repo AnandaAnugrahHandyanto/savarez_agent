@@ -442,7 +442,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
         <ApiKeyForm
           canGoBack={hasOauth}
           onBack={() => setOnboardingMode('oauth')}
-          onSave={(envKey, value, name) => saveOnboardingApiKey(envKey, value, name, ctx)}
+          onSave={(envKey, value, name, apiKey) => saveOnboardingApiKey(envKey, value, name, ctx, apiKey)}
           options={apiKeyOptions}
         />
         {manual ? null : (
@@ -641,13 +641,14 @@ export function ApiKeyForm({
   isSet?: (envKey: string) => boolean
   onBack: () => void
   onClear?: (envKey: string) => void
-  onSave: (envKey: string, value: string, name: string) => Promise<{ message?: string; ok: boolean }>
+  onSave: (envKey: string, value: string, name: string, apiKey?: string) => Promise<{ message?: string; ok: boolean }>
   options?: ApiKeyOption[]
   redactedValue?: (envKey: string) => null | string | undefined
 }) {
   const { t } = useI18n()
   const [option, setOption] = useState<ApiKeyOption>(options[0])
   const [value, setValue] = useState('')
+  const [apiKey, setApiKey] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
   // `options` can change at runtime when callers filter the catalog (e.g. the
@@ -668,6 +669,7 @@ export function ApiKeyForm({
   const pick = (o: ApiKeyOption) => {
     setOption(o)
     setValue('')
+    setApiKey('')
     setError(null)
     requestAnimationFrame(() => {
       entryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -693,7 +695,7 @@ export function ApiKeyForm({
 
     setSaving(true)
     setError(null)
-    const result = await onSave(option.envKey, value, option.name)
+    const result = await onSave(option.envKey, value, option.name, isLocal ? apiKey || undefined : undefined)
 
     if (result.ok) {
       setValue('')
@@ -759,6 +761,17 @@ export function ApiKeyForm({
           type={isLocal ? 'text' : 'password'}
           value={value}
         />
+        {isLocal ? (
+          <Input
+            autoComplete="off"
+            className="font-mono"
+            onChange={e => setApiKey(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && void submit()}
+            placeholder="API key (optional — leave empty for unauthenticated endpoints)"
+            type="password"
+            value={apiKey}
+          />
+        ) : null}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
       </div>
 

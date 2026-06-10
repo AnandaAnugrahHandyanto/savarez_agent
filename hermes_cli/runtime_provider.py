@@ -733,6 +733,9 @@ def _resolve_named_custom_runtime(
         (explicit_api_key or "").strip(),
         str(custom_provider.get("api_key", "") or "").strip(),
         os.getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
+        # Generic custom endpoint key — set via Desktop onboarding or
+        # `hermes auth add custom`.
+        os.getenv("CUSTOM_API_KEY", "").strip(),
         # Gate provider env keys on their authoritative hosts — sending
         # OPENAI_API_KEY to a local-llm endpoint leaks credentials (#28660).
         (os.getenv("OPENAI_API_KEY", "").strip()     if _cp_is_openai_url  else ""),
