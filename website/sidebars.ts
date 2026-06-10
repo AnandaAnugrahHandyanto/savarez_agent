@@ -499,6 +499,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/mlops/mlops-llava',
                     'user-guide/skills/optional/mlops/mlops-modal',
                     'user-guide/skills/optional/mlops/mlops-nemo-curator',
+                    'user-guide/skills/optional/mlops/mlops-obliteratus',
                     'user-guide/skills/optional/mlops/mlops-inference-outlines',
                     'user-guide/skills/optional/mlops/mlops-peft',
                     'user-guide/skills/optional/mlops/mlops-pinecone',
@@ -557,6 +558,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/security/security-1password',
+                    'user-guide/skills/optional/security/security-godmode',
                     'user-guide/skills/optional/security/security-oss-forensics',
                     'user-guide/skills/optional/security/security-sherlock',
                     'user-guide/skills/optional/security/security-web-pentest',
