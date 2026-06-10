@@ -807,7 +807,7 @@ export function ChatSidebar({
       collapsible="none"
     >
       <SidebarContent className="gap-0 overflow-hidden bg-transparent px-2.5">
-        <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
+        <SidebarGroup className="shrink-0 p-0 pb-0 pt-[calc(var(--titlebar-height)+0.375rem)]">
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
               {SIDEBAR_NAV.map(item => {
@@ -874,7 +874,7 @@ export function ChatSidebar({
         </SidebarGroup>
 
         {contentVisible && showSessionSections && (
-          <div className="shrink-0 px-2 pb-1 pt-1">
+          <div className="shrink-0 px-2 pb-1.5 pt-1">
             <SearchField
               aria-label={s.searchAria}
               inputRef={searchInputRef}
@@ -886,8 +886,8 @@ export function ChatSidebar({
         )}
 
         {contentVisible && showSessionSections && (
-          <div className={cn('flex min-h-0 flex-1 flex-col pb-1.75', SCROLL_Y)}>
-            {trimmedQuery && (
+          <>
+            <div className={cn('flex min-h-0 flex-1 flex-col pb-1.75', SCROLL_Y)}>            {trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
                 contentClassName={cn('flex min-h-0 flex-1 flex-col gap-px pb-1.75', SCROLL_Y)}
@@ -1062,7 +1062,10 @@ export function ChatSidebar({
                 )
               })}
 
-            {!trimmedQuery && cronJobs.length > 0 && (
+          </div>
+
+          {!trimmedQuery && cronJobs.length > 0 && (
+            <div className="shrink-0 px-0.5 pt-3.5">
               <SidebarCronJobsSection
                 jobs={cronJobs}
                 label={s.cronJobs}
@@ -1072,8 +1075,9 @@ export function ChatSidebar({
                 onTriggerJob={onTriggerCronJob}
                 open={cronOpen}
               />
-            )}
-          </div>
+            </div>
+          )}
+          </>
         )}
 
         {contentVisible && !showSessionSections && <div className="min-h-0 flex-1" />}
