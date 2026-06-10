@@ -4245,6 +4245,40 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
         return None
 
 
+def _rollback_checkout_after_failed_update(
+    git_cmd: list[str],
+    cwd: Path,
+    pre_pull_sha: str | None,
+    *,
+    failure_label: str,
+    retry_hint: str,
+) -> None:
+    """Reset the checkout back to ``pre_pull_sha`` after a post-pull failure."""
+    print()
+    print(f"✗ {failure_label}")
+    if pre_pull_sha:
+        print()
+        print(f"→ Rolling back to {pre_pull_sha[:10]}...")
+        rollback_result = subprocess.run(
+            git_cmd + ["reset", "--hard", pre_pull_sha],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if rollback_result.returncode == 0:
+            print("  ✓ Rollback complete — your install is unchanged.")
+            print(f"  {retry_hint}")
+        else:
+            print("  ✗ Rollback failed. Recover manually with:")
+            print(f"    cd {cwd} && git reset --hard {pre_pull_sha}")
+            if rollback_result.stderr.strip():
+                print(f"    ({rollback_result.stderr.strip().splitlines()[0]})")
+    else:
+        print()
+        print("  Could not capture pre-pull SHA — recover manually with:")
+        print(f"    cd {cwd} && git reflog && git reset --hard <prev-sha>")
+
+
 def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]:
     """Compile each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
 
@@ -8239,35 +8273,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 PROJECT_ROOT
             )
             if not syntax_ok:
-                print()
-                print("✗ Pulled code has a syntax error in a critical file:")
-                print(f"  {failing_path}")
+                details = [f"Pulled code has a syntax error in a critical file:"]
+                if failing_path:
+                    details.append(f"  {failing_path}")
                 if syntax_error:
                     # py_compile errors can be multi-line; show the first
                     # ~6 lines so the user sees the actual SyntaxError text.
                     for line in str(syntax_error).splitlines()[:6]:
-                        print(f"    {line}")
-                if pre_pull_sha:
-                    print()
-                    print(f"→ Rolling back to {pre_pull_sha[:10]}...")
-                    rollback_result = subprocess.run(
-                        git_cmd + ["reset", "--hard", pre_pull_sha],
-                        cwd=PROJECT_ROOT,
-                        capture_output=True,
-                        text=True,
-                    )
-                    if rollback_result.returncode == 0:
-                        print("  ✓ Rollback complete — your install is unchanged.")
-                        print("  Try ``hermes update`` again later once a fix lands.")
-                    else:
-                        print("  ✗ Rollback failed. Recover manually with:")
-                        print(f"    cd {PROJECT_ROOT} && git reset --hard {pre_pull_sha}")
-                        if rollback_result.stderr.strip():
-                            print(f"    ({rollback_result.stderr.strip().splitlines()[0]})")
-                else:
-                    print()
-                    print("  Could not capture pre-pull SHA — recover manually with:")
-                    print(f"    cd {PROJECT_ROOT} && git reflog && git reset --hard <prev-sha>")
+                        details.append(f"    {line}")
+                _rollback_checkout_after_failed_update(
+                    git_cmd,
+                    PROJECT_ROOT,
+                    pre_pull_sha,
+                    failure_label="\n".join(details),
+                    retry_hint="Try ``hermes update`` again later once a fix lands.",
+                )
                 sys.exit(1)
 
             update_succeeded = True
@@ -8339,9 +8359,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if _is_termux_env(uv_env) and _is_android_python():
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                 _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
-            _install_python_dependencies_with_optional_fallback(
-                [uv_bin, "pip"], env=uv_env, group=install_group
-            )
+            try:
+                _install_python_dependencies_with_optional_fallback(
+                    [uv_bin, "pip"], env=uv_env, group=install_group
+                )
+            except subprocess.CalledProcessError:
+                _rollback_checkout_after_failed_update(
+                    git_cmd,
+                    PROJECT_ROOT,
+                    pre_pull_sha,
+                    failure_label="Updating Python dependencies failed after git pull.",
+                    retry_hint="Close running Hermes processes, then retry ``hermes update`` later.",
+                )
+                raise SystemExit(1) from None
         else:
             # Use sys.executable to explicitly call the venv's pip module,
             # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
@@ -8367,7 +8397,19 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if _is_termux_env() and _is_android_python():
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                 _install_psutil_android_compat(pip_cmd)
-            _install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
+            try:
+                _install_python_dependencies_with_optional_fallback(
+                    pip_cmd, group=install_group
+                )
+            except subprocess.CalledProcessError:
+                _rollback_checkout_after_failed_update(
+                    git_cmd,
+                    PROJECT_ROOT,
+                    pre_pull_sha,
+                    failure_label="Updating Python dependencies failed after git pull.",
+                    retry_hint="Close running Hermes processes, then retry ``hermes update`` later.",
+                )
+                raise SystemExit(1) from None
 
         _refresh_active_lazy_features()
 

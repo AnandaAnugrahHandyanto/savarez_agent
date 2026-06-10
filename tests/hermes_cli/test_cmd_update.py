@@ -301,6 +301,71 @@ class TestCmdUpdateBranchFallback:
                 "(no capture_output) so postinstall progress is visible"
             )
 
+    def test_update_rolls_back_when_dependency_sync_fails_after_pull(
+        self, mock_args, monkeypatch, capsys
+    ):
+        from hermes_cli import main as hm
+
+        commands: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            cmd_list = [str(part) for part in cmd]
+            commands.append(cmd_list)
+
+            if "fetch" in cmd_list and cmd_list[-2:] == ["origin", "main"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if cmd_list[-2:] == ["--abbrev-ref", "HEAD"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+            if cmd_list[-3:] == ["rev-list", "HEAD..origin/main", "--count"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="1\n", stderr="")
+            if cmd_list[-2:] == ["rev-parse", "HEAD"]:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="deadbeefcafebabe1234\n", stderr=""
+                )
+            if cmd_list[-4:] == ["pull", "--ff-only", "origin", "main"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if cmd_list[-3:] == ["reset", "--hard", "deadbeefcafebabe1234"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            raise AssertionError(f"Unexpected subprocess.run call: {cmd_list}")
+
+        monkeypatch.setattr(hm.subprocess, "run", fake_run)
+        monkeypatch.setattr(hm, "_run_pre_update_backup", lambda args: None)
+        monkeypatch.setattr(hm, "_discard_lockfile_churn", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            hm,
+            "_get_origin_url",
+            lambda *args, **kwargs: "https://github.com/NousResearch/hermes-agent.git",
+        )
+        monkeypatch.setattr(hm, "_resolve_update_branch", lambda args: "main")
+        monkeypatch.setattr(
+            hm, "_stash_local_changes_if_needed", lambda *args, **kwargs: None
+        )
+        monkeypatch.setattr(
+            hm, "_validate_critical_files_syntax", lambda root: (True, None, None)
+        )
+        monkeypatch.setattr(hm, "_invalidate_update_cache", lambda: None)
+        monkeypatch.setattr(hm, "_clear_bytecode_cache", lambda root: 0)
+        monkeypatch.setattr(
+            hm,
+            "_install_python_dependencies_with_optional_fallback",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                subprocess.CalledProcessError(2, ["uv", "pip", "install", "-e", ".[all]"])
+            ),
+        )
+        monkeypatch.setattr(hm.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(hm.sys.stdout, "isatty", lambda: True)
+
+        with patch("hermes_cli.managed_uv.ensure_uv", return_value="/usr/bin/uv"), patch(
+            "hermes_cli.managed_uv.update_managed_uv", return_value=None
+        ), pytest.raises(SystemExit) as exc:
+            hm.cmd_update(mock_args)
+
+        assert exc.value.code == 1
+        assert ["git", "reset", "--hard", "deadbeefcafebabe1234"] in commands
+        out = capsys.readouterr().out
+        assert "Updating Python dependencies failed after git pull." in out
+        assert "Rollback complete — your install is unchanged." in out
+
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""
         with patch("shutil.which", return_value=None), patch(
