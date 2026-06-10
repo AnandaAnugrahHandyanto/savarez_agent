@@ -3,6 +3,7 @@ const {
   BrowserWindow,
   Menu,
   Notification,
+  Tray,
   clipboard,
   dialog,
   ipcMain,
@@ -4891,6 +4892,8 @@ function createSessionWindow(sessionId) {
   })
 }
 
+let tray = null
+
 function createWindow() {
   const icon = getAppIconPath()
   mainWindow = new BrowserWindow({
@@ -5010,6 +5013,27 @@ function createWindow() {
     sendWindowStateChanged()
     startHermes().catch(error => rememberLog(error.stack || error.message))
   })
+}
+
+function closeToTrayHandler(event) {
+  if (app.isQuitting) {
+    return app.quit()
+  }
+  event.preventDefault()
+  mainWindow.hide()
+}
+
+function createTray() {
+  const iconPath = path.join(__dirname, '..', 'public', 'apple-touch-icon.png')
+  if (!fs.existsSync(iconPath)) return
+  tray = new Tray(iconPath)
+  tray.setToolTip('Hermes Agent')
+  const contextMenu = Menu.buildFromTemplate([
+    { label: 'Show Hermes', click: () => { mainWindow.show(); mainWindow.focus() } },
+    { label: 'Quit', click: () => { app.isQuitting = true; app.quit() } }
+  ])
+  tray.setContextMenu(contextMenu)
+  tray.on('double-click', () => { mainWindow.show(); mainWindow.focus() })
 }
 
 ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(profile))
@@ -6148,6 +6172,8 @@ app.whenReady().then(() => {
   configureSpellChecker()
   registerPowerResumeListeners()
   createWindow()
+  createTray()
+  mainWindow.on('close', closeToTrayHandler)
 
   app.on('activate', () => {
     // Recreate the primary window if it's gone. Guard on mainWindow directly
@@ -6185,6 +6211,7 @@ function configureSpellChecker() {
 }
 
 app.on('before-quit', () => {
+  app.isQuitting = true
   // Quitting mid-install should stop the installer, not orphan it.
   if (bootstrapAbortController) {
     try {
@@ -6208,5 +6235,10 @@ app.on('before-quit', () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  // Keep running in the system tray on non-macOS platforms
+  if (process.platform === 'darwin') {
+    // macOS keeps running when all windows are closed (standard behaviour)
+  } else {
+    // Windows/Linux: stay in tray, don't quit
+  }
 })
