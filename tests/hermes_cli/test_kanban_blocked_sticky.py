@@ -76,6 +76,37 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             assert kb.get_task(conn, tid).status == "blocked"
 
 
+def test_initial_blocked_create_is_sticky_across_dispatcher_recompute(kanban_home: Path) -> None:
+    """A task created directly in ``blocked`` is an operator/human gate,
+    not a transient circuit-breaker block.  The dispatcher must not
+    immediately promote and claim it on the next ``recompute_ready`` tick.
+
+    This pins the CLI help contract for ``--initial-status blocked``:
+    "skip the brief running-to-blocked transition" while still remaining
+    sticky until explicit unblock.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="approval gate",
+            assignee="hephaestus",
+            initial_status="blocked",
+        )
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        events = kb.list_events(conn, tid)
+        assert [event.kind for event in events] == ["created", "blocked"]
+
+        promoted = kb.recompute_ready(conn)
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert promoted == 0
+        assert task.status == "blocked"
+
+
 def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Path) -> None:
     """The parent-completion path is the one ``recompute_ready`` was
     designed for, so it's the most dangerous false-positive: even when

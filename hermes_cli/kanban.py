@@ -2652,13 +2652,14 @@ def _project_created_task_to_discord(conn, task: kb.Task) -> dict[str, Any] | No
     if not thread_id:
         return {"error": "projection_send_failed: Discord send returned no thread_id"}
 
+    notifier_profile = str(config.get("notifier_profile") or "").strip() or _profile_author()
     kb.add_notify_sub(
         conn,
         task_id=task.id,
         platform="discord",
         chat_id=forum_channel_id,
         thread_id=thread_id,
-        notifier_profile=_profile_author(),
+        notifier_profile=notifier_profile,
     )
     url = _discord_projection_url(config, forum_channel_id=forum_channel_id, thread_id=thread_id)
     kb.add_comment(conn, task.id, _profile_author(), f"Discord forum projection: {url}")

@@ -2108,6 +2108,12 @@ def create_task(
     ``kanban-worker``. Use this to pin a task to a specialist skill
     (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
+
+    ``initial_status='blocked'`` creates the task as an explicit sticky
+    human/ops gate.  It emits both the normal ``created`` event and a
+    ``blocked`` event so dispatcher ``recompute_ready`` ticks do not
+    auto-promote it until ``unblock_task`` records a matching
+    ``unblocked`` event.
     """
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
@@ -2292,6 +2298,13 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+                if task_status == "blocked":
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {"reason": "initial_status=blocked"},
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -2860,9 +2873,11 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
 
     * **Worker- or operator-initiated** — a worker called
       ``kanban_block(reason="review-required: ...")`` (or somebody ran
-      ``hermes kanban block <id>``).  This is a deliberate handoff that
-      should stay blocked until an operator unblocks it.  The block tool
-      emits a ``"blocked"`` event row in ``task_events``.
+      ``hermes kanban block <id>``), or the task was created directly
+      with ``initial_status='blocked'`` for human/ops review.  This is a
+      deliberate handoff that should stay blocked until an operator
+      unblocks it.  These paths emit a ``"blocked"`` event row in
+      ``task_events``.
 
     * **Circuit-breaker** — ``_record_task_failure`` tripped after
       repeated crashes / spawn failures / timeouts.  This emits
