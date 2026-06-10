@@ -3400,6 +3400,86 @@ class GatewaySlashCommandsMixin:
 
         return await loop.run_in_executor(None, _collect_and_upload)
 
+    async def _handle_auth_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /auth — start OAuth flows (xai-oauth, codex, etc.) from the gateway."""
+        from hermes_cli.auth import (
+            _xai_oauth_build_authorize_url,
+            _xai_oauth_discovery,
+            resolve_xai_oauth_runtime_credentials,
+        )
+        import base64
+        import hashlib
+        import secrets
+
+        args = event.get_command_args().strip()
+        parts = args.split()
+
+        if not parts:
+            return (
+                "Usage:\n"
+                "  /auth xai-oauth                 — start xAI OAuth (SuperGrok/Premium+)\n"
+                "  /auth xai-oauth --manual-paste <callback_url> — exchange pasted URL\n"
+                "  /auth status xai-oauth          — show current status"
+            )
+
+        provider = parts[0].lower()
+
+        if provider == "status":
+            sub = parts[1] if len(parts) > 1 else ""
+            if sub == "xai-oauth":
+                try:
+                    creds = resolve_xai_oauth_runtime_credentials()
+                    if creds:
+                        return "✅ xAI OAuth is authenticated and ready."
+                    return "❌ xAI OAuth not authenticated. Run /auth xai-oauth to start."
+                except Exception as e:
+                    return f"Error checking xAI OAuth status: {e}"
+            return "Supported: /auth status xai-oauth"
+
+        if provider == "xai-oauth":
+            if "--manual-paste" in parts:
+                return (
+                    "⚠️ Manual exchange from gateway is not fully supported yet.\n"
+                    "Please run on the CLI:\n"
+                    "  hermes model → 8 (xAI Grok) → SuperGrok / Premium+ OAuth"
+                )
+
+            try:
+                discovery = _xai_oauth_discovery()
+                redirect_uri = "http://localhost:8765/callback"
+                code_verifier = secrets.token_urlsafe(64)
+                code_challenge = base64.urlsafe_b64encode(
+                    hashlib.sha256(code_verifier.encode()).digest(),
+                ).rstrip(b"=").decode()
+                state = secrets.token_urlsafe(16)
+                nonce = secrets.token_urlsafe(16)
+
+                auth_url = _xai_oauth_build_authorize_url(
+                    authorization_endpoint=discovery["authorization_endpoint"],
+                    redirect_uri=redirect_uri,
+                    code_challenge=code_challenge,
+                    state=state,
+                    nonce=nonce,
+                )
+
+                self._xai_oauth_pending = {
+                    "code_verifier": code_verifier,
+                    "state": state,
+                    "discovery": discovery,
+                    "redirect_uri": redirect_uri,
+                }
+
+                return (
+                    "🔐 xAI Grok OAuth (SuperGrok / Premium+) を開始します。\n\n"
+                    f"以下のURLをブラウザで開いてログインしてください：\n{auth_url}\n\n"
+                    "認証完了後、ブラウザのアドレスバーに表示されるURLをコピーして\n"
+                    "`/auth xai-oauth --manual-paste <URL>` で送信してください。"
+                )
+            except Exception as e:
+                return f"Failed to start xAI OAuth: {e}"
+
+        return f"Unknown provider: {provider}. Supported: xai-oauth"
+
     async def _handle_update_command(self, event: MessageEvent) -> str:
         """Handle /update command — update Hermes Agent to the latest version.
 
