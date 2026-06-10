@@ -28,6 +28,8 @@ FORBIDDEN_COMMANDS = frozenset(
     }
 )
 ORIENTATION_COMMANDS = frozenset({"whereami", "projects"})
+# /beast subcommands that proxy to AI Beast's real read-only registry handlers.
+LIVE_READ_ONLY_SUBCOMMANDS = frozenset({"whereami", "projects", "sessions"})
 APPROVED_BEAST_NAMESPACE_SUBCOMMANDS = frozenset(
     {
         "whereami",
@@ -339,33 +341,47 @@ async def handle(
                 "decision": "deny",
                 "message": "AI Beast /beast command fail-closed: parser unavailable. No command behaviour executed.",
             }
-        res = _format_beast_namespace_result(parse)
-        if res.get("decision") == "deny":
-            # We want to format the fallback string differently if it was completely unrecognized
-            # Let's just return res and let tests be happy with the existing deny messages
-            return res
-            
-        try:
-            if parse.command_class == 'read_only_orientation':
-                if parse.subcommand == 'sessions' and not parse.args:
-                    return {
-                        'decision': 'handled', 
-                        'message': '/beast sessions needs a project ID. Try: /beast sessions interaction-routing-layer. No command was executed.'
-                    }
-                # Use the orientation adapter to proxy to AI Beast's real registry read functions
-                adapter = _lazy_orientation_adapter(config, project_root, context)
-                mapped_cmd = f"/{parse.subcommand}"
-                if parse.args:
-                    mapped_cmd += f" {parse.args[0]}"
-                result = await _call_adapter(adapter, command=mapped_cmd, project_root=project_root, context=context)
-                return {'decision': 'handled', 'message': str(result)}
-        except Exception:
-            return {"decision": "deny", "message": "AI Beast orientation adapter failed safely."}
-            
-        return {
-            "decision": "handled",
-            "message": "This /beast command is recognised but requires separate approval before it can execute. No task was created and no state was changed.",
-        }
+        subcommand = _parse_value(parse, "subcommand")
+        args = tuple(_parse_value(parse, "args", ()) or ())
+        is_read_only = bool(_parse_value(parse, "is_read_only", False))
+        status = str(_parse_value(parse, "status", "unknown"))
+
+        # C2: live read-only orientation subcommands reuse AI Beast's real
+        # registry read handlers (design work items #2, #3). Every other
+        # subcommand stays inert and is only classified (work item #5).
+        if subcommand == "sessions" and not args:
+            return {
+                "decision": "handled",
+                "message": (
+                    "/beast sessions needs a project ID. "
+                    "Try: /beast sessions <project>. No command was executed."
+                ),
+            }
+        if status == "recognised" and is_read_only and subcommand in LIVE_READ_ONLY_SUBCOMMANDS:
+            # The orientation adapter prepends the leading slash, so pass the
+            # BARE top-level command here (e.g. "projects", "sessions <id>").
+            mapped = subcommand if not args else f"{subcommand} {args[0]}"
+            try:
+                adapter = orientation_adapter or _lazy_orientation_adapter(config, project_root, context)
+                result = await _call_adapter(
+                    adapter, command=mapped, project_root=project_root, context=context
+                )
+            except Exception:
+                # Never echo raw args (e.g. an unknown project id). Report a
+                # safe, handled message carrying only the argument count.
+                return {
+                    "decision": "handled",
+                    "message": (
+                        f"/beast {subcommand} could not be completed "
+                        f"(argument_count={len(args)}). "
+                        "No state was changed and no command behaviour executed."
+                    ),
+                }
+            return {"decision": "handled", "message": str(result)}
+
+        # Proposal, state-changing, unknown, and malformed subcommands stay
+        # inert: classify only, never execute.
+        return _format_beast_namespace_result(parse)
 
     if command not in ORIENTATION_COMMANDS:
         return None
