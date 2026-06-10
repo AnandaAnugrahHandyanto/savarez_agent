@@ -21,24 +21,22 @@ def _make_cli():
 
 
 class TestPromptTextInputThreadSafety:
-    def test_main_thread_uses_run_in_terminal(self):
-        """On the main thread with an active app, route through run_in_terminal."""
+    def test_main_thread_uses_ptk_prompt(self):
+        """On the main thread with an active app, route through ptk_prompt."""
         cli = _make_cli()
 
-        with patch("prompt_toolkit.application.run_in_terminal") as mock_rit, \
+        with patch("prompt_toolkit.shortcuts.prompt", return_value="2") as mock_ptk, \
              patch("builtins.input", return_value="2"):
-            cli._prompt_text_input("Choice: ")
+            result = cli._prompt_text_input("Choice: ")
 
-        # run_in_terminal was invoked; the _ask closure passed to it would
-        # call input() when driven by the event loop.  We assert dispatch path,
-        # not the orphaned-coroutine result.
-        assert mock_rit.called
+        assert mock_ptk.called
+        assert result == "2"
 
     def test_background_thread_falls_back_to_direct_input(self):
-        """On a daemon thread, skip run_in_terminal and call input() directly.
+        """On a daemon thread, skip ptk_prompt and call input() directly.
 
         This preserves the fallback for any prompt that still runs off the main
-        UI thread: run_in_terminal's coroutine would otherwise be orphaned.
+        UI thread: ptk_prompt would otherwise fail without an event loop.
         """
         cli = _make_cli()
         captured = {}
@@ -50,18 +48,18 @@ class TestPromptTextInputThreadSafety:
         result_holder = {}
 
         def run_on_daemon():
-            with patch("prompt_toolkit.application.run_in_terminal") as mock_rit, \
+            with patch("prompt_toolkit.shortcuts.prompt") as mock_ptk, \
                  patch("builtins.input", side_effect=fake_input):
                 result_holder["value"] = cli._prompt_text_input("Choice [1/2/3]: ")
-                result_holder["rit_called"] = mock_rit.called
+                result_holder["ptk_called"] = mock_ptk.called
 
         t = threading.Thread(target=run_on_daemon, daemon=True)
         t.start()
         t.join(timeout=2.0)
         assert not t.is_alive(), "daemon thread hung — input() was not driven"
 
-        # run_in_terminal was bypassed entirely on the background thread.
-        assert result_holder["rit_called"] is False
+        # ptk_prompt was bypassed entirely on the background thread.
+        assert result_holder["ptk_called"] is False
         # input() was invoked with the prompt and its return value was captured.
         assert captured.get("prompt") == "Choice [1/2/3]: "
         assert result_holder["value"] == "1"
@@ -78,11 +76,11 @@ class TestPromptTextInputThreadSafety:
         assert result == "cancel"
 
     def test_run_in_terminal_exception_falls_back(self):
-        """If run_in_terminal raises (WSL / Warp edge cases), fall back to input()."""
+        """If ptk_prompt raises (WSL / Warp edge cases), fall back to input()."""
         cli = _make_cli()
 
         with patch(
-            "prompt_toolkit.application.run_in_terminal",
+            "prompt_toolkit.shortcuts.prompt",
             side_effect=RuntimeError("event loop dropped the coroutine"),
         ), patch("builtins.input", return_value="3") as mock_input:
             result = cli._prompt_text_input("Choice: ")
