@@ -1,38 +1,57 @@
-# DeepSWE Routing Data — Why Model Routing Matters
+# DeepSWE Routing Data — Reference
 
-> **Updated 2026-06-10**: Cost figures corrected based on [DeepSWE issue #21](https://github.com/datacurve-ai/deep-swe/issues/21) — DeepSeek's cache-hit pricing was not applied, inflating costs 4-14×. The solve-rate data (8%) is unaffected. The routing recommendation stands, but the justification shifts from cost to reliability.
+> **Updated 2026-06-11**: Full model table with published and community-verified data. All solve-rate claims from DeepSWE issue #21 were retracted by the issue author (2026-06-08) after discovering a test-setup error. The cost-correction analysis in that issue remains valid and is included below. Treat DeepSWE scores as directional — effort tuning, provider routing, and limited replication all introduce uncertainty.
 
 ## The Evidence
 
-DeepSWE ([deepswe.datacurve.ai](https://deepswe.datacurve.ai)) is the only contamination-free, real-complexity coding benchmark. Tasks are written from scratch, require 5.5× more code than SWE-bench Pro, and span 91 repositories across 5 languages.
+DeepSWE ([deepswe.datacurve.ai](https://deepswe.datacurve.ai)) is a contamination-free, real-complexity coding benchmark. Tasks are written from scratch, require ~5.5x more code than SWE-bench Pro, and span 91 repositories across 5 languages.
 
-## Key Finding: Models Collapse on Real Engineering Tasks
+## Full DeepSWE Results (Published + Community)
 
-| Model | SWE-bench Pro | DeepSWE | Collapse |
-|-------|:------------:|:-------:|:--------:|
-| GPT-5.5 (xhigh) | 58.6% | **70%** | +11 — improves |
-| GPT-5.4 (xhigh) | 57.7% | **56%** | −2 — holds |
-| Claude Opus 4.7 | 64.3% | 54% | −10 |
-| MiniMax M3 | 59.0% | 20% | **−39** |
-| DeepSeek V4-Pro | 55.4% | **8%** | **−47** |
+| Model | SWE-bench Pro | DeepSWE | Delta | Notes |
+|-------|:------------:|:-------:|:-----:|-------|
+| GPT-5.5 (xhigh) | 58.6% | **70%** | +11 | Best-in-class |
+| GPT-5.4 (xhigh) | 57.7% | **56%** | −2 | Strong general coding |
+| Claude Opus 4.7 | 64.3% | **54%** | −10 | Competitive coding |
+| Claude Sonnet 4.6 | — | 32% | — | Mid-tier |
+| Gemini 3.5 Flash | — | 28% | — | Budget-aware |
+| GPT-5.4-Mini | — | 24% | — | Fast, cheap, delegated |
+| Kimi K2.6 | — | 24% | — | Budget option |
+| DeepSeek V4-Pro | 55.4% | ~8%* | −47 | See caveats below |
 
-## Cost Analysis (Cache-Adjusted, June 2026)
+### V4-Pro Caveats
 
-DeepSeek V4-Pro's actual pricing includes cache-hit rates at $0.0036/M (99.2% off cache-miss). DeepSWE's reported costs billed all tokens at the miss rate. Corrected:
+The ~8% DeepSWE score for V4-Pro comes with significant methodological concerns documented in [DeepSWE issue #21](https://github.com/datacurve-ai/deep-swe/issues/21):
 
-| Model | DeepSWE | Cost/Task | Cost/Solve | Attempts/Solve |
-|-------|:-------:|:---------:|:----------:|:--------------:|
-| GPT-5.5 | **70%** | $6.61 | $9.44 | 1.4 |
-| GPT-5.4 | **56%** | $4.38 | **$7.82** | 1.8 |
-| GPT-5.4-Mini | 24% | $2.08 | $8.67 | 4.2 |
-| DeepSeek V4-Pro | **8%** | **$0.30** | **$3.75** | 12.5 |
+1. **No effort tuning**: V4-Pro was run at `reasoning_effort: null` while all other models had tuned effort levels (xhigh, max, medium). Thinking mode was left on but unoptimized.
+2. **OpenRouter guardrail 404s**: OpenRouter blocks DeepSeek by default (data-training privacy concern). API calls may have returned 404 errors rather than model failures.
+3. **Limited replication**: Community member `ivanfioravanti` ran an independent test via direct DeepSeek API and got ~5.3% (similar direction). No independent confirmation with proper effort tuning exists yet.
+4. **Solve-rate claims from issue #21 retracted**: The issue author retracted their own solve-rate analysis after discovering a test-setup error.
 
-**Key insight:** V4-Pro costs the least per eventual solve ($3.75), but requires **12.5× more attempts** than GPT-5.4 (1.8). The routing decision isn't about cost — it's about reliability. A task routed to V4-Pro fails 92% of the time on first attempt.
+**Bottom line**: V4-Pro likely underperforms GPT-5.4/5.5 on coding tasks, but the magnitude of the gap is uncertain pending a re-run with proper effort tuning. Configure your routing accordingly.
 
-### Additional Concerns (from DeepSWE Issue #21)
+## Cost Analysis (from DeepSWE Issue #21 — Valid)
 
-- **No effort tuning**: V4-Pro was run with `reasoning_effort: null` while all other models had tuned effort levels (xhigh, max, medium). Its 8% score may improve with proper tuning.
-- **OpenRouter privacy guardrail**: OpenRouter blocks DeepSeek by default (data-training concern). Benchmark tests may have failed from 404 errors, not model capability.
+DeepSeek V4-Pro pricing includes cache-hit rates at $0.0036/M (99.2% off cache-miss). DeepSWE's reported costs billed all tokens at the miss rate ($0.435/M). In real-world agent runs, ~78% of tokens are cache hits.
+
+### Corrected Cost per Task (Cache-Adjusted)
+
+| Model | DeepSWE | Reported Cost | Corrected Cost | Factor |
+|-------|:-------:|:------------:|:--------------:|:------:|
+| GPT-5.5 | 70% | $6.61/task | — | — |
+| GPT-5.4 | 56% | $4.38/task | — | — |
+| GPT-5.4-Mini | 24% | $2.08/task | — | — |
+| DeepSeek V4-Pro | 8% | $4.22/task | ~$0.30/task | ~14× inflation |
+
+Source: Reproducible analysis script in issue #21 by `agentecobuilder`. Verified independently.
+
+**Key finding**: V4-Pro's per-task cost was inflated ~14× by ignoring cache-hit pricing. The real cost is very low (~$0.30/task). However, cost-per-task ignores solve rate — if a model requires many retries, the effective cost-per-solve may be higher despite low per-token pricing. Since the solve rate is uncertain (see caveats), cost-per-solve calculations are withheld pending a proper re-benchmark.
+
+### Additional Cost Considerations
+
+- **OpenRouter 5% fee** for high-usage accounts adds to all OpenRouter-routed models
+- **Reasoning tokens**: Thinking-mode models generate hidden reasoning tokens that are billed but not shown in output token counts
+- **Provider pricing volatility**: DeepSeek and other providers adjust pricing frequently; verify current rates
 
 ## Terminal-Bench (Agentic CLI)
 
@@ -41,21 +60,18 @@ DeepSeek V4-Pro's actual pricing includes cache-hit rates at $0.0036/M (99.2% of
 | GPT-5.5 | 82.7% | $30.00 |
 | DeepSeek V4-Pro | 67.9% | $0.87 |
 
-## The Routing Decision
+V4-Pro is competitive at tool orchestration and CLI tasks — a different skill set from code generation. This supports the routing strategy: coding → specialized coding models, orchestration → efficient orchestrator.
 
-| Task Type | Route to | Why |
-|-----------|----------|-----|
-| Code Generation | GPT-5.4 | 56% success, 1.8 attempts — gets it done |
-| Architecture | GPT-5.5 | 70% success, 1.4 attempts — best-in-class |
-| Orchestration | V4-Pro | 67.9% Terminal-Bench, cheap, reliable at tools |
-| Mechanical | GPT-5.4-Mini | 24% success, delegated, fast |
+## Routing Principles
 
-V4-Pro should not code because it fails 92% of real coding tasks — not because it costs more per solve.
+1. **Route based on task type, not model brand loyalty.** Different models excel at different things.
+2. **Treat published benchmarks as directional.** Real-world experience with your actual tasks is the best calibration.
+3. **Configure coding/architecture models explicitly.** Don't rely on the orchestrator model for code generation if there's a stronger option.
+4. **Verify subagent results.** No benchmark score guarantees a correct implementation. Always read the output.
 
 ## Sources
 
 - DeepSWE Leaderboard: https://deepswe.datacurve.ai/
-- DeepSWE Issue #21 (cost correction): https://github.com/datacurve-ai/deep-swe/issues/21
-- DeepSWE Blog: https://deepswe.datacurve.ai/blog
-- DeepSeek V4 Technical Report: https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro
-- Kilo Leaderboard: https://kilo.ai/leaderboard
+- DeepSWE Issue #21 (cost correction, caveats): https://github.com/datacurve-ai/deep-swe/issues/21
+- explainx.ai DeepSWE analysis: https://explainx.ai/blog/deepswe
+- Terminal-Bench / Kilo Leaderboard: https://kilo.ai/leaderboard
