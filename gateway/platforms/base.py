@@ -1614,6 +1614,10 @@ def merge_pending_message_event(
     """
     existing = pending_messages.get(session_key)
     if existing:
+        if getattr(existing, "internal", False) and not getattr(event, "internal", False):
+            pending_messages[session_key] = event
+            return
+
         existing_is_photo = getattr(existing, "message_type", None) == MessageType.PHOTO
         incoming_is_photo = event.message_type == MessageType.PHOTO
         existing_has_media = bool(existing.media_urls)

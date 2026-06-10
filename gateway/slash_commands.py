@@ -96,6 +96,9 @@ class GatewaySlashCommandsMixin:
         _qe = getattr(self, "_queued_events", None)
         if _qe is not None:
             _qe.pop(session_key, None)
+        _limit_counts = getattr(self, "_limit_auto_continue_counts", None)
+        if _limit_counts is not None:
+            _limit_counts.pop(session_key, None)
 
         try:
             from tools.env_passthrough import clear_env_passthrough

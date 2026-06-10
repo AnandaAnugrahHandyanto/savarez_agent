@@ -1916,6 +1916,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+    _MAX_LIMIT_AUTO_CONTINUATIONS: int = 3
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -1993,6 +1994,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # /new and /reset.  /model and other mid-session operations
         # preserve the queue.
         self._queued_events: Dict[str, List[MessageEvent]] = {}
+        self._limit_auto_continue_counts: Dict[str, int] = {}
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
@@ -3010,6 +3012,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         text = getattr(event_or_text, "text", event_or_text) or ""
         return str(text).startswith("[Continuing toward your standing goal]\nGoal:")
+
+    @staticmethod
+    def _is_limit_exhaustion_result(agent_result: Any) -> bool:
+        """Return True when a turn stopped only because per-turn limits ran out."""
+        if not isinstance(agent_result, dict):
+            return False
+        reason = str(agent_result.get("turn_exit_reason") or "")
+        return reason.startswith("max_iterations_reached") or reason.startswith("budget_exhausted")
+
+    @staticmethod
+    def _is_limit_auto_continue_event(event_or_text: Any) -> bool:
+        """Return True for synthetic max-turn/budget continuation turns."""
+        text = getattr(event_or_text, "text", event_or_text) or ""
+        return str(text).startswith("[Continuing prior work after a per-turn execution limit]")
 
     def _clear_goal_pending_continuations(self, session_key: str, adapter: Any) -> int:
         """Remove queued synthetic /goal continuations for one session.
@@ -7395,6 +7411,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            _limit_continuation_enqueued = False
+            try:
+                _limit_continuation_enqueued = await self._post_turn_limit_continuation(
+                    session_key=_quick_key,
+                    source=source,
+                    agent_result=_agent_result,
+                )
+            except Exception as _limit_exc:
+                logger.debug("limit auto-continuation hook failed: %s", _limit_exc)
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -7409,8 +7434,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _final_text = _agent_result
                 # Skip for empty responses (interrupted / errored) — the
                 # judge would almost always say "continue" and we'd loop
-                # on error. Let the user drive the next turn.
-                if _final_text.strip():
+                # on error. Let the user drive the next turn. Also skip
+                # when limit auto-continuation queued a deterministic
+                # continuation for the same exhaustion boundary.
+                if _final_text.strip() and not _limit_continuation_enqueued:
                     try:
                         session_entry = self.session_store.get_or_create_session(source)
                     except Exception:
@@ -9336,6 +9363,83 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._enqueue_fifo(_quick_key, cont_event, adapter)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
+
+    async def _post_turn_limit_continuation(
+        self,
+        *,
+        session_key: str,
+        source: Any,
+        agent_result: Any,
+    ) -> bool:
+        """Enqueue a bounded continuation when the agent only hit turn limits.
+
+        Returns True when a continuation was enqueued. The counter is scoped to
+        the gateway session key and resets on the first non-exhaustion result.
+        """
+        counters = getattr(self, "_limit_auto_continue_counts", None)
+        if counters is None:
+            counters = {}
+            self._limit_auto_continue_counts = counters
+
+        if not self._is_limit_exhaustion_result(agent_result):
+            if session_key:
+                counters.pop(session_key, None)
+            return False
+
+        if not isinstance(agent_result, dict) or not session_key or source is None:
+            return False
+        if (
+            agent_result.get("failed")
+            or agent_result.get("interrupted")
+            or agent_result.get("partial")
+            or agent_result.get("error")
+        ):
+            return False
+
+        max_continuations = int(getattr(self, "_MAX_LIMIT_AUTO_CONTINUATIONS", 3) or 0)
+        used = counters.get(session_key, 0)
+        if max_continuations <= 0 or used >= max_continuations:
+            logger.info(
+                "Limit auto-continuation cap reached for session %s (%d/%d)",
+                session_key,
+                used,
+                max_continuations,
+            )
+            return False
+
+        try:
+            adapter = self.adapters.get(source.platform)
+            if adapter is None:
+                return False
+            prompt = (
+                "[Continuing prior work after a per-turn execution limit]\n"
+                "Continue the prior task from the current conversation state. "
+                "Take concrete next actions using the available tools. Do not ask "
+                "the user to resend or manually continue. Only provide a final "
+                "answer when the work is verified, or when you are genuinely "
+                "blocked and can explain the blocker precisely."
+            )
+            cont_event = MessageEvent(
+                text=prompt,
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id=None,
+                channel_prompt=None,
+                internal=True,
+            )
+            self._enqueue_fifo(session_key, cont_event, adapter)
+        except Exception as exc:
+            logger.debug("limit auto-continuation: enqueue failed: %s", exc)
+            return False
+
+        counters[session_key] = used + 1
+        logger.info(
+            "Queued limit auto-continuation for session %s (%d/%d)",
+            session_key,
+            counters[session_key],
+            max_continuations,
+        )
+        return True
 
 
 
