@@ -264,6 +264,12 @@ function useThreadScrollAnchor({
       return
     }
 
+    // Already at bottom: writing scrollTop is a no-op and the browser
+    // fires NO scroll event, so arming the programmatic gate here would
+    // leave it permanently set. Repeated pins (streaming heartbeats)
+    // then accumulate the gate, and the next genuine user scroll-up is
+    // misread as one of our programmatic scrolls — re-arming
+    // sticky-bottom and yanking the viewport back down.
     const distFromBottom = el.scrollHeight - (el.scrollTop + el.clientHeight)
 
     if (distFromBottom <= AT_BOTTOM_THRESHOLD) {
@@ -273,6 +279,10 @@ function useThreadScrollAnchor({
       return
     }
 
+    // Hold the disarm gate across the scroll event the next line will
+    // fire. Set to 1 (not increment): coalesced writes within a frame
+    // fire a single scroll event, so a counter > 1 can never drain and
+    // would swallow a later real user scroll.
     programmaticScrollPendingRef.current = 1
     scrollElementToBottom(el)
     lastTopRef.current = el.scrollTop
@@ -377,26 +387,33 @@ function useThreadScrollAnchor({
   }, [scrollerRef, stickyBottomRef])
 
   // Streaming auto-follow: after every render, if the user is parked at
-  // the bottom and the content has grown (new streaming tokens), pin the
-  // viewport to the bottom. Uses useLayoutEffect so it runs after React
-  // commits DOM mutations but before the browser paints — this avoids
-  // fighting with the virtualizer's own scrollToFn adjustments which
-  // happen during the same layout pass.
-  const prevScrollHeightRef = useRef(0)
+  // the bottom and the virtualizer's total content size grew (new
+  // streaming tokens), pin the viewport to the bottom. Uses
+  // useLayoutEffect so it runs after React commits DOM mutations but
+  // before the browser paints — this avoids fighting with the
+  // virtualizer's own scrollToFn adjustments which happen during the
+  // same layout pass.
+  //
+  // We key on virtualizer.getTotalSize() rather than reading
+  // el.scrollHeight directly to avoid forcing synchronous layout on
+  // every render. The virtualizer already tracks its total size
+  // internally, so we only re-run when content can actually change.
+  //
+  // eslint-disable-next-line react-hooks/exhaustive-deps — intentionally
+  // omits stickyBottomRef (a ref) and pinToBottom (stable callback);
+  // re-running on every render is the design.
+  const prevTotalSizeRef = useRef(0)
   useLayoutEffect(() => {
     if (!enabled) return
 
-    const el = scrollerRef.current
-    if (!el) return
+    const currentSize = virtualizer.getTotalSize()
+    const grew = currentSize > prevTotalSizeRef.current
+    prevTotalSizeRef.current = currentSize
 
-    const currentHeight = el.scrollHeight
-    const heightGrew = currentHeight > prevScrollHeightRef.current
-    prevScrollHeightRef.current = currentHeight
-
-    if (heightGrew && stickyBottomRef.current) {
+    if (grew && stickyBottomRef.current) {
       pinToBottom()
     }
-  })  // no deps — runs after every render
+  })
 
   // Jump to bottom on session change OR when an empty thread first gets
   // content. Both share the same intent and the same effect.
