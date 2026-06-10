@@ -2082,68 +2082,39 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # If LLM summary failed, insert a deterministic fallback so the model
         # gets at least locally recoverable continuity anchors instead of a
         # content-free "N messages were removed" marker.
+        fallback_summary_used = False
         if not summary:
             if not self.quiet_mode:
                 logger.warning("Summary generation failed — inserting deterministic fallback context summary")
             n_dropped = compress_end - compress_start
             self._last_summary_dropped_count = n_dropped
             self._last_summary_fallback_used = True
+            fallback_summary_used = True
             summary = self._build_static_fallback_summary(
                 turns_to_summarize,
                 reason=self._last_summary_error,
             )
 
-        _merge_summary_into_tail = False
-        last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
-        first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
-        # Pick a role that avoids consecutive same-role with both neighbors.
-        # Priority: avoid colliding with head (already committed), then tail.
-        if last_head_role in {"assistant", "tool"}:
-            summary_role = "user"
-        else:
-            summary_role = "assistant"
-        # If the chosen role collides with the tail AND flipping wouldn't
-        # collide with the head, flip it.
-        if summary_role == first_tail_role:
-            flipped = "assistant" if summary_role == "user" else "user"
-            if flipped != last_head_role:
-                summary_role = flipped
-            else:
-                # Both roles would create consecutive same-role messages
-                # (e.g. head=assistant, tail=user — neither role works).
-                # Merge the summary into the first tail message instead
-                # of inserting a standalone message that breaks alternation.
-                _merge_summary_into_tail = True
+        # Always use role="user" for standalone compaction summaries.
+        # The model treats role="assistant" summaries as its own prior output
+        # and echoes them verbatim, triggering a compaction loop (#42768).
+        # Using role="user" also ensures the end marker is always appended,
+        # which prevents the model from treating quoted content as fresh input
+        # (#11475, #14521).
+        summary_role = "user"
 
-        # When the summary lands as a standalone role="user" message,
-        # weak models read the verbatim "## Active Task" quote of a past
-        # user request as fresh input (#11475, #14521). Append the explicit
-        # end marker — the same one used in the merge-into-tail path — so
-        # the model has a clear "summary above, not new input" signal.
-        if not _merge_summary_into_tail and summary_role == "user":
-            summary = (
-                summary
-                + "\n\n--- END OF CONTEXT SUMMARY — "
-                "respond to the message below, not the summary above ---"
-            )
+        # Always append the end marker so the model knows the summary is
+        # background context, not fresh instructions (#11475, #14521, #42768).
+        summary = (
+            summary
+            + "\n\n--- END OF CONTEXT SUMMARY — "
+            "respond to the message below, not the summary above ---"
+        )
 
-        if not _merge_summary_into_tail:
-            compressed.append({"role": summary_role, "content": summary})
+        compressed.append({"role": summary_role, "content": summary})
 
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()
-            if _merge_summary_into_tail and i == compress_end:
-                merged_prefix = (
-                    summary
-                    + "\n\n--- END OF CONTEXT SUMMARY — "
-                    "respond to the message below, not the summary above ---\n\n"
-                )
-                msg["content"] = _append_text_to_content(
-                    msg.get("content"),
-                    merged_prefix,
-                    prepend=True,
-                )
-                _merge_summary_into_tail = False
             compressed.append(msg)
 
         self.compression_count += 1
@@ -2164,7 +2135,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Anti-thrashing: track compression effectiveness
         savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0
         self._last_compression_savings_pct = savings_pct
-        if savings_pct < 10:
+        if fallback_summary_used or savings_pct < 10:
             self._ineffective_compression_count += 1
         else:
             self._ineffective_compression_count = 0

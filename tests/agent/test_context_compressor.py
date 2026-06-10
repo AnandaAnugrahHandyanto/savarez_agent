@@ -166,6 +166,39 @@ class TestCompress:
         assert c._last_summary_fallback_used is True
         assert c._last_summary_dropped_count == 3
 
+    def test_summary_failure_counts_as_ineffective_compression(self):
+        """Fallback summaries must advance anti-thrashing even when they save tokens."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                protect_first_n=1,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+
+        msgs = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "middle " + "x" * 2000},
+            {"role": "assistant", "content": "middle " + "y" * 2000},
+            {"role": "user", "content": "middle " + "z" * 2000},
+            {"role": "assistant", "content": "middle " + "w" * 2000},
+            {"role": "user", "content": "tail 1"},
+            {"role": "assistant", "content": "tail 2"},
+        ]
+        c.last_prompt_tokens = 50_000
+
+        with (
+            patch.object(c, "_find_tail_cut_by_tokens", return_value=5),
+            patch(
+                "agent.context_compressor.call_llm",
+                side_effect=RuntimeError("provider down"),
+            ),
+        ):
+            c.compress(msgs)
+
+        assert c._last_summary_fallback_used is True
+        assert c._ineffective_compression_count == 1
+
     def test_compression_increments_count(self, compressor):
         msgs = self._make_messages(10)
         # Default config (abort_on_summary_failure=False) — fallback path
@@ -1281,7 +1314,7 @@ class TestCompressWithClient:
         assert summary_msg[0]["role"] == "user"
 
     def test_summary_role_avoids_consecutive_user_when_head_ends_with_user(self):
-        """When last head message is 'user', summary must be 'assistant' to avoid two consecutive user messages."""
+        """When the head ends with 'user', summary still stays standalone user (#42768)."""
         mock_client = MagicMock()
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
@@ -1291,10 +1324,11 @@ class TestCompressWithClient:
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
 
-        # Last head message (index 2) is "user" → summary should be "assistant"
-        # NOTE: protect_first_n=2 preserves 2 non-system messages in addition to
-        # the system prompt (always implicitly protected), yielding head [system,
-        # user, user] with last head = user.
+        # Last head message (index 2) is "user".
+        # compress_start = 1 (system) + 2 (protect_first_n) = 3.
+        # compress_end = 8 - min_tail(3) = 5. First tail = "assistant" (index 5).
+        # summary_role="user" collides with head (user), but avoiding the
+        # assistant-role echo loop is more important than role alternation.
         msgs = [
             {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "msg 1"},
@@ -1311,11 +1345,14 @@ class TestCompressWithClient:
             m for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)
         ]
         assert len(summary_msg) == 1
-        assert summary_msg[0]["role"] == "assistant"
+        assert summary_msg[0]["role"] == "user"
+        assert "END OF CONTEXT SUMMARY" in summary_msg[0]["content"]
 
     def test_summary_role_flips_to_avoid_tail_collision(self):
-        """When summary role collides with the first tail message but flipping
-        doesn't collide with head, the role should be flipped."""
+        """When summary_role='user' collides with a user tail, the summary
+        is merged into the first tail message instead of flipping to
+        role='assistant' (#42768).
+        """
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "summary text"
@@ -1323,9 +1360,8 @@ class TestCompressWithClient:
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
 
-        # Head ends with tool (index 1), tail starts with user (index 6).
-        # Default: tool → summary_role="user" → collides with tail.
-        # Flip to "assistant" → tool→assistant is fine.
+        # Head ends with tool (index 2), tail starts with user (index 6).
+        # summary_role="user" collides with tail → merge into tail.
         msgs = [
             {"role": "user", "content": "msg 0"},
             {"role": "assistant", "content": "", "tool_calls": [
@@ -1348,13 +1384,7 @@ class TestCompressWithClient:
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
     def test_double_collision_merges_summary_into_tail(self):
-        """When neither role avoids collision with both neighbors, the summary
-        should be merged into the first tail message rather than creating a
-        standalone message that breaks role alternation.
-
-        Common scenario: head ends with 'assistant', tail starts with 'user'.
-        summary='user' collides with tail, summary='assistant' collides with head.
-        """
+        """Double-collision still emits a standalone user summary (#42768)."""
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "summary text"
@@ -1364,7 +1394,9 @@ class TestCompressWithClient:
 
         # Head: [system, user, assistant]  →  last head = assistant
         # Tail: [user, assistant, user]    →  first tail = user
-        # summary_role="user" collides with tail, "assistant" collides with head → merge
+        # summary_role="user" collides with tail, "assistant" collides with head.
+        # The fix favors a standalone user summary over an assistant summary or
+        # a tail merge that makes the summary look like prior assistant output.
         # NOTE: protect_first_n=2 preserves 2 non-system messages in addition to
         # the system prompt (always implicitly protected).
         msgs = [
@@ -1381,20 +1413,13 @@ class TestCompressWithClient:
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
 
-        # Verify no consecutive user or assistant messages
-        for i in range(1, len(result)):
-            r1 = result[i - 1].get("role")
-            r2 = result[i].get("role")
-            if r1 in {"user", "assistant"} and r2 in {"user", "assistant"}:
-                assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
-
-        # The summary text should be merged into the first tail message
-        first_tail = [m for m in result if "msg 6" in (m.get("content") or "")]
-        assert len(first_tail) == 1
-        assert "summary text" in first_tail[0]["content"]
+        summary_msgs = [m for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)]
+        assert len(summary_msgs) == 1
+        assert summary_msgs[0]["role"] == "user"
+        assert "summary text" in summary_msgs[0]["content"]
 
     def test_double_collision_merges_summary_into_list_tail_content(self):
-        """Structured tail content should accept a merged summary without TypeError."""
+        """Structured tail content is left untouched; summary is standalone user (#42768)."""
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "summary text"
@@ -1417,20 +1442,18 @@ class TestCompressWithClient:
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
 
-        merged_tail = next(
+        summary_msgs = [
             m for m in result
-            if m.get("role") == "user" and isinstance(m.get("content"), list)
-        )
-        assert isinstance(merged_tail["content"], list)
-        assert "summary text" in merged_tail["content"][0]["text"]
-        assert any(
-            isinstance(block, dict) and block.get("text") == "msg 6"
-            for block in merged_tail["content"]
-        )
+            if isinstance(m.get("content"), str) and m["content"].startswith(SUMMARY_PREFIX)
+        ]
+        assert len(summary_msgs) == 1
+        assert summary_msgs[0]["role"] == "user"
+        assert "summary text" in summary_msgs[0]["content"]
+        list_tail = next(m for m in result if isinstance(m.get("content"), list))
+        assert list_tail["content"] == [{"type": "text", "text": "msg 6"}]
 
     def test_double_collision_user_head_assistant_tail(self):
-        """Reverse double collision: head ends with 'user', tail starts with 'assistant'.
-        summary='assistant' collides with tail, 'user' collides with head → merge."""
+        """Reverse collision still emits a standalone user summary (#42768)."""
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "summary text"
@@ -1440,11 +1463,8 @@ class TestCompressWithClient:
 
         # Head: [system, user]        → last head = user
         # Tail: [assistant, user, assistant] → first tail = assistant
-        # summary_role="assistant" collides with tail, "user" collides with head → merge
-        # NOTE: protect_first_n=1 preserves 1 non-system message in addition to
-        # the system prompt (always implicitly protected).
-        # With min_tail=3, tail = last 3 messages (indices 5-7).
-        # Need 8 messages: _min_for_compress = head(2) + 3 + 1 = 6, must have > 6.
+        # summary_role="user" collides with head, but remains standalone so
+        # the model cannot echo an assistant-role handoff as its own answer.
         msgs = [
             {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "msg 1"},
@@ -1458,17 +1478,10 @@ class TestCompressWithClient:
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
 
-        # Verify no consecutive user or assistant messages
-        for i in range(1, len(result)):
-            r1 = result[i - 1].get("role")
-            r2 = result[i].get("role")
-            if r1 in {"user", "assistant"} and r2 in {"user", "assistant"}:
-                assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
-
-        # The summary should be merged into the first tail message (assistant at index 5)
-        first_tail = [m for m in result if "msg 5" in (m.get("content") or "")]
-        assert len(first_tail) == 1
-        assert "summary text" in first_tail[0]["content"]
+        summary_msgs = [m for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)]
+        assert len(summary_msgs) == 1
+        assert summary_msgs[0]["role"] == "user"
+        assert "summary text" in summary_msgs[0]["content"]
 
     def test_no_collision_scenarios_still_work(self):
         """Verify that the common no-collision cases (head=assistant/tail=assistant,
@@ -1539,6 +1552,104 @@ class TestCompressWithClient:
         for msg in result:
             if msg.get("role") == "tool" and msg.get("tool_call_id"):
                 assert msg["tool_call_id"] in called_ids
+
+
+class TestCompactionSummaryAlwaysUser:
+    """Verify that compaction summaries are always role='user' with end marker (#42768).
+
+    The model can echo role='assistant' summaries as its own output, causing a
+    compaction loop. All standalone summaries must be role='user' and carry the
+    explicit end marker to prevent this.
+    """
+
+    def test_head_user_tail_assistant_summary_is_user(self):
+        """When head ends with 'user' and tail starts with 'assistant', the
+        old code chose summary_role='assistant' — which the model echoes as
+        its own output, triggering a compaction loop (#42768).
+        The summary must now be 'user' with the end marker.
+        """
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: stuff happened"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        # Last head message (index 2) is "user" → old code picked "assistant"
+        # First tail message starts with "assistant" → no flip needed
+        # This is the exact scenario from #42768 that causes the loop.
+        msgs = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "user", "content": "msg 2"},  # last head — user
+            {"role": "assistant", "content": "msg 3"},
+            {"role": "user", "content": "msg 4"},
+            {"role": "assistant", "content": "msg 5"},
+            {"role": "user", "content": "msg 6"},
+            {"role": "assistant", "content": "msg 7"},
+        ]
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+        summary_msg = [
+            m for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)
+        ]
+        assert len(summary_msg) == 1
+        assert summary_msg[0]["role"] == "user", (
+            "Compaction summary must be role='user' to prevent the model from "
+            "echoing it as its own output (#42768)"
+        )
+        assert "END OF CONTEXT SUMMARY" in summary_msg[0]["content"], (
+            "Compaction summary must carry the end marker (#42768)"
+        )
+
+    def test_all_standalone_summaries_are_user_role(self):
+        """Regardless of head/tail role ordering, standalone summaries must
+        always be role='user' to prevent the model echo loop."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: stuff happened"
+
+        # Try multiple head/tail role combinations
+        test_cases = [
+            # head ends with assistant, tail starts with assistant
+            [
+                {"role": "user", "content": "msg 0"},
+                {"role": "assistant", "content": "msg 1"},
+                {"role": "user", "content": "msg 2"},
+                {"role": "assistant", "content": "msg 3"},
+                {"role": "user", "content": "msg 4"},
+                {"role": "assistant", "content": "msg 5"},
+                {"role": "user", "content": "msg 6"},
+                {"role": "assistant", "content": "msg 7"},
+            ],
+            # head ends with user, tail starts with assistant (the #42768 case)
+            [
+                {"role": "system", "content": "system prompt"},
+                {"role": "user", "content": "msg 1"},
+                {"role": "user", "content": "msg 2"},
+                {"role": "assistant", "content": "msg 3"},
+                {"role": "user", "content": "msg 4"},
+                {"role": "assistant", "content": "msg 5"},
+                {"role": "user", "content": "msg 6"},
+                {"role": "assistant", "content": "msg 7"},
+            ],
+        ]
+
+        for msgs in test_cases:
+            with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+                c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+            with patch("agent.context_compressor.call_llm", return_value=mock_response):
+                result = c.compress(msgs)
+            summary_msgs = [
+                m for m in result
+                if (m.get("content") or "").startswith(SUMMARY_PREFIX)
+            ]
+            assert len(summary_msgs) >= 1, "expected at least one summary message"
+            for sm in summary_msgs:
+                assert sm["role"] == "user", (
+                    f"standalone summary must be role='user' (#42768), "
+                    f"got role={sm['role']}"
+                )
 
 
 class TestSummaryTargetRatio:
