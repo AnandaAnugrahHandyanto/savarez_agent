@@ -3881,6 +3881,18 @@ def _save_xai_oauth_tokens(
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with _auth_store_lock():
         auth_store = _load_auth_store()
+
+        # Detect whether the profile has its own xai-oauth entry or if
+        # _load_provider_state would fall back to the global root.  When
+        # xAI rotates the refresh token on every refresh, saving the new
+        # token only into the profile leaves root with a revoked token,
+        # killing every other profile that reads the stale fallback.
+        profile_providers = auth_store.get("providers")
+        profile_has_own = (
+            isinstance(profile_providers, dict)
+            and isinstance(profile_providers.get("xai-oauth"), dict)
+        )
+
         state = _load_provider_state(auth_store, "xai-oauth") or {}
         state["tokens"] = tokens
         state["last_refresh"] = last_refresh
@@ -3891,6 +3903,25 @@ def _save_xai_oauth_tokens(
             state["redirect_uri"] = redirect_uri
         _save_provider_state(auth_store, "xai-oauth", state)
         _save_auth_store(auth_store)
+
+        # When the state was originally loaded from the global root (not
+        # the profile), push the rotated tokens back so root never holds
+        # a revoked refresh token.  Only needed in profile mode where the
+        # two stores differ.
+        if not profile_has_own:
+            try:
+                global_path = _global_auth_file_path()
+                if global_path is not None:
+                    global_store = _load_auth_store(global_path)
+                    _save_provider_state(global_store, "xai-oauth", dict(state))
+                    _save_auth_store(global_store)
+            except Exception:
+                # Best-effort: a failure writing back to root must not
+                # break the normal profile save path.
+                logger.debug(
+                    "Failed to propagate rotated xAI tokens to global root",
+                    exc_info=True,
+                )
 
 
 def _xai_access_token_is_expiring(access_token: str, skew_seconds: int = 0) -> bool:
