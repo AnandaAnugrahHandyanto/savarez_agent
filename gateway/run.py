@@ -86,6 +86,15 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_CHAT_NOISY_STATUS_RE = re.compile(
+    r"("
+    r"codex\s+gpt-5\.5\s+caps\s+context"
+    r"|auto-compaction\s+was\s+raised"
+    r"|compression\.codex_gpt55_autoraise"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
     r"api\s+(?:call\s+)?failed"
@@ -308,7 +317,10 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
-    if _gateway_platform_value(platform) != "telegram":
+    platform_value = _gateway_platform_value(platform)
+    if platform_value != "local" and _CHAT_NOISY_STATUS_RE.search(text):
+        return None
+    if platform_value != "telegram":
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
@@ -6261,6 +6273,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:
         #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
+        #   {"action": "skip_reply", "text": ...}   -> reply, then drop
         #   {"action": "rewrite", "text":  ...}     -> replace event.text, continue
         #   {"action": "allow"}   /   None          -> normal dispatch
         # Hook runs BEFORE auth so plugins can handle unauthorized senders
@@ -6285,6 +6298,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _action == "skip":
                     logger.info(
                         "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
+                        _result.get("reason"),
+                        source.platform.value if source.platform else "unknown",
+                        source.chat_id or "unknown",
+                    )
+                    return None
+                if _action == "skip_reply":
+                    _reply_text = _result.get("text")
+                    if isinstance(_reply_text, str) and _reply_text.strip():
+                        _adapter = self.adapters.get(source.platform)
+                        if _adapter and source.chat_id:
+                            try:
+                                await _adapter.send(
+                                    source.chat_id,
+                                    _reply_text.strip(),
+                                    metadata=self._thread_metadata_for_source(
+                                        source,
+                                        self._reply_anchor_for_event(event),
+                                    ),
+                                )
+                            except Exception as _send_exc:
+                                logger.warning(
+                                    "pre_gateway_dispatch skip_reply send failed: %s",
+                                    _send_exc,
+                                )
+                    logger.info(
+                        "pre_gateway_dispatch skip_reply: reason=%s platform=%s chat=%s",
                         _result.get("reason"),
                         source.platform.value if source.platform else "unknown",
                         source.chat_id or "unknown",
