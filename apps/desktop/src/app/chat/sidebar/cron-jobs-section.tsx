@@ -14,6 +14,8 @@ import type { CronJob } from '@/types/hermes'
 import { jobState, jobTitle, STATE_DOT } from '../../cron/job-state'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 
+import { SidebarLoadMoreRow } from './load-more-row'
+
 const INACTIVE_STATES = new Set(['completed', 'disabled', 'error', 'paused'])
 
 // Recent runs shown in the inline quick-peek — enough to glance at history
@@ -23,6 +25,11 @@ const PEEK_RUN_LIMIT = 5
 // Runs are written by the background scheduler tick (no UI signal), so poll the
 // open peek so a freshly-fired run shows up within a few seconds.
 const PEEK_POLL_INTERVAL_MS = 8000
+
+// Keep the section compact: show a few jobs up front, reveal more in larger
+// steps on demand (mirrors the messaging sections in the sidebar).
+const INITIAL_VISIBLE_JOBS = 3
+const LOAD_MORE_STEP = 10
 
 const relativeFmt = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })
 
@@ -100,6 +107,8 @@ export function SidebarCronJobsSection({
   const [nowMs, setNowMs] = useState(() => Date.now())
   // Single-open inline peek so the section stays scannable.
   const [peekJobId, setPeekJobId] = useState<null | string>(null)
+  // Rows revealed so far; starts compact, grows in steps via "load more".
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_JOBS)
 
   // One clock for the whole section (rows are pure) so the countdowns tick
   // without re-rendering the rest of the sidebar. Only runs while expanded.
@@ -136,7 +145,9 @@ export function SidebarCronJobsSection({
     })
   }, [jobs])
 
-  const shown = sorted.slice(0, max)
+  const cap = Math.min(visibleCount, max)
+  const shown = sorted.slice(0, cap)
+  const hiddenCount = Math.min(sorted.length, max) - shown.length
   // When capped, signal "50+" rather than implying the list is complete.
   const countLabel = jobs.length > max ? `${max}+` : String(jobs.length)
 
@@ -157,7 +168,7 @@ export function SidebarCronJobsSection({
         </button>
       </div>
       {open && (
-        <SidebarGroupContent className="flex max-h-72 shrink-0 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75 short:max-h-none short:overflow-visible">
+        <SidebarGroupContent className="flex max-h-72 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75 compact:max-h-none compact:overflow-visible">
           {shown.map(job => (
             <CronJobSidebarRow
               expanded={peekJobId === job.id}
@@ -170,6 +181,12 @@ export function SidebarCronJobsSection({
               onTrigger={() => onTriggerJob(job.id)}
             />
           ))}
+          {hiddenCount > 0 && (
+            <SidebarLoadMoreRow
+              onClick={() => setVisibleCount(count => count + LOAD_MORE_STEP)}
+              step={Math.min(LOAD_MORE_STEP, hiddenCount)}
+            />
+          )}
         </SidebarGroupContent>
       )}
     </SidebarGroup>

@@ -1,13 +1,20 @@
 // Dev-only sidebar stress harness. Splats a large, varied set of fake sessions
 // across every sidebar section (recents + workspace groups, pinned, per-platform
-// messaging, cron jobs) so the layout's resize behaviour can be stress-tested at
-// short window heights without a populated backend. Tree-shaken out of
-// production builds; loaded from main.tsx alongside the perf probe.
+// messaging, cron jobs) so the layout can be stress-tested without a populated
+// backend. Tree-shaken out of production builds; loaded from main.tsx alongside
+// the perf probe.
+//
+// Each non-session group (pinned, every messaging platform, cron) is its own
+// capped scroller, so flooding one group just makes it scroll internally —
+// siblings are never pushed off-screen. The whole stack only falls back to a
+// single outer scroll when the window is too short to show every open group at
+// its cap. Use this to confirm both modes.
 //
 // Usage (devtools console):
-//   __hermesSidebarStress.seed()              // sensible defaults
-//   __hermesSidebarStress.seed({ platforms: 12, perPlatform: 30, pins: 10 })
-//   __hermesSidebarStress.clear()             // restore empty atoms
+//   __hermesSidebarStress.seed()                 // realistic — independent group scrollers at fullscreen
+//   __hermesSidebarStress.heavy()                // floods every group (many platforms → outer scroll engages)
+//   __hermesSidebarStress.seed({ perPlatform: 5000 })  // hammer one section's internal scroller
+//   __hermesSidebarStress.clear()                // restore live data
 //
 // Or auto-seed on boot with a query param: `?sidebarStress=1` (defaults) or
 // `?sidebarStress=120` (that many recents).
@@ -43,14 +50,31 @@ interface StressSeedOptions {
   cron?: number
 }
 
-const DEFAULTS: Required<StressSeedOptions> = {
-  recents: 80,
-  workspaces: 5,
-  pins: 8,
-  platforms: 10,
-  perPlatform: 25,
-  cron: 60
-}
+const PRESETS = {
+  /** Fits comfortably at fullscreen — use this to verify per-group scrollers.
+   *  Recents mirrors the real first page (SIDEBAR_SESSIONS_PAGE_SIZE = 50), since
+   *  Sessions is the main list and is meant to be populated; the non-session
+   *  groups stay small because they collapse + cap to a few rows by default. */
+  light: {
+    recents: 50,
+    workspaces: 4,
+    pins: 2,
+    platforms: 2,
+    perPlatform: 8,
+    cron: 4
+  },
+  /** Floods every section. Many open platforms exceed the viewport → outer scroll engages. */
+  heavy: {
+    recents: 80,
+    workspaces: 5,
+    pins: 8,
+    platforms: 10,
+    perPlatform: 25,
+    cron: 60
+  }
+} satisfies Record<string, Required<StressSeedOptions>>
+
+const DEFAULTS = PRESETS.light
 
 const TITLES = [
   'Confusing accidental vortex',
@@ -229,7 +253,7 @@ function seed(options: StressSeedOptions = {}): void {
     `[sidebar-stress] seeded ${payload.recents.length} recents, ` +
       `${Object.keys(payload.platformTotals).length} platforms (${payload.messaging.length} convos), ` +
       `${payload.pinnedIds.length} pins, ${payload.cron.length} cron jobs — ` +
-      'keep-alive ON (call __hermesSidebarStress.clear() to release)'
+      'keep-alive ON (clear() to release). seed() = independent group scrollers, heavy() = flood.'
   )
 }
 
@@ -250,14 +274,21 @@ function clear(): void {
 declare global {
   interface Window {
     __hermesSidebarStress?: {
+      /** Realistic load — independent group scrollers at fullscreen. */
       seed: (options?: StressSeedOptions) => void
+      /** Extreme load — floods every group; outer scroll engages once they exceed the viewport. */
+      heavy: (options?: StressSeedOptions) => void
       clear: () => void
     }
   }
 }
 
 if (typeof window !== 'undefined' && !window.__hermesSidebarStress) {
-  window.__hermesSidebarStress = { seed, clear }
+  window.__hermesSidebarStress = {
+    seed: (options = {}) => seed({ ...PRESETS.light, ...options }),
+    heavy: (options = {}) => seed({ ...PRESETS.heavy, ...options }),
+    clear
+  }
 
   try {
     const raw = new URLSearchParams(window.location.search).get('sidebarStress')

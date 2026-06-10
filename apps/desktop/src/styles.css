@@ -4,10 +4,12 @@
 @import 'katex/dist/katex.min.css';
 @import '@vscode/codicons/dist/codicon.css';
 @custom-variant dark (&:is(.dark *));
-/* Short viewports collapse the sidebar's per-section scrollers into one shared
-   scroll stack so section headers can't overlap. ~830px is where the sections
-   stop fitting (see ChatSidebar). */
-@custom-variant short (@media (max-height: 830px));
+
+/* Sidebar section layout has two modes (see app/chat/sidebar/index.tsx):
+   tall  → each section is its own independent scroller;
+   short → sections flatten and the whole stack scrolls as one.
+   The single knob is this height threshold. */
+@custom-variant compact (@media (max-height: 768px));
 
 @font-face {
   font-family: 'Collapse';
