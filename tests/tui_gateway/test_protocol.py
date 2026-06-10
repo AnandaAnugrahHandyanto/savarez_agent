@@ -10,6 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tui_gateway.session_state import SessionState
+
 _original_stdout = sys.stdout
 
 
@@ -637,7 +639,7 @@ def test_session_activate_rebinds_orphaned_ws_session_to_current_transport(serve
     sid = "runtime01"
     old_transport = server._stdio_transport
     new_transport = _Transport()
-    server._sessions[sid] = {
+    server._sessions[sid] = SessionState({
         "agent": types.SimpleNamespace(model="test/model"),
         "created_at": 123.0,
         "history": [],
@@ -646,7 +648,7 @@ def test_session_activate_rebinds_orphaned_ws_session_to_current_transport(serve
         "running": False,
         "session_key": "20260409_010101_abc123",
         "transport": old_transport,
-    }
+    })
     monkeypatch.setattr(server, "current_transport", lambda: new_transport)
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(
@@ -710,12 +712,12 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
 
     parent_sid = "parent01"
     parent_key = "20260101_000000_parent"
-    server._sessions[parent_sid] = {
+    server._sessions[parent_sid] = SessionState({
         "session_key": parent_key,
         "history": [{"role": "user", "content": "hello"}],
         "history_lock": threading.Lock(),
         "cols": 80,
-    }
+    })
 
     resp = server.handle_request(
         {"id": "b1", "method": "session.branch", "params": {"session_id": parent_sid}}
@@ -1303,13 +1305,13 @@ def test_command_dispatch_retry_finds_last_user_message(server):
         {"role": "user", "content": "second question"},
         {"role": "assistant", "content": "second answer"},
     ]
-    server._sessions[sid] = {
+    server._sessions[sid] = SessionState({
         "session_key": sid,
         "agent": None,
         "history": history,
         "history_lock": threading.Lock(),
         "history_version": 0,
-    }
+    })
 
     resp = server.handle_request({
         "id": "r4",
@@ -1358,13 +1360,13 @@ def test_command_dispatch_retry_handles_multipart_content(server):
         ]},
         {"role": "assistant", "content": "I see the image."},
     ]
-    server._sessions[sid] = {
+    server._sessions[sid] = SessionState({
         "session_key": sid,
         "agent": None,
         "history": history,
         "history_lock": threading.Lock(),
         "history_version": 0,
-    }
+    })
 
     resp = server.handle_request({
         "id": "r6",

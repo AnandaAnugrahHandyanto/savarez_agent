@@ -18,6 +18,8 @@ import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from tui_gateway.session_state import SessionState
+
 import pytest
 
 from hermes_state import SessionDB
@@ -68,7 +70,7 @@ def session_with_history(server, db):
     agent = MagicMock()
     agent._memory_manager = MagicMock()
     agent._last_flushed_db_idx = len(history)
-    s = {
+    s = SessionState({
         "session_key": session_key,
         "history": list(history),
         "history_lock": threading.Lock(),
@@ -77,7 +79,7 @@ def session_with_history(server, db):
         "agent": agent,
         "attached_images": [],
         "cols": 120,
-    }
+    })
     server._sessions[sid] = s
     # Wire the DB cache so _get_db() returns our fixture.
     server._db = db

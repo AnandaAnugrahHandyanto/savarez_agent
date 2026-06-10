@@ -473,7 +473,7 @@ def _attach_worker(sid: str, session: dict, worker) -> None:
     worker. Closes the create/close race at every slash-worker spawn site."""
     with _sessions_lock:
         if _sessions.get(sid) is session:
-            session["slash_worker"] = worker
+            session.slash_worker = worker
             return
     worker.close()
 
@@ -565,7 +565,7 @@ def _close_sessions_for_transport(
             # Point detached sessions at the drop sentinel (NOT real stdio) so
             # _ws_session_is_orphaned recognizes them and the grace-reap can
             # actually fire; a standalone `hermes --tui` keeps real _stdio.
-            session["transport"] = _detached_ws_transport
+            session.transport = _detached_ws_transport
             detached += 1
             try:
                 _schedule_ws_orphan_reap(sid)
@@ -900,7 +900,7 @@ def _start_agent_build(sid: str, session: SessionState) -> None:
         return
     if not session.build_once():
         return
-    key = session["session_key"]
+    key = session.session_key
 
     def _build() -> None:
         with _sessions_lock:
@@ -934,7 +934,7 @@ def _start_agent_build(sid: str, session: SessionState) -> None:
 
             # Session DB row deferred to first run_conversation() call.
             # pending_title applied post-first-message (see cli.exec handler).
-            current["agent"] = agent
+            current.agent = agent
 
             try:
                 worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
@@ -1100,7 +1100,7 @@ def _git_branch_for_cwd(cwd: str) -> str:
 
 def _session_cwd(session: dict | None) -> str:
     if session and session.get("cwd"):
-        return str(session["cwd"])
+        return str(session.cwd)
     return _completion_cwd()
 
 
@@ -1111,7 +1111,7 @@ def _register_session_cwd(session: dict | None) -> None:
         from tools.terminal_tool import register_task_env_overrides
 
         register_task_env_overrides(
-            session["session_key"], {"cwd": _terminal_task_cwd(session)}
+            session.session_key, {"cwd": _terminal_task_cwd(session)}
         )
     except Exception:
         pass
@@ -1126,7 +1126,7 @@ def _ensure_session_db_row(session: dict) -> None:
     lazy create) are no-ops.
 
     Only an *explicitly chosen* workspace is persisted as the session's cwd.
-    The agent still runs in the auto-detected directory (session["cwd"]), but
+    The agent still runs in the auto-detected directory (session.cwd), but
     we don't stamp that onto the row — otherwise every session the user never
     picked a folder for gets grouped under whatever directory the desktop
     happened to launch in (e.g. "desktop"). Leaving it null groups them under
@@ -1174,7 +1174,7 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     resolved = os.path.abspath(os.path.expanduser(str(cwd)))
     if not os.path.isdir(resolved):
         raise ValueError(f"working directory does not exist: {cwd}")
-    session["cwd"] = resolved
+    session.cwd = resolved
     # An explicit user choice — persist it as the workspace (and let a later
     # lazy row creation persist it too, not the launch-dir fallback).
     session["explicit_cwd"] = True
@@ -1188,7 +1188,7 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     try:
         from tools.terminal_tool import cleanup_vm
 
-        cleanup_vm(session["session_key"])
+        cleanup_vm(session.session_key)
     except Exception:
         pass
     return resolved
@@ -1664,11 +1664,11 @@ def _restart_slash_worker(sid: str, session: dict):
             pass
     try:
         new_worker = _SlashWorker(
-            session["session_key"],
+            session.session_key,
             getattr(session.get("agent"), "model", _resolve_model()),
         )
     except Exception:
-        session["slash_worker"] = None
+        session.slash_worker = None
         return
     # Route through the same store-iff-still-mapped guard as the spawn sites:
     # the post-turn restart runs as `running` flips false, exactly when a
@@ -1829,7 +1829,7 @@ def _compress_session_history(
 ) -> tuple[int, dict]:
     from agent.model_metadata import estimate_request_tokens_rough
 
-    agent = session["agent"]
+    agent = session.agent
     # Snapshot history under the lock so the LLM-bound compression call
     # below does NOT hold history_lock for the duration of the request —
     # otherwise other handlers acquiring the lock (prompt.submit etc.)
@@ -1911,7 +1911,7 @@ def _sync_session_key_after_compress(
             unregister_gateway_notify(old_key)
         except Exception:
             pass
-        session["session_key"] = new_session_id
+        session.session_key = new_session_id
         try:
             yolo_was_on = is_session_yolo_enabled(old_key)
         except Exception:
@@ -1933,7 +1933,7 @@ def _sync_session_key_after_compress(
         # Even if the approval module fails to import, still anchor the
         # session_key on the new continuation id so downstream lookups
         # don't keep targeting the ended row.
-        session["session_key"] = new_session_id
+        session.session_key = new_session_id
 
     if clear_pending_title:
         session["pending_title"] = None
@@ -2628,9 +2628,9 @@ def _apply_personality_to_session(
                 "[System: The user has cleared the personality overlay. "
                 "From this point forward, respond in your normal default style.]"
             )
-        with session["history_lock"]:
-            session["history"].append({"role": "user", "content": marker})
-            session["history_version"] = int(session.get("history_version", 0)) + 1
+        with session.history_lock:
+            session.history.append({"role": "user", "content": marker})
+            session.history_version = int(session.get("history_version", 0)) + 1
         info = _session_info(agent)
         _emit("session.info", sid, info)
         return False, info
@@ -2748,7 +2748,7 @@ def _preview_restart_history(session: dict, max_messages: int = 24, max_tool_cha
     truncated so we don't blow the context window with file dumps.
     """
     try:
-        with session["history_lock"]:
+        with session.history_lock:
             history = list(session.get("history", []) or [])
     except Exception:
         history = list(session.get("history", []) or [])
@@ -2849,12 +2849,12 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 
 
 def _reset_session_agent(sid: str, session: dict) -> dict:
-    tokens = _set_session_context(session["session_key"])
+    tokens = _set_session_context(session.session_key)
     try:
         new_agent = _make_agent(
             sid,
-            session["session_key"],
-            session_id=session["session_key"],
+            session.session_key,
+            session_id=session.session_key,
             # Preserve this session's chosen model across /new so a reset
             # doesn't silently revert to global config (or to a model another
             # session set). See the cross-session-contamination note in
@@ -2863,17 +2863,17 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         )
     finally:
         _clear_session_context(tokens)
-    session["agent"] = new_agent
+    session.agent = new_agent
     session["attached_images"] = []
     session["edit_snapshots"] = {}
     session["image_counter"] = 0
-    session["running"] = False
+    session.running = False
     session["show_reasoning"] = _load_show_reasoning()
     session["tool_progress_mode"] = _load_tool_progress_mode()
     session["tool_started_at"] = {}
-    with session["history_lock"]:
-        session["history"] = []
-        session["history_version"] = int(session.get("history_version", 0)) + 1
+    with session.history_lock:
+        session.history = []
+        session.history_version = int(session.get("history_version", 0)) + 1
     info = _session_info(new_agent, session)
     _emit("session.info", sid, info)
     _restart_slash_worker(sid, session)
@@ -3066,7 +3066,7 @@ def _new_session_key() -> str:
 
 
 def _with_checkpoints(session, fn):
-    return fn(session["agent"]._checkpoint_mgr, _session_cwd(session))
+    return fn(session.agent._checkpoint_mgr, _session_cwd(session))
 
 
 def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
@@ -3343,7 +3343,7 @@ def _inflight_text(value: Any) -> str:
 
 def _start_inflight_turn(session: dict, text: Any) -> None:
     now = time.time()
-    session["inflight_turn"] = {
+    session.inflight_turn = {
         "assistant": "",
         "started_at": now,
         "streaming": True,
@@ -3362,11 +3362,11 @@ def _append_inflight_delta(session: dict, delta: Any) -> None:
     turn["assistant"] = f"{turn.get('assistant') or ''}{text}"
     turn["streaming"] = True
     turn["updated_at"] = time.time()
-    session["inflight_turn"] = turn
+    session.inflight_turn = turn
 
 
 def _clear_inflight_turn(session: dict) -> None:
-    session["inflight_turn"] = None
+    session.inflight_turn = None
 
 
 def _inflight_snapshot(session: dict) -> dict | None:
@@ -3839,13 +3839,13 @@ def _live_session_payload(
     touch: bool = False,
     transport: Transport | None = None,
 ) -> dict:
-    with session["history_lock"]:
+    with session.history_lock:
         if cols is not None:
-            session["cols"] = cols
+            session.cols = cols
         if transport is not None:
-            session["transport"] = transport
+            session.transport = transport
         if touch:
-            session["last_active"] = time.time()
+            session.last_active = time.time()
         history = list(session.get("display_history_prefix") or []) + list(
             session.get("history") or []
         )
@@ -3978,7 +3978,7 @@ def _(rid, params: dict) -> dict:
     db = _get_db()
     if db is None:
         return _db_unavailable_error(rid, code=5007)
-    key = session["session_key"]
+    key = session.session_key
     if "title" not in params:
         fallback = session.get("pending_title") or ""
         try:
@@ -4126,7 +4126,7 @@ def _(rid, params: dict) -> dict:
     if db is not None and session.get("session_key"):
         try:
             history = db.get_messages_as_conversation(
-                session["session_key"], include_ancestors=True
+                session.session_key, include_ancestors=True
             )
         except Exception:
             pass
@@ -4154,7 +4154,7 @@ def _(rid, params: dict) -> dict:
             rid, 4009, "session busy — /interrupt the current turn before /undo"
         )
     removed = 0
-    with session["history_lock"]:
+    with session.history_lock:
         history = session.get("history", [])
         while history and history[-1].get("role") in {"assistant", "tool"}:
             history.pop()
@@ -4163,7 +4163,7 @@ def _(rid, params: dict) -> dict:
             history.pop()
             removed += 1
         if removed:
-            session["history_version"] = int(session.get("history_version", 0)) + 1
+            session.history_version = int(session.get("history_version", 0)) + 1
     return _ok(rid, {"removed": removed})
 
 
@@ -4184,7 +4184,7 @@ def _(rid, params: dict) -> dict:
 
         before_messages, history_version = session.snapshot_history()
         before_count = len(before_messages)
-        _agent = session["agent"]
+        _agent = session.agent
         _sys_prompt = getattr(_agent, "_cached_system_prompt", "") or ""
         _tools = getattr(_agent, "tools", None) or None
         before_tokens = (
@@ -4212,7 +4212,7 @@ def _(rid, params: dict) -> dict:
                 before_messages=before_messages,
                 history_version=history_version,
             )
-            with session["history_lock"]:
+            with session.history_lock:
                 messages = list(session.get("history", []))
             after_count = len(messages)
             # Re-read system prompt + tools after compression — _compress_context
@@ -4230,7 +4230,7 @@ def _(rid, params: dict) -> dict:
                 if after_count
                 else 0
             )
-            agent = session["agent"]
+            agent = session.agent
             _sync_session_key_after_compress(sid, session)
             summary = summarize_manual_compression(
                 before_messages, messages, before_tokens, after_tokens
@@ -4267,7 +4267,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
 
-    agent = session["agent"]
+    agent = session.agent
     # Mirror the classic CLI /save: snapshot under the Hermes profile home
     # (~/.hermes/sessions/saved/) rather than the project/workspace CWD, and
     # include the system prompt so the export matches the dashboard save.
@@ -4280,7 +4280,7 @@ def _(rid, params: dict) -> dict:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     path = saved_dir / f"hermes_conversation_{timestamp}.json"
 
-    with session["history_lock"]:
+    with session.history_lock:
         messages = list(session.get("history", []))
 
     session_id = getattr(agent, "session_id", None) or session.get("session_key") or ""
@@ -4336,8 +4336,8 @@ def _(rid, params: dict) -> dict:
     db = _get_db()
     if db is None:
         return _db_unavailable_error(rid, code=5008)
-    old_key = session["session_key"]
-    with session["history_lock"]:
+    old_key = session.session_key
+    with session.history_lock:
         history = [dict(msg) for msg in session.get("history", [])]
     if not history:
         return _err(rid, 4008, "nothing to branch — send a message first")
@@ -4404,8 +4404,8 @@ def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
     if err:
         return err
-    if hasattr(session["agent"], "interrupt"):
-        session["agent"].interrupt()
+    if hasattr(session.agent, "interrupt"):
+        session.agent.interrupt()
     # Scope the pending-prompt release to THIS session.  A global
     # _clear_pending() would collaterally cancel clarify/sudo/secret
     # prompts on unrelated sessions sharing the same tui_gateway
@@ -4414,7 +4414,7 @@ def _(rid, params: dict) -> dict:
     try:
         from tools.approval import resolve_gateway_approval
 
-        resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
+        resolve_gateway_approval(session.session_key, "deny", resolve_all=True)
     except Exception:
         pass
     return _ok(rid, {"status": "interrupted"})
@@ -4675,8 +4675,8 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    session["cols"] = int(params.get("cols", 80))
-    return _ok(rid, {"cols": session["cols"]})
+    session.cols = int(params.get("cols", 80))
+    return _ok(rid, {"cols": session.cols})
 
 
 # ── Methods: prompt ──────────────────────────────────────────────────
@@ -4693,8 +4693,8 @@ def _(rid, params: dict) -> dict:
     # streaming events on the active websocket even if an earlier disconnect
     # or fallback moved the session transport to stdio.
     if (t := current_transport()) is not None:
-        session["transport"] = t
-    with session["history_lock"]:
+        session.transport = t
+    with session.history_lock:
         if session.get("running"):
             return _err(rid, 4009, "session busy")
         if truncate_user_ordinal is not None:
@@ -4707,15 +4707,15 @@ def _(rid, params: dict) -> dict:
             if ordinal >= len(user_indices):
                 return _err(rid, 4018, "target user message is no longer in session history")
             truncated = history[: user_indices[ordinal]]
-            session["history"] = truncated
-            session["history_version"] = int(session.get("history_version", 0)) + 1
+            session.history = truncated
+            session.history_version = int(session.get("history_version", 0)) + 1
             if (db := _get_db()) is not None:
                 try:
-                    db.replace_messages(session["session_key"], truncated)
+                    db.replace_messages(session.session_key, truncated)
                 except Exception as exc:
                     print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
-        session["running"] = True
-        session["last_active"] = time.time()
+        session.running = True
+        session.last_active = time.time()
         _start_inflight_turn(session, text)
 
     # Persist the DB row lazily, now that the user has actually sent a message.
@@ -4734,8 +4734,8 @@ def _(rid, params: dict) -> dict:
                     )
                 },
             )
-            with session["history_lock"]:
-                session["running"] = False
+            with session.history_lock:
+                session.running = False
                 _clear_inflight_turn(session)
             return
         _run_prompt_submit(rid, sid, session, text)
@@ -4856,11 +4856,11 @@ def _notification_poller_loop(
             _emit("status.update", sid, {"kind": "process", "text": text})
             _emitted.add(_dedup_key)
 
-        with session["history_lock"]:
+        with session.history_lock:
             if session.get("running"):
                 process_registry.completion_queue.put(evt)
                 continue
-            session["running"] = True
+            session.running = True
 
         rid = f"__notif__{int(time.time() * 1000)}"
         try:
@@ -4872,8 +4872,8 @@ def _notification_poller_loop(
                 f"{type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
-            with session["history_lock"]:
-                session["running"] = False
+            with session.history_lock:
+                session.running = False
 
     # Drain any remaining events after stop signal (process all pending
     # before exiting so nothing is lost on shutdown). Events owned by other
@@ -4899,11 +4899,11 @@ def _notification_poller_loop(
             _emit("status.update", sid, {"kind": "process", "text": text})
             _emitted.add(_dedup_key)
 
-        with session["history_lock"]:
+        with session.history_lock:
             if session.get("running"):
                 process_registry.completion_queue.put(evt)
                 break
-            session["running"] = True
+            session.running = True
 
         rid = f"__notif__{int(time.time() * 1000)}"
         try:
@@ -4915,8 +4915,8 @@ def _notification_poller_loop(
                 f"{type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
-            with session["history_lock"]:
-                session["running"] = False
+            with session.history_lock:
+                session.running = False
 
     # Hand any other sessions' events back to the shared queue.
     for evt in deferred:
@@ -4936,14 +4936,14 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
 
 
 def _run_prompt_submit(rid, sid: str, session: SessionState, text: Any) -> None:
-    with session["history_lock"]:
-        history = list(session["history"])
+    with session.history_lock:
+        history = list(session.history)
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
         session["attached_images"] = []
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, text)
-    agent = session["agent"]
+    agent = session.agent
     _emit("message.start", sid)
 
     def run():
@@ -4957,8 +4957,8 @@ def _run_prompt_submit(rid, sid: str, session: SessionState, text: Any) -> None:
                 set_current_session_key,
             )
 
-            approval_token = set_current_session_key(session["session_key"])
-            session_tokens = _set_session_context(session["session_key"])
+            approval_token = set_current_session_key(session.session_key)
+            session_tokens = _set_session_context(session.session_key)
             _profile_home_str = session.get("profile_home")
             if _profile_home_str:
                 home_token = set_hermes_home_override(_profile_home_str)
@@ -5064,7 +5064,7 @@ def _run_prompt_submit(rid, sid: str, session: SessionState, text: Any) -> None:
                     run_message = _enrich_with_attached_images(prompt, images)
 
             def _stream(delta):
-                with session["history_lock"]:
+                with session.history_lock:
                     _append_inflight_delta(session, delta)
                 payload = {"text": delta}
                 if streamer and (r := streamer.feed(delta)) is not None:
@@ -5077,7 +5077,7 @@ def _run_prompt_submit(rid, sid: str, session: SessionState, text: Any) -> None:
             }
             try:
                 if "task_id" in inspect.signature(agent.run_conversation).parameters:
-                    run_kwargs["task_id"] = session["session_key"]
+                    run_kwargs["task_id"] = session.session_key
             except (TypeError, ValueError):
                 pass
             result = agent.run_conversation(run_message, **run_kwargs)
@@ -5086,11 +5086,11 @@ def _run_prompt_submit(rid, sid: str, session: SessionState, text: Any) -> None:
             status_note = None
             if isinstance(result, dict):
                 if isinstance(result.get("messages"), list):
-                    with session["history_lock"]:
+                    with session.history_lock:
                         current_version = int(session.get("history_version", 0))
                         if current_version == history_version:
-                            session["history"] = result["messages"]
-                            session["history_version"] = history_version + 1
+                            session.history = result["messages"]
+                            session.history_version = history_version + 1
                         else:
                             # History mutated externally during the turn
                             # (undo/compress/retry/rollback now guard on
@@ -5154,7 +5154,7 @@ def _run_prompt_submit(rid, sid: str, session: SessionState, text: Any) -> None:
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
-            with session["history_lock"]:
+            with session.history_lock:
                 _clear_inflight_turn(session)
             _emit("message.complete", sid, payload)
 
@@ -5303,12 +5303,12 @@ def _run_prompt_submit(rid, sid: str, session: SessionState, text: Any) -> None:
         # prompt.submit sets running=True under the history_lock and
         # we check that guard before re-firing.
         if goal_followup:
-            with session["history_lock"]:
+            with session.history_lock:
                 if session.get("running"):
                     # User already sent something — their turn wins,
                     # the judge will re-run on the next turn anyway.
                     return
-                session["running"] = True
+                session.running = True
             try:
                 _emit("message.start", sid)
                 _run_prompt_submit(rid, sid, session, goal_followup)
@@ -5318,8 +5318,8 @@ def _run_prompt_submit(rid, sid: str, session: SessionState, text: Any) -> None:
                     f"{type(_cont_exc).__name__}: {_cont_exc}",
                     file=sys.stderr,
                 )
-                with session["history_lock"]:
-                    session["running"] = False
+                with session.history_lock:
+                    session.running = False
 
         # Drain completion notifications that arrived during this turn.
         # The background poller handles between-turn delivery; this is
@@ -5328,11 +5328,11 @@ def _run_prompt_submit(rid, sid: str, session: SessionState, text: Any) -> None:
             from tools.process_registry import process_registry
 
             for _evt, synth in process_registry.drain_notifications():
-                with session["history_lock"]:
+                with session.history_lock:
                     if session.get("running"):
                         process_registry.completion_queue.put(_evt)
                         break
-                    session["running"] = True
+                    session.running = True
                 try:
                     _emit("message.start", sid)
                     _run_prompt_submit(rid, sid, session, synth)
@@ -5342,8 +5342,8 @@ def _run_prompt_submit(rid, sid: str, session: SessionState, text: Any) -> None:
                         f"{type(_n_exc).__name__}: {_n_exc}",
                         file=sys.stderr,
                     )
-                    with session["history_lock"]:
-                        session["running"] = False
+                    with session.history_lock:
+                        session.running = False
         except Exception as _drain_exc:
             print(
                 f"[tui_gateway] completion queue drain failed: "
@@ -5979,7 +5979,7 @@ def _(rid, params: dict) -> dict:
             from run_agent import AIAgent
 
             result = AIAgent(
-                **_background_agent_kwargs(session["agent"], task_id)
+                **_background_agent_kwargs(session.agent, task_id)
             ).run_conversation(
                 user_message=text,
                 task_id=task_id,
@@ -6090,7 +6090,7 @@ def _(rid, params: dict) -> dict:
                 {"task_id": task_id, "text": f"Starting hidden restart agent{history_note}"},
             )
             result = AIAgent(
-                **_ephemeral_preview_agent_kwargs(session["agent"], task_id),
+                **_ephemeral_preview_agent_kwargs(session.agent, task_id),
                 **_preview_restart_callbacks(parent, task_id),
             ).run_conversation(
                 user_message=prompt,
@@ -6170,7 +6170,7 @@ def _(rid, params: dict) -> dict:
             rid,
             {
                 "resolved": resolve_gateway_approval(
-                    session["session_key"],
+                    session.session_key,
                     params.get("choice", "deny"),
                     resolve_all=params.get("all", False),
                 )
@@ -6388,13 +6388,13 @@ def _(rid, params: dict) -> dict:
                 return _ok(rid, {"key": key, "value": nv, "scope": "global"})
 
             if session:
-                current = is_session_yolo_enabled(session["session_key"])
+                current = is_session_yolo_enabled(session.session_key)
                 enable = _resolve_toggle(current)
                 if enable:
-                    enable_session_yolo(session["session_key"])
+                    enable_session_yolo(session.session_key)
                     nv = "1"
                 else:
-                    disable_session_yolo(session["session_key"])
+                    disable_session_yolo(session.session_key)
                     nv = "0"
                 agent = session.get("agent")
                 if agent is not None:
@@ -6463,7 +6463,7 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")
             _write_config_key("agent.reasoning_effort", arg)
             if session and session.get("agent") is not None:
-                session["agent"].reasoning_config = parsed
+                session.agent.reasoning_config = parsed
             return _ok(rid, {"key": key, "value": arg})
         except Exception as e:
             return _err(rid, 5001, str(e))
@@ -6925,7 +6925,7 @@ def _(rid, params: dict) -> dict:
         shutdown_mcp_servers()
         discover_mcp_tools()
         if session:
-            agent = session["agent"]
+            agent = session.agent
             # Rebuild the cached agent's tool snapshot so the current session
             # picks up added/removed MCP tools without `/new` (which discards
             # history).  The agent snapshots tools once at build and never
@@ -7324,9 +7324,9 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4018, "last user message is empty")
         # Truncate history: remove everything from the last user message onward
         # (mirrors CLI retry_last() which strips the failed exchange)
-        with session["history_lock"]:
-            session["history"] = history[:last_user_idx]
-            session["history_version"] = int(session.get("history_version", 0)) + 1
+        with session.history_lock:
+            session.history = history[:last_user_idx]
+            session.history_version = int(session.get("history_version", 0)) + 1
         return _ok(rid, {"type": "send", "message": content})
 
     if name == "steer":
@@ -7470,9 +7470,9 @@ def _(rid, params: dict) -> dict:
             active = db.get_messages_as_conversation(session_key)
         except Exception:
             active = []
-        with session["history_lock"]:
-            session["history"] = list(active)
-            session["history_version"] = int(session.get("history_version", 0)) + 1
+        with session.history_lock:
+            session.history = list(active)
+            session.history_version = int(session.get("history_version", 0)) + 1
         # Notify memory providers — same hook /branch fires, plus the
         # rewound flag so providers caching per-turn document state
         # know to invalidate. See #6672 + #21910.
@@ -8413,7 +8413,7 @@ def _slash_exec_core(
     if not worker:
         try:
             worker = _SlashWorker(
-                session["session_key"],
+                session.session_key,
                 getattr(session.get("agent"), "model", _resolve_model()),
             )
             _attach_worker(params.get("session_id", ""), session, worker)
@@ -8439,7 +8439,7 @@ def _slash_exec_core(
             worker.close()
         except Exception:
             pass
-        session["slash_worker"] = None
+        session.slash_worker = None
         return None, None, _err(rid, 5030, str(e))
 
 
@@ -8876,7 +8876,7 @@ def _(rid, params: dict) -> dict:
             result = mgr.restore(cwd, resolved, file_path=file_path or None)
             if result.get("success") and not file_path:
                 removed = 0
-                with session["history_lock"]:
+                with session.history_lock:
                     history = session.get("history", [])
                     while history and history[-1].get("role") in {"assistant", "tool"}:
                         history.pop()
@@ -8885,7 +8885,7 @@ def _(rid, params: dict) -> dict:
                         history.pop()
                         removed += 1
                     if removed:
-                        session["history_version"] = (
+                        session.history_version = (
                             int(session.get("history_version", 0)) + 1
                         )
                 result["history_removed"] = removed
@@ -9229,7 +9229,7 @@ def _(rid, params: dict) -> dict:
 
         session = _sessions.get(params.get("session_id", ""))
         enabled = (
-            set(getattr(session["agent"], "enabled_toolsets", []) or [])
+            set(getattr(session.agent, "enabled_toolsets", []) or [])
             if session
             else set(_load_enabled_toolsets() or [])
         )
@@ -9260,7 +9260,7 @@ def _(rid, params: dict) -> dict:
 
         session = _sessions.get(params.get("session_id", ""))
         enabled = (
-            getattr(session["agent"], "enabled_toolsets", None)
+            getattr(session.agent, "enabled_toolsets", None)
             if session
             else _load_enabled_toolsets()
         )
@@ -9369,7 +9369,7 @@ def _(rid, params: dict) -> dict:
 
         session = _sessions.get(params.get("session_id", ""))
         enabled = (
-            set(getattr(session["agent"], "enabled_toolsets", []) or [])
+            set(getattr(session.agent, "enabled_toolsets", []) or [])
             if session
             else set(_load_enabled_toolsets() or [])
         )

@@ -173,7 +173,7 @@ def test_terminal_task_cwd_local_backend_uses_session_cwd(monkeypatch, tmp_path)
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
 
-    assert server._terminal_task_cwd({"cwd": str(project)}) == str(project)
+    assert server._terminal_task_cwd(SessionState({"cwd": str(project)})) == str(project)
 
 
 def test_terminal_task_cwd_ssh_uses_remote_path_unvalidated(monkeypatch):
@@ -206,7 +206,7 @@ def test_terminal_task_cwd_ssh_sentinel_cwd_falls_back_to_session(monkeypatch):
     monkeypatch.setenv("TERMINAL_CWD", "auto")
     monkeypatch.setattr(server, "_load_cfg", lambda: {"terminal": {"cwd": "."}})
 
-    assert server._terminal_task_cwd({"cwd": "/host/session/dir"}) == "/host/session/dir"
+    assert server._terminal_task_cwd(SessionState({"cwd": "/host/session/dir"})) == "/host/session/dir"
 
 
 class _ChunkyStdout:
@@ -1386,7 +1386,7 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
-    server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path), "explicit_cwd": True})
+    server._ensure_session_db_row(SessionState({"session_key": "k1", "cwd": str(tmp_path), "explicit_cwd": True}))
 
     assert created == [
         {"key": "k1", "source": "tui", "model": "test-model", "cwd": str(tmp_path)}
@@ -6258,13 +6258,13 @@ def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, t
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "hello"},
     ]
-    server._sessions[sid] = {
+    server._sessions[sid] = SessionState({
         "agent": agent,
         "session_key": "save-key",
         "history": history,
         "history_lock": threading.Lock(),
         "created_at": 1735732800.0,
-    }
+    })
     try:
         resp = server._methods["session.save"]("1", {"session_id": sid})
     finally:
@@ -6687,7 +6687,7 @@ def test_attach_worker_stores_worker_on_live_session():
         def close(self):
             raise AssertionError("must not close a worker for a live session")
 
-    live = {"session_key": "k"}
+    live = SessionState({"session_key": "k"})
     server._sessions["live"] = live
     worker = W()
     try:
@@ -6711,7 +6711,7 @@ def test_restart_slash_worker_closes_orphan_when_session_reaped(monkeypatch):
 
     monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
     server._sessions.pop("reaped", None)
-    reaped = {"session_key": "k"}  # not in _sessions -> torn down concurrently
+    reaped = SessionState({"session_key": "k"})  # not in _sessions -> torn down concurrently
     server._restart_slash_worker("reaped", reaped)
 
     assert closed == [True]
@@ -6728,7 +6728,7 @@ def test_restart_slash_worker_stores_on_live_session(monkeypatch):
             pass
 
     monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
-    live = {"session_key": "k", "slash_worker": None}
+    live = SessionState({"session_key": "k", "slash_worker": None})
     server._sessions["live-restart"] = live
     try:
         server._restart_slash_worker("live-restart", live)
@@ -6761,8 +6761,8 @@ def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
     transport = object()  # the disconnecting transport
     server._sessions.clear()
-    server._sessions["a"] = {"transport": transport, "close_on_disconnect": True}
-    server._sessions["b"] = {"transport": transport, "close_on_disconnect": False}
+    server._sessions["a"] = SessionState({"transport": transport, "close_on_disconnect": True})
+    server._sessions["b"] = SessionState({"transport": transport, "close_on_disconnect": False})
     try:
         server._close_sessions_for_transport(transport, end_reason="ws_disconnect")
         assert seen == [("a", "ws_disconnect")]  # only the flagged one closed
