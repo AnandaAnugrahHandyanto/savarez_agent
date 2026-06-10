@@ -1211,6 +1211,13 @@ def run_setup_plan_command(
     print(f"Monica setup plan: {report.rollout_mode}")
     if report.ready:
         print("Monica is ready for this rollout mode.")
+        if steps:
+            print("")
+            print("Recommended proof setup steps:")
+            for index, step in enumerate(steps, start=1):
+                print(f"{index}. {step['title']}")
+                print(f"   {step['command']}")
+                print(f"   {step['why']}")
         return 0
     print("")
     print("Blocking readiness failures:")
@@ -1226,11 +1233,17 @@ def run_setup_plan_command(
 
 
 def _setup_plan_steps(report: Any) -> list[dict[str, str]]:
-    if bool(getattr(report, "ready", False)):
-        return []
     failure_codes = {str(issue.code) for issue in getattr(report, "failures", ())}
+    warning_codes = {str(issue.code) for issue in getattr(report, "warnings", ())}
     rollout_mode = str(getattr(report, "rollout_mode", "") or "")
     steps: list[dict[str, str]] = []
+    proof_warning_codes = {
+        "proof_commands_empty",
+        "ios_proof_tooling",
+        "android_proof_tooling",
+    }
+    if not failure_codes and not (warning_codes & proof_warning_codes):
+        return []
     if rollout_mode == "dry_run" and "config_enabled" in failure_codes:
         _append_setup_step(
             steps,
@@ -1383,6 +1396,40 @@ def _setup_plan_steps(report: Any) -> list[dict[str, str]]:
             title="Prepare draft-PR tooling",
             command="gh auth status",
             why="Approved-PR mode needs GitHub CLI auth for pushing branches and opening draft PRs.",
+        )
+    if warning_codes & {"proof_commands_empty"}:
+        _append_setup_step(
+            steps,
+            step_id="configure_simulator_proof",
+            title="Configure Monica simulator proof command",
+            command=(
+                "Set mobile_bug_agent.proof.commands to "
+                "`uv run --project \"$MONICA_HERMES_AGENT_ROOT\" python -m "
+                "plugins.mobile_bug_agent.simulator_proof --timeout-seconds 600`"
+            ),
+            why="Stage D/E/F cannot complete until proof commands write screenshots or recordings to MONICA_PROOF_DIR.",
+        )
+    if warning_codes & {"ios_proof_tooling"}:
+        _append_setup_step(
+            steps,
+            step_id="prepare_ios_simulator",
+            title="Prepare iOS simulator proof tooling",
+            command="xcrun --find simctl && xcodebuild -version",
+            why=(
+                "Install full Xcode, open it once, accept the license, select "
+                "/Applications/Xcode.app/Contents/Developer, and install an iOS simulator runtime."
+            ),
+        )
+    if warning_codes & {"android_proof_tooling"}:
+        _append_setup_step(
+            steps,
+            step_id="prepare_android_emulator",
+            title="Prepare Android emulator proof tooling",
+            command="adb version && emulator -list-avds",
+            why=(
+                "Install Android SDK platform-tools and emulator, create an AVD, "
+                "and make adb/emulator available on PATH."
+            ),
         )
     _append_setup_step(
         steps,

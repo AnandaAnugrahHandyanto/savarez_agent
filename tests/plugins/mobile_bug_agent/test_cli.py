@@ -1708,6 +1708,50 @@ def test_setup_plan_json_has_no_steps_when_rollout_is_ready(capsys):
     assert payload["steps"] == []
 
 
+def test_setup_plan_json_lists_proof_warning_steps_when_rollout_is_ready(capsys):
+    exit_code = run_setup_plan_command(
+        config=MonicaConfig(
+            enabled=True,
+            rollout_mode="approved_pr",
+            dry_run=False,
+            slack=SlackConfig(
+                allowed_channels=("C123MOBILE",),
+                bot_user_ids=("U123MONICA",),
+                approver_user_ids=("U123APPROVER",),
+            ),
+            linear=LinearConfig(team_id="team-mobile"),
+            repo=RepoConfig(url="git@github.com:acme/mobile.git"),
+            verification=VerificationConfig(commands=("npm test",)),
+            proof=ProofConfig(
+                enabled=True,
+                required_for_done=True,
+                commands=("uv run --project \"$MONICA_HERMES_AGENT_ROOT\" python -m plugins.mobile_bug_agent.simulator_proof",),
+                platform_order=("ios", "android"),
+            ),
+        ),
+        target_rollout_mode="approved_pr",
+        json_output=True,
+        environ={
+            "MONICA_SLACK_BOT_TOKEN": "xoxb-token",
+            "MONICA_SLACK_APP_TOKEN": "xapp-token",
+            "LINEAR_API_KEY": "lin_api_key",
+            "GITHUB_TOKEN": "gh_token",
+        },
+        which=lambda command: None
+        if command in {"xcrun", "xcodebuild", "adb", "emulator"}
+        else f"/usr/bin/{command}",
+        module_available=lambda name: True,
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    step_ids = [step["id"] for step in payload["steps"]]
+    assert exit_code == 0
+    assert payload["ready"] is True
+    assert step_ids == ["prepare_ios_simulator", "prepare_android_emulator", "rerun_doctor"]
+    assert "Install full Xcode" in payload["steps"][0]["why"]
+    assert "Install Android SDK" in payload["steps"][1]["why"]
+
+
 def test_setup_plan_json_lists_approved_pr_rollout_steps(capsys):
     exit_code = run_setup_plan_command(
         config=MonicaConfig(
