@@ -4054,6 +4054,10 @@ class BasePlatformAdapter(ABC):
         delivery_attempted = False
         delivery_succeeded = False
 
+        # Reset typing-stop signal so post-send typing re-triggers are
+        # active for the duration of this turn (see _stop_typing_task).
+        self._typing_stopping = False
+
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
             if result is None:
@@ -4085,6 +4089,11 @@ class BasePlatformAdapter(ABC):
         )
 
         async def _stop_typing_task() -> None:
+            # Signal platforms that post-send typing re-triggers should be
+            # suppressed (see telegram.py send() re-trigger).  Without this,
+            # the final send() fires send_chat_action("typing") *before* the
+            # task is cancelled, leaving a ghost typing indicator for ~5s.
+            self._typing_stopping = True
             typing_task.cancel()
             try:
                 await asyncio.wait_for(asyncio.shield(typing_task), timeout=0.5)
