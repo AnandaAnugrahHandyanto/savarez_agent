@@ -98,6 +98,7 @@ import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { ProfileRail } from './profile-switcher'
 import { SidebarSessionRow } from './session-row'
+import { useSessionDropZone } from './use-session-drop-zone'
 import { VirtualSessionList } from './virtual-session-list'
 
 const VIRTUALIZE_THRESHOLD = 25
@@ -393,6 +394,27 @@ export function ChatSidebar({
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   )
+
+  // Row bodies are native-draggable (the same drag that drops a session into
+  // the composer), so Pinned/Sessions accept that drag directly: drop a row on
+  // Pinned to pin it, drop a pinned row on Sessions to unpin — no context menu
+  // round-trip. Auto-open the target section so the landed row is visible even
+  // when it was collapsed.
+  const pinnedDropZone = useSessionDropZone({
+    acceptPinned: false,
+    onDropSession: payload => {
+      pinSession(payload.pinId ?? payload.id)
+      setSidebarPinsOpen(true)
+    }
+  })
+
+  const sessionsDropZone = useSessionDropZone({
+    acceptPinned: true,
+    onDropSession: payload => {
+      unpinSession(payload.pinId ?? payload.id)
+      setSidebarRecentsOpen(true)
+    }
+  })
 
   // Profile scope = the "workspace switcher" context. Concrete scope shows only
   // that profile's sessions (clean rows, no per-row tags); ALL fans every
@@ -880,6 +902,8 @@ export function ChatSidebar({
                 activeSessionId={activeSidebarSessionId}
                 contentClassName={cn('flex max-h-44 flex-col gap-px rounded-lg pb-2 pt-1', GROUP_BODY)}
                 dndSensors={dndSensors}
+                dropActive={pinnedDropZone.active}
+                dropHandlers={pinnedDropZone.dropHandlers}
                 emptyState={<SidebarPinnedEmptyState />}
                 label={s.pinned}
                 onArchiveSession={onArchiveSession}
@@ -910,6 +934,8 @@ export function ChatSidebar({
                   !recentsVirtualizes && COMPACT_FLAT
                 )}
                 dndSensors={dndSensors}
+                dropActive={sessionsDropZone.active}
+                dropHandlers={sessionsDropZone.dropHandlers}
                 emptyState={showSessionSkeletons ? <SidebarSessionSkeletons /> : <SidebarAllPinnedState />}
                 footer={
                   // Hide "load more" only when workspace-grouped (those groups page
@@ -1161,6 +1187,10 @@ interface SidebarSessionsSectionProps {
   sortable?: boolean
   onReorder?: (event: DragEndEvent) => void
   dndSensors?: ReturnType<typeof useSensors>
+  /** Native session-drag drop target (drag-to-pin/unpin): true while an
+   * acceptable row drag hovers the section. */
+  dropActive?: boolean
+  dropHandlers?: ReturnType<typeof useSessionDropZone>['dropHandlers']
 }
 
 function SidebarSessionsSection({
@@ -1187,7 +1217,9 @@ function SidebarSessionsSection({
   labelIcon,
   sortable = false,
   onReorder,
-  dndSensors
+  dndSensors,
+  dropActive = false,
+  dropHandlers
 }: SidebarSessionsSectionProps) {
   const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
   const showEmptyState = forceEmptyState || (!hasGroupedSessions && sessions.length === 0)
@@ -1303,7 +1335,15 @@ function SidebarSessionsSection({
   const resolvedContentClassName = cn(contentClassName, flatVirtualized && 'overflow-y-visible')
 
   return (
-    <SidebarGroup className={rootClassName}>
+    <SidebarGroup
+      className={cn(
+        rootClassName,
+        // Light the whole section (header included — drops there count too, even
+        // collapsed) while an acceptable row drag hovers it.
+        dropActive && 'rounded-lg bg-(--ui-control-hover-background) ring-1 ring-inset ring-(--ui-stroke-tertiary)'
+      )}
+      {...dropHandlers}
+    >
       <SidebarSectionHeader
         action={headerAction}
         icon={labelIcon}
