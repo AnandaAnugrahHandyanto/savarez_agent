@@ -39,7 +39,10 @@ from typing import List, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hermes_constants import get_hermes_home
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import (
+    windows_detach_flags_without_breakaway,
+    windows_detach_popen_kwargs,
+)
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
@@ -1044,16 +1047,68 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         pass
 
     try:
-        popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
-        result = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=script_timeout,
-            cwd=str(path.parent),
-            env=run_env,
-            **popen_kwargs,
-        )
+        popen_kwargs = windows_detach_popen_kwargs()
+        try:
+            result = subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=script_timeout,
+                cwd=str(path.parent),
+                env=run_env,
+                **popen_kwargs,
+            )
+        except OSError as exc:
+            # CREATE_BREAKAWAY_FROM_JOB rejected by the parent job object
+            # (Windows Terminal with restrictive job settings, containers,
+            # kiosk-mode shells). Retry without it. Mirrors the canonical
+            # fallback in hermes_cli/gateway.py:716-742.
+            fallback_kwargs: dict = (
+                {"creationflags": windows_detach_flags_without_breakaway()}
+                if sys.platform == "win32"
+                else {"start_new_session": True}
+            )
+            try:
+                result = subprocess.run(
+                    argv,
+                    capture_output=True,
+                    text=True,
+                    timeout=script_timeout,
+                    cwd=str(path.parent),
+                    env=run_env,
+                    **fallback_kwargs,
+                )
+            except OSError as inner_exc:
+                # Both attempts failed. Log a brief warning and re-raise
+                # so _run_job_script's outer ``except Exception`` at
+                # cron/scheduler.py:1135-1136 catches it and returns
+                # ``(False, "Script execution failed: <error>")``, which
+                # in turn flows to _process_job (at line 2187-2189)
+                # and records the failure in the job state. The
+                # re-raise is NOT propagating to _process_job directly
+                # (it stops at _run_job_script's catch-all), but the
+                # log line below is still load-bearing for operator
+                # visibility on the rare dual-OSError case.
+                #
+                # SECURITY: log ONLY the argv head and the exception
+                # messages, NOT the full ``argv`` list. Cron scripts are
+                # user-written Python that routinely embed secrets
+                # (``os.environ["API_KEY"]`` passed inline, database
+                # URLs with passwords, token-bearing git URLs).
+                # A WARNING line ships to log aggregation and persists.
+                # The canonical pattern at hermes_cli/gateway.py:716-742
+                # doesn't log anything on this path; this warning exists
+                # only so the cron job's failure record points at the
+                # underlying spawn error. The argv head (typically
+                # ``"/usr/bin/bash"`` or ``sys.executable``) is the
+                # least-informative, least-leaky identifier we can log
+                # and still tells the operator which interpreter failed.
+                logger.warning(
+                    "Could not run cron script %r: %s (after %s). "
+                    "The scheduled run will be reported as failed.",
+                    argv[0] if argv else "<empty>", exc, inner_exc,
+                )
+                raise
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
 
