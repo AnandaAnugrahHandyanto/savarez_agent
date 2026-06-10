@@ -505,10 +505,15 @@ class HermesACPAgent(acp.Agent):
     _MODE_DEFAULT = "default"
     _MODE_ACCEPT_EDITS = "accept_edits"
     _MODE_DONT_ASK = "dont_ask"
+    _MODE_PLAN = "plan"
     _MODE_TO_EDIT_APPROVAL_POLICY = {
         _MODE_DEFAULT: "ask",
         _MODE_ACCEPT_EDITS: "workspace_session",
         _MODE_DONT_ASK: "session",
+        # Plan mode gates *all* mutating tools (not just edits) via the
+        # thread tool-whitelist in prompt(); its edit-approval fallback stays
+        # "ask" for the edge case of a tool that slips past the whitelist.
+        _MODE_PLAN: "ask",
     }
     _EDIT_APPROVAL_POLICY_TO_MODE = {
         value: key for key, value in _MODE_TO_EDIT_APPROVAL_POLICY.items()
@@ -557,6 +562,12 @@ class HermesACPAgent(acp.Agent):
                     name="Don't Ask",
                     description="Auto-allow file edits for this session except sensitive paths.",
                 ),
+                SessionMode(
+                    id=self._MODE_PLAN,
+                    name="Plan",
+                    description="Propose a plan and run read-only tools only; wait for "
+                    "your approval (switch out of Plan mode) before editing or running commands.",
+                ),
             ],
         )
 
@@ -564,6 +575,37 @@ class HermesACPAgent(acp.Agent):
         mode = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
         policy = self._MODE_TO_EDIT_APPROVAL_POLICY.get(mode, self._EDIT_APPROVAL_POLICY_DEFAULT)
         return policy, state.cwd
+
+    def _install_plan_gate(self, state: SessionState) -> bool:
+        """In plan mode, restrict the agent's executor thread to non-mutating
+        tools via the thread tool-whitelist so the agent can plan but not act
+        until the user switches out of plan mode (FR-19). Returns True if the
+        gate was installed. MUST be called on the executor thread.
+        """
+        if str(getattr(state, "mode", "")) != self._MODE_PLAN:
+            return False
+        try:
+            from hermes_cli.plugins import set_thread_tool_whitelist
+            from acp_adapter.plan_gate import plan_mode_allowed_tools, PLAN_BLOCK_FMT
+            from acp_adapter.tools import _POLISHED_TOOLS
+
+            set_thread_tool_whitelist(plan_mode_allowed_tools(_POLISHED_TOOLS), PLAN_BLOCK_FMT)
+            return True
+        except Exception:
+            logger.debug("Could not install plan-mode tool whitelist", exc_info=True)
+            return False
+
+    @staticmethod
+    def _clear_plan_gate(installed: bool) -> None:
+        """Clear the plan-mode tool whitelist set by :meth:`_install_plan_gate`."""
+        if not installed:
+            return
+        try:
+            from hermes_cli.plugins import clear_thread_tool_whitelist
+
+            clear_thread_tool_whitelist()
+        except Exception:
+            logger.debug("Could not clear plan-mode tool whitelist", exc_info=True)
 
     @staticmethod
     def _encode_model_choice(provider: str | None, model: str | None) -> str:
@@ -1499,6 +1541,10 @@ class HermesACPAgent(acp.Agent):
             # never leaks one session's id into the next session's tools.
             previous_session_id = os.environ.get("HERMES_SESSION_ID")
             os.environ["HERMES_SESSION_ID"] = session_id
+            # Plan mode: gate mutating tools on THIS executor thread (the
+            # thread-local whitelist must be set where run_conversation runs)
+            # until the user approves by switching out of plan mode (FR-19).
+            plan_gate_installed = self._install_plan_gate(state)
             try:
                 result = agent.run_conversation(
                     user_message=user_content,
@@ -1511,6 +1557,7 @@ class HermesACPAgent(acp.Agent):
                 logger.exception("Agent error in session %s", session_id)
                 return {"final_response": f"Error: {e}", "messages": state.history}
             finally:
+                self._clear_plan_gate(plan_gate_installed)
                 # Restore HERMES_INTERACTIVE.
                 if previous_interactive is None:
                     os.environ.pop("HERMES_INTERACTIVE", None)
