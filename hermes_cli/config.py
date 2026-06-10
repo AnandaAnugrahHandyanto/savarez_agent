@@ -1050,6 +1050,7 @@ DEFAULT_CONFIG = {
             "same_tool_failure": 8,
             "idempotent_no_progress": 5,
         },
+        "platforms": {},
     },
 
     "compression": {

@@ -36,7 +36,12 @@ def _mock_response(content="Hello", finish_reason="stop", tool_calls=None):
     return SimpleNamespace(choices=[choice], model="test/model", usage=None)
 
 
-def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None = None) -> AIAgent:
+def _make_agent(
+    *tool_names: str,
+    max_iterations: int = 10,
+    config: dict | None = None,
+    platform: str | None = None,
+) -> AIAgent:
     with (
         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs(*tool_names)),
         patch("run_agent.check_toolset_requirements", return_value={}),
@@ -50,6 +55,7 @@ def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None 
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
+            platform=platform,
         )
     agent.client = MagicMock()
     agent._cached_system_prompt = "You are helpful."
@@ -84,6 +90,28 @@ def _hard_stop_config(**overrides) -> dict:
     }
     cfg["tool_loop_guardrails"].update(overrides)
     return cfg
+
+
+def _telegram_hard_stop_config() -> dict:
+    return {
+        "tool_loop_guardrails": {
+            "warnings_enabled": True,
+            "hard_stop_enabled": False,
+            "hard_stop_after": {
+                "exact_failure": 5,
+                "same_tool_failure": 8,
+                "idempotent_no_progress": 5,
+            },
+            "platforms": {
+                "telegram": {
+                    "hard_stop_enabled": True,
+                    "hard_stop_after": {
+                        "exact_failure": 2,
+                    },
+                },
+            },
+        },
+    }
 
 
 def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_execution():
@@ -236,6 +264,23 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
     mock_hfc.assert_not_called()
     assert "plugin policy" in messages[0]["content"]
     assert agent._tool_guardrails.before_call("web_search", args).action == "allow"
+
+
+def test_platform_guardrail_override_hard_stops_telegram_only():
+    cfg = _telegram_hard_stop_config()
+    same_args = {"query": "same"}
+
+    cli_agent = _make_agent("web_search", config=cfg, platform="cli")
+    _seed_exact_failures(cli_agent, "web_search", same_args)
+    assert cli_agent._tool_guardrails.before_call("web_search", same_args).action == "allow"
+
+    telegram_agent = _make_agent("web_search", config=cfg, platform="telegram")
+    _seed_exact_failures(telegram_agent, "web_search", same_args)
+    decision = telegram_agent._tool_guardrails.before_call("web_search", same_args)
+
+    assert decision.action == "block"
+    assert decision.code == "repeated_exact_failure_block"
+    assert decision.count == 2
 
 
 def test_default_run_conversation_warns_without_guardrail_halt():
