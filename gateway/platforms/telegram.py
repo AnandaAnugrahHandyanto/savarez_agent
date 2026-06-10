@@ -2324,34 +2324,51 @@ class TelegramAdapter(BasePlatformAdapter):
         Falls back to ``SendResult(success=False)`` only if even the first-
         chunk edit fails — that's a real adapter problem, not an overflow.
         """
-        chunks = self.truncate_message(
-            content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
-        )
+        if finalize:
+            # Format the entire content first, THEN chunk — mirroring send().
+            # Formatting inflates MarkdownV2 escaping by 4-8 %; chunking
+            # the raw text and formatting per-chunk pushes each chunk past
+            # the 4096 UTF-16 limit, causing Telegram to reject and fall
+            # back to unformatted plain text (issue #43441).
+            formatted_content = self.format_message(content)
+            chunks = self.truncate_message(
+                formatted_content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
+            )
+            if len(chunks) > 1:
+                # Escape MarkdownV2-special parentheses in the "(1/N)"
+                # suffix that truncate_message appends — same as send().
+                chunks = [
+                    re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
+                    for chunk in chunks
+                ]
+        else:
+            chunks = self.truncate_message(
+                content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
+            )
         if len(chunks) <= 1:
             # Defensive: shouldn't happen given the caller's pre-flight, but
             # if truncate_message returned a single chunk just edit normally.
-            chunks = [content]
+            chunks = [content if not finalize else self.format_message(content)]
 
         # Step 1 — edit the existing message with the first chunk.
         first_chunk = chunks[0]
         try:
             if finalize:
-                # Use format_message + parse_mode for the final chunk;
-                # mirror edit_message's main happy-path.
-                formatted = self.format_message(first_chunk)
+                # Chunks are already formatted (see chunking above).
                 try:
                     await self._bot.edit_message_text(
                         chat_id=int(chat_id),
                         message_id=int(message_id),
-                        text=formatted,
+                        text=first_chunk,
                         parse_mode=ParseMode.MARKDOWN_V2,
                     )
                 except Exception as fmt_err:
                     if "not modified" not in str(fmt_err).lower():
+                        # MarkdownV2 rejected — send as plain text.
                         await self._bot.edit_message_text(
                             chat_id=int(chat_id),
                             message_id=int(message_id),
-                            text=first_chunk,
+                            text=_strip_mdv2(first_chunk),
                         )
             else:
                 await self._bot.edit_message_text(
@@ -2392,7 +2409,9 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             for use_markdown in (True, False) if finalize else (False,):
                 try:
-                    text = self.format_message(chunk) if use_markdown else chunk
+                    # Chunks are already formatted when finalize=True (see
+                    # chunking above).  _strip_mdv2 for the plain fallback.
+                    text = chunk if use_markdown else _strip_mdv2(chunk)
                     sent_msg = await self._bot.send_message(
                         chat_id=int(chat_id),
                         text=text,
