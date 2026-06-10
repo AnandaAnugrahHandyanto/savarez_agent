@@ -1666,6 +1666,40 @@ function forceKillProcessTree(pid) {
 // SIGTERM + app.quit() teardown already works (the macOS path is flawless), and
 // aggressively SIGKILL-ing the backend here would be an untested behavior change
 // for no benefit. So we no-op off Windows and leave that path exactly as it was.
+async function releaseBackendLock(updateRoot, tag) {
+  if (!IS_WINDOWS) return { unlocked: true }
+
+  // Collect every backend PID the desktop owns: primary window backend + pool.
+  const pids = []
+  if (hermesProcess && Number.isInteger(hermesProcess.pid)) pids.push(hermesProcess.pid)
+  for (const entry of backendPool.values()) {
+    if (entry.process && Number.isInteger(entry.process.pid)) pids.push(entry.process.pid)
+  }
+
+  // Graceful first (lets Python flush), then tree-kill to catch grandchildren.
+  if (hermesProcess && !hermesProcess.killed) {
+    try {
+      hermesProcess.kill('SIGTERM')
+    } catch {
+      void 0
+    }
+  }
+  stopAllPoolBackends()
+  for (const pid of pids) forceKillProcessTree(pid)
+
+  const shim = venvHermesShimPath(updateRoot)
+  const deadlineMs = Date.now() + 15000
+  while (Date.now() < deadlineMs) {
+    if (!isShimLocked(shim)) {
+      rememberLog(`[${tag}] venv shim unlocked; safe to proceed`)
+      return { unlocked: true }
+    }
+    await new Promise(r => setTimeout(r, 300))
+  }
+  rememberLog(`[${tag}] venv shim still locked after 15s; proceeding anyway (force)`)
+  return { unlocked: false }
+}
+
 async function releaseBackendLockForUpdate(updateRoot) {
   if (!IS_WINDOWS) return { unlocked: true }
 
@@ -3354,7 +3388,7 @@ function buildApplicationMenu() {
         label: 'Actual Size',
         accelerator: 'CommandOrControl+0',
         click: () => {
-          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.setZoomLevel(0)
+          if (mainWindow && !mainWindow.isDestroyed()) setAndPersistZoomLevel(mainWindow, 0)
         }
       },
       {
@@ -3362,8 +3396,7 @@ function buildApplicationMenu() {
         accelerator: 'CommandOrControl+Plus',
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
-            const next = Math.min(mainWindow.webContents.getZoomLevel() + 0.1, 9)
-            mainWindow.webContents.setZoomLevel(next)
+            setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() + 0.1)
           }
         }
       },
@@ -3372,8 +3405,7 @@ function buildApplicationMenu() {
         accelerator: 'CommandOrControl+-',
         click: () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
-            const next = Math.max(mainWindow.webContents.getZoomLevel() - 0.1, -9)
-            mainWindow.webContents.setZoomLevel(next)
+            setAndPersistZoomLevel(mainWindow, mainWindow.webContents.getZoomLevel() - 0.1)
           }
         }
       },
@@ -3484,15 +3516,13 @@ function installZoomShortcuts(window) {
     const key = input.key
     if (key === '0') {
       event.preventDefault()
-      window.webContents.setZoomLevel(0)
+      setAndPersistZoomLevel(window, 0)
     } else if (key === '=' || key === '+') {
       event.preventDefault()
-      const next = Math.min(window.webContents.getZoomLevel() + ZOOM_STEP, 9)
-      window.webContents.setZoomLevel(next)
+      setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + ZOOM_STEP)
     } else if (key === '-') {
       event.preventDefault()
-      const next = Math.max(window.webContents.getZoomLevel() - ZOOM_STEP, -9)
-      window.webContents.setZoomLevel(next)
+      setAndPersistZoomLevel(window, window.webContents.getZoomLevel() - ZOOM_STEP)
     }
   })
 }
@@ -5089,6 +5119,7 @@ function createWindow() {
   }
 
   mainWindow.webContents.once('did-finish-load', () => {
+    restorePersistedZoomLevel(mainWindow)
     broadcastBootProgress()
     sendWindowStateChanged()
     startHermes().catch(error => rememberLog(error.stack || error.message))

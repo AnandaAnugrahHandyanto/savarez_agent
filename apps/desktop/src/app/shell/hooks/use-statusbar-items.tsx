@@ -59,7 +59,8 @@ import type { StatusbarItem, StatusbarSelectModifiers } from '../statusbar-contr
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
-  chatOpen: boolean
+  // Optional: callers without a chat-pane concept keep the terminal toggle visible.
+  chatOpen?: boolean
   commandCenterOpen: boolean
   extraLeftItems: readonly StatusbarItem[]
   extraRightItems: readonly StatusbarItem[]
@@ -77,7 +78,7 @@ interface StatusbarItemsOptions {
 
 export function useStatusbarItems({
   agentsOpen,
-  chatOpen,
+  chatOpen = true,
   commandCenterOpen,
   extraLeftItems,
   extraRightItems,
@@ -119,6 +120,7 @@ export function useStatusbarItems({
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
+
   const contextCapacityClass = useMemo(
     () => contextCapacityClassName(currentUsage.context_percent),
     [currentUsage.context_percent]
