@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
+import { useState } from 'react'
 
 import { ErrorBoundary } from '@/components/error-boundary'
 import { Button } from '@/components/ui/button'
@@ -12,10 +13,11 @@ import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { setCurrentSessionPreviewTarget } from '@/store/preview'
-import { $currentCwd } from '@/store/session'
+import { $currentCwd, $selectedStoredSessionId, $sessions } from '@/store/session'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
+import { ChangesPanel } from './changes'
 import { ProjectTree } from './files/tree'
 import { useProjectTree } from './files/use-project-tree'
 
@@ -29,8 +31,15 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
   const { t } = useI18n()
   const r = t.rightSidebar
   const panesFlipped = useStore($panesFlipped)
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const sessions = useStore($sessions)
   const currentCwd = useStore($currentCwd).trim()
   const hasCwd = currentCwd.length > 0
+  const [activePanel, setActivePanel] = useState<'changes' | 'explorer'>('explorer')
+
+  const selectedStoredSession = selectedStoredSessionId
+    ? sessions.find(session => session.id === selectedStoredSessionId)
+    : null
 
   const cwdName = hasCwd
     ? (currentCwd
@@ -90,25 +99,51 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
           : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
       )}
     >
-      <FilesystemTab
-        canCollapse={canCollapse}
-        collapseNonce={collapseNonce}
-        cwd={currentCwd}
-        cwdName={cwdName}
-        data={data}
-        error={rootError}
-        hasCwd={hasCwd}
-        loading={rootLoading}
-        onActivateFile={onActivateFile}
-        onActivateFolder={onActivateFolder}
-        onChangeFolder={chooseFolder}
-        onCollapseAll={collapseAll}
-        onLoadChildren={loadChildren}
-        onNodeOpenChange={setNodeOpen}
-        onPreviewFile={previewFile}
-        onRefresh={() => void refreshRoot()}
-        openState={openState}
-      />
+      <div className="grid grid-cols-2 gap-1 border-b border-border/45 p-1.5">
+        <button
+          className={cn(
+            'rounded-md px-2 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.06em] transition',
+            activePanel === 'explorer' ? 'bg-sidebar-accent text-sidebar-accent-foreground' : 'text-muted-foreground hover:bg-sidebar-accent/55 hover:text-foreground'
+          )}
+          onClick={() => setActivePanel('explorer')}
+          type="button"
+        >
+          {r.explorer}
+        </button>
+        <button
+          className={cn(
+            'rounded-md px-2 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.06em] transition',
+            activePanel === 'changes' ? 'bg-sidebar-accent text-sidebar-accent-foreground' : 'text-muted-foreground hover:bg-sidebar-accent/55 hover:text-foreground'
+          )}
+          onClick={() => setActivePanel('changes')}
+          type="button"
+        >
+          {r.changes}
+        </button>
+      </div>
+      {activePanel === 'explorer' ? (
+        <FilesystemTab
+          canCollapse={canCollapse}
+          collapseNonce={collapseNonce}
+          cwd={currentCwd}
+          cwdName={cwdName}
+          data={data}
+          error={rootError}
+          hasCwd={hasCwd}
+          loading={rootLoading}
+          onActivateFile={onActivateFile}
+          onActivateFolder={onActivateFolder}
+          onChangeFolder={chooseFolder}
+          onCollapseAll={collapseAll}
+          onLoadChildren={loadChildren}
+          onNodeOpenChange={setNodeOpen}
+          onPreviewFile={previewFile}
+          onRefresh={() => void refreshRoot()}
+          openState={openState}
+        />
+      ) : (
+        <ChangesPanel profile={selectedStoredSession?.profile ?? null} sessionId={selectedStoredSessionId} />
+      )}
     </aside>
   )
 }

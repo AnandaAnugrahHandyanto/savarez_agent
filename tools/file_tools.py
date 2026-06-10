@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """File Tools Module - LLM agent file manipulation tools."""
 
+import difflib
 import errno
 import json
 import logging
@@ -1093,6 +1094,32 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     return None
 
 
+def _write_file_unified_diff(path: str, new_content: str, *, max_lines: int = 800) -> str:
+    """Best-effort before/after diff for write_file tool results.
+
+    The session Changes UI consumes tool outputs after the fact, including for
+    non-Git projects. write_file used to report only the changed path, which
+    made before/after review impossible. Keep this bounded so large file writes
+    do not flood the transcript.
+    """
+    target = Path(path)
+    try:
+        old_content = target.read_text(encoding="utf-8", errors="replace") if target.exists() else ""
+    except Exception:
+        old_content = ""
+    old_label = str(target) if target.exists() else "/dev/null"
+    diff_lines = list(difflib.unified_diff(
+        old_content.splitlines(),
+        new_content.splitlines(),
+        fromfile=old_label,
+        tofile=str(target),
+        lineterm="",
+    ))
+    if len(diff_lines) > max_lines:
+        diff_lines = diff_lines[:max_lines] + [f"... truncated {len(diff_lines) - max_lines} diff lines"]
+    return "\n".join(diff_lines)
+
+
 def write_file_tool(path: str, content: str, task_id: str = "default",
                     cross_profile: bool = False) -> str:
     """Write content to a file.
@@ -1126,9 +1153,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
 
         if _resolved is None:
             stale_warning = _check_file_staleness(path, task_id)
+            write_diff = _write_file_unified_diff(path, content)
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(path, content)
             result_dict = result.to_dict()
+            if not result_dict.get("error") and write_diff:
+                result_dict["diff"] = write_diff
             if stale_warning:
                 result_dict["_warning"] = stale_warning
             _update_read_timestamp(path, task_id)
@@ -1145,9 +1175,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # Workspace-divergence warning: relative path resolving outside the
             # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
             cwd_warning = _path_resolution_warning(path, Path(_resolved), task_id)
+            write_diff = _write_file_unified_diff(_resolved, content)
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(_resolved, content)
             result_dict = result.to_dict()
+            if not result_dict.get("error") and write_diff:
+                result_dict["diff"] = write_diff
             effective_warning = cross_warning or stale_warning or cwd_warning
             if effective_warning:
                 result_dict["_warning"] = effective_warning

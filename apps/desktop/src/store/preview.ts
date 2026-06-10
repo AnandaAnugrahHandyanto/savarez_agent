@@ -3,6 +3,11 @@ import { atom, computed } from 'nanostores'
 import { $rightRailActiveTabId, RIGHT_RAIL_PREVIEW_TAB_ID, type RightRailTabId, selectRightRailTab } from './layout'
 import { $activeSessionId, $selectedStoredSessionId } from './session'
 
+export interface PreviewDiffLine {
+  type: 'added' | 'context' | 'hunk' | 'meta' | 'removed'
+  text: string
+}
+
 export interface PreviewTarget {
   binary?: boolean
   byteSize?: number
@@ -11,13 +16,15 @@ export interface PreviewTarget {
    * path the preview can't reliably re-read. Rendered directly and NOT
    * persisted to the session-preview registry (it would bloat localStorage). */
   dataUrl?: string
+  /** Inline unified diff lines for synthetic Changes tabs. */
+  diffLines?: PreviewDiffLine[]
   kind: 'file' | 'url'
   label: string
   large?: boolean
   language?: string
   mimeType?: string
   path?: string
-  previewKind?: 'binary' | 'html' | 'image' | 'text'
+  previewKind?: 'binary' | 'diff' | 'html' | 'image' | 'text'
   renderMode?: 'preview' | 'source'
   source: string
   url: string

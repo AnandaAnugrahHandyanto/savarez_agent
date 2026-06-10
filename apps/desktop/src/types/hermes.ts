@@ -565,6 +565,74 @@ export interface LogsResponse {
   lines: string[]
 }
 
+export interface WorkspaceGitDiffLine {
+  type: 'added' | 'context' | 'hunk' | 'meta' | 'removed'
+  text: string
+}
+
+export interface WorkspaceGitChangeFile {
+  path: string
+  previousPath?: string | null
+  status: 'added' | 'conflict' | 'copied' | 'deleted' | 'modified' | 'renamed' | 'untracked'
+  statusCode?: string
+  added: number
+  removed: number
+  binary?: boolean
+  diff: WorkspaceGitDiffLine[]
+}
+
+export interface WorkspaceGitChangesResponse {
+  ok: boolean
+  cwd: string
+  root?: string
+  branch?: string
+  ahead?: number
+  behind?: number
+  truncated?: boolean
+  error?: string
+  message?: string
+  totals: {
+    files: number
+    shown?: number
+    added: number
+    removed: number
+    modified: number
+    untracked: number
+    deleted?: number
+  }
+  files: WorkspaceGitChangeFile[]
+}
+
+export interface SessionTurnChangeFile extends WorkspaceGitChangeFile {
+  messageId?: number
+  timestamp?: number
+  toolName?: string
+}
+
+export interface SessionTurnChange {
+  id: number
+  timestamp?: number
+  title: string
+  totals: {
+    files: number
+    added: number
+    removed: number
+  }
+  files: SessionTurnChangeFile[]
+}
+
+export interface SessionChangesResponse {
+  ok: boolean
+  session_id: string
+  totals: {
+    turns: number
+    files: number
+    added: number
+    removed: number
+  }
+  turns: SessionTurnChange[]
+}
+
 export interface PlatformStatus {
   error_code?: string
   error_message?: string
