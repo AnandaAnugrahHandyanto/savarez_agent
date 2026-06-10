@@ -1245,7 +1245,7 @@ _PROVIDER_ALIASES = {
 # missing model can never escalate to the flagship.
 #
 # This is deliberately a fixed, side-effect-free default for the hot resolution
-# path. The *interactive* default (GUI onboarding / ``hermes model``) uses the
+# path. The *interactive* default (GUI onboarding / ``savarez model``) uses the
 # richer free/paid-tier-aware resolver — see ``get_recommended_default_model``
 # in hermes_cli/web_server.py and ``partition_nous_models_by_tier`` — which can
 # hit the Portal; this fallback must stay cheap and network-free.
@@ -1259,10 +1259,10 @@ def get_default_model_for_provider(provider: str) -> str:
 
     Used as a NON-INTERACTIVE fallback when a provider is configured but no
     model was ever selected (e.g. ``hermes auth add openai-codex`` without
-    ``hermes model``, or a profile that sets ``provider`` with no ``model``).
+    ``savarez model``, or a profile that sets ``provider`` with no ``model``).
 
     For most providers this is the first entry in ``_PROVIDER_MODELS`` — the
-    same model the ``hermes model`` picker offers first. For metered aggregators
+    same model the ``savarez model`` picker offers first. For metered aggregators
     whose curated list is ordered most-capable-first, that entry is also the
     most EXPENSIVE one, so silently defaulting to it is a billing footgun. Such
     providers carry an explicit low-cost override in

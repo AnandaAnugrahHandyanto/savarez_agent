@@ -197,7 +197,7 @@ savarez setup --portal
 | 问题                        | 解决方案                                                                           |
 | --------------------------- | ---------------------------------------------------------------------------------- |
 | `hermes: command not found` | 重新加载 shell（`source ~/.bashrc`）或检查 PATH                                    |
-| `API key not set`           | 运行 `hermes model` 配置提供商，或 `hermes config set OPENROUTER_API_KEY your_key` |
+| `API key not set`           | 运行 `savarez model` 配置提供商，或 `hermes config set OPENROUTER_API_KEY your_key` |
 | 更新后配置丢失              | 运行 `hermes config check`，然后运行 `hermes config migrate`                       |
 
 如需更多诊断信息，运行 `savarez doctor`——它会告诉你确切缺少什么以及如何修复。

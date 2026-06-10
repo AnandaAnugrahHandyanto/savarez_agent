@@ -2318,7 +2318,7 @@ def get_model_options():
         # include_unconfigured + picker_hints + canonical_order mirror the
         # tui_gateway `model.options` JSON-RPC handler exactly, so every GUI
         # surface fed by this endpoint (Settings → Model, the first-run
-        # onboarding picker) sees the SAME full provider universe `hermes model`
+        # onboarding picker) sees the SAME full provider universe `savarez model`
         # exposes — not just the authenticated subset. Unconfigured providers
         # come back as skeleton rows carrying `authenticated=False` +
         # `auth_type`/`key_env`/`warning` so the GUI can render a setup

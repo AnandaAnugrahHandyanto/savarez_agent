@@ -566,7 +566,7 @@ class TestCustomProviderModelSwitch:
 
 
 class TestCustomProviderDiscoverModels:
-    """#18726: honor ``discover_models: false`` in the terminal ``hermes model``
+    """#18726: honor ``discover_models: false`` in the terminal ``savarez model``
     named-custom flow so the picker shows the configured ``models:`` subset
     instead of the endpoint's full live catalog."""
 
