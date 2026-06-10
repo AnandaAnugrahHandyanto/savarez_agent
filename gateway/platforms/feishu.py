@@ -549,7 +549,7 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 
 
 def _build_markdown_post_payload(content: str) -> str:
-    rows = _build_markdown_post_rows(content)
+    rows = _build_outbound_mention_rows(_build_markdown_post_rows(content))
     return json.dumps(
         {
             "zh_cn": {
@@ -607,6 +607,102 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
 
     _flush_current()
     return rows or [[{"tag": "md", "text": content}]]
+
+
+def _load_outbound_mention_aliases() -> Dict[str, str]:
+    """Load Feishu outbound @mention aliases from the process environment.
+
+    ``FEISHU_MENTION_ALIASES`` accepts comma-separated ``Name:ou_xxx`` or
+    ``Name=ou_xxx`` entries. The values are Feishu open_ids used in post
+    ``at`` tags. Invalid or incomplete entries are ignored so a malformed
+    optional alias does not break ordinary message sending.
+    """
+
+    aliases: Dict[str, str] = {}
+    raw = os.getenv("FEISHU_MENTION_ALIASES", "")
+    for entry in raw.split(","):
+        item = entry.strip()
+        if not item:
+            continue
+        if ":" in item:
+            name, open_id = item.split(":", 1)
+        elif "=" in item:
+            name, open_id = item.split("=", 1)
+        else:
+            continue
+        name = name.strip()
+        open_id = open_id.strip()
+        if name and open_id:
+            aliases[name] = open_id
+    return aliases
+
+
+def _split_md_text_with_outbound_mentions(text: str, aliases: Dict[str, str]) -> List[Dict[str, str]]:
+    if not text or not aliases:
+        return [{"tag": "md", "text": text}]
+
+    alias_names = sorted(aliases, key=len, reverse=True)
+    elements: List[Dict[str, str]] = []
+    index = 0
+    while index < len(text):
+        match_name: Optional[str] = None
+        for name in alias_names:
+            marker = f"@{name}"
+            if not text.startswith(marker, index):
+                continue
+            end = index + len(marker)
+            # Do not treat email-like/user-word substrings as mentions.
+            if end < len(text) and (text[end].isalnum() or text[end] == "_"):
+                continue
+            match_name = name
+            break
+
+        if not match_name:
+            next_positions = [text.find(f"@{name}", index + 1) for name in alias_names]
+            next_positions = [pos for pos in next_positions if pos != -1]
+            next_index = min(next_positions) if next_positions else len(text)
+            chunk = text[index:next_index]
+            if chunk:
+                if elements and elements[-1].get("tag") == "md":
+                    elements[-1]["text"] += chunk
+                else:
+                    elements.append({"tag": "md", "text": chunk})
+            index = next_index
+            continue
+
+        open_id = aliases[match_name]
+        elements.append({"tag": "at", "user_id": open_id, "user_name": match_name})
+        index += len(match_name) + 1
+
+    return elements or [{"tag": "md", "text": text}]
+
+
+def _build_outbound_mention_rows(rows: List[List[Dict[str, str]]]) -> List[List[Dict[str, str]]]:
+    aliases = _load_outbound_mention_aliases()
+    if not aliases:
+        return rows
+
+    converted_rows: List[List[Dict[str, str]]] = []
+    for row in rows:
+        converted: List[Dict[str, str]] = []
+        for element in row:
+            if element.get("tag") != "md":
+                converted.append(element)
+                continue
+            text = element.get("text", "")
+            # Keep code fences literal: diagnostic examples like `@MOSS` inside
+            # fenced blocks must not ping agents.
+            if text.lstrip().startswith("```"):
+                converted.append(element)
+                continue
+            converted.extend(_split_md_text_with_outbound_mentions(text, aliases))
+        converted_rows.append(converted or row)
+    return converted_rows
+
+
+def _content_has_outbound_mention_alias(content: str) -> bool:
+    aliases = _load_outbound_mention_aliases()
+    return any(f"@{name}" in content for name in aliases)
 
 
 def parse_feishu_post_payload(
@@ -4380,6 +4476,8 @@ class FeishuAdapter(BasePlatformAdapter):
         if _MARKDOWN_TABLE_RE.search(content):
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)
+        if _content_has_outbound_mention_alias(content):
+            return "post", self._build_post_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
