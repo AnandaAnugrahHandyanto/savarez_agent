@@ -2521,16 +2521,37 @@ install_desktop() {
         fi
     fi
 
-    # macOS: make the locally-built (ad-hoc) app relaunchable after an in-place
+    # macOS: make the locally-built app relaunchable after an in-place
     # self-update. An ad-hoc bundle has no stable Designated Requirement, so a
     # later in-place rebuild (new cdhash) plus the inherited quarantine flag
     # trips Gatekeeper's tamper check ("Hermes is damaged and can't be opened").
-    # Strip quarantine + re-apply a clean deep ad-hoc signature (no
-    # hardened-runtime flag, which an ad-hoc build can't satisfy). Skipped when a
-    # real signing identity is configured so a signed build isn't clobbered.
-    if [ "$OS" = "macos" ] && [ -z "${CSC_LINK:-}" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ] && command -v codesign >/dev/null 2>&1; then
+    # The same unstable requirement also makes TCC grants fragile: microphone
+    # permission is tied to the app's code-signing requirement, not the visible
+    # app name. If the user explicitly provides a local signing identity, prefer
+    # that stable signature; otherwise preserve the old ad-hoc relaunch fixup.
+    # Skipped when electron-builder release signing is configured so a real
+    # signed/notarized build isn't clobbered.
+    if [ "$OS" = "macos" ] && [ -z "${CSC_LINK:-}" ] && [ -z "${CSC_NAME:-}" ] && command -v codesign >/dev/null 2>&1; then
         xattr -cr "$app" 2>/dev/null || true
-        codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
+        local local_identity="${HERMES_DESKTOP_SIGNING_IDENTITY:-${APPLE_SIGNING_IDENTITY:-}}"
+        local entitlements="$desktop_dir/electron/entitlements.mac.plist"
+        if [ -n "$local_identity" ] && [ -f "$entitlements" ]; then
+            # Clean stale CodeResources first: interrupted deep-sign attempts can
+            # leave *.cstemp entries that make the next sign fail before it can
+            # repair nested Electron frameworks.
+            find "$app" -name _CodeSignature -type d -prune -exec rm -rf {} + 2>/dev/null || true
+            find "$app" -name '*.cstemp' -type f -delete 2>/dev/null || true
+            if codesign --force --deep --sign "$local_identity" --options runtime --timestamp=none --entitlements "$entitlements" "$app" >/dev/null 2>&1; then
+                log_success "Desktop app signed with local macOS identity: $local_identity"
+            else
+                log_warn "Local macOS desktop signing failed; falling back to ad-hoc signature"
+                codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
+            fi
+        else
+            # Strip quarantine + re-apply a clean deep ad-hoc signature (no
+            # hardened-runtime flag, which an ad-hoc build can't satisfy).
+            codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
+        fi
     fi
 
     # `npm install` + `npm run pack` rewrite lockfiles; restore them so the

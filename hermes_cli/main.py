@@ -5046,24 +5046,26 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
 
 
 def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
-    """Make a locally-built (unsigned) macOS desktop app survive in-place self-update.
+    """Make a locally-built macOS desktop app survive in-place self-update.
 
     An ad-hoc-signed .app has no stable Designated Requirement (no Team ID), so
     when the self-updater rebuilds the bundle in place with a fresh build (a new,
     different cdhash) Gatekeeper/LaunchServices treats the changed code as
-    tampering and macOS reports "Hermes is damaged and can't be opened." The
-    bundle also inherits the com.apple.quarantine flag from the downloaded
-    installer process chain. Both make the relaunch fail.
+    tampering and macOS reports "Hermes is damaged and can't be opened." The same
+    unstable identity also makes macOS TCC grants fragile: microphone permission
+    is tied to the app's designated requirement, not just the visible app name.
 
-    Clearing the quarantine xattrs and re-applying a clean deep ad-hoc signature
-    (omitting the hardened-runtime flag, which is meaningless without a real
-    Developer ID) lets the rebuilt app relaunch. No-op when a real signing
-    identity is configured (CSC_LINK / APPLE_SIGNING_IDENTITY) so a properly
-    signed/notarized build is never clobbered. Best-effort: never raises.
+    If the user explicitly provides a local signing identity, re-sign the unpacked
+    Electron app with the desktop entitlements and hardened runtime so the bundle
+    keeps a stable local requirement across rebuilds. Otherwise preserve the old
+    best-effort behavior: strip quarantine and apply a clean ad-hoc signature so
+    the rebuilt app can at least relaunch. No-op when electron-builder release
+    signing is configured (CSC_LINK / CSC_NAME) so a properly signed/notarized
+    build is never clobbered. Best-effort: never raises.
     """
     if sys.platform != "darwin":
         return
-    if os.environ.get("CSC_LINK") or os.environ.get("APPLE_SIGNING_IDENTITY"):
+    if os.environ.get("CSC_LINK") or os.environ.get("CSC_NAME"):
         return
     exe = _desktop_packaged_executable(desktop_dir)
     if exe is None:
@@ -5075,8 +5077,41 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     codesign = shutil.which("codesign")
     if not codesign:
         return
+
+    identity = (
+        os.environ.get("HERMES_DESKTOP_SIGNING_IDENTITY")
+        or os.environ.get("APPLE_SIGNING_IDENTITY")
+        or ""
+    ).strip()
+    entitlements = desktop_dir / "electron" / "entitlements.mac.plist"
+
     try:
         subprocess.run(["xattr", "-cr", str(app)], check=False)
+        if identity and entitlements.is_file():
+            subprocess.run(
+                ["find", str(app), "-name", "_CodeSignature", "-type", "d", "-prune", "-exec", "rm", "-rf", "{}", "+"],
+                check=False,
+            )
+            subprocess.run(["find", str(app), "-name", "*.cstemp", "-type", "f", "-delete"], check=False)
+            sign_result = subprocess.run(
+                [
+                    codesign,
+                    "--force",
+                    "--deep",
+                    "--sign",
+                    identity,
+                    "--options",
+                    "runtime",
+                    "--timestamp=none",
+                    "--entitlements",
+                    str(entitlements),
+                    str(app),
+                ],
+                check=False,
+            )
+            if sign_result.returncode == 0:
+                return
+            print("  (warning: explicit macOS desktop signing failed; falling back to ad-hoc signature)")
         subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
