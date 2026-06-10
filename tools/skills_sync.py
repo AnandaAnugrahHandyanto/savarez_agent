@@ -50,6 +50,15 @@ MANIFEST_FILE = SKILLS_DIR / ".bundled_manifest"
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
 
 
+# Opt-in curated bootstrap (HERMES_SKILLS_BOOTSTRAP=curated) seeds only this
+# focused subset instead of every bundled skill. Selection rationale: keep the
+# skills a typical coding/agent operator reaches for on a fresh install —
+# agent CLIs and workflows (claude-code/codex/opencode/hermes-agent), GitHub
+# flows, MCP, design/docs authoring, local-AI serving and evaluation,
+# research, document handling, debugging/planning practices, and macOS
+# personal-productivity integrations — and leave out demo/novelty skills
+# (e.g. gaming) that mostly add noise. The default mode is "all" (seed every
+# bundled skill); this list only takes effect when curated is explicitly set.
 CURATED_BOOTSTRAP_BUNDLED_SKILLS = frozenset({
     "apple-notes",
     "apple-reminders",
@@ -111,6 +120,10 @@ CURATED_BOOTSTRAP_BUNDLED_SKILLS = frozenset({
 })
 
 
+# Official optional skills promoted into the curated set: vetted search,
+# vector-store, container, and debugging helpers that round out the curated
+# bundled skills above. Like the bundled list, this only applies when the
+# user explicitly opts in with HERMES_SKILLS_BOOTSTRAP=curated.
 CURATED_BOOTSTRAP_OPTIONAL_SKILLS = frozenset({
     "1password",
     "chroma",
@@ -129,14 +142,13 @@ CURATED_BOOTSTRAP_OPTIONAL_SKILLS = frozenset({
 
 
 _BOOTSTRAP_MODE_ALIASES = {
-    "": "curated",
-    "curated": "curated",
-    "default": "curated",
-    "meshboard": "curated",
-    "lean": "curated",
+    "": "all",
+    "default": "all",
     "all": "all",
     "full": "all",
     "legacy": "all",
+    "curated": "curated",
+    "lean": "curated",
     "none": "none",
     "off": "none",
     "disabled": "none",
@@ -369,13 +381,16 @@ def _optional_skill_index() -> Dict[str, Tuple[str, str, Path]]:
 def _bootstrap_mode() -> str:
     """Return the bundled-skill bootstrap mode.
 
-    ``curated`` is the default: seed a focused set of broadly useful coding,
-    agent, GitHub, MCP, local-AI, research, document, and ops skills.  ``all``
-    preserves the legacy behavior for users who want every bundled skill.
-    ``none`` disables bundled seeding without requiring a profile marker.
+    ``all`` is the default: seed every bundled skill, matching long-standing
+    behavior so existing users see no change on update.  ``curated`` is a pure
+    opt-in (``HERMES_SKILLS_BOOTSTRAP=curated``) that seeds a focused set of
+    broadly useful coding, agent, GitHub, MCP, local-AI, research, document,
+    and ops skills — and prunes pristine previously-seeded skills outside that
+    set.  ``none`` disables bundled seeding without requiring a profile
+    marker.  Unrecognized values fall back to ``all``.
     """
     raw = os.environ.get("HERMES_SKILLS_BOOTSTRAP", "").strip().lower()
-    return _BOOTSTRAP_MODE_ALIASES.get(raw, "curated")
+    return _BOOTSTRAP_MODE_ALIASES.get(raw, "all")
 
 
 def _filter_skills(
@@ -694,14 +709,19 @@ def sync_skills(quiet: bool = False) -> dict:
         (name, path, optional_dir) for name, path in promoted_optional_skills
     ]
     selected_names = {name for name, _path, _root in sync_sources}
-    prunable_sources: Dict[str, Tuple[Path, Path]] = {
+    known_sources: Dict[str, Tuple[Path, Path]] = {
         name: (path, bundled_dir) for name, path in all_bundled_skills
     }
-    known_sources: Dict[str, Tuple[Path, Path]] = dict(prunable_sources)
+    # Pruning previously-seeded skills is strictly part of the opt-in curated
+    # mode. The default "all" mode and the "none" mode never delete what an
+    # earlier sync seeded, so existing users see no change on update.
+    prunable_sources: Dict[str, Tuple[Path, Path]] = (
+        dict(known_sources) if mode == "curated" else {}
+    )
     for name, path in all_optional_skills:
         if name in manifest:
             known_sources[name] = (path, optional_dir)
-            if mode in {"curated", "none"}:
+            if mode == "curated":
                 prunable_sources[name] = (path, optional_dir)
     suppressed = _read_suppressed_names()
 

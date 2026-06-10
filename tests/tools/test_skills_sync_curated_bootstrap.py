@@ -22,6 +22,81 @@ def _isolated_sync(monkeypatch, tmp_path, bundled_dir, optional_dir):
     return sync, skills_dir
 
 
+def test_default_bootstrap_mode_seeds_all(monkeypatch, tmp_path):
+    """With HERMES_SKILLS_BOOTSTRAP unset, the default is seed-all — the
+    long-standing behavior, so existing users see no change on update."""
+    bundled_dir = tmp_path / "bundled"
+    optional_dir = tmp_path / "optional"
+    _write_skill(bundled_dir, "software-development/plan", "plan")
+    _write_skill(bundled_dir, "gaming/pokemon-player", "pokemon-player")
+    _write_skill(optional_dir, "devops/watchers", "watchers")
+    sync, skills_dir = _isolated_sync(monkeypatch, tmp_path, bundled_dir, optional_dir)
+
+    monkeypatch.delenv("HERMES_SKILLS_BOOTSTRAP", raising=False)
+    result = sync.sync_skills(quiet=True)
+
+    assert result["bootstrap_mode"] == "all"
+    assert set(result["copied"]) == {"plan", "pokemon-player"}
+    assert (skills_dir / "software-development" / "plan" / "SKILL.md").exists()
+    assert (skills_dir / "gaming" / "pokemon-player" / "SKILL.md").exists()
+    # Optional skills are not promoted outside curated mode.
+    assert not (skills_dir / "devops" / "watchers" / "SKILL.md").exists()
+
+
+def test_default_bootstrap_mode_never_prunes_seeded_skills(monkeypatch, tmp_path):
+    """Updating with the default mode must not delete previously-seeded
+    pristine skills, even ones outside the curated list."""
+    bundled_dir = tmp_path / "bundled"
+    optional_dir = tmp_path / "optional"
+    pokemon_src = _write_skill(bundled_dir, "gaming/pokemon-player", "pokemon-player")
+    sync, skills_dir = _isolated_sync(monkeypatch, tmp_path, bundled_dir, optional_dir)
+    pokemon_dest = skills_dir / "gaming" / "pokemon-player"
+    pokemon_dest.parent.mkdir(parents=True, exist_ok=True)
+    sync.shutil.copytree(pokemon_src, pokemon_dest)
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    (skills_dir / ".bundled_manifest").write_text(
+        f"pokemon-player:{sync._dir_hash(pokemon_src)}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("HERMES_SKILLS_BOOTSTRAP", raising=False)
+    result = sync.sync_skills(quiet=True)
+
+    assert result["bootstrap_mode"] == "all"
+    assert result["pruned"] == []
+    assert (pokemon_dest / "SKILL.md").exists()
+    assert "pokemon-player" in (skills_dir / ".bundled_manifest").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_none_bootstrap_mode_skips_seeding_without_pruning(monkeypatch, tmp_path):
+    """HERMES_SKILLS_BOOTSTRAP=none disables seeding but never deletes what an
+    earlier sync seeded — pruning is exclusive to opt-in curated mode."""
+    bundled_dir = tmp_path / "bundled"
+    optional_dir = tmp_path / "optional"
+    _write_skill(bundled_dir, "software-development/plan", "plan")
+    pokemon_src = _write_skill(bundled_dir, "gaming/pokemon-player", "pokemon-player")
+    sync, skills_dir = _isolated_sync(monkeypatch, tmp_path, bundled_dir, optional_dir)
+    pokemon_dest = skills_dir / "gaming" / "pokemon-player"
+    pokemon_dest.parent.mkdir(parents=True, exist_ok=True)
+    sync.shutil.copytree(pokemon_src, pokemon_dest)
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    (skills_dir / ".bundled_manifest").write_text(
+        f"pokemon-player:{sync._dir_hash(pokemon_src)}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_SKILLS_BOOTSTRAP", "none")
+    result = sync.sync_skills(quiet=True)
+
+    assert result["bootstrap_mode"] == "none"
+    assert result["copied"] == []
+    assert result["pruned"] == []
+    assert (pokemon_dest / "SKILL.md").exists()
+    assert not (skills_dir / "software-development" / "plan" / "SKILL.md").exists()
+
+
 def test_curated_bootstrap_seeds_relevant_defaults_and_promoted_optional(
     monkeypatch,
     tmp_path,
@@ -33,7 +108,7 @@ def test_curated_bootstrap_seeds_relevant_defaults_and_promoted_optional(
     _write_skill(optional_dir, "devops/watchers", "watchers")
     sync, skills_dir = _isolated_sync(monkeypatch, tmp_path, bundled_dir, optional_dir)
 
-    monkeypatch.delenv("HERMES_SKILLS_BOOTSTRAP", raising=False)
+    monkeypatch.setenv("HERMES_SKILLS_BOOTSTRAP", "curated")
     result = sync.sync_skills(quiet=True)
 
     assert result["bootstrap_mode"] == "curated"
@@ -62,7 +137,7 @@ def test_curated_bootstrap_prunes_old_pristine_bundled_junk(monkeypatch, tmp_pat
         encoding="utf-8",
     )
 
-    monkeypatch.delenv("HERMES_SKILLS_BOOTSTRAP", raising=False)
+    monkeypatch.setenv("HERMES_SKILLS_BOOTSTRAP", "curated")
     result = sync.sync_skills(quiet=True)
 
     assert result["pruned"] == ["pokemon-player"]
@@ -89,6 +164,7 @@ def test_curated_bootstrap_preserves_user_modified_pruned_skill(monkeypatch, tmp
         encoding="utf-8",
     )
 
+    monkeypatch.setenv("HERMES_SKILLS_BOOTSTRAP", "curated")
     result = sync.sync_skills(quiet=True)
 
     assert result["pruned"] == []
