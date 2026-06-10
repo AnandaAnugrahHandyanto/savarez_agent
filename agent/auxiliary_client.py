@@ -4226,9 +4226,19 @@ def resolve_vision_provider_client(
                     main_provider,
                 )
             else:
+                # Bridge process-local runtime credentials for custom:<name>
+                # providers whose base_url / api_key / api_mode live only on
+                # the live runtime (recorded via set_runtime_main()).  This is
+                # the vision-sibling gap of #35259 — _resolve_auto() already
+                # does this bridging but the vision path was left unbridged.
+                rpc_base_url = resolved_base_url or (_RUNTIME_MAIN_BASE_URL or None)
+                rpc_api_key = resolved_api_key or (_RUNTIME_MAIN_API_KEY or None)
+                rpc_api_mode = resolved_api_mode or (_RUNTIME_MAIN_API_MODE or None)
                 rpc_client, rpc_model = resolve_provider_client(
                     main_provider, vision_model,
-                    api_mode=resolved_api_mode,
+                    explicit_base_url=rpc_base_url,
+                    explicit_api_key=rpc_api_key,
+                    api_mode=rpc_api_mode,
                     is_vision=True)
                 if rpc_client is not None:
                     logger.info(
