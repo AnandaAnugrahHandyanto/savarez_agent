@@ -235,6 +235,7 @@ class TestExtractImages:
         assert "\n\n\n" not in cleaned
 
     def test_non_http_url_not_matched(self):
+        """file:// URI without a matching file on disk is silently skipped."""
         content = "![file](file:///local/path.png)"
         images, _ = BasePlatformAdapter.extract_images(content)
         assert images == []
@@ -251,6 +252,179 @@ class TestExtractImages:
         assert images[0][0] == "https://fal.media/cat.png"
         # The PDF link must survive in cleaned content
         assert "![report](https://example.com/report.pdf)" in cleaned
+
+    def test_markdown_file_url_windows(self, tmp_path):
+        """Markdown image with file:///C:/path on Windows (POSIX no real C:)."""
+        content = "![screen](file:///C:/Users/test/screenshot.png)"
+        images, _ = BasePlatformAdapter.extract_images(content)
+        # No C: on Linux so validation fails silently
+        assert images == []
+
+    def test_markdown_file_url_posix(self, tmp_path):
+        """Markdown image with file:///tmp/... pointing to a real file."""
+        img = tmp_path / "snap.png"
+        img.write_bytes(b"PNG")
+        content = f"![screen](file://{img.as_posix()})"
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        # Normalised file:// URI should start with file:// and end with the path
+        assert images[0][0].startswith("file://")
+        assert str(img) in images[0][0] or "file://" + str(img) == images[0][0]
+        assert images[0][1] == "screen"
+
+    def test_markdown_file_url_posix_no_such_file(self, tmp_path):
+        """file:// URI pointing to a non-existing file is silently skipped."""
+        content = f"![ghost](file://{tmp_path}/nope.png)"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        # Original text must be preserved
+        assert "![ghost]" in cleaned
+
+    def test_html_file_url_posix(self, tmp_path):
+        """HTML img tag with file:/// URI."""
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        content = f'<img src="file://{f}">'
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert images[0][0] == f"file://{f}"
+        assert images[0][1] == ""
+
+    def test_file_url_percent_encoded(self, tmp_path):
+        """file:// URI with %20-encoded spaces."""
+        d = tmp_path / "my folder"
+        d.mkdir()
+        img = d / "screen shot.png"
+        img.write_bytes(b"PNG")
+        encoded = img.as_posix().replace(" ", "%20")
+        content = f"![img](file://{encoded})"
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert str(img) in images[0][0]
+
+    def test_file_url_unc_rejected(self, tmp_path):
+        """UNC file:// URIs are rejected in v1."""
+        content = "![img](file://server/share/img.png)"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "![img]" in cleaned
+
+    def test_file_url_in_fenced_code_block(self, tmp_path):
+        """file:// URI inside ```code``` is NOT extracted."""
+        img = tmp_path / "real.png"
+        img.write_bytes(b"PNG")
+        content = f"""Some text
+```
+![screen](file://{img.as_posix()})
+```
+More"""
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        # Code block text must survive
+        assert "![screen]" in cleaned
+
+    def test_file_url_in_inline_code(self, tmp_path):
+        """file:// URI inside backtick inline code is NOT extracted."""
+        img = tmp_path / "not_used.png"
+        img.write_bytes(b"PNG")
+        content = f"Use `![ref](file://{img.as_posix()})` here"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "`!" in cleaned
+
+    def test_file_url_in_blockquote(self, tmp_path):
+        """file:// URI in blockquote is NOT extracted."""
+        img = tmp_path / "quote.png"
+        img.write_bytes(b"PNG")
+        content = f"> ![img](file://{img.as_posix()})"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        # Blockquote text should survive
+        assert "![img]" in cleaned
+
+    def test_html_file_url_in_fenced_code(self, tmp_path):
+        """HTML img with file:// URI inside ```code``` is NOT extracted."""
+        img = tmp_path / "hidden.png"
+        img.write_bytes(b"PNG")
+        content = f"""Text
+```
+<img src="file://{img.as_posix()}">
+```
+More"""
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "<img" in cleaned or "file://" in cleaned
+
+    def test_file_url_only_image_extensions(self, tmp_path):
+        """Non-image file:// URIs (e.g. .pdf) are not extracted."""
+        content = "![doc](file:///tmp/report.pdf)"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "![doc]" in cleaned
+
+    def test_https_still_works(self):
+        """Normal HTTPS image extraction unchanged."""
+        content = "![cat](https://example.com/cat.png)"
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert images[0][0] == "https://example.com/cat.png"
+
+    def test_non_file_like_url_not_matched(self):
+        """Markdown image with non-image extension (http/https) is not extracted."""
+        content = "![doc](https://example.com/report.pdf)"
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert "![doc]" in cleaned
+
+
+class TestNormalizeFileUrl:
+    """Tests for BasePlatformAdapter._normalize_file_url."""
+
+    def test_windows_drive_three_slashes(self):
+        result = BasePlatformAdapter._normalize_file_url("file:///C:/Users/test/file.png")
+        assert result == "C:\\Users\\test\\file.png" or result == "C:/Users/test/file.png"
+
+    def test_windows_drive_two_slashes(self):
+        result = BasePlatformAdapter._normalize_file_url("file://C:/Users/test/file.png")
+        assert result == "C:\\Users\\test\\file.png" or result == "C:/Users/test/file.png"
+
+    def test_windows_drive_backslashes(self):
+        result = BasePlatformAdapter._normalize_file_url("file://C:\\Users\\test\\file.png")
+        assert "C:\\" in result or "C:/" in result
+        assert "file.png" in result
+
+    def test_posix_absolute(self):
+        result = BasePlatformAdapter._normalize_file_url("file:///tmp/foo/bar.png")
+        assert result == "/tmp/foo/bar.png"
+
+    def test_percent_encoding(self):
+        result = BasePlatformAdapter._normalize_file_url("file:///tmp/my%20file.png")
+        assert result == "/tmp/my file.png"
+
+    def test_unc_rejected(self):
+        result = BasePlatformAdapter._normalize_file_url("file://server/share/file.png")
+        assert result is None
+
+    def test_not_a_file_url(self):
+        result = BasePlatformAdapter._normalize_file_url("https://example.com/img.png")
+        assert result is None
+
+    def test_empty_url(self):
+        result = BasePlatformAdapter._normalize_file_url("")
+        assert result is None
+
+    def test_quoted_url(self):
+        result = BasePlatformAdapter._normalize_file_url("'file:///tmp/foo.png'")
+        assert result == "/tmp/foo.png"
+
+    def test_double_quoted_url(self):
+        result = BasePlatformAdapter._normalize_file_url('"file:///tmp/foo.png"')
+        assert result == "/tmp/foo.png"
+
+    def test_backtick_quoted_url(self):
+        result = BasePlatformAdapter._normalize_file_url("`file:///tmp/foo.png`")
+        assert result == "/tmp/foo.png"
 
 
 # ---------------------------------------------------------------------------
