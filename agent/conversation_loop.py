@@ -25,6 +25,7 @@ import ssl
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.anthropic_adapter import _is_oauth_token
@@ -671,6 +672,58 @@ def run_conversation(
             effective_task_id=effective_task_id,
             should_review_memory=_should_review_memory,
         )
+
+    # Claude Code CLI runtime: bypass Hermes' HTTP/model-tool loop and hand
+    # the turn to the official local `claude -p` command.  This is used by
+    # Clara/reviewer profiles that should draw from the user's Claude Code
+    # subscription login rather than Anthropic API billing.
+    if agent.api_mode == "claude_code_cli":
+        try:
+            from gateway.claude_code_bridge import run_claude_code_bridge_sync
+            from hermes_constants import get_hermes_home
+            try:
+                from hermes_cli.config import load_config as _load_cli_config
+                bridge_config = _load_cli_config() or {}
+            except Exception:
+                bridge_config = {}
+            bridge_config = dict(bridge_config) if isinstance(bridge_config, dict) else {}
+            bridge_config.setdefault("model", {"provider": "claude-code-cli", "default": agent.model})
+
+            bridge_result = run_claude_code_bridge_sync(
+                config=bridge_config,
+                message=user_message,
+                context_prompt=system_message,
+                channel_prompt=None,
+                history=conversation_history or [],
+                hermes_home=Path(get_hermes_home()),
+            )
+            final_response = bridge_result.final_response
+            return {
+                "final_response": final_response,
+                "messages": [
+                    {"role": "user", "content": user_message},
+                    {"role": "assistant", "content": final_response},
+                ],
+                "api_calls": 0,
+                "tools": ["claude-code-cli"],
+                "completed": bridge_result.exit_code == 0,
+                "metadata": {
+                    "provider": "claude-code-cli",
+                    "job_id": bridge_result.job_id,
+                    "workdir": bridge_result.workdir,
+                    "log_dir": bridge_result.log_dir,
+                    "exit_code": bridge_result.exit_code,
+                },
+            }
+        except Exception as exc:
+            logger.exception("Claude Code CLI runtime failed")
+            return {
+                "final_response": f"🟪 Clara/클라라 — ⚠️ Claude Code CLI runtime failed: {exc}",
+                "messages": [],
+                "api_calls": 0,
+                "tools": ["claude-code-cli"],
+                "completed": False,
+            }
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot

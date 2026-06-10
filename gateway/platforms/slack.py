@@ -329,6 +329,10 @@ class SlackAdapter(BasePlatformAdapter):
         # respond to ALL subsequent messages in that thread automatically.
         self._mentioned_threads: set = set()
         self._MENTIONED_THREADS_MAX = 5000
+        # Optional Slack wake-word patterns (plain text aliases such as
+        # "Coda"/"Mira"/"Nova") so role-specific gateway profiles can stay
+        # mention-gated without requiring a real Slack @mention every time.
+        self._mention_patterns = self._compile_mention_patterns()
         # Assistant thread metadata keyed by (channel_id, thread_ts). Slack's
         # AI Assistant lifecycle events can arrive before/alongside message
         # events, and they carry the user/thread identity needed for stable
@@ -343,6 +347,11 @@ class SlackAdapter(BasePlatformAdapter):
         # Track active assistant thread status indicators so stop_typing can
         # clear them (chat_id → thread_ts).
         self._active_status_threads: Dict[str, str] = {}
+        # Track assistant thread titles we already attempted to set so the
+        # first meaningful user message wins and later replies do not keep
+        # renaming the same Slack AI thread.
+        self._assistant_thread_titles_set: set = set()
+        self._ASSISTANT_THREAD_TITLES_MAX = 5000
         # Slash-command contexts: stash response_url + user_id so send()
         # can route the first reply ephemerally.  Keyed by
         # (channel_id, user_id) to avoid cross-user collisions.
@@ -1727,6 +1736,95 @@ class SlackAdapter(BasePlatformAdapter):
             return merged
         return metadata
 
+    @staticmethod
+    def _unicode_bold_ascii(text: str) -> str:
+        """Render ASCII letters/digits in mathematical bold characters.
+
+        Slack assistant thread titles are plain strings rather than Block Kit
+        text objects. Using Unicode bold keeps visual emphasis even when Slack
+        does not parse mrkdwn in a title field. Non-ASCII text (Korean, emoji,
+        punctuation, etc.) is left unchanged.
+        """
+        result: list[str] = []
+        for ch in text:
+            code = ord(ch)
+            if 0x41 <= code <= 0x5A:  # A-Z
+                result.append(chr(0x1D400 + code - 0x41))
+            elif 0x61 <= code <= 0x7A:  # a-z
+                result.append(chr(0x1D41A + code - 0x61))
+            elif 0x30 <= code <= 0x39:  # 0-9
+                result.append(chr(0x1D7CE + code - 0x30))
+            else:
+                result.append(ch)
+        return "".join(result)
+
+    def _slack_thread_title_prefix(self) -> str:
+        """Return the configured color/icon prefix for assistant titles."""
+        raw = self.config.extra.get("thread_title_prefix", "🟦")
+        return str(raw or "").strip()
+
+    def _build_assistant_thread_title(self, text: str) -> str:
+        """Build the visible title used for Slack assistant threads."""
+        cleaned = re.sub(r"<@[^>]+>", "", text or "")
+        cleaned = re.sub(r"<#[A-Z0-9]+\|?([^>]*)>", r"\1", cleaned)
+        cleaned = re.sub(r"<([^|>]+)\|([^>]+)>", r"\2", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if not cleaned:
+            cleaned = "New thread"
+        if len(cleaned) > 72:
+            cleaned = cleaned[:69].rstrip() + "…"
+
+        title = self._unicode_bold_ascii(cleaned)
+        prefix = self._slack_thread_title_prefix()
+        return f"{prefix} {title}".strip()
+
+    async def _maybe_set_assistant_thread_title(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        text: str,
+    ) -> None:
+        """Best-effort Slack Assistant title styling.
+
+        This uses Slack's ``assistant.threads.setTitle`` method when the SDK
+        exposes it. The call is intentionally best-effort: missing
+        ``assistant:write`` scope or non-assistant threads should never block
+        normal message processing.
+        """
+        if not self._app or not channel_id or not thread_ts:
+            return
+
+        key = self._assistant_thread_key(channel_id, thread_ts)
+        if not key or key in self._assistant_thread_titles_set:
+            return
+
+        client = self._get_client(channel_id)
+        set_title = getattr(client, "assistant_threads_setTitle", None)
+        if not set_title:
+            return
+        if (
+            "assistant_threads_setTitle" not in getattr(client, "__dict__", {})
+            and not hasattr(type(client), "assistant_threads_setTitle")
+        ):
+            return
+
+        title = self._build_assistant_thread_title(text)
+        try:
+            await set_title(
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                title=title,
+            )
+            self._assistant_thread_titles_set.add(key)
+            if len(self._assistant_thread_titles_set) > self._ASSISTANT_THREAD_TITLES_MAX:
+                excess = len(self._assistant_thread_titles_set) - self._ASSISTANT_THREAD_TITLES_MAX // 2
+                for old_key in list(self._assistant_thread_titles_set)[:excess]:
+                    self._assistant_thread_titles_set.discard(old_key)
+        except Exception as e:
+            # Missing assistant:write scope or a non-assistant thread are both
+            # acceptable fallbacks; the user still gets a normal reply.
+            logger.debug("[Slack] assistant.threads.setTitle failed: %s", e)
+
     def _seed_assistant_thread_session(self, metadata: Dict[str, str]) -> None:
         """Prime the session store so assistant threads get stable user scoping."""
         session_store = getattr(self, "_session_store", None)
@@ -1952,13 +2050,16 @@ class SlackAdapter(BasePlatformAdapter):
         # In channels, respond if:
         #   0. Channel is in free_response_channels, OR require_mention is
         #      disabled — always process regardless of mention.
-        #   1. The bot is @mentioned in this message, OR
+        #   1. The bot is @mentioned in this message or matched by a configured
+        #      plain-text wake pattern, OR
         #   2. The message is a reply in a thread the bot started/participated in, OR
         #   3. The message is in a thread where the bot was previously @mentioned, OR
         #   4. There's an existing session for this thread (survives restarts)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         routing_text = original_text or ""
-        is_mentioned = bot_uid and f"<@{bot_uid}>" in routing_text
+        real_slack_mention = bool(bot_uid and f"<@{bot_uid}>" in routing_text)
+        pattern_mention = self._message_matches_mention_patterns(routing_text)
+        is_mentioned = real_slack_mention or pattern_mention
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
@@ -1995,8 +2096,11 @@ class SlackAdapter(BasePlatformAdapter):
                     return
 
         if is_mentioned:
-            # Strip the bot mention from the text
-            text = text.replace(f"<@{bot_uid}>", "").strip()
+            # Strip a real Slack bot mention from the text. Plain-text wake
+            # patterns are left intact so the agent still sees which role name
+            # the user addressed (Coda/Clara/Mira/Nova).
+            if real_slack_mention and bot_uid:
+                text = text.replace(f"<@{bot_uid}>", "").strip()
             # Register this thread so all future messages auto-trigger the bot.
             # Skipped in strict mode: strict_mention=true bots must be
             # re-mentioned every turn, so remembering the thread would
@@ -2167,6 +2271,12 @@ class SlackAdapter(BasePlatformAdapter):
         if attachment_notices:
             notice_block = "[Slack attachment notice]\n" + "\n".join(f"- {n}" for n in attachment_notices)
             text = f"{notice_block}\n\n{text}" if text else notice_block
+
+        await self._maybe_set_assistant_thread_title(
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            text=text or original_text,
+        )
 
         if msg_type != MessageType.COMMAND and media_types:
             if any(m.startswith("image/") for m in media_types):
@@ -3009,6 +3119,42 @@ class SlackAdapter(BasePlatformAdapter):
         if s:
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
+
+    def _compile_mention_patterns(self) -> List[re.Pattern]:
+        """Compile optional regex wake-word patterns for Slack channel triggers."""
+        patterns = self.config.extra.get("mention_patterns")
+        if patterns is None:
+            raw = os.getenv("SLACK_MENTION_PATTERNS", "").strip()
+            if raw:
+                try:
+                    loaded = json.loads(raw)
+                    patterns = loaded if isinstance(loaded, list) else [raw]
+                except Exception:
+                    patterns = [part.strip() for part in raw.split(",") if part.strip()]
+            else:
+                patterns = []
+        elif isinstance(patterns, str):
+            patterns = [patterns]
+        elif not isinstance(patterns, list):
+            logger.warning(
+                "[%s] slack mention_patterns must be a list or string; got %s",
+                self.name,
+                type(patterns).__name__,
+            )
+            patterns = []
+
+        compiled: List[re.Pattern] = []
+        for pattern in patterns:
+            try:
+                compiled.append(re.compile(str(pattern), re.IGNORECASE))
+            except re.error as exc:
+                logger.warning("[%s] Invalid slack mention pattern %r: %s", self.name, pattern, exc)
+        return compiled
+
+    def _message_matches_mention_patterns(self, text: str) -> bool:
+        if not text or not self._mention_patterns:
+            return False
+        return any(pattern.search(text) for pattern in self._mention_patterns)
 
     def _slack_allowed_channels(self) -> set:
         """Return the whitelist of channel IDs the bot will respond in.

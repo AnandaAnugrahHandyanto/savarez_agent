@@ -73,6 +73,20 @@ def _call(server, method, **params):
     return handler(1, params)
 
 
+# ── command.dispatch control-plane commands ───────────────────────────
+
+
+def test_lead_mode_dispatch_switches_mode(server, session, hermes_home):
+    sid, _, _ = session
+    r = _call(server, "command.dispatch", name="clara-lead", arg="", session_id=sid)
+    assert r["result"]["type"] == "exec"
+    assert "clara-lead" in r["result"]["output"]
+
+    from gateway.orchestrator_modes import read_mode
+
+    assert read_mode(hermes_home)["mode"] == "clara-lead"
+
+
 # ── command.dispatch /goal ────────────────────────────────────────────
 
 

@@ -31,6 +31,7 @@ from gateway.platforms.api_server import (
     _IdempotencyCache,
     _CORS_HEADERS,
     _derive_chat_session_id,
+    _expand_api_slash_command,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -49,6 +50,34 @@ class TestCheckRequirements:
     @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", False)
     def test_returns_false_without_aiohttp(self):
         assert check_api_server_requirements() is False
+
+
+# ---------------------------------------------------------------------------
+# API slash command expansion
+# ---------------------------------------------------------------------------
+
+
+class TestAPISlashCommandExpansion:
+    def test_expands_auto_goal_for_desktop_api_clients(self):
+        expanded = _expand_api_slash_command("/auto fix the desktop workflow")
+
+        assert "[AUTO WORKFLOW INVOCATION]" in expanded
+        assert "skill_view(name=\"auto\")" in expanded
+        assert "Run at most 3 cycles total" in expanded
+        assert "fix the desktop workflow" in expanded
+
+    def test_empty_auto_returns_usage(self):
+        expanded = _expand_api_slash_command("/auto")
+
+        assert "사용법: /auto <목표>" in expanded
+        assert "최대 3 cycles" in expanded
+
+    def test_ignores_non_text_or_other_commands(self):
+        multimodal = [{"type": "text", "text": "/auto hi"}]
+
+        assert _expand_api_slash_command("hello") == "hello"
+        assert _expand_api_slash_command("/unknown hi") == "/unknown hi"
+        assert _expand_api_slash_command(multimodal) is multimodal
 
 
 # ---------------------------------------------------------------------------
@@ -708,6 +737,28 @@ class TestChatCompletionsEndpoint:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/v1/chat/completions", json={"model": "test", "messages": []})
             assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_expands_auto_slash_before_agent_run(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "/auto fix desktop app"}],
+                    },
+                )
+
+        assert resp.status == 200
+        sent = mock_run.call_args.kwargs["user_message"]
+        assert "[AUTO WORKFLOW INVOCATION]" in sent
+        assert "fix desktop app" in sent
 
     @pytest.mark.asyncio
     async def test_stream_true_returns_sse(self, adapter):

@@ -110,6 +110,10 @@ def test_mode_router_classifies_and_sets_context(isolated_home):
     assert project["mode"] == "project"
     assert project["needs_project"] is True
 
+    status_query = plugin.classify_request("현재모드")
+    assert status_query["mode"] == "chat"
+    assert status_query["reason"] == "control_status_query"
+
     result = json.loads(plugin.wave_set_mode_handler({"mode": "scratch"}))
     assert result["success"] is True
     assert result["data"]["mode"] == "scratch"

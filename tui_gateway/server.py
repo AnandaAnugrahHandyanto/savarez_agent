@@ -4991,9 +4991,17 @@ def _(rid, params: dict) -> dict:
 
     try:
         from agent.skill_commands import (
+            AUTO_WORKFLOW_USAGE,
+            build_auto_workflow_prompt,
             scan_skill_commands,
             build_skill_invocation_message,
         )
+
+        if name == "auto":
+            msg = build_auto_workflow_prompt(arg)
+            if not msg:
+                return _ok(rid, {"type": "exec", "output": AUTO_WORKFLOW_USAGE})
+            return _ok(rid, {"type": "send", "message": msg})
 
         cmds = scan_skill_commands()
         key = f"/{name}"
@@ -5021,6 +5029,15 @@ def _(rid, params: dict) -> dict:
         if not arg:
             return _err(rid, 4004, "usage: /queue <prompt>")
         return _ok(rid, {"type": "send", "message": arg})
+
+    if name in {"hugo-lead", "clara-lead"}:
+        try:
+            from gateway.orchestrator_modes import handle_lead_slash
+
+            output = handle_lead_slash(name, source=f"tui:slash:{name}")
+        except Exception as exc:
+            return _err(rid, 5030, f"lead mode unavailable: {exc}")
+        return _ok(rid, {"type": "exec", "output": output})
 
     if name == "retry":
         if not session:

@@ -10,6 +10,7 @@ import type {
   SessionSteerResponse,
   ShellExecResponse
 } from '../gatewayTypes.js'
+import { applyCompletion } from '../hooks/useCompletion.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
@@ -362,14 +363,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
     (value: string) => {
       if (composerState.completions.length) {
         const row = composerState.completions[composerState.compIdx]
+        const next = applyCompletion(value, composerState.compReplace, row)
 
-        if (row?.text) {
-          const text = value.startsWith('/') && row.text.startsWith('/') ? row.text.slice(1) : row.text
-          const next = value.slice(0, composerState.compReplace) + text
-
-          if (next !== value) {
-            return composerActions.setInput(next)
-          }
+        if (next) {
+          return composerActions.setInput(next)
         }
       }
 

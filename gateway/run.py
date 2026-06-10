@@ -1061,14 +1061,14 @@ logger = logging.getLogger(__name__)
 _AGENT_PENDING_SENTINEL = object()
 
 
-def _resolve_runtime_agent_kwargs() -> dict:
+def _resolve_runtime_agent_kwargs(user_config: dict | None = None) -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
-    Provider is read from ``config.yaml`` ``model.provider`` (the single
-    source of truth). ``resolve_runtime_provider()`` falls through to env
-    var lookups internally for legacy compatibility, but the gateway does
-    not consult environment variables for behavioral config — config.yaml
-    is authoritative.
+    Normal gateway turns use the active profile's ``config.yaml`` as before.
+    Alias/profile-routed turns pass a profile config tagged with
+    ``_runtime_profile_route``; those turns resolve the runtime from that
+    profile's ``model`` section so a Slack alias can use a genuinely separate
+    model/provider config without running a second Socket Mode gateway.
 
     If the primary provider fails with an authentication error, attempt to
     resolve credentials using the fallback provider chain from config.yaml
@@ -1080,8 +1080,45 @@ def _resolve_runtime_agent_kwargs() -> dict:
     )
     from hermes_cli.auth import AuthError
 
+    routed_profile = None
+    model_cfg = {}
+    if isinstance(user_config, dict):
+        routed_profile = user_config.get("_runtime_profile_route")
+        raw_model_cfg = user_config.get("model") or {}
+        if isinstance(raw_model_cfg, dict):
+            model_cfg = dict(raw_model_cfg)
+        elif isinstance(raw_model_cfg, str):
+            model_cfg = {"default": raw_model_cfg}
+
+    resolve_kwargs: dict[str, Any] = {}
+    if routed_profile:
+        requested = str(model_cfg.get("provider") or "").strip() or None
+        target_model = str(
+            model_cfg.get("default") or model_cfg.get("model") or ""
+        ).strip() or None
+        explicit_base_url = str(model_cfg.get("base_url") or "").strip() or None
+        explicit_api_key = str(model_cfg.get("api_key") or "").strip() or None
+        if not explicit_api_key:
+            key_env = str(
+                model_cfg.get("key_env") or model_cfg.get("api_key_env") or ""
+            ).strip()
+            if key_env:
+                explicit_api_key = os.getenv(key_env, "").strip() or None
+        resolve_kwargs = {
+            "requested": requested,
+            "explicit_api_key": explicit_api_key,
+            "explicit_base_url": explicit_base_url,
+            "target_model": target_model,
+        }
+        logger.info(
+            "Resolving gateway runtime from routed profile %s: provider=%s model=%s",
+            routed_profile,
+            requested,
+            target_model,
+        )
+
     try:
-        runtime = resolve_runtime_provider()
+        runtime = resolve_runtime_provider(**resolve_kwargs)
     except AuthError as auth_exc:
         # Primary provider auth failed (expired token, revoked key, etc.).
         # Try the fallback provider chain before raising.
@@ -1421,6 +1458,108 @@ def _load_gateway_config() -> dict:
     except Exception:
         logger.debug("Could not load gateway config from %s", config_path)
     return {}
+
+
+def _load_gateway_profile_config(profile: str) -> dict | None:
+    """Load a named Hermes profile config for Slack alias runtime routing."""
+    safe = str(profile or "").strip()
+    if not safe or safe in {"default", ".", ".."} or "/" in safe or "\\" in safe:
+        return None
+    config_path = _hermes_home / "profiles" / safe / "config.yaml"
+    try:
+        if config_path.exists():
+            import yaml
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            if isinstance(cfg, dict):
+                cfg = dict(cfg)
+                cfg["_runtime_profile_route"] = safe
+                return cfg
+    except Exception as exc:
+        logger.warning("Could not load routed profile config %s: %s", safe, exc)
+    return None
+
+
+def _coerce_slack_role_routes(config: dict) -> list[dict]:
+    """Normalize slack.role_routes/gateway.role_routes for alias→profile routing."""
+    raw = None
+    if isinstance(config, dict):
+        slack_cfg = config.get("slack") or {}
+        if isinstance(slack_cfg, dict):
+            raw = slack_cfg.get("role_routes")
+        if raw is None:
+            gw_cfg = config.get("gateway") or {}
+            if isinstance(gw_cfg, dict):
+                raw = gw_cfg.get("role_routes")
+    routes: list[dict] = []
+    if isinstance(raw, dict):
+        iterable = []
+        for profile, aliases in raw.items():
+            iterable.append({"profile": profile, "aliases": aliases})
+    elif isinstance(raw, list):
+        iterable = raw
+    else:
+        iterable = []
+    for item in iterable:
+        if not isinstance(item, dict):
+            continue
+        profile = str(item.get("profile") or "").strip()
+        aliases_raw = item.get("aliases") or item.get("names") or []
+        if isinstance(aliases_raw, str):
+            aliases = [aliases_raw]
+        elif isinstance(aliases_raw, list):
+            aliases = [str(a).strip() for a in aliases_raw if str(a).strip()]
+        else:
+            aliases = []
+        if profile and aliases:
+            routes.append({"profile": profile, "aliases": aliases})
+    return routes
+
+
+def _message_starts_with_role_alias(message: str, alias: str) -> bool:
+    """Return True when a Slack turn is explicitly addressed to an alias."""
+    text = str(message or "").lstrip()
+    # Slack gateway messages can include a sender prefix like "[Sangkun Lee] ...".
+    text = re.sub(r"^\[[^\]]+\]\s*", "", text).lstrip()
+    text = re.sub(r"^<@[^>]+>\s*", "", text).lstrip()
+    alias_norm = str(alias or "").strip()
+    if not alias_norm:
+        return False
+    if not text.casefold().startswith(alias_norm.casefold()):
+        return False
+    rest = text[len(alias_norm):]
+    if not rest:
+        return True
+    # Accept common address separators and Korean particles used after names.
+    if rest[0] in {" ", "\t", "\n", ":", "：", ",", "，", "/", "-", "—"}:
+        return True
+    if rest.startswith(("야", "아", "야,", "아,", "님", "만")):
+        return True
+    # Avoid matching words like "clarification" for alias "Clara".
+    return False
+
+
+def _resolve_slack_role_profile_config(config: dict, message: str) -> dict | None:
+    """Return a profile config when the message addresses a routed Slack role."""
+    for route in _coerce_slack_role_routes(config):
+        for alias in route["aliases"]:
+            if _message_starts_with_role_alias(message, alias):
+                profile = route["profile"]
+                profile_cfg = _load_gateway_profile_config(profile)
+                if profile_cfg:
+                    logger.info(
+                        "Slack role route matched alias=%s profile=%s",
+                        alias,
+                        profile,
+                    )
+                    return profile_cfg
+                logger.warning(
+                    "Slack role route matched alias=%s but profile config missing: %s",
+                    alias,
+                    profile,
+                )
+                return None
+    return None
 
 
 def _load_gateway_runtime_config() -> dict:
@@ -2389,7 +2528,7 @@ class GatewayRunner:
                 list(self._session_model_overrides.keys())[:5] if self._session_model_overrides else "[]",
             )
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        runtime_kwargs = _resolve_runtime_agent_kwargs(user_config)
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info(
@@ -6942,6 +7081,23 @@ class GatewayRunner:
             # clearly moved on.
             _slash_confirm_mod.clear_if_stale(_quick_key)
 
+        # Natural-language orchestrator mode switches.  These are control-plane
+        # commands ("1번 모드", "2번 모드", "현재 모드") and should not
+        # interrupt or get queued behind a running agent.
+        if event.message_type == MessageType.TEXT and not event.get_command():
+            try:
+                from gateway.orchestrator_modes import handle_mode_text
+                _mode_reply = handle_mode_text(
+                    event.text or "",
+                    hermes_home=_hermes_home,
+                    source="gateway:natural",
+                )
+            except Exception as _mode_exc:
+                logger.debug("orchestrator mode natural command failed: %s", _mode_exc)
+                _mode_reply = None
+            if _mode_reply:
+                return _mode_reply
+
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
@@ -7135,11 +7291,12 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "model":
                 return "Agent is running — wait or /stop first, then switch models."
 
-            # /codex-runtime must not be used while the agent is running.
-            # Switching mid-turn would split a turn across two transports.
-            if _cmd_def_inner and _cmd_def_inner.name == "codex-runtime":
+            # /codex-runtime and lead-mode switches must not be used while the
+            # agent is running. Switching lead policy mid-turn would split role
+            # semantics across two runtimes.
+            if _cmd_def_inner and _cmd_def_inner.name in {"codex-runtime", "hugo-lead", "clara-lead"}:
                 return ("Agent is running — wait or /stop first, then "
-                        "change runtime.")
+                        "change runtime/mode.")
 
             # /approve and /deny must bypass the running-agent interrupt path.
             # The agent thread is blocked on a threading.Event inside
@@ -7503,6 +7660,9 @@ class GatewayRunner:
         if canonical == "codex-runtime":
             return await self._handle_codex_runtime_command(event)
 
+        if canonical in {"hugo-lead", "clara-lead"}:
+            return await self._handle_lead_mode_command(event, canonical)
+
         if canonical == "personality":
             return await self._handle_personality_command(event)
 
@@ -7702,12 +7862,23 @@ class GatewayRunner:
         if command and not locals().get("_bundle_handled", False):
             try:
                 from agent.skill_commands import (
+                    AUTO_WORKFLOW_USAGE,
+                    build_auto_workflow_prompt,
                     get_skill_commands,
                     build_skill_invocation_message,
                     resolve_skill_command_key,
                 )
                 skill_cmds = get_skill_commands()
                 cmd_key = resolve_skill_command_key(command)
+                _auto_handled = False
+                if cmd_key == "/auto":
+                    user_instruction = event.get_command_args().strip()
+                    msg = build_auto_workflow_prompt(user_instruction)
+                    if not msg:
+                        return AUTO_WORKFLOW_USAGE
+                    event.text = msg
+                    cmd_key = None
+                    _auto_handled = True
                 if cmd_key is not None:
                     # Check per-platform disabled status before executing.
                     # get_skill_commands() only applies the *global* disabled
@@ -7729,7 +7900,7 @@ class GatewayRunner:
                     if msg:
                         event.text = msg
                         # Fall through to normal message processing with skill content
-                else:
+                elif not _auto_handled:
                     # Not an active skill — check if it's a known-but-disabled or
                     # uninstalled skill and give actionable guidance.
                     _unavail_msg = _check_unavailable_skill(command)
@@ -8203,6 +8374,16 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+
+        # Inject the current Hugo/Clara operational mode.  This is role/routing
+        # policy only; it deliberately does NOT mutate Hermes' configured model
+        # provider, preventing accidental Anthropic API usage when the user wants
+        # Claude Code subscription-backed CLI execution.
+        try:
+            from gateway.orchestrator_modes import mode_system_note
+            context_prompt = mode_system_note(_hermes_home) + "\n\n" + context_prompt
+        except Exception as _mode_note_exc:
+            logger.debug("failed to inject orchestrator mode note: %s", _mode_note_exc)
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
@@ -10559,6 +10740,19 @@ class GatewayRunner:
 
         prefix = "✓" if result.success else "✗"
         return f"{prefix} {result.message}"
+
+    async def _handle_lead_mode_command(self, event: MessageEvent, mode: str) -> str:
+        """Handle /hugo-lead and /clara-lead for lead switching."""
+        try:
+            from gateway.orchestrator_modes import handle_lead_slash
+            return handle_lead_slash(
+                mode,
+                hermes_home=_hermes_home,
+                source=f"gateway:slash:{mode}",
+            )
+        except Exception as exc:
+            logger.exception("lead mode command failed")
+            return f"❌ Could not change lead mode: {exc}"
 
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
@@ -15807,6 +16001,82 @@ class GatewayRunner:
             return self._is_session_run_current(session_key, run_generation)
         
         user_config = _load_gateway_config()
+        if (source.platform.value if source.platform else "") == "slack":
+            routed_user_config = _resolve_slack_role_profile_config(user_config, message)
+            if routed_user_config:
+                user_config = routed_user_config
+                try:
+                    slack_cfg = user_config.get("slack") or {}
+                    prompts = slack_cfg.get("channel_prompts") or {}
+                    if isinstance(prompts, dict):
+                        routed_prompt = (
+                            prompts.get(str(source.chat_id or ""))
+                            or prompts.get(str(source.thread_id or ""))
+                        )
+                        if routed_prompt:
+                            channel_prompt = str(routed_prompt)
+                except Exception:
+                    pass
+
+        # Clara subscription route: if a Slack role/profile is configured for
+        # ``claude-code-cli``, do not instantiate the Anthropic API-backed
+        # AIAgent.  Instead run the official local Claude Code CLI, which uses
+        # the Mac user's Claude Code subscription login.  This keeps Clara out
+        # of Hermes' API billing path while preserving Slack thread/session
+        # handling around the returned result.
+        try:
+            from gateway.claude_code_bridge import (
+                is_claude_code_cli_config,
+                run_claude_code_bridge_sync,
+            )
+
+            route_via_claude_code = is_claude_code_cli_config(user_config)
+            if not route_via_claude_code:
+                try:
+                    from gateway.orchestrator_modes import MODE_CLARA_LEAD, read_mode
+                    route_via_claude_code = read_mode(_hermes_home).get("mode") == MODE_CLARA_LEAD
+                except Exception:
+                    route_via_claude_code = False
+
+            if route_via_claude_code:
+                bridge_result = await asyncio.to_thread(
+                    run_claude_code_bridge_sync,
+                    config=user_config,
+                    message=message,
+                    context_prompt=context_prompt,
+                    channel_prompt=channel_prompt,
+                    history=history,
+                    hermes_home=_hermes_home,
+                )
+                return {
+                    "final_response": bridge_result.final_response,
+                    "messages": [
+                        {"role": "user", "content": message},
+                        {"role": "assistant", "content": bridge_result.final_response},
+                    ],
+                    "api_calls": 0,
+                    "tools": ["claude-code-cli"],
+                    "history_offset": len(history),
+                    "session_id": session_id,
+                    "metadata": {
+                        "provider": "claude-code-cli",
+                        "job_id": bridge_result.job_id,
+                        "workdir": bridge_result.workdir,
+                        "log_dir": bridge_result.log_dir,
+                        "exit_code": bridge_result.exit_code,
+                    },
+                }
+        except Exception as bridge_exc:
+            logger.exception("Claude Code CLI bridge failed")
+            return {
+                "final_response": f"🟪 Clara/클라라 — ⚠️ Claude Code CLI bridge failed: {bridge_exc}",
+                "messages": [],
+                "api_calls": 0,
+                "tools": ["claude-code-cli"],
+                "history_offset": len(history),
+                "session_id": session_id,
+            }
+
         platform_key = _platform_config_key(source.platform)
 
         from hermes_cli.tools_config import _get_platform_tools

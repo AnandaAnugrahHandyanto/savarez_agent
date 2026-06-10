@@ -614,6 +614,36 @@ def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
     return sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
+def _expand_api_slash_command(user_message: Any) -> Any:
+    """Expand API-server text slash commands that native gateway UIs handle elsewhere.
+
+    The desktop app talks to Hermes through the OpenAI-compatible API server, so
+    text like ``/auto fix the UI`` arrives as a normal user message rather than
+    going through Slack/TUI slash-command dispatch.  Keep the behavior aligned by
+    converting high-value skill slashes into the same compact workflow prompt.
+    Multimodal payloads are left untouched.
+    """
+    if not isinstance(user_message, str):
+        return user_message
+    text = user_message.strip()
+    if not text.startswith("/"):
+        return user_message
+    command_text = text[1:]
+    parts = command_text.split(maxsplit=1)
+    if not parts:
+        return user_message
+    name = parts[0].lower()
+    arg = parts[1] if len(parts) > 1 else ""
+    if name == "auto":
+        try:
+            from agent.skill_commands import AUTO_WORKFLOW_USAGE, build_auto_workflow_prompt
+
+            return build_auto_workflow_prompt(arg) or AUTO_WORKFLOW_USAGE
+        except Exception:
+            return user_message
+    return user_message
+
+
 def _derive_chat_session_id(
     system_prompt: Optional[str],
     first_user_message: str,
@@ -1159,6 +1189,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 {"error": {"message": "No user message found in messages", "type": "invalid_request_error"}},
                 status=400,
             )
+        user_message = _expand_api_slash_command(user_message)
 
         # Allow caller to scope long-term memory (e.g. Honcho) with a
         # stable per-channel identifier via X-Hermes-Session-Key.  This
@@ -2274,6 +2305,7 @@ class APIServerAdapter(BasePlatformAdapter):
         user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
         if not _content_has_visible_payload(user_message):
             return web.json_response(_openai_error("No user message found in input"), status=400)
+        user_message = _expand_api_slash_command(user_message)
 
         # Truncation support
         if body.get("truncation") == "auto" and len(conversation_history) > 100:
@@ -2979,6 +3011,7 @@ class APIServerAdapter(BasePlatformAdapter):
         user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
         if not user_message:
             return web.json_response(_openai_error("No user message found in input"), status=400)
+        user_message = _expand_api_slash_command(user_message)
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")

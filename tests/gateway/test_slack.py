@@ -231,6 +231,41 @@ class TestSlackConnectCleanup:
         mock_release.assert_called_once_with("slack-app-token", "xapp-fake")
         assert adapter._platform_lock_identity is None
 
+
+class TestSlackAssistantThreadTitles:
+    def test_build_assistant_thread_title_adds_color_prefix_and_unicode_bold(self, adapter):
+        adapter.config.extra["thread_title_prefix"] = "🟩"
+
+        title = adapter._build_assistant_thread_title("<@U_BOT> review PR 123")
+
+        assert title == "🟩 𝐫𝐞𝐯𝐢𝐞𝐰 𝐏𝐑 𝟏𝟐𝟑"
+
+    @pytest.mark.asyncio
+    async def test_maybe_set_assistant_thread_title_once(self, adapter):
+        adapter.config.extra["thread_title_prefix"] = "🟦"
+        adapter._app.client.assistant_threads_setTitle = AsyncMock()
+
+        await adapter._maybe_set_assistant_thread_title("C123", "171234.0001", "hello 42")
+        await adapter._maybe_set_assistant_thread_title("C123", "171234.0001", "renamed")
+
+        adapter._app.client.assistant_threads_setTitle.assert_awaited_once_with(
+            channel_id="C123",
+            thread_ts="171234.0001",
+            title="🟦 𝐡𝐞𝐥𝐥𝐨 𝟒𝟐",
+        )
+
+    @pytest.mark.asyncio
+    async def test_maybe_set_assistant_thread_title_best_effort_on_error(self, adapter):
+        adapter._app.client.assistant_threads_setTitle = AsyncMock(
+            side_effect=RuntimeError("missing_scope")
+        )
+
+        await adapter._maybe_set_assistant_thread_title("C123", "171234.0001", "hello")
+
+        assert ("C123", "171234.0001") not in adapter._assistant_thread_titles_set
+
+
+class TestSlackConnectReconnectCleanup:
     @pytest.mark.asyncio
     async def test_reconnect_closes_previous_handler_to_prevent_zombie_socket(self):
         """Regression for #18980: calling connect() on an adapter that already has

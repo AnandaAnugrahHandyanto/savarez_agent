@@ -423,6 +423,30 @@ class TestResolveSkillCommandKey:
             assert resolve_skill_command_key("foo-bar") == "/foo-bar"
             # Underscore form also works (Telegram round-trip)
             assert resolve_skill_command_key("foo_bar") == "/foo-bar"
+    def test_korean_particle_suffix_resolves_to_bare_skill(self, tmp_path):
+        """Korean mentions like /auto라는 should resolve to the /auto skill."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "auto")
+            _make_skill(tmp_path, "auto-review")
+            scan_skill_commands()
+            assert resolve_skill_command_key("auto라는") == "/auto"
+            assert resolve_skill_command_key("/auto로") == "/auto"
+            assert resolve_skill_command_key("auto_review라는") == "/auto-review"
+            assert resolve_skill_command_key("auto-review") == "/auto-review"
+
+    def test_auto_workflow_prompt_enforces_three_cycle_budget(self):
+        from agent.skill_commands import (
+            AUTO_WORKFLOW_USAGE,
+            build_auto_workflow_prompt,
+        )
+
+        assert build_auto_workflow_prompt("") is None
+        prompt = build_auto_workflow_prompt("fix the login UI")
+        assert prompt is not None
+        assert "Run at most 3 cycles total" in prompt
+        assert "20-turn standing-goal budget" in prompt
+        assert "fix the login UI" in prompt
+        assert "최대 3 cycles" in AUTO_WORKFLOW_USAGE
 
 
 class TestBuildPreloadedSkillsPrompt:

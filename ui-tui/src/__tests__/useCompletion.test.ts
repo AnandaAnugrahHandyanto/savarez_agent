@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { completionRequestForInput } from '../hooks/useCompletion.js'
+import { applyCompletion, completionRequestForInput } from '../hooks/useCompletion.js'
 
 describe('completionRequestForInput', () => {
   it('routes real slash commands to slash completion', () => {
@@ -31,5 +31,13 @@ describe('completionRequestForInput', () => {
 
   it('leaves plain text alone', () => {
     expect(completionRequestForInput('hello there')).toBeNull()
+  })
+
+  it('applies selected skill slash completions with trailing space', () => {
+    expect(applyCompletion('/au', 1, { display: '/auto', meta: 'skill', text: 'auto ' })).toBe('/auto ')
+  })
+
+  it('strips duplicate slash from slash completion text', () => {
+    expect(applyCompletion('/mou', 1, { display: '/mouse', text: '/mouse' })).toBe('/mouse')
   })
 })

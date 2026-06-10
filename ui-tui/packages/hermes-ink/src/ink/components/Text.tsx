@@ -6,7 +6,10 @@ import type { Color, Styles } from '../styles.js'
 
 const ENV_ON_RE = /^(?:1|true|yes|on)$/i
 const ENV_OFF_RE = /^(?:0|false|no|off)$/i
-const LEGACY_APPLE_DIM_COLOR: Color = '#6B7280'
+// High-contrast local preference: Apple Terminal's dim fallback must remain
+// readable on black backgrounds. The previous gray (#6B7280) was effectively
+// invisible for Sangkun's Hermes terminal workflow.
+const LEGACY_APPLE_DIM_COLOR: Color = '#FFFFFF'
 type BaseProps = {
   /**
    * Change text color. Accepts a raw color value (rgb, hex, ansi).

@@ -1655,6 +1655,26 @@ def test_complete_slash_includes_tui_mouse_command():
     assert any(item["text"] == "/mouse" for item in resp["result"]["items"])
 
 
+def test_complete_slash_includes_installed_skill_commands(monkeypatch):
+    monkeypatch.setattr(
+        "agent.skill_commands.get_skill_commands",
+        lambda: {
+            "/auto": {"description": "Run autonomous implementation workflow"},
+            "/audit-logs": {"description": "Audit logs"},
+        },
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/au"}}
+    )
+
+    items = resp["result"]["items"]
+    auto = next((item for item in items if item["display"] == "/auto"), None)
+    assert auto is not None
+    assert auto["text"] == "auto "
+    assert auto["meta"] == "⚡ Run autonomous implementation workflow"
+
+
 def test_complete_slash_details_args():
     resp_root = server.handle_request(
         {"id": "0", "method": "complete.slash", "params": {"text": "/details"}}

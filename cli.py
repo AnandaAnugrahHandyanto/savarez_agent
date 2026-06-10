@@ -46,6 +46,9 @@ from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+_CLAUDE_USAGE_STATUS_CACHE = {"value": "", "checked_at": 0.0, "updating": False}
+_CLAUDE_USAGE_STATUS_LOCK = threading.Lock() if "threading" in globals() else None
+
 # Suppress startup messages for clean CLI experience
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
@@ -81,6 +84,8 @@ try:
 except Exception:
     pass
 import threading
+if _CLAUDE_USAGE_STATUS_LOCK is None:
+    _CLAUDE_USAGE_STATUS_LOCK = threading.Lock()
 import queue
 
 def CanonicalUsage(*args, **kwargs):
@@ -132,6 +137,103 @@ def format_token_count_compact(*args, **kwargs):
             return f"{sign}{text}{suffix}"
 
     return f"{value:,}"
+
+
+def _format_claude_code_usage_from_ccusage(data: dict[str, Any]) -> str:
+    """Compact Claude Code usage label for the Wave/Hermes status bar.
+
+    Claude Code does not expose the claude.ai web quota percentage through a
+    stable public CLI command.  When available, ccusage gives a reliable local
+    view of the active 5-hour Claude Code billing/rate-limit block.  We show
+    the active block cost and reset time; if there is no active block, return
+    an empty label so the status bar stays clean.
+    """
+    blocks = data.get("blocks") if isinstance(data, dict) else None
+    if not isinstance(blocks, list):
+        return ""
+    active = None
+    for block in reversed(blocks):
+        if isinstance(block, dict) and block.get("isActive") and not block.get("isGap"):
+            active = block
+            break
+    if not active:
+        return ""
+    cost = active.get("costUSD") or 0
+    try:
+        cost_label = f"${float(cost):.2f}"
+    except Exception:
+        cost_label = "$?"
+    end_text = str(active.get("endTime") or "")
+    reset_label = ""
+    if end_text:
+        try:
+            end_dt = datetime.fromisoformat(end_text.replace("Z", "+00:00")).astimezone()
+            reset_label = end_dt.strftime("%H:%M")
+        except Exception:
+            reset_label = ""
+    if reset_label:
+        return f"CC {cost_label}↺{reset_label}"
+    return f"CC {cost_label}"
+
+
+def _refresh_claude_code_usage_status() -> None:
+    """Background refresh for Claude Code usage label.
+
+    Never raise: status bars must not break the chat UI.
+    """
+    import subprocess
+
+    value = ""
+    try:
+        completed = subprocess.run(
+            [
+                "npx",
+                "--yes",
+                "ccusage@latest",
+                "blocks",
+                "--json",
+                "--timezone",
+                "Asia/Seoul",
+                "--offline",
+            ],
+            text=True,
+            capture_output=True,
+            timeout=8,
+        )
+        if completed.returncode == 0 and completed.stdout.strip():
+            value = _format_claude_code_usage_from_ccusage(json.loads(completed.stdout))
+    except Exception:
+        value = ""
+    try:
+        with _CLAUDE_USAGE_STATUS_LOCK:
+            _CLAUDE_USAGE_STATUS_CACHE["value"] = value
+            _CLAUDE_USAGE_STATUS_CACHE["checked_at"] = time.time()
+            _CLAUDE_USAGE_STATUS_CACHE["updating"] = False
+    except Exception:
+        pass
+
+
+def _get_claude_code_usage_status_cached() -> str:
+    """Return cached Claude Code usage label and refresh asynchronously.
+
+    The prompt/status bar is rendered often; never block it on npx/ccusage.
+    """
+    try:
+        now = time.time()
+        with _CLAUDE_USAGE_STATUS_LOCK:
+            value = str(_CLAUDE_USAGE_STATUS_CACHE.get("value") or "")
+            checked_at = float(_CLAUDE_USAGE_STATUS_CACHE.get("checked_at") or 0.0)
+            updating = bool(_CLAUDE_USAGE_STATUS_CACHE.get("updating"))
+            if now - checked_at > 60 and not updating:
+                _CLAUDE_USAGE_STATUS_CACHE["updating"] = True
+                threading.Thread(
+                    target=_refresh_claude_code_usage_status,
+                    daemon=True,
+                    name="claude-usage-status-refresh",
+                ).start()
+            return value
+    except Exception:
+        return ""
 
 
 def is_table_divider(*args, **kwargs):
@@ -2504,6 +2606,48 @@ def _preserve_ctrl_enter_newline() -> bool:
     return False
 
 
+def _wave_korean_enter_delay_enabled() -> bool:
+    """Return True for the Wave/macOS/Korean IME composition-submit workaround.
+
+    Wave Terminal on macOS can deliver the Enter keybinding before the final
+    Korean IME composition update reaches prompt_toolkit. Without a tiny defer,
+    a phrase such as "잠깐" can submit as "잠" while "깐" remains in the input
+    buffer. Keep this narrowly scoped to Sangkun's observed environment.
+    """
+    if sys.platform != "darwin":
+        return False
+    if os.environ.get("HERMES_DISABLE_WAVE_KOREAN_ENTER_DELAY", "").lower() in {"1", "true", "yes", "on"}:
+        return False
+    term_program = os.environ.get("TERM_PROGRAM", "").lower()
+    if "wave" not in term_program and not os.environ.get("WAVETERM"):
+        return False
+    locale_text = " ".join(
+        os.environ.get(name, "") for name in ("LC_ALL", "LC_CTYPE", "LANG")
+    ).lower()
+    return "ko" in locale_text
+
+
+def _wave_korean_enter_delay_seconds() -> float:
+    """Delay before submitting Enter so Wave/macOS Korean IME can flush.
+
+    Wave appears to deliver the Enter keybinding before the final Korean IME
+    commit is visible to prompt_toolkit. Fixed sleeps of 50 ms, 180 ms, and
+    350 ms were still too short on Sangkun's Wave/macOS setup (for example
+    "된다" submitted as "된", with "다" left in the composer). Default to a
+    more conservative 900 ms while allowing runtime tuning through
+    HERMES_WAVE_KOREAN_ENTER_DELAY_MS.
+    """
+    raw = os.environ.get("HERMES_WAVE_KOREAN_ENTER_DELAY_MS", "").strip()
+    if raw:
+        try:
+            ms = float(raw)
+            if ms >= 0:
+                return min(ms / 1000.0, 3.0)
+        except (TypeError, ValueError):
+            logger.warning("Invalid HERMES_WAVE_KOREAN_ENTER_DELAY_MS=%r; using default", raw)
+    return 0.9
+
+
 def _bind_prompt_submit_keys(kb, handler) -> None:
     """Bind terminal Enter forms to the submit handler.
 
@@ -3480,10 +3624,46 @@ class HermesCLI:
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
+        display_model_short = model_short
+        claude_usage_status = ""
+        try:
+            from gateway.orchestrator_modes import MODE_CLARA_LEAD, read_mode
+
+            if read_mode(get_hermes_home()).get("mode") == MODE_CLARA_LEAD:
+                claude_model = ""
+                bridge_cfg = (getattr(self, "config", {}) or {}).get("claude_code_cli") or (getattr(self, "config", {}) or {}).get("clara_cli") or {}
+                if isinstance(bridge_cfg, dict):
+                    claude_model = str(bridge_cfg.get("model") or "").strip()
+                if not claude_model:
+                    settings_path = Path.home() / ".claude" / "settings.json"
+                    if settings_path.exists():
+                        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+                        if isinstance(settings, dict):
+                            claude_model = str(settings.get("model") or "").strip()
+                if claude_model:
+                    claude_model_short = claude_model.split("/")[-1]
+                    # Keep Clara lead compact enough that the status-bar
+                    # renderer can preserve the strong/accent color instead
+                    # of falling back to a monochrome trimmed string in narrow
+                    # Wave panes.  `Clara fable-5` still identifies the
+                    # Claude Code model while fitting like `gpt-5.5`.
+                    if claude_model_short.startswith("claude-"):
+                        claude_model_short = claude_model_short[len("claude-"):]
+                    display_model_short = f"Clara {claude_model_short}"
+                else:
+                    display_model_short = "Clara Code"
+                claude_usage_status = _get_claude_code_usage_status_cached()
+                if len(display_model_short) > 26:
+                    display_model_short = f"{display_model_short[:23]}..."
+        except Exception:
+            pass
+
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "display_model_short": display_model_short,
+            "claude_usage_status": claude_usage_status,
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
@@ -3748,14 +3928,19 @@ class HermesCLI:
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
 
+            display_model_short = snapshot.get("display_model_short") or snapshot["model_short"]
+            claude_usage_status = str(snapshot.get("claude_usage_status") or "")
+
             yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"⚕ {display_model_short} · {duration_label}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"⚕ {display_model_short}", percent_label]
+                if claude_usage_status:
+                    parts.append(claude_usage_status)
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -3778,7 +3963,9 @@ class HermesCLI:
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"⚕ {display_model_short}", context_label, percent_label]
+            if claude_usage_status:
+                parts.append(claude_usage_status)
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -3811,10 +3998,13 @@ class HermesCLI:
             duration_label = snapshot["duration"]
             yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
 
+            display_model_short = snapshot.get("display_model_short") or snapshot["model_short"]
+            claude_usage_status = str(snapshot.get("claude_usage_status") or "")
+
             if width < 52:
                 frags = [
                     ("class:status-bar", " ⚕ "),
-                    ("class:status-bar-strong", snapshot["model_short"]),
+                    ("class:status-bar-strong", display_model_short),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
                 ]
@@ -3831,10 +4021,13 @@ class HermesCLI:
                     bg_proc_count = snapshot.get("active_background_processes", 0)
                     frags = [
                         ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-strong", display_model_short),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
+                    if claude_usage_status:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append(("class:status-bar-strong", claude_usage_status))
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -3866,7 +4059,7 @@ class HermesCLI:
                     bg_proc_count = snapshot.get("active_background_processes", 0)
                     frags = [
                         ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-strong", display_model_short),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),
@@ -3874,6 +4067,9 @@ class HermesCLI:
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
                     ]
+                    if claude_usage_status:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-strong", claude_usage_status))
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -7756,6 +7952,39 @@ class HermesCLI:
         if result.success and result.requires_new_session:
             _cprint("    Tip: `/reset` starts a new session immediately.")
 
+    def _handle_lead_mode_command(self, mode: str) -> None:
+        """Handle /hugo-lead and /clara-lead in the interactive CLI/TUI."""
+        try:
+            from gateway.orchestrator_modes import handle_lead_slash
+
+            reply = handle_lead_slash(mode, source=f"cli:slash:{mode}")
+        except Exception as exc:
+            _cprint(f"❌ Could not change lead mode: {exc}")
+            return
+        _cprint(f"⚙️  /{mode}\n{reply}")
+
+    def _handle_natural_lead_mode_text(self, text: str) -> bool:
+        """Handle natural Korean/English lead-mode commands before LLM routing.
+
+        This keeps `현재모드` from being interpreted by the Wave role-board
+        chat/council/project router.  In the T1 chat surface, Sangkun expects
+        this phrase to report the Hugo/Clara lead runtime mode, not the
+        Wave-board interaction mode.
+        """
+        if not text or _looks_like_slash_command(text):
+            return False
+        try:
+            from gateway.orchestrator_modes import handle_mode_text
+
+            reply = handle_mode_text(text, source="cli:natural")
+        except Exception as exc:
+            _cprint(f"❌ Could not inspect orchestrator mode: {exc}")
+            return True
+        if not reply:
+            return False
+        _cprint(f"⚙️  현재 모드\n{reply}")
+        return True
+
     def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /model should be handled immediately on the UI thread."""
         if not text or has_images or not _looks_like_slash_command(text):
@@ -8455,6 +8684,8 @@ class HermesCLI:
             self._handle_model_switch(cmd_original)
         elif canonical == "codex-runtime":
             self._handle_codex_runtime(cmd_original)
+        elif canonical in {"hugo-lead", "clara-lead"}:
+            self._handle_lead_mode_command(canonical)
         elif canonical == "gquota":
             self._handle_gquota_command(cmd_original)
 
@@ -11743,13 +11974,56 @@ class HermesCLI:
                     agent_message = _srn + "\n\n" + agent_message
                     self._pending_skills_reload_note = None
                 try:
-                    result = self.agent.run_conversation(
-                        user_message=agent_message,
-                        conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
-                        stream_callback=stream_callback,
-                        task_id=self.session_id,
-                        persist_user_message=message if _voice_prefix else None,
-                    )
+                    route_via_claude_code = False
+                    try:
+                        from gateway.orchestrator_modes import MODE_CLARA_LEAD, read_mode
+                        route_via_claude_code = read_mode(get_hermes_home()).get("mode") == MODE_CLARA_LEAD
+                    except Exception:
+                        route_via_claude_code = False
+
+                    if route_via_claude_code:
+                        # clara-lead is not a display-only mode.  In CLI/Wave as
+                        # well as Slack, every normal assistant turn must be
+                        # handled by the official local Claude Code CLI bridge so
+                        # Sangkun's Claude subscription runtime is used instead
+                        # of Hermes' parent OpenAI/Codex provider.
+                        from gateway.claude_code_bridge import run_claude_code_bridge_sync
+
+                        bridge_result = run_claude_code_bridge_sync(
+                            config=getattr(self, "config", {}) or {},
+                            message=agent_message,
+                            context_prompt=None,
+                            channel_prompt=None,
+                            history=self.conversation_history[:-1],  # Exclude the message we just added
+                            hermes_home=get_hermes_home(),
+                        )
+                        previous_history = list(self.conversation_history[:-1])
+                        result = {
+                            "final_response": bridge_result.final_response,
+                            "messages": previous_history + [
+                                {"role": "user", "content": message},
+                                {"role": "assistant", "content": bridge_result.final_response},
+                            ],
+                            "api_calls": 0,
+                            "tools": ["claude-code-cli"],
+                            "completed": bridge_result.exit_code == 0,
+                            "failed": bridge_result.exit_code != 0,
+                            "metadata": {
+                                "provider": "claude-code-cli",
+                                "job_id": bridge_result.job_id,
+                                "workdir": bridge_result.workdir,
+                                "log_dir": bridge_result.log_dir,
+                                "exit_code": bridge_result.exit_code,
+                            },
+                        }
+                    else:
+                        result = self.agent.run_conversation(
+                            user_message=agent_message,
+                            conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
+                            stream_callback=stream_callback,
+                            task_id=self.session_id,
+                            persist_user_message=message if _voice_prefix else None,
+                        )
                 except Exception as exc:
                     logging.error("run_conversation raised: %s", exc, exc_info=True)
                     _summary = getattr(self.agent, '_summarize_api_error', lambda e: str(e)[:300])(exc)
@@ -12564,8 +12838,9 @@ class HermesCLI:
         
         # Key bindings for the input area
         kb = KeyBindings()
+        _delayed_enter_pending = [False]
         
-        def handle_enter(event):
+        def _handle_enter_now(event):
             """Handle Enter key - submit input.
             
             Routes to the correct queue based on active UI state:
@@ -12655,6 +12930,13 @@ class HermesCLI:
             text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)
             if text or has_images:
+                # Natural lead-mode controls (e.g. `현재모드`) are UI commands,
+                # not LLM turns. Handle them before the Wave role-board router
+                # can classify the phrase as chat/council/project mode.
+                if text and not has_images and self._handle_natural_lead_mode_text(text):
+                    event.app.current_buffer.reset(append_to_history=True)
+                    return
+
                 # Handle /model directly on the UI thread so interactive pickers
                 # can safely use prompt_toolkit terminal handoff helpers.
                 if self._should_handle_model_command_inline(text, has_images=has_images):
@@ -12741,6 +13023,40 @@ class HermesCLI:
                 else:
                     self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
+
+        def handle_enter(event):
+            """Submit on Enter, with a tiny Wave/macOS Korean IME composition defer."""
+            modal_active = any(
+                (
+                    self._sudo_state,
+                    self._secret_state,
+                    self._approval_state,
+                    self._slash_confirm_state,
+                    self._model_picker_state,
+                    self._clarify_state,
+                )
+            )
+            if _wave_korean_enter_delay_enabled() and not modal_active:
+                if _delayed_enter_pending[0]:
+                    return
+                _delayed_enter_pending[0] = True
+
+                def _run_delayed_submit():
+                    _delayed_enter_pending[0] = False
+                    _handle_enter_now(event)
+                    try:
+                        event.app.invalidate()
+                    except Exception:
+                        pass
+
+                try:
+                    event.app.loop.call_later(_wave_korean_enter_delay_seconds(), _run_delayed_submit)
+                except Exception:
+                    _delayed_enter_pending[0] = False
+                    _handle_enter_now(event)
+                return
+
+            _handle_enter_now(event)
 
         _bind_prompt_submit_keys(kb, handle_enter)
         
@@ -15020,19 +15336,56 @@ def main(
                     # status lines).  The response is printed once below.
                     cli.agent.stream_delta_callback = None
                     cli.agent.tool_gen_callback = None
-                    result = cli.agent.run_conversation(
-                        user_message=effective_query,
-                        conversation_history=cli.conversation_history,
-                    )
-                    # Sync session_id if mid-run compression created a
-                    # continuation session. The exit line below reports
-                    # session_id to stderr for automation wrappers; without
-                    # this sync it would point at the ended parent.
-                    if (
-                        getattr(cli.agent, "session_id", None)
-                        and cli.agent.session_id != cli.session_id
-                    ):
-                        cli.session_id = cli.agent.session_id
+                    route_via_claude_code = False
+                    try:
+                        from gateway.orchestrator_modes import MODE_CLARA_LEAD, read_mode
+                        route_via_claude_code = read_mode(get_hermes_home()).get("mode") == MODE_CLARA_LEAD
+                    except Exception:
+                        route_via_claude_code = False
+
+                    if route_via_claude_code:
+                        from gateway.claude_code_bridge import run_claude_code_bridge_sync
+
+                        bridge_result = run_claude_code_bridge_sync(
+                            config=getattr(cli, "config", {}) or {},
+                            message=effective_query if isinstance(effective_query, str) else str(effective_query),
+                            context_prompt=None,
+                            channel_prompt=None,
+                            history=cli.conversation_history,
+                            hermes_home=get_hermes_home(),
+                        )
+                        result = {
+                            "final_response": bridge_result.final_response,
+                            "messages": list(cli.conversation_history) + [
+                                {"role": "user", "content": effective_query},
+                                {"role": "assistant", "content": bridge_result.final_response},
+                            ],
+                            "api_calls": 0,
+                            "tools": ["claude-code-cli"],
+                            "completed": bridge_result.exit_code == 0,
+                            "failed": bridge_result.exit_code != 0,
+                            "metadata": {
+                                "provider": "claude-code-cli",
+                                "job_id": bridge_result.job_id,
+                                "workdir": bridge_result.workdir,
+                                "log_dir": bridge_result.log_dir,
+                                "exit_code": bridge_result.exit_code,
+                            },
+                        }
+                    else:
+                        result = cli.agent.run_conversation(
+                            user_message=effective_query,
+                            conversation_history=cli.conversation_history,
+                        )
+                        # Sync session_id if mid-run compression created a
+                        # continuation session. The exit line below reports
+                        # session_id to stderr for automation wrappers; without
+                        # this sync it would point at the ended parent.
+                        if (
+                            getattr(cli.agent, "session_id", None)
+                            and cli.agent.session_id != cli.session_id
+                        ):
+                            cli.session_id = cli.agent.session_id
                     response = result.get("final_response", "") if isinstance(result, dict) else str(result)
                     # Surface backend errors that produced no visible output
                     # (e.g. invalid model slug → provider 4xx). Mirrors the

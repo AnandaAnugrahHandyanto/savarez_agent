@@ -25,6 +25,58 @@ _skill_commands_platform: Optional[str] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+_KOREAN_COMMAND_SUFFIXES = (
+    "이라는",
+    "라는",
+    "이란",
+    "란",
+    "으로",
+    "로",
+    "을",
+    "를",
+    "은",
+    "는",
+    "이",
+    "가",
+    "에",
+    "도",
+    "만",
+)
+
+AUTO_WORKFLOW_MAX_CYCLES = 3
+
+AUTO_WORKFLOW_USAGE = (
+    "사용법: /auto <목표>\n"
+    "예: /auto 이 저장소에서 로그인 버튼 UI 깨짐을 고치고 테스트까지 돌려줘\n\n"
+    f"/auto는 최대 {AUTO_WORKFLOW_MAX_CYCLES} cycles까지만 실행합니다.\n"
+    "빈 /auto는 워크플로 목표가 없어서 실행하지 않습니다."
+)
+
+
+def build_auto_workflow_prompt(user_instruction: str) -> str | None:
+    """Build the compact prompt used by native /auto dispatch.
+
+    Generic skill slash dispatch expands the full SKILL.md into the visible user
+    turn. That is useful for occasional skills, but /auto is a high-frequency
+    workflow command and the full workflow text pollutes TUI/Slack sessions when
+    invoked as a launcher. Keep the user turn compact and let the agent load the
+    skill through the normal skill_view tool only when there is an actual goal.
+    """
+    goal = (user_instruction or "").strip()
+    if not goal:
+        return None
+    return (
+        "[AUTO WORKFLOW INVOCATION]\n"
+        "The user invoked /auto. Load skill_view(name=\"auto\") now and follow "
+        f"the auto workflow for the goal below. Run at most {AUTO_WORKFLOW_MAX_CYCLES} cycles total; "
+        "do not reinterpret /goal's max_turns or any 20-turn standing-goal budget as the /auto budget. "
+        "If blockers remain after cycle 3, stop and report them instead of continuing autonomously. "
+        "Do not paste the full skill text "
+        "back to the user; execute the workflow and report in Korean using the "
+        "auto skill's final report shape.\n\n"
+        "Goal:\n"
+        f"{goal}"
+    )
 
 
 def _resolve_skill_commands_platform() -> Optional[str]:
@@ -421,8 +473,26 @@ def resolve_skill_command_key(command: str) -> Optional[str]:
     """
     if not command:
         return None
-    cmd_key = f"/{command.replace('_', '-')}"
-    return cmd_key if cmd_key in get_skill_commands() else None
+    normalized = command.strip().lstrip("/").replace('_', '-')
+    if not normalized:
+        return None
+    cmd_key = f"/{normalized}"
+    commands = get_skill_commands()
+    if cmd_key in commands:
+        return cmd_key
+
+    # Korean Slack/DM messages often mention commands with particles attached,
+    # e.g. ``/auto라는`` ("the /auto thing") or ``/auto로``. Treat those as the
+    # bare skill command instead of surfacing an Unknown command error. Keep this
+    # suffix-only so real skill names such as /auto-review are not truncated.
+    for existing_key in sorted(commands, key=len, reverse=True):
+        slug = existing_key.lstrip("/")
+        if not normalized.startswith(slug):
+            continue
+        suffix = normalized[len(slug):]
+        if suffix in _KOREAN_COMMAND_SUFFIXES:
+            return existing_key
+    return None
 
 
 def build_skill_invocation_message(

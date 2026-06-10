@@ -3,6 +3,7 @@
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
+import hermes_cli.commands as commands_module
 from hermes_cli.commands import (
     COMMAND_REGISTRY,
     COMMANDS,
@@ -115,6 +116,19 @@ class TestResolveCommand:
         assert topic is not None
         assert topic.name == "topic"
         assert "topic" in GATEWAY_KNOWN_COMMANDS
+
+    def test_only_two_lead_slash_commands_are_registered(self):
+        assert resolve_command("hugo-lead").name == "hugo-lead"
+        assert resolve_command("clara-lead").name == "clara-lead"
+        assert resolve_command("orchestrator-mode") is None
+        assert resolve_command("orchestrator_mode") is None
+        assert resolve_command("mode") is None
+        assert "/orchestrator-mode" not in COMMANDS
+        assert "/mode" not in COMMANDS
+        assert "/hugo-lead" in COMMANDS
+        assert "/clara-lead" in COMMANDS
+        assert "hugo-lead" in GATEWAY_KNOWN_COMMANDS
+        assert "clara-lead" in GATEWAY_KNOWN_COMMANDS
 
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
@@ -344,6 +358,77 @@ class TestSlackNativeSlashes:
         assert "reset" in names
         assert "q" in names
 
+    def test_promotes_auto_skill_as_native_slash(self, monkeypatch):
+        """Slack must register /auto natively when the auto skill exists.
+
+        Slack will not deliver /auto events to Socket Mode unless the command
+        appears in the app manifest; the gateway can only resolve the skill
+        after Slack has delivered that event.
+        """
+        import agent.skill_commands as skill_commands_mod
+        from hermes_cli import config as config_module
+
+        monkeypatch.setattr(
+            config_module,
+            "read_raw_config",
+            lambda: {"platforms": {"slack": {"native_skill_slashes": ["auto"]}}},
+        )
+        monkeypatch.setattr(
+            skill_commands_mod,
+            "get_skill_commands",
+            lambda: {
+                "/auto": {
+                    "name": "auto",
+                    "description": "Run the auto workflow",
+                    "skill_md_path": "/tmp/auto/SKILL.md",
+                    "skill_dir": "/tmp/auto",
+                }
+            },
+        )
+        monkeypatch.setattr(
+            skill_commands_mod,
+            "resolve_skill_command_key",
+            lambda command: "/auto" if command.strip().lstrip("/") == "auto" else None,
+        )
+
+        names = {n for n, _d, _h in slack_native_slashes()}
+        assert "auto" in names
+        assert len(names) <= 50
+
+    def test_includes_configured_skill_slashes_when_installed(self, tmp_path, monkeypatch):
+        """Configured local skill commands such as /auto can be promoted to
+        native Slack registration when the skill is installed in HERMES_HOME.
+        """
+        skills_dir = tmp_path / "skills"
+        auto_dir = skills_dir / "software-development" / "auto"
+        auto_dir.mkdir(parents=True)
+        (auto_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: auto\n"
+            "description: Run Sangkun's multi-agent auto workflow.\n"
+            "---\n"
+            "# Auto\n",
+            encoding="utf-8",
+        )
+
+        import tools.skills_tool as skills_tool
+        from agent import skill_commands
+        from hermes_cli import config as config_module
+
+        monkeypatch.setattr(skills_tool, "SKILLS_DIR", skills_dir)
+        monkeypatch.setattr(
+            config_module,
+            "read_raw_config",
+            lambda: {"platforms": {"slack": {"native_skill_slashes": ["auto"]}}},
+        )
+        skill_commands.scan_skill_commands()
+
+        try:
+            names = {n for n, _d, _h in slack_native_slashes()}
+            assert "auto" in names
+        finally:
+            skill_commands._skill_commands = {}
+
     def test_telegram_parity(self):
         """Every Telegram bot command must be registerable on Slack too.
 
@@ -370,6 +455,62 @@ class TestSlackNativeSlashes:
         assert not missing, (
             f"commands on Telegram but missing from Slack native slashes: {sorted(missing)}"
         )
+    def test_configured_skill_slash_can_be_promoted(self, monkeypatch):
+        """Operators can spend a Slack native slash slot on an allowlisted skill."""
+        monkeypatch.setattr(
+            commands_module,
+            "_configured_slack_native_skill_slashes",
+            lambda: [("auto", "Run the /auto workflow", "[prompt]")],
+        )
+
+        slashes = slack_native_slashes()
+        names = [n for n, _d, _h in slashes]
+
+        assert "auto" in names
+        assert len(slashes) <= 50
+        # Keep /hermes first, then prioritize configured skills over aliases/plugins
+        # so the operator-selected command is not pushed out by the 50-command cap.
+        assert names.index("auto") < names.index("new")
+
+    def test_configured_skill_slashes_read_config_and_skip_conflicts(self, monkeypatch):
+        """Only installed, non-conflicting configured skills become Slack slashes."""
+        from hermes_cli import config as config_module
+        from agent import skill_commands
+
+        monkeypatch.setattr(
+            config_module,
+            "read_raw_config",
+            lambda: {
+                "platforms": {
+                    "slack": {
+                        "native_skill_slashes": ["auto", "goal", "missing"],
+                    }
+                }
+            },
+        )
+        monkeypatch.setattr(
+            skill_commands,
+            "get_skill_commands",
+            lambda: {"/auto": {"description": "Auto workflow skill"}},
+        )
+        monkeypatch.setattr(
+            skill_commands,
+            "resolve_skill_command_key",
+            lambda name: "/auto" if name == "auto" else None,
+        )
+
+        assert commands_module._configured_slack_native_skill_slashes() == [
+            ("auto", "Auto workflow skill", "[prompt]")
+        ]
+
+    def test_configured_skill_slash_reachable_via_hermes_subcommand(self, monkeypatch):
+        monkeypatch.setattr(
+            commands_module,
+            "_configured_slack_native_skill_slashes",
+            lambda: [("auto", "Run the /auto workflow", "[prompt]")],
+        )
+
+        assert slack_subcommand_map()["auto"] == "/auto"
 
 
 class TestSlackAppManifest:
@@ -542,7 +683,7 @@ class TestSlashCommandCompleter:
         completions = _completions(completer, "/gif")
 
         assert len(completions) == 1
-        assert completions[0].text == "gif-search"
+        assert completions[0].text == "gif-search "
         assert completions[0].display_text == "/gif-search"
         assert completions[0].display_meta_text == "⚡ Search for GIFs across providers"
 

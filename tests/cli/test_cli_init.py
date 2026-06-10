@@ -226,6 +226,35 @@ class TestPromptToolkitTerminalCompatibility:
             assert bindings[("c-m",)] is submit_handler
             assert ("c-j",) not in bindings
 
+    def test_wave_korean_enter_delay_is_conservative_and_tunable(self):
+        import os as _os
+        import sys as _sys
+        from unittest.mock import patch as _patch
+
+        from cli import _wave_korean_enter_delay_enabled, _wave_korean_enter_delay_seconds
+
+        wave_ko_env = {
+            "TERM_PROGRAM": "waveterm",
+            "LANG": "ko_KR.UTF-8",
+        }
+        with _patch.object(_sys, "platform", "darwin"), _patch.dict(_os.environ, wave_ko_env, clear=True):
+            assert _wave_korean_enter_delay_enabled() is True
+            assert _wave_korean_enter_delay_seconds() == 0.9
+
+        with _patch.object(_sys, "platform", "darwin"), _patch.dict(
+            _os.environ,
+            {**wave_ko_env, "HERMES_WAVE_KOREAN_ENTER_DELAY_MS": "250"},
+            clear=True,
+        ):
+            assert _wave_korean_enter_delay_seconds() == 0.25
+
+        with _patch.object(_sys, "platform", "darwin"), _patch.dict(
+            _os.environ,
+            {**wave_ko_env, "HERMES_DISABLE_WAVE_KOREAN_ENTER_DELAY": "1"},
+            clear=True,
+        ):
+            assert _wave_korean_enter_delay_enabled() is False
+
     def test_cpr_warning_callback_is_disabled(self):
         from cli import _disable_prompt_toolkit_cpr_warning
 

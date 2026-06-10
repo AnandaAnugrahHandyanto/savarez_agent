@@ -8,6 +8,17 @@ import { asRpcResult } from '../lib/rpc.js'
 
 const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))[^\s]*)$/
 
+export function applyCompletion(input: string, replaceFrom: number, row: CompletionItem | undefined): string | null {
+  if (!row?.text) {
+    return null
+  }
+
+  const text = input.startsWith('/') && row.text.startsWith('/') && replaceFrom > 0 ? row.text.slice(1) : row.text
+  const next = input.slice(0, replaceFrom) + text
+
+  return next === input ? null : next
+}
+
 export function completionRequestForInput(
   input: string
 ):
