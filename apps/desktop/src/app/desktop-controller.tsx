@@ -70,6 +70,7 @@ import {
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
+  setPendingWorktree,
   setSessionProfileTotals,
   setSessions,
   setSessionsLoading,
@@ -675,6 +676,23 @@ export function DesktopController() {
     [requestGateway, startFreshSessionDraft]
   )
 
+  const startSessionInWorktree = useCallback(
+    (path: null | string) => {
+      const target = path?.trim()
+
+      if (!target) {
+        return
+      }
+
+      // Same as a workspace new-session, but arm the one-shot worktree flag so
+      // the backend creates the session inside a fresh git worktree of this
+      // repo. startFreshSessionDraft() clears the flag, so arm it afterwards.
+      startSessionInWorkspace(target)
+      setPendingWorktree(true)
+    },
+    [startSessionInWorkspace]
+  )
+
   const handleSkinCommand = useSkinCommand()
 
   const {
@@ -791,12 +809,14 @@ export function DesktopController() {
       }}
       onNavigate={selectSidebarItem}
       onNewSessionInWorkspace={startSessionInWorkspace}
+      onNewSessionWorktree={startSessionInWorktree}
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
       onTriggerCronJob={jobId => {
         void triggerCronJob(jobId)
           .then(() => refreshCronJobs())
           .catch(() => undefined)
       }}
+      requestGateway={requestGateway}
     />
   )
 

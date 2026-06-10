@@ -91,6 +91,7 @@ import {
 } from '@/store/session'
 
 import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
+import { useWorkspaceGitRepos } from '../../session/hooks/use-workspace-git'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
@@ -297,6 +298,8 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
   onNewSessionInWorkspace: (path: null | string) => void
+  onNewSessionWorktree: (path: null | string) => void
+  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
   onManageCronJob: (jobId: string) => void
   onTriggerCronJob: (jobId: string) => void
 }
@@ -311,6 +314,8 @@ export function ChatSidebar({
   onDeleteSession,
   onArchiveSession,
   onNewSessionInWorkspace,
+  onNewSessionWorktree,
+  requestGateway,
   onManageCronJob,
   onTriggerCronJob
 }: ChatSidebarProps) {
@@ -660,6 +665,21 @@ export function ChatSidebar({
     sessionProfileTotals
   ])
 
+  // Probe each distinct workspace path for git-repo-ness (memoized, once per
+  // path) so the per-group "new session in a worktree" fork icon only appears
+  // for real repos.
+  const workspacePaths = useMemo(
+    () => agentGroups.map(g => g.path).filter((p): p is string => Boolean(p)),
+    [agentGroups]
+  )
+
+  const gitRepoPaths = useWorkspaceGitRepos(workspacePaths, requestGateway)
+
+  const agentGroupsWithRepo = useMemo(
+    () => agentGroups.map(g => ({ ...g, isGitRepo: g.path ? gitRepoPaths.has(g.path) : false })),
+    [agentGroups, gitRepoPaths]
+  )
+
   const displayAgentSessions = agentSessions
 
   // Pagination is scope-aware. In "All profiles" mode it tracks the global
@@ -681,7 +701,7 @@ export function ChatSidebar({
 
   const recentsMeta = countLabel(agentSessions.length, knownSessionTotal)
 
-  const displayAgentGroups = showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : undefined
+  const displayAgentGroups = showAllProfiles ? profileGroups : agentsGrouped ? agentGroupsWithRepo : undefined
 
   // The recents list owns its own (virtualized) scroll container only when it's a
   // long flat list. In that case it must keep its scroller even in short mode, so
@@ -960,6 +980,7 @@ export function ChatSidebar({
                 onArchiveSession={onArchiveSession}
                 onDeleteSession={onDeleteSession}
                 onNewSessionInWorkspace={showAllProfiles ? undefined : onNewSessionInWorkspace}
+                onNewSessionWorktree={showAllProfiles ? undefined : onNewSessionWorktree}
                 onReorder={showAllProfiles ? undefined : handleAgentDragEnd}
                 onResumeSession={onResumeSession}
                 onToggle={() => setSidebarRecentsOpen(!agentsOpen)}
@@ -1126,6 +1147,7 @@ interface SidebarSessionGroup {
   onLoadMore?: () => void
   sourceId?: string
   totalCount?: number
+  isGitRepo?: boolean
 }
 
 interface MessagingSection {
@@ -1148,6 +1170,7 @@ interface SidebarSessionsSectionProps {
   onArchiveSession: (sessionId: string) => void
   onTogglePin: (sessionId: string) => void
   onNewSessionInWorkspace?: (path: null | string) => void
+  onNewSessionWorktree?: (path: null | string) => void
   pinned: boolean
   rootClassName?: string
   contentClassName?: string
@@ -1175,6 +1198,7 @@ function SidebarSessionsSection({
   onArchiveSession,
   onTogglePin,
   onNewSessionInWorkspace,
+  onNewSessionWorktree,
   pinned,
   rootClassName,
   contentClassName,
@@ -1249,6 +1273,7 @@ function SidebarSessionsSection({
           group={group}
           key={group.id}
           onNewSession={onNewSessionInWorkspace}
+          onNewSessionWorktree={onNewSessionWorktree}
           renderRows={renderNestedSessionList}
         />
       ) : (
@@ -1256,6 +1281,7 @@ function SidebarSessionsSection({
           group={group}
           key={group.id}
           onNewSession={onNewSessionInWorkspace}
+          onNewSessionWorktree={onNewSessionWorktree}
           renderRows={renderSessionList}
         />
       )
@@ -1326,6 +1352,7 @@ interface SidebarWorkspaceGroupProps extends React.ComponentProps<'div'> {
   group: SidebarSessionGroup
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
+  onNewSessionWorktree?: (path: null | string) => void
   reorderable?: boolean
   dragging?: boolean
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
@@ -1335,6 +1362,7 @@ function SidebarWorkspaceGroup({
   group,
   renderRows,
   onNewSession,
+  onNewSessionWorktree,
   reorderable = false,
   dragging = false,
   dragHandleProps,
@@ -1426,6 +1454,17 @@ function SidebarWorkspaceGroup({
             </button>
           </Tip>
         )}
+        {group.isGitRepo && onNewSessionWorktree && group.path && (
+          <button
+            aria-label={`New worktree session in ${group.label}`}
+            className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
+            onClick={() => onNewSessionWorktree(group.path)}
+            title={`New session in a git worktree of ${group.label}`}
+            type="button"
+          >
+            <Codicon name="repo-forked" size="0.75rem" />
+          </button>
+        )}
         {reorderable && (
           <span
             {...dragHandleProps}
@@ -1476,6 +1515,7 @@ interface SortableWorkspaceProps {
   group: SidebarSessionGroup
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
+  onNewSessionWorktree?: (path: null | string) => void
 }
 
 function SortableSidebarWorkspaceGroup(props: SortableWorkspaceProps) {

@@ -17,10 +17,9 @@ import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalize
 import {
   $currentCwd,
   $messages,
+  $pendingWorktree,
   $sessions,
   $yoloActive,
-  getRememberedWorkspaceCwd,
-  workspaceCwdForNewSession,
   sessionPinId,
   setActiveSessionId,
   setAwaitingResponse,
@@ -37,12 +36,14 @@ import {
   setFreshDraftReady,
   setIntroSeed,
   setMessages,
+  setPendingWorktree,
   setSelectedStoredSessionId,
   setSessions,
   setSessionStartedAt,
   setSessionsTotal,
   setTurnStartedAt,
-  setYoloActive
+  setYoloActive,
+  workspaceCwdForNewSession
 } from '@/store/session'
 import { reportBackendContract } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, UsageStats } from '@/types/hermes'
@@ -316,6 +317,8 @@ export function useSessionActions({
       // otherwise the sticky last-used workspace (PR #37586).
       setCurrentCwd(workspaceCwdForNewSession())
       setCurrentBranch('')
+      // A plain new-chat draft is never a worktree session; clear any stale arm.
+      setPendingWorktree(false)
       clearComposerDraft()
       clearComposerAttachments()
       setFreshDraftReady(true)
@@ -339,11 +342,21 @@ export function useSessionActions({
         // Pass the owning profile so a new chat under a non-launch profile (global
         // remote mode) builds its agent + persists against THAT profile's home/db.
         const newChatProfile = $newChatProfile.get()
+        // The fork icon arms a one-shot worktree request; consume + reset it so
+        // a later plain new-chat doesn't accidentally inherit it.
+        const worktree = $pendingWorktree.get()
+
+        if (worktree) {
+          setPendingWorktree(false)
+        }
+
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
           ...(cwd && { cwd }),
-          ...(newChatProfile ? { profile: newChatProfile } : {})
+          ...(newChatProfile ? { profile: newChatProfile } : {}),
+          ...(worktree && cwd ? { worktree: true } : {})
         })
+
         const stored = created.stored_session_id ?? null
 
         if (
