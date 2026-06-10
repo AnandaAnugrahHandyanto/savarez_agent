@@ -7418,7 +7418,9 @@ def _update_node_dependencies() -> None:
 
     # Step 2: install only the workspaces update needs (ui-tui, web).
     # --workspace selects specific workspaces; the rest (desktop) are skipped.
-    ws_args = [*extra_args, "--workspace", "ui-tui", "--workspace", "web"]
+    # --include-workspace-root keeps repo-root-only deps (e.g. agent-browser)
+    # from being pruned during the workspace-scoped install.
+    ws_args = [*extra_args, "--workspace", "ui-tui", "--workspace", "web", "--include-workspace-root"]
     ws_result = _run_npm_install_deterministic(
         npm,
         PROJECT_ROOT,
