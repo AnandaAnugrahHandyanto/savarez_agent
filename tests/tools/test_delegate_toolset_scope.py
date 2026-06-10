@@ -109,3 +109,43 @@ class TestToolsetIntersection:
         scoped = [t for t in requested if t in parent_toolsets]
 
         assert scoped == []
+
+    def test_orchestrator_disabled_toolsets_retains_delegation(self):
+        """Orchestrator children must have 'delegation' available.
+
+        _build_child_agent re-adds 'delegation' to child_toolsets for
+        orchestrators, but disabled_toolsets must also exclude 'delegation'
+        so _compute_tool_definitions does not subtract it again.
+        """
+        from tools.delegate_tool import _DELEGATE_BLOCKED_TOOLSETS
+
+        # Simulate the orchestrator path in _build_child_agent
+        effective_role = "orchestrator"
+        if effective_role == "orchestrator":
+            child_disabled = sorted(_DELEGATE_BLOCKED_TOOLSETS - {"delegation"})
+        else:
+            child_disabled = sorted(_DELEGATE_BLOCKED_TOOLSETS)
+
+        # Orchestrator must NOT have 'delegation' disabled
+        assert "delegation" not in child_disabled, (
+            "orchestrator child must retain delegation toolset"
+        )
+        # All other blocked toolsets must still be disabled
+        assert "clarify" in child_disabled
+        assert "memory" in child_disabled
+        assert "messaging" in child_disabled
+        assert "execute_code" not in child_disabled  # code_execution, not execute_code
+        assert "code_execution" in child_disabled
+        assert "cronjob" in child_disabled
+
+    def test_leaf_disabled_toolsets_blocks_delegation(self):
+        """Leaf children must have 'delegation' disabled."""
+        from tools.delegate_tool import _DELEGATE_BLOCKED_TOOLSETS
+
+        effective_role = "leaf"
+        if effective_role == "orchestrator":
+            child_disabled = sorted(_DELEGATE_BLOCKED_TOOLSETS - {"delegation"})
+        else:
+            child_disabled = sorted(_DELEGATE_BLOCKED_TOOLSETS)
+
+        assert "delegation" in child_disabled

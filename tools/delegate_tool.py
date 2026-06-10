@@ -1066,6 +1066,17 @@ def _build_child_agent(
     if effective_role == "orchestrator" and "delegation" not in child_toolsets:
         child_toolsets.append("delegation")
 
+    # Orchestrator children must keep 'delegation' in the final schema so they
+    # can actually spawn workers.  _DELEGATE_BLOCKED_TOOLSETS always includes
+    # 'delegation', so we need to exclude it from disabled_toolsets for
+    # orchestrators.  Without this, _compute_tool_definitions() subtracts the
+    # delegation toolset after adding it, making the orchestrator prompt lie
+    # about available capabilities.
+    if effective_role == "orchestrator":
+        child_disabled = sorted(_DELEGATE_BLOCKED_TOOLSETS - {"delegation"})
+    else:
+        child_disabled = sorted(_DELEGATE_BLOCKED_TOOLSETS)
+
     workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(
         goal,
@@ -1216,7 +1227,7 @@ def _build_child_agent(
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         fallback_model=parent_fallback,
         enabled_toolsets=child_toolsets,
-        disabled_toolsets=sorted(_DELEGATE_BLOCKED_TOOLSETS),
+        disabled_toolsets=child_disabled,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
         log_prefix=f"[subagent-{task_index}]",
