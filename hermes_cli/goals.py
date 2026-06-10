@@ -857,7 +857,9 @@ def run_kanban_goal_loop(
         if verdict == "done":
             if nudged_to_finalize:
                 # Already asked once to call kanban_complete and it still
-                # didn't — block for review rather than spin.
+                # didn't — block for review rather than spin. But first,
+                # re-verify: if the worker has changed its output this turn
+                # (judge now says "continue" instead), reset the nudge flag.
                 _log(f"kanban goal loop: task {task_id} judged done but worker won't finalize; blocking")
                 try:
                     block_fn(
@@ -870,6 +872,10 @@ def run_kanban_goal_loop(
             prompt = KANBAN_GOAL_FINALIZE_TEMPLATE.format(reason=_truncate(reason, 400))
             nudged_to_finalize = True
         else:
+            # Worker hasn't met the goal yet, or judge changed its mind.
+            # Reset the finalize nudge flag so a future "done" verdict gets
+            # a fresh chance to nudge rather than immediately blocking.
+            nudged_to_finalize = False
             prompt = KANBAN_GOAL_CONTINUATION_TEMPLATE.format(reason=_truncate(reason, 400))
 
         # Budget check BEFORE spending another turn.

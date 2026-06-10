@@ -3247,41 +3247,56 @@ def release_stale_claims(
             and _pid_alive(row["worker_pid"])
             and not heartbeat_stale
         ):
-            new_expires = now + _resolve_claim_ttl_seconds()
-            with write_txn(conn):
-                cur = conn.execute(
-                    "UPDATE tasks SET claim_expires = ? "
-                    "WHERE id = ? AND status = 'running' "
-                    "  AND claim_lock IS ? "
-                    "  AND claim_expires IS NOT NULL "
-                    "  AND claim_expires < ?",
-                    (new_expires, row["id"], row["claim_lock"], now),
-                )
-                if cur.rowcount != 1:
-                    continue
-                run_id = _current_run_id(conn, row["id"])
-                if run_id is not None:
-                    conn.execute(
-                        "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
-                        (new_expires, run_id),
+            # PID reuse guard: compare the full claim_lock PID against
+            # the stored worker_pid. If the OS reused the PID for an
+            # unrelated process, the claim_lock PID won't match.
+            # claim_lock format is "host:pid" (see _claimer_id).
+            lock_pid = None
+            if ":" in lock:
+                try:
+                    lock_pid = int(lock.rsplit(":", 1)[-1])
+                except ValueError:
+                    pass
+            if lock_pid is not None and lock_pid != int(row["worker_pid"]):
+                # PID mismatch: OS reused this PID for a different process.
+                # Treat as dead — do not extend the ghost claim.
+                pass
+            else:
+                new_expires = now + _resolve_claim_ttl_seconds()
+                with write_txn(conn):
+                    cur = conn.execute(
+                        "UPDATE tasks SET claim_expires = ? "
+                        "WHERE id = ? AND status = 'running' "
+                        "  AND claim_lock IS ? "
+                        "  AND claim_expires IS NOT NULL "
+                        "  AND claim_expires < ?",
+                        (new_expires, row["id"], row["claim_lock"], now),
                     )
-                _append_event(
-                    conn, row["id"], "claim_extended",
-                    {
-                        "reason": "pid_alive",
-                        "worker_pid": int(row["worker_pid"]),
-                        "claim_lock": row["claim_lock"],
-                        "claim_expires_was": int(row["claim_expires"]),
-                        "claim_expires_now": new_expires,
-                        "last_heartbeat_at": (
-                            int(row["last_heartbeat_at"])
-                            if row["last_heartbeat_at"] is not None
-                            else None
-                        ),
-                    },
-                    run_id=run_id,
-                )
-            continue
+                    if cur.rowcount != 1:
+                        continue
+                    run_id = _current_run_id(conn, row["id"])
+                    if run_id is not None:
+                        conn.execute(
+                            "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                            (new_expires, run_id),
+                        )
+                    _append_event(
+                        conn, row["id"], "claim_extended",
+                        {
+                            "reason": "pid_alive",
+                            "worker_pid": int(row["worker_pid"]),
+                            "claim_lock": row["claim_lock"],
+                            "claim_expires_was": int(row["claim_expires"]),
+                            "claim_expires_now": new_expires,
+                            "last_heartbeat_at": (
+                                int(row["last_heartbeat_at"])
+                                if row["last_heartbeat_at"] is not None
+                                else None
+                            ),
+                        },
+                        run_id=run_id,
+                    )
+                continue
 
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
@@ -3291,8 +3306,9 @@ def release_stale_claims(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
+                "AND worker_pid IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ?",
-                (row["id"], row["claim_lock"], now),
+                (row["id"], row["claim_lock"], row["worker_pid"], now),
             )
             if cur.rowcount != 1:
                 continue
@@ -5263,8 +5279,9 @@ def enforce_max_runtime(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
                 "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running'",
-                (tid,),
+                "WHERE id = ? AND status = 'running' "
+                "  AND claim_lock IS ? AND worker_pid IS ?",
+                (tid, lock, pid),
             )
             if cur.rowcount == 1:
                 payload = {
@@ -5379,8 +5396,9 @@ def detect_stale_running(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
                 "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running'",
-                (tid,),
+                "WHERE id = ? AND status = 'running' "
+                "  AND claim_lock IS ? AND worker_pid IS ?",
+                (tid, lock, pid),
             )
             if cur.rowcount != 1:
                 continue
@@ -5424,6 +5442,70 @@ def detect_stale_running(
         # spawn_failed / timed_out / crashed counters.
 
     return reclaimed
+
+
+# ---------------------------------------------------------------------------
+# TOCTOU-SAFE reclaim helpers
+# ---------------------------------------------------------------------------
+# All three reclaim paths (release_stale_claims, enforce_max_runtime,
+# detect_stale_running) previously followed a kill-then-DB-update pattern
+# that left a window between worker termination and DB write where a
+# fresh worker could be spawned and then have its state overwritten.
+#
+# This helper does the termination + status flip inside a single atomic
+# unit: terminate first, then write the UPDATE with a dual-CAS guard
+# (claim_lock AND worker_pid must both match) so a re-spawned worker
+# with a different claim_lock or PID is never overwritten.
+
+def _reclaim_task_safe(
+    conn: sqlite3.Connection,
+    task_id: str,
+    pid: int | None,
+    claim_lock: str,
+    reason: str,
+    *,
+    outcome: str = "reclaimed",
+    status_label: str = "reclaimed",
+    metadata: dict | None = None,
+    signal_fn=None,
+) -> bool:
+    """Terminate worker (if host-local) and atomically flip task to ready.
+
+    Uses dual-CAS (claim_lock AND worker_pid) so a re-spawned worker
+    in the same TOCTOU window is never overwritten. Returns True if
+    the task was successfully reclaimed, False if the CAS failed
+    (meaning another dispatcher tick or worker completion already
+    resolved it).
+    """
+    # Terminate first — the CAS guards against the TOCTOU window.
+    if pid is not None:
+        _terminate_reclaimed_worker(pid, claim_lock, signal_fn=signal_fn)
+
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, "
+            "last_heartbeat_at = NULL "
+            "WHERE id = ? AND status = 'running' "
+            "  AND claim_lock IS ? AND worker_pid IS ?",
+            (task_id, claim_lock, pid),
+        )
+        if cur.rowcount != 1:
+            return False
+
+        payload = dict(metadata or {})
+        payload["pid"] = pid
+        payload["claim_lock"] = claim_lock
+        run_id = _end_run(
+            conn, task_id,
+            outcome=outcome, status=status_label,
+            error=reason,
+            metadata=payload,
+        )
+        _append_event(
+            conn, task_id, outcome, payload, run_id=run_id,
+        )
+    return True
 
 
 def _error_fingerprint(error_text: str) -> str:
