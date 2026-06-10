@@ -27,6 +27,7 @@ import html
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
@@ -102,6 +103,31 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 3978
 _WEBHOOK_PATH = "/api/messages"
+
+
+def _read_env_file_value(key: str) -> str:
+    """Read a single value from ~/.hermes/.env as a fallback."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        env_path = Path(get_hermes_home()) / ".env"
+    except Exception:
+        env_path = Path.home() / ".hermes" / ".env"
+    try:
+        for raw_line in env_path.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            name, value = line.split("=", 1)
+            if name.strip() == key:
+                return value.strip().strip('\"').strip("'")
+    except Exception:
+        return ""
+    return ""
+
+
+def _env_or_file(key: str) -> str:
+    return (os.getenv(key) or _read_env_file_value(key) or "").strip()
 
 
 def _parse_bool(value: Any, *, default: bool = False) -> bool:
@@ -669,6 +695,11 @@ class TeamsAdapter(BasePlatformAdapter):
             # Set up aiohttp app first — the bridge adapter wires SDK routes into it
             aiohttp_app = web.Application()
             aiohttp_app.router.add_get("/health", lambda _: web.Response(text="ok"))
+            aiohttp_app.router.add_get(
+                "/hermes-files/{token}/{filename}",
+                self._handle_file_download,
+                allow_head=True,
+            )
 
             self._app = App(
                 client_id=self._client_id,
@@ -724,6 +755,53 @@ class TeamsAdapter(BasePlatformAdapter):
         self._app = None
         self._mark_disconnected()
         logger.info("[teams] Disconnected")
+
+    def _file_download_allowed_dirs(self) -> list[Path]:
+        raw_dirs = [
+            _env_or_file("ALLHIRED_ON_HIRE_REPORTS_DIR"),
+            _env_or_file("HIO_PENDING_TASKS_REPORTS_DIR") or "/mnt/c/temp",
+        ]
+        extra = _env_or_file("HERMES_FILE_DOWNLOAD_DIRS")
+        if extra:
+            raw_dirs.extend(part for part in extra.split(os.pathsep) if part.strip())
+
+        dirs: list[Path] = []
+        seen: set[Path] = set()
+        for raw in raw_dirs:
+            if not raw:
+                continue
+            try:
+                path = Path(raw).expanduser().resolve()
+            except Exception:
+                continue
+            if path in seen or not path.is_dir():
+                continue
+            seen.add(path)
+            dirs.append(path)
+        return dirs
+
+    async def _handle_file_download(self, request: "web.Request") -> "web.StreamResponse":
+        token = str(request.match_info.get("token") or "")
+        expected = _env_or_file("HERMES_FILE_DOWNLOAD_TOKEN")
+        if not expected or token != expected:
+            return web.Response(status=404, text="File not found")
+
+        filename = Path(str(request.match_info.get("filename") or "")).name
+        if not filename or filename in {".", ".."}:
+            return web.Response(status=404, text="File not found")
+
+        for directory in self._file_download_allowed_dirs():
+            candidate = (directory / filename).resolve()
+            try:
+                candidate.relative_to(directory)
+            except ValueError:
+                continue
+            if candidate.is_file():
+                return web.FileResponse(
+                    candidate,
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+                )
+        return web.Response(status=404, text="File not found")
 
     async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
         """Process an incoming Teams message and dispatch to the gateway."""
@@ -804,7 +882,300 @@ class TeamsAdapter(BasePlatformAdapter):
             media_types=media_types,
             message_id=msg_id,
         )
+
+        # Fast-path RAG streaming proof-of-concept: bypass the Hermes agent
+        # entirely when a Teams user sends "/ragtest" or "/ragstream".
+        # This lets us test Teams pseudo-streaming with deterministic,
+        # hardcoded content and no LLM/tool reasoning in the hot path.
+        if msg_type == MessageType.TEXT and self._is_rag_stream_test(text):
+            asyncio.create_task(self._run_rag_stream_test(activity, source, text))
+            return
+
         await self.handle_message(event)
+
+    def _is_rag_stream_test(self, text: str) -> bool:
+        first = (text or "").strip().split(maxsplit=1)[0].lower()
+        return first in {"/ragtest", "/ragstream"}
+
+    def _rag_stream_test_chunks(self, query: str) -> list[str]:
+        clean_query = query.strip() or "demo query"
+        final = (
+            "**RAG streaming demo**\n\n"
+            f"Query received: `{clean_query}`\n\n"
+            "Answer: This is hardcoded text pretending to be a retrieval-augmented answer. "
+            "The hot path did not call the Hermes agent brain after the Teams trigger. "
+            "In the real version this worker would call the RAG service directly, retrieve "
+            "matching snippets, and update this same Teams message as tokens or progress arrive.\n\n"
+            "Sources:\n"
+            "- Demo KB / Operations Handbook / section 1\n"
+            "- Demo KB / Hire Process FAQ / section 3\n\n"
+            "Timing: simulated retrieval 120 ms, simulated generation 2.4 s."
+        )
+        # Word-based chunks are good enough for the POC and avoid needing
+        # a streaming LLM. Teams users see one message grow over time.
+        words = final.split()
+        chunks: list[str] = []
+        step = 12
+        for end in range(step, len(words) + step, step):
+            chunks.append(" ".join(words[:end]))
+        return chunks
+
+    async def _run_rag_stream_test(self, activity: Any, source: Any, text: str) -> None:
+        """Simulate Teams native streaming without entering the agent runner.
+
+        Uses the official Teams streamInfo REST pattern:
+        1. start stream with a typing/informative activity (sequence 1)
+        2. send cumulative typing/streaming chunks (sequence 2..N)
+        3. finish with a message/final activity (no streamSequence)
+
+        If the official streaming calls fail for this tenant/client, fall back
+        to the older updateActivity proof-of-concept so /ragtest still returns
+        something useful.
+        """
+        query = (text or "").strip().split(maxsplit=1)[1] if len((text or "").strip().split(maxsplit=1)) > 1 else ""
+        chat_id = source.chat_id
+        service_url = _validate_teams_service_url(
+            getattr(activity, "service_url", "")
+            or os.getenv("TEAMS_SERVICE_URL", "")
+            or _DEFAULT_TEAMS_SERVICE_URL
+        )
+        try:
+            if service_url and source.chat_type == "dm":
+                ok = await self._run_rag_stream_test_native(
+                    service_url=service_url,
+                    chat_id=chat_id,
+                    query=query,
+                )
+                if ok:
+                    return
+
+            logger.info("[teams] native streaming unavailable; falling back to updateActivity ragtest")
+            await self._run_rag_stream_test_update_activity(activity, source, query, service_url)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("[teams] rag stream test failed: %s", e, exc_info=True)
+            try:
+                await self.send(chat_id, f"⚠️ RAG streaming demo failed before agent dispatch: {e}")
+            except Exception:
+                pass
+
+    async def _run_rag_stream_test_native(
+        self,
+        *,
+        service_url: str,
+        chat_id: str,
+        query: str,
+    ) -> bool:
+        """Run the /ragtest demo via Teams native streamInfo activities."""
+        chunks = self._rag_stream_test_chunks(query)
+        if not chunks:
+            return False
+
+        started = await self._post_stream_activity(
+            service_url=service_url,
+            chat_id=chat_id,
+            text="Searching the knowledge base…",
+            stream_type="informative",
+            stream_sequence=1,
+        )
+        if not started[0] or not started[1]:
+            return False
+        stream_id = started[1]
+
+        # The Teams docs state a 1 request/sec throttling limit for REST
+        # streaming. Keep the demo conservative even though the old
+        # updateActivity simulator used 500 ms.
+        sequence = 2
+        for chunk in chunks[:-1]:
+            await asyncio.sleep(1.05)
+            ok, _ = await self._post_stream_activity(
+                service_url=service_url,
+                chat_id=chat_id,
+                text=chunk,
+                stream_type="streaming",
+                stream_sequence=sequence,
+                stream_id=stream_id,
+            )
+            if not ok:
+                return False
+            sequence += 1
+
+        await asyncio.sleep(0.35)
+        ok, _ = await self._post_stream_activity(
+            service_url=service_url,
+            chat_id=chat_id,
+            text=chunks[-1],
+            stream_type="final",
+            stream_id=stream_id,
+            final=True,
+        )
+        return ok
+
+    async def _run_rag_stream_test_update_activity(
+        self,
+        activity: Any,
+        source: Any,
+        query: str,
+        service_url: Optional[str],
+    ) -> None:
+        """Fallback simulator using a normal message plus updateActivity."""
+        chat_id = source.chat_id
+        await self.send_typing(chat_id)
+        result = await self.send(
+            chat_id,
+            "⏳ RAG demo started… retrieving hardcoded snippets.",
+            reply_to=getattr(activity, "id", None),
+        )
+        message_id = result.message_id if result.success else None
+        if not message_id or not service_url:
+            for chunk in self._rag_stream_test_chunks(query):
+                await asyncio.sleep(0.75)
+                await self.send(chat_id, chunk)
+            return
+
+        chunks = self._rag_stream_test_chunks(query)
+        for idx, chunk in enumerate(chunks, start=1):
+            await asyncio.sleep(0.75)
+            prefix = "⏳ Streaming RAG demo…\n\n" if idx < len(chunks) else "✅ RAG demo complete\n\n"
+            updated = prefix + chunk
+            ok = await self._update_message_activity(
+                service_url=service_url,
+                chat_id=chat_id,
+                message_id=message_id,
+                content=updated,
+            )
+            if not ok:
+                await self.send(chat_id, updated)
+                return
+
+    async def _post_stream_activity(
+        self,
+        *,
+        service_url: str,
+        chat_id: str,
+        text: str,
+        stream_type: str,
+        stream_sequence: Optional[int] = None,
+        stream_id: Optional[str] = None,
+        final: bool = False,
+    ) -> tuple[bool, Optional[str]]:
+        """POST one Teams native streaming activity through Bot Framework REST."""
+        if not (_TEAMS_CONV_ID_RE.match(chat_id)):
+            return (False, None)
+        try:
+            import aiohttp as _aiohttp
+
+            token = await self._botframework_access_token()
+            url = f"{service_url}v3/conversations/{quote(chat_id, safe='')}/activities"
+            entity: dict[str, Any] = {
+                "type": "streaminfo",
+                "streamType": stream_type,
+            }
+            if stream_id:
+                entity["streamId"] = stream_id
+            if stream_sequence is not None and not final:
+                entity["streamSequence"] = stream_sequence
+
+            activity = {
+                "type": "message" if final else "typing",
+                "channelId": "msteams",
+                "text": self.format_message(text),
+                "textFormat": "markdown",
+                "entities": [entity],
+            }
+            timeout = _aiohttp.ClientTimeout(total=15.0)
+            async with _aiohttp.ClientSession(trust_env=True) as session:
+                async with session.post(
+                    url,
+                    json=activity,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=timeout,
+                ) as resp:
+                    body_text = await resp.text()
+                    if resp.status >= 400:
+                        logger.warning("[teams] stream activity failed (%s): %s", resp.status, body_text[:300])
+                        return (False, None)
+                    if resp.status == 201 and body_text.strip():
+                        try:
+                            payload = json.loads(body_text)
+                        except json.JSONDecodeError:
+                            payload = {}
+                        return (True, payload.get("id"))
+            return (True, None)
+        except Exception as e:
+            logger.warning("[teams] stream activity failed: %s", e)
+            return (False, None)
+
+    async def _botframework_access_token(self) -> str:
+        if not (self._client_id and self._client_secret and self._tenant_id):
+            raise ValueError("Teams credentials are not configured")
+        if not AIOHTTP_AVAILABLE:
+            raise ValueError("aiohttp not installed")
+        import aiohttp as _aiohttp
+
+        token_url = f"https://login.microsoftonline.com/{self._tenant_id}/oauth2/v2.0/token"
+        timeout = _aiohttp.ClientTimeout(total=15.0)
+        async with _aiohttp.ClientSession(trust_env=True) as session:
+            async with session.post(
+                token_url,
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": self._client_id,
+                    "client_secret": self._client_secret,
+                    "scope": "https://api.botframework.com/.default",
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=timeout,
+            ) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    raise RuntimeError(f"Bot Framework token failed ({resp.status}): {body[:300]}")
+                payload = await resp.json()
+        token = payload.get("access_token")
+        if not token:
+            raise RuntimeError("Bot Framework token response missing access_token")
+        return token
+
+    async def _update_message_activity(
+        self,
+        *,
+        service_url: str,
+        chat_id: str,
+        message_id: str,
+        content: str,
+    ) -> bool:
+        """PUT an updated message activity through Bot Framework REST."""
+        if not (_TEAMS_CONV_ID_RE.match(chat_id) and _TEAMS_CONV_ID_RE.match(message_id)):
+            return False
+        try:
+            import aiohttp as _aiohttp
+
+            token = await self._botframework_access_token()
+            url = f"{service_url}v3/conversations/{quote(chat_id, safe='')}/activities/{quote(message_id, safe='')}"
+            activity = {"type": "message", "text": self.format_message(content), "textFormat": "markdown"}
+            timeout = _aiohttp.ClientTimeout(total=15.0)
+            async with _aiohttp.ClientSession(trust_env=True) as session:
+                async with session.put(
+                    url,
+                    json=activity,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                    timeout=timeout,
+                ) as resp:
+                    if resp.status >= 400:
+                        body = await resp.text()
+                        logger.warning("[teams] activity update failed (%s): %s", resp.status, body[:300])
+                        return False
+            return True
+        except Exception as e:
+            logger.warning("[teams] activity update failed: %s", e)
+            return False
 
     async def _send_card(self, chat_id: str, card: "AdaptiveCard") -> "Any":
         """Send an AdaptiveCard, using a stored ConversationReference when available."""
