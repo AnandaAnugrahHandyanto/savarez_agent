@@ -147,6 +147,9 @@ class GatewayStreamConsumer:
         self._edit_supported = True  # Disabled when progressive edits are no longer usable
         self._last_edit_time = 0.0
         self._last_sent_text = ""   # Track last-sent text to skip redundant edits
+        # True when the most recent _send_or_edit split-and-delivered across
+        # continuation messages (the adapter adopted a new message id).
+        self._last_edit_overflowed = False
         self._fallback_final_send = False
         self._fallback_prefix = ""
         self._flood_strikes = 0         # Consecutive flood-control edit failures
@@ -581,14 +584,20 @@ class GatewayStreamConsumer:
                     if self._accumulated:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
-                        elif (
-                            current_update_visible
-                            and not self._adapter_requires_finalize
+                        elif current_update_visible and (
+                            not self._adapter_requires_finalize
+                            or self._last_edit_overflowed
                         ):
                             # Mid-stream edit above already delivered the
                             # final accumulated content.  Skip the redundant
-                            # final edit — but only for adapters that don't
-                            # need an explicit finalize signal.
+                            # final edit for adapters that don't need an
+                            # explicit finalize signal, and for any adapter
+                            # when that edit split-and-delivered across
+                            # continuations: the split edit carried
+                            # finalize=True itself, and re-finalizing with
+                            # the full text would overflow-split again into
+                            # the adopted continuation, duplicating chunks
+                            # on screen.
                             self._final_response_sent = True
                             self._final_content_delivered = True
                         elif self._message_id:
@@ -1218,6 +1227,7 @@ class GatewayStreamConsumer:
                 return True
             # Failure already disabled drafts for this run; fall through to
             # the regular edit/send path below.
+        self._last_edit_overflowed = False
         try:
             if self._message_id is not None:
                 if self._edit_supported:
@@ -1274,6 +1284,7 @@ class GatewayStreamConsumer:
                             and result.message_id
                             and result.message_id != self._message_id
                         ):
+                            self._last_edit_overflowed = True
                             self._message_id = str(result.message_id)
                             self._message_created_ts = time.monotonic()
                             self._last_sent_text = ""

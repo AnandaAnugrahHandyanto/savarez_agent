@@ -38,6 +38,7 @@ _ensure_telegram_mock()
 from gateway.platforms.base import utf16_len  # noqa: E402
 from gateway.platforms.telegram import (  # noqa: E402
     TelegramAdapter,
+    _escape_chunk_indicator,
     _escape_mdv2,
     _strip_mdv2,
     _wrap_markdown_tables,
@@ -904,6 +905,28 @@ class TestEditMessageStreamingSafety:
         assert sent_kwargs[0]["reply_to_message_id"] == 456
 
 # =========================================================================
+# _escape_chunk_indicator
+# =========================================================================
+
+
+class TestEscapeChunkIndicator:
+    def test_escapes_trailing_indicator(self):
+        assert _escape_chunk_indicator("text (1/2)") == "text \\(1/2\\)"
+
+    def test_multi_digit_chunk_numbers(self):
+        assert _escape_chunk_indicator("text (12/99)") == "text \\(12/99\\)"
+
+    def test_no_indicator_is_unchanged(self):
+        assert _escape_chunk_indicator("plain text") == "plain text"
+
+    def test_mid_string_indicator_is_not_touched(self):
+        assert _escape_chunk_indicator("step (1/2) done") == "step (1/2) done"
+
+    def test_already_escaped_indicator_is_unchanged(self):
+        assert _escape_chunk_indicator("text \\(1/2\\)") == "text \\(1/2\\)"
+
+
+# =========================================================================
 # _edit_overflow_split: finalize formatting (bound-topic raw markdown fix)
 # =========================================================================
 
@@ -1111,7 +1134,13 @@ class TestEditOverflowFinalizeFormatting:
         assert retries, "expected no-anchor retry sends"
         for kwargs in retries:
             assert kwargs.get("message_thread_id") == 17585
+            assert kwargs.get("parse_mode") is None
+            # Stripped clean text: no raw bold markers and no MarkdownV2
+            # escape backslashes (the bare "**" check alone is vacuous on
+            # formatted text, which has already converted ** to *).
             assert "**" not in kwargs["text"]
+            assert "\\." not in kwargs["text"]
+            assert "\\(" not in kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_inflation_window_routes_to_formatted_split(self):

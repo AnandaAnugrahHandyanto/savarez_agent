@@ -2181,6 +2181,10 @@ class TelegramAdapter(BasePlatformAdapter):
         existing message with the first chunk and send the rest as
         continuation messages, returning the final chunk's id so subsequent
         edits target the most recent visible message.
+
+        When ``finalize=True`` the overflow check is performed against the
+        FORMATTED (MarkdownV2) text: escaping inflates length, so raw text
+        under 4096 UTF-16 units can still exceed the limit after formatting.
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
@@ -2197,6 +2201,10 @@ class TelegramAdapter(BasePlatformAdapter):
             formatted = self.format_message(content)
             overflow = utf16_len(formatted) > self.MAX_MESSAGE_LENGTH
         if overflow:
+            # The pre-flight's formatted value is intentionally not forwarded:
+            # _edit_overflow_split owns its own formatting pass over raw
+            # content, and the double format only occurs on the rare
+            # inflation-window route (raw under the limit, formatted over it).
             return await self._edit_overflow_split(
                 chat_id, message_id, content, finalize=finalize, metadata=metadata,
             )
@@ -2375,6 +2383,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as fmt_err:
                     if "not modified" not in str(fmt_err).lower():
+                        logger.warning(
+                            "[%s] Overflow split: MarkdownV2 first-chunk edit "
+                            "failed, falling back to plain text: %s",
+                            self.name, fmt_err,
+                        )
                         await self._bot.edit_message_text(
                             chat_id=int(chat_id),
                             message_id=int(message_id),
