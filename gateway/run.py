@@ -1968,6 +1968,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_via_service = False
         self._restart_command_source: Optional[SessionSource] = None
         self._stop_task: Optional[asyncio.Task] = None
+        self._boot_time = time.time()  # Startup timestamp for stale restart dedup
         
         # Track running agents per session for interrupt support
         # Key: session_key, Value: AIAgent instance
@@ -9127,6 +9128,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
         if platform_value != "telegram":
             return False
+
+        # Startup cooldown: block /restart in the first 10 seconds after boot.
+        # Telegram redelivers unacknowledged commands immediately on reconnect;
+        # a legitimate user /restart cannot arrive within 10s of gateway start.
+        if time.time() - self._boot_time < 10:
+            return True
 
         try:
             marker_path = _hermes_home / ".restart_last_processed.json"
