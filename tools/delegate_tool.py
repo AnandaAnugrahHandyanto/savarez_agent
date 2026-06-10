@@ -24,12 +24,15 @@ logger = logging.getLogger(__name__)
 import os
 import threading
 import time
+import weakref
 from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
 from typing import Any, Dict, List, Optional
 
+from action_runtime.contract import ErrorType, ExecError, ExecutionResult, Status
+from action_runtime.task_registry import AgentTaskRecord, get_registry
 from toolsets import TOOLSETS
 
 # Sentinel value used by the runtime provider system for providers that are
@@ -1371,6 +1374,54 @@ def _dump_subagent_timeout_diagnostic(
         return None
 
 
+def _entry_to_execution_result(entry: Any) -> Optional[ExecutionResult]:
+    """Map a _run_single_child result dict to a terminal ExecutionResult.
+
+    Phase 5 Step 2 dual-write (central-brain-openclaw.md): the registry record
+    is completed from the same per-child entry the legacy path returns.
+    Returns None when the entry is missing or unrecognized — the registry maps
+    a None result to FAILED (the run died without an honest answer).
+    """
+    if not isinstance(entry, dict):
+        return None
+    status = entry.get("status")
+    if status == "completed":
+        return ExecutionResult(
+            task_id=None,
+            status=Status.SUCCEEDED,
+            outputs={"summary": entry.get("summary") or ""},
+        )
+    if status in ("interrupted", "timeout"):
+        # Doc ruling: interrupted/timeout map to FAILED + TRANSPORT, not
+        # retryable — the Core must replan, not blindly re-run.
+        return ExecutionResult(
+            task_id=None,
+            status=Status.FAILED,
+            error=ExecError(
+                type=ErrorType.TRANSPORT,
+                retryable=False,
+                message=status,  # "interrupted" or "timeout"
+            ),
+        )
+    if status in ("failed", "error"):
+        # "failed": the child ran but produced no usable output (provider
+        # side); "error": an exception escaped the run itself (our side).
+        return ExecutionResult(
+            task_id=None,
+            status=Status.FAILED,
+            error=ExecError(
+                type=(
+                    ErrorType.PROVIDER_ERROR
+                    if status == "failed"
+                    else ErrorType.INTERNAL
+                ),
+                retryable=False,
+                message=str(entry.get("error") or "subagent failed"),
+            ),
+        )
+    return None
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -1517,6 +1568,35 @@ def _run_single_child(
                 "agent": child,
             }
         )
+        # Phase 5 Step 2 dual-write (central-brain-openclaw.md): mirror the
+        # record into the AgentTaskRegistry.  Strictly additive — a registry
+        # bug must never break a real delegate run, hence the broad guard.
+        try:
+            get_registry().register(
+                AgentTaskRecord(
+                    task_id=_subagent_id,
+                    parent_task_id=(
+                        _parent_sid if isinstance(_parent_sid, str) else None
+                    ),
+                    depth=_tui_depth,
+                    goal=goal,
+                    intent="delegate",
+                    model=(
+                        getattr(child, "model", None)
+                        if isinstance(getattr(child, "model", None), str)
+                        else None
+                    ),
+                    # weakref: the registry must not prolong the child's life.
+                    agent_ref=weakref.ref(child),
+                )
+            )
+        except Exception:
+            logger.debug("registry dual-write register failed", exc_info=True)
+
+    # Result dict for the registry dual-write in the finally block.  Bound by
+    # every exit path below; stays None when the run dies before producing
+    # one (BaseException) — complete() maps that to FAILED.
+    entry: Optional[Dict[str, Any]] = None
 
     try:
         _heartbeat_thread.start()
@@ -1645,7 +1725,7 @@ def _run_single_child(
             else:
                 _err = str(_timeout_exc)
 
-            return {
+            entry = {
                 "task_index": task_index,
                 "status": "timeout" if is_timeout else "error",
                 "summary": None,
@@ -1656,6 +1736,7 @@ def _run_single_child(
                 "_child_role": getattr(child, "_delegate_role", None),
                 "diagnostic_path": diagnostic_path,
             }
+            return entry
         finally:
             # Shut down executor without waiting — if the child thread
             # is stuck on blocking I/O, wait=True would hang forever.
@@ -1734,7 +1815,7 @@ def _run_single_child(
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
 
-        entry: Dict[str, Any] = {
+        entry = {
             "task_index": task_index,
             "status": status,
             "summary": summary,
@@ -1882,7 +1963,7 @@ def _run_single_child(
                 )
             except Exception as e:
                 logger.debug("Progress callback failure relay failed: %s", e)
-        return {
+        entry = {
             "task_index": task_index,
             "status": "error",
             "summary": None,
@@ -1891,6 +1972,7 @@ def _run_single_child(
             "duration_seconds": duration,
             "_child_role": getattr(child, "_delegate_role", None),
         }
+        return entry
 
     finally:
         # Stop the heartbeat thread so it doesn't keep touching parent activity
@@ -1906,6 +1988,16 @@ def _run_single_child(
         # child was never registered (e.g. ID missing on test doubles).
         if _subagent_id:
             _unregister_subagent(_subagent_id)
+            # Phase 5 Step 2 dual-write: close out the AgentTaskRegistry
+            # record in the same finally that owns _unregister_subagent
+            # (doc R1 — symmetric cleanup).  entry is None when the run died
+            # before producing a result dict; complete() maps that to FAILED.
+            try:
+                get_registry().complete(
+                    _subagent_id, _entry_to_execution_result(entry)
+                )
+            except Exception:
+                logger.debug("registry dual-write complete failed", exc_info=True)
 
         if child_pool is not None and leased_cred_id is not None:
             try:
