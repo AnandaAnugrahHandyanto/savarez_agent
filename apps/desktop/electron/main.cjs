@@ -4390,6 +4390,15 @@ function primaryProfileKey() {
   return readActiveDesktopProfile() || 'default'
 }
 
+// Profiles with a delete or rename in flight. prepareProfileMutationRequest()
+// marks the name before tearing down its backend; the hermes:api handler
+// clears it once the request settles. Scoped requests racing the mutation
+// would otherwise respawn a backend whose directory is being rmtree'd or
+// renamed under it — a doomed child per retry, fresh Windows handle locks
+// that make the rename itself fail with EACCES, and (worse) a boot that
+// could resurrect a half-deleted profile husk.
+const busyProfiles = new Set()
+
 // Resolve a backend connection for the given profile. Routes the primary
 // profile to startHermes() (the window backend: boot UI, bootstrap, remote
 // mode), and any OTHER profile to a lazily-spawned pool backend. An empty /
@@ -4399,6 +4408,16 @@ async function ensureBackend(profile) {
 
   if (key === primaryProfileKey()) {
     return startHermes()
+  }
+
+  // Pool keys feed a path join and a child --profile flag below; reject
+  // anything that isn't a well-formed profile name before either.
+  if (!PROFILE_NAME_RE.test(key)) {
+    throw new Error(`Invalid Hermes profile name "${key}".`)
+  }
+
+  if (busyProfiles.has(key)) {
+    throw new Error(`Hermes profile "${key}" has a delete or rename in progress.`)
   }
 
   const existing = backendPool.get(key)
@@ -4485,6 +4504,15 @@ async function spawnPoolBackend(profile, entry) {
       logs: hermesLog.slice(-80),
       ...getWindowState()
     }
+  }
+
+  // A local pool backend needs the profile's directory on disk. A stale
+  // renderer reference (e.g. a reconnect loop still pointed at a just-deleted
+  // profile) would otherwise spawn `--profile <name>` children that exit 1
+  // immediately, once per backoff retry. Fail fast with a clear error instead.
+  const profileDir = profile === 'default' ? HERMES_HOME : path.join(HERMES_HOME, 'profiles', profile)
+  if (!fs.existsSync(profileDir)) {
+    throw new Error(`Hermes profile "${profile}" does not exist (was it deleted?).`)
   }
 
   const port = await pickPort()
@@ -4596,12 +4624,16 @@ function stopAllPoolBackends() {
   }
 }
 
-function profileNameFromDeleteRequest(request) {
-  if (!request || String(request.method || 'GET').toUpperCase() !== 'DELETE') {
+// Detect a profile mutation request: DELETE /api/profiles/{name} (delete) or
+// PATCH /api/profiles/{name} (rename). Returns { kind, profile } or null.
+function profileMutationFromRequest(request) {
+  const method = String(request?.method || 'GET').toUpperCase()
+  const kind = method === 'DELETE' ? 'delete' : method === 'PATCH' ? 'rename' : null
+  if (!kind) {
     return null
   }
 
-  const match = String(request.path || '').match(/^\/api\/profiles\/([^/?#]+)(?:[?#].*)?$/)
+  const match = String(request?.path || '').match(/^\/api\/profiles\/([^/?#]+)(?:[?#].*)?$/)
   if (!match) {
     return null
   }
@@ -4613,29 +4645,41 @@ function profileNameFromDeleteRequest(request) {
     return null
   }
 
-  const name = raw.trim()
+  const name = raw.trim().toLowerCase()
   if (!name) {
     return null
   }
-  if (name.toLowerCase() === 'default') {
-    return 'default'
-  }
-  return name.toLowerCase()
+  return { kind, profile: name }
 }
 
-async function prepareProfileDeleteRequest(request) {
-  const profile = profileNameFromDeleteRequest(request)
-  if (!profile || profile === 'default' || !PROFILE_NAME_RE.test(profile)) {
-    return
+// Quiesce a profile ahead of a delete/rename: tombstone it in `busyProfiles`
+// and tear down its backend, waiting for the child to exit. The teardown
+// matters doubly on Windows — a live child holds open handles inside the
+// profile directory, which makes the backend's rmtree/rename fail with
+// access-denied. Returns the mutation ({ kind, profile }) — the caller MUST
+// clear the profile from `busyProfiles` once the request settles — or null
+// when the request isn't a profile mutation.
+async function prepareProfileMutationRequest(request) {
+  const mutation = profileMutationFromRequest(request)
+  if (!mutation || mutation.profile === 'default' || !PROFILE_NAME_RE.test(mutation.profile)) {
+    return null
   }
 
-  if (profile === primaryProfileKey()) {
-    writeActiveDesktopProfile('default')
+  busyProfiles.add(mutation.profile)
+
+  if (mutation.profile === primaryProfileKey()) {
+    // A deleted primary falls back to default now; a renamed one follows to
+    // its new name only AFTER the backend confirms (see the hermes:api
+    // handler), so a failed rename leaves the preference valid.
+    if (mutation.kind === 'delete') {
+      writeActiveDesktopProfile('default')
+    }
     await teardownPrimaryBackendAndWait()
-    return
+    return mutation
   }
 
-  await teardownPoolBackendAndWait(profile)
+  await teardownPoolBackendAndWait(mutation.profile)
+  return mutation
 }
 
 async function startHermes() {
@@ -5340,27 +5384,48 @@ ipcMain.handle('hermes:api', async (_event, request) => {
     return rerouted
   }
 
-  await prepareProfileDeleteRequest(request)
+  const mutation = await prepareProfileMutationRequest(request)
 
-  const connection = await ensureBackend(request?.profile)
-  const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
-  const url = `${connection.baseUrl}${request.path}`
-  // OAuth gateways authenticate REST via the HttpOnly session cookie held in
-  // the OAuth partition — route through Electron's net stack bound to that
-  // session so the cookie attaches automatically. Token/local modes keep using
-  // the static session-token header.
-  if (connection.authMode === 'oauth') {
-    return fetchJsonViaOauthSession(url, {
-      method: request?.method,
-      body: request?.body,
-      timeoutMs
-    })
+  try {
+    const connection = await ensureBackend(request?.profile)
+    const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+    const url = `${connection.baseUrl}${request.path}`
+    // OAuth gateways authenticate REST via the HttpOnly session cookie held in
+    // the OAuth partition — route through Electron's net stack bound to that
+    // session so the cookie attaches automatically. Token/local modes keep using
+    // the static session-token header.
+    const result =
+      connection.authMode === 'oauth'
+        ? await fetchJsonViaOauthSession(url, {
+            method: request?.method,
+            body: request?.body,
+            timeoutMs
+          })
+        : await fetchJson(url, connection.token, {
+            method: request?.method,
+            body: request?.body,
+            timeoutMs
+          })
+
+    // A confirmed rename of the desktop's pinned profile: follow the stored
+    // preference to the new name so the next primary boot doesn't point at a
+    // directory that no longer exists.
+    if (mutation?.kind === 'rename' && mutation.profile === primaryProfileKey()) {
+      const newName = String(request?.body?.new_name || '').trim().toLowerCase()
+      if (PROFILE_NAME_RE.test(newName)) {
+        writeActiveDesktopProfile(newName)
+      }
+    }
+
+    return result
+  } finally {
+    // The tombstone only needs to cover the teardown→rmtree/rename window;
+    // once the request settles (either way) the directory state is the source
+    // of truth again (spawnPoolBackend fails fast when the dir is gone).
+    if (mutation) {
+      busyProfiles.delete(mutation.profile)
+    }
   }
-  return fetchJson(url, connection.token, {
-    method: request?.method,
-    body: request?.body,
-    timeoutMs
-  })
 })
 
 ipcMain.handle('hermes:notify', (_event, payload) => {
