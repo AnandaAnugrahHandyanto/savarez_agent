@@ -23,6 +23,7 @@ from hermes_cli.config import (
     cfg_get,
     load_config, save_config, get_env_value, save_env_value,
 )
+from hermes_cli._subprocess_compat import subprocess_text_encoding as _subprocess_text_encoding
 from hermes_cli.colors import Colors, color
 from hermes_cli.nous_subscription import (
     apply_nous_managed_defaults,
@@ -611,6 +612,7 @@ def _pip_install(
             result = subprocess.run(
                 [uv_bin, "pip", "install", *args],
                 capture_output=capture_output, text=True, timeout=timeout,
+                encoding=_subprocess_text_encoding(),
                 env=uv_env,
             )
             if result.returncode == 0:
@@ -626,6 +628,7 @@ def _pip_install(
         probe = subprocess.run(
             pip_cmd + ["--version"],
             capture_output=True, text=True, timeout=15,
+            encoding=_subprocess_text_encoding(),
         )
         if probe.returncode != 0:
             raise FileNotFoundError("pip not in venv")
@@ -634,6 +637,7 @@ def _pip_install(
             subprocess.run(
                 [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
                 capture_output=True, text=True, timeout=120, check=True,
+                encoding=_subprocess_text_encoding(),
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             # Synthesize a result so callers see a clean failure path.
@@ -645,6 +649,7 @@ def _pip_install(
     return subprocess.run(
         pip_cmd + ["install", *args],
         capture_output=capture_output, text=True, timeout=timeout,
+        encoding=_subprocess_text_encoding(),
     )
 
 

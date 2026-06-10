@@ -61,6 +61,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from hermes_cli._subprocess_compat import subprocess_text_encoding as _subprocess_text_encoding
+
 logger = logging.getLogger(__name__)
 
 
@@ -364,7 +366,9 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         try:
             r = subprocess.run(
                 [uv_bin, "pip", "install", *specs],
-                capture_output=True, text=True, timeout=timeout, env=uv_env,
+                capture_output=True, text=True, timeout=timeout,
+                encoding=_subprocess_text_encoding(),
+                env=uv_env,
                 stdin=subprocess.DEVNULL,
             )
             if r.returncode == 0:
@@ -379,6 +383,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         probe = subprocess.run(
             pip_cmd + ["--version"],
             capture_output=True, text=True, timeout=15,
+            encoding=_subprocess_text_encoding(),
             stdin=subprocess.DEVNULL,
         )
         if probe.returncode != 0:
@@ -388,6 +393,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             subprocess.run(
                 [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
                 capture_output=True, text=True, timeout=120, check=True,
+                encoding=_subprocess_text_encoding(),
                 stdin=subprocess.DEVNULL,
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
@@ -398,6 +404,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         r = subprocess.run(
             pip_cmd + ["install", *specs],
             capture_output=True, text=True, timeout=timeout,
+            encoding=_subprocess_text_encoding(),
             stdin=subprocess.DEVNULL,
         )
         return _InstallResult(r.returncode == 0, r.stdout or "", r.stderr or "")

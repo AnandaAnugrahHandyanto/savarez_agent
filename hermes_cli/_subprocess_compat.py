@@ -34,6 +34,7 @@ from typing import Sequence
 __all__ = [
     "IS_WINDOWS",
     "resolve_node_command",
+    "subprocess_text_encoding",
     "windows_detach_flags",
     "windows_detach_flags_without_breakaway",
     "windows_hide_flags",
@@ -85,6 +86,38 @@ def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
     if resolved:
         return [resolved, *argv]
     return [name, *argv]
+
+
+# -----------------------------------------------------------------------------
+# Text encoding for subprocess pipes (Windows GBK / UTF-8 mismatch)
+# -----------------------------------------------------------------------------
+
+
+def subprocess_text_encoding() -> str | None:
+    """Return the encoding to use for ``text=True`` subprocess calls.
+
+    On Windows, Python's default text-pipe encoding is
+    ``locale.getpreferredencoding()``, which returns a locale-specific
+    ANSI code page (e.g. ``cp936`` / GBK on Chinese Windows, ``cp932`` on
+    Japanese Windows, ``cp949`` on Korean Windows).  Most CLI tools
+    (git, pip, uv, npm, cargo, ...) emit UTF-8 regardless of the system
+    locale, so subprocess text-pipe reads fail with
+    ``UnicodeDecodeError`` when a UTF-8 multibyte sequence happens to
+    look like an illegal local-code-page byte.
+
+    This helper returns ``'utf-8'`` on Windows (matching what virtually
+    every modern CLI tool outputs) and ``None`` on POSIX (where the
+    default locale encoding is almost always UTF-8).
+
+    Callers that use ``subprocess.run(..., text=True)`` or
+    ``subprocess.Popen(..., text=True)`` should pass
+    ``encoding=subprocess_text_encoding()`` so output is decoded
+    correctly on CJK Windows systems.
+
+    Returns:
+        ``'utf-8'`` on Windows, ``None`` on non-Windows.
+    """
+    return "utf-8" if IS_WINDOWS else None
 
 
 # -----------------------------------------------------------------------------
