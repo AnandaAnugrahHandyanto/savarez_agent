@@ -397,11 +397,14 @@ def resolve_runtime_mode(
     config: Optional[dict[str, Any]] = None,
     model: Optional[str] = None,
 ) -> RuntimeMode:
-    """Resolve the operating posture once. Cheap; detection is memoized.
+    """Resolve the operating posture once. Cheap — a handful of ``stat`` calls.
 
     This is the single entry point every domain should call. The returned
-    object is immutable and safe to cache for the session. ``model`` is
-    recorded only to steer edit-format guidance; it never affects detection.
+    object is immutable and safe to cache for the session. Detection itself is
+    intentionally *not* memoized (see ``_detect_profile_name``) so a long-lived
+    process can't pin a stale posture; callers resolve once per session and
+    hold the result. ``model`` is recorded only to steer edit-format guidance;
+    it never affects detection.
     """
     resolved_cwd = _resolve_cwd(cwd)
     mode = _coding_mode(config)

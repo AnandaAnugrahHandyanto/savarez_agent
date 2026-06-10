@@ -1654,7 +1654,9 @@ def _load_enabled_toolsets() -> list[str] | None:
     # Coding posture (base Hermes): with no explicit pin, collapse to the
     # coding toolset (+ enabled MCP servers) when sitting in a code workspace.
     # The desktop app and `hermes --tui` both land here. See
-    # agent/coding_context.py.
+    # agent/coding_context.py. No config is loaded yet at this point, so we let
+    # coding_selection() load it lazily (cli.py passes its already-resolved
+    # CLI_CONFIG instead, purely to avoid a redundant read).
     if not explicit:
         try:
             from agent.coding_context import coding_selection
