@@ -1188,6 +1188,8 @@ export const zhHant = defineLocale({
     groupAriaUngrouped: '依工作區分組工作階段',
     groupTitleGrouped: '取消分組',
     groupTitleUngrouped: '依工作區分組',
+    hideToolSessions: '隱藏工具會話',
+    showToolSessions: '顯示工具會話',
     allPinned: '這裡的全部已釘選。取消釘選某個聊天即可在最近中顯示。',
     shiftClickHint: 'Shift + 點擊聊天以釘選 · 拖曳以重新排序',
     noWorkspace: '無工作區',
