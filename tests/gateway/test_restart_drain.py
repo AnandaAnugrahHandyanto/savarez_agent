@@ -1,6 +1,8 @@
 import asyncio
+import os
 import shutil
 import subprocess
+import sys
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
