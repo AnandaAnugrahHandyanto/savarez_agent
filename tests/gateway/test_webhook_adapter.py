@@ -138,6 +138,23 @@ class TestValidateSignature:
         req = _mock_request(headers={"X-Hub-Signature-256": "sha256=deadbeef"})
         assert adapter._validate_signature(req, body, secret) is False
 
+    def test_validate_fireflies_v2_hub_signature(self):
+        """Fireflies V2 X-Hub-Signature (without -256) is accepted."""
+        adapter = _make_adapter()
+        body = b'{"event": "meeting.transcribed"}'
+        secret = "fireflies-secret"
+        sig = "sha256=" + hmac.new(
+            secret.encode(), body, hashlib.sha256
+        ).hexdigest()
+        req = _mock_request(headers={"X-Hub-Signature": sig})
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_fireflies_v2_hub_signature_invalid(self):
+        """Wrong Fireflies X-Hub-Signature is rejected."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={"X-Hub-Signature": "sha256=deadbeef"})
+        assert adapter._validate_signature(req, b'{}', "correct") is False
+
     def test_validate_gitlab_token(self):
         """GitLab plain-token match via X-Gitlab-Token."""
         adapter = _make_adapter()
@@ -463,6 +480,27 @@ class TestEventFilter:
             resp = await cli.post(
                 "/webhooks/svix",
                 json={"type": "message.received"},
+            )
+            assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_event_filter_accepts_payload_event_field(self):
+        """Fireflies V2 payloads use a top-level `event` field."""
+        routes = {
+            "fireflies": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["meeting.transcribed"],
+                "prompt": "got it",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/fireflies",
+                json={"event": "meeting.transcribed"},
             )
             assert resp.status == 202
 

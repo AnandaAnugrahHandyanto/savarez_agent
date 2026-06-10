@@ -442,6 +442,7 @@ class WebhookAdapter(BasePlatformAdapter):
             request.headers.get("X-GitHub-Event", "")
             or request.headers.get("X-GitLab-Event", "")
             or payload.get("event_type", "")
+            or payload.get("event", "")
             or payload.get("type", "")
             or "unknown"
         )
@@ -676,6 +677,15 @@ class WebhookAdapter(BasePlatformAdapter):
                 secret.encode(), body, hashlib.sha256
             ).hexdigest()
             return hmac.compare_digest(gh_sig, expected)
+
+        # Fireflies V2 / legacy GitHub: X-Hub-Signature = sha256=<hex>
+        # Same format as X-Hub-Signature-256 but without the -256 suffix.
+        hub_sig = request.headers.get("X-Hub-Signature", "")
+        if hub_sig:
+            expected = "sha256=" + hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(hub_sig, expected)
 
         # GitLab: X-Gitlab-Token = <plain secret>
         gl_token = request.headers.get("X-Gitlab-Token", "")
