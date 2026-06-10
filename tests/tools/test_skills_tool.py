@@ -181,21 +181,21 @@ class TestRequiredEnvironmentVariablesNormalization:
 
 class TestGetCategoryFromPath:
     def test_categorized_skill(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             skill_md = tmp_path / "mlops" / "axolotl" / "SKILL.md"
             skill_md.parent.mkdir(parents=True)
             skill_md.touch()
             assert _get_category_from_path(skill_md) == "mlops"
 
     def test_uncategorized_skill(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             skill_md = tmp_path / "my-skill" / "SKILL.md"
             skill_md.parent.mkdir(parents=True)
             skill_md.touch()
             assert _get_category_from_path(skill_md) is None
 
     def test_outside_skills_dir(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path / "skills"):
             skill_md = tmp_path / "other" / "SKILL.md"
             assert _get_category_from_path(skill_md) is None
 
@@ -207,7 +207,7 @@ class TestGetCategoryFromPath:
 
 class TestFindAllSkills:
     def test_finds_skills(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(tmp_path, "skill-a")
             _make_skill(tmp_path, "skill-b")
             skills = _find_all_skills()
@@ -217,17 +217,17 @@ class TestFindAllSkills:
         assert "skill-b" in names
 
     def test_empty_directory(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             skills = _find_all_skills()
         assert skills == []
 
     def test_nonexistent_directory(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "nope"):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path / "nope"):
             skills = _find_all_skills()
         assert skills == []
 
     def test_categorized_skills(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(tmp_path, "axolotl", category="mlops")
             skills = _find_all_skills()
         assert len(skills) == 1
@@ -240,7 +240,7 @@ class TestFindAllSkills:
         (skill_dir / "SKILL.md").write_text(
             "---\nname: no-desc\n---\n\n# Heading\n\nFirst paragraph.\n"
         )
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             skills = _find_all_skills()
         assert skills[0]["description"] == "First paragraph."
 
@@ -251,12 +251,12 @@ class TestFindAllSkills:
         (skill_dir / "SKILL.md").write_text(
             f"---\nname: long\ndescription: {long_desc}\n---\n\nBody.\n"
         )
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             skills = _find_all_skills()
         assert len(skills[0]["description"]) <= MAX_DESCRIPTION_LENGTH
 
     def test_skips_git_directories(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(tmp_path, "real-skill")
             git_dir = tmp_path / ".git" / "fake-skill"
             git_dir.mkdir(parents=True)
@@ -268,7 +268,7 @@ class TestFindAllSkills:
         assert skills[0]["name"] == "real-skill"
 
     def test_skips_nested_virtualenv_dependency_skills(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(tmp_path, "real-skill")
             typer_skill = (
                 tmp_path
@@ -301,7 +301,7 @@ class TestFindAllSkills:
         external_category = _symlink_category(skills_root, external_root, "linked")
         _make_skill(external_category.parent, "knowledge-brain", category="linked")
 
-        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+        with patch("tools.skills_tool.get_skills_dir", return_value=skills_root):
             skills = _find_all_skills()
 
         assert [s["name"] for s in skills] == ["knowledge-brain"]
@@ -316,7 +316,7 @@ class TestFindAllSkills:
 class TestSkillsList:
     def test_empty_creates_directory(self, tmp_path):
         skills_dir = tmp_path / "skills"
-        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+        with patch("tools.skills_tool.get_skills_dir", return_value=skills_dir):
             raw = skills_list()
         result = json.loads(raw)
         assert result["success"] is True
@@ -324,7 +324,7 @@ class TestSkillsList:
         assert skills_dir.exists()
 
     def test_lists_skills(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(tmp_path, "alpha")
             _make_skill(tmp_path, "beta")
             raw = skills_list()
@@ -332,7 +332,7 @@ class TestSkillsList:
         assert result["count"] == 2
 
     def test_category_filter(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(tmp_path, "skill-a", category="devops")
             _make_skill(tmp_path, "skill-b", category="mlops")
             raw = skills_list(category="devops")
@@ -348,7 +348,7 @@ class TestSkillsList:
         external_category = _symlink_category(skills_root, external_root, "linked")
         _make_skill(external_category.parent, "knowledge-brain", category="linked")
 
-        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+        with patch("tools.skills_tool.get_skills_dir", return_value=skills_root):
             raw = skills_list(category="linked")
 
         result = json.loads(raw)
@@ -365,7 +365,7 @@ class TestSkillsList:
 
 class TestSkillView:
     def test_view_existing_skill(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(tmp_path, "my-skill")
             raw = skill_view("my-skill")
         result = json.loads(raw)
@@ -387,7 +387,7 @@ class TestSkillView:
             "# real-skill-name\n\n"
             "Step 1: Do the thing.\n"
         )
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             raw = skill_view("real-skill-name")
         result = json.loads(raw)
         assert result["success"] is True
@@ -395,7 +395,7 @@ class TestSkillView:
 
     def test_skill_view_applies_template_vars(self, tmp_path):
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool.get_skills_dir", return_value=tmp_path),
             patch(
                 "agent.skill_preprocessing.load_skills_config",
                 return_value={"template_vars": True, "inline_shell": False},
@@ -415,7 +415,7 @@ class TestSkillView:
 
     def test_skill_view_applies_inline_shell_when_enabled(self, tmp_path):
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool.get_skills_dir", return_value=tmp_path),
             patch(
                 "agent.skill_preprocessing.load_skills_config",
                 return_value={
@@ -439,7 +439,7 @@ class TestSkillView:
 
     def test_skill_view_leaves_inline_shell_literal_when_disabled(self, tmp_path):
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool.get_skills_dir", return_value=tmp_path),
             patch(
                 "agent.skill_preprocessing.load_skills_config",
                 return_value={"template_vars": True, "inline_shell": False},
@@ -458,7 +458,7 @@ class TestSkillView:
         assert "Current date: SHOULD_NOT_RUN" not in result["content"]
 
     def test_view_nonexistent_skill(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(tmp_path, "other-skill")
             raw = skill_view("nonexistent")
         result = json.loads(raw)
@@ -467,7 +467,7 @@ class TestSkillView:
         assert "available_skills" in result
 
     def test_view_reference_file(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             skill_dir = _make_skill(tmp_path, "my-skill")
             refs_dir = skill_dir / "references"
             refs_dir.mkdir()
@@ -478,14 +478,14 @@ class TestSkillView:
         assert "Endpoint info" in result["content"]
 
     def test_view_nonexistent_file(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(tmp_path, "my-skill")
             raw = skill_view("my-skill", file_path="references/nope.md")
         result = json.loads(raw)
         assert result["success"] is False
 
     def test_view_shows_linked_files(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             skill_dir = _make_skill(tmp_path, "my-skill")
             refs_dir = skill_dir / "references"
             refs_dir.mkdir()
@@ -496,7 +496,7 @@ class TestSkillView:
         assert "references" in result["linked_files"]
 
     def test_view_tags_from_metadata(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(
                 tmp_path,
                 "tagged",
@@ -508,7 +508,7 @@ class TestSkillView:
         assert "llm" in result["tags"]
 
     def test_view_nonexistent_skills_dir(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "nope"):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path / "nope"):
             raw = skill_view("anything")
         result = json.loads(raw)
         assert result["success"] is False
@@ -516,7 +516,7 @@ class TestSkillView:
     def test_view_disabled_skill_blocked(self, tmp_path):
         """Disabled skills should not be viewable via skill_view."""
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool.get_skills_dir", return_value=tmp_path),
             patch(
                 "tools.skills_tool._is_skill_disabled",
                 return_value=True,
@@ -531,7 +531,7 @@ class TestSkillView:
     def test_view_enabled_skill_allowed(self, tmp_path):
         """Non-disabled skills should be viewable normally."""
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool.get_skills_dir", return_value=tmp_path),
             patch(
                 "tools.skills_tool._is_skill_disabled",
                 return_value=False,
@@ -550,7 +550,7 @@ class TestSkillView:
         external_category = _symlink_category(skills_root, external_root, "linked")
         _make_skill(external_category.parent, "knowledge-brain", category="linked")
 
-        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+        with patch("tools.skills_tool.get_skills_dir", return_value=skills_root):
             raw = skill_view("knowledge-brain")
 
         result = json.loads(raw)
@@ -558,7 +558,7 @@ class TestSkillView:
         assert result["name"] == "knowledge-brain"
 
     def test_not_found_hint_uses_same_order_as_skills_list(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(tmp_path, "zeta", category="z-cat")
             _make_skill(tmp_path, "alpha", category="a-cat")
             _make_skill(tmp_path, "beta", category="a-cat")
@@ -600,7 +600,7 @@ class TestSkillViewSecureSetupOnLoad:
             raising=False,
         )
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(
                 tmp_path,
                 "gif-search",
@@ -649,7 +649,7 @@ class TestSkillViewSecureSetupOnLoad:
             raising=False,
         )
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(
                 tmp_path,
                 "gif-search",
@@ -754,7 +754,7 @@ class TestFindAllSkillsPlatformFiltering:
 
     def test_excludes_incompatible_platform(self, tmp_path):
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool.get_skills_dir", return_value=tmp_path),
             patch("agent.skill_utils.sys") as mock_sys,
         ):
             mock_sys.platform = "linux"
@@ -767,7 +767,7 @@ class TestFindAllSkillsPlatformFiltering:
 
     def test_includes_matching_platform(self, tmp_path):
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool.get_skills_dir", return_value=tmp_path),
             patch("agent.skill_utils.sys") as mock_sys,
         ):
             mock_sys.platform = "darwin"
@@ -779,7 +779,7 @@ class TestFindAllSkillsPlatformFiltering:
     def test_no_platforms_always_included(self, tmp_path):
         """Skills without platforms field should appear on any platform."""
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool.get_skills_dir", return_value=tmp_path),
             patch("agent.skill_utils.sys") as mock_sys,
         ):
             mock_sys.platform = "win32"
@@ -790,7 +790,7 @@ class TestFindAllSkillsPlatformFiltering:
 
     def test_multi_platform_skill(self, tmp_path):
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skills_tool.get_skills_dir", return_value=tmp_path),
             patch("agent.skill_utils.sys") as mock_sys,
         ):
             _make_skill(
@@ -815,7 +815,7 @@ class TestFindAllSkillsPlatformFiltering:
 class TestFindAllSkillsSecureSetup:
     def test_skills_with_missing_env_vars_remain_listed(self, tmp_path, monkeypatch):
         monkeypatch.delenv("NONEXISTENT_API_KEY_XYZ", raising=False)
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(
                 tmp_path,
                 "needs-key",
@@ -831,7 +831,7 @@ class TestFindAllSkillsSecureSetup:
         self, tmp_path, monkeypatch
     ):
         monkeypatch.setenv("MY_PRESENT_KEY", "val")
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(
                 tmp_path,
                 "has-key",
@@ -843,7 +843,7 @@ class TestFindAllSkillsSecureSetup:
         assert "readiness_status" not in skills[0]
 
     def test_skills_without_prereqs_have_same_listing_shape(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(tmp_path, "simple-skill")
             skills = _find_all_skills()
         assert len(skills) == 1
@@ -855,7 +855,7 @@ class TestFindAllSkillsSecureSetup:
     ):
         monkeypatch.setenv("TERMINAL_ENV", "docker")
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(
                 tmp_path,
                 "skill-a",
@@ -877,7 +877,7 @@ class TestSkillViewPrerequisites:
         self, tmp_path, monkeypatch
     ):
         monkeypatch.delenv("MISSING_KEY_XYZ", raising=False)
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(
                 tmp_path,
                 "gated-skill",
@@ -897,7 +897,7 @@ class TestSkillViewPrerequisites:
 
     def test_no_setup_needed_when_legacy_prereqs_are_met(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PRESENT_KEY", "value")
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(
                 tmp_path,
                 "ready-skill",
@@ -914,7 +914,7 @@ class TestSkillViewPrerequisites:
     ):
         monkeypatch.setenv("TERMINAL_ENV", "docker")
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(
                 tmp_path,
                 "remote-ready",
@@ -933,7 +933,7 @@ class TestSkillViewPrerequisites:
         assert result["readiness_status"] == "available"
 
     def test_no_setup_metadata_when_no_required_envs(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(tmp_path, "plain-skill")
             raw = skill_view("plain-skill")
         result = json.loads(raw)
@@ -946,7 +946,7 @@ class TestSkillViewPrerequisites:
     ):
         monkeypatch.setenv("TERMINAL_ENV", "docker")
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(
                 tmp_path,
                 "backend-ready",
@@ -962,7 +962,7 @@ class TestSkillViewPrerequisites:
         monkeypatch.setenv("TERMINAL_ENV", "local")
         monkeypatch.delenv("SHELL_ONLY_KEY", raising=False)
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(
                 tmp_path,
                 "shell-ready",
@@ -1004,7 +1004,7 @@ class TestSkillViewPrerequisites:
             raising=False,
         )
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(
                 tmp_path,
                 "gif-search",
@@ -1025,7 +1025,7 @@ class TestSkillViewPrerequisites:
         assert "setup_note" not in result
 
     def test_skill_view_surfaces_skill_read_errors(self, tmp_path, monkeypatch):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(tmp_path, "broken-skill")
             skill_md = tmp_path / "broken-skill" / "SKILL.md"
             original_read_text = Path.read_text
@@ -1066,7 +1066,7 @@ Do the legacy thing.
             encoding="utf-8",
         )
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             raw = skill_view("legacy-skill")
 
         result = json.loads(raw)
@@ -1102,7 +1102,7 @@ Do the legacy thing.
             raising=False,
         )
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("tools.skills_tool.get_skills_dir", return_value=tmp_path):
             _make_skill(
                 tmp_path,
                 "gif-search",
@@ -1144,7 +1144,7 @@ class TestSkillViewCollisionDetection:
     def _patch_dirs(self, local_dir, external_dirs):
         """Patch SKILLS_DIR (module-level) and get_external_skills_dirs at source."""
         return (
-            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("tools.skills_tool.get_skills_dir", return_value=local_dir),
             patch(
                 "agent.skill_utils.get_external_skills_dirs",
                 return_value=list(external_dirs),
