@@ -3557,12 +3557,13 @@ def validate_requested_model(
         }
 
     if any(ch.isspace() for ch in requested):
-        return {
-            "accepted": False,
-            "persist": False,
-            "recognized": False,
-            "message": "Model names cannot contain spaces.",
-        }
+        # Spaces in model names are uncommon but valid for some providers
+        # (e.g. VLLM allows quoted model names with spaces).  Allow them
+        # to pass through to the provider rather than hard-rejecting.
+        import logging as _log
+        _log.getLogger(__name__).info(
+            "Model name contains spaces: %r — proceeding anyway", requested,
+        )
 
     if normalized == "lmstudio":
         from hermes_cli.auth import AuthError
