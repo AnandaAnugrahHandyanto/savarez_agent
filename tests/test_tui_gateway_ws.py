@@ -1,7 +1,28 @@
 import asyncio
+import time
 
 from tui_gateway import server
 from tui_gateway import ws as ws_mod
+
+
+def _fresh_session(**fields):
+    """Session dict seeded with the timestamps every real creation site sets.
+
+    Importing tui_gateway.server starts a module-level idle-reaper thread
+    (_start_idle_reaper) that scans _sessions every 300s and evicts sessions
+    whose transport is dead and whose created_at/last_active are older than
+    the 6h TTL. A bare seeded dict has neither key, so _session_is_evictable
+    reads them as 0.0 — "idle since the epoch" — and the session becomes
+    evictable the instant handle_ws's finally closes the transport. In any
+    pytest process that outlives the reaper's first tick (e.g. a single-
+    process full-suite run; per-file CI subprocesses exit long before 300s),
+    a tick landing in the close→assert window pops the session and the test
+    dies with KeyError. Real sessions are immune — _init_session and
+    session.create always stamp both fields with time.time() — so the test
+    must seed them too to exercise the same contract.
+    """
+    now = time.time()
+    return {"created_at": now, "last_active": now, **fields}
 
 
 def _run_disconnect(monkeypatch, seed):
@@ -61,12 +82,12 @@ def test_ws_disconnect_reaps_flagged_session_and_closes_worker(monkeypatch):
         _run_disconnect(
             monkeypatch,
             lambda t: server._sessions.update(
-                flagged={
-                    "transport": t,
-                    "close_on_disconnect": True,
-                    "slash_worker": FakeWorker(),
-                    "session_key": "k",
-                }
+                flagged=_fresh_session(
+                    transport=t,
+                    close_on_disconnect=True,
+                    slash_worker=FakeWorker(),
+                    session_key="k",
+                )
             ),
         )
         assert "flagged" not in server._sessions
@@ -81,7 +102,9 @@ def test_ws_disconnect_preserves_and_repoints_reconnectable_session(monkeypatch)
         _run_disconnect(
             monkeypatch,
             lambda t: server._sessions.update(
-                plain={"transport": t, "close_on_disconnect": False, "session_key": "k"}
+                plain=_fresh_session(
+                    transport=t, close_on_disconnect=False, session_key="k"
+                )
             ),
         )
         assert server._sessions["plain"]["transport"] is server._detached_ws_transport
