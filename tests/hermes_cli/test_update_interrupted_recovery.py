@@ -121,3 +121,98 @@ def test_recovery_keeps_marker_on_failure(tmp_path, monkeypatch):
     # Must not raise.
     m._recover_from_interrupted_install()
     assert m._update_marker_path().exists(), "marker preserved for retry on failure"
+
+
+def _stub_install_env(monkeypatch, m, seen):
+    """Common stubs so recovery's install path is inert and observable."""
+
+    class R:
+        returncode = 0
+
+    monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: R())
+    monkeypatch.setattr(m, "_is_termux_env", lambda *a, **k: False)
+    monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda: None)
+    monkeypatch.setattr(
+        m,
+        "_install_python_dependencies_with_optional_fallback",
+        lambda *a, **k: seen.__setitem__("install", True),
+    )
+
+
+def test_recovery_skips_when_lock_held(tmp_path, monkeypatch):
+    # Another process is mid-recovery (fresh lockfile) — this launch must skip
+    # the install entirely and leave both marker and lock untouched.
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    m._write_update_incomplete_marker()
+    lock = tmp_path / ".update-incomplete.lock"
+    lock.write_text("12345\n")
+
+    seen = {"install": False}
+    _stub_install_env(monkeypatch, m, seen)
+
+    m._recover_from_interrupted_install()
+
+    assert seen["install"] is False, "must not install while another holds the lock"
+    assert m._update_marker_path().exists(), "marker left for the lock holder"
+    assert lock.exists(), "fresh lock must not be broken"
+
+
+def test_recovery_breaks_stale_lock(tmp_path, monkeypatch):
+    # A lock older than an hour is from a crashed holder — it gets removed so
+    # the NEXT launch can recover (this launch still skips).
+    import os as _os
+
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    m._write_update_incomplete_marker()
+    lock = tmp_path / ".update-incomplete.lock"
+    lock.write_text("12345\n")
+    stale = m._time.time() - 7200
+    _os.utime(lock, (stale, stale))
+
+    seen = {"install": False}
+    _stub_install_env(monkeypatch, m, seen)
+
+    m._recover_from_interrupted_install()
+
+    assert not lock.exists(), "stale lock must be broken"
+    assert m._update_marker_path().exists()
+
+    # Next launch proceeds normally.
+    m._recover_from_interrupted_install()
+    assert seen["install"] is True
+    assert not m._update_marker_path().exists()
+    assert not lock.exists(), "lock released after recovery"
+
+
+def test_recovery_releases_lock_after_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    m._write_update_incomplete_marker()
+
+    seen = {"install": False}
+    _stub_install_env(monkeypatch, m, seen)
+
+    m._recover_from_interrupted_install()
+
+    assert seen["install"] is True
+    assert not (tmp_path / ".update-incomplete.lock").exists()
+
+
+def test_recovery_output_goes_to_stderr(tmp_path, monkeypatch, capfd):
+    # ACP speaks JSON-RPC on stdout — recovery output (including the streamed
+    # install, which inherits fd 1) must land on stderr only.
+    monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+    m._write_update_incomplete_marker()
+
+    seen = {"install": False}
+    _stub_install_env(monkeypatch, m, seen)
+
+    m._recover_from_interrupted_install()
+
+    out, err = capfd.readouterr()
+    assert "interrupted mid-install" not in out
+    assert "interrupted mid-install" in err
+    assert "recovered" in err
