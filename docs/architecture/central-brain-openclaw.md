@@ -683,8 +683,8 @@ Current `task.submit` with `intent="slash"` is milliseconds. With `intent="deleg
 
 `action_runtime/contract.py` `Status` is currently only used on completed results. Adding `RUNNING` means consumers of `ExecutionResult` must guard against a non-terminal status where today they assume all results are terminal. Adapters in `adapters.py` never produce `RUNNING`; the risk is that a future adapter forgets the guard. Consider whether `RUNNING` belongs on `AgentTaskRecord.status` (a separate field type) rather than in the `ExecutionResult.Status` enum. The two have different invariants: an `ExecutionResult` is always a final answer; an `AgentTaskRecord` represents live state.
 
-#### คำถามเปิด — ตัดสินแล้ว 5/6 (2026-06-10), Q3 อยู่ระหว่าง impact sweep
-## Open questions — decided 2026-06-10 (Q3 pending evidence)
+#### คำถามเปิด — ตัดสินครบ 6/6 (2026-06-10)
+## Open questions — all decided 2026-06-10
 
 ### Q1 — Registry singleton location: standalone module or folded into BrainHost?
 
@@ -710,7 +710,7 @@ R7 above: adding `RUNNING` to the contract enum changes the invariant that every
 >
 > **Lifecycle:** delegate_tool.py:1515 มี precedent record-level `"status": "running"` อยู่แล้ว; crash recovery ภายใต้ option B = flip record เป็น BLOCKED โดยไม่แตะ stored result ใดๆ; ภายใต้ option A ต้องมี terminal-only guard + write path ที่สอง + reconciliation sweep. หมายเหตุ: doc บรรทัด ~509/517/594 ร่างไว้แบบ option A — ต้อง amend เมื่อตัดสิน B.
 >
-> **ข้อเสนอตามหลักฐาน: option B** — `TaskStatus` enum แยกบน `AgentTaskRecord` (มี RUNNING), `ExecutionResult.Status` คง terminal-only; `task.status` ฝัง terminal ExecutionResult เมื่อจบ; bg_*/preview_* ต้องลงทะเบียนใน registry.
+> **ตัดสินแล้ว (2026-06-10): option B** — `TaskStatus` enum แยกบน `AgentTaskRecord` (มี RUNNING), `ExecutionResult.Status` คง terminal-only; `task.status` ฝัง terminal ExecutionResult เมื่อจบ; bg_*/preview_* ต้องลงทะเบียนใน registry. (maintainer ยืนยันตามหลักฐาน sweep ข้างบน) **Q1-Q6 ครบแล้ว — Phase 5 Step 1 เริ่มได้.** หมายเหตุ implement: ต้อง amend ร่าง option A ที่บรรทัด ~509/517/594 ให้ตรง ruling นี้ด้วย.
 
 ### Q4 — What does `intent="delegate"` return for a partially-interrupted batch?
 
