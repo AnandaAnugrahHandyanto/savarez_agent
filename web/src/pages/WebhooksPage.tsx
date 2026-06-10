@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
-import { Webhook, Plus, Trash2, X, Copy, Check } from "lucide-react";
+import { Webhook, Plus, Trash2, X, Copy, Check, RotateCw } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -88,6 +88,38 @@ export default function WebhooksPage() {
   useEffect(() => {
     loadWebhooks();
   }, [loadWebhooks]);
+
+  const [enabling, setEnabling] = useState(false);
+  const [restartNeeded, setRestartNeeded] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+
+  const handleEnablePlatform = useCallback(async () => {
+    setEnabling(true);
+    try {
+      await api.updateMessagingPlatform("webhook", { enabled: true });
+      showToast("Webhook platform enabled", "success");
+      setRestartNeeded(true);
+      loadWebhooks();
+    } catch (e) {
+      showToast(`Failed to enable: ${e}`, "error");
+    } finally {
+      setEnabling(false);
+    }
+  }, [loadWebhooks, showToast]);
+
+  const handleRestartGateway = useCallback(async () => {
+    setRestarting(true);
+    try {
+      await api.restartGateway();
+      showToast("Gateway restarting…", "success");
+      setRestartNeeded(false);
+      window.setTimeout(() => loadWebhooks(), 4000);
+    } catch (e) {
+      showToast(`Failed to restart: ${e}`, "error");
+    } finally {
+      setRestarting(false);
+    }
+  }, [loadWebhooks, showToast]);
 
   const resetForm = useCallback(() => {
     setName("");
@@ -378,13 +410,57 @@ export default function WebhooksPage() {
         <Card>
           <CardContent className="py-6 flex items-start gap-3 text-sm">
             <Webhook className="h-5 w-5 shrink-0 text-warning" />
-            <div className="flex flex-col gap-1">
-              <span className="font-medium">Webhook platform disabled</span>
-              <span className="text-muted-foreground">
-                The webhook platform must be enabled on the Channels page before
-                you can create subscriptions. Enable it there, then return to
-                this page.
-              </span>
+            <div className="flex flex-1 flex-col gap-3">
+              <div className="flex flex-col gap-1">
+                <span className="font-medium">Webhook platform disabled</span>
+                <span className="text-muted-foreground">
+                  The webhook platform must be enabled before you can create
+                  subscriptions. Enabling it requires a gateway restart before
+                  incoming events are received.
+                </span>
+              </div>
+              <div className="flex justify-start">
+                <Button
+                  className="uppercase"
+                  size="sm"
+                  onClick={handleEnablePlatform}
+                  disabled={enabling}
+                  prefix={enabling ? <Spinner /> : undefined}
+                >
+                  {enabling ? "Enabling…" : "Enable webhook platform"}
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {enabled && restartNeeded && (
+        <Card>
+          <CardContent className="py-6 flex items-start gap-3 text-sm">
+            <RotateCw className="h-5 w-5 shrink-0 text-warning" />
+            <div className="flex flex-1 flex-col gap-3">
+              <div className="flex flex-col gap-1">
+                <span className="font-medium">Restart required</span>
+                <span className="text-muted-foreground">
+                  Webhook platform enabled. Restart the gateway to start
+                  receiving incoming events. You can create subscriptions now;
+                  they take effect once the gateway is back up.
+                </span>
+              </div>
+              <div className="flex justify-start">
+                <Button
+                  className="uppercase"
+                  size="sm"
+                  onClick={handleRestartGateway}
+                  disabled={restarting}
+                  prefix={
+                    restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />
+                  }
+                >
+                  {restarting ? "Restarting…" : "Restart gateway"}
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>
