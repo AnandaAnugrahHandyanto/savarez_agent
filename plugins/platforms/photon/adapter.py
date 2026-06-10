@@ -49,7 +49,7 @@ else:
     try:
         import httpx
         HTTPX_AVAILABLE = True
-    except ImportError:  # pragma: no cover - httpx is already a Hermes dep
+    except ImportError:  # pragma: no cover - httpx is already a Savarez dep
         HTTPX_AVAILABLE = False
         httpx = None
 
@@ -231,7 +231,7 @@ class PhotonAdapter(BasePlatformAdapter):
         """Compile group-mention wake words from config/env.
 
         ``raw`` is a list (config or env JSON), a string (env var: JSON
-        list, or comma/newline-separated), or None (use Hermes defaults).
+        list, or comma/newline-separated), or None (use Savarez defaults).
         Mirrors the BlueBubbles implementation so both iMessage channels
         accept the same configuration shapes.
         """
@@ -369,7 +369,7 @@ class PhotonAdapter(BasePlatformAdapter):
         if client is None:
             return
         url = f"http://{self._sidecar_bind}:{self._sidecar_port}/inbound"
-        headers = {"X-Hermes-Sidecar-Token": self._sidecar_token}
+        headers = {"X-Savarez-Sidecar-Token": self._sidecar_token}
         backoff = 1.0
         while self._inbound_running:
             try:
@@ -593,7 +593,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 try:
                     resp = await client.post(
                         f"http://{self._sidecar_bind}:{self._sidecar_port}/healthz",
-                        headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
+                        headers={"X-Savarez-Sidecar-Token": self._sidecar_token},
                     )
                     if resp.status_code == 200:
                         return
@@ -629,7 +629,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 try:
                     await self._http_client.post(
                         f"http://{self._sidecar_bind}:{self._sidecar_port}/shutdown",
-                        headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
+                        headers={"X-Savarez-Sidecar-Token": self._sidecar_token},
                         timeout=2.0,
                     )
                 except Exception:
@@ -880,7 +880,7 @@ class PhotonAdapter(BasePlatformAdapter):
         to a plain audio attachment on platforms without voice notes),
         otherwise ``"attachment"``. spectrum-ts infers ``name`` and
         ``mimeType`` from the file extension; we only pass overrides when
-        Hermes supplied them.
+        Savarez supplied them.
         """
         # Defense-in-depth: re-validate the path before handing it to the
         # Node sidecar. The gateway already filters MEDIA paths, but
@@ -918,7 +918,7 @@ class PhotonAdapter(BasePlatformAdapter):
         resp = await self._http_client.post(
             f"http://{self._sidecar_bind}:{self._sidecar_port}{path}",
             json=body,
-            headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
+            headers={"X-Savarez-Sidecar-Token": self._sidecar_token},
             timeout=30.0,
         )
         if resp.status_code != 200:
@@ -1056,7 +1056,7 @@ async def _standalone_send(
             )
         }
     base = f"http://{_DEFAULT_SIDECAR_BIND}:{port}"
-    headers = {"X-Hermes-Sidecar-Token": token}
+    headers = {"X-Savarez-Sidecar-Token": token}
     last_message_id: Optional[str] = None
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1111,7 +1111,7 @@ async def _standalone_send(
 # Plugin entry point
 
 def register(ctx) -> None:
-    """Called by the Hermes plugin loader at startup."""
+    """Called by the Savarez plugin loader at startup."""
     # Local import to avoid argparse work at module load; reused for both the
     # gateway-setup hook and the `hermes photon` CLI command below.
     from . import cli as _cli

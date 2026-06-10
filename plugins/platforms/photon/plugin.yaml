@@ -63,7 +63,7 @@ optional_env:
     prompt: "Require a mention in group chats?"
     password: false
   - name: PHOTON_MENTION_PATTERNS
-    description: "Mention wake-word regexes for group chats (JSON list or comma/newline-separated; defaults to Hermes wake words)"
+    description: "Mention wake-word regexes for group chats (JSON list or comma/newline-separated; defaults to Savarez wake words)"
     prompt: "Group mention patterns"
     password: false
   - name: PHOTON_HOME_CHANNEL

@@ -13,7 +13,7 @@ recommend for everyone who doesn't already pay for a dedicated number.
 Like Discord and Slack, Photon is a **persistent-connection** channel — no
 public URL, no webhook, no signing secret. The `spectrum-ts` SDK holds a
 long-lived **gRPC stream** to Photon for both directions. Because the SDK is
-TypeScript-only, Hermes runs it inside a small supervised Node sidecar and
+TypeScript-only, Savarez runs it inside a small supervised Node sidecar and
 talks to it over loopback.
 
 ```
@@ -36,7 +36,7 @@ talks to it over loopback.
   a `MessageEvent` to the gateway. It reconnects automatically if the stream
   drops; the sidecar owns the gRPC reconnect to Photon.
 - **Outbound**: `send` / `send_typing` are loopback POSTs to the sidecar,
-  authenticated with a shared `X-Hermes-Sidecar-Token`.
+  authenticated with a shared `X-Savarez-Sidecar-Token`.
 
 ## First-time setup
 
@@ -61,7 +61,7 @@ hermes gateway start --platform photon
    agent.
 6. **Install the sidecar deps** (`spectrum-ts`).
 
-There is no separate `login` command; like every other Hermes channel,
+There is no separate `login` command; like every other Savarez channel,
 onboarding goes through one setup surface. Re-running `setup` reuses an
 existing token/project, so it's safe to run again to finish a partial setup.
 Run `hermes photon status` to see what's configured.

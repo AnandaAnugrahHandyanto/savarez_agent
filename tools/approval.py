@@ -548,7 +548,7 @@ def _normalize_command_for_detection(command: str) -> str:
     # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
     command = re.sub(r"''|\"\"", '', command)
     # Fold the resolved absolute active-profile home path into the canonical
-    # ~/.hermes/ form so the Hermes config/env patterns catch it. In Docker and
+    # ~/.hermes/ form so the Savarez config/env patterns catch it. In Docker and
     # gateway deployments the agent often references the resolved absolute path
     # directly (e.g. `sed -i ... /home/hermes/.hermes/config.yaml`) rather than
     # ~, $HOME, or $HERMES_HOME. Done at detection time (not via an import-time
@@ -559,7 +559,7 @@ def _normalize_command_for_detection(command: str) -> str:
 
 
 def _rewrite_resolved_hermes_home(command: str) -> str:
-    """Rewrite the resolved absolute Hermes home prefix to ``~/.hermes/``.
+    """Rewrite the resolved absolute Savarez home prefix to ``~/.hermes/``.
 
     Resolves the active ``HERMES_HOME`` at call time (and its symlink-resolved
     form) and replaces an occurrence of ``<home>/`` in *command* with

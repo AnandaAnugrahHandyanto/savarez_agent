@@ -2,9 +2,9 @@
   <img src="assets/banner.png" alt="Savarez AI Agent" width="100%">
 </p>
 
-# Hermes Agent ☤
+# Savarez Agent ☤
 <p align="center">
-  <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>
+  <a href="https://hermes-agent.nousresearch.com/">Savarez Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Savarez Desktop</a>
 </p>
 <p align="center">
   <a href="https://savarez-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-savarez--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
