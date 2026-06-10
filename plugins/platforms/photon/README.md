@@ -131,7 +131,10 @@ All env vars are documented in `plugin.yaml`. The most important:
   documents are sent via `space.send(attachment(...))` /
   `space.send(voice(...))` through the sidecar's `/send-attachment`
   endpoint; a caption is delivered as a separate text bubble after the media.
-- **Reactions, message effects, polls** — supported by `spectrum-ts` but not
-  yet exposed; the sidecar is the natural place to add them.
+- **Message effects are supported.** Text can be sent with native iMessage
+  bubble/screen effects through `spectrum-ts`' iMessage `effect(...)` builder
+  via the sidecar's `/send-effect` endpoint.
+- **Reactions and polls** — supported by `spectrum-ts` but not yet exposed; the
+  sidecar is the natural place to add them.
 
 [photon]: https://photon.codes/
