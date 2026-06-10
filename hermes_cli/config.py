@@ -2127,7 +2127,7 @@ DEFAULT_CONFIG = {
             "key_source": "keyring",
             # .env, auth.json, and the OAuth token files.
             "encrypt_credentials": True,
-            # state.db and kanban.db via SQLCipher (needs sqlcipher3-binary).
+            # state.db and kanban.db via SQLCipher (needs sqlcipher3-wheels).
             "encrypt_databases": False,
             # Encrypt rotated log segments (the live log stays redacted plaintext).
             "encrypt_logs": False,

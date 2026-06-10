@@ -136,10 +136,19 @@ _signal_handler_lock = threading.Lock()
 
 
 def clear_broker_config_cache() -> None:
-    """Drop cached broker config so the next check re-reads config.yaml."""
+    """Drop cached broker config so the next check re-reads config.yaml.
+
+    Deliberately lock-free: this runs inside the SIGHUP handler, which CPython
+    executes on the main thread between bytecodes. If the main thread is
+    inside ``broker_enabled()`` holding ``_broker_config_cache_lock`` (a
+    non-reentrant lock) when the signal lands, acquiring the lock here would
+    deadlock the process. A bare global assignment is atomic under the GIL;
+    the worst-case race is a concurrent ``broker_enabled()`` overwriting the
+    invalidation with a just-computed value, which an operator can resolve by
+    sending SIGHUP again — strictly better than a deadlock.
+    """
     global _broker_enabled_cache
-    with _broker_config_cache_lock:
-        _broker_enabled_cache = None
+    _broker_enabled_cache = None
 
 
 def install_broker_signal_handler() -> bool:

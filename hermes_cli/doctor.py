@@ -1227,8 +1227,14 @@ def run_doctor(args):
     state_db_path = hermes_home / "state.db"
     if state_db_path.exists():
         try:
-            import sqlite3
-            conn = sqlite3.connect(str(state_db_path))
+            # hermes_state rebinds sqlite3 to the keyed sqlcipher3 module when
+            # database encryption is on; _apply_db_key is a no-op otherwise.
+            # A plain sqlite3.connect here would misreport a healthy encrypted
+            # state.db as "has issues: file is not a database".
+            from hermes_state import _apply_db_key
+            from hermes_state import sqlite3 as _state_sqlite3
+            conn = _state_sqlite3.connect(str(state_db_path))
+            _apply_db_key(conn)
             cursor = conn.execute("SELECT COUNT(*) FROM sessions")
             count = cursor.fetchone()[0]
             conn.close()
@@ -1295,8 +1301,10 @@ def run_doctor(args):
                     "(may indicate missed checkpoints)"
                 )
                 if should_fix:
-                    import sqlite3
-                    conn = sqlite3.connect(str(state_db_path))
+                    from hermes_state import _apply_db_key
+                    from hermes_state import sqlite3 as _state_sqlite3
+                    conn = _state_sqlite3.connect(str(state_db_path))
+                    _apply_db_key(conn)
                     conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
                     conn.close()
                     new_size = wal_path.stat().st_size if wal_path.exists() else 0

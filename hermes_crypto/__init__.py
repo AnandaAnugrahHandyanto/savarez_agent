@@ -66,6 +66,31 @@ __all__ = [
 
 PASSPHRASE_ENV_VAR = "HERMES_ENCRYPTION_PASSPHRASE"
 
+# In-memory home for the passphrase once it has been moved out of
+# ``os.environ`` — see :func:`stash_passphrase_from_env`.
+_stashed_passphrase: "str | None" = None
+
+
+def stash_passphrase_from_env() -> None:
+    """Move ``HERMES_ENCRYPTION_PASSPHRASE`` out of ``os.environ`` into memory.
+
+    Called from ``load_hermes_dotenv()`` at process startup. Subprocesses are
+    spawned from many places (terminal tool, LSP clients, media probes,
+    platform scripts) and not every spawn site scrubs its child environment —
+    moving the passphrase out of ``os.environ`` before any of them can run
+    makes "the passphrase never reaches a child process" true by
+    construction rather than by enumerating spawn sites. The explicit
+    scrub lists in ``tools/environments/local.py`` and
+    ``tools/code_execution_tool.py`` stay as defense-in-depth for the case
+    where the variable is re-set later in the process lifetime.
+
+    Idempotent and cheap: a no-op when the variable is absent.
+    """
+    global _stashed_passphrase
+    value = os.environ.pop(PASSPHRASE_ENV_VAR, None)
+    if value:
+        _stashed_passphrase = value
+
 
 # ─── Config gating ────────────────────────────────────────────────────────────
 
@@ -163,22 +188,28 @@ def get_data_key() -> bytes:
         return keystore.unlock()
 
     if source == "passphrase":
-        # Layer 1 (parent process): pop after unlock so the passphrase does not
-        # linger in os.environ for later in-process reads. Layer 2 (upstream
-        # subprocess scrub in tools/environments/local.py and
-        # tools/code_execution_tool.py): strip HERMES_ENCRYPTION_PASSPHRASE
-        # unconditionally from every spawned shell/code-exec env — belt-and-
-        # suspenders if the var is re-set or this pop did not run. Both layers
-        # are intentional; do not remove either.
+        # Layer 1 (parent process): the passphrase was moved out of
+        # os.environ into _stashed_passphrase by stash_passphrase_from_env()
+        # at startup, so no child process can inherit it. The os.environ read
+        # below remains for direct API users who set the variable after
+        # startup; it is popped after a successful unlock so it does not
+        # linger. Layer 2 (subprocess scrub in tools/environments/local.py
+        # and tools/code_execution_tool.py): strip
+        # HERMES_ENCRYPTION_PASSPHRASE unconditionally from every spawned
+        # shell/code-exec env — belt-and-suspenders if the var is re-set
+        # later. All layers are intentional; do not remove any.
         #
-        # read first, pop only on successful unlock so a
-        # wrong-passphrase failure surfaces cleanly (caller can retry) instead
-        # of consuming the env var and falling through to the TTY / LockedError
-        # path on the next call. Layer 2 still strips it from every spawned
-        # subprocess regardless.
-        passphrase = os.environ.get(PASSPHRASE_ENV_VAR)
+        # The stash/env value is kept on a failed unlock so a
+        # wrong-passphrase failure surfaces cleanly (caller can retry)
+        # instead of falling through to the TTY / LockedError path on the
+        # next call.
+        global _stashed_passphrase
+        passphrase = _stashed_passphrase or os.environ.get(PASSPHRASE_ENV_VAR)
         if passphrase:
-            dek = keystore.unlock(passphrase=passphrase)  # may raise; var stays
+            dek = keystore.unlock(passphrase=passphrase)  # may raise; value stays
+            # Keep the proven passphrase in the stash (not os.environ) so a
+            # later explicit lock()/unlock cycle still works headlessly.
+            _stashed_passphrase = passphrase
             os.environ.pop(PASSPHRASE_ENV_VAR, None)
             return dek
         if sys.stdin is not None and sys.stdin.isatty():

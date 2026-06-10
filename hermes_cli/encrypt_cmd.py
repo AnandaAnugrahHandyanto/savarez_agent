@@ -117,7 +117,11 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
     recovery.set_defaults(func=cmd_add_recovery)
 
     unlock = sub.add_parser(
-        "unlock", help="Verify the passphrase / key can unlock the keystore"
+        "unlock",
+        help=(
+            "Verify the passphrase / key can unlock the keystore "
+            "(headless: set HERMES_ENCRYPTION_PASSPHRASE)"
+        ),
     )
     unlock.set_defaults(func=cmd_unlock)
 
@@ -209,8 +213,48 @@ def _argon2_params() -> dict:
     return {}
 
 
+def _no_passphrase_available(console: "Console", what: str = "the passphrase") -> None:
+    """Explain why we cannot collect a passphrase in this environment."""
+    env = _passphrase_env()
+    console.print(
+        f"[red]stdin is not a TTY and {env} is not set — cannot prompt for "
+        f"{what}.[/red]\n"
+        f"  Set [cyan]{env}[/cyan] or run this command in an interactive "
+        "terminal."
+    )
+
+
+def _read_current_passphrase(
+    console: "Console", prompt: str = "  Encryption passphrase: "
+) -> "str | None":
+    """Collect the CURRENT keystore passphrase without ever blocking.
+
+    Resolution order mirrors ``hermes_crypto.get_data_key``: the
+    ``HERMES_ENCRYPTION_PASSPHRASE`` environment variable (headless / CI)
+    first, then an interactive ``getpass`` prompt when stdin is a TTY.
+    Returns ``None`` — after printing an actionable error — when neither is
+    available, so callers exit cleanly instead of ``getpass`` hanging
+    forever on a piped or closed stdin.
+    """
+    env_pw = os.environ.get(_passphrase_env())
+    if env_pw:
+        return env_pw
+    if sys.stdin is not None and sys.stdin.isatty():
+        return getpass.getpass(prompt) or None
+    _no_passphrase_available(console)
+    return None
+
+
 def _prompt_new_passphrase(console: "Console") -> "str | None":
-    """Prompt for a passphrase twice and return it, or None if they mismatch."""
+    """Collect a NEW passphrase: prompt twice on a TTY, env var when headless."""
+    if sys.stdin is None or not sys.stdin.isatty():
+        # Headless enable/rotate (CI, Docker build): accept the new passphrase
+        # from the environment — there is nobody to type the confirmation.
+        env_pw = os.environ.get(_passphrase_env())
+        if env_pw:
+            return env_pw
+        _no_passphrase_available(console, what="a new passphrase")
+        return None
     first = getpass.getpass("  New encryption passphrase: ")
     if not first:
         console.print("  [red]Empty passphrase — aborting.[/red]")
@@ -403,6 +447,18 @@ def cmd_enable(args: argparse.Namespace) -> int:
     from hermes_crypto import keystore, migrate
 
     if keystore.keystore_exists():
+        from hermes_crypto import is_encryption_enabled
+
+        if not is_encryption_enabled():
+            # The enabled flag is flipped last by migrate.enable(), so a
+            # keystore without it means a previous enable was interrupted.
+            console.print(
+                "[yellow]A keystore exists but encryption is not enabled in "
+                "config — a previous enable was likely interrupted.[/yellow]\n"
+                "  Run [cyan]hermes encrypt disable[/cyan] to roll back to "
+                "plaintext, then re-run [cyan]hermes encrypt enable[/cyan]."
+            )
+            return 1
         console.print(
             "[yellow]A keystore already exists — encryption appears enabled.[/yellow]\n"
             "  Use [cyan]hermes encrypt status[/cyan] or [cyan]rotate-key[/cyan]."
@@ -549,20 +605,25 @@ def cmd_disable(args: argparse.Namespace) -> int:
     has_recovery = keystore.has_recovery_slot()
 
     if source == "passphrase":
-        if has_recovery:
-            console.print(
-                "  Enter the encryption passphrase, "
-                "or leave it empty to use a recovery code."
-            )
-        passphrase = getpass.getpass("  Encryption passphrase: ") or None
-        if passphrase is None:
+        # Env var first (headless), then the interactive prompt; never let
+        # getpass block on a non-TTY stdin.
+        passphrase = os.environ.get(_passphrase_env()) or None
+        if passphrase is None and sys.stdin is not None and sys.stdin.isatty():
             if has_recovery:
-                recovery = getpass.getpass("  Recovery code: ").strip() or None
-            if recovery is None:
                 console.print(
-                    "[red]No passphrase or recovery code provided — cannot disable.[/red]"
+                    "  Enter the encryption passphrase, "
+                    "or leave it empty to use a recovery code."
                 )
-                return 1
+            passphrase = getpass.getpass("  Encryption passphrase: ") or None
+            if passphrase is None and has_recovery:
+                recovery = getpass.getpass("  Recovery code: ").strip() or None
+        if passphrase is None and recovery is None:
+            if sys.stdin is None or not sys.stdin.isatty():
+                _no_passphrase_available(console)
+            console.print(
+                "[red]No passphrase or recovery code provided — cannot disable.[/red]"
+            )
+            return 1
     elif source in {"keyring", "keyfile"} and has_recovery:
         # Try the configured slot first; on failure, fall back to recovery.
         # keystore.unlock() populates the process-lifetime DEK cache
@@ -574,7 +635,13 @@ def cmd_disable(args: argparse.Namespace) -> int:
                 f"  [yellow]Could not unlock via {source} "
                 f"({type(exc).__name__}). Falling back to recovery code.[/yellow]"
             )
-            recovery = getpass.getpass("  Recovery code: ").strip() or None
+            if sys.stdin is not None and sys.stdin.isatty():
+                recovery = getpass.getpass("  Recovery code: ").strip() or None
+            else:
+                console.print(
+                    "[red]stdin is not a TTY — cannot prompt for the recovery "
+                    "code. Run this command in an interactive terminal.[/red]"
+                )
             if recovery is None:
                 console.print(
                     "[red]No recovery code provided — cannot disable.[/red]"
@@ -829,7 +896,11 @@ def cmd_rotate_key(args: argparse.Namespace) -> int:
     current_passphrase: str | None = None
     try:
         if current == "passphrase":
-            current_passphrase = getpass.getpass("  Current passphrase: ")
+            current_passphrase = _read_current_passphrase(
+                console, prompt="  Current passphrase: "
+            )
+            if current_passphrase is None:
+                return 1
             keystore.unlock(passphrase=current_passphrase)
         else:
             keystore.unlock()
@@ -944,7 +1015,10 @@ def cmd_add_recovery(args: argparse.Namespace) -> int:
     source = keystore.primary_slot_type()
     try:
         if source == "passphrase":
-            keystore.unlock(passphrase=getpass.getpass("  Encryption passphrase: "))
+            passphrase = _read_current_passphrase(console)
+            if passphrase is None:
+                return 1
+            keystore.unlock(passphrase=passphrase)
         else:
             keystore.unlock()
     except Exception as exc:  # noqa: BLE001
@@ -979,7 +1053,10 @@ def cmd_unlock(args: argparse.Namespace) -> int:
     source = keystore.primary_slot_type()
     try:
         if source == "passphrase":
-            keystore.unlock(passphrase=getpass.getpass("  Encryption passphrase: "))
+            passphrase = _read_current_passphrase(console)
+            if passphrase is None:
+                return 1
+            keystore.unlock(passphrase=passphrase)
         else:
             keystore.unlock()
     except Exception as exc:  # noqa: BLE001

@@ -228,8 +228,11 @@ def _shape_scrub_enabled() -> bool:
 
 def _should_strip_env_key(key: str, is_passthrough) -> bool:
     """Return True when *key* must be removed from a subprocess environment."""
-    if key in _ALWAYS_STRIP_ENV:
-        return True  # unconditional — not overridable by passthrough
+    if key.upper() in _ALWAYS_STRIP_ENV:
+        # Case-insensitive to match code_execution_tool — Windows env-var
+        # names are case-insensitive. Unconditional; passthrough cannot
+        # resurrect these.
+        return True
     if is_passthrough(key):
         return False
     if key in _HERMES_PROVIDER_ENV_BLOCKLIST:

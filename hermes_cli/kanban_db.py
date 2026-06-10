@@ -105,6 +105,14 @@ try:
         import sqlcipher3.dbapi2 as sqlite3  # noqa: F811 — keyed-DB drop-in
 
         _DB_ENCRYPTED = True
+except ImportError:
+    # sqlcipher3 missing while encryption is on — surface the cause instead
+    # of failing later with an opaque "file is not a database" (mirrors
+    # hermes_state).
+    _log.warning(
+        "Database encryption is enabled but the 'sqlcipher3' module is not "
+        "installed — run: pip install 'hermes-agent[encryption]'"
+    )
 except Exception:  # noqa: BLE001 — never let this break import of the DB layer
     pass
 

@@ -87,3 +87,49 @@ def test_disable_then_read_returns_plaintext():
     assert not detect.is_encrypted(env_path.read_bytes())
     config.invalidate_env_cache()
     assert config.load_env()["TOKEN_KEY"] == "abc123"
+
+
+def test_stash_passphrase_removes_env_var_and_still_unlocks(monkeypatch):
+    """The startup stash moves the passphrase out of os.environ (so no child
+    process can inherit it) while get_data_key() keeps unlocking from the
+    in-memory copy."""
+    import os
+
+    import hermes_crypto
+    from hermes_crypto import keystore
+
+    env_path = get_hermes_home() / ".env"
+    env_path.write_text("OPENAI_API_KEY=sk-stash\n", encoding="utf-8")
+    migrate.enable("passphrase", passphrase="pw", argon2_params=FAST_ARGON2)
+    keystore.lock()
+
+    monkeypatch.setenv("HERMES_ENCRYPTION_PASSPHRASE", "pw")
+    hermes_crypto.stash_passphrase_from_env()
+
+    assert "HERMES_ENCRYPTION_PASSPHRASE" not in os.environ
+    assert hermes_crypto.get_data_key()  # unlocks from the stash
+
+    # A later explicit lock()/get_data_key() cycle still works headlessly.
+    keystore.lock()
+    assert hermes_crypto.get_data_key()
+
+
+def test_env_var_unlock_survives_relock(monkeypatch):
+    """Direct env-var unlock (no startup stash) keeps the proven passphrase
+    in memory so a re-lock does not strand a headless process."""
+    import os
+
+    import hermes_crypto
+    from hermes_crypto import keystore
+
+    env_path = get_hermes_home() / ".env"
+    env_path.write_text("OPENAI_API_KEY=sk-relock\n", encoding="utf-8")
+    migrate.enable("passphrase", passphrase="pw", argon2_params=FAST_ARGON2)
+    keystore.lock()
+
+    monkeypatch.setenv("HERMES_ENCRYPTION_PASSPHRASE", "pw")
+    assert hermes_crypto.get_data_key()
+    assert "HERMES_ENCRYPTION_PASSPHRASE" not in os.environ
+
+    keystore.lock()
+    assert hermes_crypto.get_data_key()

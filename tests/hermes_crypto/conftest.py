@@ -63,10 +63,13 @@ def _in_memory_keyring():
 @pytest.fixture(autouse=True)
 def _clear_dek_cache():
     """Drop any cached data-encryption key before and after each test."""
+    import hermes_crypto
     from hermes_crypto import keystore
 
     keystore.lock()
+    hermes_crypto._stashed_passphrase = None
     try:
         yield
     finally:
         keystore.lock()
+        hermes_crypto._stashed_passphrase = None

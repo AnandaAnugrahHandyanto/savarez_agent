@@ -69,6 +69,11 @@ def decrypt(envelope: bytes, dek: bytes) -> bytes:
     """
     if not envelope.startswith(MAGIC):
         raise DecryptionError("not a hermes_crypto envelope (bad magic)")
+    if len(envelope) <= len(_HEADER) + NONCE_LEN:
+        # Too short to even hold the header + nonce — catch this before the
+        # version-byte read below so a magic-only blob raises DecryptionError,
+        # not IndexError.
+        raise DecryptionError("truncated envelope")
     version = envelope[len(MAGIC)]
     if version != VERSION:
         raise DecryptionError(f"unsupported envelope version {version}")

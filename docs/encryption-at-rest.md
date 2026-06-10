@@ -99,13 +99,15 @@ encryption — `hermes encrypt status` reports how many remain.
 On headless hosts, export `HERMES_ENCRYPTION_PASSPHRASE` before starting
 Hermes. Two independent protections apply — both on purpose:
 
-1. **Parent process** — `get_data_key()` removes the variable from
-   `os.environ` as soon as the keystore unlocks, so the passphrase does not
-   linger for later in-process reads.
+1. **Parent process** — at startup the variable is moved out of
+   `os.environ` into process memory before anything can spawn a subprocess,
+   so no child process — terminal commands, LSP servers, media probes,
+   platform scripts — can inherit it. The keystore keeps unlocking from the
+   in-memory copy.
 2. **Subprocesses** — every spawned shell and code-execution environment
-   strips `HERMES_ENCRYPTION_PASSPHRASE` unconditionally (even when other
-   credential scrubbing is off), in case the variable was re-set or unlock
-   happened another way.
+   additionally strips `HERMES_ENCRYPTION_PASSPHRASE` unconditionally (even
+   when other credential scrubbing is off), in case the variable was re-set
+   later in the process lifetime.
 
 Neither layer alone covers every path; keeping both is deliberate.
 
@@ -165,3 +167,7 @@ security:
 - Checkpoint snapshots (`~/.hermes/checkpoints/`) are a live git repository and
   are **not** encrypted by this feature; use full-disk encryption if those are
   a concern.
+- Plugin-managed databases (for example the memory plugins'
+  `memory_store.db` / `retaindb_queue.db`) open their own SQLite connections
+  and are **not** covered by `encrypt_databases` in this iteration — only
+  `state.db` and `kanban.db` are.

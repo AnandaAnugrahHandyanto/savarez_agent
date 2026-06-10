@@ -91,6 +91,26 @@ def test_truncated_envelope_fails():
         envelope.decrypt(blob[:10], dek)
 
 
+@pytest.mark.parametrize("length", [7, 8, 9, 19, 20])
+def test_magic_only_and_header_only_envelopes_fail_cleanly(length):
+    # A blob cut anywhere inside the header/nonce must raise DecryptionError,
+    # never IndexError — a 7-byte magic-only file previously hit the
+    # version-byte read out of bounds.
+    dek = _dek()
+    blob = envelope.encrypt(b"secret", dek)
+    with pytest.raises(DecryptionError):
+        envelope.decrypt(blob[:length], dek)
+
+
+def test_env_framed_magic_only_envelope_fails_cleanly():
+    import base64
+
+    body = base64.b64encode(b"HRMSENC").decode("ascii")
+    framed = f"{detect.ENV_MARKER}\n{body}\n".encode("ascii")
+    with pytest.raises(DecryptionError):
+        envelope.decrypt_env(framed, _dek())
+
+
 def test_decrypt_rejects_non_envelope():
     with pytest.raises(DecryptionError):
         envelope.decrypt(b"just some plaintext bytes", _dek())

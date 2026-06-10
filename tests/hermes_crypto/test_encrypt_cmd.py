@@ -100,6 +100,7 @@ def test_rotate_key_full_proceeds_with_yes(monkeypatch):
 
     monkeypatch.setattr(encrypt_cmd, "_ensure_deps", lambda *_a, **_k: True)
     monkeypatch.setattr("hermes_crypto.migrate.full_rekey", _stub_full_rekey)
+    monkeypatch.setattr(encrypt_cmd.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(encrypt_cmd.getpass, "getpass", lambda *_a, **_k: "pw")
 
     rc = encrypt_cmd.cmd_rotate_key(_full_rotate_args(yes=True))
@@ -255,6 +256,7 @@ def test_rotate_key_full_key_source_succeeds_with_valid_new_passphrase(monkeypat
     # Keyring mode: no current-passphrase prompt. _prompt_new_passphrase
     # asks twice (matched).
     answers = iter(["brand-new-pw", "brand-new-pw"])
+    monkeypatch.setattr(encrypt_cmd.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(
         encrypt_cmd.getpass, "getpass", lambda *_a, **_kw: next(answers)
     )
@@ -351,6 +353,7 @@ def test_rotate_key_full_key_source_end_to_end_keyring_to_passphrase(
     # Keyring mode means no current-passphrase prompt; getpass is only invoked
     # twice for the new passphrase (matched).
     answers = iter(["e2e-new-pw", "e2e-new-pw"])
+    monkeypatch.setattr(encrypt_cmd.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(
         encrypt_cmd.getpass, "getpass", lambda *_a, **_kw: next(answers)
     )
@@ -402,6 +405,7 @@ def test_rotate_key_full_panel_prints_even_with_yes(monkeypatch, capsys):
 
     monkeypatch.setattr(encrypt_cmd, "_ensure_deps", lambda *_a, **_k: True)
     monkeypatch.setattr("hermes_crypto.migrate.full_rekey", _stub_full_rekey)
+    monkeypatch.setattr(encrypt_cmd.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(encrypt_cmd.getpass, "getpass", lambda *_a, **_kw: "pw")
 
     rc = encrypt_cmd.cmd_rotate_key(_full_rotate_args(yes=True))
@@ -421,6 +425,7 @@ def test_rotate_key_full_surfaces_backups_removed(monkeypatch, capsys):
     _seed_and_enable()
     monkeypatch.setattr(encrypt_cmd, "_ensure_deps", lambda *_a, **_k: True)
     # No new key source — full re-key only. getpass returns the current pw.
+    monkeypatch.setattr(encrypt_cmd.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(encrypt_cmd.getpass, "getpass", lambda *_a, **_kw: "pw")
 
     rc = encrypt_cmd.cmd_rotate_key(_full_rotate_args(yes=True))
@@ -467,6 +472,7 @@ def test_cmd_disable_accepts_recovery_code_in_passphrase_mode(monkeypatch):
     monkeypatch.setattr(encrypt_cmd, "_ensure_deps", lambda *_a, **_k: True)
     monkeypatch.setattr("hermes_crypto.migrate.disable", _stub_disable)
     answers = iter(["", "RECOVERY-CODE-ABCD-1234"])
+    monkeypatch.setattr(encrypt_cmd.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(
         encrypt_cmd.getpass, "getpass", lambda *_a, **_kw: next(answers)
     )
@@ -491,6 +497,7 @@ def test_cmd_disable_passphrase_path_unchanged(monkeypatch):
 
     monkeypatch.setattr(encrypt_cmd, "_ensure_deps", lambda *_a, **_k: True)
     monkeypatch.setattr("hermes_crypto.migrate.disable", _stub_disable)
+    monkeypatch.setattr(encrypt_cmd.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(
         encrypt_cmd.getpass, "getpass", lambda *_a, **_kw: "correct horse"
     )
@@ -549,6 +556,7 @@ def test_cmd_disable_keyring_fallback_to_recovery(monkeypatch):
     )
     monkeypatch.setattr("hermes_crypto.keystore.has_recovery_slot", lambda: True)
     monkeypatch.setattr("hermes_crypto.keystore.unlock", _broken_unlock)
+    monkeypatch.setattr(encrypt_cmd.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(
         encrypt_cmd.getpass, "getpass", lambda *_a, **_kw: "RECOVERY-FROM-KEYRING"
     )
@@ -613,6 +621,7 @@ def test_prepare_new_key_source_passphrase_to_passphrase_prompts_for_new(monkeyp
         prompts.append(prompt)
         return "new-pw"
 
+    monkeypatch.setattr(encrypt_cmd.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(encrypt_cmd.getpass, "getpass", _fake_getpass)
 
     console = Console()
@@ -674,3 +683,90 @@ def test_prepare_new_key_source_no_key_source_arg_short_circuits(monkeypatch):
 
     assert ok is True
     assert new_passphrase is None
+
+
+# ---------------------------------------------------------------------------
+# Non-TTY behavior: commands must never block on getpass when stdin is not a
+# terminal — they either read HERMES_ENCRYPTION_PASSPHRASE or fail fast with
+# an actionable error.
+# ---------------------------------------------------------------------------
+
+
+def _fail_getpass(*_a, **_k):
+    raise AssertionError("getpass must never run when stdin is not a TTY")
+
+
+def test_cmd_unlock_non_tty_without_env_fails_fast(monkeypatch):
+    from hermes_cli import encrypt_cmd
+
+    _seed_and_enable()
+    keystore.lock()  # drop the cached DEK so unlock really runs
+    monkeypatch.setattr(encrypt_cmd, "_ensure_deps", lambda *_a, **_k: True)
+    monkeypatch.setattr(encrypt_cmd.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(encrypt_cmd.getpass, "getpass", _fail_getpass)
+    monkeypatch.delenv("HERMES_ENCRYPTION_PASSPHRASE", raising=False)
+
+    assert encrypt_cmd.cmd_unlock(Namespace()) == 1
+
+
+def test_cmd_unlock_non_tty_uses_env_passphrase(monkeypatch):
+    from hermes_cli import encrypt_cmd
+
+    _seed_and_enable()
+    keystore.lock()  # drop the cached DEK so unlock really runs
+    monkeypatch.setattr(encrypt_cmd, "_ensure_deps", lambda *_a, **_k: True)
+    monkeypatch.setattr(encrypt_cmd.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(encrypt_cmd.getpass, "getpass", _fail_getpass)
+    monkeypatch.setenv("HERMES_ENCRYPTION_PASSPHRASE", "pw")
+
+    assert encrypt_cmd.cmd_unlock(Namespace()) == 0
+
+
+def test_cmd_disable_non_tty_uses_env_passphrase(monkeypatch):
+    from hermes_cli import encrypt_cmd
+
+    _seed_and_enable()
+    keystore.lock()  # drop the cached DEK so unlock really runs
+    captured: dict = {}
+
+    def _stub_disable(*, passphrase, recovery_code, **_kw):
+        captured["passphrase"] = passphrase
+        captured["recovery_code"] = recovery_code
+
+    monkeypatch.setattr(encrypt_cmd, "_ensure_deps", lambda *_a, **_k: True)
+    monkeypatch.setattr("hermes_crypto.migrate.disable", _stub_disable)
+    monkeypatch.setattr(encrypt_cmd.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(encrypt_cmd.getpass, "getpass", _fail_getpass)
+    monkeypatch.setenv("HERMES_ENCRYPTION_PASSPHRASE", "pw")
+
+    assert encrypt_cmd.cmd_disable(_disable_args()) == 0
+    assert captured["passphrase"] == "pw"
+    assert captured["recovery_code"] is None
+
+
+def test_cmd_rotate_key_non_tty_without_env_fails_fast(monkeypatch):
+    from hermes_cli import encrypt_cmd
+
+    _seed_and_enable()
+    keystore.lock()  # drop the cached DEK so unlock really runs
+    monkeypatch.setattr(encrypt_cmd, "_ensure_deps", lambda *_a, **_k: True)
+    monkeypatch.setattr(encrypt_cmd.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(encrypt_cmd.getpass, "getpass", _fail_getpass)
+    monkeypatch.delenv("HERMES_ENCRYPTION_PASSPHRASE", raising=False)
+
+    rc = encrypt_cmd.cmd_rotate_key(_full_rotate_args(yes=True))
+
+    assert rc == 1
+
+
+def test_cmd_add_recovery_non_tty_without_env_fails_fast(monkeypatch):
+    from hermes_cli import encrypt_cmd
+
+    _seed_and_enable()
+    keystore.lock()  # drop the cached DEK so unlock really runs
+    monkeypatch.setattr(encrypt_cmd, "_ensure_deps", lambda *_a, **_k: True)
+    monkeypatch.setattr(encrypt_cmd.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(encrypt_cmd.getpass, "getpass", _fail_getpass)
+    monkeypatch.delenv("HERMES_ENCRYPTION_PASSPHRASE", raising=False)
+
+    assert encrypt_cmd.cmd_add_recovery(Namespace()) == 1

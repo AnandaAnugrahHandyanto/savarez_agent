@@ -223,8 +223,13 @@ def _unlink_tmp(path: Path) -> None:
 
 
 def _drop_sidecars(path: Path) -> None:
-    """Remove stale WAL/SHM sidecar files after a whole-database conversion."""
-    for suffix in ("-wal", "-shm"):
+    """Remove stale sidecar files after a whole-database conversion.
+
+    The WAL and rollback-journal sidecars hold raw page images from before
+    the conversion — after encrypting, a stale plaintext ``-wal``/``-journal``
+    would leak exactly the data the conversion was meant to protect.
+    """
+    for suffix in ("-wal", "-shm", "-journal"):
         sidecar = path.with_name(path.name + suffix)
         try:
             sidecar.unlink(missing_ok=True)

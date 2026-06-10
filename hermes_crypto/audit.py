@@ -176,6 +176,18 @@ def _maybe_rotate(path: Path) -> None:
         except FileExistsError:
             return
         os.close(fd)
+        # Best-effort directory fsync so the rename chain above is durable —
+        # a crash right after rotation must not lose the archived segments.
+        # Opening a directory fails on Windows; the renames still land.
+        try:
+            dir_fd = os.open(str(path.parent), os.O_RDONLY)
+        except OSError:
+            dir_fd = None
+        if dir_fd is not None:
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
     except Exception:
         pass
     finally:

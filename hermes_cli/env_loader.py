@@ -286,6 +286,23 @@ def load_hermes_dotenv(
 
     _apply_external_secret_sources(home_path)
 
+    # Move the encryption passphrase out of os.environ into hermes_crypto's
+    # in-memory stash before anything can spawn a subprocess — child
+    # processes must never inherit it (the per-spawn-site scrub lists are
+    # only defense-in-depth). Runs after the dotenv loads above so a
+    # passphrase placed in a plaintext .env is stashed too; an encrypted
+    # .env was already decrypted via the shell-provided variable, which
+    # get_data_key() consumed-and-stashed on its own.
+    if os.environ.get("HERMES_ENCRYPTION_PASSPHRASE"):
+        try:
+            from hermes_crypto import stash_passphrase_from_env
+
+            stash_passphrase_from_env()
+        except Exception:
+            # The stash is hardening, not a load-bearing step — never let it
+            # break startup credential loading.
+            pass
+
     return loaded
 
 

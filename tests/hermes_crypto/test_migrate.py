@@ -100,6 +100,27 @@ def test_enable_refuses_when_already_enabled():
         migrate.enable("passphrase", passphrase="pw", argon2_params=FAST_ARGON2)
 
 
+def test_enable_after_interrupted_enable_points_to_disable():
+    """A keystore without the config flag = a crashed previous enable().
+
+    The guard must say exactly how to recover (disable rolls back to
+    plaintext), not claim encryption "looks enabled already".
+    """
+    _seed_credentials()
+    # Simulate a crash between keystore creation and the config flip: run a
+    # full enable, then force the enabled flag back off the way enable()
+    # would have left it had it died before the final write.
+    migrate.enable("passphrase", passphrase="pw", argon2_params=FAST_ARGON2)
+    migrate._set_config("security.encryption.enabled", False)
+
+    with pytest.raises(HermesCryptoError, match="interrupted"):
+        migrate.enable("passphrase", passphrase="pw", argon2_params=FAST_ARGON2)
+
+    # disable() recovers from this state.
+    migrate.disable(passphrase="pw")
+    assert not keystore.keystore_exists()
+
+
 def test_disable_restores_plaintext():
     env, auth = _seed_credentials()
     migrate.enable("passphrase", passphrase="pw", argon2_params=FAST_ARGON2)

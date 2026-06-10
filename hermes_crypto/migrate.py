@@ -688,6 +688,20 @@ def enable(
     the databases). Flips ``security.encryption.*`` config keys on success.
     """
     if keystore.keystore_exists():
+        from . import is_encryption_enabled
+
+        if not is_encryption_enabled():
+            # A keystore without the config flag means a previous enable()
+            # crashed mid-migration (the flag is flipped last, so the
+            # half-migrated state is inert). disable() handles this state
+            # cleanly: it decrypts whatever was already encrypted, skips the
+            # rest, and removes the keystore.
+            raise HermesCryptoError(
+                "A keystore exists but encryption is not enabled in config — "
+                "a previous 'hermes encrypt enable' was likely interrupted. "
+                "Run 'hermes encrypt disable' to roll everything back to "
+                "plaintext, then re-run 'hermes encrypt enable'."
+            )
         raise HermesCryptoError(
             "A keystore already exists — encryption looks enabled already. "
             "Use 'hermes encrypt status' / 'rotate-key', or 'disable' first."
