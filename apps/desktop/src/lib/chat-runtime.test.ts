@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ComposerAttachment } from '@/store/composer'
 
-import { coerceThinkingText, optimisticAttachmentRef } from './chat-runtime'
+import { coerceThinkingText, optimisticAttachmentRef, parseCommandDispatch } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 
@@ -50,5 +50,88 @@ describe('coerceThinkingText', () => {
         "◉_◉ processing... I don't see any current rewritten thinking or next thinking to process. Could you provide the thinking content you'd like me to rewrite?"
       )
     ).toBe('')
+  })
+})
+
+describe('parseCommandDispatch', () => {
+  it('returns null for non-object input', () => {
+    expect(parseCommandDispatch(null)).toBeNull()
+    expect(parseCommandDispatch(undefined)).toBeNull()
+    expect(parseCommandDispatch('string')).toBeNull()
+    expect(parseCommandDispatch(42)).toBeNull()
+  })
+
+  it('parses exec dispatch', () => {
+    expect(parseCommandDispatch({ type: 'exec', output: 'hello' })).toEqual({
+      type: 'exec',
+      output: 'hello'
+    })
+  })
+
+  it('parses plugin dispatch', () => {
+    expect(parseCommandDispatch({ type: 'plugin', output: 'ok' })).toEqual({
+      type: 'plugin',
+      output: 'ok'
+    })
+  })
+
+  it('parses alias dispatch', () => {
+    expect(parseCommandDispatch({ type: 'alias', target: 'help' })).toEqual({
+      type: 'alias',
+      target: 'help'
+    })
+  })
+
+  it('returns null for alias without target', () => {
+    expect(parseCommandDispatch({ type: 'alias' })).toBeNull()
+  })
+
+  it('parses skill dispatch', () => {
+    expect(
+      parseCommandDispatch({ type: 'skill', name: 'test', message: 'do it' })
+    ).toEqual({ type: 'skill', name: 'test', message: 'do it' })
+  })
+
+  it('returns null for skill without name', () => {
+    expect(parseCommandDispatch({ type: 'skill' })).toBeNull()
+  })
+
+  it('parses send dispatch', () => {
+    expect(parseCommandDispatch({ type: 'send', message: 'hello' })).toEqual({
+      type: 'send',
+      message: 'hello'
+    })
+  })
+
+  it('returns null for send without message', () => {
+    expect(parseCommandDispatch({ type: 'send' })).toBeNull()
+  })
+
+  it('parses prefill dispatch with message and notice', () => {
+    expect(
+      parseCommandDispatch({
+        type: 'prefill',
+        message: 'edit me',
+        notice: '↶ Undid 1 turn'
+      })
+    ).toEqual({ type: 'prefill', message: 'edit me', notice: '↶ Undid 1 turn' })
+  })
+
+  it('parses prefill dispatch with only message', () => {
+    expect(
+      parseCommandDispatch({ type: 'prefill', message: 'edit me' })
+    ).toEqual({ type: 'prefill', message: 'edit me', notice: undefined })
+  })
+
+  it('parses prefill dispatch with no message (empty undo)', () => {
+    expect(parseCommandDispatch({ type: 'prefill' })).toEqual({
+      type: 'prefill',
+      message: undefined,
+      notice: undefined
+    })
+  })
+
+  it('returns null for unknown type', () => {
+    expect(parseCommandDispatch({ type: 'unknown' })).toBeNull()
   })
 })

@@ -28,13 +28,16 @@ export type CommandDispatchResponse =
   | { type: "exec" | "plugin"; output?: string }
   | { type: "alias"; target: string }
   | { type: "skill"; name: string; message?: string }
-  | { type: "send"; message: string };
+  | { type: "send"; message: string }
+  | { type: "prefill"; message?: string; notice?: string };
 
 export interface SlashExecCallbacks {
   /** Render a transcript system message. */
   sys(text: string): void;
   /** Submit a user message to the agent (prompt.submit). */
   send(message: string): Promise<void> | void;
+  /** Prefill the composer with text without submitting. */
+  prefill?(text: string): void;
 }
 
 export interface SlashExecOptions {
@@ -56,7 +59,7 @@ export async function executeSlash({
   command,
   sessionId,
   gw,
-  callbacks: { sys, send },
+  callbacks: { sys, send, prefill },
 }: SlashExecOptions): Promise<SlashExecResult> {
   const { name, arg } = parseSlash(command);
 
@@ -119,6 +122,12 @@ export async function executeSlash({
         await send(msg);
         return "sent";
       }
+
+      case "prefill": {
+        if (d.notice?.trim()) sys(d.notice);
+        if (d.message) prefill?.(d.message);
+        return "done";
+      }
     }
   } catch (err) {
     sys(`error: ${err instanceof Error ? err.message : String(err)}`);
@@ -156,6 +165,9 @@ function parseCommandDispatch(raw: unknown): CommandDispatchResponse | null {
       return typeof r.message === "string"
         ? { type: "send", message: r.message }
         : null;
+
+    case "prefill":
+      return { type: "prefill", message: str(r.message), notice: str(r.notice) };
 
     default:
       return null;
