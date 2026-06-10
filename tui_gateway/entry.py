@@ -263,6 +263,21 @@ def main():
         global _mcp_discovery_thread
         _mcp_discovery_thread = _mcp_thread
 
+    # Register declarative shell hooks from config.yaml.  The TUI / desktop
+    # entry point has no TTY for consent prompts, so accept_hooks=False and
+    # the effective value is resolved from HERMES_ACCEPT_HOOKS env var or
+    # hooks_auto_accept in config — matching the gateway pattern.
+    # Failures are logged but must never block TUI startup.
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+        register_from_config(load_config(), accept_hooks=False)
+    except Exception:
+        logger.debug(
+            "shell-hook registration failed at TUI startup",
+            exc_info=True,
+        )
+
     if not write_json({
         "jsonrpc": "2.0",
         "method": "event",
