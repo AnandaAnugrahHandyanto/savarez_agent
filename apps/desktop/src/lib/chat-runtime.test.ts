@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ComposerAttachment } from '@/store/composer'
 
-import { coerceThinkingText, optimisticAttachmentRef } from './chat-runtime'
+import { coerceThinkingText, optimisticAttachmentRef, parseCommandDispatch } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 
@@ -50,5 +50,27 @@ describe('coerceThinkingText', () => {
         "◉_◉ processing... I don't see any current rewritten thinking or next thinking to process. Could you provide the thinking content you'd like me to rewrite?"
       )
     ).toBe('')
+  })
+})
+
+describe('parseCommandDispatch', () => {
+  it('parses prefill type with message', () => {
+    expect(parseCommandDispatch({ type: 'prefill', message: 'edit me' })).toEqual({
+      type: 'prefill',
+      message: 'edit me'
+    })
+  })
+
+  it('parses prefill type with notice', () => {
+    expect(parseCommandDispatch({ type: 'prefill', message: 'edit me', notice: '↶ rewound 1 turn' })).toEqual({
+      type: 'prefill',
+      message: 'edit me',
+      notice: '↶ rewound 1 turn'
+    })
+  })
+
+  it('rejects prefill without message', () => {
+    expect(parseCommandDispatch({ type: 'prefill' })).toBeNull()
+    expect(parseCommandDispatch({ type: 'prefill', message: 42 })).toBeNull()
   })
 })

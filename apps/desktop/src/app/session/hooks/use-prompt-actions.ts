@@ -28,6 +28,7 @@ import {
   clearComposerAttachments,
   type ComposerAttachment,
   setComposerAttachmentUploadState,
+  setComposerDraft,
   terminalContextBlocksFromDraft,
   updateComposerAttachment
 } from '@/store/composer'
@@ -964,6 +965,16 @@ export function usePromptActions({
 
           if (dispatch.type === 'alias') {
             await runSlash(`/${dispatch.target}${arg ? ` ${arg}` : ''}`, sessionId, false)
+
+            return
+          }
+
+          if (dispatch.type === 'prefill') {
+            if (dispatch.notice) {
+              renderSlashOutput(dispatch.notice)
+            }
+
+            setComposerDraft(dispatch.message)
 
             return
           }
