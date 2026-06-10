@@ -19,6 +19,7 @@ preserved.
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import re
@@ -66,6 +67,32 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+def _tool_loop_guardrail_config_for_platform(config: dict, platform: str | None) -> dict:
+    """Return tool-loop guardrail config with optional platform override applied."""
+    guardrail_cfg = config.get("tool_loop_guardrails", {})
+    if not isinstance(guardrail_cfg, dict):
+        return {}
+
+    merged = copy.deepcopy({k: v for k, v in guardrail_cfg.items() if k != "platforms"})
+    platforms_cfg = guardrail_cfg.get("platforms")
+    platform_key = str(platform or "").strip().lower()
+    if not platform_key or not isinstance(platforms_cfg, dict):
+        return merged
+
+    override = platforms_cfg.get(platform_key)
+    if not isinstance(override, dict):
+        return merged
+
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            nested = copy.deepcopy(merged[key])
+            nested.update(value)
+            merged[key] = nested
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
 
 
 def _normalized_custom_base_url(value: Any) -> str:
@@ -1050,7 +1077,7 @@ def init_agent(
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(
-                _agent_cfg.get("tool_loop_guardrails", {})
+                _tool_loop_guardrail_config_for_platform(_agent_cfg, agent.platform)
             )
         )
     except Exception as _tlg_err:
