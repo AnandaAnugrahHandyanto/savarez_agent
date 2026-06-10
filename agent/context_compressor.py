@@ -1143,7 +1143,7 @@ class ContextCompressor(ContextEngine):
             completed.append(f"{idx}. {item}")
 
         active_task = (
-            f"User asked: {user_asks[-1]!r}"
+            "Indeterminate from compacted history — refer to the latest user message in the protected tail below."
             if user_asks
             else "Unknown from deterministic fallback."
         )
