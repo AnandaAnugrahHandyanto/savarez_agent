@@ -4447,10 +4447,26 @@ def _(rid, params: dict) -> dict:
 # ── Methods: prompt ──────────────────────────────────────────────────
 
 
+def _sanitize_sender_device(value) -> str:
+    """Clamp a client-declared sender device name to a sane one-line label.
+
+    Remote clients self-report this (F-003 attribution); it lands in
+    ``messages.sender_device`` and renders as a chat label, so collapse
+    whitespace and cap length rather than trusting it verbatim.
+    """
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())[:80]
+
+
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     sid, text = params.get("session_id", ""), params.get("text", "")
     truncate_user_ordinal = params.get("truncate_before_user_ordinal")
+    # Optional: which device the human typed this on. Local clients omit it
+    # (append_message auto-stamps the gateway's device); clients attached
+    # from ANOTHER device pass theirs so group sessions attribute correctly.
+    sender_device = _sanitize_sender_device(params.get("sender_device"))
     session, err = _sess_nowait(params, rid)
     if err:
         return err
@@ -4462,6 +4478,8 @@ def _(rid, params: dict) -> dict:
     with session["history_lock"]:
         if session.get("running"):
             return _err(rid, 4009, "session busy")
+        if sender_device:
+            session["pending_sender_device"] = sender_device
         if truncate_user_ordinal is not None:
             try:
                 ordinal = int(truncate_user_ordinal)
@@ -4706,9 +4724,13 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
         session["attached_images"] = []
+        _pending_sender = session.pop("pending_sender_device", None)
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, text)
     agent = session["agent"]
+    # Hand the prompt's declared sender to the conversation loop; consumed
+    # (and cleared) when the user message dict is built for this turn.
+    agent._pending_user_sender_device = _pending_sender or None
     _emit("message.start", sid)
 
     def run():

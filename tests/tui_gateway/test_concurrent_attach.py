@@ -181,3 +181,18 @@ def test_duplicate_attach_is_idempotent(server):
 
     # No double-delivery from a repeated attach of the same client.
     assert t2.event_types() == ["message.delta"]
+
+
+# -------------------------------------------------------------------------
+# prompt.submit sender_device sanitation (channels Phase 2)
+# -------------------------------------------------------------------------
+
+def test_sanitize_sender_device(server):
+    f = server._sanitize_sender_device
+    assert f("omar-iphone") == "omar-iphone"
+    assert f("  Omar's   MacBook  Pro  ") == "Omar's MacBook Pro"
+    assert f("x" * 500) == "x" * 80
+    assert f(None) == ""
+    assert f(123) == ""
+    assert f(["nope"]) == ""
+    assert f("line\nbreaks\tcollapse") == "line breaks collapse"
