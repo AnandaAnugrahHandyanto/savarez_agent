@@ -5,10 +5,8 @@
 @import '@vscode/codicons/dist/codicon.css';
 @custom-variant dark (&:is(.dark *));
 
-/* Sidebar section layout has two modes (see app/chat/sidebar/index.tsx):
-   tall  → each section is its own independent scroller;
-   short → sections flatten and the whole stack scrolls as one.
-   The single knob is this height threshold. */
+/* Sidebar sections: tall viewports give each its own scroller; compact ones
+   (this variant) flatten everything into one shared scroll. See ChatSidebar. */
 @custom-variant compact (@media (max-height: 768px));
 
 @font-face {

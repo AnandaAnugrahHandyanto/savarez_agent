@@ -137,25 +137,14 @@ const WORKSPACE_PAGE = 5
 const PROFILE_INITIAL_PAGE = 5
 const GROUP_DND_ID_PREFIX = 'group:'
 
-// The sidebar's section stack has two pure-CSS modes, switched by the `compact`
-// height variant (defined in styles.css):
-//
-//   TALL  (default): every section is `shrink-0`, capped with a max-height, and
-//     its own `overflow-y-auto` scroller. Sessions is the one `flex-1` scroller
-//     that soaks up leftover height. Nothing ever shrinks below its content, so
-//     a section's content can never bleed onto the next one — no overlap, ever.
-//
-//   SHORT (`@media max-height`): `COMPACT_FLAT` drops the caps + internal
-//     overflow so the sections flatten into document flow and the whole stack
-//     scrolls as a single scrollbar (the outer wrapper's `overflow-y-auto`).
-//
-// The cardinal rule (CSS flexbox min-size gotcha): never give a section
-// `flex-shrink` + `min-height: 0` unless it is itself the scroll container —
-// that combination lets a squeezed section spill its content over its sibling.
-// Keeping every section `shrink-0` sidesteps it entirely.
+// Two modes via the `compact` height variant (styles.css):
+//   tall    → each section is shrink-0, capped, its own scroller; Sessions is flex-1.
+//   compact → COMPACT_FLAT drops the caps so the whole stack scrolls as one.
+// Sections stay shrink-0 so none can be squeezed below its content and bleed onto
+// the next — the flexbox `min-height: auto` overlap trap that caused the bug.
 const COMPACT_FLAT = 'compact:max-h-none compact:overflow-visible'
 
-// A non-session group's scroll body in tall mode; flattens in short mode.
+// A non-session group's scroll body: own scroller when tall, flattened when compact.
 const GROUP_BODY = cn('overflow-y-auto overscroll-contain', COMPACT_FLAT)
 
 const groupDndId = (id: string) => `${GROUP_DND_ID_PREFIX}${id}`
@@ -570,21 +559,17 @@ export function ChatSidebar({
     [onLoadMoreMessaging]
   )
 
-  // Reveal another batch of a platform's rows. Bumps the client-side visible
-  // count; if that runs past what's loaded and the backend has more on disk,
-  // also kick a fetch so the next rows are there to show.
-  const revealMoreMessaging = useCallback(
-    (platform: string, loaded: number, hasMore: boolean) => {
-      const next = (messagingVisible[platform] ?? NON_SESSION_INITIAL_ROWS) + NON_SESSION_LOAD_STEP
+  // Reveal another batch of a platform's rows; fetch from the backend too if we
+  // run past what's loaded and more remain on disk.
+  const revealMoreMessaging = (platform: string, loaded: number, hasMore: boolean) => {
+    const next = (messagingVisible[platform] ?? NON_SESSION_INITIAL_ROWS) + NON_SESSION_LOAD_STEP
 
-      setMessagingVisible(prev => ({ ...prev, [platform]: next }))
+    setMessagingVisible(prev => ({ ...prev, [platform]: next }))
 
-      if (next > loaded && hasMore) {
-        loadMoreForMessaging(platform)
-      }
-    },
-    [messagingVisible, loadMoreForMessaging]
-  )
+    if (next > loaded && hasMore) {
+      loadMoreForMessaging(platform)
+    }
+  }
 
   // Each messaging platform is its own self-managed section: split the
   // separately-fetched messaging slice by source, newest platform first, rows
@@ -920,8 +905,8 @@ export function ChatSidebar({
                   // Separate profile sections clearly in the ALL view; rows inside
                   // each group keep their own tight gap-px rhythm.
                   showAllProfiles ? 'gap-3' : 'gap-px',
-                  // Flatten into the single outer scroll in short mode — unless this
-                  // is the virtualized long list, which must keep its own scroller.
+                  // Flatten into the single scroll when compact — unless this is the
+                  // virtualized long list, which must keep its own scroller.
                   !recentsVirtualizes && COMPACT_FLAT
                 )}
                 dndSensors={dndSensors}
