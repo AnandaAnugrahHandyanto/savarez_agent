@@ -13,7 +13,7 @@
 import type { InlineRefInput } from './inline-refs'
 
 export type ComposerTarget = 'edit' | 'main'
-export type ComposerInsertMode = 'block' | 'inline'
+export type ComposerInsertMode = 'block' | 'inline' | 'replace'
 
 interface FocusDetail {
   target: ComposerTarget
@@ -83,6 +83,12 @@ export const requestComposerInsert = (
 
   dispatch<InsertDetail>(INSERT_EVENT, { mode, target: resolve(target), text: trimmed })
 }
+
+/** Replace the entire composer draft (e.g. /undo prefill). */
+export const requestComposerPrefill = (
+  text: string,
+  { target = 'active' }: { target?: ComposerTarget | 'active' } = {}
+) => dispatch<InsertDetail>(INSERT_EVENT, { mode: 'replace', target: resolve(target), text })
 
 export const onComposerFocusRequest = (handler: (target: ComposerTarget) => void) =>
   subscribe<FocusDetail>(FOCUS_EVENT, ({ target }) => handler(target))

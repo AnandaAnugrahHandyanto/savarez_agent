@@ -227,9 +227,15 @@ export function ChatBar({
         return
       }
 
-      const base = mode === 'inline' ? draftRef.current.trimEnd() : draftRef.current
-      const sep = mode === 'inline' ? (base ? ' ' : '') : base && !base.endsWith('\n') ? '\n\n' : ''
-      const next = `${base}${sep}${value}`
+      const next =
+        mode === 'replace'
+          ? value
+          : (() => {
+              const base = mode === 'inline' ? draftRef.current.trimEnd() : draftRef.current
+              const sep = mode === 'inline' ? (base ? ' ' : '') : base && !base.endsWith('\n') ? '\n\n' : ''
+
+              return `${base}${sep}${value}`
+            })()
 
       draftRef.current = next
       aui.composer().setText(next)

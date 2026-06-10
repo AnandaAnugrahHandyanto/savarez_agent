@@ -4,11 +4,15 @@ import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $sessions, setSessions } from '@/store/session'
+import type { ChatMessage } from '@/lib/chat-messages'
+import { chatMessageText } from '@/lib/chat-messages'
 import type { SessionInfo } from '@/types/hermes'
 
 import { usePromptActions } from './use-prompt-actions'
 
 vi.mock('@/hermes', () => ({
+  getProfiles: vi.fn(async () => ({ profiles: [] })),
+  setApiRequestProfile: vi.fn(),
   transcribeAudio: vi.fn()
 }))
 
@@ -162,5 +166,105 @@ describe('usePromptActions /title', () => {
     expect(requestGateway).toHaveBeenCalledWith('session.title', expect.objectContaining({ title: 'way too long title' }))
     expect(refreshSessions).not.toHaveBeenCalled()
     expect($sessions.get()[0]?.title).toBe('Old title')
+  })
+})
+
+describe('usePromptActions /goal', () => {
+  const capturedMessages: ChatMessage[] = []
+
+  function GoalHarness({
+    onReady,
+    requestGateway
+  }: {
+    onReady: (handle: HarnessHandle) => void
+    requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  }) {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+    const busyRef = { current: false }
+
+    const actions = usePromptActions({
+      activeSessionId: RUNTIME_SESSION_ID,
+      activeSessionIdRef,
+      branchCurrentSession: async () => true,
+      busyRef,
+      createBackendSessionForSend: async () => RUNTIME_SESSION_ID,
+      handleSkinCommand: () => '',
+      refreshSessions: async () => undefined,
+      requestGateway,
+      selectedStoredSessionIdRef,
+      startFreshSessionDraft: () => undefined,
+      sttEnabled: false,
+      updateSessionState: (_sessionId, updater) => {
+        const next = updater({
+          messages: capturedMessages,
+          busy: false,
+          awaitingResponse: false
+        } as never)
+
+        capturedMessages.splice(0, capturedMessages.length, ...next.messages)
+      }
+    })
+
+    useEffect(() => {
+      onReady({ submitText: actions.submitText })
+    }, [actions.submitText, onReady])
+
+    return null
+  }
+
+  beforeEach(() => {
+    capturedMessages.length = 0
+    setSessions(() => [sessionInfo()])
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('shows goal notice and submits kickoff text via command.dispatch send', async () => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        throw new Error('pending-input command: use command.dispatch for /goal')
+      }
+
+      if (method === 'command.dispatch') {
+        return {
+          type: 'send',
+          notice: '⊙ Goal set (20-turn budget): write a hello-world script',
+          message: 'write a hello-world script'
+        } as never
+      }
+
+      if (method === 'prompt.submit') {
+        return {} as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<GoalHarness onReady={h => (handle = h)} requestGateway={requestGateway} />)
+
+    await handle!.submitText('/goal write a hello-world script')
+
+    expect(requestGateway).toHaveBeenCalledWith('command.dispatch', {
+      session_id: RUNTIME_SESSION_ID,
+      name: 'goal',
+      arg: 'write a hello-world script'
+    })
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+      session_id: RUNTIME_SESSION_ID,
+      text: 'write a hello-world script'
+    })
+
+    const systemText = capturedMessages
+      .filter(message => message.role === 'system')
+      .map(message => chatMessageText(message))
+      .join('\n')
+
+    expect(systemText).toContain('slash:/goal write a hello-world script')
+    expect(systemText).toContain('⊙ Goal set (20-turn budget): write a hello-world script')
   })
 })

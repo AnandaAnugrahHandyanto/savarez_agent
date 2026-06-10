@@ -21,6 +21,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { setSessionYolo } from '@/lib/yolo-session'
+import { requestComposerPrefill } from '@/app/chat/composer/focus'
 import {
   $composerAttachments,
   addComposerAttachment,
@@ -613,27 +614,67 @@ export function usePromptActions({
             return
           }
 
-          const message = ('message' in dispatch ? dispatch.message : '')?.trim() ?? ''
+          if (dispatch.type === 'prefill') {
+            if (dispatch.notice?.trim()) {
+              renderSlashOutput(dispatch.notice)
+            }
 
-          if (!message) {
-            renderSlashOutput(
-              `/${name}: ${dispatch.type === 'skill' ? 'skill payload missing message' : 'empty message'}`
-            )
+            if (dispatch.message.trim()) {
+              requestComposerPrefill(dispatch.message)
+            } else {
+              renderSlashOutput(`/${name}: empty message`)
+            }
+
+            return
+          }
+
+          if (dispatch.type === 'send') {
+            if (dispatch.notice?.trim()) {
+              renderSlashOutput(dispatch.notice)
+            }
+
+            const message = dispatch.message.trim()
+
+            if (!message) {
+              renderSlashOutput(`/${name}: empty message`)
+
+              return
+            }
+
+            if (busyRef.current) {
+              renderSlashOutput('session busy — /interrupt the current turn before sending this command')
+
+              return
+            }
+
+            await submitPromptText(message)
 
             return
           }
 
           if (dispatch.type === 'skill') {
-            renderSlashOutput(`⚡ loading skill: ${dispatch.name}`)
-          }
+            const message = dispatch.message?.trim() ?? ''
 
-          if (busyRef.current) {
-            renderSlashOutput('session busy — /interrupt the current turn before sending this command')
+            if (!message) {
+              renderSlashOutput(`/${name}: skill payload missing message`)
+
+              return
+            }
+
+            renderSlashOutput(`⚡ loading skill: ${dispatch.name}`)
+
+            if (busyRef.current) {
+              renderSlashOutput('session busy — /interrupt the current turn before sending this command')
+
+              return
+            }
+
+            await submitPromptText(message)
 
             return
           }
 
-          await submitPromptText(message)
+          renderSlashOutput('error: invalid response: command.dispatch')
         } catch (err) {
           renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
         }

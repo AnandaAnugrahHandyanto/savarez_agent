@@ -1,6 +1,34 @@
 import { describe, expect, it } from 'vitest'
 
-import { coerceThinkingText } from './chat-runtime'
+import { coerceThinkingText, parseCommandDispatch } from './chat-runtime'
+
+describe('parseCommandDispatch', () => {
+  it('parses send and prefill notices from command.dispatch', () => {
+    expect(
+      parseCommandDispatch({
+        type: 'send',
+        message: 'write a hello-world script',
+        notice: '⊙ Goal set (20-turn budget): write a hello-world script'
+      })
+    ).toEqual({
+      type: 'send',
+      message: 'write a hello-world script',
+      notice: '⊙ Goal set (20-turn budget): write a hello-world script'
+    })
+
+    expect(
+      parseCommandDispatch({
+        type: 'prefill',
+        message: 'edit me',
+        notice: '↶ Undid 1 turn (2 message(s)).'
+      })
+    ).toEqual({
+      type: 'prefill',
+      message: 'edit me',
+      notice: '↶ Undid 1 turn (2 message(s)).'
+    })
+  })
+})
 
 describe('coerceThinkingText', () => {
   it('strips streaming status prefixes from thinking deltas', () => {
