@@ -2628,16 +2628,40 @@ TERMINAL_SCHEMA = {
 }
 
 
-def _handle_terminal(args, **kw):
+def _handle_terminal(args=None, **kw):
+    """Normalize terminal tool arguments before dispatching to terminal_tool."""
+    if isinstance(args, str):
+        args = {"command": args}
+    elif args is None:
+        args = {}
+    elif not isinstance(args, dict):
+        return json.dumps({
+            "output": "",
+            "exit_code": -1,
+            "error": (
+                "Invalid terminal args: expected dict or string, "
+                f"got {type(args).__name__}"
+            ),
+            "status": "error",
+        }, ensure_ascii=False)
+
+    command = args.get("command") or kw.get("command")
+
     return terminal_tool(
-        command=args.get("command"),
-        background=args.get("background", False),
-        timeout=args.get("timeout"),
-        task_id=kw.get("task_id"),
-        workdir=args.get("workdir"),
-        pty=args.get("pty", False),
-        notify_on_complete=args.get("notify_on_complete", False),
-        watch_patterns=args.get("watch_patterns"),
+        command=command,
+        background=args.get("background", kw.get("background", False)),
+        timeout=args.get("timeout", kw.get("timeout")),
+        task_id=kw.get("task_id", args.get("task_id")),
+        workdir=args.get("workdir", kw.get("workdir")),
+        pty=args.get("pty", kw.get("pty", False)),
+        notify_on_complete=args.get(
+            "notify_on_complete",
+            kw.get("notify_on_complete", False),
+        ),
+        watch_patterns=args.get(
+            "watch_patterns",
+            kw.get("watch_patterns"),
+        ),
     )
 
 
