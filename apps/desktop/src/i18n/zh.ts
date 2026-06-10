@@ -297,7 +297,9 @@ export const zh: Translations = {
       technicalDesc: '包含原始工具参数/结果及底层细节。',
       themeTitle: '主题',
       themeDesc: '仅桌面端调色板。所选模式叠加其上。',
-      themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`
+      themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`,
+      notificationTitle: '桌面通知',
+      notificationDesc: '当 Agent 完成响应且窗口未聚焦时，显示原生系统通知。'
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',

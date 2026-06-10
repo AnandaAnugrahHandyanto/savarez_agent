@@ -16,6 +16,7 @@ import {
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
+import { $desktopNotificationsEnabled } from '@/store/desktop-notifications'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { setClarifyRequest } from '@/store/clarify'
 import { notify } from '@/store/notifications'
@@ -783,6 +784,17 @@ export function useMessageStream({
 
         if (isActiveEvent) {
           triggerHaptic('streamDone')
+
+          // Fire native OS notification when the window is not focused
+          if (!document.hasFocus() && $desktopNotificationsEnabled.get()) {
+            const snippet = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered) || ''
+            const firstLine = snippet.split('\n').find(l => l.trim()) || 'Response ready'
+            window.hermesDesktop?.notify({
+              title: 'Hermes',
+              body: firstLine.slice(0, 120),
+              silent: false
+            })
+          }
         }
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
