@@ -164,6 +164,22 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     # cron status
     cron_subparsers.add_parser("status", help="Check if cron scheduler is running")
 
+    # cron maintenance
+    cron_maintenance = cron_subparsers.add_parser("maintenance", help="Manage global cron maintenance mode")
+    maintenance_subparsers = cron_maintenance.add_subparsers(dest="maintenance_action")
+    maintenance_start = maintenance_subparsers.add_parser("start", help="Start maintenance blackout mode")
+    maintenance_start.add_argument("--until", help="ISO timestamp when maintenance should expire")
+    maintenance_start.add_argument("--reason", default="maintenance", help="Reason recorded in maintenance state")
+    maintenance_start.add_argument("--owner", help="Owner recorded in maintenance state")
+    maintenance_subparsers.add_parser("stop", help="Stop maintenance blackout mode")
+    maintenance_subparsers.add_parser("status", help="Show maintenance status")
+
+    # cron running/drain
+    cron_subparsers.add_parser("running", help="List currently running cron jobs")
+    cron_drain = cron_subparsers.add_parser("drain", help="Wait for running cron jobs to complete")
+    cron_drain.add_argument("--timeout", default="45m", help="Maximum wait, e.g. 45m, 1h, 30s")
+    cron_drain.add_argument("--poll", default="5s", help="Poll interval, e.g. 5s")
+
     # cron tick (mostly for debugging)
     cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
     add_accept_hooks_flag(cron_tick)

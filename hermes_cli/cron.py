@@ -154,6 +154,124 @@ def cron_tick():
     tick(verbose=True)
 
 
+def _parse_duration_seconds(value) -> float:
+    text = str(value or "").strip().lower()
+    if not text:
+        raise ValueError("duration is required")
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)([smhd]?)", text)
+    if not match:
+        raise ValueError(f"invalid duration: {value!r}")
+    amount = float(match.group(1))
+    unit = match.group(2) or "s"
+    return amount * {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+
+
+def cron_maintenance(args):
+    """Manage global cron maintenance mode."""
+    from cron.maintenance import (
+        MaintenanceStateError,
+        is_maintenance_active,
+        list_running_jobs,
+        read_maintenance,
+        start_maintenance,
+        stop_maintenance,
+    )
+
+    action = getattr(args, "maintenance_action", None) or "status"
+    if action == "start":
+        try:
+            state = start_maintenance(
+                until=getattr(args, "until", None),
+                reason=getattr(args, "reason", None) or "maintenance",
+                owner=getattr(args, "owner", None),
+            )
+        except Exception as exc:
+            print(color(f"Failed to start cron maintenance: {exc}", Colors.RED))
+            return 1
+        print(color("Cron maintenance mode started", Colors.GREEN))
+        print(f"  Reason: {state.get('reason')}")
+        if state.get("until"):
+            print(f"  Until:  {state.get('until')}")
+        print(f"  Owner:  {state.get('owner')}")
+        return 0
+
+    if action == "stop":
+        removed = stop_maintenance()
+        print(color("Cron maintenance mode stopped", Colors.GREEN) if removed else color("Cron maintenance mode was not active", Colors.YELLOW))
+        return 0
+
+    if action == "status":
+        try:
+            state = read_maintenance()
+            active = is_maintenance_active()
+            running = list_running_jobs()
+        except MaintenanceStateError as exc:
+            print(color(f"Cron maintenance state error: {exc}", Colors.RED))
+            print(color("Fail-safe: cron dispatch is treated as blocked while this file is corrupt.", Colors.YELLOW))
+            return 2
+        print(color("Cron maintenance: active", Colors.YELLOW) if active else color("Cron maintenance: inactive", Colors.GREEN))
+        if state:
+            print(f"  Reason: {state.get('reason')}")
+            print(f"  Started: {state.get('started_at')}")
+            if state.get("until"):
+                print(f"  Until:   {state.get('until')}")
+            print(f"  Owner:   {state.get('owner')}")
+        print(f"  Running jobs: {len(running)}")
+        return 0
+
+    print(f"Unknown cron maintenance command: {action}")
+    return 1
+
+
+def cron_running():
+    """List file-backed running cron jobs."""
+    from cron.maintenance import MaintenanceStateError, list_running_jobs
+
+    try:
+        jobs = list_running_jobs()
+    except MaintenanceStateError as exc:
+        print(color(f"Failed to read running cron jobs: {exc}", Colors.RED))
+        return 2
+    if not jobs:
+        print(color("No cron jobs currently running.", Colors.GREEN))
+        return 0
+    print(color("Running cron jobs:", Colors.CYAN))
+    for job in jobs:
+        print(f"  {job.get('id')}  {job.get('name') or '(unnamed)'}")
+        print(f"    Started: {job.get('started_at')}")
+        if job.get("pid"):
+            print(f"    PID:     {job.get('pid')}")
+        if job.get("workdir"):
+            print(f"    Workdir: {job.get('workdir')}")
+        if job.get("profile"):
+            print(f"    Profile: {job.get('profile')}")
+    return 0
+
+
+def cron_drain(args):
+    """Wait for running cron jobs to complete."""
+    from cron.maintenance import MaintenanceStateError, drain, list_running_jobs
+
+    try:
+        timeout = _parse_duration_seconds(getattr(args, "timeout", "45m"))
+        poll = _parse_duration_seconds(getattr(args, "poll", "5s"))
+    except ValueError as exc:
+        print(color(str(exc), Colors.RED))
+        return 1
+    try:
+        if drain(timeout, poll):
+            print(color("Cron drain complete: no running jobs.", Colors.GREEN))
+            return 0
+        running = list_running_jobs()
+    except MaintenanceStateError as exc:
+        print(color(f"Failed to drain cron jobs: {exc}", Colors.RED))
+        return 2
+    print(color(f"Cron drain timed out with {len(running)} running job(s).", Colors.RED))
+    for job in running:
+        print(f"  {job.get('id')}  {job.get('name') or '(unnamed)'}")
+    return 1
+
+
 def cron_status():
     """Show cron execution status."""
     from cron.jobs import list_jobs
@@ -342,6 +460,15 @@ def cron_command(args):
     if subcmd == "tick":
         cron_tick()
         return 0
+
+    if subcmd == "maintenance":
+        return cron_maintenance(args)
+
+    if subcmd == "running":
+        return cron_running()
+
+    if subcmd == "drain":
+        return cron_drain(args)
 
     if subcmd in {"create", "add"}:
         return cron_create(args)

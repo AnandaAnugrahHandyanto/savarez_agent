@@ -42,6 +42,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
+from cron.maintenance import is_maintenance_active, record_job_finished, record_job_started
 
 logger = logging.getLogger(__name__)
 
@@ -2085,6 +2086,11 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         return 0
 
     try:
+        if is_maintenance_active():
+            if verbose:
+                logger.info("Cron maintenance mode active — skipping due-job dispatch")
+            return 0
+
         due_jobs = get_due_jobs()
 
         if verbose and not due_jobs:
@@ -2205,6 +2211,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     logger.info("Job '%s' already running — skipping", job.get("name", job_id))
                     return None
                 _running_job_ids.add(job_id)
+            record_job_started(job)
             _ctx = contextvars.copy_context()
 
             def _run_and_release(j=job, ctx=_ctx):
@@ -2213,6 +2220,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 finally:
                     with _running_lock:
                         _running_job_ids.discard(j["id"])
+                    record_job_finished(j["id"])
 
             return pool.submit(_run_and_release)
 

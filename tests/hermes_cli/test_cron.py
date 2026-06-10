@@ -127,3 +127,55 @@ class TestCronCommandLifecycle:
 
         out = capsys.readouterr().out
         assert "Repeat:    ∞" in out
+
+
+class TestCronMaintenanceCommands:
+    def test_maintenance_start_status_stop(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        until = "2099-01-01T00:00:00+00:00"
+
+        rc = cron_command(
+            Namespace(
+                cron_command="maintenance",
+                maintenance_action="start",
+                until=until,
+                reason="daily-maintenance",
+                owner="pytest",
+            )
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Cron maintenance mode started" in out
+
+        rc = cron_command(Namespace(cron_command="maintenance", maintenance_action="status"))
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Cron maintenance: active" in out
+        assert "Running jobs: 0" in out
+
+        rc = cron_command(Namespace(cron_command="maintenance", maintenance_action="stop"))
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "stopped" in out
+
+    def test_running_and_drain_commands(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        from cron.maintenance import record_job_finished, record_job_started
+
+        rc = cron_command(Namespace(cron_command="running"))
+        assert rc == 0
+        assert "No cron jobs currently running" in capsys.readouterr().out
+
+        record_job_started({"id": "job_1", "name": "Tracked"})
+        rc = cron_command(Namespace(cron_command="running"))
+        assert rc == 0
+        assert "job_1" in capsys.readouterr().out
+
+        rc = cron_command(Namespace(cron_command="drain", timeout="0.01s", poll="0.01s"))
+        assert rc == 1
+        assert "timed out" in capsys.readouterr().out
+
+        record_job_finished("job_1")
+        rc = cron_command(Namespace(cron_command="drain", timeout="1s", poll="0.01s"))
+        assert rc == 0
+        assert "Cron drain complete" in capsys.readouterr().out
