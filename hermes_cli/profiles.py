@@ -319,6 +319,43 @@ def _count_skills(profile_dir: Path) -> int:
     return count
 
 
+def _make_writable(func, path: str, exc_info):
+    """Rmtree error callback that retries after clearing immutable/read-only flags.
+
+    On macOS an immutable flag (uchg) can prevent deletion even with writable
+    permissions. We clear chflags first (best-effort), then chmod, then retry
+    the original function.
+    """
+    try:
+        path_obj = Path(path)
+    except Exception:
+        raise exc_info[1]
+
+    if not isinstance(exc_info[1], (PermissionError, OSError)):
+        raise exc_info[1]
+
+    try:
+        if hasattr(os, "chflags"):
+            try:
+                os.chflags(path, 0)
+            except (AttributeError, OSError):
+                pass
+    except Exception:
+        # pragma: no cover - defensive: leave deletion attempts unchanged
+        pass
+
+    try:
+        path_obj.chmod(path_obj.stat().st_mode | stat.S_IWUSR)
+    except (AttributeError, OSError):
+        pass
+
+    try:
+        func(path)
+    except Exception as e:
+        raise e from exc_info[1]
+
+
+
 # ---------------------------------------------------------------------------
 # CRUD operations
 # ---------------------------------------------------------------------------
@@ -570,7 +607,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     # 4. Remove profile directory
     try:
-        shutil.rmtree(profile_dir)
+        shutil.rmtree(profile_dir, onerror=_make_writable)
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
         print(f"⚠ Could not remove {profile_dir}: {e}")

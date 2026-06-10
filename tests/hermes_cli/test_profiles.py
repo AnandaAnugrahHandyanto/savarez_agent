@@ -196,6 +196,31 @@ class TestDeleteProfile:
             delete_profile("coder", yes=True)
         assert not profile_dir.is_dir()
 
+    def test_deletes_read_only_contents(self, profile_env):
+        """Profiles with read-only files should still delete (retries with chmod/chflags)."""
+        profile_dir = create_profile("coder", no_alias=True)
+        readonly_file = profile_dir / "readonly.txt"
+        readonly_file.write_text("locked")
+        readonly_file.chmod(0o400)
+
+        original_unlink = os.unlink
+        seen = {"count": 0}
+
+        def unlink_retry(path, *args, **kwargs):
+            seen["count"] += 1
+            if seen["count"] == 1:
+                # Simulate a macOS-style/read-only deletion failure for the first attempt
+                raise PermissionError("operation not permitted")
+            return original_unlink(path, *args, **kwargs)
+
+        # Mock gateway import to avoid real systemd/launchd interaction
+        with patch("hermes_cli.profiles._cleanup_gateway_service"):
+            with patch("hermes_cli.profiles.os.unlink", unlink_retry):
+                delete_profile("coder", yes=True)
+
+        assert seen["count"] >= 1
+        assert not profile_dir.is_dir()
+
     def test_default_raises_value_error(self, profile_env):
         with pytest.raises(ValueError, match="default"):
             delete_profile("default", yes=True)
