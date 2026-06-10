@@ -549,7 +549,8 @@ class TestYoudotcomSearchErrors:
         assert result["used"] == 100
         assert result["period"] == "day"
         assert result["reset_at"] == "2026-06-11T00:00:00+00:00"
-        assert "free search limit reached" in result["error"]
+        assert "keep searching for free" in result["error"]
+        assert "set it as `YDC_API_KEY`" in result["error"]
         assert "YDC_API_KEY" in result["error"]
         assert "https://you.com/platform" in result["error"]
 

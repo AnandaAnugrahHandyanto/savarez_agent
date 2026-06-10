@@ -60,13 +60,12 @@ def _ydc_search_error(resp: Any, *, has_api_key: bool) -> Dict[str, Any]:
     }
 
     if resp.status_code == 402 and error_code == "free_tier_limit_exceeded":
-        reset_at = details.get("reset_at")
-        reset_hint = f" Free searches reset at {reset_at}." if reset_at else ""
         return {
             "success": False,
             "error": (
-                f"You.com free search limit reached. {message}{reset_hint} "
-                f"Set YDC_API_KEY from {_YDC_PLATFORM_URL} to continue with authenticated search."
+                "You’ve used all of today’s free You.com searches. Free searches reset later, "
+                "or you can add a You.com API key to keep searching for free. Get a key at "
+                f"{_YDC_PLATFORM_URL} and set it as `YDC_API_KEY`."
             ).strip(),
             "error_code": error_code,
             **details,
