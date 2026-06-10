@@ -650,7 +650,7 @@ def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
     return _err(rid, 5032, err) if err else None
 
 
-def _start_agent_build(sid: str, session: dict) -> None:
+def _start_agent_build(sid: str, session: SessionState) -> None:
     """Start building the real AIAgent for a TUI session, once.
 
     Classic `hermes` shows the prompt before constructing AIAgent; the TUI used
@@ -663,11 +663,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
     ready = session.get("agent_ready")
     if ready is None:
         return
-    lock = session.setdefault("agent_build_lock", threading.Lock())
-    with lock:
-        if ready.is_set() or session.get("agent_build_started"):
-            return
-        session["agent_build_started"] = True
+    if not session.build_once():
+        return
     key = session["session_key"]
 
     def _build() -> None:
@@ -1543,7 +1540,7 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
 
 
 def _compress_session_history(
-    session: dict,
+    session: SessionState,
     focus_topic: str | None = None,
     approx_tokens: int | None = None,
     before_messages: list | None = None,
@@ -1557,9 +1554,7 @@ def _compress_session_history(
     # otherwise other handlers acquiring the lock (prompt.submit etc.)
     # block on the dispatcher loop while compaction runs.
     if before_messages is None or history_version is None:
-        with session["history_lock"]:
-            before_messages = list(session.get("history", []))
-            history_version = int(session.get("history_version", 0))
+        before_messages, history_version = session.snapshot_history()
     history = before_messages
     if len(history) < 4:
         usage = _get_usage(agent)
@@ -1583,14 +1578,11 @@ def _compress_session_history(
         approx_tokens=approx_tokens,
         focus_topic=focus_topic or None,
     )
-    with session["history_lock"]:
-        if int(session.get("history_version", 0)) != history_version:
-            # External mutation during compaction — drop the compressed
-            # result so we don't clobber concurrent edits.
-            usage = _get_usage(agent)
-            return 0, usage
-        session["history"] = compressed
-        session["history_version"] = history_version + 1
+    if not session.commit_compaction(compressed, history_version):
+        # External mutation during compaction — drop the compressed
+        # result so we don't clobber concurrent edits.
+        usage = _get_usage(agent)
+        return 0, usage
     usage = _get_usage(agent)
     return len(history) - len(compressed), usage
 
@@ -3796,9 +3788,7 @@ def _(rid, params: dict) -> dict:
         from agent.manual_compression_feedback import summarize_manual_compression
         from agent.model_metadata import estimate_request_tokens_rough
 
-        with session["history_lock"]:
-            before_messages = list(session.get("history", []))
-            history_version = int(session.get("history_version", 0))
+        before_messages, history_version = session.snapshot_history()
         before_count = len(before_messages)
         _agent = session["agent"]
         _sys_prompt = getattr(_agent, "_cached_system_prompt", "") or ""
@@ -4546,7 +4536,7 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
-def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+def _run_prompt_submit(rid, sid: str, session: SessionState, text: Any) -> None:
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
@@ -4904,10 +4894,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             if home_token is not None:
                 reset_hermes_home_override(home_token)
             _clear_session_context(session_tokens)
-            with session["history_lock"]:
-                session["running"] = False
-                session["last_active"] = time.time()
-                _clear_inflight_turn(session)
+            session.end_turn()
             _emit("session.info", sid, _session_info(agent, session))
 
         # Chain a goal-continuation turn if the judge said so. We do

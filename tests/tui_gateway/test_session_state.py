@@ -68,3 +68,93 @@ def test_setters_write_through_to_items():
     assert s["running"] is True
     assert s["history"] == [1, 2]
     assert s["history_version"] == 5
+
+
+# ── lock dances (Phase 3 Step 2) ────────────────────────────────────────
+
+
+def _locked_session(**extra):
+    return SessionState(
+        {
+            "history": [],
+            "history_lock": threading.Lock(),
+            "history_version": 0,
+            "running": False,
+            "inflight_turn": None,
+            "last_active": 0.0,
+            **extra,
+        }
+    )
+
+
+def test_snapshot_history_returns_shallow_copy_and_version():
+    msgs = [{"role": "user", "content": "hi"}]
+    s = _locked_session(history=msgs, history_version=7)
+    snap, version = s.snapshot_history()
+    assert snap == msgs
+    assert snap is not msgs  # a copy — mutating it must not touch the session
+    snap.append({"role": "assistant", "content": "x"})
+    assert s["history"] == [{"role": "user", "content": "hi"}]
+    assert version == 7
+    # mirrors the server's `.get()` defaults for absent keys
+    bare = SessionState({"history_lock": threading.Lock()})
+    assert bare.snapshot_history() == ([], 0)
+
+
+def test_commit_compaction_rejects_on_version_mismatch():
+    s = _locked_session(history=[1, 2, 3, 4], history_version=3)
+    snap, version = s.snapshot_history()
+    # someone mutated mid-compress
+    s["history_version"] = 4
+    assert s.commit_compaction([1], expected_version=version) is False
+    assert s["history"] == [1, 2, 3, 4]  # compressed result dropped
+    assert s["history_version"] == 4  # version untouched by the reject
+
+
+def test_commit_compaction_commits_on_match_and_bumps_version():
+    s = _locked_session(history=[1, 2, 3, 4], history_version=3)
+    snap, version = s.snapshot_history()
+    assert s.commit_compaction([1], expected_version=version) is True
+    assert s["history"] == [1]
+    assert s["history_version"] == 4  # bumped past the snapshot
+
+
+def test_begin_turn_claims_idle_session_and_touches_last_active():
+    s = _locked_session()
+    assert s.begin_turn() is True
+    assert s["running"] is True
+    assert s["last_active"] > 0.0
+
+
+def test_begin_turn_returns_false_when_running():
+    s = _locked_session(running=True, last_active=1.0)
+    assert s.begin_turn() is False
+    assert s["running"] is True
+    assert s["last_active"] == 1.0  # busy reject does not touch last_active
+
+
+def test_end_turn_clears_running_and_inflight():
+    s = _locked_session(running=True, inflight_turn={"text": "hi"}, last_active=1.0)
+    s.end_turn()
+    assert s["running"] is False
+    assert s["inflight_turn"] is None
+    assert s["last_active"] > 1.0
+
+
+def test_build_once_returns_true_exactly_once():
+    s = SessionState({})
+    assert s.build_once() is True
+    assert s["agent_build_started"] is True
+    assert s.build_once() is False
+    assert s.build_once() is False
+    # the lazily-created lock is reused, not re-made
+    assert isinstance(s["agent_build_lock"], type(threading.Lock()))
+
+
+def test_build_once_returns_false_when_agent_already_ready():
+    ready = threading.Event()
+    ready.set()
+    s = SessionState({"agent_ready": ready})
+    # agent already built (ready set) — nobody should build again
+    assert s.build_once() is False
+    assert "agent_build_started" not in s

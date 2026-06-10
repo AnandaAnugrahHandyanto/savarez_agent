@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tui_gateway import server
+from tui_gateway.session_state import SessionState
 
 
 def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
@@ -877,7 +878,10 @@ def test_startup_runtime_does_not_call_network_detector(monkeypatch):
 
 
 def _session(agent=None, **extra):
-    return {
+    # SessionState (not a bare dict) so tests mirror the real creation sites
+    # (_init_session / session.create) now that handlers call its lock-dance
+    # methods (snapshot_history / end_turn / ...). Phase 3 Step 2.
+    return SessionState({
         "agent": agent if agent is not None else types.SimpleNamespace(),
         "session_key": "session-key",
         "history": [],
@@ -891,7 +895,7 @@ def _session(agent=None, **extra):
         "show_reasoning": False,
         "tool_progress_mode": "all",
         **extra,
-    }
+    })
 
 
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
@@ -1390,7 +1394,7 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
             self._target()
 
     agent = _Agent()
-    session = {
+    session = SessionState({
         "agent": agent,
         "session_key": "test-session",
         "history": [],
@@ -1404,7 +1408,7 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
         "show_reasoning": False,
         "tool_progress_mode": "all",
         "pending_title": "duplicate title",
-    }
+    })
 
     server._sessions["sid"] = session
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())

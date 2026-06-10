@@ -27,8 +27,15 @@ def _make_session_db(tmp_path):
 
 
 def _tui_session(agent=None, session_key="session-key-old", **extra):
-    """Minimal TUI gateway session dict matching server._sessions values."""
-    return {
+    """Minimal TUI gateway session matching server._sessions values.
+
+    SessionState (not a bare dict) since Phase 3 Step 2: handlers exercised
+    here (_run_prompt_submit's finally → session.end_turn()) call its
+    lock-dance methods, exactly like the real creation sites produce.
+    """
+    from tui_gateway.session_state import SessionState
+
+    return SessionState({
         "agent": agent if agent is not None else types.SimpleNamespace(session_id=session_key),
         "session_key": session_key,
         "history": [],
@@ -43,7 +50,7 @@ def _tui_session(agent=None, session_key="session-key-old", **extra):
         "tool_progress_mode": "all",
         "pending_title": None,
         **extra,
-    }
+    })
 
 
 # ===========================================================================

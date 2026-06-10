@@ -17,11 +17,19 @@ Each accessor is sugar over the same dict item, so old and new styles stay in
 sync. The per-session locks (``history_lock``, ``agent_build_lock``) remain dict
 items for now; they become owned attributes once the subscript call-sites are
 converted (Step 4).
+
+Phase 3 Step 2 absorbs the gateway's inline lock-dances into methods so the
+locking contract lives here instead of being re-spelled at every handler:
+``snapshot_history`` / ``commit_compaction`` (the compaction snapshot +
+compare-and-swap), ``begin_turn`` / ``end_turn`` (the turn-lifecycle CAS), and
+``build_once`` (the one-shot agent-build guard). Each method mirrors the
+server.py block it replaced EXACTLY — same lock, same checks, same order.
 """
 
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any, Optional
 
 
@@ -122,3 +130,78 @@ class SessionState(dict):
     @cols.setter
     def cols(self, value: int) -> None:
         self["cols"] = value
+
+    # ── lock dances (Phase 3 Step 2) ────────────────────────────────
+    # Each method is a verbatim lift of an inline ``with history_lock:``
+    # (or ``agent_build_lock``) block from tui_gateway.server — same lock,
+    # same ``.get()`` defaults, same ordering — so call sites keep EXACT
+    # observable behavior.
+
+    def snapshot_history(self) -> "tuple[list, int]":
+        """Copy (history, history_version) under the lock.
+
+        The compaction path snapshots so the LLM-bound compression call does
+        NOT hold ``history_lock`` for the duration of the request — otherwise
+        other handlers acquiring the lock (prompt.submit etc.) block on the
+        dispatcher loop while compaction runs.
+        """
+        with self["history_lock"]:
+            return list(self.get("history", [])), int(self.get("history_version", 0))
+
+    def commit_compaction(self, new_history: list, expected_version: int) -> bool:
+        """Compare-and-swap the compacted history back in.
+
+        Returns False (committing nothing) when ``history_version`` moved
+        since :meth:`snapshot_history` — external mutation during compaction
+        means the compressed result would clobber concurrent edits. On match,
+        replaces history and bumps the version past the snapshot.
+        """
+        with self["history_lock"]:
+            if int(self.get("history_version", 0)) != expected_version:
+                return False
+            self["history"] = new_history
+            self["history_version"] = expected_version + 1
+            return True
+
+    def begin_turn(self) -> bool:
+        """Claim the session for a turn: running False→True atomically.
+
+        Returns False when a turn is already running (caller rejects with
+        4009 "session busy"). On success also refreshes ``last_active``.
+        """
+        with self["history_lock"]:
+            if self.get("running"):
+                return False
+            self["running"] = True
+            self["last_active"] = time.time()
+            return True
+
+    def end_turn(self) -> None:
+        """Release the session after a turn — the turn thread's ``finally``.
+
+        Clears ``running``, refreshes ``last_active``, and drops the
+        inflight-turn snapshot, all under one lock acquisition (mirrors the
+        ``_run_prompt_submit`` finally block).
+        """
+        with self["history_lock"]:
+            self["running"] = False
+            self["last_active"] = time.time()
+            self["inflight_turn"] = None
+
+    def build_once(self) -> bool:
+        """One-shot agent-build guard: True iff THIS caller should build.
+
+        Mirrors ``_start_agent_build``'s dance: lazily create
+        ``agent_build_lock``, and under it return False when the agent is
+        already built (``agent_ready`` set) or a build was already claimed
+        (``agent_build_started``); otherwise claim the build and return True.
+        """
+        ready = self.get("agent_ready")
+        lock = self.setdefault("agent_build_lock", threading.Lock())
+        with lock:
+            if (ready is not None and ready.is_set()) or self.get(
+                "agent_build_started"
+            ):
+                return False
+            self["agent_build_started"] = True
+            return True
