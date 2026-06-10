@@ -431,22 +431,23 @@ class MemoryStore:
         return candidates
 
     def _resolve_entity(self, name: str) -> int:
-        """Find an existing entity by name or alias (case-insensitive) or create one.
+        """Find an existing entity by exact name or alias match, or create one.
 
         Returns the entity_id.
         """
-        # Exact name match
+        # Exact name match (= avoids LIKE wildcard/case-sensitivity bugs)
         row = self._conn.execute(
-            "SELECT entity_id FROM entities WHERE name LIKE ?", (name,)
+            "SELECT entity_id FROM entities WHERE name = ?", (name,)
         ).fetchone()
         if row is not None:
             return int(row["entity_id"])
 
-        # Search aliases — aliases stored as comma-separated; use LIKE with % boundaries
+        # Search aliases — aliases stored as comma-separated; use INSTR to
+        # avoid LIKE wildcard issues (_ and %) in entity names.
         alias_row = self._conn.execute(
             """
             SELECT entity_id FROM entities
-            WHERE ',' || aliases || ',' LIKE '%,' || ? || ',%'
+            WHERE INSTR(',' || aliases || ',' , ',' || ? || ',') > 0
             """,
             (name,),
         ).fetchone()
