@@ -35,6 +35,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
+from gateway.platforms.base import utf16_len  # noqa: E402
 from gateway.platforms.telegram import (  # noqa: E402
     TelegramAdapter,
     _escape_mdv2,
@@ -901,6 +902,251 @@ class TestEditMessageStreamingSafety:
         assert sent_kwargs, "expected at least one overflow continuation"
         assert all(kwargs.get("message_thread_id") == 17585 for kwargs in sent_kwargs)
         assert sent_kwargs[0]["reply_to_message_id"] == 456
+
+# =========================================================================
+# _edit_overflow_split — finalize formatting (bound-topic raw markdown fix)
+# =========================================================================
+
+
+_MD_SECTION = (
+    "Status update with **bold emphasis** and `inline_code` markers.\n"
+    "More context... (see notes) - revision #3! Final.\n"
+    "- bullet one with detail\n"
+    "- bullet two with `code`\n"
+    "```python\n"
+    "value = compute_thing()\n"
+    "print(value)\n"
+    "```\n"
+)
+
+
+def _markdown_heavy_content(min_units=9000):
+    """Realistic mixed-markdown content exceeding Telegram's 4096 limit."""
+    parts = []
+    while utf16_len("".join(parts)) <= min_units:
+        parts.append(_MD_SECTION)
+    return "".join(parts)
+
+
+def _strict_length_bot():
+    """Bot mock that rejects any text over Telegram's 4096 UTF-16 limit."""
+    bot = MagicMock()
+
+    async def _edit(**kwargs):
+        if utf16_len(kwargs["text"]) > 4096:
+            raise Exception("Bad Request: message is too long")
+        return None
+
+    _next_id = [1000]
+
+    async def _send(**kwargs):
+        if utf16_len(kwargs["text"]) > 4096:
+            raise Exception("Bad Request: message is too long")
+        _next_id[0] += 1
+        return SimpleNamespace(message_id=_next_id[0])
+
+    bot.edit_message_text = AsyncMock(side_effect=_edit)
+    bot.send_message = AsyncMock(side_effect=_send)
+    return bot
+
+
+def _all_transmitted(bot):
+    calls = list(bot.edit_message_text.await_args_list) + list(
+        bot.send_message.await_args_list
+    )
+    return [c.kwargs for c in calls]
+
+
+class TestEditOverflowFinalizeFormatting:
+    """Final oversize edits must deliver every chunk through the MarkdownV2
+    path. Previously _edit_overflow_split chunked the raw text at the full
+    4096 limit and formatted afterwards, so escaping inflated every chunk
+    past the limit and the fallbacks delivered raw markers literally."""
+
+    def _adapter(self, bot):
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = bot
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_finalize_overflow_delivers_every_chunk_formatted(self):
+        adapter = self._adapter(_strict_length_bot())
+
+        result = await adapter.edit_message(
+            "123", "456", _markdown_heavy_content(), finalize=True,
+        )
+
+        assert result.success is True
+        assert len(result.continuation_message_ids) >= 1
+        transmitted = _all_transmitted(adapter._bot)
+        assert transmitted
+        for kwargs in transmitted:
+            assert utf16_len(kwargs["text"]) <= 4096
+            assert kwargs.get("parse_mode") is not None
+            assert "**" not in kwargs["text"]
+        # Bold made it through as MarkdownV2, not raw markers.
+        assert any("*bold emphasis*" in kwargs["text"] for kwargs in transmitted)
+
+    @pytest.mark.asyncio
+    async def test_finalize_overflow_preserves_topic_and_parse_mode(self):
+        adapter = self._adapter(_strict_length_bot())
+
+        result = await adapter.edit_message(
+            "-100123",
+            "456",
+            _markdown_heavy_content(),
+            finalize=True,
+            metadata={"thread_id": "17585"},
+        )
+
+        assert result.success is True
+        sent = [c.kwargs for c in adapter._bot.send_message.await_args_list]
+        assert sent, "expected at least one overflow continuation"
+        assert all(k.get("message_thread_id") == 17585 for k in sent)
+        assert all(k.get("parse_mode") is not None for k in sent)
+        assert sent[0]["reply_to_message_id"] == 456
+
+    @pytest.mark.asyncio
+    async def test_finalize_overflow_escapes_chunk_indicators(self):
+        adapter = self._adapter(_strict_length_bot())
+
+        result = await adapter.edit_message(
+            "123", "456", _markdown_heavy_content(), finalize=True,
+        )
+
+        assert result.success is True
+        markdown_texts = [
+            k["text"] for k in _all_transmitted(adapter._bot) if k.get("parse_mode")
+        ]
+        assert len(markdown_texts) > 1
+        for text in markdown_texts:
+            assert re.search(r" \\\(\d+/\d+\\\)$", text), text[-40:]
+            assert not re.search(r" \(\d+/\d+\)$", text)
+
+    @pytest.mark.asyncio
+    async def test_finalize_continuation_parse_error_falls_back_to_stripped_text(self):
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock()
+        calls = []
+
+        async def _send(**kwargs):
+            calls.append(kwargs)
+            markdown_attempts = [c for c in calls if c.get("parse_mode") is not None]
+            if kwargs.get("parse_mode") is not None and len(markdown_attempts) == 1:
+                raise Exception("Bad Request: can't parse entities")
+            return SimpleNamespace(message_id=1000 + len(calls))
+
+        bot.send_message = AsyncMock(side_effect=_send)
+        adapter = self._adapter(bot)
+
+        result = await adapter.edit_message(
+            "123", "456", _markdown_heavy_content(), finalize=True,
+        )
+
+        assert result.success is True
+        plain_calls = [k for k in calls if k.get("parse_mode") is None]
+        assert plain_calls, "expected a plain-text fallback send"
+        fallback_text = plain_calls[0]["text"]
+        # Clean stripped text, not the raw chunk with literal markers.
+        assert "**" not in fallback_text
+        assert "\\(" not in fallback_text
+        assert "\\." not in fallback_text
+
+    @pytest.mark.asyncio
+    async def test_finalize_first_chunk_fallback_uses_stripped_text(self):
+        bot = MagicMock()
+        edit_calls = []
+
+        async def _edit(**kwargs):
+            edit_calls.append(kwargs)
+            if kwargs.get("parse_mode") is not None:
+                raise Exception("Bad Request: can't parse entities")
+            return None
+
+        bot.edit_message_text = AsyncMock(side_effect=_edit)
+        _next_id = [2000]
+
+        async def _send(**kwargs):
+            _next_id[0] += 1
+            return SimpleNamespace(message_id=_next_id[0])
+
+        bot.send_message = AsyncMock(side_effect=_send)
+        adapter = self._adapter(bot)
+
+        result = await adapter.edit_message(
+            "123", "456", _markdown_heavy_content(), finalize=True,
+        )
+
+        assert result.success is True
+        plain_edits = [k for k in edit_calls if k.get("parse_mode") is None]
+        assert plain_edits, "expected plain-text fallback edit for chunk 1"
+        assert "**" not in plain_edits[0]["text"]
+        assert "\\." not in plain_edits[0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_finalize_reply_not_found_retry_sends_stripped_text(self):
+        bot = MagicMock()
+        bot.edit_message_text = AsyncMock()
+        calls = []
+
+        async def _send(**kwargs):
+            calls.append(kwargs)
+            if kwargs.get("reply_to_message_id"):
+                raise Exception("Bad Request: reply message not found")
+            return SimpleNamespace(message_id=3000 + len(calls))
+
+        bot.send_message = AsyncMock(side_effect=_send)
+        adapter = self._adapter(bot)
+
+        result = await adapter.edit_message(
+            "-100123",
+            "456",
+            _markdown_heavy_content(),
+            finalize=True,
+            metadata={"thread_id": "17585"},
+        )
+
+        assert result.success is True
+        retries = [k for k in calls if not k.get("reply_to_message_id")]
+        assert retries, "expected no-anchor retry sends"
+        for kwargs in retries:
+            assert kwargs.get("message_thread_id") == 17585
+            assert "**" not in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_inflation_window_routes_to_formatted_split(self):
+        """Raw text under 4096 whose MarkdownV2 form exceeds it must be
+        split-and-delivered formatted, not degraded to a stripped plain
+        edit by the in-place fallback."""
+        adapter = self._adapter(_strict_length_bot())
+
+        line = "Step 1. Done! More... (note) - item.\n"
+        content = line * 105
+        assert utf16_len(content) <= 4096
+        assert utf16_len(adapter.format_message(content)) > 4096
+
+        result = await adapter.edit_message("123", "456", content, finalize=True)
+
+        assert result.success is True
+        assert len(result.continuation_message_ids) >= 1
+        for kwargs in _all_transmitted(adapter._bot):
+            assert kwargs.get("parse_mode") is not None
+            assert utf16_len(kwargs["text"]) <= 4096
+
+    @pytest.mark.asyncio
+    async def test_non_finalize_overflow_keeps_plain_chunks(self):
+        """Streaming previews stay plain by design: the finalize fix must
+        not leak parse_mode into the non-finalize overflow path."""
+        adapter = self._adapter(_strict_length_bot())
+
+        result = await adapter.edit_message(
+            "123", "456", _markdown_heavy_content(), finalize=False,
+        )
+
+        assert result.success is True
+        for kwargs in _all_transmitted(adapter._bot):
+            assert kwargs.get("parse_mode") is None
+
 
 # =========================================================================
 # Telegram guest mention gating
