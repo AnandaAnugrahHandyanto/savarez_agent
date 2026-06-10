@@ -1430,9 +1430,10 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
     agent = None
 
-    # Mark this as a cron session so the approval system can apply cron_mode.
-    # This env var is process-wide and persists for the lifetime of the
-    # scheduler process — every job this process runs is a cron job.
+    # Mark this job as cron-scoped for approval checks. Keep a temporary env
+    # mirror for legacy code paths that still read os.environ directly, but
+    # restore it in finally so the flag does not leak across unrelated turns.
+    _prior_cron_session = os.environ.get("HERMES_CRON_SESSION")
     os.environ["HERMES_CRON_SESSION"] = "1"
 
     # Use ContextVars for per-job session/delivery state so parallel jobs
@@ -1464,6 +1465,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         platform="",
         chat_id="",
         chat_name="",
+        cron_session="1",
     )
     _cron_delivery_vars = (
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",
@@ -1859,6 +1861,10 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
+        if _prior_cron_session is None:
+            os.environ.pop("HERMES_CRON_SESSION", None)
+        else:
+            os.environ["HERMES_CRON_SESSION"] = _prior_cron_session
         if _session_db:
             try:
                 _session_db.end_session(_cron_session_id, "cron_complete")
