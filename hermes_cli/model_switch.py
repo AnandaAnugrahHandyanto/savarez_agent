@@ -1664,10 +1664,6 @@ def list_authenticated_providers(
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
                 continue
-            # Skip if this slug was already emitted (e.g. canonical provider
-            # with the same name) or will be picked up by section 4.
-            if ep_name.lower() in seen_slugs:
-                continue
             display_name = ep_cfg.get("name", "") or ep_name
             # ``base_url`` is Hermes's canonical write key (matches
             # custom_providers and _save_custom_provider); ``api`` / ``url``
@@ -1699,6 +1695,26 @@ def list_authenticated_providers(
                 for m in cfg_models:
                     if m and m not in models_list:
                         models_list.append(m)
+
+            # If this provider was already emitted by Section 1 (built-in)
+            # or Section 2 (hermes overlays), merge user-configured models
+            # into the existing entry instead of skipping entirely.
+            # This ensures providers.*.models overrides are visible in the
+            # picker even for built-in providers like alibaba, openai, etc.
+            if ep_name.lower() in seen_slugs and models_list:
+                for _existing in results:
+                    if _existing.get("slug", "").lower() == ep_name.lower():
+                        _em = set(_existing.get("models", []))
+                        for _m in models_list:
+                            if _m not in _em:
+                                _existing["models"].append(_m)
+                                _em.add(_m)
+                        _existing["total_models"] = len(_existing["models"])
+                        _existing["is_user_defined"] = True
+                        break
+                continue
+            elif ep_name.lower() in seen_slugs:
+                continue
 
             # Official OpenAI API rows in providers: often have base_url but no
             # explicit models: dict — avoid a misleading zero count in /model.
