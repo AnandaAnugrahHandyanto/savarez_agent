@@ -588,6 +588,16 @@ def test_leonidas_plan_returns_structured_error_for_bad_request(monkeypatch):
         server._sessions.pop("plan-sid", None)
 
 
+def test_leonidas_plan_normalizes_legacy_policy_refusal_error_code():
+    assert server._plan_error_envelope("policy_refusal", "legacy refusal") == {
+        "contract_version": "leonidas.hermes.plan.v1",
+        "error": {
+            "code": "planning_refused",
+            "message": "legacy refusal",
+        },
+    }
+
+
 def test_leonidas_plan_returns_structured_error_for_missing_fields():
     resp = server.handle_request(
         {
