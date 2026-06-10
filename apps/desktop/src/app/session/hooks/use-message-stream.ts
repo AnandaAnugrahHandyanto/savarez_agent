@@ -31,6 +31,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setApprovalMode,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -673,6 +674,14 @@ export function useMessageStream({
 
           if (typeof payload?.fast === 'boolean') {
             setCurrentFastMode(payload.fast)
+          }
+
+          if (
+            payload?.approval_mode === 'manual' ||
+            payload?.approval_mode === 'smart' ||
+            payload?.approval_mode === 'off'
+          ) {
+            setApprovalMode(payload.approval_mode)
           }
 
           if (typeof payload?.yolo === 'boolean') {

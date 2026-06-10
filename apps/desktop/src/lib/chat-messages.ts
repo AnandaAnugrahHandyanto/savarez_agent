@@ -2,7 +2,7 @@ import type { ThreadMessageLike } from '@assistant-ui/react'
 
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 import { parseTodos } from '@/lib/todos'
-import type { SessionMessage, UsageStats } from '@/types/hermes'
+import type { ApprovalMode, SessionMessage, UsageStats } from '@/types/hermes'
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number]
 
@@ -44,6 +44,7 @@ export type GatewayEventPayload = {
   reasoning_effort?: string
   service_tier?: string
   fast?: boolean
+  approval_mode?: ApprovalMode
   yolo?: boolean
   running?: boolean
   cwd?: string
