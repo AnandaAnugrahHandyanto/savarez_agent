@@ -4080,6 +4080,9 @@ class TelegramAdapter(BasePlatformAdapter):
             "draftk": (["draft", "--key", token], "draft", False),
             "editk": (["edit-context", "--key", token], "edit context", False),
             "sendk": (["send", "--key", token, "--execute"], "sent", True),
+            "promdonek": (["promise-action", "done", token], "promise done", True),
+            "promfupk": (["promise-action", "followup", token], "promise follow-up", True),
+            "promwaitk": (["promise-action", "wait", token], "promise waiting", True),
         }
         return dispatch.get(verb)
 
