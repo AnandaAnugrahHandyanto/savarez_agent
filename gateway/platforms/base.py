@@ -2639,14 +2639,14 @@ class BasePlatformAdapter(ABC):
         # Strip surrounding quotes / backticks
         if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "`\"'":
             raw = raw[1:-1].strip()
-        if not raw.startswith('file://'):
+        if not raw.lower().startswith('file://'):
             return None
 
         # Normalise backslashes to forward slashes for URL parsing
         normalised = raw.replace('\\', '/')
 
         parsed = urllib.parse.urlparse(normalised)
-        if parsed.scheme != 'file':
+        if parsed.scheme.lower() != 'file':
             return None
 
         if parsed.netloc:
@@ -2671,6 +2671,21 @@ class BasePlatformAdapter(ABC):
 
         # URL-decode
         local = urllib.parse.unquote(local)
+
+        # Normalise backslashes to forward slashes in the decoded result
+        # so encoded variants (``%5C%5C``) are caught by the ``//`` check below.
+        local = local.replace('\\', '/')
+
+        # After decoding and normalising, reject paths starting with ``//`` —
+        # these are UNC paths that slipped past ``netloc`` (e.g.
+        # ``file:////server/share``, ``file:///%2F%2Fserver/share``,
+        # or ``file:///%5C%5Cserver/share``).
+        if local.startswith('//'):
+            logger.debug(
+                "Rejecting decoded UNC file:// URI: %s", _log_safe_path(url)
+            )
+            return None
+
         return local
 
     @staticmethod
@@ -2714,12 +2729,8 @@ class BasePlatformAdapter(ABC):
         # coordinates (masking is offset-preserving).
         accepted_spans: list = []
 
-        FILE_LIKE_EXTS = frozenset({
-            '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.tiff',
-        })
-
         # Match markdown images: ![alt](url)
-        md_pattern = r'!\[([^\]]*)\]\(((?:https?|file)://[^\s\)]+)\)'
+        md_pattern = r'!\[([^\]]*)\]\(((?i:https?|file)://[^\s\)]+)\)'
         md_re = re.compile(md_pattern)
         for match in md_re.finditer(scan_content):
             # Reject matches that landed in a masked region
@@ -2731,7 +2742,7 @@ class BasePlatformAdapter(ABC):
                 continue
             alt_text = real_match.group(1)
             url = real_match.group(2)
-            if url.startswith('file://'):
+            if url.lower().startswith('file://'):
                 local_path = BasePlatformAdapter._normalize_file_url(url)
                 if local_path and os.path.splitext(local_path)[1].lower() in FILE_LIKE_EXTS:
                     validated = validate_media_delivery_path(local_path)
@@ -2752,7 +2763,7 @@ class BasePlatformAdapter(ABC):
         # Match HTML img tags, case-insensitive, with optional extra
         # attributes before or after ``src`` (e.g. ``<img width="200" src="...">``).
         html_pattern = (
-            r'<img\s+[^>]*?src=(["\']?)((?:https?|file)://[^\s"\'<>]+)\1'
+            r'<img\s+[^>]*?src=(["\']?)((?i:https?|file)://[^\s"\'<>]+)\1'
             r'[^>]*?/?>\s*(?:</img>)?'
         )
         html_re = re.compile(html_pattern, re.IGNORECASE)
@@ -2764,7 +2775,7 @@ class BasePlatformAdapter(ABC):
             if not real_match:
                 continue
             url = real_match.group(2)
-            if url.startswith('file://'):
+            if url.lower().startswith('file://'):
                 local_path = BasePlatformAdapter._normalize_file_url(url)
                 if local_path and os.path.splitext(local_path)[1].lower() in FILE_LIKE_EXTS:
                     validated = validate_media_delivery_path(local_path)

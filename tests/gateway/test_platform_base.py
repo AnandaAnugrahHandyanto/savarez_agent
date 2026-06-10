@@ -454,6 +454,27 @@ Example code:
         assert images[0][0] == "https://example.com/img.png"
         assert "<img" not in cleaned
 
+    def test_uppercase_scheme_extraction(self, tmp_path):
+        """FILE:/// URI (uppercase) extracts with existing file."""
+        img = tmp_path / "cap.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        # Markdown with FILE://
+        content = f"![x](FILE://{f})"
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert str(img) in images[0][0]
+
+    def test_uppercase_scheme_html_extraction(self, tmp_path):
+        """HTML <img SRC="FILE://..."> extracts."""
+        img = tmp_path / "cap.png"
+        img.write_bytes(b"PNG")
+        f = img.as_posix()
+        content = f'<img SRC="FILE://{f}">'
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+        assert str(img) in images[0][0]
+
 
 class TestNormalizeFileUrl:
     """Tests for BasePlatformAdapter._normalize_file_url."""
@@ -482,6 +503,60 @@ class TestNormalizeFileUrl:
     def test_unc_rejected(self):
         result = BasePlatformAdapter._normalize_file_url("file://server/share/file.png")
         assert result is None
+
+    def test_unc_double_forward_slash_rejected(self):
+        """file:////server/share/... (four slashes) is rejected."""
+        result = BasePlatformAdapter._normalize_file_url("file:////server/share/a.png")
+        assert result is None
+
+    def test_unc_encoded_double_slash_rejected(self):
+        """file:///%2F%2Fserver/share/... (URL-encoded UNC) is rejected."""
+        result = BasePlatformAdapter._normalize_file_url("file:///%2F%2Fserver/share/a.png")
+        assert result is None
+
+    def test_unc_encoded_backslash_variant_rejected(self):
+        """file:///%5C%5Cserver/share/... (backslash-encoded UNC) is rejected."""
+        result = BasePlatformAdapter._normalize_file_url("file:///%5C%5Cserver/share/a.png")
+        assert result is None
+
+    def test_uppercase_scheme_windows(self):
+        """FILE:///C:/path (uppercase scheme) works on Windows."""
+        result = BasePlatformAdapter._normalize_file_url("FILE:///C:/Users/test/file.png")
+        assert result is not None
+        assert "C:" in result
+        assert "file.png" in result
+
+    def test_uppercase_scheme_posix(self):
+        """FILE:///tmp/foo (uppercase scheme) works."""
+        result = BasePlatformAdapter._normalize_file_url("FILE:///tmp/foo.png")
+        assert result == "/tmp/foo.png"
+
+    def test_mixed_case_scheme_posix(self):
+        """File:///tmp/foo (mixed case) works."""
+        result = BasePlatformAdapter._normalize_file_url("File:///tmp/foo.png")
+        assert result == "/tmp/foo.png"
+
+    def test_posix_absolute_regression(self, tmp_path):
+        """Normal POSIX path not broken."""
+        result = BasePlatformAdapter._normalize_file_url(f"file://{tmp_path}/snap.png")
+        assert result == f"{tmp_path}/snap.png"
+
+    def test_windows_three_slashes_drive_regression(self):
+        """Windows file:///C:/... not broken."""
+        result = BasePlatformAdapter._normalize_file_url("file:///C:/Users/test/file.png")
+        assert result is not None
+        assert "C:" in result
+
+    def test_windows_two_slashes_drive_regression(self):
+        """Windows file://C:/... not broken."""
+        result = BasePlatformAdapter._normalize_file_url("file://C:/Users/test/file.png")
+        assert result is not None
+        assert "C:" in result
+
+    def test_percent_encoding_regression(self):
+        """%20 decoding not broken."""
+        result = BasePlatformAdapter._normalize_file_url("file:///tmp/my%20file.png")
+        assert result == "/tmp/my file.png"
 
     def test_not_a_file_url(self):
         result = BasePlatformAdapter._normalize_file_url("https://example.com/img.png")
