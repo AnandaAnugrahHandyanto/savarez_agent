@@ -259,6 +259,8 @@ class TestBackendSelection:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "YDC_API_KEY",
+        "YDC_API_KEY",
     )
 
     def setup_method(self):
@@ -304,6 +306,12 @@ class TestBackendSelection:
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={"backend": "tavily"}):
             assert _get_backend() == "tavily"
+
+    def test_config_youdotcom(self):
+        """web.backend=youdotcom in config → 'youdotcom' regardless of keys."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "youdotcom"}):
+            assert _get_backend() == "youdotcom"
 
     def test_config_tavily_overrides_env_keys(self):
         """web.backend=tavily in config → 'tavily' even if Firecrawl key set."""
@@ -354,6 +362,13 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
             assert _get_backend() == "tavily"
+
+    def test_fallback_youdotcom_only_key(self):
+        """Only YDC_API_KEY set → 'youdotcom'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"YDC_API_KEY": "ydc-test"}):
+            assert _get_backend() == "youdotcom"
 
     def test_fallback_tavily_beats_firecrawl_direct(self):
         """Tavily ranks above firecrawl in the explicit-credential block."""
@@ -623,9 +638,15 @@ class TestCheckWebApiKey:
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
+    def test_youdotcom_key_only(self):
+        with patch.dict(os.environ, {"YDC_API_KEY": "ydc-test"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
     def test_no_keys_returns_false(self):
         from tools.web_tools import check_web_api_key
-        assert check_web_api_key() is False
+        # You.com Search API works without an API key (100 free searches/day)
+        assert check_web_api_key() is True
 
     def test_both_keys_returns_true(self):
         with patch.dict(os.environ, {
