@@ -32,6 +32,8 @@ Requires:
 """
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -40,6 +42,7 @@ import os
 import socket as _socket
 import re
 import sqlite3
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -92,6 +95,7 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -1283,6 +1287,125 @@ class APIServerAdapter(BasePlatformAdapter):
             "platform": "api_server",
             "data": data,
         })
+
+    # ------------------------------------------------------
+    # POST /api/audio/transcribe — voice dictation
+    # ------------------------------------------------------
+
+    _MAX_TRANSCRIPTION_BYTES = 10 * 1024 * 1024  # 10 MB
+
+    async def _handle_audio_transcribe(self, request: web.Request) -> web.Response:
+        """Transcribe an audio recording sent as a base64 data-URL.
+
+        Accepts JSON with ``data_url`` (required) and optional ``mime_type``.
+        Returns ``{ok: bool, transcript: str, provider?: str}``.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(
+                {"ok": False, "transcript": "", "error": "Invalid JSON body"},
+                status=400,
+            )
+
+        data_url = (body.get("data_url") or "").strip()
+        if not data_url.startswith("data:") or "," not in data_url:
+            return web.json_response(
+                {"ok": False, "transcript": "", "error": "Missing or invalid data_url"},
+                status=400,
+            )
+
+        header, encoded = data_url.split(",", 1)
+        if ";base64" not in header:
+            return web.json_response(
+                {"ok": False, "transcript": "", "error": "data_url must be base64-encoded"},
+                status=400,
+            )
+
+        mime_type = (body.get("mime_type") or header[5:].split(";", 1)[0] or "audio/webm").strip()
+        normalized_mime = mime_type.split(";", 1)[0].lower()
+        if not (normalized_mime.startswith("audio/") or normalized_mime == "video/webm"):
+            return web.json_response(
+                {"ok": False, "transcript": "", "error": "Payload must be an audio recording"},
+                status=400,
+            )
+
+        try:
+            audio_bytes = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError):
+            return web.json_response(
+                {"ok": False, "transcript": "", "error": "Invalid base64 audio data"},
+                status=400,
+            )
+
+        if not audio_bytes:
+            return web.json_response(
+                {"ok": False, "transcript": "", "error": "Audio recording is empty"},
+                status=400,
+            )
+        if len(audio_bytes) > self._MAX_TRANSCRIPTION_BYTES:
+            return web.json_response(
+                {"ok": False, "transcript": "", "error": "Audio recording is too large"},
+                status=413,
+            )
+
+        # Determine file extension from mime type
+        ext_map = {
+            "audio/webm": ".webm",
+            "audio/wav": ".wav",
+            "audio/mp4": ".m4a",
+            "audio/mpeg": ".mp3",
+            "audio/ogg": ".ogg",
+            "audio/flac": ".flac",
+            "video/webm": ".webm",
+        }
+        suffix = ext_map.get(normalized_mime, ".webm")
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(audio_bytes)
+                tmp_path = tmp.name
+
+            from tools.transcription_tools import transcribe_audio
+
+            result = await asyncio.to_thread(transcribe_audio, tmp_path)
+            success = bool(result.get("success"))
+            transcript = str(result.get("transcript") or "").strip()
+            provider = result.get("provider")
+            error = result.get("error")
+
+            if success and transcript:
+                return web.json_response({
+                    "ok": True,
+                    "transcript": transcript,
+                    "provider": provider,
+                })
+            else:
+                return web.json_response({
+                    "ok": False,
+                    "transcript": "",
+                    "error": error or "Transcription returned no text",
+                })
+        except ImportError:
+            return web.json_response({
+                "ok": False,
+                "transcript": "",
+                "error": "STT is not available — install transcription dependencies",
+            })
+        except Exception as exc:
+            logger.exception("Audio transcription failed")
+            return web.json_response({
+                "ok": False,
+                "transcript": "",
+                "error": f"Transcription error: {exc}",
+            })
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     # ------------------------------------------------------------------
     # /api/sessions — thin client/session resource API
@@ -4167,6 +4290,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
+            # Voice dictation
+            self._app.router.add_post("/api/audio/transcribe", self._handle_audio_transcribe)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
             self._app.router.add_get("/api/sessions", self._handle_list_sessions)
             self._app.router.add_post("/api/sessions", self._handle_create_session)
