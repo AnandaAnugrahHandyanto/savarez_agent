@@ -4539,6 +4539,82 @@ def _read_spawn_tree_index(session_dir) -> list[dict]:
     return out
 
 
+# Registry-written ledger of completed-task snapshots (Phase 5 Step 6b).
+# Appended by AgentTaskRegistry.complete() — see task_registry._TASKS_JSONL,
+# which this name must match — one AgentTaskRecord.snapshot() dict per line.
+_SPAWN_TREE_TASKS = "_tasks.jsonl"
+
+
+def _read_spawn_tree_tasks(session_dir) -> list[dict]:
+    """Read the registry's ``_tasks.jsonl`` — same lenient line handling as
+    ``_read_spawn_tree_index`` (blank/corrupt lines skipped silently), plus a
+    dict check since each line must be a snapshot object."""
+    tasks_path = session_dir / _SPAWN_TREE_TASKS
+    if not tasks_path.exists():
+        return []
+    out: list[dict] = []
+    try:
+        with tasks_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    snap = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(snap, dict):
+                    out.append(snap)
+    except OSError:
+        return []
+    return out
+
+
+def _registry_task_entries(session_dir, legacy_entries: list[dict]) -> list[dict]:
+    """List-entries for registry-completed tasks not already covered by the
+    legacy index (Phase 5 Step 6b).
+
+    Q5 ruling: when both sources carry the same ``task_id`` the legacy
+    (TUI-assembled, richer) entry wins; registry-only tasks are appended in
+    the legacy list-entry shape with additive keys.  Fully guarded — a
+    registry-side bug can never break ``spawn_tree.list``.
+    """
+    try:
+        snapshots = _read_spawn_tree_tasks(session_dir)
+        if not snapshots:
+            return []
+        legacy_ids = {tid for e in legacy_entries if (tid := e.get("task_id"))}
+        by_task: dict[str, dict] = {}
+        for snap in snapshots:
+            tid = snap.get("task_id")
+            if not isinstance(tid, str) or not tid or tid in legacy_ids:
+                continue
+            by_task[tid] = snap  # later lines win: latest snapshot per task
+        tasks_path = str(session_dir / _SPAWN_TREE_TASKS)
+        return [
+            {
+                # Legacy list-entry keys, mapped from the snapshot.  `path`
+                # points at the ledger file itself: it exists on disk and
+                # identifies the source, but is not a loadable snapshot.
+                "path": tasks_path,
+                "session_id": snap.get("session_id") or session_dir.name,
+                "finished_at": snap.get("finished_at") or snap.get("started_at") or 0,
+                "started_at": snap.get("started_at"),
+                "label": snap.get("goal") or "",
+                "count": 1,
+                # Additive keys — absent on legacy entries; clients that
+                # predate Step 6b ignore them.
+                "task_id": tid,
+                "status": snap.get("status"),
+                "source": "registry",
+            }
+            for tid, snap in by_task.items()
+        ]
+    except Exception as exc:
+        logger.debug("spawn_tree tasks merge failed for %s: %s", session_dir, exc)
+        return []
+
+
 @method("spawn_tree.save")
 def _(rid, params: dict) -> dict:
     session_id = str(params.get("session_id") or "").strip()
@@ -4596,38 +4672,44 @@ def _(rid, params: dict) -> dict:
 
     entries: list[dict] = []
     for d in roots:
+        dir_entries: list[dict] = []
         indexed = _read_spawn_tree_index(d)
         if indexed:
             # Skip index entries whose snapshot file was manually deleted.
-            entries.extend(
+            dir_entries.extend(
                 e for e in indexed if (p := e.get("path")) and Path(p).exists()
             )
-            continue
-
-        # Fallback for legacy (pre-index) sessions: full scan.  O(N) reads
-        # but only runs once per session until the next save writes the index.
-        for p in d.glob("*.json"):
-            if p.name == _SPAWN_TREE_INDEX:
-                continue
-            try:
-                stat = p.stat()
+        else:
+            # Fallback for legacy (pre-index) sessions: full scan.  O(N) reads
+            # but only runs once per session until the next save writes the index.
+            for p in d.glob("*.json"):
+                if p.name == _SPAWN_TREE_INDEX:
+                    continue
                 try:
-                    raw = json.loads(p.read_text(encoding="utf-8"))
-                except Exception:
-                    raw = {}
-                subagents = raw.get("subagents") or []
-                entries.append(
-                    {
-                        "path": str(p),
-                        "session_id": raw.get("session_id") or d.name,
-                        "finished_at": raw.get("finished_at") or stat.st_mtime,
-                        "started_at": raw.get("started_at"),
-                        "label": raw.get("label") or "",
-                        "count": len(subagents) if isinstance(subagents, list) else 0,
-                    }
-                )
-            except OSError:
-                continue
+                    stat = p.stat()
+                    try:
+                        raw = json.loads(p.read_text(encoding="utf-8"))
+                    except Exception:
+                        raw = {}
+                    subagents = raw.get("subagents") or []
+                    dir_entries.append(
+                        {
+                            "path": str(p),
+                            "session_id": raw.get("session_id") or d.name,
+                            "finished_at": raw.get("finished_at") or stat.st_mtime,
+                            "started_at": raw.get("started_at"),
+                            "label": raw.get("label") or "",
+                            "count": len(subagents) if isinstance(subagents, list) else 0,
+                        }
+                    )
+                except OSError:
+                    continue
+
+        # Phase 5 Step 6b: append registry-completed tasks (_tasks.jsonl)
+        # not already present in the legacy sources (dedupe by task_id,
+        # legacy wins per the Q5 ruling).
+        dir_entries.extend(_registry_task_entries(d, dir_entries))
+        entries.extend(dir_entries)
 
     entries.sort(key=lambda e: e.get("finished_at") or 0, reverse=True)
     return _ok(rid, {"entries": entries[:limit]})

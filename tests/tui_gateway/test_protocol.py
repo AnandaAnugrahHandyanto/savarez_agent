@@ -1420,6 +1420,391 @@ def test_delegation_pause_writes_both_stores(server, registry, monkeypatch):
     assert registry.spawns_paused() is False
 
 
+# ── task.submit intent="delegate" (Phase 5 Step 5) ───────────────────
+# The delegate engine is stubbed in sys.modules (run_agent-stub pattern
+# above): importing the real delegate_tool here would execute its import
+# chain under the fixture's mocked hermes_constants.
+
+
+def _delegate_session(server, sid="test-session"):
+    """Session with a live (weakref-able) agent for delegate submits."""
+    agent = _FakeInterruptibleAgent()
+    server._sessions[sid] = {"session_key": sid, "agent": agent}
+    return agent
+
+
+def _stub_delegate_engine(monkeypatch, fake):
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.delegate_tool",
+        types.SimpleNamespace(delegate_task=fake),
+    )
+
+
+def test_task_submit_delegate_all_success_returns_succeeded(
+    server, registry, monkeypatch
+):
+    """intent=delegate happy path: every child completed -> status=succeeded
+    with the engine's per-child breakdown carried verbatim in outputs."""
+    sid = "test-session"
+    agent = _delegate_session(server, sid)
+    calls = []
+
+    def fake_delegate_task(tasks=None, parent_agent=None, **kwargs):
+        calls.append((tasks, parent_agent))
+        return json.dumps({
+            "results": [
+                {"task_index": 0, "status": "completed", "summary": "a done",
+                 "error": None, "api_calls": 2, "duration_seconds": 1},
+                {"task_index": 1, "status": "completed", "summary": "b done",
+                 "error": None, "api_calls": 3, "duration_seconds": 2},
+            ],
+            "total_duration_seconds": 2.5,
+        })
+
+    _stub_delegate_engine(monkeypatch, fake_delegate_task)
+
+    resp = server.handle_request({
+        "id": "r-del-ok",
+        "method": "task.submit",
+        "params": {
+            "session_id": sid,
+            "intent": "delegate",
+            "inputs": {"tasks": ["task a", {"goal": "task b"}]},
+            "task_id": "task-del-1",
+        },
+    })
+
+    assert "error" not in resp
+    r = resp["result"]
+    assert r["task_id"] == "task-del-1"
+    assert r["status"] == "succeeded"
+    assert r["error"] is None
+    assert [e["status"] for e in r["outputs"]["results"]] == [
+        "completed", "completed",
+    ]
+    assert r["outputs"]["total_duration_seconds"] == 2.5
+    # Goal strings were coerced to the engine's own {goal: ...} task shape
+    # and the session's live agent was passed as the parent.
+    assert calls == [([{"goal": "task a"}, {"goal": "task b"}], agent)]
+    # The parent task is a real registry record, completed terminally.
+    record = registry.get("task-del-1")
+    assert record is not None
+    assert record.intent == "delegate"
+    assert record.status.value == "succeeded"
+
+
+def test_task_submit_delegate_mixed_batch_is_partial(server, registry, monkeypatch):
+    """Q4 ruling pin: some children finished, some did not -> PARTIAL (never
+    FAILED — the Core must be able to re-plan only the unfinished children)."""
+    sid = "test-session"
+    _delegate_session(server, sid)
+
+    def fake_delegate_task(tasks=None, parent_agent=None, **kwargs):
+        return json.dumps({
+            "results": [
+                {"task_index": 0, "status": "completed", "summary": "done",
+                 "error": None},
+                {"task_index": 1, "status": "interrupted", "summary": None,
+                 "error": "Parent agent interrupted — child did not finish in time"},
+            ],
+            "total_duration_seconds": 4.0,
+        })
+
+    _stub_delegate_engine(monkeypatch, fake_delegate_task)
+
+    resp = server.handle_request({
+        "id": "r-del-partial",
+        "method": "task.submit",
+        "params": {
+            "session_id": sid,
+            "intent": "delegate",
+            "inputs": {"tasks": ["a", "b"]},
+            "task_id": "task-del-2",
+        },
+    })
+
+    assert "error" not in resp
+    r = resp["result"]
+    assert r["status"] == "partial"
+    assert r["error"] is None
+    assert [e["status"] for e in r["outputs"]["results"]] == [
+        "completed", "interrupted",
+    ]
+    assert registry.get("task-del-2").status.value == "partial"
+
+
+def test_task_submit_delegate_engine_exception_is_failed(
+    server, registry, monkeypatch
+):
+    """An exception escaping the engine maps to FAILED + internal ExecError —
+    never a protocol error (the submit itself round-tripped honestly)."""
+    sid = "test-session"
+    _delegate_session(server, sid)
+
+    def boom(tasks=None, parent_agent=None, **kwargs):
+        raise RuntimeError("kaboom")
+
+    _stub_delegate_engine(monkeypatch, boom)
+
+    resp = server.handle_request({
+        "id": "r-del-boom",
+        "method": "task.submit",
+        "params": {
+            "session_id": sid,
+            "intent": "delegate",
+            "inputs": {"tasks": ["a"]},
+            "task_id": "task-del-3",
+        },
+    })
+
+    assert "error" not in resp
+    r = resp["result"]
+    assert r["status"] == "failed"
+    assert r["error"]["type"] == "internal"
+    assert r["error"]["retryable"] is False
+    assert "kaboom" in r["error"]["message"]
+    assert registry.get("task-del-3").status.value == "failed"
+
+
+def test_task_submit_delegate_missing_tasks_is_param_error(server, registry):
+    """Missing, non-list, or empty inputs.tasks -> 4012 param error before
+    any session/agent work happens."""
+    sid = "test-session"
+    _delegate_session(server, sid)
+
+    for bad_inputs in ({}, {"tasks": []}, {"tasks": "not-a-list"}):
+        resp = server.handle_request({
+            "id": "r-del-bad-tasks",
+            "method": "task.submit",
+            "params": {
+                "session_id": sid,
+                "intent": "delegate",
+                "inputs": bad_inputs,
+            },
+        })
+        assert resp["error"]["code"] == 4012
+        assert "inputs.tasks required" in resp["error"]["message"]
+
+    resp = server.handle_request({
+        "id": "r-del-bad-item",
+        "method": "task.submit",
+        "params": {
+            "session_id": sid,
+            "intent": "delegate",
+            "inputs": {"tasks": ["ok", 42]},
+        },
+    })
+    assert resp["error"]["code"] == 4012
+    assert "inputs.tasks[1]" in resp["error"]["message"]
+
+
+def test_task_submit_delegate_without_live_agent_errors(server, registry):
+    """A session without a live agent cannot delegate."""
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid, "agent": None}
+
+    resp = server.handle_request({
+        "id": "r-del-no-agent",
+        "method": "task.submit",
+        "params": {
+            "session_id": sid,
+            "intent": "delegate",
+            "inputs": {"tasks": ["a"]},
+        },
+    })
+
+    assert resp["error"]["code"] == 4010
+
+
+def test_task_submit_delegate_idempotency_replay_does_not_rerun(
+    server, registry, monkeypatch
+):
+    """Re-submitting the SAME idempotency_key replays the cached rich dict
+    + replayed=true without invoking the delegate engine again."""
+    sid = "test-session"
+    _delegate_session(server, sid)
+    calls = []
+
+    def fake_delegate_task(tasks=None, parent_agent=None, **kwargs):
+        calls.append(tasks)
+        return json.dumps({
+            "results": [
+                {"task_index": 0, "status": "completed", "summary": "done",
+                 "error": None},
+            ],
+            "total_duration_seconds": 0.1,
+        })
+
+    _stub_delegate_engine(monkeypatch, fake_delegate_task)
+
+    params = {
+        "session_id": sid,
+        "intent": "delegate",
+        "inputs": {"tasks": ["a"]},
+        "idempotency_key": "idem-del-1",
+    }
+    resp1 = server.handle_request(
+        {"id": "r-del-idem-1", "method": "task.submit", "params": params}
+    )
+    resp2 = server.handle_request(
+        {"id": "r-del-idem-2", "method": "task.submit", "params": params}
+    )
+
+    assert len(calls) == 1  # executed exactly once
+    assert "replayed" not in resp1["result"]
+    assert resp1["result"]["status"] == "succeeded"
+    assert resp2["result"]["replayed"] is True
+    replay = dict(resp2["result"])
+    replay.pop("replayed")
+    assert replay == resp1["result"]
+
+
+# ── spawn_tree.list: legacy _index.jsonl + registry _tasks.jsonl (Step 6b) ──
+
+
+@pytest.fixture()
+def spawn_home(server, tmp_path, monkeypatch):
+    """Point the lazily-imported get_hermes_home at a tmp dir so the
+    spawn-tree handlers read/write under tmp_path/spawn-trees."""
+    monkeypatch.setattr(
+        sys.modules["hermes_constants"], "get_hermes_home", lambda: tmp_path
+    )
+    return tmp_path
+
+
+def _spawn_session_dir(spawn_home, session_id="sess-1"):
+    d = spawn_home / "spawn-trees" / session_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _write_legacy_snapshot(session_dir, fname, label="legacy run", **index_extra):
+    """One saved snapshot file + its _index.jsonl line, as spawn_tree.save
+    writes them."""
+    path = session_dir / fname
+    path.write_text(
+        json.dumps({"session_id": session_dir.name, "subagents": [{}, {}]}),
+        encoding="utf-8",
+    )
+    entry = {
+        "path": str(path),
+        "session_id": session_dir.name,
+        "started_at": 100.0,
+        "finished_at": 200.0,
+        "label": label,
+        "count": 2,
+        **index_extra,
+    }
+    with (session_dir / "_index.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+    return entry
+
+
+def _write_task_snapshot(session_dir, task_id, goal="child goal", finished_at=300.0):
+    """One registry-completed line, as AgentTaskRegistry.complete() appends."""
+    snap = {
+        "task_id": task_id,
+        "parent_task_id": None,
+        "depth": 1,
+        "goal": goal,
+        "intent": "delegate",
+        "model": "test/model",
+        "started_at": 250.0,
+        "finished_at": finished_at,
+        "status": "succeeded",
+        "tool_count": 3,
+        "last_tool": "bash",
+        "result": None,
+        "session_id": session_dir.name,
+    }
+    with (session_dir / "_tasks.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(snap) + "\n")
+    return snap
+
+
+def _spawn_tree_list(server, session_id="sess-1"):
+    resp = server.handle_request({
+        "id": "r-st-list",
+        "method": "spawn_tree.list",
+        "params": {"session_id": session_id},
+    })
+    assert "error" not in resp
+    return resp["result"]["entries"]
+
+
+def test_spawn_tree_list_legacy_only_unchanged(server, spawn_home):
+    """No _tasks.jsonl: the wire shape is byte-identical to the pre-6b list
+    (same keys, no additive ones)."""
+    d = _spawn_session_dir(spawn_home)
+    expected = _write_legacy_snapshot(d, "20260610T000000.json")
+
+    entries = _spawn_tree_list(server)
+
+    assert entries == [expected]
+    assert set(entries[0]) == {
+        "path", "session_id", "started_at", "finished_at", "label", "count",
+    }
+
+
+def test_spawn_tree_list_tasks_only_entries_appear(server, spawn_home):
+    """A session with only the registry ledger still lists its tasks, mapped
+    onto the legacy entry schema."""
+    d = _spawn_session_dir(spawn_home)
+    _write_task_snapshot(d, "sa-0-aaaa", goal="first child", finished_at=300.0)
+    _write_task_snapshot(d, "sa-1-bbbb", goal="second child", finished_at=400.0)
+
+    entries = _spawn_tree_list(server)
+
+    assert [e["task_id"] for e in entries] == ["sa-1-bbbb", "sa-0-aaaa"]  # newest first
+    e = entries[1]
+    assert e["path"] == str(d / "_tasks.jsonl")
+    assert e["session_id"] == "sess-1"
+    assert e["started_at"] == 250.0
+    assert e["finished_at"] == 300.0
+    assert e["label"] == "first child"
+    assert e["count"] == 1
+    assert e["status"] == "succeeded"
+    assert e["source"] == "registry"
+
+
+def test_spawn_tree_list_merge_dedupes_by_task_id_preferring_legacy(
+    server, spawn_home
+):
+    """Q5 ruling: same task_id in both sources -> the TUI-assembled legacy
+    entry wins; registry-only ids are appended."""
+    d = _spawn_session_dir(spawn_home)
+    legacy = _write_legacy_snapshot(
+        d, "20260610T000000.json", label="rich legacy", task_id="sa-0-aaaa"
+    )
+    _write_task_snapshot(d, "sa-0-aaaa", goal="poor registry copy")
+    _write_task_snapshot(d, "sa-1-bbbb", goal="registry only", finished_at=400.0)
+
+    entries = _spawn_tree_list(server)
+
+    assert len(entries) == 2
+    by_id = {e["task_id"]: e for e in entries}
+    assert by_id["sa-0-aaaa"] == legacy  # legacy entry, untouched
+    assert by_id["sa-1-bbbb"]["label"] == "registry only"
+    assert by_id["sa-1-bbbb"]["source"] == "registry"
+
+
+def test_spawn_tree_list_skips_corrupt_tasks_lines(server, spawn_home):
+    """Corrupt _tasks.jsonl lines are skipped silently, like the legacy
+    index reader."""
+    d = _spawn_session_dir(spawn_home)
+    _write_task_snapshot(d, "sa-0-aaaa")
+    with (d / "_tasks.jsonl").open("a", encoding="utf-8") as f:
+        f.write("{not json\n")
+        f.write("\n")
+        f.write('["a", "json", "array", "not", "a", "dict"]\n')
+    _write_task_snapshot(d, "sa-1-bbbb")
+
+    entries = _spawn_tree_list(server)
+
+    assert sorted(e["task_id"] for e in entries) == ["sa-0-aaaa", "sa-1-bbbb"]
+
+
 def test_command_dispatch_queue_sends_message(server):
     """command.dispatch /queue returns {type: 'send', message: ...} for the TUI."""
     sid = "test-session"
