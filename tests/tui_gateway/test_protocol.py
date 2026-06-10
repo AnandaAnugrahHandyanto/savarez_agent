@@ -1048,6 +1048,135 @@ def test_slash_exec_rejects_pending_input_commands(server, cmd):
     assert "pending-input command" in resp["error"]["message"]
 
 
+# ── slash.exec task_id echo + task.submit (Phase 4) ──────────────────
+
+
+class _FakeSlashWorker:
+    """Worker double matching the slash.exec test style above."""
+
+    def __init__(self):
+        self.calls = []
+
+    def run(self, cmd):
+        self.calls.append(cmd)
+        return f"worker:{cmd}"
+
+
+def _clear_task_results(server):
+    with server._TASK_RESULTS_LOCK:
+        server._TASK_RESULTS.clear()
+
+
+def test_slash_exec_task_id_param_is_echoed_additively(server):
+    """slash.exec accepts an optional task_id and echoes it on the wire —
+    everything else in the payload stays exactly as today."""
+    sid = "test-session"
+    worker = _FakeSlashWorker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+
+    resp = server.handle_request({
+        "id": "r-slash-task-id",
+        "method": "slash.exec",
+        "params": {"command": "help", "session_id": sid, "task_id": "task-echo-1"},
+    })
+
+    assert "error" not in resp
+    assert resp["result"] == {"output": "worker:help", "task_id": "task-echo-1"}
+    assert worker.calls == ["help"]
+
+
+def test_task_submit_slash_happy_path_returns_rich_result(server):
+    """task.submit(intent=slash) runs the same execution core as slash.exec but
+    returns the rich ExecutionResult wire shape, echoing the supplied task_id."""
+    sid = "test-session"
+    worker = _FakeSlashWorker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+    _clear_task_results(server)
+
+    resp = server.handle_request({
+        "id": "r-task-submit-ok",
+        "method": "task.submit",
+        "params": {
+            "session_id": sid,
+            "intent": "slash",
+            "inputs": {"command": "help"},
+            "task_id": "task-123",
+        },
+    })
+
+    assert "error" not in resp
+    assert resp["result"] == {
+        "task_id": "task-123",
+        "status": "succeeded",
+        "outputs": {"output": "worker:help"},
+        "error": None,
+        "side_effects": [],
+    }
+    assert worker.calls == ["help"]
+
+
+def test_task_submit_idempotency_replay_does_not_rerun(server):
+    """Re-submitting the SAME idempotency_key must NOT execute again: the
+    stored rich result comes back with an additive replayed=true marker."""
+    sid = "test-session"
+    worker = _FakeSlashWorker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+    _clear_task_results(server)
+
+    params = {
+        "session_id": sid,
+        "intent": "slash",
+        "inputs": {"command": "help"},
+        "idempotency_key": "idem-key-1",
+    }
+    resp1 = server.handle_request({"id": "r-idem-1", "method": "task.submit", "params": params})
+    resp2 = server.handle_request({"id": "r-idem-2", "method": "task.submit", "params": params})
+
+    assert worker.calls == ["help"]  # executed exactly once
+    assert "replayed" not in resp1["result"]
+    # task_id was not supplied → a fresh uuid4 default, always present.
+    assert resp1["result"]["task_id"]
+    assert resp1["result"]["status"] == "succeeded"
+    assert resp2["result"]["replayed"] is True
+    replay = dict(resp2["result"])
+    replay.pop("replayed")
+    assert replay == resp1["result"]
+
+
+def test_task_submit_rejects_unsupported_intent(server):
+    """Pilot scope is intent='slash' only — anything else is a 4030 error."""
+    resp = server.handle_request({
+        "id": "r-task-bad-intent",
+        "method": "task.submit",
+        "params": {
+            "session_id": "test-session",
+            "intent": "shell",
+            "inputs": {"command": "ls"},
+        },
+    })
+
+    assert resp["error"]["code"] == 4030
+    assert "unsupported intent: shell" in resp["error"]["message"]
+    assert "pilot supports 'slash'" in resp["error"]["message"]
+
+
+def test_task_submit_propagates_slash_core_errors(server):
+    """Early-reject errors from the shared slash core surface as the same
+    JSON-RPC errors slash.exec returns (here: unknown session)."""
+    _clear_task_results(server)
+    resp = server.handle_request({
+        "id": "r-task-no-session",
+        "method": "task.submit",
+        "params": {
+            "session_id": "missing",
+            "intent": "slash",
+            "inputs": {"command": "help"},
+        },
+    })
+
+    assert resp["error"]["code"] == 4001
+
+
 def test_command_dispatch_queue_sends_message(server):
     """command.dispatch /queue returns {type: 'send', message: ...} for the TUI."""
     sid = "test-session"

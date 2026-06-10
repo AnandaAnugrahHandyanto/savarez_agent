@@ -182,6 +182,7 @@ _LONG_HANDLERS = frozenset(
         "shell.exec",
         "skills.manage",
         "slash.exec",
+        "task.submit",
     }
 )
 
@@ -7405,15 +7406,30 @@ def _mirror_slash_side_effects(
     return _SlashSideEffect()
 
 
-@method("slash.exec")
-def _(rid, params: dict) -> dict:
+def _slash_exec_core(
+    rid, params: dict, task_id: Optional[str] = None
+) -> tuple[Optional["ExecutionResult"], Optional[dict], Optional[dict]]:
+    """Shared slash-execution core for slash.exec and task.submit (Phase 4).
+
+    Runs the early-reject checks, the plugin path, and the slash-worker path,
+    ending in an Action Runtime ``ExecutionResult``. Returns a
+    ``(result, legacy_wire, err)`` triple:
+
+    * ``err`` — a JSON-RPC error response dict when the command was rejected
+      (or the worker died); ``result``/``legacy_wire`` are then ``None``.
+    * ``result`` — the rich ``ExecutionResult`` (task.submit renders it via
+      ``result_to_wire_rich``).
+    * ``legacy_wire`` — the byte-compatible legacy slash.exec payload
+      (``plugin_to_wire`` / ``slash_to_wire``), rendered here so the legacy
+      handler returns it untouched and the two methods cannot drift.
+    """
     session, err = _sess(params, rid)
     if err:
-        return err
+        return None, None, err
 
     cmd = params.get("command", "").strip()
     if not cmd:
-        return _err(rid, 4004, "empty command")
+        return None, None, _err(rid, 4004, "empty command")
 
     # Skill slash commands and _pending_input commands must NOT go through the
     # slash worker — see _PENDING_INPUT_COMMANDS definition above. Plugin
@@ -7425,14 +7441,14 @@ def _(rid, params: dict) -> dict:
     _cmd_arg = _cmd_parts[1] if len(_cmd_parts) > 1 else ""
 
     if _cmd_base in _PENDING_INPUT_COMMANDS:
-        return _err(
+        return None, None, _err(
             rid, 4018, f"pending-input command: use command.dispatch for /{_cmd_base}"
         )
 
     if _cmd_base in _WORKER_BLOCKED_COMMANDS:
         subcommand = _cmd_arg.split(maxsplit=1)[0].lower() if _cmd_arg else ""
         if subcommand in {"restore", "rewind"}:
-            return _err(
+            return None, None, _err(
                 rid,
                 4018,
                 "snapshot restore mutates live config/state; use command.dispatch for /snapshot restore",
@@ -7443,7 +7459,7 @@ def _(rid, params: dict) -> dict:
 
         _cmd_key = f"/{_cmd_base}"
         if _cmd_key in get_skill_commands():
-            return _err(
+            return None, None, _err(
                 rid, 4018, f"skill command: use command.dispatch for {_cmd_key}"
             )
     except Exception:
@@ -7468,15 +7484,14 @@ def _(rid, params: dict) -> dict:
 
         try:
             value = resolve_plugin_command_result(plugin_handler(_cmd_arg))
-            return _ok(
-                rid, plugin_to_wire(plugin_to_result(str(value or "(no output)")))
-            )
+            result = plugin_to_result(str(value or "(no output)"), task_id=task_id)
         except Exception as e:
             # Plugin failure → byte-identical {output, error} (Phase 1a additive
             # contract: both equal "Plugin command error: <e>") rendered from the
             # Action Runtime result so programmatic clients can detect it; the
             # TUI/web slashExec paths still read output and are unaffected.
-            return _ok(rid, plugin_to_wire(plugin_to_result(exc=e)))
+            result = plugin_to_result(exc=e, task_id=task_id)
+        return result, plugin_to_wire(result), None
 
     worker = session.get("slash_worker")
     if not worker:
@@ -7487,7 +7502,7 @@ def _(rid, params: dict) -> dict:
             )
             session["slash_worker"] = worker
         except Exception as e:
-            return _err(rid, 5030, f"slash worker start failed: {e}")
+            return None, None, _err(rid, 5030, f"slash worker start failed: {e}")
 
     try:
         output = worker.run(cmd)
@@ -7501,15 +7516,111 @@ def _(rid, params: dict) -> dict:
         from action_runtime import slash_to_result, slash_to_wire
 
         warning = _slash_side_effect_warning(effect)
-        result = slash_to_result(output or "(no output)", effect)
-        return _ok(rid, slash_to_wire(result, warning))
+        result = slash_to_result(output or "(no output)", effect, task_id=task_id)
+        return result, slash_to_wire(result, warning), None
     except Exception as e:
         try:
             worker.close()
         except Exception:
             pass
         session["slash_worker"] = None
-        return _err(rid, 5030, str(e))
+        return None, None, _err(rid, 5030, str(e))
+
+
+@method("slash.exec")
+def _(rid, params: dict) -> dict:
+    # Phase 4 (additive): an optional string ``task_id`` is threaded through
+    # the Action Runtime and echoed on the wire by the adapters IFF supplied;
+    # when absent the payload stays byte-identical to the legacy shape.
+    task_id = params.get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        task_id = None
+    result, legacy_wire, err = _slash_exec_core(rid, params, task_id=task_id)
+    if err:
+        return err
+    return _ok(rid, legacy_wire)
+
+
+# ── Methods: task.submit (Phase 4 pilot — intent-based execution) ────
+# docs/architecture/central-brain-openclaw.md §11 Phase 4: the Orchestration
+# Core submits a high-level intent instead of picking an RPC. Pilot scope is
+# intent="slash" only (reversible; /model is the canonical pilot task). The
+# execution path is the SAME _slash_exec_core slash.exec uses — task.submit
+# merely renders the rich ExecutionResult instead of the legacy wire.
+
+# Idempotency replay store: {idempotency_key: (monotonic_ts, rich_result_dict)}.
+# Entries expire after _TASK_RESULT_TTL_S (lazily, on access) and the map is
+# capped at _TASK_RESULTS_MAX by evicting the oldest entry. Re-submitting a
+# known key returns the stored rich dict + {"replayed": true} WITHOUT
+# executing again (the Broken-pipe cure, §8).
+_TASK_RESULTS_LOCK = threading.Lock()
+_TASK_RESULTS: dict[str, tuple[float, dict]] = {}
+_TASK_RESULT_TTL_S = 600.0
+_TASK_RESULTS_MAX = 1024
+
+
+def _task_result_replay(key: str) -> Optional[dict]:
+    now = time.monotonic()
+    with _TASK_RESULTS_LOCK:
+        expired = [
+            k for k, (ts, _) in _TASK_RESULTS.items() if now - ts > _TASK_RESULT_TTL_S
+        ]
+        for k in expired:
+            del _TASK_RESULTS[k]
+        hit = _TASK_RESULTS.get(key)
+        return hit[1] if hit else None
+
+
+def _task_result_store(key: str, rich: dict) -> None:
+    with _TASK_RESULTS_LOCK:
+        if key not in _TASK_RESULTS and len(_TASK_RESULTS) >= _TASK_RESULTS_MAX:
+            oldest = min(_TASK_RESULTS, key=lambda k: _TASK_RESULTS[k][0])
+            del _TASK_RESULTS[oldest]
+        _TASK_RESULTS[key] = (time.monotonic(), rich)
+
+
+@method("task.submit")
+def _(rid, params: dict) -> dict:
+    intent = params.get("intent")
+    if intent != "slash":
+        return _err(rid, 4030, f"unsupported intent: {intent} (pilot supports 'slash')")
+
+    idempotency_key = params.get("idempotency_key")
+    if isinstance(idempotency_key, str) and idempotency_key:
+        cached = _task_result_replay(idempotency_key)
+        if cached is not None:
+            replay = dict(cached)
+            replay["replayed"] = True
+            return _ok(rid, replay)
+    else:
+        idempotency_key = None
+
+    # The rich result ALWAYS carries a task_id — default to a fresh uuid4.
+    task_id = params.get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        task_id = str(uuid.uuid4())
+
+    inputs = params.get("inputs")
+    if not isinstance(inputs, dict):
+        inputs = {}
+    command = inputs.get("command")
+    if not isinstance(command, str):
+        command = ""
+    core_params = {
+        "session_id": params.get("session_id") or "",
+        "command": command,
+    }
+
+    result, _legacy_wire, err = _slash_exec_core(rid, core_params, task_id=task_id)
+    if err:
+        return err
+
+    from action_runtime import result_to_wire_rich
+
+    rich = result_to_wire_rich(result)
+    if idempotency_key:
+        _task_result_store(idempotency_key, rich)
+    return _ok(rid, rich)
 
 
 # ── Methods: voice ───────────────────────────────────────────────────

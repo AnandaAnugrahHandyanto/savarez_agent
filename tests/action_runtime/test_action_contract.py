@@ -14,6 +14,7 @@ from action_runtime import (
     cli_to_wire,
     plugin_to_result,
     plugin_to_wire,
+    result_to_wire_rich,
     shell_to_result,
     shell_to_wire,
     slash_to_result,
@@ -165,3 +166,97 @@ def test_slash_busy_is_failed_and_retryable():
         "warning": rendered,
         "error": rendered,
     }
+
+
+# ── Phase 4: additive task_id echo on the legacy wire ────────────────
+
+
+def test_slash_wire_echoes_task_id_additively():
+    r = slash_to_result("done", _Effect(kind="", message=""), task_id="task-1")
+    assert slash_to_wire(r, warning="") == {"output": "done", "task_id": "task-1"}
+
+
+def test_slash_wire_without_task_id_is_unchanged():
+    r = slash_to_result("done", _Effect(kind="", message=""))
+    assert slash_to_wire(r, warning="") == {"output": "done"}
+
+
+def test_plugin_wire_echoes_task_id_additively():
+    r = plugin_to_result("hi", task_id="task-2")
+    assert plugin_to_wire(r) == {"output": "hi", "task_id": "task-2"}
+
+
+def test_plugin_failure_wire_echoes_task_id_additively():
+    r = plugin_to_result(exc=RuntimeError("boom"), task_id="task-3")
+    assert plugin_to_wire(r) == {
+        "output": "Plugin command error: boom",
+        "error": "Plugin command error: boom",
+        "task_id": "task-3",
+    }
+
+
+# ── Phase 4: rich wire renderer (task.submit) ────────────────────────
+
+
+def test_rich_wire_success_renders_every_key():
+    r = slash_to_result("done", _Effect(kind="", message=""), task_id="task-4")
+    assert result_to_wire_rich(r) == {
+        "task_id": "task-4",
+        "status": "succeeded",
+        "outputs": {"output": "done"},
+        "error": None,
+        "side_effects": [],
+    }
+
+
+def test_rich_wire_failure_renders_structured_error_and_side_effects():
+    eff = _Effect(kind="failure", message="'bad/model' unavailable")
+    r = slash_to_result("  ✗ not available", eff, task_id="task-5")
+    assert result_to_wire_rich(r) == {
+        "task_id": "task-5",
+        "status": "failed",
+        "outputs": {"output": "  ✗ not available"},
+        "error": {
+            "type": "provider_error",
+            "retryable": False,
+            "message": "'bad/model' unavailable",
+        },
+        "side_effects": [
+            {
+                "kind": "slash_sync",
+                "detail": "'bad/model' unavailable",
+                "applied": False,
+                "target": None,
+            }
+        ],
+    }
+
+
+def test_rich_wire_busy_is_retryable_transport_error():
+    eff = _Effect(kind="busy", message="/interrupt the current turn first")
+    r = slash_to_result("busy", eff, task_id="task-6")
+    rich = result_to_wire_rich(r)
+    assert rich["status"] == "failed"
+    assert rich["error"] == {
+        "type": "transport",
+        "retryable": True,
+        "message": "/interrupt the current turn first",
+    }
+    assert rich["side_effects"] == [
+        {
+            "kind": "slash_sync",
+            "detail": "/interrupt the current turn first",
+            "applied": False,
+            "target": None,
+        }
+    ]
+
+
+def test_rich_wire_blocked_cli_keeps_enum_value_strings():
+    # status/error.type must be the ENUM VALUE strings, not Enum reprs.
+    r = cli_to_result(blocked=True, code=-1, output="", hint="needs a terminal")
+    rich = result_to_wire_rich(r)
+    assert rich["status"] == "blocked"
+    assert isinstance(rich["status"], str)
+    assert rich["error"]["type"] == "denied"
+    assert rich["task_id"] is None  # never omitted, even when unset

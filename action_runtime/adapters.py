@@ -137,10 +137,14 @@ def plugin_to_result(
 
 
 def plugin_to_wire(result: ExecutionResult) -> dict:
-    """Byte-identical to the slash.exec plugin-path _ok payload."""
+    """Byte-identical to the slash.exec plugin-path _ok payload. Phase 4
+    additive: ``task_id`` is echoed IFF the client supplied one — absent
+    task_id leaves the wire dict untouched."""
     out = {"output": result.outputs["output"]}
     if result.error is not None:
         out["error"] = result.error.message  # == output, per the Phase 1a test
+    if result.task_id is not None:
+        out["task_id"] = result.task_id
     return out
 
 
@@ -176,7 +180,9 @@ def slash_to_result(output: str, effect, task_id: Optional[str] = None) -> Execu
 
 def slash_to_wire(result: ExecutionResult, warning: str) -> dict:
     """Byte-identical to the slash.exec worker-path _ok payload. ``warning`` is
-    the rendered _slash_side_effect_warning(effect) string."""
+    the rendered _slash_side_effect_warning(effect) string. Phase 4 additive:
+    ``task_id`` is echoed IFF the client supplied one — absent task_id leaves
+    the wire dict untouched."""
     payload = {"output": result.outputs["output"]}
     if warning:
         payload["warning"] = warning
@@ -184,4 +190,44 @@ def slash_to_wire(result: ExecutionResult, warning: str) -> dict:
         # (failure/busy) — exactly when result.error is set.
         if result.error is not None:
             payload["error"] = warning
+    if result.task_id is not None:
+        payload["task_id"] = result.task_id
     return payload
+
+
+# ── rich wire renderer (Phase 4: task.submit) ────────────────────────
+# The full ExecutionResult, rendered losslessly — no legacy aliasing, no
+# omitted-when-empty keys. task.submit returns THIS shape; the legacy
+# slash.exec wire above stays byte-compatible and untouched.
+
+
+def result_to_wire_rich(result: ExecutionResult) -> dict:
+    """Render the complete :class:`ExecutionResult` as a wire dict.
+
+    Every key is always present: ``error`` is ``None`` (not omitted) on
+    success, ``side_effects`` is ``[]`` when nothing changed, and ``status``
+    is the :class:`Status` enum's value string (e.g. ``"succeeded"``).
+    """
+    return {
+        "task_id": result.task_id,
+        "status": result.status.value,
+        "outputs": result.outputs,
+        "error": (
+            None
+            if result.error is None
+            else {
+                "type": result.error.type.value,
+                "retryable": result.error.retryable,
+                "message": result.error.message,
+            }
+        ),
+        "side_effects": [
+            {
+                "kind": s.kind,
+                "detail": s.detail,
+                "applied": s.applied,
+                "target": s.target,
+            }
+            for s in result.side_effects
+        ],
+    }
