@@ -32,6 +32,7 @@ import logging
 import mimetypes
 import os
 import re
+import stat
 import time
 from dataclasses import dataclass
 
@@ -195,6 +196,7 @@ MAX_MESSAGE_LENGTH = 4000
 # Store directory for E2EE keys and sync state.
 # Uses get_hermes_home() so each profile gets its own Matrix store.
 from hermes_constants import get_hermes_dir as _get_hermes_dir
+from utils import env_var_enabled
 
 _STORE_DIR = _get_hermes_dir("platforms/matrix/store", "matrix/store")
 _CRYPTO_DB_PATH = _STORE_DIR / "crypto.db"
@@ -940,15 +942,57 @@ class MatrixAdapter(BasePlatformAdapter):
                     if own_xsign is None:
                         try:
                             new_recovery_key = await olm.generate_recovery_key()
-                            logger.warning(
-                                "Matrix: bootstrapped cross-signing for %s. "
-                                "SAVE THIS RECOVERY KEY — set "
-                                "MATRIX_RECOVERY_KEY for future restarts so "
-                                "the bot can re-sign its device after key "
-                                "rotation: %s",
-                                client.mxid,
-                                new_recovery_key,
-                            )
+                            # Write the key to a one-time secret file instead
+                            # of logging it — recovery keys are account-level
+                            # cryptographic material that should not persist in
+                            # ordinary logs, diagnostics, or support bundles.
+                            try:
+                                secret_file = _STORE_DIR / ".recovery_key_once"
+                                secret_file.parent.mkdir(parents=True, exist_ok=True)
+                                # Atomic create+write with 0600 — O_EXCL fails if
+                                # the path exists (including as a symlink), closing
+                                # both the TOCTOU race and symlink attack vectors.
+                                fd = os.open(
+                                    str(secret_file),
+                                    os.O_CREAT | os.O_WRONLY | os.O_EXCL,
+                                    0o600,
+                                )
+                                with os.fdopen(fd, "w") as fh:
+                                    fh.write(new_recovery_key)
+                            except OSError as write_exc:
+                                logger.warning(
+                                    "Matrix: could not write recovery key to "
+                                    "file (%s). The key has NOT been persisted — "
+                                    "set MATRIX_RECOVERY_KEY in your environment "
+                                    "before the next restart to avoid losing "
+                                    "cross-signing state.",
+                                    write_exc,
+                                )
+                            else:
+                                logger.warning(
+                                    "Matrix: bootstrapped cross-signing for %s. "
+                                    "Recovery key written to %s — store it as "
+                                    "MATRIX_RECOVERY_KEY, then delete the file. "
+                                    "The raw key is not printed in logs.",
+                                    client.mxid,
+                                    secret_file,
+                                )
+                            # Escape hatch: print to stderr if explicitly opted in.
+                            # Accepts both HERMES_PRINT_GENERATED_SECRETS and the
+                            # legacy _ONCE suffix for backward compatibility.
+                            # Uses shared truthy parser so "false"/"0"/"off"
+                            # do NOT enable secret printing (egilewski review).
+                            if env_var_enabled(
+                                "HERMES_PRINT_GENERATED_SECRETS"
+                            ) or env_var_enabled(
+                                "HERMES_PRINT_GENERATED_SECRETS_ONCE"
+                            ):
+                                import sys
+                                print(
+                                    f"\nMatrix RECOVERY KEY for {client.mxid}: "
+                                    f"{new_recovery_key}\n",
+                                    file=sys.stderr,
+                                )
                         except Exception as exc:
                             logger.warning(
                                 "Matrix: cross-signing bootstrap failed "
