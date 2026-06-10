@@ -1,4 +1,5 @@
 import { defineLocale } from './define-locale'
+import { defineFieldCopy } from '@/app/settings/field-copy'
 
 export const ru = defineLocale({
   common: {
@@ -175,6 +176,15 @@ export const ru = defineLocale({
       'session.new': 'Новая сессия',
       'session.next': 'Следующая сессия',
       'session.prev': 'Предыдущая сессия',
+      'session.slot.1': 'Переключиться на сессию 1',
+      'session.slot.2': 'Переключиться на сессию 2',
+      'session.slot.3': 'Переключиться на сессию 3',
+      'session.slot.4': 'Переключиться на сессию 4',
+      'session.slot.5': 'Переключиться на сессию 5',
+      'session.slot.6': 'Переключиться на сессию 6',
+      'session.slot.7': 'Переключиться на сессию 7',
+      'session.slot.8': 'Переключиться на сессию 8',
+      'session.slot.9': 'Переключиться на сессию 9',
       'session.focusSearch': 'Поиск сессий',
       'session.togglePin': 'Закрепить / открепить',
       'composer.focus': 'Фокус редактора',
@@ -287,10 +297,230 @@ export const ru = defineLocale({
       technical: 'Технический',
       technicalDesc: 'Показывает полные входные и выходные данные',
       themeTitle: 'Тема',
-      themeDesc: 'Только палитры рабочего стола. Выбранный режим применяется поверх.'
+      themeDesc: 'Только палитры рабочего стола. Выбранный режим применяется поверх.',
+      themeProfileNote: profile => `Сохранено для профиля ${profile} — каждый профиль хранит свою тему.`
     },
-    fieldLabels: {},
-    fieldDescriptions: {},
+    fieldLabels: defineFieldCopy({
+      model: 'Модель по умолчанию',
+      modelContextLength: 'Окно контекста',
+      fallbackProviders: 'Резервные модели',
+      toolsets: 'Включённые наборы инструментов',
+      timezone: 'Часовой пояс',
+      display: {
+        personality: 'Персона',
+        showReasoning: 'Блоки рассуждений'
+      },
+      agent: {
+        maxTurns: 'Макс. шагов агента',
+        imageInputMode: 'Вложения изображений',
+        apiMaxRetries: 'Повторы API',
+        serviceTier: 'Уровень обслуживания',
+        toolUseEnforcement: 'Принудительное использование инструментов'
+      },
+      terminal: {
+        cwd: 'Рабочая директория',
+        backend: 'Бэкенд выполнения',
+        timeout: 'Тайм-аут команды',
+        persistentShell: 'Постоянная оболочка',
+        envPassthrough: 'Проброс переменных среды',
+        dockerImage: 'Образ Docker',
+        singularityImage: 'Образ Singularity',
+        modalImage: 'Образ Modal',
+        daytonaImage: 'Образ Daytona'
+      },
+      fileReadMaxChars: 'Лимит чтения файла',
+      toolOutput: {
+        maxBytes: 'Лимит вывода терминала',
+        maxLines: 'Лимит страниц файла',
+        maxLineLength: 'Лимит длины строки'
+      },
+      codeExecution: {
+        mode: 'Режим выполнения кода'
+      },
+      approvals: {
+        mode: 'Режим одобрения',
+        timeout: 'Тайм-аут одобрения',
+        mcpReloadConfirm: 'Подтверждение перезагрузки MCP'
+      },
+      commandAllowlist: 'Белый список команд',
+      security: {
+        redactSecrets: 'Скрывать секреты',
+        allowPrivateUrls: 'Разрешить частные URL'
+      },
+      browser: {
+        allowPrivateUrls: 'Частные URL браузера',
+        autoLocalForPrivateUrls: 'Локальный браузер для частных URL'
+      },
+      checkpoints: {
+        enabled: 'Контрольные точки файлов',
+        maxSnapshots: 'Лимит контрольных точек'
+      },
+      voice: {
+        recordKey: 'Голосовое сокращение',
+        maxRecordingSeconds: 'Макс. длина записи',
+        autoTts: 'Озвучивание ответов'
+      },
+      stt: {
+        enabled: 'Распознавание речи',
+        provider: 'Провайдер распознавания речи',
+        local: {
+          model: 'Локальная модель транскрипции',
+          language: 'Язык транскрипции'
+        },
+        openai: {
+          model: 'Модель OpenAI STT'
+        },
+        groq: {
+          model: 'Модель Groq STT'
+        },
+        mistral: {
+          model: 'Модель Mistral STT'
+        },
+        elevenlabs: {
+          modelId: 'Модель ElevenLabs STT',
+          languageCode: 'Язык ElevenLabs',
+          tagAudioEvents: 'Метки аудио-событий',
+          diarize: 'Диаризация говорящих'
+        }
+      },
+      tts: {
+        provider: 'Провайдер синтеза речи',
+        edge: {
+          voice: 'Голос Edge'
+        },
+        openai: {
+          model: 'Модель OpenAI TTS',
+          voice: 'Голос OpenAI'
+        },
+        elevenlabs: {
+          voiceId: 'Голос ElevenLabs',
+          modelId: 'Модель ElevenLabs'
+        },
+        xai: {
+          voiceId: 'Голос xAI (Grok)',
+          language: 'Язык xAI'
+        },
+        minimax: {
+          model: 'Модель MiniMax TTS',
+          voiceId: 'Голос MiniMax'
+        },
+        mistral: {
+          model: 'Модель Mistral TTS',
+          voiceId: 'Голос Mistral'
+        },
+        gemini: {
+          model: 'Модель Gemini TTS',
+          voice: 'Голос Gemini'
+        },
+        neutts: {
+          model: 'Модель NeuTTS',
+          device: 'Устройство NeuTTS'
+        },
+        kittentts: {
+          model: 'Модель KittenTTS',
+          voice: 'Голос KittenTTS'
+        },
+        piper: {
+          voice: 'Голос Piper'
+        }
+      },
+      memory: {
+        memoryEnabled: 'Постоянная память',
+        userProfileEnabled: 'Профиль пользователя',
+        memoryCharLimit: 'Бюджет памяти',
+        userCharLimit: 'Бюджет профиля',
+        provider: 'Провайдер памяти'
+      },
+      context: {
+        engine: 'Движок контекста'
+      },
+      compression: {
+        enabled: 'Авто-сжатие',
+        threshold: 'Порог сжатия',
+        targetRatio: 'Целевой коэффициент сжатия',
+        protectLastN: 'Защищённые последние сообщения'
+      },
+      delegation: {
+        model: 'Модель субагента',
+        provider: 'Провайдер субагента',
+        maxIterations: 'Лимит ходов субагента',
+        maxConcurrentChildren: 'Параллельные субагенты',
+        childTimeoutSeconds: 'Тайм-аут субагента',
+        reasoningEffort: 'Усилие рассуждения субагента'
+      },
+      updates: {
+        nonInteractiveLocalChanges: 'Локальные изменения при обновлении в приложении'
+      }
+    }),
+    fieldDescriptions: defineFieldCopy({
+      model: 'Используется для новых чатов, если не выбрана другая модель в редакторе.',
+      modelContextLength: 'Оставьте 0, чтобы использовать обнаруженное окно контекста выбранной модели.',
+      fallbackProviders: 'Резервные записи provider:model на случай ошибки модели по умолчанию.',
+      display: {
+        personality: 'Стиль ассистента по умолчанию для новых сессий.',
+        showReasoning: 'Показывать блоки рассуждений, когда бэкенд их предоставляет.'
+      },
+      timezone: 'Используется, когда Hermes нужен локальный контекст времени. Пусто — системный часовой пояс.',
+      agent: {
+        imageInputMode: 'Управляет отправкой изображений модели.',
+        maxTurns: 'Верхняя граница ходов с вызовом инструментов перед остановкой.'
+      },
+      terminal: {
+        cwd: 'Папка проекта по умолчанию для работы инструментов и терминала.',
+        persistentShell: 'Сохранять состояние оболочки между командами, если бэкенд поддерживает.',
+        envPassthrough: 'Переменные среды для передачи в выполнение инструментов.',
+        dockerImage: 'Образ контейнера, используемый при бэкенде Docker.',
+        singularityImage: 'Образ, используемый при бэкенде Singularity.',
+        modalImage: 'Образ, используемый при бэкенде Modal.',
+        daytonaImage: 'Образ, используемый при бэкенде Daytona.'
+      },
+      codeExecution: {
+        mode: 'Насколько строго выполнение кода ограничено текущим проектом.'
+      },
+      fileReadMaxChars: 'Максимальное количество символов, которое Hermes может прочитать из одного файла.',
+      approvals: {
+        mode: 'Как Hermes обрабатывает команды, требующие явного одобрения.',
+        timeout: 'Как долго ждать ответа на запрос одобрения до тайм-аута.'
+      },
+      security: {
+        redactSecrets: 'Скрывать обнаруженные секреты из контента, видимого модели, когда возможно.'
+      },
+      checkpoints: {
+        enabled: 'Создавать снимки для отката перед редактированием файлов.'
+      },
+      memory: {
+        memoryEnabled: 'Сохранять постоянные воспоминания, которые помогут будущим сессиям.',
+        userProfileEnabled: 'Вести компактный профиль предпочтений пользователя.'
+      },
+      context: {
+        engine: 'Стратегия управления длинными разговорами вблизи лимита контекста.'
+      },
+      compression: {
+        enabled: 'Суммировать старый контекст, когда разговоры становятся большими.'
+      },
+      voice: {
+        autoTts: 'Автоматически озвучивать ответы ассистента.'
+      },
+      tts: {
+        xai: {
+          voiceId: 'ID голоса xAI (например eve) или произвольный ID голоса.',
+          language: 'Код языка озвучки, например en.'
+        },
+        neutts: {
+          device: 'Локальное устройство инференса для NeuTTS.'
+        }
+      },
+      stt: {
+        enabled: 'Включить локальную или провайдерскую транскрипцию речи.',
+        elevenlabs: {
+          languageCode: 'Опциональный код языка ISO-639-3. Пусто — автовыбор ElevenLabs.'
+        }
+      },
+      updates: {
+        nonInteractiveLocalChanges:
+          'Когда Hermes обновляется из приложения (без терминала): сохранить локальные правки (stash) или отбросить (discard). Терминальные обновления всегда спрашивают.'
+      }
+    }),
     about: {
       heading: 'О программе',
       version: value => `Версия ${value}`,
@@ -1078,6 +1308,7 @@ export const ru = defineLocale({
       sessionRunning: 'Сессия выполняется',
       needsInput: 'Требуется ваш ввод',
       waitingForAnswer: 'Ожидание ответа',
+      handoffOrigin: platform => `Передано из ${platform}`,
       renamed: 'Переименовано',
       renameFailed: 'Ошибка переименования',
       renameTitle: 'Переименовать сессию',
@@ -1419,6 +1650,9 @@ export const ru = defineLocale({
       updateInProgress: 'Обновление…',
       commitsBehind: (count, branch) => `${count} коммит${count === 1 ? '' : 'ов'} позади ${branch}`,
       desktopVersion: version => `Hermes Desktop v${version}`,
+      backendVersion: version => `Бэкенд v${version}`,
+      clientLabel: version => `клиент v${version}`,
+      backendLabel: version => `бэкенд v${version}`,
       commit: sha => `коммит ${sha}`,
       branch: branch => `ветка ${branch}`,
       closeCommandCenter: 'Закрыть палитру',
