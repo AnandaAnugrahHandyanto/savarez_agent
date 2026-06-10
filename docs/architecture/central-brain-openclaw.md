@@ -683,32 +683,44 @@ Current `task.submit` with `intent="slash"` is milliseconds. With `intent="deleg
 
 `action_runtime/contract.py` `Status` is currently only used on completed results. Adding `RUNNING` means consumers of `ExecutionResult` must guard against a non-terminal status where today they assume all results are terminal. Adapters in `adapters.py` never produce `RUNNING`; the risk is that a future adapter forgets the guard. Consider whether `RUNNING` belongs on `AgentTaskRecord.status` (a separate field type) rather than in the `ExecutionResult.Status` enum. The two have different invariants: an `ExecutionResult` is always a final answer; an `AgentTaskRecord` represents live state.
 
-#### คำถามเปิด (ต้องให้ maintainer ตัดสินก่อนเริ่ม)
-## Open questions — only a maintainer can decide
+#### คำถามเปิด — ตัดสินแล้ว 5/6 (2026-06-10), Q3 อยู่ระหว่าง impact sweep
+## Open questions — decided 2026-06-10 (Q3 pending evidence)
 
 ### Q1 — Registry singleton location: standalone module or folded into BrainHost?
 
 `BrainHost` (`agent/brain_host.py`, flag-gated `HERMES_BRAIN_HOST=1`) is the planned singleton factory for AIAgent construction. The `AgentTaskRegistry` is a natural tenant for BrainHost (it needs process-global scope, one instance per process). But BrainHost is still feature-flagged and off by default. Should `AgentTaskRegistry` live there (accepting the `HERMES_BRAIN_HOST` dependency), or in a standalone module that both BrainHost and the current path can import? The answer affects Step 1 and all subsequent steps.
 
+> **ตัดสินแล้ว (2026-06-10): standalone module** (`agent/task_registry.py`). เหตุผลชี้ขาด: dual-write ใน Step 2 ต้องเขียนจาก default path ที่ flag ปิดอยู่ — ถ้า registry อยู่ใน BrainHost จะถูกล็อกหลัง `HERMES_BRAIN_HOST=1` ทำให้ default path มอง subagent ไม่เห็น. BrainHost ถือ reference ภายหลังได้.
+
 ### Q2 — Persist idempotency keys across gateway restarts?
 
 R5 above: should `_TASK_RESULTS` / idempotency replay be durable (written to `_tasks.jsonl` or state.db) or stay ephemeral (current behavior)? Durable replay means subagent runs that survived a gateway restart can be replayed without re-execution. Ephemeral is simpler and avoids the I/O cost on every `task.submit`. The answer determines Step 5 design and whether `state.db` needs a new table.
+
+> **ตัดสินแล้ว (2026-06-10): ephemeral ต่อไป.** ประเด็นชี้ขาดไม่ใช่ I/O cost — หลัง crash ไม่มีทางรู้ว่า task ที่ค้างอยู่ทำ side effects ไปแค่ไหน; replay ผลที่ "อาจทำไปครึ่งเดียว" ขัด honest-status. สิ่งที่ persist คือ **task records** (observability) ไม่ใช่ replay store; task ที่ค้างตอน crash ให้สถานะตามจริง. ไม่มี state.db table ใหม่ใน Phase 5.
 
 ### Q3 — Should `Status.RUNNING` be part of `ExecutionResult.Status` or live only on `AgentTaskRecord`?
 
 R7 above: adding `RUNNING` to the contract enum changes the invariant that every `ExecutionResult` is a terminal answer. The cleaner option is a separate `TaskStatus` enum on `AgentTaskRecord` that includes `RUNNING`, while `ExecutionResult.Status` stays terminal-only. This is a design decision for `contract.py` that affects how the Core interprets results from `task.status`.
 
+> **สถานะ (2026-06-10): รอ impact sweep** — maintainer ขอหลักฐานเพิ่มก่อนตัดสิน: นับ consumer ของ `Status`/`ExecutionResult` ทั้งหมด + พิสูจน์ว่า option B (TaskStatus แยกบน record) ไม่ทำให้ visibility ของงานที่ค้างอยู่หายไปเมื่อเทียบ option A. ข้อกังวลหลักของ maintainer: "จะรู้ได้อย่างไรว่าอะไรกำลังทำอยู่ / อะไรยังไม่เสร็จ".
+
 ### Q4 — What does `intent="delegate"` return for a partially-interrupted batch?
 
 If the parent is interrupted mid-batch (some children succeeded, some did not), delegate_tool.py:2177-2210 already collects whatever finished and marks the rest as "interrupted". Should `task.submit` with `intent="delegate"` return `Status.PARTIAL` for this case (matching the existing `Status.PARTIAL` in the contract)? Or always `Status.FAILED`? The answer ties to how the Core is expected to re-plan.
+
+> **ตัดสินแล้ว (2026-06-10): `Status.PARTIAL`** + per-child breakdown ใน `outputs` (+ side effects ของ children ที่จบแล้วใน `side_effects`). `FAILED` จะทิ้งงานจริงและบังคับ Core รัน children ที่สำเร็จแล้วซ้ำ — เปลืองและ side-effect ไม่ปลอดภัย; `PARTIAL` ตรง semantics ที่ contract มีไว้แต่แรก.
 
 ### Q5 — Does the TUI's `spawn_tree.save` RPC survive long-term or get deprecated?
 
 Today the TUI assembles the subagent tree payload from the event stream and calls `spawn_tree.save` on turn-complete (server.py:4478-4479 comment). In Phase 5, the registry writes `_tasks.jsonl` directly. Should `spawn_tree.save` remain as the canonical rich-snapshot path (TUI-assembled, richer than the registry's record), or should the registry's write be the canonical source and `spawn_tree.save` be deprecated? The answer determines whether the two files (`_index.jsonl` + `_tasks.jsonl`) need merging logic in `spawn_tree.list` indefinitely.
 
+> **ตัดสินแล้ว (2026-06-10): dual-write ชั่วคราว, deprecate ด้วยเกณฑ์ไม่ใช่วันที่.** Sunset criteria: (1) registry record ครอบ field ครบของ spawn-tree payload และ (2) `spawn_tree.list` เสิร์ฟจาก registry ได้ 100% → deprecate `spawn_tree.save` (รับ RPC เป็น no-op compat อีก 1 release สำหรับ TUI เก่า). กันไม่ให้ merge logic ลากยาวอนันต์.
+
 ### Q6 — Cross-process / multi-gateway support in scope for Phase 5?
 
 The current registry is in-process. If two gateway processes serve the same `HERMES_HOME` (e.g., desktop + TUI connected simultaneously), each has its own `_active_subagents`. Phase 5 design as written does not change this. Is cross-process observability (one process seeing the other's subagents) in scope? If yes, the registry needs to be backed by `state.db` or a shared file from the start, which significantly changes Step 1.
+
+> **ตัดสินแล้ว (2026-06-10): ตัดออกจาก Phase 5.** Registry เป็น in-process แต่ออกแบบ API ให้ backing store สลับได้ (state.db-backed = Phase 6 candidate — "เดินท่อเผื่อไว้แต่ยังไม่ติดแท็งก์"). ระหว่างนี้ `_tasks.jsonl` เป็นช่องอ่านข้าม process แบบหยาบได้อยู่แล้ว.
 
 ---
 
@@ -727,6 +739,7 @@ The current registry is in-process. If two gateway processes serve the same `HER
 |---|---|
 | 2026-06-09 | สร้างเอกสาร v1 — สำรวจโค้ด, เสนอโมเดล Central Brain + OpenClaw |
 | 2026-06-10 | **v2**: §10-Q1 = **(ข)** native Action Runtime, ยืมแค่ OpenClaw messaging-bridge compatibility · ล็อกศัพท์ **Orchestration Core** / **Action Runtime**; "OpenClaw" = reference/compat เท่านั้น · ล็อกลำดับ phase (0→1a→2/1b→3→4→5) · Phase 0 = doc-only, ไม่สร้างโฟลเดอร์เปล่า · เพิ่ม cross-cutting (compat/test-first/observability/idempotency) + acceptance criteria ต่อ phase |
+| 2026-06-10 | **Phase 5 open questions ตัดสินแล้ว 5/6 (maintainer ruling).** Q1=**standalone module** (`agent/task_registry.py` — dual-write ต้องทำงานบน default path ที่ flag ปิด) · Q2=**ephemeral** (persist task records ไม่ใช่ replay store; crash แล้วไม่รู้ side effects → replay = โกหก) · Q4=**`Status.PARTIAL`** + per-child breakdown (FAILED ทิ้งงานจริง+เสี่ยง side-effect ซ้ำ) · Q5=**dual-write ชั่วคราว + sunset criteria** (record ครบ field + list เสิร์ฟจาก registry 100% → deprecate, no-op compat 1 release) · Q6=**ตัดออก** (API ออกแบบให้ backing store สลับได้; state.db-backed = Phase 6 candidate). **Q3 รอ impact sweep** — maintainer ขอหลักฐาน consumer census + พิสูจน์ว่า visibility ของงานค้างไม่หายก่อนตัดสิน |
 | 2026-06-10 | **BrainHost migration complete (ทุก construction site) + Phase 3 Step 4 landed.** เพิ่ม `agent/brain_host_gate.py` — `build_agent(intent, **kwargs)` helper แบบบรรทัดเดียว (module แยกเบา import แค่ `os` → คง invariant "flag off ไม่ import `agent.brain_host`" ที่ test ยึดอยู่ + lazy-import `run_agent` ตอน call เหมือน site เดิม). Migrate 14 sites ที่เหลือ + ยุบ inline gate เดิม 3 จุดเป็น `build_agent` call เดียว — รวม **20 intents / 16 ไฟล์**: tui_gateway (tui_gateway, tui-background, preview-restart), gateway (gateway-run, history-hygiene, gateway-background, compress, api-server, feishu-comment), hermes_cli (cli, cli-background, oneshot, prompt-size), agent (background-review, curator), acp, cron, batch, run-agent-cli, delegate. **ตั้งใจไม่แตะ:** `cli.py` lazy wrapper (re-export shim), `scripts/tool_search_livetest.py`, ทุกอย่างรอบ `_active_subagents`/spawn-tree/interrupt ใน delegate_tool (R2). Step 4: เพิ่ม 10 accessors (attached_images, pending_title, image_counter, show_reasoning, tool_progress_mode, tool_started_at, personality, model_override, explicit_cwd, edit_snapshots) + แปลง subscript ที่เหลือทั้งหมดใน server.py — ยกเว้น 2 จุดโดยตั้งใจ: `model_override` ใน `_apply_model_switch` (caller ส่ง plain dict บน no-session path, มี isinstance guard อยู่แล้ว) และ `_finalized` (private marker จุดเดียว). Tests: gate helper 4 + site-table parametrized (แทน grep-test เดิม) + accessor sync; suites เขียว 164 (brain_host+tui_gateway+action_runtime) + 252 server + 171 (delegate/batch/prompt_size/curator/cron); commit กลาง bisect-green. ทำด้วย workflow 5 Sonnet agents บนกลุ่มไฟล์ disjoint ใน working tree ตรง (ไม่ใช้ harness worktree — บทเรียน base ผิด) |
 | 2026-06-10 | **Phase 3 design delivered (ยังไม่ implement).** Scoping fan-out 3 agents → `SessionState` dataclass (lock เป็น field) + MutableMapping-shim incremental adoption (Step1 = zero handler churn) + `BrainHost` (`agent/brain_host.py`, flag-gated `HERMES_BRAIN_HOST`, additive) + map 20 AIAgent sites (first=`_make_agent`) + documented dual-path + parity test. เก็บใน §11 "Phase 3 — design detail". **Implementation ถือไว้เป็น cycle เฉพาะ** — decompose live session-state + locks ที่ 74 handlers + concurrency model พึ่ง (gap #1, เสี่ยงสุดในแผน) ไม่ควรรีบท้าย session |
 | 2026-06-10 | **BrainHost sites #2-3 + Phase 5 design (Sonnet sub-agents).** gateway/run.py `_run_agent` LRU-miss site (intent="gateway-run") + api_server `_create_agent` (intent="api-server") gate ผ่าน `HERMES_BRAIN_HOST` แบบเดียวกับ `_make_agent` (+7 gate tests; 114 api_server failures ยืนยัน pre-existing ผ่าน stash round-trip). Phase 5 design ลงเอกสารแล้ว (§11 "Phase 5 — design detail"): `AgentTaskRegistry` + dual-write migration 6 steps + risks R1-R7 (สำคัญ: R2 — ห้ามแตะ `_active_children` interrupt chain) + open questions Q1-Q6. หมายเหตุ: live install ถูกอัปเดตไป main แล้ว — งาน dev ทำใน worktrees จาก branch refs |
