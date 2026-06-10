@@ -1,6 +1,6 @@
 # Action Items For You
 
-Current status: none.
+Current status: 1 open item.
 
 Use Linear as the durable source of truth for operator action items. This file is
 the quick side-panel index: keep it short, current, and link to the Linear issue
@@ -10,7 +10,7 @@ Linear view: [Hermes - Action Items For Jesse](https://linear.app/agents-n-such/
 
 ## Open
 
-- None.
+- [HERMES-27](https://linear.app/agents-n-such/issue/HERMES-27/codify-hermes-github-pr-and-linear-linking-workflow): Connect Linear GitHub integration for Hermes PR linking. Target repo access: `heavyMGS/hermes-agent` first; `NousResearch/hermes-agent` if permissions allow.
 
 ## Recently Cleared
 
