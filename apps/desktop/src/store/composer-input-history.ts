@@ -156,3 +156,48 @@ export function isBrowsingHistory(sessionId: string | null | undefined): boolean
 }
 
 export { $perSessionBrowse }
+
+/**
+ * Per-session draft snapshots for preserving composer text across
+ * unmount/remount cycles (e.g. navigating to Settings and back).
+ *
+ * Unlike `draftSnapshot` in `SessionBrowseState` (which captures the text at
+ * the moment the user starts browsing arrow-key history), these snapshots are
+ * saved on unmount and consumed on remount — a one-shot restore mechanism.
+ */
+const $draftSnapshots = atom<Record<string, string>>({})
+
+/** Save the current composer text so it can be restored after a remount. */
+export function saveDraftSnapshot(sessionId: string | null | undefined, text: string): void {
+  if (!valid(sessionId)) {
+    return
+  }
+
+  const all = { ...$draftSnapshots.get() }
+  all[sessionId] = text
+  $draftSnapshots.set(all)
+}
+
+/**
+ * Load (and consume) a previously saved draft snapshot.
+ * Returns null when no snapshot exists for the given session.
+ */
+export function loadDraftSnapshot(sessionId: string | null | undefined): string | null {
+  if (!valid(sessionId)) {
+    return null
+  }
+
+  const all = $draftSnapshots.get()
+  const text = all[sessionId]
+
+  if (text === undefined) {
+    return null
+  }
+
+  // Consume on read — one-shot restore
+  const next = { ...all }
+  delete next[sessionId]
+  $draftSnapshots.set(next)
+
+  return text
+}

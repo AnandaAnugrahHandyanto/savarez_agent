@@ -6,7 +6,9 @@ import {
   browseForward,
   deriveUserHistory,
   isBrowsingHistory,
-  resetBrowseState
+  loadDraftSnapshot,
+  resetBrowseState,
+  saveDraftSnapshot
 } from './composer-input-history'
 
 const SESSION_A = 'session-a'
@@ -124,6 +126,52 @@ describe('resetBrowseState', () => {
 
     expect(s.cursor).toBe(-1)
     expect(s.draftSnapshot).toBe('')
+    expect(isBrowsingHistory(SESSION_A)).toBe(false)
+  })
+})
+
+describe('draft snapshots (unmount/remount persistence)', () => {
+  it('saves and restores a draft for a session', () => {
+    saveDraftSnapshot(SESSION_A, 'my unsent prompt')
+
+    expect(loadDraftSnapshot(SESSION_A)).toBe('my unsent prompt')
+  })
+
+  it('consumes the snapshot on load (one-shot restore)', () => {
+    saveDraftSnapshot(SESSION_A, 'once')
+
+    expect(loadDraftSnapshot(SESSION_A)).toBe('once')
+    expect(loadDraftSnapshot(SESSION_A)).toBeNull()
+  })
+
+  it('returns null when no snapshot exists', () => {
+    expect(loadDraftSnapshot(SESSION_A)).toBeNull()
+  })
+
+  it('isolates snapshots per session', () => {
+    saveDraftSnapshot(SESSION_A, 'draft-a')
+    saveDraftSnapshot(SESSION_B, 'draft-b')
+
+    expect(loadDraftSnapshot(SESSION_A)).toBe('draft-a')
+    expect(loadDraftSnapshot(SESSION_B)).toBe('draft-b')
+  })
+
+  it('ignores null/undefined/empty session IDs', () => {
+    saveDraftSnapshot(null, 'text')
+    saveDraftSnapshot(undefined, 'text')
+    saveDraftSnapshot('', 'text')
+
+    expect(loadDraftSnapshot(null)).toBeNull()
+    expect(loadDraftSnapshot(undefined)).toBeNull()
+    expect(loadDraftSnapshot('')).toBeNull()
+  })
+
+  it('saves empty string as a valid draft', () => {
+    saveDraftSnapshot(SESSION_A, '')
+
+    // Empty string is falsy but should be stored and returned as-is.
+    // The consumer (ChatBar) checks for null, not falsiness.
+    expect(loadDraftSnapshot(SESSION_A)).toBe('')
   })
 })
 

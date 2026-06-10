@@ -29,7 +29,9 @@ import {
   browseForward,
   deriveUserHistory,
   isBrowsingHistory,
-  resetBrowseState
+  loadDraftSnapshot,
+  resetBrowseState,
+  saveDraftSnapshot
 } from '@/store/composer-input-history'
 import {
   $queuedPromptsBySession,
@@ -210,6 +212,40 @@ export function ChatBar({
     resetBrowseState(prev)
     setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
   }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
+
+  // Preserve the composer draft across unmount/remount cycles (e.g. navigating
+  // to Settings and back).  The assistant-ui runtime is destroyed when the
+  // chat view unmounts, so the draft must be stashed externally.
+  const draftSessionIdRef = useRef(sessionId)
+
+  useEffect(() => {
+    draftSessionIdRef.current = sessionId
+  })
+
+  useEffect(() => {
+    return () => {
+      saveDraftSnapshot(draftSessionIdRef.current, draftRef.current)
+    }
+  }, [sessionId])
+
+  // Restore a previously saved draft snapshot on mount.  Uses a ref flag so
+  // this only runs once (not on every re-render or session prop change).
+  const draftRestoredRef = useRef(false)
+
+  useEffect(() => {
+    if (draftRestoredRef.current) {
+      return
+    }
+
+    draftRestoredRef.current = true
+    const saved = loadDraftSnapshot(sessionId)
+
+    if (saved) {
+      aui.composer().setText(saved)
+      draftRef.current = saved
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only
+  }, [])
 
   // When the bar is disabled it's because the gateway isn't open. Distinguish a
   // cold start ("Starting Hermes...") from a dropped connection we're trying to
