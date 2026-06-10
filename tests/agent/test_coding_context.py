@@ -205,6 +205,7 @@ class TestEditFormatSteering:
         brief = mode.system_blocks()[0]
         assert "mode='patch'" in brief
         assert "V4A" in brief
+        assert "write_file" in brief  # new files authored, not patched
 
     def test_anthropic_family_gets_replace_nudge(self, tmp_path):
         _git_init(tmp_path)
@@ -215,6 +216,7 @@ class TestEditFormatSteering:
         )
         brief = mode.system_blocks()[0]
         assert "mode='replace'" in brief
+        assert "write_file" in brief  # new files authored, not patched
 
     def test_unknown_model_keeps_neutral_brief(self, tmp_path):
         # No edit-format line appended — brief equals the bare profile guidance.

@@ -89,13 +89,15 @@ _GIT_TIMEOUT = 2.5
 _EDIT_FORMAT_GUIDANCE: dict[str, tuple[tuple[str, ...], str]] = {
     "patch": (
         ("gpt", "codex"),
-        "- Edit format: prefer `patch` with `mode='patch'` (V4A multi-file diff) "
-        "for structured or multi-file edits — it's the diff format you handle "
+        "- Edit format: author new files with `write_file`; for edits to "
+        "existing code prefer `patch` with `mode='patch'` (V4A multi-file diff) "
+        "for structured or multi-file changes — it's the diff format you handle "
         "most reliably. Use `mode='replace'` for a single small swap.",
     ),
     "replace": (
         ("claude", "sonnet", "opus", "haiku"),
-        "- Edit format: prefer `patch` in `mode='replace'` — match a unique "
+        "- Edit format: author new files with `write_file`; for edits to "
+        "existing code prefer `patch` in `mode='replace'` — match a unique "
         "snippet and swap it. Reach for `mode='patch'` (V4A) only when an edit "
         "genuinely spans several files at once.",
     ),
