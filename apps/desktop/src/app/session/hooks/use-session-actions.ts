@@ -20,6 +20,7 @@ import { remoteSessionEndpoint } from '@/store/remote-sessions'
 import {
   $currentCwd,
   $desktopYoloDefault,
+  $localDeviceName,
   $messages,
   $sessions,
   $sessionsTotal,
@@ -60,6 +61,17 @@ import type {
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../types'
+
+// Announce THIS device as a viewer when attaching to a session so co-viewers on
+// other devices see it in the channel roster (channels Phase 3). Unlike
+// sender_device (remote-only message attribution) this is sent on every attach
+// when the device name is known — a local viewer must still be visible to
+// remote co-viewers for presence to mean anything.
+function viewerDeviceParams(): { viewer_device?: string } {
+  const name = $localDeviceName.get()
+
+  return name ? { viewer_device: name } : {}
+}
 
 // A delete that fails with 404 "Session not found" means the row is ALREADY
 // gone server-side — deleted on another device, or a remote profile's session
@@ -593,6 +605,7 @@ export function useSessionActions({
         const resumed = await requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
           cols: 96,
+          ...viewerDeviceParams(),
           // Owning profile: in app-global remote mode one backend serves every
           // profile, so the gateway opens this profile's state.db + home to
           // resume + persist the right session (no-op for single/launch profile).
@@ -718,12 +731,14 @@ export function useSessionActions({
         try {
           opened = await requestGateway<SessionResumeResponse>('session.activate', {
             cols: 96,
-            session_id: runtimeTarget
+            session_id: runtimeTarget,
+            ...viewerDeviceParams()
           })
         } catch {
           opened = await requestGateway<SessionResumeResponse>('session.resume', {
             cols: 96,
-            session_id: storedTarget
+            session_id: storedTarget,
+            ...viewerDeviceParams()
           })
         }
 
