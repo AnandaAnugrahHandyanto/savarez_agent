@@ -69,7 +69,7 @@ Usage:
 import json
 import logging
 
-from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_constants import get_hermes_home, display_hermes_home, get_skills_dir as _get_skills_dir_dynamic
 import os
 import re
 from enum import Enum
@@ -89,6 +89,20 @@ logger = logging.getLogger(__name__)
 # skills all coexist here without polluting the git repo.
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
+
+
+def _current_skills_dir() -> Path:
+    """Return the current skills directory, respecting monkeypatching.
+
+    Tests may monkeypatch the module-level SKILLS_DIR constant. If it has
+    been monkeypatched to something different from the import-time value,
+    honour the monkeypatch.  Otherwise resolve dynamically so that a later
+    HERMES_HOME change is picked up (issue #43548).
+    """
+    # If someone monkeypatched SKILLS_DIR to a different path, respect that.
+    if SKILLS_DIR != HERMES_HOME / "skills":
+        return SKILLS_DIR
+    return _get_skills_dir_dynamic()
 
 # Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64
@@ -498,7 +512,7 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     """
     # Try the module-level SKILLS_DIR first (respects monkeypatching in tests),
     # then fall back to external dirs from config.
-    dirs_to_check = [SKILLS_DIR]
+    dirs_to_check = [_current_skills_dir()]
     try:
         from agent.skill_utils import get_external_skills_dirs
         dirs_to_check.extend(get_external_skills_dirs())
@@ -613,8 +627,9 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     # Scan local dir first, then external dirs (local takes precedence)
     dirs_to_scan = []
-    if SKILLS_DIR.exists():
-        dirs_to_scan.append(SKILLS_DIR)
+    _skills_dir = _current_skills_dir()
+    if _skills_dir.exists():
+        dirs_to_scan.append(_skills_dir)
     dirs_to_scan.extend(get_external_skills_dirs())
 
     for scan_dir in dirs_to_scan:
@@ -692,8 +707,9 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         JSON string with minimal skill info: name, description, category
     """
     try:
-        if not SKILLS_DIR.exists():
-            SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+        _skills_dir = _current_skills_dir()
+        if not _skills_dir.exists():
+            _skills_dir.mkdir(parents=True, exist_ok=True)
             return json.dumps(
                 {
                     "success": True,
@@ -975,8 +991,9 @@ def skill_view(
 
         # Build list of all skill directories to search
         all_dirs = []
-        if SKILLS_DIR.exists():
-            all_dirs.append(SKILLS_DIR)
+        _skills_dir = _current_skills_dir()
+        if _skills_dir.exists():
+            all_dirs.append(_skills_dir)
         all_dirs.extend(get_external_skills_dirs())
 
         if not all_dirs:
@@ -1107,7 +1124,8 @@ def skill_view(
         # Security: warn if skill is loaded from outside trusted directories
         # (local skills dir + configured external_dirs are all trusted)
         _outside_skills_dir = True
-        _trusted_dirs = [SKILLS_DIR.resolve()]
+        _skills_dir = _current_skills_dir()
+        _trusted_dirs = [_skills_dir.resolve()]
         try:
             _trusted_dirs.extend(d.resolve() for d in all_dirs[1:])
         except Exception:
@@ -1336,7 +1354,7 @@ def skill_view(
             linked_files["scripts"] = script_files
 
         try:
-            rel_path = str(skill_md.relative_to(SKILLS_DIR))
+            rel_path = str(skill_md.relative_to(_current_skills_dir()))
         except ValueError:
             # External skill — use path relative to the skill's own parent dir
             rel_path = str(skill_md.relative_to(skill_md.parent.parent)) if skill_md.parent.parent else skill_md.name
