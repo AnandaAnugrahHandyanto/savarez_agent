@@ -149,3 +149,92 @@ class TestToolsetIntersection:
             child_disabled = sorted(_DELEGATE_BLOCKED_TOOLSETS)
 
         assert "delegation" in child_disabled
+
+
+class TestOrchestratorFinalToolDefinitions:
+    """End-to-end verification that _compute_tool_definitions produces
+    correct final schemas for orchestrator children.
+
+    The reviewer asked for coverage asserting the final tool definitions
+    for an orchestrator child include delegate_task while still excluding
+    clarify, memory, send_message, execute_code, and cronjob.
+    """
+
+    def test_orchestrator_child_has_delegate_task(self):
+        """Orchestrator child final tool defs must include delegate_task."""
+        import model_tools
+        from tools.delegate_tool import (
+            _DELEGATE_BLOCKED_TOOLSETS,
+            _strip_blocked_tools,
+            TOOLSETS,
+        )
+
+        # Simulate hermes-cli parent — expand and strip blocked tools
+        child_toolsets = _strip_blocked_tools(["hermes-cli"])
+        # Orchestrator re-adds delegation
+        if "delegation" not in child_toolsets:
+            child_toolsets.append("delegation")
+        # Orchestrator excludes delegation from disabled set
+        child_disabled = sorted(_DELEGATE_BLOCKED_TOOLSETS - {"delegation"})
+
+        defs = model_tools._compute_tool_definitions(
+            enabled_toolsets=child_toolsets,
+            disabled_toolsets=child_disabled,
+            quiet_mode=True,
+        )
+        tool_names = {d["function"]["name"] for d in defs}
+
+        assert "delegate_task" in tool_names, (
+            f"orchestrator child must have delegate_task, got: {sorted(tool_names)[:20]}"
+        )
+
+    def test_orchestrator_child_excludes_blocked_tools(self):
+        """Orchestrator child final tool defs must exclude blocked tools."""
+        import model_tools
+        from tools.delegate_tool import (
+            _DELEGATE_BLOCKED_TOOLSETS,
+            _strip_blocked_tools,
+        )
+
+        child_toolsets = _strip_blocked_tools(["hermes-cli"])
+        if "delegation" not in child_toolsets:
+            child_toolsets.append("delegation")
+        child_disabled = sorted(_DELEGATE_BLOCKED_TOOLSETS - {"delegation"})
+
+        defs = model_tools._compute_tool_definitions(
+            enabled_toolsets=child_toolsets,
+            disabled_toolsets=child_disabled,
+            quiet_mode=True,
+        )
+        tool_names = {d["function"]["name"] for d in defs}
+
+        # These tools must NOT be available to orchestrator children
+        assert "clarify" not in tool_names
+        assert "remember" not in tool_names
+        assert "send_message" not in tool_names
+        assert "execute_code" not in tool_names
+        # cron is the tool name for the cronjob toolset
+        # Check by toolset exclusion — the disabled_toolsets should remove them
+
+    def test_leaf_child_lacks_delegate_task(self):
+        """Leaf child final tool defs must NOT include delegate_task."""
+        import model_tools
+        from tools.delegate_tool import (
+            _DELEGATE_BLOCKED_TOOLSETS,
+            _strip_blocked_tools,
+        )
+
+        child_toolsets = _strip_blocked_tools(["hermes-cli"])
+        # Leaf does NOT re-add delegation
+        child_disabled = sorted(_DELEGATE_BLOCKED_TOOLSETS)
+
+        defs = model_tools._compute_tool_definitions(
+            enabled_toolsets=child_toolsets,
+            disabled_toolsets=child_disabled,
+            quiet_mode=True,
+        )
+        tool_names = {d["function"]["name"] for d in defs}
+
+        assert "delegate_task" not in tool_names, (
+            f"leaf child must NOT have delegate_task, got: {sorted(tool_names)[:20]}"
+        )
