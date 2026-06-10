@@ -8522,49 +8522,255 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, legacy_wire)
 
 
-# ── Methods: task.submit (Phase 4 pilot — intent-based execution) ────
-# docs/architecture/central-brain-openclaw.md §11 Phase 4: the Orchestration
-# Core submits a high-level intent instead of picking an RPC. Pilot scope is
-# intent="slash" only (reversible; /model is the canonical pilot task). The
-# execution path is the SAME _slash_exec_core slash.exec uses — task.submit
-# merely renders the rich ExecutionResult instead of the legacy wire.
+# ── Methods: task.submit (Phase 4 pilot + Phase 5 Step 5) ────────────
+# docs/architecture/central-brain-openclaw.md §11: the Orchestration Core
+# submits a high-level intent instead of picking an RPC. Phase 4 piloted
+# intent="slash" (the SAME _slash_exec_core slash.exec uses, rendered as the
+# rich ExecutionResult instead of the legacy wire); Phase 5 Step 5 adds
+# intent="delegate" (the existing delegate_task engine, one terminal
+# ExecutionResult per batch — Q4 ruling).
 
-# Idempotency replay store: {idempotency_key: (monotonic_ts, rich_result_dict)}.
-# Entries expire after _TASK_RESULT_TTL_S (lazily, on access) and the map is
-# capped at _TASK_RESULTS_MAX by evicting the oldest entry. Re-submitting a
-# known key returns the stored rich dict + {"replayed": true} WITHOUT
-# executing again (the Broken-pipe cure, §8).
+# Idempotency replay (Phase 5 Step 5 fold): served by the AgentTaskRegistry's
+# replay store — same observable semantics the Phase 4 local dict had (600s
+# TTL, 1024-entry cap, lazy eviction; re-submitting a known key returns the
+# stored rich dict + {"replayed": true} WITHOUT executing again — the
+# Broken-pipe cure, §8). _TASK_RESULTS/_TASK_RESULTS_LOCK are retained as
+# module-level names because the protocol-test helper still pokes them; no
+# production path reads them anymore.
 _TASK_RESULTS_LOCK = threading.Lock()
 _TASK_RESULTS: dict[str, tuple[float, dict]] = {}
-_TASK_RESULT_TTL_S = 600.0
-_TASK_RESULTS_MAX = 1024
 
 
 def _task_result_replay(key: str) -> Optional[dict]:
-    now = time.monotonic()
-    with _TASK_RESULTS_LOCK:
-        expired = [
-            k for k, (ts, _) in _TASK_RESULTS.items() if now - ts > _TASK_RESULT_TTL_S
-        ]
-        for k in expired:
-            del _TASK_RESULTS[k]
-        hit = _TASK_RESULTS.get(key)
-        return hit[1] if hit else None
+    """Recall a cached rich result for *key*. Guarded: a registry bug
+    degrades to a cache miss (the task simply executes again) — it can
+    never break the submit path."""
+    try:
+        from action_runtime.task_registry import get_registry
+
+        return get_registry().recall(key)
+    except Exception:
+        logger.debug("task.submit replay recall failed", exc_info=True)
+        return None
 
 
 def _task_result_store(key: str, rich: dict) -> None:
-    with _TASK_RESULTS_LOCK:
-        if key not in _TASK_RESULTS and len(_TASK_RESULTS) >= _TASK_RESULTS_MAX:
-            oldest = min(_TASK_RESULTS, key=lambda k: _TASK_RESULTS[k][0])
-            del _TASK_RESULTS[oldest]
-        _TASK_RESULTS[key] = (time.monotonic(), rich)
+    try:
+        from action_runtime.task_registry import get_registry
+
+        get_registry().remember(key, rich)
+    except Exception:
+        logger.debug("task.submit replay store failed", exc_info=True)
+
+
+def _delegate_aggregate_to_result(task_id: str, raw: Any) -> "ExecutionResult":
+    """Map delegate_task's aggregate JSON string to ONE terminal ExecutionResult.
+
+    Q4 ruling (central-brain-openclaw.md §"Open questions"):
+
+    * every child "completed"      -> SUCCEEDED
+    * no child "completed"         -> FAILED (+ ExecError, retryable per cause)
+    * mixed / interrupted-partial  -> PARTIAL
+
+    ``outputs`` carries the engine's aggregate untouched ({"results": [...],
+    "total_duration_seconds": ...}) so the Core can re-plan ONLY the
+    unfinished children instead of re-running completed ones. Error typing
+    for the all-failed case mirrors the Step 2 per-child mapping
+    (delegate_tool._entry_to_execution_result): interrupted/timeout →
+    TRANSPORT, failed → PROVIDER_ERROR, error → INTERNAL — all
+    retryable=False (the Core must replan, not blindly re-run).
+    """
+    from action_runtime.contract import ErrorType, ExecError, ExecutionResult, Status
+
+    aggregate = None
+    if isinstance(raw, str):
+        try:
+            aggregate = json.loads(raw)
+        except ValueError:
+            aggregate = None
+    if not isinstance(aggregate, dict):
+        return ExecutionResult(
+            task_id=task_id,
+            status=Status.FAILED,
+            outputs={"raw": str(raw)[:2000]},
+            error=ExecError(
+                type=ErrorType.INTERNAL,
+                retryable=False,
+                message="delegate engine returned unparseable output",
+            ),
+        )
+
+    results = aggregate.get("results")
+    if not isinstance(results, list) or not results:
+        # Pre-spawn rejection (tool_error: spawn pause, depth limit, task
+        # validation) — no child ran, so there is nothing partial to keep.
+        # DENIED = refused by a pre-execution guard; the operator spawn
+        # pause is the one transient guard, so it alone is retryable.
+        message = str(aggregate.get("error") or "delegate engine returned no results")
+        return ExecutionResult(
+            task_id=task_id,
+            status=Status.FAILED,
+            outputs=aggregate,
+            error=ExecError(
+                type=ErrorType.DENIED,
+                retryable="paused" in message,
+                message=message,
+            ),
+        )
+
+    statuses = [e.get("status") if isinstance(e, dict) else None for e in results]
+    succeeded = sum(1 for s in statuses if s == "completed")
+    if succeeded == len(results):
+        return ExecutionResult(
+            task_id=task_id, status=Status.SUCCEEDED, outputs=aggregate
+        )
+    if succeeded > 0:
+        return ExecutionResult(
+            task_id=task_id, status=Status.PARTIAL, outputs=aggregate
+        )
+    failure_kinds = {s for s in statuses if s != "completed"}
+    if failure_kinds <= {"interrupted", "timeout"}:
+        err_type = ErrorType.TRANSPORT
+    elif failure_kinds == {"failed"}:
+        err_type = ErrorType.PROVIDER_ERROR
+    else:
+        err_type = ErrorType.INTERNAL
+    first_error = next(
+        (str(e.get("error")) for e in results if isinstance(e, dict) and e.get("error")),
+        "",
+    )
+    message = f"0/{len(results)} delegated tasks succeeded"
+    if first_error:
+        message += f": {first_error}"
+    return ExecutionResult(
+        task_id=task_id,
+        status=Status.FAILED,
+        outputs=aggregate,
+        error=ExecError(type=err_type, retryable=False, message=message),
+    )
+
+
+def _task_submit_delegate(
+    rid, params: dict, task_id: str
+) -> tuple[Optional["ExecutionResult"], Optional[dict]]:
+    """task.submit intent="delegate" core (Phase 5 Step 5).
+
+    Extracts ``inputs.tasks`` (goal strings or task objects — the same batch
+    shape delegate_task itself accepts), runs the existing engine against the
+    session's live agent, and wraps the aggregate via
+    ``_delegate_aggregate_to_result``. Returns a ``(result, err)`` pair
+    mirroring ``_slash_exec_core``'s triple: ``err`` is a JSON-RPC error dict
+    for parameter/session rejections, in which case ``result`` is ``None``.
+    """
+    inputs = params.get("inputs")
+    if not isinstance(inputs, dict):
+        inputs = {}
+    raw_tasks = inputs.get("tasks")
+    # Param validation happens BEFORE session resolution so a syntactically
+    # invalid request never triggers the lazy agent build.
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        return None, _err(
+            rid,
+            4012,
+            "inputs.tasks required (non-empty list of goal strings or task objects)",
+        )
+    tasks: list[dict] = []
+    for i, t in enumerate(raw_tasks):
+        if isinstance(t, str) and t.strip():
+            tasks.append({"goal": t})
+        elif isinstance(t, dict):
+            # delegate_task validates the 'goal' key itself — it stays the
+            # authority on its own task shape.
+            tasks.append(t)
+        else:
+            return None, _err(
+                rid, 4012, f"inputs.tasks[{i}] must be a goal string or a task object"
+            )
+
+    session, err = _sess(params, rid)
+    if err:
+        return None, err
+    agent = session.get("agent")
+    if agent is None:
+        return None, _err(
+            rid, 4010, "no live agent in session — delegate needs a parent agent"
+        )
+
+    # Honest visibility while the batch runs: register the parent task so
+    # task.status/task.list see it and task.cancel can interrupt the parent
+    # agent (the engine's own interrupted-collection path then yields the Q4
+    # PARTIAL aggregate). Children register themselves via the Step 2
+    # dual-write. Guarded — a registry bug must never break the run.
+    try:
+        import weakref
+
+        from action_runtime.task_registry import AgentTaskRecord, get_registry
+
+        try:
+            agent_ref: Any = weakref.ref(agent)
+        except TypeError:
+            agent_ref = agent
+        get_registry().register(
+            AgentTaskRecord(
+                task_id=task_id,
+                goal=str(tasks[0].get("goal") or "")[:120],
+                intent="delegate",
+                model=getattr(agent, "model", None),
+                agent_ref=agent_ref,
+            )
+        )
+    except Exception:
+        logger.debug("task.submit delegate registry register failed", exc_info=True)
+
+    from action_runtime.contract import ErrorType, ExecError, ExecutionResult, Status
+
+    try:
+        from tools.delegate_tool import delegate_task
+
+        raw = delegate_task(tasks=tasks, parent_agent=agent)
+        result = _delegate_aggregate_to_result(task_id, raw)
+    except Exception as e:
+        result = ExecutionResult(
+            task_id=task_id,
+            status=Status.FAILED,
+            error=ExecError(
+                type=ErrorType.INTERNAL,
+                retryable=False,
+                message=f"delegate engine error: {e}",
+            ),
+        )
+
+    try:
+        from action_runtime.task_registry import get_registry
+
+        get_registry().complete(task_id, result)
+    except Exception:
+        logger.debug("task.submit delegate registry complete failed", exc_info=True)
+    return result, None
 
 
 @method("task.submit")
 def _(rid, params: dict) -> dict:
+    """Intent-based execution (Phase 4 pilot + Phase 5 Step 5).
+
+    intent="slash" completes in milliseconds. intent="delegate" runs the
+    delegate_task engine SYNCHRONOUSLY on this handler's thread and can block
+    for minutes (doc §Phase 5 R6 — document explicitly): task.submit is in
+    _LONG_HANDLERS, so the run occupies one tui-rpc pool worker rather than
+    the dispatcher loop, and fast inline RPCs arriving as separate requests —
+    notably task.cancel and subagent.interrupt — still get through; they are
+    the ONLY way to stop an in-flight batch (the submit call itself cannot be
+    aborted by its caller). Concurrent long-running submits can exhaust the
+    small pool (HERMES_TUI_RPC_POOL_WORKERS, default 4) and queue behind each
+    other.
+    """
     intent = params.get("intent")
-    if intent != "slash":
-        return _err(rid, 4030, f"unsupported intent: {intent} (pilot supports 'slash')")
+    if intent not in ("slash", "delegate"):
+        return _err(
+            rid,
+            4030,
+            f"unsupported intent: {intent} (pilot supports 'slash', 'delegate')",
+        )
 
     idempotency_key = params.get("idempotency_key")
     if isinstance(idempotency_key, str) and idempotency_key:
@@ -8581,18 +8787,20 @@ def _(rid, params: dict) -> dict:
     if not isinstance(task_id, str) or not task_id:
         task_id = str(uuid.uuid4())
 
-    inputs = params.get("inputs")
-    if not isinstance(inputs, dict):
-        inputs = {}
-    command = inputs.get("command")
-    if not isinstance(command, str):
-        command = ""
-    core_params = {
-        "session_id": params.get("session_id") or "",
-        "command": command,
-    }
-
-    result, _legacy_wire, err = _slash_exec_core(rid, core_params, task_id=task_id)
+    if intent == "delegate":
+        result, err = _task_submit_delegate(rid, params, task_id)
+    else:
+        inputs = params.get("inputs")
+        if not isinstance(inputs, dict):
+            inputs = {}
+        command = inputs.get("command")
+        if not isinstance(command, str):
+            command = ""
+        core_params = {
+            "session_id": params.get("session_id") or "",
+            "command": command,
+        }
+        result, _legacy_wire, err = _slash_exec_core(rid, core_params, task_id=task_id)
     if err:
         return err
 
