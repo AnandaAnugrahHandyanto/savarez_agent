@@ -5,6 +5,7 @@ import { useSyncExternalStore } from 'react'
 import { NotificationStack } from '@/components/notifications'
 import { PaneShell } from '@/components/pane-shell'
 import { SidebarProvider } from '@/components/ui/sidebar'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import {
   $fileBrowserOpen,
   $panesFlipped,
@@ -15,6 +16,9 @@ import {
 } from '@/store/layout'
 import { $paneWidthOverride } from '@/store/panes'
 import { $connection } from '@/store/session'
+import { isSecondaryWindow } from '@/store/windows'
+
+import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
 
 import { KeybindPanel } from './keybind-panel'
 import { StatusbarControls, type StatusbarItem } from './statusbar-controls'
@@ -58,6 +62,7 @@ export function AppShell({
   const sidebarOpen = useStore($sidebarOpen)
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const panesFlipped = useStore($panesFlipped)
+  const narrowViewport = useMediaQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)
   const fileBrowserWidthOverride = useStore($paneWidthOverride(FILE_BROWSER_PANE_ID))
   const connection = useStore($connection)
   const viewportFullscreen = useSyncExternalStore(subscribeWindowSize, viewportIsFullscreen, () => false)
@@ -71,8 +76,12 @@ export function AppShell({
 
   // The inset clears the top-left titlebar buttons when nothing covers the
   // window's left edge. Default layout: the sessions sidebar sits there.
-  // Flipped layout: the file browser does instead.
-  const leftEdgePaneOpen = panesFlipped ? fileBrowserOpen : sidebarOpen
+  // Flipped layout: the file browser does instead. Below the collapse
+  // breakpoint both rails are force-collapsed (hover-reveal overlay), so the
+  // edge is uncovered regardless of their stored open state. A standalone
+  // session window renders no sidebar at all, so its edge is always uncovered.
+  const leftEdgePaneOpen =
+    !narrowViewport && !isSecondaryWindow() && (panesFlipped ? fileBrowserOpen : sidebarOpen)
 
   const titlebarContentInset = leftEdgePaneOpen
     ? 0
