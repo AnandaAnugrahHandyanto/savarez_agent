@@ -614,8 +614,14 @@ app.post('/send-media', async (req, res) => {
         if (needsConversion) {
           tmpPath = path.join(tmpdir(), `hermes_voice_${randomBytes(6).toString('hex')}.ogg`);
           try {
-            execSync(
-              `ffmpeg -y -i ${JSON.stringify(filePath)} -ar 48000 -ac 1 -c:a libopus ${JSON.stringify(tmpPath)}`,
+            // execFileSync with an argument array — never spawns a shell, so a
+            // crafted filePath (e.g. containing $(...) or backticks) cannot inject
+            // commands. Double-quoting via JSON.stringify in a shell string does
+            // NOT neutralize command substitution, so the prior execSync form was
+            // a shell-injection vector (#21758 review / CodeRabbit critical).
+            execFileSync(
+              'ffmpeg',
+              ['-y', '-i', filePath, '-ar', '48000', '-ac', '1', '-c:a', 'libopus', tmpPath],
               { timeout: 30000, stdio: 'pipe' }
             );
             audioBuffer = readFileSync(tmpPath);
