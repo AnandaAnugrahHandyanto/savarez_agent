@@ -1071,6 +1071,7 @@ export const ru = defineLocale({
       export: 'Экспорт',
       rename: 'Переименовать',
       archive: 'Архивировать',
+      newWindow: 'Новое окно',
       copyIdFailed: 'Не удалось скопировать ID сессии',
       actionsFor: title => `Действия для «${title}»`,
       sessionActions: 'Действия с сессией',
@@ -1238,7 +1239,8 @@ export const ru = defineLocale({
       restoreCheckpoint: 'Восстановить точку',
       restoreNext: 'Восстановить следующую точку',
       goForward: 'Вперёд',
-      sendEdited: 'Отправить отредактированное'
+      sendEdited: 'Отправить отредактированное',
+      attachingFile: 'Прикрепление…'
     },
     approval: {
       gatewayDisconnected: 'Шлюз отключён',
@@ -1421,6 +1423,8 @@ export const ru = defineLocale({
       branch: branch => `ветка ${branch}`,
       closeCommandCenter: 'Закрыть палитру',
       openCommandCenter: 'Открыть палитру команд',
+      showTerminal: 'Показать терминал',
+      hideTerminal: 'Скрыть терминал',
       gateway: 'Шлюз',
       gatewayReady: 'Готов',
       gatewayNeedsSetup: 'Настройка',
@@ -1478,6 +1482,7 @@ export const ru = defineLocale({
     loadingFiles: 'Загрузка файлов',
     terminalFocus: 'Фокус на терминал',
     terminalSplit: 'Вернуться к разделённому виду',
+    terminalHide: 'Скрыть терминал',
     addToChat: 'Добавить в чат'
   },
 
@@ -1708,9 +1713,13 @@ export const ru = defineLocale({
     unsupportedMessage: 'Эта версия Hermes не может обновляться из приложения.',
     connectionRetry: 'Проверьте подключение и попробуйте снова.',
     latestBody: 'У вас последняя версия.',
+    latestBodyBackend: 'Бэкенд работает на последней версии.',
     allSetTitle: 'Всё готово',
     availableTitle: 'Доступно новое обновление',
+    availableTitleBackend: 'Доступно обновление бэкенда',
     availableBody: 'Новая версия Hermes готова к установке.',
+    availableBodyBackend: 'Новая версия подключённого бэкенда готова к установке.',
+    availableBodyNoChangelog: 'Новая версия готова. Для этого типа установки список изменений недоступен.',
     updateNow: 'Обновить сейчас',
     maybeLater: 'Может, позже',
     moreChanges: count => `+ ${count} изменение${count === 1 ? '' : 'й'} включено.`,
@@ -1721,10 +1730,19 @@ export const ru = defineLocale({
     copied: 'Скопировано',
     done: 'Готово',
     applyingBody: 'Установщик Hermes откроется в отдельном окне и перезапустит приложение.',
+    applyingBodyBackend: 'Удалённый бэкенд применяет обновление и перезапустится. Hermes автоматически подключится при возврате.',
     applyingClose: 'Hermes закроется для применения обновления.',
     errorTitle: 'Обновление не завершилось',
     errorBody: 'Ничего не потеряно. Попробуйте снова.',
-    notNow: 'Не сейчас'
+    notNow: 'Не сейчас',
+    applyStatus: {
+      preparing: 'Обновление бэкенда…',
+      pulling: 'Бэкенд обновляется…',
+      restarting: 'Бэкенд перезапускается для применения обновления…',
+      notAvailable: 'Обновление недоступно для этого бэкенда.',
+      failed: 'Ошибка обновления бэкенда.',
+      noReturn: 'Бэкенд не вернулся в сеть. Возможно, обновление не завершилось — проверьте хост бэкенда.'
+    }
   },
 
   errors: {
