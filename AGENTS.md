@@ -31,6 +31,9 @@ main checkout).
 - Prefer Linear's GitHub integration or native PR attachments when available,
   but keep the human-readable Linear handoff comment even when auto-linking
   works.
+- When user action is needed, lead the update with an `Action Items For You`
+  list. Keep it short, concrete, and separate from agent-owned next steps; if
+  there are no user actions, say `Action Items For You: None`.
 - Do not design a new subsystem until you have reported the reuse scan. Before
   implementing new behavior, search existing Hermes mechanisms, nearby tests,
   and docs; then state what is reused, what new code/config is necessary, and
