@@ -1,0 +1,108 @@
+name: Build Hermes CLI Standalone EXE (PyInstaller)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2,14 * * *'
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM_REPO: NousResearch/hermes-agent
+  UPSTREAM_BRANCH: main
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      has_update: ${{ steps.check.outputs.has_update }}
+    steps:
+      - id: fork_head
+        run: |
+          SHA=$(curl -fsSL -H "Authorization: token ${{ github.token }}" \
+            "https://api.github.com/repos/${{ github.repository }}/commits/main" | jq -r '.sha')
+          echo "fork_sha=$SHA" >> "$GITHUB_OUTPUT"
+      - id: upstream_head
+        run: |
+          SHA=$(curl -fsSL -H "Authorization: token ${{ github.token }}" \
+            "https://api.github.com/repos/${{ env.UPSTREAM_REPO }}/commits/${{ env.UPSTREAM_BRANCH}}" | jq -r '.sha')
+          echo "upstream_sha=$SHA" >> "$GITHUB_OUTPUT"
+      - id: check
+        run: |
+          FORK="${{ steps.fork_head.outputs.fork_sha }}"
+          UPSTREAM="${{ steps.upstream_head.outputs.upstream_sha }}"
+          [ "$FORK" != "$UPSTREAM" ] && echo "has_update=true" >> "$GITHUB_OUTPUT" || echo "has_update=false" >> "$GITHUB_OUTPUT"
+
+  sync:
+    needs: check-upstream
+    if: needs.check-upstream.outputs.has_update == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+      - run: |
+          git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git
+          git fetch upstream ${{ env.UPSTREAM_BRANCH }}
+          git checkout -b sync-branch upstream/${{ env.UPSTREAM_BRANCH }}
+          # 只恢复自定义 workflow，并删除其余全部上游 workflow
+          git checkout main -- .github/workflows/build-hermes-desktop-exe.yml 2>/dev/null || true
+          git checkout main -- .github/workflows/build-hermes-cli-exe.yml 2>/dev/null || true
+          find .github/workflows -maxdepth 1 -name '*.yml' \
+            ! -name 'build-hermes-desktop-exe.yml' \
+            ! -name 'build-hermes-cli-exe.yml' \
+            -delete
+          git config user.email "joeshu@users.noreply.github.com"
+          git config user.name "joeshu"
+          git add . && git commit -m "sync: upstream $(git rev-parse --short upstream/${{ env.UPSTREAM_BRANCH }})" || true
+          git push origin HEAD:main --force
+
+  build-cli-exe:
+    needs: sync
+    if: always() && (needs.sync.result == 'success' || needs.sync.result == 'skipped')
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Create venv and install Hermes
+        run: |
+          uv venv .venv --python 3.11
+          uv pip install -e ".[all]"
+
+      - name: Install PyInstaller
+        run: uv pip install pyinstaller==6.12.0
+
+      - name: Build standalone exe with PyInstaller
+        shell: bash
+        run: |
+          source .venv/Scripts/activate
+          pyinstaller --onefile --name hermes \
+            --hidden-import hermes_cli \
+            --hidden-import hermes_cli.main \
+            --hidden-import hermes_cli.gateway \
+            --collect-all hermes_cli \
+            --add-data "hermes_cli:hermes_cli" \
+            --clean --noconfirm \
+            hermes
+
+      - name: Upload standalone exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-cli.exe
+          path: dist/hermes.exe
