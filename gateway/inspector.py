@@ -30,11 +30,39 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Keys that are never exposed in /config/public, regardless of nesting level.
+# Regex: catches pattern-based variants (api_key, API_KEY, ApiKey, …).
 _SENSITIVE_KEY_PATTERNS = re.compile(
     r"(api[_-]?key|apikey|token|secret|password|passwd|auth|credential|bearer)",
     re.IGNORECASE,
 )
+
+# Exact-match allowlist for common sensitive key names that the regex may miss:
+# abbreviations ("pass"), hyphenated forms ("api-key" → normalized), and
+# compound names whose substrings don't trigger the regex anchors.
+_SENSITIVE_KEY_SET: frozenset = frozenset({
+    "api_key", "apikey",
+    "token", "access_token", "refresh_token", "id_token",
+    "secret", "client_secret", "app_secret", "signing_secret", "webhook_secret",
+    "password", "passwd", "pass",
+    "auth", "authorization",
+    "credential", "credentials",
+    "bearer",
+    "private_key", "privatekey", "signing_key",
+    "session_key", "session_token",
+    "hmac_key", "encryption_key",
+})
+
+
+def _is_sensitive_key(key: str) -> bool:
+    """Return True if *key* should be redacted from public output.
+
+    Two complementary strategies so neither alone is a single point of failure:
+    the regex catches pattern-based variants; the exact-match set catches
+    abbreviated or hyphenated forms the regex might miss.
+    """
+    normalized = str(key).lower().replace("-", "_")
+    return normalized in _SENSITIVE_KEY_SET or bool(_SENSITIVE_KEY_PATTERNS.search(str(key)))
+
 
 # Frontmatter description extractor
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
@@ -69,14 +97,14 @@ def _extract_frontmatter(text: str) -> dict:
 
 
 def _scrub_sensitive(obj: Any, _depth: int = 0) -> Any:
-    """Recursively remove keys that match sensitive-key patterns from a dict."""
+    """Recursively remove sensitive keys from a dict using regex + allowlist."""
     if _depth > 20:
         return obj
     if isinstance(obj, dict):
         return {
             k: _scrub_sensitive(v, _depth + 1)
             for k, v in obj.items()
-            if not _SENSITIVE_KEY_PATTERNS.search(str(k))
+            if not _is_sensitive_key(k)
         }
     if isinstance(obj, list):
         return [_scrub_sensitive(item, _depth + 1) for item in obj]
