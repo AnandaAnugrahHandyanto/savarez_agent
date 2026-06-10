@@ -206,6 +206,57 @@ def test_complete_on_child_exception_maps_internal_failed(registry):
     assert rec.agent_ref is None
 
 
+# ── session_id threading + _tasks.jsonl persistence (Step 6a) ───────────
+
+
+def test_dual_write_carries_parent_session_id_and_persists(
+    registry, tmp_path, monkeypatch
+):
+    """A parent agent with a string session_id ties the child record to that
+    session, so complete() appends the snapshot to the session's
+    _tasks.jsonl (end-to-end through the real registry persist path)."""
+    import json
+
+    import hermes_constants
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+    parent = _make_parent()
+    parent.session_id = "sess-dw"
+    sid = "sa-0-9999aaaa"
+    child = _make_child(sid, summary="persisted")
+
+    result = _run_single_child(
+        task_index=0, goal="persist me", child=child, parent_agent=parent
+    )
+
+    assert result["status"] == "completed"
+    assert registry.get(sid).session_id == "sess-dw"
+    lines = (
+        (tmp_path / "spawn-trees" / "sess-dw" / "_tasks.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["task_id"] == sid
+    assert entry["session_id"] == "sess-dw"
+    assert entry["status"] == "succeeded"
+
+
+def test_dual_write_skips_non_string_parent_session_id(registry):
+    """Test doubles (MagicMock attrs) must not leak a non-string session_id
+    into the record — no session, no persistence."""
+    sid = "sa-0-8888bbbb"
+    child = _make_child(sid)
+
+    result = _run_single_child(
+        task_index=0, goal="no session", child=child, parent_agent=_make_parent()
+    )
+
+    assert result["status"] == "completed"
+    assert registry.get(sid).session_id is None
+
+
 # ── complete(None) -> FAILED on the interrupt path ──────────────────────
 
 

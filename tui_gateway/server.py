@@ -4472,8 +4472,11 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4000, "subagent_id required")
     # Registry first (Phase 5 Step 3); fall back to the legacy dict for
     # spawn paths that don't register into the registry yet (Step 7 cutover
-    # removes the fallback).
-    ok = get_registry().interrupt(subagent_id) or interrupt_subagent(subagent_id)
+    # removes the fallback). The reason mirrors the human-readable interrupt
+    # message the legacy interrupt_subagent path attaches.
+    ok = get_registry().interrupt(
+        subagent_id, reason=f"Interrupted via TUI ({subagent_id})"
+    ) or interrupt_subagent(subagent_id)
     return _ok(rid, {"found": ok, "subagent_id": subagent_id})
 
 
@@ -6064,12 +6067,19 @@ def _(rid, params: dict) -> dict:
 # task.cancel returns found=false for these tasks for now (doc §Step 4).
 
 
-def _registry_register_bg(task_id: str, goal: str, intent: str) -> None:
+def _registry_register_bg(
+    task_id: str, goal: str, intent: str, session_id: str | None = None
+) -> None:
     try:
         from action_runtime.task_registry import AgentTaskRecord, get_registry
 
         get_registry().register(
-            AgentTaskRecord(task_id=task_id, goal=goal[:120], intent=intent)
+            AgentTaskRecord(
+                task_id=task_id,
+                session_id=session_id or None,
+                goal=goal[:120],
+                intent=intent,
+            )
         )
     except Exception:
         pass
@@ -6116,7 +6126,9 @@ def _(rid, params: dict) -> dict:
 
     def run():
         session_tokens = _set_session_context(task_id, cwd=_session_cwd(session))
-        _registry_register_bg(task_id, goal=text, intent="tui-background")
+        _registry_register_bg(
+            task_id, goal=text, intent="tui-background", session_id=parent
+        )
         try:
             from agent.brain_host_gate import build_agent
 
@@ -6215,7 +6227,9 @@ def _(rid, params: dict) -> dict:
         # Pin the validated preview cwd, else the parent workspace — never an
         # invalid client path, which would silently fall back to the launch dir.
         session_tokens = _set_session_context(task_id, cwd=(preview_cwd or _session_cwd(session)))
-        _registry_register_bg(task_id, goal=prompt, intent="preview-restart")
+        _registry_register_bg(
+            task_id, goal=prompt, intent="preview-restart", session_id=parent
+        )
         try:
             from agent.brain_host_gate import build_agent
             from tools.terminal_tool import register_task_env_overrides
@@ -8684,18 +8698,22 @@ def _delegate_aggregate_to_result(task_id: str, raw: Any) -> "ExecutionResult":
 
     results = aggregate.get("results")
     if not isinstance(results, list) or not results:
-        # Pre-spawn rejection (tool_error: spawn pause, depth limit, task
-        # validation) — no child ran, so there is nothing partial to keep.
-        # DENIED = refused by a pre-execution guard; the operator spawn
-        # pause is the one transient guard, so it alone is retryable.
+        # Pre-spawn rejection — no child ran, so there is nothing partial to
+        # keep. DENIED is reserved for the operator spawn-pause guard: the
+        # one true pre-execution authorization refusal, and transient
+        # (retryable once unpaused). Every other no-results error (credential
+        # resolution, task-shape validation, depth limit, ...) is an
+        # engine-side failure, not an authorization denial: INTERNAL and
+        # not retryable (the Core must replan, not blindly re-run).
         message = str(aggregate.get("error") or "delegate engine returned no results")
+        paused = "spawning is paused" in message
         return ExecutionResult(
             task_id=task_id,
             status=Status.FAILED,
             outputs=aggregate,
             error=ExecError(
-                type=ErrorType.DENIED,
-                retryable="paused" in message,
+                type=ErrorType.DENIED if paused else ErrorType.INTERNAL,
+                retryable=paused,
                 message=message,
             ),
         )
@@ -8769,6 +8787,19 @@ def _task_submit_delegate(
                 rid, 4012, f"inputs.tasks[{i}] must be a goal string or a task object"
             )
 
+    # In-flight duplicate: the idempotency replay store only covers keys
+    # AFTER completion, so a retry while the first run is still live would
+    # re-execute the batch. Reject it before any session/agent work; a
+    # registry bug degrades to a cache miss (the duplicate check is skipped).
+    try:
+        from action_runtime.task_registry import TaskStatus, get_registry
+
+        existing = get_registry().get(task_id)
+        if existing is not None and existing.status is TaskStatus.RUNNING:
+            return None, _err(rid, 4034, f"task already running: {task_id}")
+    except Exception:
+        logger.debug("task.submit delegate in-flight check failed", exc_info=True)
+
     session, err = _sess(params, rid)
     if err:
         return None, err
@@ -8778,56 +8809,84 @@ def _task_submit_delegate(
             rid, 4010, "no live agent in session — delegate needs a parent agent"
         )
 
-    # Honest visibility while the batch runs: register the parent task so
-    # task.status/task.list see it and task.cancel can interrupt the parent
-    # agent (the engine's own interrupted-collection path then yields the Q4
-    # PARTIAL aggregate). Children register themselves via the Step 2
-    # dual-write. Guarded — a registry bug must never break the run.
-    try:
-        import weakref
+    # Claim the session for the batch — prompt.submit serializes user turns
+    # via session.running, so without this gate a delegate batch and a user
+    # turn would run concurrently on the SAME agent with cross-coupled
+    # interrupt state. Same rejection prompt.submit gives a busy session.
+    if not session.begin_turn():
+        return None, _err(rid, 4009, "session busy")
 
-        from action_runtime.task_registry import AgentTaskRecord, get_registry
+    try:
+        # Honest visibility while the batch runs: register the parent task so
+        # task.status/task.list see it and task.cancel can interrupt the parent
+        # agent (the engine's own interrupted-collection path then yields the Q4
+        # PARTIAL aggregate). session_id ties the record to the gateway session
+        # so complete() appends the snapshot to its _tasks.jsonl (Step 6a).
+        # Children register themselves via the Step 2 dual-write. Guarded — a
+        # registry bug must never break the run.
+        try:
+            import weakref
+
+            from action_runtime.task_registry import AgentTaskRecord, get_registry
+
+            try:
+                agent_ref: Any = weakref.ref(agent)
+            except TypeError:
+                agent_ref = agent
+            get_registry().register(
+                AgentTaskRecord(
+                    task_id=task_id,
+                    session_id=str(params.get("session_id") or "") or None,
+                    goal=str(tasks[0].get("goal") or "")[:120],
+                    intent="delegate",
+                    model=getattr(agent, "model", None),
+                    agent_ref=agent_ref,
+                )
+            )
+        except Exception:
+            logger.debug(
+                "task.submit delegate registry register failed", exc_info=True
+            )
+
+        from action_runtime.contract import ErrorType, ExecError, ExecutionResult, Status
 
         try:
-            agent_ref: Any = weakref.ref(agent)
-        except TypeError:
-            agent_ref = agent
-        get_registry().register(
-            AgentTaskRecord(
+            from tools.delegate_tool import delegate_task
+
+            raw = delegate_task(tasks=tasks, parent_agent=agent)
+            result = _delegate_aggregate_to_result(task_id, raw)
+        except Exception as e:
+            result = ExecutionResult(
                 task_id=task_id,
-                goal=str(tasks[0].get("goal") or "")[:120],
-                intent="delegate",
-                model=getattr(agent, "model", None),
-                agent_ref=agent_ref,
+                status=Status.FAILED,
+                error=ExecError(
+                    type=ErrorType.INTERNAL,
+                    retryable=False,
+                    message=f"delegate engine error: {e}",
+                ),
             )
-        )
-    except Exception:
-        logger.debug("task.submit delegate registry register failed", exc_info=True)
 
-    from action_runtime.contract import ErrorType, ExecError, ExecutionResult, Status
+        try:
+            from action_runtime.task_registry import get_registry
 
-    try:
-        from tools.delegate_tool import delegate_task
-
-        raw = delegate_task(tasks=tasks, parent_agent=agent)
-        result = _delegate_aggregate_to_result(task_id, raw)
-    except Exception as e:
-        result = ExecutionResult(
-            task_id=task_id,
-            status=Status.FAILED,
-            error=ExecError(
-                type=ErrorType.INTERNAL,
-                retryable=False,
-                message=f"delegate engine error: {e}",
-            ),
-        )
-
-    try:
-        from action_runtime.task_registry import get_registry
-
-        get_registry().complete(task_id, result)
-    except Exception:
-        logger.debug("task.submit delegate registry complete failed", exc_info=True)
+            get_registry().complete(task_id, result)
+        except Exception:
+            logger.debug(
+                "task.submit delegate registry complete failed", exc_info=True
+            )
+    finally:
+        # A task.cancel during the batch interrupts the PARENT agent, and
+        # nothing else clears that flag here — the parent runs no
+        # run_conversation of its own (only finalize_turn auto-clears), so a
+        # stale flag would abort the user's NEXT turn at the loop's first
+        # interrupt check. The busy gate above guarantees no user turn is
+        # running concurrently, so the clear is safe.
+        try:
+            if hasattr(agent, "clear_interrupt"):
+                agent.clear_interrupt()
+        except Exception:
+            logger.debug("task.submit delegate interrupt clear failed", exc_info=True)
+        session.end_turn()
     return result, None
 
 
@@ -8907,10 +8966,11 @@ def _(rid, params: dict) -> dict:
     task_id = str(params.get("task_id") or "").strip()
     if not task_id:
         return _err(rid, 4000, "task_id required")
-    record = get_registry().get(task_id)
-    if record is None:
+    # Locked snapshot read — never serialize a half-mutated record.
+    snap = get_registry().get_snapshot(task_id)
+    if snap is None:
         return _ok(rid, {"found": False, "task_id": task_id})
-    return _ok(rid, {"found": True, **record.snapshot()})
+    return _ok(rid, {"found": True, **snap})
 
 
 @method("task.cancel")
@@ -8927,7 +8987,8 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     from action_runtime.task_registry import get_registry
 
-    return _ok(rid, {"tasks": [r.snapshot() for r in get_registry().list_active()]})
+    # Locked snapshot reads — never serialize half-mutated records.
+    return _ok(rid, {"tasks": get_registry().list_active_snapshots()})
 
 
 # ── Methods: voice ───────────────────────────────────────────────────

@@ -1103,8 +1103,16 @@ class _FakeSlashWorker:
 
 
 def _clear_task_results(server):
+    import action_runtime.task_registry as task_registry_mod
+
+    # Legacy module dict — retained for name-compat only; no production path
+    # reads it anymore.
     with server._TASK_RESULTS_LOCK:
         server._TASK_RESULTS.clear()
+    # The replay store now lives in the AgentTaskRegistry singleton (Phase 5
+    # Step 5 fold) — reset it the same way the registry fixture does, so
+    # idempotency tests can never replay a key cached by an earlier test.
+    task_registry_mod._instance = None
 
 
 def test_slash_exec_task_id_param_is_echoed_additively(server):
@@ -1235,9 +1243,17 @@ def registry(monkeypatch):
 class _FakeInterruptibleAgent:
     def __init__(self):
         self.interrupted = False
+        self.interrupt_message = None
+        self._interrupt_requested = False
 
-    def interrupt(self):
+    def interrupt(self, message=None):
         self.interrupted = True
+        self.interrupt_message = message
+        self._interrupt_requested = True
+
+    def clear_interrupt(self):
+        self._interrupt_requested = False
+        self.interrupt_message = None
 
 
 def test_task_status_round_trip_returns_snapshot(server, registry):
@@ -1386,6 +1402,9 @@ def test_subagent_interrupt_prefers_registry_hit(server, registry, monkeypatch):
 
     assert resp["result"] == {"found": True, "subagent_id": "sa-1-cafebabe"}
     assert fake.interrupted is True
+    # Reason parity with the legacy interrupt_subagent path: the agent sees
+    # the same human-readable interrupt message either way.
+    assert fake.interrupt_message == "Interrupted via TUI (sa-1-cafebabe)"
     legacy.assert_not_called()
 
 
@@ -1427,9 +1446,21 @@ def test_delegation_pause_writes_both_stores(server, registry, monkeypatch):
 
 
 def _delegate_session(server, sid="test-session"):
-    """Session with a live (weakref-able) agent for delegate submits."""
+    """Session with a live (weakref-able) agent for delegate submits.
+
+    A real SessionState with the turn-lifecycle keys: _task_submit_delegate
+    claims the session via begin_turn()/end_turn() (same gate prompt.submit
+    uses), so the busy machinery must be present.
+    """
     agent = _FakeInterruptibleAgent()
-    server._sessions[sid] = {"session_key": sid, "agent": agent}
+    server._sessions[sid] = SessionState({
+        "session_key": sid,
+        "agent": agent,
+        "history_lock": threading.Lock(),
+        "running": False,
+        "inflight_turn": None,
+        "last_active": 0.0,
+    })
     return agent
 
 
@@ -1487,11 +1518,15 @@ def test_task_submit_delegate_all_success_returns_succeeded(
     # Goal strings were coerced to the engine's own {goal: ...} task shape
     # and the session's live agent was passed as the parent.
     assert calls == [([{"goal": "task a"}, {"goal": "task b"}], agent)]
-    # The parent task is a real registry record, completed terminally.
+    # The parent task is a real registry record, completed terminally, tied
+    # to the gateway session (Step 6 persistence identity).
     record = registry.get("task-del-1")
     assert record is not None
     assert record.intent == "delegate"
     assert record.status.value == "succeeded"
+    assert record.session_id == sid
+    # The turn claim is released once the batch finishes.
+    assert server._sessions[sid]["running"] is False
 
 
 def test_task_submit_delegate_mixed_batch_is_partial(server, registry, monkeypatch):
@@ -1658,6 +1693,238 @@ def test_task_submit_delegate_idempotency_replay_does_not_rerun(
     replay = dict(resp2["result"])
     replay.pop("replayed")
     assert replay == resp1["result"]
+
+
+def test_task_submit_delegate_rejects_busy_session(server, registry, monkeypatch):
+    """A delegate batch must never run concurrently with a user turn on the
+    SAME agent (cross-coupled interrupt state) — busy sessions get the same
+    4009 rejection prompt.submit gives, and the engine never runs."""
+    sid = "test-session"
+    _delegate_session(server, sid)
+    server._sessions[sid]["running"] = True
+    calls = []
+
+    def fake_delegate_task(tasks=None, parent_agent=None, **kwargs):
+        calls.append(tasks)
+        return json.dumps({"results": [], "total_duration_seconds": 0})
+
+    _stub_delegate_engine(monkeypatch, fake_delegate_task)
+
+    resp = server.handle_request({
+        "id": "r-del-busy",
+        "method": "task.submit",
+        "params": {
+            "session_id": sid,
+            "intent": "delegate",
+            "inputs": {"tasks": ["a"]},
+            "task_id": "task-del-busy",
+        },
+    })
+
+    assert resp["error"]["code"] == 4009
+    assert resp["error"]["message"] == "session busy"
+    assert calls == []
+    # The rejection happened before the parent record was registered.
+    assert registry.get("task-del-busy") is None
+    # The pre-existing claim is untouched (we never began a turn).
+    assert server._sessions[sid]["running"] is True
+
+
+def test_task_submit_delegate_inflight_duplicate_task_id_is_rejected(
+    server, registry, monkeypatch
+):
+    """An idempotent retry while the FIRST run is still in flight must not
+    re-execute the batch: replay only covers keys AFTER completion, so a
+    RUNNING task_id is rejected with 4034 instead of re-running."""
+    from action_runtime.task_registry import AgentTaskRecord
+
+    sid = "test-session"
+    _delegate_session(server, sid)
+    registry.register(AgentTaskRecord(task_id="task-dup-1", intent="delegate"))
+    calls = []
+
+    def fake_delegate_task(tasks=None, parent_agent=None, **kwargs):
+        calls.append(tasks)
+        return json.dumps({"results": [], "total_duration_seconds": 0})
+
+    _stub_delegate_engine(monkeypatch, fake_delegate_task)
+
+    resp = server.handle_request({
+        "id": "r-del-dup",
+        "method": "task.submit",
+        "params": {
+            "session_id": sid,
+            "intent": "delegate",
+            "inputs": {"tasks": ["a"]},
+            "task_id": "task-dup-1",
+        },
+    })
+
+    assert resp["error"]["code"] == 4034
+    assert "already running" in resp["error"]["message"]
+    assert calls == []
+    # The first run's record is untouched.
+    assert registry.get("task-dup-1").status.value == "running"
+
+
+def test_task_submit_delegate_clears_stale_parent_interrupt(
+    server, registry, monkeypatch
+):
+    """A task.cancel during the batch interrupts the PARENT agent; the flag
+    must not survive the submit, or it would abort the user's NEXT turn."""
+    sid = "test-session"
+    agent = _delegate_session(server, sid)
+
+    def fake_delegate_task(tasks=None, parent_agent=None, **kwargs):
+        # Simulate task.cancel arriving mid-batch: the registry resolves the
+        # parent record's agent_ref and calls interrupt() on it.
+        assert registry.interrupt("task-del-int") is True
+        assert parent_agent._interrupt_requested is True
+        return json.dumps({
+            "results": [
+                {"task_index": 0, "status": "interrupted", "summary": None,
+                 "error": "Parent agent interrupted — child did not finish in time"},
+            ],
+            "total_duration_seconds": 0.2,
+        })
+
+    _stub_delegate_engine(monkeypatch, fake_delegate_task)
+
+    resp = server.handle_request({
+        "id": "r-del-int",
+        "method": "task.submit",
+        "params": {
+            "session_id": sid,
+            "intent": "delegate",
+            "inputs": {"tasks": ["a"]},
+            "task_id": "task-del-int",
+        },
+    })
+
+    assert "error" not in resp
+    assert resp["result"]["status"] == "failed"
+    # The stale interrupt was cleared and the session released.
+    assert agent._interrupt_requested is False
+    assert server._sessions[sid]["running"] is False
+
+
+def test_task_submit_delegate_denied_only_for_spawn_pause(
+    server, registry, monkeypatch
+):
+    """Only the operator spawn-pause guard maps to DENIED/retryable=True;
+    any other no-results {'error': ...} aggregate (credential resolution,
+    task-shape validation, ...) is INTERNAL/retryable=False — not an
+    authorization denial."""
+    sid = "test-session"
+    _delegate_session(server, sid)
+    aggregates = iter([
+        json.dumps({
+            "error": (
+                "Delegation spawning is paused. Clear the pause via the TUI "
+                "(`p` in /agents) or the `delegation.pause` RPC before retrying."
+            )
+        }),
+        json.dumps({"error": "Failed to resolve delegation credentials: no key"}),
+    ])
+    _stub_delegate_engine(
+        monkeypatch, lambda tasks=None, parent_agent=None, **kw: next(aggregates)
+    )
+
+    resp = server.handle_request({
+        "id": "r-del-paused",
+        "method": "task.submit",
+        "params": {
+            "session_id": sid,
+            "intent": "delegate",
+            "inputs": {"tasks": ["a"]},
+            "task_id": "task-del-paused",
+        },
+    })
+    assert resp["result"]["status"] == "failed"
+    assert resp["result"]["error"]["type"] == "denied"
+    assert resp["result"]["error"]["retryable"] is True
+
+    resp = server.handle_request({
+        "id": "r-del-creds",
+        "method": "task.submit",
+        "params": {
+            "session_id": sid,
+            "intent": "delegate",
+            "inputs": {"tasks": ["a"]},
+            "task_id": "task-del-creds",
+        },
+    })
+    assert resp["result"]["status"] == "failed"
+    assert resp["result"]["error"]["type"] == "internal"
+    assert resp["result"]["error"]["retryable"] is False
+
+
+def test_task_submit_delegate_persists_tasks_jsonl_line(
+    server, registry, spawn_home, monkeypatch
+):
+    """Step 6 end-to-end on a production-shaped path: the parent delegate
+    record carries the gateway session_id, so complete() appends one
+    snapshot line to that session's _tasks.jsonl under the (tmp) home."""
+    sid = "sess-e2e"
+    _delegate_session(server, sid)
+
+    def fake_delegate_task(tasks=None, parent_agent=None, **kwargs):
+        return json.dumps({
+            "results": [
+                {"task_index": 0, "status": "completed", "summary": "done",
+                 "error": None},
+            ],
+            "total_duration_seconds": 0.1,
+        })
+
+    _stub_delegate_engine(monkeypatch, fake_delegate_task)
+
+    resp = server.handle_request({
+        "id": "r-del-persist",
+        "method": "task.submit",
+        "params": {
+            "session_id": sid,
+            "intent": "delegate",
+            "inputs": {"tasks": ["a"]},
+            "task_id": "task-e2e-1",
+        },
+    })
+
+    assert resp["result"]["status"] == "succeeded"
+    lines = (
+        (spawn_home / "spawn-trees" / sid / "_tasks.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["task_id"] == "task-e2e-1"
+    assert entry["session_id"] == sid
+    assert entry["status"] == "succeeded"
+
+
+def test_registry_register_bg_session_id_persists_on_complete(
+    server, registry, spawn_home
+):
+    """The bg/preview register helper threads session_id onto the record, so
+    the completion path appends to that session's _tasks.jsonl."""
+    server._registry_register_bg(
+        "bg_abc123", goal="poke", intent="tui-background", session_id="sess-bg"
+    )
+    assert registry.get("bg_abc123").session_id == "sess-bg"
+
+    server._registry_complete_bg("bg_abc123", text="done")
+
+    lines = (
+        (spawn_home / "spawn-trees" / "sess-bg" / "_tasks.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["task_id"] == "bg_abc123"
+    assert entry["session_id"] == "sess-bg"
+    assert entry["status"] == "succeeded"
 
 
 # ── spawn_tree.list: legacy _index.jsonl + registry _tasks.jsonl (Step 6b) ──

@@ -868,6 +868,18 @@ def _build_child_progress_callback(
                 if rec is not None:
                     rec["tool_count"] = _tool_count[0]
                     rec["last_tool"] = tool_name or ""
+            # Phase 5 dual-write: mirror live progress into the
+            # AgentTaskRegistry so task.status/task.list show
+            # tool_count/last_tool while the child runs.  Guarded — a
+            # registry bug must never break the progress relay.
+            try:
+                get_registry().update_progress(
+                    subagent_id,
+                    tool_count=_tool_count[0],
+                    last_tool=tool_name or "",
+                )
+            except Exception as e:
+                logger.debug("Registry progress update failed: %s", e)
         if spinner:
             short = (
                 (preview[:35] + "...")
@@ -1571,12 +1583,19 @@ def _run_single_child(
         # Phase 5 Step 2 dual-write (central-brain-openclaw.md): mirror the
         # record into the AgentTaskRegistry.  Strictly additive — a registry
         # bug must never break a real delegate run, hence the broad guard.
+        # session_id ties the record to the parent's persistent session so
+        # complete() appends the snapshot to that session's _tasks.jsonl
+        # (Step 6a); test doubles without a string session_id skip it.
+        _raw_session = getattr(parent_agent, "session_id", None)
         try:
             get_registry().register(
                 AgentTaskRecord(
                     task_id=_subagent_id,
                     parent_task_id=(
                         _parent_sid if isinstance(_parent_sid, str) else None
+                    ),
+                    session_id=(
+                        _raw_session if isinstance(_raw_session, str) else None
                     ),
                     depth=_tui_depth,
                     goal=goal,
