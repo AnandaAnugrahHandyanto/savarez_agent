@@ -25,12 +25,23 @@ def _build():
 
 def test_cron_subactions_present():
     parser = _build()
-    for action in ("list", "create", "edit", "pause", "resume", "run", "remove", "status", "tick"):
-        ns = parser.parse_args(["cron", action] if action in ("list", "status", "tick")
+    for action in ("list", "create", "edit", "pause", "resume", "run", "remove", "status", "tick", "audit"):
+        ns = parser.parse_args(["cron", action] if action in ("list", "status", "tick", "audit")
                                else ["cron", action, "jobid"] if action in ("pause", "resume", "run", "remove", "edit")
                                else ["cron", "create", "30m"])
         assert ns.command == "cron"
         assert ns.cron_command == action
+
+
+def test_cron_audit_options():
+    parser = _build()
+    ns = parser.parse_args([
+        "cron", "audit", "--limit", "10", "--job-id", "abc123", "--action", "paused"
+    ])
+    assert ns.cron_command == "audit"
+    assert ns.limit == 10
+    assert ns.job_id == "abc123"
+    assert ns.action == "paused"
 
 
 def test_cron_aliases():
