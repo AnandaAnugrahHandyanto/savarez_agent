@@ -1858,11 +1858,11 @@ class MatrixAdapter(BasePlatformAdapter):
             self._threads.mark(thread_id)
 
         display_name = await self._get_display_name(room_id, sender)
-        room_info = await self.get_chat_info(room_id)
+        chat_info = await self.get_chat_info(room_id)
         source = self.build_source(
             chat_id=room_id,
-            chat_name=room_info["name"],
-            chat_type=room_info["type"],
+            chat_name=chat_info.get("name"),
+            chat_type=chat_info.get("type", chat_type),
             user_id=sender,
             user_name=display_name,
             thread_id=thread_id,
