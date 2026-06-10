@@ -19,6 +19,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
+import urllib.parse as _urllib_parse
 
 from utils import normalize_proxy_url
 
@@ -2747,7 +2748,7 @@ class BasePlatformAdapter(ABC):
                 if local_path and os.path.splitext(local_path)[1].lower() in FILE_LIKE_EXTS:
                     validated = validate_media_delivery_path(local_path)
                     if validated:
-                        norm_url = f'file://{validated}'
+                        norm_url = 'file://' + _urllib_parse.quote(validated, safe='/:\\')
                         images.append((norm_url, alt_text))
                         accepted_spans.append(match.span())
                         continue
@@ -2780,7 +2781,7 @@ class BasePlatformAdapter(ABC):
                 if local_path and os.path.splitext(local_path)[1].lower() in FILE_LIKE_EXTS:
                     validated = validate_media_delivery_path(local_path)
                     if validated:
-                        norm_url = f'file://{validated}'
+                        norm_url = 'file://' + _urllib_parse.quote(validated, safe='/:\\')
                         images.append((norm_url, ""))
                         accepted_spans.append(match.span())
                         continue
@@ -3013,14 +3014,18 @@ class BasePlatformAdapter(ABC):
         Offsets are preserved (matched chars replaced with spaces, newlines kept)
         so downstream match positions stay valid.
         """
-        if '"' not in content or ("MEDIA:" not in content and "file://" not in content):
+        # Use case-insensitive checks so FILE:// (accepted by extract_images)
+        # is also blocked.
+        content_lower = content.lower()
+        if '"' not in content or ("media:" not in content_lower and "file://" not in content_lower):
             return content
         chars = list(content)
         # JSON value-context string: a quote preceded by : , { or [ (optional ws),
         # capturing the (escape-aware) string body up to the closing quote.
         for m in re.finditer(r'(?<=[:,{\[])\s*"((?:[^"\\\n]|\\.)*)"', content):
             seg = m.group(1)
-            if re.search(r'(?:MEDIA:\s*(?:~/|/|[A-Za-z]:[/\\])|file://)', seg):
+            seg_lower = seg.lower()
+            if re.search(r'(?:media:\s*(?:~/|/|[A-Za-z]:[/\\])|file://)', seg_lower):
                 for i in range(m.start(1), m.end(1)):
                     if chars[i] != '\n':
                         chars[i] = ' '

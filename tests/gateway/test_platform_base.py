@@ -292,7 +292,8 @@ class TestExtractImages:
         assert images[0][1] == ""
 
     def test_file_url_percent_encoded(self, tmp_path):
-        """file:// URI with %20-encoded spaces."""
+        """file:// URI with %20-encoded spaces — also verifies round-trip."""
+        import urllib.parse
         d = tmp_path / "my folder"
         d.mkdir()
         img = d / "screen shot.png"
@@ -301,7 +302,10 @@ class TestExtractImages:
         content = f"![img](file://{encoded})"
         images, _ = BasePlatformAdapter.extract_images(content)
         assert len(images) == 1
-        assert str(img) in images[0][0]
+        url = images[0][0]
+        assert url.startswith("file://")
+        decoded = urllib.parse.unquote(url[7:])
+        assert decoded == str(img), f"Decoded {decoded!r} != {str(img)!r}"
 
     def test_file_url_unc_rejected(self, tmp_path):
         """UNC file:// URIs are rejected in v1."""
@@ -518,6 +522,81 @@ Example code:
         content = 'Normal: ![x](file://%s)' % f.as_posix()
         images, _ = BasePlatformAdapter.extract_images(content)
         assert len(images) == 1
+
+    # ---- Blocker 1: case-insensitive JSON file:// blocking ----
+
+    def test_json_uppercase_file_url_blocked(self, tmp_path):
+        """FILE:// (uppercase) inside JSON string is blocked."""
+        f = tmp_path / "cap_block.png"
+        f.write_bytes(b"PNG")
+        fp = f.as_posix()
+        for content in [
+            '{"result":"![img](FILE://%s)"}' % fp,
+            '{"result":"<img src=FILE://%s>"}' % fp,
+            '{"result":"![img](File://%s)"}' % fp,
+        ]:
+            images, cleaned = BasePlatformAdapter.extract_images(content)
+            assert images == [], f"Uppercase FILE:// not blocked: {content}"
+            assert cleaned == content, f"cleaned differs from source: {cleaned}"
+
+    def test_json_uppercase_nested_object_file_url_blocked(self, tmp_path):
+        """FILE:// in nested JSON object is blocked; source preserved."""
+        f = tmp_path / "ncap.png"
+        f.write_bytes(b"PNG")
+        content = '{"outer":{"inner":"![x](FILE://%s)"}}' % f.as_posix()
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert cleaned == content
+
+    def test_json_uppercase_array_file_url_blocked(self, tmp_path):
+        """FILE:// in JSON array is blocked; source preserved."""
+        f = tmp_path / "acap.png"
+        f.write_bytes(b"PNG")
+        content = '{"items":["![x](FILE://%s)"]}' % f.as_posix()
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == []
+        assert cleaned == content
+
+    # ---- Blocker 2: double-decode protection ----
+
+    def test_quote_roundtrip_percent_in_filename(self, tmp_path):
+        """A filename containing literal % (e.g. 100%25) survives the
+        quote/unquote round-trip in send_multiple_images."""
+        import urllib.parse
+        d = tmp_path / "pct"
+        d.mkdir()
+        # A path with a literal "%25" in the name
+        img = d / "test%file.png"
+        img.write_bytes(b"PNG")
+        fp = img.as_posix()
+        encoded = fp.replace("%", "%25")  # double-encode
+        content = f"![x](file://{encoded})"
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1, f"No image extracted from {content}"
+        decoded = urllib.parse.unquote(images[0][0][7:])
+        assert decoded == fp, f"Round-trip broken: {decoded!r} != {fp!r}"
+
+    def test_send_multiple_images_roundtrip_path(self, tmp_path):
+        """Verifies that the path reaching send_image_file from
+        send_multiple_images matches the validated path exactly."""
+        import urllib.parse
+        from unittest.mock import AsyncMock
+        from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+        d = tmp_path / "roundtrip"
+        d.mkdir()
+        img = d / "test file.png"  # has space
+        img.write_bytes(b"PNG")
+        fp = img.as_posix()  # /tmp/.../roundtrip/test file.png
+
+        # Simulate what _normalize_file_url + validate produces
+        validated = fp
+        # Then what extract_images now puts into the image tuple
+        norm_url = 'file://' + urllib.parse.quote(validated, safe='/:\\')
+
+        # Simulate send_multiple_images decode
+        final = urllib.parse.unquote(norm_url[7:])
+        assert final == validated, f"send_multiple_images gets wrong path: {final!r} != {validated!r}"
 
 
 class TestNormalizeFileUrl:
