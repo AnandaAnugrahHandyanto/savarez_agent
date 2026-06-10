@@ -1862,6 +1862,7 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "channel_prompts": {},         # Per-channel ephemeral system prompts
+        "channel_cwds": {},            # Per-channel working directories
     },
 
     # Discord platform settings (gateway mode)
@@ -1875,6 +1876,7 @@ DEFAULT_CONFIG = {
         "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the backfill block
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
+        "channel_cwds": {},            # Per-channel working directories (forum parents apply to child threads)
         # Opt-in DM role-based auth (#12136). By default, DISCORD_ALLOWED_ROLES
         # authorizes only guild messages in the role's own guild — DMs require
         # DISCORD_ALLOWED_USERS. Set dm_role_auth_guild to a guild ID to also
@@ -1937,6 +1939,7 @@ DEFAULT_CONFIG = {
     "telegram": {
         "reactions": False,            # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
+        "channel_cwds": {},            # Per-chat/topic working directories (topics inherit from parent group)
         "allowed_chats": "",           # If set, bot ONLY responds in these group/supergroup chat IDs (whitelist)
     },
 
@@ -1946,6 +1949,7 @@ DEFAULT_CONFIG = {
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "channel_prompts": {},         # Per-channel ephemeral system prompts
+        "channel_cwds": {},            # Per-channel working directories
     },
 
     # Matrix platform settings (gateway mode)
