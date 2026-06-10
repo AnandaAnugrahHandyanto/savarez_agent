@@ -475,6 +475,50 @@ Example code:
         assert len(images) == 1
         assert str(img) in images[0][0]
 
+    # ---- JSON string value blocking ----
+
+    def test_json_embedded_file_url_markdown_blocked(self, tmp_path):
+        """JSON string value with file:// markdown image is blocked."""
+        f = tmp_path / "exist.png"
+        f.write_bytes(b"PNG")
+        content = '{"result":"![img](file://%s)"}' % f.as_posix()
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == [], "JSON-embedded file:// markdown should be blocked"
+        assert "![img]" in cleaned or "file://" in cleaned
+
+    def test_json_embedded_file_url_html_blocked(self, tmp_path):
+        """JSON string value with <img src=file://...> is blocked."""
+        f = tmp_path / "exist.png"
+        f.write_bytes(b"PNG")
+        content = '{"result":"<img src=file://%s>"}' % f.as_posix()
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+        assert images == [], "JSON-embedded file:// HTML should be blocked"
+        assert "<img" in cleaned or "file://" in cleaned
+
+    def test_json_nested_object_file_url_blocked(self, tmp_path):
+        """Nested JSON object with file:// image is blocked."""
+        f = tmp_path / "nest.png"
+        f.write_bytes(b"PNG")
+        content = '{"outer":{"inner":"![x](file://%s)"}}' % f.as_posix()
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert images == []
+
+    def test_json_array_file_url_blocked(self, tmp_path):
+        """JSON array with file:// image value is blocked."""
+        f = tmp_path / "arr.png"
+        f.write_bytes(b"PNG")
+        content = '{"items":["![x](file://%s)"]}' % f.as_posix()
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert images == []
+
+    def test_json_embedded_does_not_affect_normal_file_url(self, tmp_path):
+        """Normal (non-JSON) file:// image still works when JSON is present."""
+        f = tmp_path / "real.png"
+        f.write_bytes(b"PNG")
+        content = 'Normal: ![x](file://%s)' % f.as_posix()
+        images, _ = BasePlatformAdapter.extract_images(content)
+        assert len(images) == 1
+
 
 class TestNormalizeFileUrl:
     """Tests for BasePlatformAdapter._normalize_file_url."""

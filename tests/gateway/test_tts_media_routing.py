@@ -363,3 +363,33 @@ async def test_post_stream_bare_local_path_not_attached(tmp_path, monkeypatch):
     adapter.send_multiple_images.assert_not_awaited()
     adapter.send_image_file.assert_not_awaited()
     adapter.send_document.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_stream_json_embedded_file_url_not_attached(tmp_path, monkeypatch):
+    """file:// image tag inside a JSON string value must NOT reach send_multiple_images."""
+    event = _event()
+    png = _allowed_media_path(tmp_path, monkeypatch, "stale.png")
+    response = '{"result":"![img](file://%s)"}' % png.as_posix()
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_multiple_images=AsyncMock(return_value=SendResult(success=True, message_id="batch")),
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner(None),
+        response,
+        event,
+        adapter,
+    )
+
+    adapter.send_multiple_images.assert_not_awaited()
+    adapter.send_image_file.assert_not_awaited()
+    adapter.send_document.assert_not_awaited()

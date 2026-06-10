@@ -2987,39 +2987,40 @@ class BasePlatformAdapter(ABC):
 
     @staticmethod
     def _mask_json_string_media(content: str) -> str:
-        """Blank out ``MEDIA:<bare-path>`` occurrences that sit inside a JSON
-        string *value* so they are never delivered as real attachments.
+        """Blank out ``MEDIA:<bare-path>`` and ``file://`` image tag occurrences
+        that sit inside a JSON string *value* so they are never delivered as
+        real attachments.
 
         Serialized tool results frequently embed a previous reply's text, e.g.::
 
             {"result": "MEDIA:/Users/x/.hermes/media/generated/stale.png"}
+            {"result": "![img](file:///tmp/generated.png)"}
+            {"result": "<img src=file:///tmp/generated.png>"}
 
-        Here the ``MEDIA:`` is part of stored text, not an outbound directive,
-        but the bare-path branch of ``MEDIA_TAG_CLEANUP_RE`` would still match it
-        and re-deliver a stale file. (Regression report #34375.)
+        Here the ``file://`` paths are part of stored text, not outbound
+        directives, but ``extract_images`` would still match them and trigger
+        a native upload. (Regression report #PR43332 review.)
 
-        The discriminator is precise so legitimate tags are untouched:
+        The discriminator:
 
         * Only spans opened by a JSON value-context quote (``:``, ``,``, ``{`` or
           ``[`` immediately before the ``"``) are considered.
-        * Within such a span, only a ``MEDIA:`` followed by a **bare** path
-          (``/``, ``~/`` or ``X:\\``) is masked. A ``MEDIA:"..."`` quoted-path
-          tag — a real LLM output format the extractor supports — is not bare and
-          is left alone.
+        * Within such a span, any ``file://`` presence or ``MEDIA:`` followed by
+          a bare path is masked.
         * Tags at line start, after prose whitespace, or indented are outside any
           JSON value span and are never affected.
 
         Offsets are preserved (matched chars replaced with spaces, newlines kept)
         so downstream match positions stay valid.
         """
-        if '"' not in content or "MEDIA:" not in content:
+        if '"' not in content or ("MEDIA:" not in content and "file://" not in content):
             return content
         chars = list(content)
         # JSON value-context string: a quote preceded by : , { or [ (optional ws),
         # capturing the (escape-aware) string body up to the closing quote.
         for m in re.finditer(r'(?<=[:,{\[])\s*"((?:[^"\\\n]|\\.)*)"', content):
             seg = m.group(1)
-            if re.search(r'MEDIA:\s*(?:~/|/|[A-Za-z]:[/\\])', seg):
+            if re.search(r'(?:MEDIA:\s*(?:~/|/|[A-Za-z]:[/\\])|file://)', seg):
                 for i in range(m.start(1), m.end(1)):
                     if chars[i] != '\n':
                         chars[i] = ' '
