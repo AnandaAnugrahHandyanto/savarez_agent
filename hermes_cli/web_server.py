@@ -4734,6 +4734,16 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
         if body.enabled is not None:
             _write_platform_enabled(platform_id, body.enabled)
 
+            # 联动 gateway：任意消息平台被启用 → 自动启动 gateway（fire-and-forget）
+            if body.enabled:
+                try:
+                    _spawn_hermes_action(["gateway", "start"], "gateway-start")
+                    gw_state = _read_gateway_state()
+                    gw_state["desktop_managed"] = True
+                    _write_gateway_state(gw_state)
+                except Exception:
+                    pass  # best-effort
+
         return {"ok": True, "platform": platform_id}
     except HTTPException:
         raise
@@ -7522,13 +7532,41 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle):
 
 @app.post("/api/gateway/start")
 async def start_gateway():
-    """Start Hermes Gateway (called from Desktop toggle and auto-boot).
+    """Start Hermes Gateway.
 
-    Also writes gateway_state.json to signal that the gateway is
-    desktop-managed, so the cron health-check knows to keep it alive."""
+    Delegates to ``hermes gateway start`` which dispatches to the
+    platform-appropriate handler (systemd / launchd / gateway_windows).
+    On Windows, ``gateway_windows.start()`` prefers ``schtasks /Run``
+    and falls back to a detached ``pythonw.exe`` spawn.
+
+    If a gateway is already running, the handler returns immediately
+    and we still write the ``desktop_managed`` flag so the cron
+    health-check knows the Desktop is in charge."""
     try:
+        # 1 — Check if already running (fast path — mark as managed)
+        try:
+            from gateway.status import get_running_pid
+            existing_pid = get_running_pid(cleanup_stale=False)
+        except ImportError:
+            existing_pid = None
+
+        if existing_pid is not None:
+            try:
+                gw_state = _read_gateway_state()
+                gw_state["desktop_managed"] = True
+                _write_gateway_state(gw_state)
+            except Exception:
+                pass
+            return {"ok": True, "pid": existing_pid, "already_running": True}
+
+        # 2 — Spawn ``hermes gateway start`` as a background action.
+        #     On Linux this becomes ``systemctl start``.
+        #     On macOS this becomes ``launchctl kickstart``.
+        #     On Windows this becomes ``gateway_windows.start()``
+        #     (schtasks /Run or detached pythonw.exe spawn).
         proc = _spawn_hermes_action(["gateway", "start"], "gateway-start")
-        # Signal to cron health-check that this gateway is under Desktop management
+
+        # 3 — Mark as desktop-managed (cron health-check will keep alive)
         try:
             gw_state = _read_gateway_state()
             gw_state["desktop_managed"] = True
