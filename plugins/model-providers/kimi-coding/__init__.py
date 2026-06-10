@@ -1,10 +1,10 @@
 """Kimi / Moonshot provider profiles.
 
 Kimi has dual endpoints:
-  - sk-kimi-* keys → api.kimi.com/coding (Anthropic Messages API)
+  - sk-kimi-* keys → api.kimi.com/coding (Coding Agent endpoint)
   - legacy keys → api.moonshot.ai/v1 (OpenAI chat completions)
 
-This module covers the chat_completions path (/v1 endpoint).
+This module covers the Coding Agent path (/coding endpoint).
 """
 
 from typing import Any
@@ -58,10 +58,10 @@ kimi = KimiProfile(
     name="kimi-coding",
     aliases=("kimi", "moonshot", "kimi-for-coding"),
     env_vars=("KIMI_API_KEY", "KIMI_CODING_API_KEY"),
-    base_url="https://api.moonshot.ai/v1",
+    base_url="https://api.kimi.com/coding",
     fixed_temperature=OMIT_TEMPERATURE,
     default_max_tokens=32000,
-    default_headers={"User-Agent": "hermes-agent/1.0"},
+    default_headers={"User-Agent": "claude-code/0.1.0"},
     default_aux_model="kimi-k2-turbo-preview",
 )
 
@@ -69,10 +69,10 @@ kimi_cn = KimiProfile(
     name="kimi-coding-cn",
     aliases=("kimi-cn", "moonshot-cn"),
     env_vars=("KIMI_CN_API_KEY",),
-    base_url="https://api.moonshot.cn/v1",
+    base_url="https://api.kimi.com/coding",
     fixed_temperature=OMIT_TEMPERATURE,
     default_max_tokens=32000,
-    default_headers={"User-Agent": "hermes-agent/1.0"},
+    default_headers={"User-Agent": "claude-code/0.1.0"},
     default_aux_model="kimi-k2-turbo-preview",
 )
 
