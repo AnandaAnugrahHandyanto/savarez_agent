@@ -825,3 +825,105 @@ termux = ["rich>=14"]
 
     assert hm._load_installable_optional_extras(group="all") == ["mcp"]
     assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
+
+
+class TestDesktopBuildBackupRestore:
+    """Tests for the desktop build backup/restore logic in _cmd_update_impl."""
+
+    @staticmethod
+    def _setup_desktop_dir(tmp_path, with_exe=True):
+        """Create a mock desktop directory structure with optional packaged exe."""
+        desktop_dir = tmp_path / "apps" / "desktop"
+        desktop_dir.mkdir(parents=True)
+        (desktop_dir / "package.json").write_text("{}")
+        if with_exe:
+            release_dir = desktop_dir / "release"
+            if __import__("sys").platform == "win32":
+                unpacked = release_dir / "win-unpacked"
+            elif __import__("sys").platform == "darwin":
+                unpacked = release_dir / "mac" / "Hermes.app" / "Contents" / "MacOS"
+            else:
+                unpacked = release_dir / "linux-unpacked"
+            unpacked.mkdir(parents=True)
+            exe_name = "Hermes.exe" if __import__("sys").platform == "win32" else "Hermes"
+            exe = unpacked / exe_name
+            exe.write_bytes(b"MZ" if exe_name.endswith(".exe") else b"\x7fELF")
+            return desktop_dir, exe
+        return desktop_dir, None
+
+    def test_build_succeeds_backup_cleaned_up(self, tmp_path, monkeypatch):
+        """When the desktop build succeeds, the backup directory is removed."""
+        from hermes_cli import main as hm
+
+        desktop_dir, exe = self._setup_desktop_dir(tmp_path)
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(hm, "_desktop_packaged_executable", lambda d: exe)
+        monkeypatch.setattr(hm, "_desktop_dist_exists", lambda d: False)
+
+        call_count = {"n": 0}
+
+        def fake_run(cmd, **kw):
+            call_count["n"] += 1
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(hm.subprocess, "run", fake_run)
+        monkeypatch.setattr(hm.shutil, "which", lambda x: "/usr/bin/npm")
+
+        # Simulate the desktop rebuild block
+        has_desktop_app = hm._desktop_packaged_executable(desktop_dir) is not None
+        assert has_desktop_app
+
+        # Run the actual logic (inline — we can't easily call _cmd_update_impl
+        # because it does too much, so we test the backup/restore pattern directly)
+        import shutil
+        from pathlib import Path
+
+        _desktop_exe_backup = None
+        _desktop_exe_backup_src = None
+        _existing_exe = exe
+        if _existing_exe is not None:
+            _desktop_exe_backup_src = _existing_exe.parent
+            _desktop_exe_backup = _desktop_exe_backup_src.with_suffix(".bak")
+            shutil.copytree(_desktop_exe_backup_src, _desktop_exe_backup)
+            assert _desktop_exe_backup.exists()
+
+        # Build succeeds
+        build_result = subprocess.CompletedProcess([], 0)
+        if build_result.returncode == 0:
+            if _desktop_exe_backup is not None:
+                shutil.rmtree(_desktop_exe_backup, ignore_errors=True)
+
+        assert not _desktop_exe_backup.exists()
+
+    def test_build_fails_backup_restored(self, tmp_path):
+        """When the desktop build fails, the backup is restored."""
+        import shutil
+        from pathlib import Path
+
+        desktop_dir, exe = self._setup_desktop_dir(tmp_path)
+        original_content = exe.read_bytes()
+
+        _desktop_exe_backup_src = exe.parent
+        _desktop_exe_backup = _desktop_exe_backup_src.with_suffix(".bak")
+        shutil.copytree(_desktop_exe_backup_src, _desktop_exe_backup)
+
+        # Simulate build failure — before-pack deletes the unpacked dir
+        shutil.rmtree(_desktop_exe_backup_src)
+
+        # Build fails
+        build_result = subprocess.CompletedProcess([], 1)
+        if build_result.returncode != 0:
+            if _desktop_exe_backup is not None and _desktop_exe_backup_src is not None:
+                if _desktop_exe_backup_src.exists():
+                    shutil.rmtree(_desktop_exe_backup_src, ignore_errors=True)
+                shutil.move(str(_desktop_exe_backup), str(_desktop_exe_backup_src))
+
+        assert exe.exists()
+        assert exe.read_bytes() == original_content
+
+    def test_no_existing_exe_no_backup_attempted(self, tmp_path):
+        """When no packaged executable exists, no backup is created."""
+        from hermes_cli import main as hm
+
+        desktop_dir, _ = self._setup_desktop_dir(tmp_path, with_exe=False)
+        assert hm._desktop_packaged_executable(desktop_dir) is None

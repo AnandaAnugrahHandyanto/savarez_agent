@@ -8573,6 +8573,27 @@ def _cmd_update_impl(args, gateway_mode: bool):
         has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
         if (desktop_dir / "package.json").exists() and shutil.which("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
+            # Backup the existing packaged executable before the build.
+            # electron-builder's before-pack hook deletes the unpacked app
+            # directory; if the build fails (network, cache corruption, etc.)
+            # the user's desktop shortcut becomes a dead link.  Backing up
+            # the unpacked dir lets us restore it on failure.
+            _desktop_exe_backup: Path | None = None
+            _desktop_exe_backup_src: Path | None = None
+            try:
+                _existing_exe = _desktop_packaged_executable(desktop_dir)
+                if _existing_exe is not None:
+                    _desktop_exe_backup_src = _existing_exe.parent  # e.g. win-unpacked/
+                    _desktop_exe_backup = _desktop_exe_backup_src.with_suffix(".bak")
+                    if _desktop_exe_backup.exists():
+                        shutil.rmtree(_desktop_exe_backup, ignore_errors=True)
+                    shutil.copytree(_desktop_exe_backup_src, _desktop_exe_backup)
+                    print(f"  → Backed up existing desktop app to {_desktop_exe_backup.name}")
+            except Exception as _backup_err:
+                # Non-fatal — proceed with the build without backup
+                print(f"  ⚠ Could not backup desktop app: {_backup_err}")
+                _desktop_exe_backup = None
+
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
             # Stream the build output live (long Electron builds otherwise
             # look hung). On the rare nonzero exit, retry once after waiting
@@ -8582,7 +8603,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if build_result.returncode != 0:
                 build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
             if build_result.returncode != 0:
-                print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
+                # Build failed — restore the backup if we have one
+                if _desktop_exe_backup is not None and _desktop_exe_backup_src is not None:
+                    try:
+                        if _desktop_exe_backup_src.exists():
+                            shutil.rmtree(_desktop_exe_backup_src, ignore_errors=True)
+                        shutil.move(str(_desktop_exe_backup), str(_desktop_exe_backup_src))
+                        print("  ⚠ Desktop build failed; restored previous desktop app from backup")
+                    except Exception as _restore_err:
+                        print(f"  ⚠ Desktop build failed and restore also failed: {_restore_err}")
+                        print("    Run `hermes desktop` to retry manually")
+                else:
+                    print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
+            else:
+                # Build succeeded — clean up the backup
+                if _desktop_exe_backup is not None:
+                    shutil.rmtree(_desktop_exe_backup, ignore_errors=True)
 
         print()
         print("✓ Code updated!")
