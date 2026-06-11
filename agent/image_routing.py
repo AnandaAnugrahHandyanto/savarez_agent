@@ -17,12 +17,13 @@ It reads ``agent.image_input_mode`` from config.yaml (``auto`` | ``native``
 | ``text``, default ``auto``) and the active model's capability metadata.
 
 In ``auto`` mode:
-  - If the user has explicitly configured ``auxiliary.vision.provider``
+  - If the active model reports ``supports_vision=True`` in its
+    models.dev metadata (or via the ``supports_vision`` config override),
+    we attach natively — the main model can see the pixels directly.
+  - Otherwise, if the user has explicitly configured ``auxiliary.vision.provider``
     (i.e. not ``auto`` and not empty), we assume they want the text pipeline
-    regardless of the main model — they've opted in to a specific vision
-    backend for a reason (cost, quality, local-only, etc.).
-  - Otherwise, if the active model reports ``supports_vision=True`` in its
-    models.dev metadata, we attach natively.
+    as a fallback (they've opted in to a specific vision backend for a reason:
+    cost, quality, local-only, etc.).
   - Otherwise (non-vision model, no explicit override), we fall back to text.
 
 This keeps ``vision_analyze`` surfaced as a tool in every session — skills
@@ -337,12 +338,13 @@ def decide_image_input_mode(
         return "text"
 
     # auto
-    if _explicit_aux_vision_override(cfg):
-        return "text"
-
     supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
-        return "native"
+        return "native"  # main model can see images
+
+    if _explicit_aux_vision_override(cfg):
+        return "text"  # main model can't see -> use aux if configured
+
     return "text"
 
 
