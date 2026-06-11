@@ -82,6 +82,43 @@ class TestUnifiedDashboardRouting:
         # Profile HERMES_HOME dropped so the child binds the machine root.
         assert "HERMES_HOME" not in env
 
+    def test_windows_profile_launch_does_not_reexec(self, main_mod, monkeypatch):
+        """On Windows os.execvpe segfaults during interpreter finalization
+        (#44282 STATUS_ACCESS_VIOLATION). The re-exec must be skipped and the
+        command must fall through to in-place dashboard startup, never calling
+        os.execvpe."""
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
+        )
+        monkeypatch.setattr(main_mod, "_dashboard_listening", lambda host, port: False)
+        monkeypatch.setattr(main_mod.sys, "platform", "win32")
+        execs = []
+        monkeypatch.setattr(main_mod.os, "execvpe", lambda *a, **k: execs.append(a))
+        # Stop before actually starting a server: make the first post-routing
+        # dependency check bail.
+        monkeypatch.setitem(sys.modules, "fastapi", None)
+
+        with pytest.raises((SystemExit, AttributeError, ImportError, TypeError)):
+            main_mod.cmd_dashboard(_args())
+
+        assert execs == []  # Windows must NOT re-exec (would segfault)
+
+    def test_windows_profile_launch_still_attaches_when_running(self, main_mod, monkeypatch):
+        """The attach path (machine dashboard already listening) is exec-free
+        and must still work on Windows."""
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
+        )
+        monkeypatch.setattr(main_mod, "_dashboard_listening", lambda host, port: True)
+        monkeypatch.setattr(main_mod.sys, "platform", "win32")
+        execs = []
+        monkeypatch.setattr(main_mod.os, "execvpe", lambda *a, **k: execs.append(a))
+
+        with pytest.raises(SystemExit) as exc:
+            main_mod.cmd_dashboard(_args())
+        assert exc.value.code == 0
+        assert execs == []
+
     def test_isolated_flag_skips_routing(self, main_mod, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
