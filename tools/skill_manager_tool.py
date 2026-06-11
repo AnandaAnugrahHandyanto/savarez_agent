@@ -831,8 +831,40 @@ def _require_approval_for_skill_action(action: str, name: str) -> Optional[Dict[
 
     Returns error dict (to return to caller) if blocked, None if allowed.
     """
-    if os.getenv("HERMES_YOLO_MODE") or os.getenv("HERMES_INTERACTIVE"):
+    from tools.approval import (
+        _YOLO_MODE_FROZEN,
+        is_current_session_yolo_enabled,
+        prompt_dangerous_approval,
+    )
+    from utils import env_var_enabled
+
+    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
         return None
+
+    if env_var_enabled("HERMES_INTERACTIVE"):
+        from tools.terminal_tool import _get_approval_callback
+
+        description = (
+            "skill mutation. Skills are persistent instructions loaded into "
+            "future agent sessions, so malicious or accidental changes can "
+            "become durable prompt injection."
+        )
+        choice = prompt_dangerous_approval(
+            f"skill_manage action={action} name={name}",
+            description,
+            allow_permanent=False,
+            approval_callback=_get_approval_callback(),
+        )
+        if choice != "deny":
+            return None
+        return {
+            "success": False,
+            "error": (
+                f"BLOCKED: User denied skill '{name}' action '{action}'. "
+                "Do NOT retry or attempt the same skill mutation another way."
+            ),
+        }
+
     logger.warning(
         "Skill '%s' action '%s' requires user approval - non-interactive, no YOLO mode",
         name, action,
@@ -842,7 +874,7 @@ def _require_approval_for_skill_action(action: str, name: str) -> Optional[Dict[
         "error": (
             f"Cannot '{action}' skill '{name}' without user confirmation. "
             f"The agent must ask the user to approve this skill change. "
-            f"To auto-approve, enable YOLO mode or run interactively."
+            f"To auto-approve, set HERMES_YOLO_MODE=1 or run interactively."
         ),
     }
 

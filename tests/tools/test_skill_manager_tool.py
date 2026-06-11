@@ -14,6 +14,7 @@ from tools.skill_manager_tool import (
     _validate_file_path,
     _require_approval_for_skill_action,
     _MUTATING_SKILL_ACTIONS,
+    SKILL_MANAGE_SCHEMA,
     _create_skill,
     _edit_skill,
     _patch_skill,
@@ -31,7 +32,7 @@ def _skill_dir(tmp_path):
     only the temp directory — not the real ~/.hermes/skills/."""
     with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]), \
-         patch.dict("os.environ", {"HERMES_YOLO_MODE": "1"}, clear=False):
+         patch("tools.approval._YOLO_MODE_FROZEN", True):
         yield
 
 
@@ -972,46 +973,84 @@ class TestApprovalGate:
 
     def test_blocked_without_yolo_or_interactive(self):
         """Mutating actions blocked when no YOLO or INTERACTIVE env."""
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", {}, clear=True), \
+             patch("tools.approval._YOLO_MODE_FROZEN", False):
             result = _require_approval_for_skill_action("create", "test-skill")
         assert result is not None
         assert result["success"] is False
         assert "approval" in result["error"].lower() or "confirm" in result["error"].lower()
 
-    def test_allowed_with_yolo_mode(self):
-        """Mutating actions allowed when HERMES_YOLO_MODE is set."""
-        with patch.dict("os.environ", {"HERMES_YOLO_MODE": "1"}):
+    def test_live_yolo_env_does_not_bypass_gate(self):
+        """Runtime env mutation must not bypass the frozen YOLO approval state."""
+        with patch.dict("os.environ", {"HERMES_YOLO_MODE": "1"}, clear=True), \
+             patch("tools.approval._YOLO_MODE_FROZEN", False):
+            result = _require_approval_for_skill_action("create", "test-skill")
+        assert result is not None
+        assert result["success"] is False
+
+    def test_allowed_with_frozen_yolo_mode(self):
+        """Mutating actions allowed when process YOLO was enabled at startup."""
+        with patch.dict("os.environ", {}, clear=True), \
+             patch("tools.approval._YOLO_MODE_FROZEN", True):
             result = _require_approval_for_skill_action("create", "test-skill")
         assert result is None
 
-    def test_allowed_with_interactive(self):
-        """Mutating actions allowed when HERMES_INTERACTIVE is set."""
-        with patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}):
-            result = _require_approval_for_skill_action("delete", "test-skill")
+    def test_allowed_with_interactive_approval(self):
+        """Mutating actions allowed when the interactive user approves."""
+        from tools.terminal_tool import set_approval_callback
+        set_approval_callback(lambda *args, **kwargs: "once")
+        try:
+            with patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}), \
+                 patch("tools.approval._YOLO_MODE_FROZEN", False):
+                result = _require_approval_for_skill_action("delete", "test-skill")
+        finally:
+            set_approval_callback(None)
         assert result is None
 
-    def test_readonly_actions_always_allowed(self):
-        """Read-only actions (list, show) bypass the approval gate entirely.
-
-        The gate is only invoked for actions in _MUTATING_SKILL_ACTIONS,
-        so list/show never reach _require_approval_for_skill_action.
-        """
-        assert "list" not in _MUTATING_SKILL_ACTIONS
-        assert "show" not in _MUTATING_SKILL_ACTIONS
+    def test_interactive_denial_blocks_mutation(self):
+        """Interactive mode still blocks when the user denies approval."""
+        from tools.terminal_tool import set_approval_callback
+        set_approval_callback(lambda *args, **kwargs: "deny")
+        try:
+            with patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}), \
+                 patch("tools.approval._YOLO_MODE_FROZEN", False):
+                result = _require_approval_for_skill_action("delete", "test-skill")
+        finally:
+            set_approval_callback(None)
+        assert result is not None
+        assert result["success"] is False
+        assert "denied" in result["error"].lower()
 
     def test_all_mutating_actions_gated(self):
         """Every action in _MUTATING_SKILL_ACTIONS goes through the gate."""
-        from tools.skill_manager_tool import _MUTATING_SKILL_ACTIONS
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", {}, clear=True), \
+             patch("tools.approval._YOLO_MODE_FROZEN", False):
             for action in _MUTATING_SKILL_ACTIONS:
                 result = _require_approval_for_skill_action(action, "x")
                 assert result is not None, f"action '{action}' should be gated"
+
+    def test_gate_covers_all_schema_actions(self):
+        """_MUTATING_SKILL_ACTIONS must match the tool schema enum exactly."""
+        schema_actions = set(SKILL_MANAGE_SCHEMA["parameters"]["properties"]["action"]["enum"])
+        assert _MUTATING_SKILL_ACTIONS == schema_actions, (
+            f"Frozenset {sorted(_MUTATING_SKILL_ACTIONS)} != schema {sorted(schema_actions)}. "
+            "Add new actions to _MUTATING_SKILL_ACTIONS or the schema."
+        )
+
+    def test_error_message_includes_yolo_hint(self):
+        """Blocked error tells the agent how to bypass (HERMES_YOLO_MODE)."""
+        with patch.dict("os.environ", {}, clear=True), \
+             patch("tools.approval._YOLO_MODE_FROZEN", False):
+            result = _require_approval_for_skill_action("create", "test-skill")
+        assert result is not None
+        assert "HERMES_YOLO_MODE" in result["error"]
 
     def test_skill_manage_returns_approval_error(self, tmp_path):
         """skill_manage returns JSON approval error for blocked mutations."""
         with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
              patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]), \
-             patch.dict("os.environ", {}, clear=True):
+             patch.dict("os.environ", {}, clear=True), \
+             patch("tools.approval._YOLO_MODE_FROZEN", False):
             raw = skill_manage("create", "test-skill", content=VALID_SKILL_CONTENT)
         import json
         result = json.loads(raw)
