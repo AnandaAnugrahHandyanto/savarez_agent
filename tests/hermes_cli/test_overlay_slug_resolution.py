@@ -68,6 +68,15 @@ def test_kimi_for_coding_overlay_uses_hermes_slug():
     assert kimi_mdev is None, "kimi-for-coding slug should not appear (resolved to kimi-coding)"
 
 
+@patch.dict(os.environ, {"KIMI_API_KEY": "fake-key"}, clear=False)
+def test_kimi_alias_does_not_duplicate_canonical_provider():
+    """Kimi should appear once as the canonical kimi-coding row, not again as bare kimi."""
+    providers = list_authenticated_providers(current_provider="kimi-coding")
+
+    kimi_slugs = [p["slug"] for p in providers if p["slug"] in {"kimi", "kimi-coding"}]
+    assert kimi_slugs == ["kimi-coding"]
+
+
 @patch.dict(os.environ, {"KILOCODE_API_KEY": "fake-key"}, clear=False)
 def test_kilo_overlay_uses_hermes_slug():
     """kilo overlay should resolve to slug='kilocode'."""
