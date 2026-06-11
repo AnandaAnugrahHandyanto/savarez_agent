@@ -2999,10 +2999,11 @@ class AIAgent:
                 final_response,
                 **sync_kwargs,
             )
-            self._memory_manager.queue_prefetch_all(
-                original_user_message,
-                session_id=self.session_id or "",
-            )
+            if not getattr(self, "_suppress_post_turn_prefetch", False):
+                self._memory_manager.queue_prefetch_all(
+                    original_user_message,
+                    session_id=self.session_id or "",
+                )
         except Exception:
             pass
 
