@@ -194,6 +194,23 @@ class TestBraveFreeProviderSearch:
         assert result["success"] is False
         assert "BRAVE_SEARCH_API_KEY" in result["error"]
 
+    def test_config_loader_uses_readonly_fast_path(self, monkeypatch):
+        from hermes_cli import config
+        from plugins.web.brave_free import provider
+
+        monkeypatch.setattr(
+            config,
+            "load_config_readonly",
+            lambda: {"web": {"brave_free": {"min_request_interval_seconds": 0.25}}},
+        )
+        monkeypatch.setattr(
+            config,
+            "load_config",
+            lambda: pytest.fail("Brave free hot path should not deepcopy config"),
+        )
+
+        assert provider._load_brave_free_config() == {"min_request_interval_seconds": 0.25}
+
     def test_default_throttles_consecutive_calls_to_1_5_second_gap(self, monkeypatch):
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
         from plugins.web.brave_free import provider

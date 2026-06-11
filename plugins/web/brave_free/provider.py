@@ -39,11 +39,11 @@ _last_request_monotonic: float | None = None
 
 
 def _load_brave_free_config() -> Dict[str, Any]:
-    """Read ``web.brave_free`` from config.yaml."""
+    """Read ``web.brave_free`` from config.yaml without deepcopying it."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config_readonly
 
-        cfg = load_config()
+        cfg = load_config_readonly()
         web_section = cfg.get("web") if isinstance(cfg, dict) else None
         brave_section = web_section.get("brave_free") if isinstance(web_section, dict) else None
         return brave_section if isinstance(brave_section, dict) else {}
