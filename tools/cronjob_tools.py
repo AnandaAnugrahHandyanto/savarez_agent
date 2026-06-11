@@ -634,22 +634,35 @@ def cronjob(
                 "paused_reason": job.get("paused_reason"),
                 "next_run_at": job.get("next_run_at"),
             }
-            updated = update_job(
-                job_id,
-                {
-                    "enabled": True,
-                    "state": "scheduled",
-                    "paused_at": None,
-                    "paused_reason": None,
-                    "next_run_at": job.get("next_run_at"),
-                },
-            )
+
+            def _restore_schedule_snapshot() -> None:
+                updates = {
+                    "manual_run_schedule_snapshot": None,
+                    "manual_run_gateway_only": None,
+                    "enabled": schedule_snapshot.get("enabled", True),
+                    "state": schedule_snapshot.get("state"),
+                    "paused_at": schedule_snapshot.get("paused_at"),
+                    "paused_reason": schedule_snapshot.get("paused_reason"),
+                    "next_run_at": schedule_snapshot.get("next_run_at"),
+                }
+                update_job(job_id, updates)
+
+            updated = job
             try:
+                updated = update_job(
+                    job_id,
+                    {
+                        "enabled": True,
+                        "state": "scheduled",
+                        "paused_at": None,
+                        "paused_reason": None,
+                        "next_run_at": job.get("next_run_at"),
+                    },
+                )
                 from cron.scheduler import (
                     _job_has_required_live_delivery_context,
                     _job_requires_live_delivery_context,
                     _queue_manual_run_for_tick,
-                    _restore_manual_run_schedule,
                     _resolve_live_delivery_context,
                     run_job_immediate,
                 )
@@ -670,7 +683,7 @@ def cronjob(
                     dispatched, dispatch_error = run_job_immediate(job_id, schedule_snapshot=schedule_snapshot)
             except Exception as _e:
                 try:
-                    _restore_manual_run_schedule(job_id, schedule_snapshot)
+                    _restore_schedule_snapshot()
                 except Exception:
                     pass
                 dispatched, dispatch_error = False, str(_e)

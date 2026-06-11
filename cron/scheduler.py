@@ -302,9 +302,13 @@ def _claim_running_job(job_id: str):
         lock_file = _get_job_run_lock_path(job_id)
         lock_file.parent.mkdir(parents=True, exist_ok=True)
         lock_fd = open(lock_file, "a+", encoding="utf-8")
-        if not _try_lock_file(lock_fd):
+        try:
+            if not _try_lock_file(lock_fd):
+                lock_fd.close()
+                return None
+        except Exception:
             lock_fd.close()
-            return None
+            raise
         _running_job_ids.add(job_id)
         return lock_fd
 
@@ -382,6 +386,8 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
         for k, v in env_snapshot.items():
             if os.environ.get(k) != v:
                 os.environ[k] = v
+
+
 def _resolve_origin(job: dict) -> Optional[dict]:
     """Extract origin info from a job, preserving any extra routing metadata.
 
@@ -2368,7 +2374,7 @@ def run_job_immediate(job_id: str, schedule_snapshot: Optional[dict] = None) -> 
     def _run_and_release(j=job, ctx=_ctx, job_lock=run_lock):
         try:
             success, output, final_response, error = ctx.run(run_job, j)
-            if success:
+            if success and not schedule_snapshot:
                 advance_next_run(j["id"])
             save_job_output(j["id"], output)
             deliver_content = (
