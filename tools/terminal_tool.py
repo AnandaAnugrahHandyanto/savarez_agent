@@ -1140,6 +1140,21 @@ def _get_env_config() -> Dict[str, Any]:
         # normal sandbox behavior and discard host paths.
         cwd = os.getenv("TERMINAL_CWD", default_cwd)
 
+    # If TERMINAL_CWD is a stale path from a different backend (e.g. /workspace
+    # left over from Docker when switching to WSL/local), discard it and use the
+    # current backend's default instead.
+    if not _backend_cwd and cwd:
+        # WSL: docker leftovers like /workspace don't exist; fall back to probe
+        if env_type == "wsl" and not any(cwd.startswith(p) for p in ("/home/", "/mnt/", "/root/", "/tmp", "/opt")):
+            logger.info("Discarding stale TERMINAL_CWD=%r for wsl backend "
+                        "(leftover from another backend). Falling back to $HOME probe.", cwd)
+            cwd = ""
+        # Local/SSH on Windows: /workspace or /root are container paths
+        elif env_type in ("local", "ssh") and cwd in ("/workspace", "/root", "/home"):
+            logger.info("Discarding stale TERMINAL_CWD=%r for %s backend "
+                        "(leftover from container backend).", cwd, env_type)
+            cwd = default_cwd
+
     # Auto-populate per-backend CWD on first use so the user's choice persists.
     if not _backend_cwd and cwd and cwd != default_cwd:
         try:
