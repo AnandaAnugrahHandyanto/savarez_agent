@@ -2023,41 +2023,69 @@ class SessionDB:
             f"            AND {alias}.started_at >= p.ended_at))"
         )
 
-    def _batch_compression_tips(self, root_ids: List[str]) -> Dict[str, str]:
+    def _batch_compression_lineages(self, root_ids: List[str]) -> Dict[str, Dict[str, Any]]:
         """Walk compression-continuation chains for multiple roots in one query.
 
-        Returns a dict mapping root_id -> tip_id for each root that has a
-        continuation chain. Roots with no continuation map to themselves.
-        Replaces the N+1 ``get_compression_tip()`` calls in ``list_sessions_rich``.
+        Returns a dict mapping root_id -> {"tip_id": tip_id, "ids": [root..tip]}
+        for each requested root. Replaces the N+1 ``get_compression_tip()``
+        calls in ``list_sessions_rich`` and gives desktop enough aliases to
+        collapse stale pinned intermediate segments into the live row.
         """
         if not root_ids:
             return {}
 
+        root_ids = list(dict.fromkeys(root_ids))
         placeholders = ",".join("?" * len(root_ids))
         query = f"""
-            WITH RECURSIVE chain(root_id, cur_id) AS (
-                SELECT id, id FROM sessions WHERE id IN ({placeholders})
+            WITH RECURSIVE chain(root_id, cur_id, depth, path) AS (
+                SELECT id, id, 0, ',' || id || ',' FROM sessions WHERE id IN ({placeholders})
                 UNION ALL
-                SELECT c.root_id, child.id
+                SELECT c.root_id, child.id, c.depth + 1, c.path || child.id || ','
                 FROM chain c
                 JOIN sessions parent ON parent.id = c.cur_id
                 JOIN sessions child ON child.parent_session_id = c.cur_id
                 WHERE parent.end_reason = 'compression'
                   AND child.started_at >= parent.ended_at
+                  AND instr(c.path, ',' || child.id || ',') = 0
             )
-            SELECT root_id, MAX(cur_id) AS tip_id
+            SELECT root_id, cur_id, depth
             FROM chain
-            GROUP BY root_id
+            ORDER BY root_id, depth
         """
         with self._lock:
             cursor = self._conn.execute(query, root_ids)
             rows = cursor.fetchall()
 
-        tips = {}
+        lineages: Dict[str, Dict[str, Any]] = {
+            rid: {"tip_id": rid, "ids": [rid], "_depth": 0} for rid in root_ids
+        }
         for row in rows:
             rid = row["root_id"]
-            tid = row["tip_id"]
-            if tid != rid:
+            cid = row["cur_id"]
+            depth = int(row["depth"] or 0)
+            entry = lineages.setdefault(rid, {"tip_id": rid, "ids": [rid], "_depth": 0})
+            if cid not in entry["ids"]:
+                entry["ids"].append(cid)
+            if depth >= int(entry.get("_depth") or 0):
+                entry["tip_id"] = cid
+                entry["_depth"] = depth
+
+        for entry in lineages.values():
+            entry.pop("_depth", None)
+        return lineages
+
+    def _batch_compression_tips(self, root_ids: List[str]) -> Dict[str, str]:
+        """Walk compression-continuation chains for multiple roots in one query.
+
+        Returns a dict mapping root_id -> tip_id for each root that has a
+        continuation chain. Roots with no continuation are omitted.
+        Replaces the N+1 ``get_compression_tip()`` calls in ``list_sessions_rich``.
+        """
+        lineages = self._batch_compression_lineages(root_ids)
+        tips = {}
+        for rid, lineage in lineages.items():
+            tid = lineage.get("tip_id")
+            if tid and tid != rid:
                 tips[rid] = tid
         return tips
 
@@ -2284,16 +2312,17 @@ class SessionDB:
                 s["id"] for s in sessions if s.get("end_reason") == "compression"
             ]
             if compression_roots:
-                tips = self._batch_compression_tips(compression_roots)
+                lineages = self._batch_compression_lineages(compression_roots)
             else:
-                tips = {}
+                lineages = {}
 
             projected = []
             for s in sessions:
                 if s.get("end_reason") != "compression":
                     projected.append(s)
                     continue
-                tip_id = tips.get(s["id"], s["id"])
+                lineage = lineages.get(s["id"]) or {"tip_id": s["id"], "ids": [s["id"]]}
+                tip_id = lineage.get("tip_id", s["id"])
                 if tip_id == s["id"]:
                     projected.append(s)
                     continue
@@ -2312,6 +2341,7 @@ class SessionDB:
                     if key in tip_row:
                         merged[key] = tip_row[key]
                 merged["_lineage_root_id"] = s["id"]
+                merged["_lineage_ids"] = lineage.get("ids") or [s["id"], tip_id]
                 projected.append(merged)
             sessions = projected
 
@@ -3872,6 +3902,7 @@ class SessionDB:
 
         def score(row: Dict[str, Any]) -> int:
             ids = [str(row.get("id") or ""), str(row.get("_lineage_root_id") or "")]
+            ids.extend(str(value or "") for value in row.get("_lineage_ids") or [])
             normalized = [value.lower() for value in ids if value]
             if any(value == needle for value in normalized):
                 return 0

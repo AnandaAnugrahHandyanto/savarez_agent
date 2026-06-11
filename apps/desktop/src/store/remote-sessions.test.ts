@@ -39,10 +39,14 @@ describe('$remoteSessions', () => {
   })
 
   it('excludes a record whose session is already a local row (by id or key)', () => {
-    $sessions.set([localSession('local-1'), localSession('tip-9', { _lineage_root_id: 'root-9' })])
+    $sessions.set([
+      localSession('local-1'),
+      localSession('tip-9', { _lineage_root_id: 'root-9', _lineage_ids: ['root-9', 'mid-9', 'tip-9'] })
+    ])
     $sessionPresence.set([
       presence({ session_id: 'local-1' }), // own session, also in local DB
       presence({ session_id: 'rt-9', session_key: 'root-9' }), // key matches a lineage root
+      presence({ session_id: 'mid-9' }), // session id matches an intermediate lineage segment
       presence({ session_id: 'genuinely-remote' })
     ])
     const ids = $remoteSessions.get().map(r => r.sessionId)

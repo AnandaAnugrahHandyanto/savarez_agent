@@ -143,6 +143,16 @@ describe('pruneSidebarSelection', () => {
     expect($sidebarSelection.get().ids).toEqual(['a', 'b-tip', 'c'])
   })
 
+  it('remaps an intermediate lineage id to the live tip', () => {
+    toggleSessionSelected('sessions', 'mid')
+
+    pruneSidebarSelection('sessions', [
+      { id: 'tip', _lineage_root_id: 'root', _lineage_ids: ['root', 'mid', 'tip'] }
+    ])
+
+    expect($sidebarSelection.get().ids).toEqual(['tip'])
+  })
+
   it('collapses duplicates when a rotation lands on an already-selected tip', () => {
     toggleSessionSelected('sessions', 'b')
     toggleSessionSelected('sessions', 'b-tip')

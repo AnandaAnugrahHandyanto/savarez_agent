@@ -85,6 +85,7 @@ export function rangeSelectSessions(
 
 interface PrunableRow {
   id: string
+  _lineage_ids?: string[]
   _lineage_root_id?: null | string
 }
 
@@ -118,8 +119,11 @@ export function pruneSidebarSelection(section: SidebarSectionKey, rows: readonly
   for (const row of rows) {
     liveIds.add(row.id)
 
-    if (row._lineage_root_id) {
-      tipByRoot.set(row._lineage_root_id, row.id)
+    const aliases = [row._lineage_root_id, ...(row._lineage_ids ?? [])]
+    for (const alias of aliases) {
+      if (alias) {
+        tipByRoot.set(alias, row.id)
+      }
     }
   }
 

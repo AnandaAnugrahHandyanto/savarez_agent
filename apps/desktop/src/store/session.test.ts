@@ -10,6 +10,7 @@ import {
   applyConfiguredDefaultProjectDir,
   getRecentlySettledSessionIds,
   mergeSessionPage,
+  sessionAliasIds,
   sessionPinId,
   setSessionAttention,
   setSessionWorking,
@@ -72,6 +73,12 @@ describe('sessionPinId', () => {
     // After auto-compression the entry surfaces under a fresh tip id but keeps
     // the original root — pinning on the root keeps the pin stable.
     expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root' }))).toBe('root')
+  })
+
+  it('collects every compression segment as an alias', () => {
+    expect(
+      sessionAliasIds(session({ id: 'tip', _lineage_root_id: 'root', _lineage_ids: ['root', 'mid', 'tip'] }))
+    ).toEqual(['tip', 'root', 'mid'])
   })
 })
 
@@ -139,6 +146,37 @@ describe('mergeSessionPage', () => {
     const merged = mergeSessionPage(previous, incoming, ['root'])
 
     expect(merged.map(s => s.id)).toEqual(['tip', 'other'])
+  })
+
+  it('replaces a stale pinned intermediate segment with the live tip', () => {
+    const previous = [session({ id: 'mid', _lineage_root_id: 'root' })]
+    const incoming = [session({ id: 'tip', _lineage_root_id: 'root', _lineage_ids: ['root', 'mid', 'tip'] })]
+
+    const merged = mergeSessionPage(previous, incoming, ['mid'])
+
+    expect(merged.map(s => s.id)).toEqual(['tip'])
+  })
+
+  it('dedupes incoming rows that describe the same lineage', () => {
+    const incoming = [
+      session({ id: 'tip', _lineage_root_id: 'root', _lineage_ids: ['root', 'mid', 'tip'] }),
+      session({ id: 'mid', _lineage_root_id: 'root' })
+    ]
+
+    const merged = mergeSessionPage([], incoming, ['mid'])
+
+    expect(merged.map(s => s.id)).toEqual(['tip'])
+  })
+
+  it('prefers the live lineage row when a stale incoming segment arrives first', () => {
+    const incoming = [
+      session({ id: 'mid', _lineage_root_id: 'root', last_active: 100 }),
+      session({ id: 'tip', _lineage_root_id: 'root', _lineage_ids: ['root', 'mid', 'tip'], last_active: 200 })
+    ]
+
+    const merged = mergeSessionPage([], incoming, ['mid'])
+
+    expect(merged.map(s => s.id)).toEqual(['tip'])
   })
 })
 
