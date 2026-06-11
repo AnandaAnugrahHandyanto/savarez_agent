@@ -1,16 +1,12 @@
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
-    BasePlatformAdapter,
-    MessageEvent,
-    SendResult,
-    _is_telegram_group_no_action_event,
-)
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
 from gateway.session import SessionSource
+from plugins.telegram_no_action_suppression import _on_pre_gateway_dispatch
 
 
 class DummyTelegramAdapter(BasePlatformAdapter):
@@ -74,26 +70,32 @@ async def _drain(adapter: DummyTelegramAdapter):
 
 
 @pytest.mark.asyncio
-async def test_casual_telegram_group_message_is_hard_silent_in_adapter_send_path():
-    adapter = DummyTelegramAdapter()
-    handler = AsyncMock(return_value="No action taken")
-    adapter.set_message_handler(handler)
+async def test_casual_telegram_group_message_is_hard_silent_via_pre_dispatch_plugin(monkeypatch):
+    from gateway.run import GatewayRunner
 
-    event = _event("Just testing whether this casual message stays quiet.")
-    await adapter.handle_message(event)
-    await _drain(adapter)
-    await adapter.cancel_background_tasks()
+    adapter = AsyncMock()
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = MagicMock()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._handle_message_with_agent = AsyncMock(
+        side_effect=AssertionError("agent should not run")
+    )
 
-    handler.assert_not_called()
-    assert adapter.sent == []
-    assert adapter.processing_events == []
-    sent_text = "\n".join(item["content"] for item in adapter.sent)
-    assert "No action taken" not in sent_text
-    assert "Staying quiet" not in sent_text
-    assert "Staying quiet-ish" not in sent_text
-    assert "compacting context" not in sent_text.lower()
-    assert "compression" not in sent_text.lower()
-    assert "auto-reset" not in sent_text.lower()
+    def _invoke_hook(name, **kwargs):
+        if name == "pre_gateway_dispatch":
+            result = _on_pre_gateway_dispatch(kwargs["event"])
+            return [result] if result else []
+        return []
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _invoke_hook)
+
+    result = await runner._handle_message(
+        _event("Just testing whether this casual message stays quiet.")
+    )
+
+    assert result is None
+    runner._handle_message_with_agent.assert_not_called()
+    adapter.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -110,26 +112,15 @@ async def test_actionable_telegram_group_message_still_responds_normally():
     assert [item["content"] for item in adapter.sent] == ["Ready for review."]
 
 
-@pytest.mark.asyncio
-async def test_gateway_runner_suppresses_casual_group_message_before_agent_dispatch():
-    from gateway.run import GatewayRunner
-
-    runner = object.__new__(GatewayRunner)
-    runner._run_agent = AsyncMock(side_effect=AssertionError("agent should not run"))
-
-    result = await runner._handle_message(
+def test_plugin_classifier_preserves_dm_and_actionable_messages():
+    assert _on_pre_gateway_dispatch(_event("hello", chat_type="dm")) is None
+    assert _on_pre_gateway_dispatch(_event("hello", chat_type="private")) is None
+    assert _on_pre_gateway_dispatch(_event("JIMMY: please review this")) is None
+    assert _on_pre_gateway_dispatch(_event("BLOCKER: branch unclear")) is None
+    assert _on_pre_gateway_dispatch(_event("hello", platform=Platform.DISCORD)) is None
+    assert _on_pre_gateway_dispatch(
         _event("Just testing whether this casual message stays quiet.")
-    )
-
-    assert result is None
-    runner._run_agent.assert_not_called()
-
-
-def test_classifier_preserves_dm_and_actionable_messages():
-    assert _is_telegram_group_no_action_event(_event("hello", chat_type="dm")) is False
-    assert _is_telegram_group_no_action_event(_event("JIMMY: please review this")) is False
-    assert _is_telegram_group_no_action_event(_event("BLOCKER: branch unclear")) is False
-    assert _is_telegram_group_no_action_event(_event("hello", platform=Platform.DISCORD)) is False
-    assert _is_telegram_group_no_action_event(
-        _event("Just testing whether this casual message stays quiet.")
-    ) is True
+    ) == {
+        "action": "skip",
+        "reason": "casual/no-action Telegram group message",
+    }
