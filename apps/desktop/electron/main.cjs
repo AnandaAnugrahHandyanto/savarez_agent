@@ -29,6 +29,7 @@ const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { buildSessionWindowUrl, createSessionWindowRegistry } = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
+const { applyDashboardWebDist, resolveDashboardWebDist } = require('./web-dist.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const {
@@ -4539,13 +4540,13 @@ async function spawnPoolBackend(profile, entry) {
   const dashboardArgs = ['--profile', profile, 'dashboard', '--no-open', '--host', '127.0.0.1', '--port', String(port)]
   const backend = await ensureRuntime(resolveHermesBackend(dashboardArgs))
   const hermesCwd = resolveHermesCwd()
-  const webDist = resolveWebDist()
+  const webDist = resolveDashboardWebDist(APP_ROOT)
 
   rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
 
   const child = spawn(backend.command, backend.args, hiddenWindowsChildOptions({
     cwd: hermesCwd,
-    env: {
+    env: applyDashboardWebDist({
       ...process.env,
       HERMES_HOME,
       ...backend.env,
@@ -4556,9 +4557,8 @@ async function spawnPoolBackend(profile, entry) {
       HERMES_DASHBOARD_SESSION_TOKEN: token,
       // Marks this dashboard backend as desktop-spawned so it runs the cron
       // scheduler tick loop (the gateway isn't running under the app).
-      HERMES_DESKTOP: '1',
-      HERMES_WEB_DIST: webDist
-    },
+      HERMES_DESKTOP: '1'
+    }, webDist),
     shell: backend.shell,
     stdio: ['ignore', 'pipe', 'pipe']
   }))
@@ -4738,14 +4738,14 @@ async function startHermes() {
     await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
     const backend = await ensureRuntime(resolveHermesBackend(dashboardArgs))
     const hermesCwd = resolveHermesCwd()
-    const webDist = resolveWebDist()
+    const webDist = resolveDashboardWebDist(APP_ROOT)
 
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}`)
 
     hermesProcess = spawn(backend.command, backend.args, hiddenWindowsChildOptions({
       cwd: hermesCwd,
-      env: {
+      env: applyDashboardWebDist({
         ...process.env,
         // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
         // resolves to the SAME location our resolveHermesHome() picked. Without
@@ -4761,9 +4761,8 @@ async function startHermes() {
         HERMES_DASHBOARD_SESSION_TOKEN: token,
         // Marks this dashboard backend as desktop-spawned so it runs the cron
         // scheduler tick loop (the gateway isn't running under the app).
-        HERMES_DESKTOP: '1',
-        HERMES_WEB_DIST: webDist
-      },
+        HERMES_DESKTOP: '1'
+      }, webDist),
       shell: backend.shell,
       stdio: ['ignore', 'pipe', 'pipe']
     }))
