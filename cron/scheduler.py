@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from contextlib import contextmanager
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
