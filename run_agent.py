@@ -1137,13 +1137,46 @@ class AIAgent:
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
             return float("inf")
 
-        from agent.chat_completion_helpers import estimate_request_context_tokens
+        from agent.chat_completion_helpers import (
+            estimate_request_context_tokens,
+            _reasoning_effort_scaled_timeout,
+        )
         est_tokens = estimate_request_context_tokens(api_payload)
         if est_tokens > 100_000:
-            return max(stale_base, 240.0)
-        if est_tokens > 50_000:
-            return max(stale_base, 150.0)
-        return stale_base
+            timeout = max(stale_base, 240.0)
+        elif est_tokens > 50_000:
+            timeout = max(stale_base, 150.0)
+        else:
+            timeout = stale_base
+
+        # Reasoning-effort multiplier (symmetric with the Codex stream
+        # watchdog in chat_completion_helpers). GPT-5+ models
+        # with any non-minimal reasoning_effort routinely spend 30-280s
+        # in server-side thinking before emitting any response. On
+        # non-streaming calls this manifests as zero bytes received until
+        # done, which the 90s default kills as "stale." The effort lives
+        # in ``api_payload['reasoning']['effort']`` for the Responses API
+        # (and ``api_payload['reasoning_effort']`` for some Chat Completions
+        # backends). ``self.reasoning_config`` is NOT a reliable signal
+        # here — many AIAgent paths (oneshot, cron, default chat) never
+        # populate it. Read straight from the payload that the wire will
+        # actually see. Empirically verified against api.githubcopilot.com
+        # gpt-5.5 + medium effort + ~13K-token prompts that legitimately
+        # take 200-280s. Override via
+        # HERMES_API_CALL_STALE_REASONING_MULTIPLIER (default 5.0 for
+        # high/xhigh, 3.5 for medium, 1.0 for low/minimal/none).
+        try:
+            timeout = _reasoning_effort_scaled_timeout(
+                timeout,
+                api_payload,
+                self,
+                "HERMES_API_CALL_STALE_REASONING_MULTIPLIER",
+            )
+            # low/minimal/none/'' keep the 1.0 multiplier (no change)
+        except Exception:
+            pass
+
+        return timeout
 
     def _codex_silent_hang_hint(self, model: Optional[str] = None) -> Optional[str]:
         """Return an actionable hint when this request matches a known
