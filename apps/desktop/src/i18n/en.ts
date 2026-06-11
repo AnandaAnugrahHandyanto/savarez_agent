@@ -1549,6 +1549,10 @@ export const en: Translations = {
     tryAgain: 'Try again',
     loadingTree: 'Loading file tree',
     loadingFiles: 'Loading files',
+    terminalFocus: 'Focus terminal view',
+    terminalSplit: 'Return to split view',
+    openInFileManager: 'Open in File Manager',
+    openInFileManagerTooltip: 'Open folder in system file manager'
     terminalHide: 'Hide terminal',
     addToChat: 'Add to chat'
   },
