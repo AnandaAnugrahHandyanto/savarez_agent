@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
+import { $terminalTakeover, setRightSidebarTab, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
@@ -103,9 +103,10 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     goToSession(openOrAdvanceSwitcher(direction))
   }
 
-  const showFiles = () => {
+  const showRightSidebarTab = (tab: 'files' | 'kanban') => {
     setFileBrowserOpen(true)
     setTerminalTakeover(false)
+    setRightSidebarTab(tab)
   }
 
   handlersRef.current = {
@@ -152,7 +153,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         toggleFileBrowserOpen()
       }
     },
-    'view.showFiles': showFiles,
+    'view.showFiles': () => showRightSidebarTab('files'),
     'view.showTerminal': () => setTerminalTakeover(!$terminalTakeover.get()),
     'view.flipPanes': togglePanesFlipped,
 

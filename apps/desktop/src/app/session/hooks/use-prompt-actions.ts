@@ -2,6 +2,7 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { setRightSidebarTab } from '@/app/right-sidebar/store'
 import { getProfiles, transcribeAudio } from '@/hermes'
 import { translateNow, type Translations, useI18n } from '@/i18n'
 import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
@@ -33,6 +34,7 @@ import {
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { setFileBrowserOpen } from '@/store/layout'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $busy,
@@ -796,6 +798,11 @@ export function usePromptActions({
           notify({ kind: 'success', message: handleSkinCommand(arg) })
 
           return
+        }
+
+        if (normalizedName === 'kanban') {
+          setFileBrowserOpen(true)
+          setRightSidebarTab('kanban')
         }
 
         // /profile selects which profile new chats open in — no app relaunch.
