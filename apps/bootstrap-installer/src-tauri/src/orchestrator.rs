@@ -311,6 +311,31 @@ pub fn node_deps_skip_result_from_env(
     node_deps_skip_result(stage, hermes_home, path_env, &pathext)
 }
 
+/// Return a Rust-side skip result for desktop builds without the desktop package.
+pub fn desktop_stage_skip_result(
+    stage: &StageInfo,
+    install_root: &Path,
+) -> Option<crate::events::StageResultPayload> {
+    if !stage.name.eq_ignore_ascii_case("desktop") {
+        return None;
+    }
+    if install_root
+        .join("apps")
+        .join("desktop")
+        .join("package.json")
+        .is_file()
+    {
+        return None;
+    }
+    Some(crate::events::StageResultPayload {
+        stage: stage.name.clone(),
+        ok: true,
+        skipped: true,
+        reason: Some("apps/desktop not present".to_string()),
+        data: None,
+    })
+}
+
 /// Return a Rust-side skip result for platform SDK verification with no tokens.
 pub fn platform_sdks_skip_result(
     stage: &StageInfo,
@@ -1366,7 +1391,7 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
     }
     if matches!(
         name.to_ascii_lowercase().as_str(),
-        "uv" | "python" | "git" | "node" | "system-packages" | "node-deps"
+        "uv" | "git" | "node" | "system-packages" | "node-deps" | "desktop"
     ) {
         return StageExecutionMode::ProbeThenScript;
     }
@@ -1446,13 +1471,14 @@ mod tests {
             stage("uv"),
             stage("platform-sdks"),
             stage("node-deps"),
+            stage("desktop"),
             stage("venv"),
             stage("dependencies"),
             stage("python-deps"),
         ];
         let plan = build_stage_plan(&stages, false);
 
-        assert_eq!(plan.len(), 9);
+        assert_eq!(plan.len(), 10);
         assert_eq!(plan[0].name, "repository");
         assert_eq!(plan[0].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[0].script_fallback, true);
@@ -1471,15 +1497,18 @@ mod tests {
         assert_eq!(plan[5].name, "node-deps");
         assert_eq!(plan[5].execution, StageExecutionMode::ProbeThenScript);
         assert_eq!(plan[5].rust_probe, true);
-        assert_eq!(plan[6].name, "venv");
-        assert_eq!(plan[6].execution, StageExecutionMode::NativeWithScriptFallback);
-        assert_eq!(plan[6].script_fallback, true);
-        assert_eq!(plan[7].name, "dependencies");
+        assert_eq!(plan[6].name, "desktop");
+        assert_eq!(plan[6].execution, StageExecutionMode::ProbeThenScript);
+        assert_eq!(plan[6].rust_probe, true);
+        assert_eq!(plan[7].name, "venv");
         assert_eq!(plan[7].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[7].script_fallback, true);
-        assert_eq!(plan[8].name, "python-deps");
+        assert_eq!(plan[8].name, "dependencies");
         assert_eq!(plan[8].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[8].script_fallback, true);
+        assert_eq!(plan[9].name, "python-deps");
+        assert_eq!(plan[9].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[9].script_fallback, true);
     }
 
     #[test]
@@ -1691,6 +1720,35 @@ mod tests {
         assert_eq!(skipped.reason.as_deref(), Some("npm not available"));
         std::fs::write(tools.join("npm.cmd"), b"npm").unwrap();
         assert!(node_deps_skip_result(&node_deps, &hermes_home, &tools, ".EXE;.CMD").is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn desktop_stage_skip_result_skips_when_desktop_package_is_absent() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-desktop-skip-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let desktop = stage_info("desktop", "Building desktop app", "install", false);
+        let skipped = desktop_stage_skip_result(&desktop, &root).unwrap();
+
+        assert_eq!(skipped.stage, "desktop");
+        assert_eq!(skipped.ok, true);
+        assert_eq!(skipped.skipped, true);
+        assert_eq!(
+            skipped.reason.as_deref(),
+            Some("apps/desktop not present")
+        );
+        std::fs::create_dir_all(root.join("apps").join("desktop")).unwrap();
+        std::fs::write(
+            root.join("apps").join("desktop").join("package.json"),
+            b"{}",
+        )
+        .unwrap();
+        assert!(desktop_stage_skip_result(&desktop, &root).is_none());
 
         let _ = std::fs::remove_dir_all(&root);
     }
