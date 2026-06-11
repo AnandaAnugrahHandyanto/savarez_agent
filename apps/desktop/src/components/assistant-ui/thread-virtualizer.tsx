@@ -295,6 +295,17 @@ function useThreadScrollAnchor({
     setMutableRef(stickyBottomRef, true)
 
     if (groupCount > 0) {
+      const lastItem = virtualizer.getVirtualItems().at(-1)
+      const measured = lastItem && lastItem.size > 0 && lastItem.index === groupCount - 1
+
+      if (!measured) {
+        // Virtualizer hasn't measured items yet (still using estimateSize).
+        // scrollToIndex with unmeasured items lands at the wrong position.
+        // Retry next frame after the ResizeObserver reports real dimensions.
+        requestAnimationFrame(() => jumpToBottom())
+        return
+      }
+
       virtualizer.scrollToIndex(groupCount - 1, { align: 'end', behavior: 'auto' })
     }
 
