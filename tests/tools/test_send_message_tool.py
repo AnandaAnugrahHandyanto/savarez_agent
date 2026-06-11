@@ -27,6 +27,7 @@ def _reset_signal_scheduler():
 
 from gateway.config import Platform
 from tools.send_message_tool import (
+    SEND_MESSAGE_SCHEMA,
     _is_telegram_thread_not_found,
     _parse_target_ref,
     _send_matrix_via_adapter,
@@ -163,6 +164,11 @@ def _ensure_slack_mock(monkeypatch):
 
 
 class TestSendMessageTool:
+    def test_schema_does_not_expose_trigger_agent(self):
+        properties = SEND_MESSAGE_SCHEMA["parameters"]["properties"]
+
+        assert "trigger_agent" not in properties
+
     def test_ntfy_topic_target_is_explicit(self):
         chat_id, thread_id, is_explicit = _parse_target_ref("ntfy", "alerts-channel")
 
@@ -243,7 +249,7 @@ class TestSendMessageTool:
         assert mirror_kwargs["thread_id"] is None
         trigger_mock.assert_not_awaited()
 
-    def test_trigger_agent_send_wakes_without_passive_mirror(self):
+    def test_trigger_agent_argument_is_not_model_exposed_and_does_not_wake(self):
         config, telegram_cfg = _make_config()
 
         with patch("gateway.config.load_gateway_config", return_value=config), \
@@ -264,8 +270,8 @@ class TestSendMessageTool:
             )
 
         assert result["success"] is True
-        assert result["triggered_agent"] is True
-        assert "mirrored" not in result
+        assert result["mirrored"] is True
+        assert "triggered_agent" not in result
         send_mock.assert_awaited_once_with(
             Platform.TELEGRAM,
             telegram_cfg,
@@ -275,13 +281,8 @@ class TestSendMessageTool:
             media_files=[],
             force_document=False,
         )
-        trigger_mock.assert_awaited_once_with(
-            "telegram",
-            "12345",
-            "wake hello",
-            thread_id="678",
-        )
-        mirror_mock.assert_not_called()
+        trigger_mock.assert_not_awaited()
+        mirror_mock.assert_called_once()
 
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
@@ -317,7 +318,6 @@ class TestSendMessageTool:
         assert "final response" in result["note"]
         send_mock.assert_not_awaited()
         mirror_mock.assert_not_called()
-
     def test_resolved_telegram_topic_name_preserves_thread_id(self):
         config, telegram_cfg = _make_config()
 

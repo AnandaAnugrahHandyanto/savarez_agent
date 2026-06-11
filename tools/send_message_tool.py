@@ -292,7 +292,6 @@ def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
-    trigger_agent = bool(args.get("trigger_agent", False))
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
@@ -440,40 +439,27 @@ def _handle_send(args):
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
 
-        # Mirror passive sends into the target's gateway session. Active
-        # handoffs use a synthetic inbound event instead; mirroring those too
-        # would record duplicate context without waking anything extra.
+        # Mirror sends into the target's gateway session for transcript continuity.
+        # Active wake is intentionally not model-exposed from send_message; the
+        # private _trigger_gateway_agent helper is reserved for verified Kanban
+        # notification subscriptions created by the gateway/CLI control plane.
         if isinstance(result, dict) and result.get("success") and mirror_text:
-            if trigger_agent:
-                try:
-                    trigger_result = _run_async(
-                        _trigger_gateway_agent(
-                            platform_name,
-                            chat_id,
-                            mirror_text,
-                            thread_id=thread_id,
-                        )
-                    )
-                    result.update(trigger_result)
-                except Exception as exc:
-                    result["trigger_error"] = _sanitize_error_text(str(exc))
-            else:
-                try:
-                    from gateway.mirror import mirror_to_session
-                    from gateway.session_context import get_session_env
-                    source_label = get_session_env("HERMES_SESSION_PLATFORM", "cli")
-                    user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
-                    if mirror_to_session(
-                        platform_name,
-                        chat_id,
-                        mirror_text,
-                        source_label=source_label,
-                        thread_id=thread_id,
-                        user_id=user_id,
-                    ):
-                        result["mirrored"] = True
-                except Exception:
-                    pass
+            try:
+                from gateway.mirror import mirror_to_session
+                from gateway.session_context import get_session_env
+                source_label = get_session_env("HERMES_SESSION_PLATFORM", "cli")
+                user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
+                if mirror_to_session(
+                    platform_name,
+                    chat_id,
+                    mirror_text,
+                    source_label=source_label,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                ):
+                    result["mirrored"] = True
+            except Exception:
+                pass
 
         if isinstance(result, dict) and "error" in result:
             result["error"] = _sanitize_error_text(result["error"])

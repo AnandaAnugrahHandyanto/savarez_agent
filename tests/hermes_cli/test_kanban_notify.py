@@ -168,7 +168,7 @@ def test_cli_create_infers_notify_subscription_from_origin_return_to_body(kanban
     assert len(subs) == 1
     assert subs[0]["platform"] == "discord"
     assert subs[0]["chat_id"] == "1499390151393284106"
-    assert int(subs[0]["trigger_agent"]) == 1
+    assert int(subs[0]["trigger_agent"]) == 0
 
 
 @pytest.mark.asyncio

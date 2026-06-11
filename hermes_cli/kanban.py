@@ -1393,7 +1393,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
                 chat_id=inferred_origin["chat_id"],
                 thread_id=inferred_origin.get("thread_id") or None,
                 notifier_profile=_profile_author(),
-                trigger_agent=True,
+                # Body prose inference is a recovery rail for passive terminal
+                # ACK delivery only. Active wake remains explicit via
+                # --ack-trigger-agent / notify-subscribe --trigger-agent.
+                trigger_agent=False,
             )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
