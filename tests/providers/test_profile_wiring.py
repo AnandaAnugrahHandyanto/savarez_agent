@@ -294,3 +294,13 @@ class TestRequestOverridesParity:
             request_overrides={"top_p": 0.9},
         )
         assert kw["top_p"] == 0.9
+
+
+def test_wandb_profile_resolves():
+    """W&B Inference fast-path plugin resolves by id and all aliases."""
+    p = get_provider_profile("wandb")
+    assert p is not None
+    assert p.base_url == "https://api.inference.wandb.ai/v1"
+    assert "WANDB_API_KEY" in p.env_vars
+    for alias in ("weights-and-biases", "wandb-inference", "wnb"):
+        assert get_provider_profile(alias) is p

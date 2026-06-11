@@ -51,6 +51,8 @@ images/
 __pycache__/
 hermes_agent.egg-info/
 wandb/
+# but do track the W&B Inference provider plugin (not a W&B SDK run-output dir)
+!plugins/model-providers/wandb/
 testlogs
 
 # CLI config (may contain sensitive SSH paths)

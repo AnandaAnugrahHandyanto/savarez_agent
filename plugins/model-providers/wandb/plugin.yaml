@@ -1,0 +1,5 @@
+name: wandb-provider
+kind: model-provider
+version: 1.0.0
+description: Weights & Biases Inference (open models on CoreWeave)
+author: Nous Research
