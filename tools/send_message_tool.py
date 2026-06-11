@@ -1593,10 +1593,10 @@ async def _send_bluebubbles(extra, chat_id, message):
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):
     """Send via Feishu/Lark using the adapter's send pipeline."""
     try:
-        from gateway.platforms.feishu import FeishuAdapter, FEISHU_AVAILABLE
-        if not FEISHU_AVAILABLE:
-            return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
-        from gateway.platforms.feishu import FEISHU_DOMAIN, LARK_DOMAIN
+        import gateway.platforms.feishu as feishu_mod
+        if not feishu_mod.check_feishu_requirements():
+            return {"error": "Feishu requirements not met. Run: pip install 'hermes-agent[feishu]'"}
+        FeishuAdapter = feishu_mod.FeishuAdapter
     except ImportError:
         return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
 
@@ -1605,7 +1605,7 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
     try:
         adapter = FeishuAdapter(pconfig)
         domain_name = getattr(adapter, "_domain_name", "feishu")
-        domain = FEISHU_DOMAIN if domain_name != "lark" else LARK_DOMAIN
+        domain = feishu_mod.FEISHU_DOMAIN if domain_name != "lark" else feishu_mod.LARK_DOMAIN
         adapter._client = adapter._build_lark_client(domain)
         metadata = {"thread_id": thread_id} if thread_id else None
 
