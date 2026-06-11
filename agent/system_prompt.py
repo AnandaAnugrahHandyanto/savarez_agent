@@ -102,6 +102,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
+    # Keep the response-language preference in the stable prompt tier so the
+    # selected interface language improves the conversation without reducing
+    # prompt-cache reuse during the session.
+    from agent.i18n import response_language_guidance
+    _language_guidance = response_language_guidance()
+    if _language_guidance:
+        stable_parts.append(_language_guidance)
+
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes
     # this targets (stopping after a stub; fabricating output when a real

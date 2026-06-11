@@ -96,3 +96,16 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)
+
+
+class TestResponseLanguageGuidance:
+    def test_arabic_display_language_adds_stable_guidance(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "ar")
+        stable = _stable_prompt(_make_agent())
+        assert "Modern Standard Arabic" in stable
+        assert "Preserve code, commands, paths, identifiers" in stable
+
+    def test_english_display_language_adds_no_guidance(self, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "en")
+        stable = _stable_prompt(_make_agent())
+        assert "Modern Standard Arabic" not in stable

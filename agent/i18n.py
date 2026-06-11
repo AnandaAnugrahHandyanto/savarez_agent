@@ -1,10 +1,9 @@
 """Lightweight internationalization (i18n) for Hermes static user-facing messages.
 
-Scope (thin slice, by design): only the highest-impact static strings shown
-to the user by Hermes itself -- approval prompts, a handful of gateway slash
-command replies, restart-drain notices.  Agent-generated output, log lines,
-error tracebacks, tool outputs, and slash-command descriptions all stay in
-English.
+The catalogs translate high-impact static strings shown by Hermes itself.
+For Arabic, the selected display language also contributes a stable response
+language hint to the system prompt. Log lines, error tracebacks, tool outputs,
+and slash-command descriptions stay in English.
 
 Catalog files live under ``locales/<lang>.yaml`` at the repo root.  Each
 catalog is a flat dict keyed by dotted paths (e.g. ``approval.choose`` or
@@ -46,6 +45,16 @@ SUPPORTED_LANGUAGES: tuple[str, ...] = (
     "af", "ko", "it", "ga", "pt", "ru", "hu",
 )
 DEFAULT_LANGUAGE = "en"
+
+_RESPONSE_LANGUAGE_GUIDANCE: dict[str, str] = {
+    "ar": (
+        "Arabic is the preferred conversation language. Reply in clear Modern "
+        "Standard Arabic when the user writes in Arabic or does not request a "
+        "different language. Preserve code, commands, paths, identifiers, and "
+        "verbatim technical output exactly when translation would change their "
+        "meaning."
+    ),
+}
 
 # Accept a few natural aliases so users who type "chinese" / "zh-CN" / "jp"
 # get the right catalog instead of silently falling back to English.
@@ -251,6 +260,11 @@ def get_language() -> str:
     if cfg_lang:
         return cfg_lang
     return DEFAULT_LANGUAGE
+
+
+def response_language_guidance() -> str:
+    """Return stable model guidance for the active display language."""
+    return _RESPONSE_LANGUAGE_GUIDANCE.get(get_language(), "")
 
 
 def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
