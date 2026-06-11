@@ -56,7 +56,11 @@ param(
     #   * The canonical CLI one-liner (irm | iex) omits the flag too;
     #     terminal users don't need a desktop binary built for them, and
     #     `hermes desktop` already builds on demand.
-    [switch]$IncludeDesktop
+    [switch]$IncludeDesktop,
+    # Internal bootstrapper flag: the Rust installer creates desktop shortcuts
+    # after Stage-Desktop succeeds, while normal script users keep legacy
+    # PowerShell shortcut creation.
+    [switch]$SkipDesktopShortcuts
 )
 
 $ErrorActionPreference = "Stop"
@@ -2327,7 +2331,11 @@ function Install-Desktop {
     #    which would cost minutes each time. The packed exe is the consumer —
     #    launching it directly is instant, and updates flow through the
     #    installer's --update path (which rebuilds once, then relaunches).
-    New-DesktopShortcuts -TargetExe $desktopExe
+    if (-not $SkipDesktopShortcuts) {
+        New-DesktopShortcuts -TargetExe $desktopExe
+    } else {
+        Write-Info "Skipping PowerShell shortcut creation; bootstrapper will create shortcuts natively"
+    }
 }
 
 function New-DesktopShortcuts {

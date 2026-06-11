@@ -163,6 +163,9 @@ language-specific setup where needed.
   including working directory and icon location, without mutating user state.
 - `hermes-manager write-shortcuts` can dry-run or create those `.lnk` files through the built-in Windows shortcut COM
   API, keeping shortcut setup in the Rust-managed command surface.
+- Tauri bootstrap now passes an internal `-SkipDesktopShortcuts` flag for Windows desktop stages and creates Start
+  Menu/Desktop shortcuts through the Rust manager after the desktop build succeeds, while direct `install.ps1`
+  invocations keep the legacy PowerShell fallback.
 
 **Exit Criteria:**
 - Rust manager can perform platform cleanup with parity to Python/shell uninstall.

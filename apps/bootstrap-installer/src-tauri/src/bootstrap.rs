@@ -619,16 +619,7 @@ async fn run_bootstrap(
             }
         }
 
-        let mut stage_args = vec![
-            "-Stage".to_string(),
-            stage.name.clone(),
-            "-NonInteractive".to_string(),
-            "-Json".to_string(),
-        ];
-        stage_args.extend(manifest_args.clone());
-        if args.include_desktop {
-            stage_args.push("-IncludeDesktop".to_string());
-        }
+        let stage_args = stage_script_args(&stage.name, &manifest_args, args.include_desktop);
 
         // Each stage gets its own cancel receiver because tokio::select!
         // in run_script consumes it. Take/return through the Arc<Mutex>.
@@ -707,6 +698,20 @@ async fn run_bootstrap(
                 );
             }
             Some(frame) if frame.ok => {
+                if cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("desktop") {
+                    let hermes_home = args
+                        .hermes_home
+                        .as_ref()
+                        .map(PathBuf::from)
+                        .unwrap_or_else(crate::paths::hermes_home);
+                    let install_root = hermes_home.join("hermes-agent");
+                    if let Err(err) = create_windows_desktop_shortcuts(&install_root) {
+                        tracing::warn!(?err, "failed to create desktop shortcuts via manager");
+                        emit_log(&format!(
+                            "[bootstrap] warning: could not create desktop shortcuts: {err}"
+                        ));
+                    }
+                }
                 emit_event(
                     &app,
                     BootstrapEvent::Stage {
@@ -783,6 +788,63 @@ async fn run_bootstrap(
     );
 
     Ok(install_root.to_string_lossy().into_owned())
+}
+
+fn stage_script_args(stage_name: &str, manifest_args: &[String], include_desktop: bool) -> Vec<String> {
+    let mut stage_args = vec![
+        "-Stage".to_string(),
+        stage_name.to_string(),
+        "-NonInteractive".to_string(),
+        "-Json".to_string(),
+    ];
+    stage_args.extend(manifest_args.iter().cloned());
+    if include_desktop {
+        stage_args.push("-IncludeDesktop".to_string());
+    }
+    if cfg!(target_os = "windows") && stage_name.eq_ignore_ascii_case("desktop") {
+        stage_args.push("-SkipDesktopShortcuts".to_string());
+    }
+    stage_args
+}
+
+fn create_windows_desktop_shortcuts(install_root: &std::path::Path) -> anyhow::Result<()> {
+    let target_exe = resolve_hermes_desktop_exe(install_root).ok_or_else(|| {
+        anyhow!(
+            "desktop build succeeded but no Hermes.exe was found under {}",
+            install_root.join("apps").join("desktop").join("release").display()
+        )
+    })?;
+    let programs_dir = default_windows_programs_dir();
+    let desktop_dir = default_windows_desktop_dir();
+    let icon_exists = target_exe
+        .parent()
+        .map(|parent| parent.join("resources").join("icon.ico").is_file())
+        .unwrap_or(false);
+    let plans = hermes_manager::platform::plan_windows_shortcuts(
+        &target_exe,
+        &programs_dir,
+        &desktop_dir,
+        icon_exists,
+    );
+    hermes_manager::platform::write_windows_shortcuts(&plans)
+        .map_err(|err| anyhow!("manager write-shortcuts failed: {err}"))
+}
+
+fn default_windows_programs_dir() -> PathBuf {
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Microsoft")
+        .join("Windows")
+        .join("Start Menu")
+        .join("Programs")
+}
+
+fn default_windows_desktop_dir() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Desktop")
 }
 
 fn record_manager_install_metadata(hermes_home: &std::path::Path) -> bool {
@@ -1052,5 +1114,20 @@ mod tests {
             .exists());
 
         let _ = std::fs::remove_dir_all(&hermes_home);
+    }
+
+    #[test]
+    fn desktop_stage_args_skip_script_shortcuts_on_windows_bootstrap() {
+        let args = stage_script_args(
+            "desktop",
+            &["-Commit".to_string(), "abc123".to_string()],
+            true,
+        );
+
+        assert!(args.contains(&"-IncludeDesktop".to_string()));
+        assert_eq!(
+            args.contains(&"-SkipDesktopShortcuts".to_string()),
+            cfg!(target_os = "windows")
+        );
     }
 }
