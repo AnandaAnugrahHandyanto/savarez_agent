@@ -2169,17 +2169,25 @@ class TestInterleavedThinkingBlockOrdering:
     """
 
     def test_convert_assistant_message_interleaved_preserves_order(self):
-        """Message with _anthropic_content_blocks=[thinking1, tool_use1, thinking2]
+        """Message with anthropic_content_blocks=[thinking1, tool_use1, thinking2]
         should output content in the same order, not grouped by type."""
         interleaved_content = [
-            {"type": "thinking", "thinking": "Let me analyze this."},
+            {
+                "type": "thinking",
+                "thinking": "Let me analyze this.",
+                "signature": "sig_1",
+            },
             {
                 "type": "tool_use",
                 "id": "call_1",
                 "name": "search",
                 "input": {"query": "test"},
             },
-            {"type": "thinking", "thinking": "Results are promising."},
+            {
+                "type": "thinking",
+                "thinking": "Results are promising.",
+                "signature": "sig_2",
+            },
             {
                 "type": "tool_use",
                 "id": "call_2",
@@ -2188,14 +2196,14 @@ class TestInterleavedThinkingBlockOrdering:
             },
         ]
 
-        message = {"_anthropic_content_blocks": interleaved_content}
+        message = {"anthropic_content_blocks": interleaved_content}
         result = _convert_assistant_message(message)
 
         assert result["role"] == "assistant"
         assert result["content"] == interleaved_content
 
     def test_convert_assistant_message_legacy_fallback(self):
-        """Message without the private stash should use fallback
+        """Message without the ordered-block stash should use fallback
         reconstruction from reasoning_details + tool_calls without error."""
         message = {
             "content": "Here are the results",
@@ -2221,14 +2229,14 @@ class TestInterleavedThinkingBlockOrdering:
         # Content should have multiple blocks (thinking, text, tool_use).
         assert len(result["content"]) >= 3
 
-    def test_normalize_response_stores_private_anthropic_blocks(self):
+    def test_normalize_response_stores_ordered_anthropic_blocks(self):
         """normalize_response() should store the full interleaved content
-        array in provider_data['_anthropic_content_blocks'] for preservation."""
+        array in provider_data['anthropic_content_blocks'] for preservation."""
         from agent.transports.anthropic import AnthropicTransport
 
-        # Mock a minimal Anthropic response with interleaved blocks.
+        # Mock a minimal Anthropic response with signed interleaved blocks.
         mock_block_1 = SimpleNamespace(
-            type="thinking", thinking="Initial thinking"
+            type="thinking", thinking="Initial thinking", signature="sig_1"
         )
         mock_block_2 = SimpleNamespace(
             type="tool_use",
@@ -2237,7 +2245,7 @@ class TestInterleavedThinkingBlockOrdering:
             input={"q": "test"},
         )
         mock_block_3 = SimpleNamespace(
-            type="thinking", thinking="More thinking"
+            type="thinking", thinking="More thinking", signature="sig_2"
         )
         mock_response = SimpleNamespace(
             content=[mock_block_1, mock_block_2, mock_block_3],
@@ -2247,12 +2255,12 @@ class TestInterleavedThinkingBlockOrdering:
         transport = AnthropicTransport()
         normalized = transport.normalize_response(mock_response)
 
-        # Should have provider_data with the private stash.
+        # Should have provider_data with the ordered replay stash.
         assert normalized.provider_data is not None
-        assert "_anthropic_content_blocks" in normalized.provider_data
+        assert "anthropic_content_blocks" in normalized.provider_data
 
         # The array should preserve the original interleaved order.
-        raw_content = normalized.provider_data["_anthropic_content_blocks"]
+        raw_content = normalized.provider_data["anthropic_content_blocks"]
         assert len(raw_content) == 3
         assert raw_content[0]["type"] == "thinking"
         assert raw_content[1]["type"] == "tool_use"
