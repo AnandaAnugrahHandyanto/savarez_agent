@@ -1965,6 +1965,8 @@ class FeishuAdapter(BasePlatformAdapter):
     @staticmethod
     def _build_streaming_card_json(
         initial_content: str = "",
+        *,
+        bot_name: str = "Hermes",
     ) -> str:
         """Build a cardkit v1 schema-2.0 JSON string with streaming enabled.
 
@@ -1977,12 +1979,14 @@ class FeishuAdapter(BasePlatformAdapter):
         preview_text = _re.sub(r"[#*`_~\[\]()>|]", "", initial_content).strip()
         preview_text = preview_text.replace("\n", " ")[:60].strip()
 
+        _display_name = bot_name or "Hermes"
+
         card: Dict[str, Any] = {
             "schema": "2.0",
             "header": {
                 "title": {
                     "tag": "lark_md",
-                    "content": "🪶 Hermes",
+                    "content": f"🪶 {_display_name}",
                 },
                 "text_tag_list": [
                     {
@@ -2034,14 +2038,38 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client or not HAS_CARDKIT:
             return None
         try:
+            # --- Card reuse: if this chat already has an active streaming
+            # card, update it in-place instead of closing + recreating.
+            # This handles the tool-boundary case where stream_consumer
+            # resets _message_id to None (got_segment_break), causing
+            # send() to be called again within the same turn.
+            existing = self._streaming_cards.get(chat_id)
+            if existing:
+                card_id, card_state = next(iter(existing.items()))
+                result = await self._edit_streaming_card(
+                    chat_id=chat_id,
+                    card_id=card_id,
+                    content=content,
+                    card_state=card_state,
+                    finalize=False,
+                )
+                if result.success:
+                    logger.info(
+                        "[Feishu] Reused existing streaming card: card_id=%s seq=%s",
+                        card_id, card_state.get("sequence"),
+                    )
+                    return result
+                # Edit failed — fall through to create a new card.
+                logger.warning("[Feishu] Streaming card reuse edit failed; creating new card")
+
             # Close any previously-open streaming cards for this chat before
-            # creating a new one (handles tool-progress → final-response
-            # handoff; mirrors dingtalk's _close_streaming_siblings).
+            # creating a new one (only reached when no active card exists or
+            # reuse failed).
             await self._close_streaming_siblings(chat_id)
 
             formatted = self.format_message(content)
             truncated = formatted[: self.MAX_MESSAGE_LENGTH]
-            card_json = self._build_streaming_card_json(truncated)
+            card_json = self._build_streaming_card_json(truncated, bot_name=self._bot_name)
 
             # Step 1: Create card entity via cardkit v1
             create_body = CreateCardRequestBody.builder() \
