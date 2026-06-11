@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ComposerAttachment } from '@/store/composer'
 
-import { coerceThinkingText, optimisticAttachmentRef } from './chat-runtime'
+import { coerceThinkingText, optimisticAttachmentRef, parseCommandDispatch } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 
@@ -35,6 +35,34 @@ describe('optimisticAttachmentRef', () => {
     expect(optimisticAttachmentRef(attachment({ kind: 'file', refText: '@file:src/a.ts', previewUrl: DATA_URL }))).toBe(
       '@file:src/a.ts'
     )
+  })
+})
+
+describe('parseCommandDispatch', () => {
+  it('parses the prefill dispatch /undo returns (message + notice)', () => {
+    // Gateway shape: {"type": "prefill", "message": target_text, "notice": notice}
+    expect(
+      parseCommandDispatch({ type: 'prefill', message: 'edit me', notice: '↶ Undid 1 turn (2 message(s)).' })
+    ).toEqual({ type: 'prefill', message: 'edit me', notice: '↶ Undid 1 turn (2 message(s)).' })
+  })
+
+  it('parses a prefill without a notice', () => {
+    expect(parseCommandDispatch({ type: 'prefill', message: 'edit me' })).toEqual({
+      type: 'prefill',
+      message: 'edit me',
+      notice: undefined
+    })
+  })
+
+  it('rejects a prefill whose message is missing or not a string', () => {
+    expect(parseCommandDispatch({ type: 'prefill' })).toBeNull()
+    expect(parseCommandDispatch({ type: 'prefill', message: 42, notice: 'n' })).toBeNull()
+  })
+
+  it('still rejects unknown dispatch types and non-objects', () => {
+    expect(parseCommandDispatch({ type: 'confetti' })).toBeNull()
+    expect(parseCommandDispatch(null)).toBeNull()
+    expect(parseCommandDispatch('prefill')).toBeNull()
   })
 })
 

@@ -3,6 +3,7 @@ import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { onComposerInsertRequest } from '@/app/chat/composer/focus'
 import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
 import { $connection, $sessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
@@ -259,6 +260,79 @@ describe('usePromptActions desktop slash pickers', () => {
         session_id: RUNTIME_SESSION_ID
       }
     })
+  })
+})
+
+describe('usePromptActions /undo prefill dispatch', () => {
+  beforeEach(() => {
+    setSessions(() => [sessionInfo()])
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
+
+  it('renders the undo notice and prefills the composer instead of erroring or auto-submitting', async () => {
+    // Gateway /undo path: slash.exec rejects (command.dispatch owns /undo) and
+    // command.dispatch answers {type:"prefill"} — the shape that used to fall
+    // out of parseCommandDispatch as "invalid response: command.dispatch".
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        throw new Error('handled via command.dispatch')
+      }
+
+      if (method === 'command.dispatch') {
+        return {
+          type: 'prefill',
+          message: 'make the tests pass',
+          notice: '↶ Undid 1 turn (2 message(s)).'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const inserts: { target: string; text: string }[] = []
+    const offInsert = onComposerInsertRequest(({ target, text }) => inserts.push({ target, text }))
+
+    let lastState: Record<string, unknown> = {}
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => (lastState = state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    try {
+      await handle!.submitText('/undo')
+
+      expect(requestGateway).toHaveBeenCalledWith('command.dispatch', {
+        session_id: RUNTIME_SESSION_ID,
+        name: 'undo',
+        arg: ''
+      })
+
+      const systemText = ((lastState.messages ?? []) as { parts: { text?: string }[] }[])
+        .map(message => message.parts.map(part => part.text ?? '').join(''))
+        .join('\n')
+
+      // The rewind notice renders as a system line — not the old parse failure.
+      expect(systemText).toContain('↶ Undid 1 turn (2 message(s)).')
+      expect(systemText).not.toContain('invalid response')
+
+      // The undone text lands in the main composer (the insert bus defers a
+      // macrotask)…
+      await waitFor(() => expect(inserts).toEqual([{ target: 'main', text: 'make the tests pass' }]))
+
+      // …for edit-and-resubmit; it is NOT auto-submitted like a 'send' dispatch.
+      expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything())
+    } finally {
+      offInsert()
+    }
   })
 })
 

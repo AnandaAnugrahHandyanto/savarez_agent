@@ -2,6 +2,7 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { requestComposerInsert } from '@/app/chat/composer/focus'
 import { getProfiles, transcribeAudio } from '@/hermes'
 import { translateNow, type Translations, useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
@@ -897,6 +898,20 @@ export function usePromptActions({
 
           if (dispatch.type === 'alias') {
             await runSlash(`/${dispatch.target}${arg ? ` ${arg}` : ''}`, sessionId, false)
+
+            return
+          }
+
+          if (dispatch.type === 'prefill') {
+            // /undo: the gateway already rewound the history — render its
+            // notice, then drop the undone message text into the composer so
+            // the user can edit and resubmit (matching the TUI), instead of
+            // auto-submitting it like 'send'.
+            if (dispatch.notice?.trim()) {
+              renderSlashOutput(dispatch.notice)
+            }
+
+            requestComposerInsert(dispatch.message, { target: 'main' })
 
             return
           }

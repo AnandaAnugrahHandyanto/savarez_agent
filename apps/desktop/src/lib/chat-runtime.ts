@@ -239,6 +239,13 @@ export function parseCommandDispatch(raw: unknown): CommandDispatchResponse | nu
     case 'send':
       return typeof row.message === 'string' ? { type: 'send', message: row.message } : null
 
+    case 'prefill':
+      // /undo backs up N turns and hands back the undone user message so the
+      // client can drop it into the composer for edit-and-resubmit.
+      return typeof row.message === 'string'
+        ? { type: 'prefill', message: row.message, notice: str(row.notice) }
+        : null
+
     default:
       return null
   }
