@@ -1035,6 +1035,7 @@ AUTHOR_MAP = {
     "yehuosi@users.noreply.github.com": "yehuosi",
     "31932854+jelrod27@users.noreply.github.com": "jelrod27",
     "11262660+konsisumer@users.noreply.github.com": "konsisumer",
+    "konsisumer@users.noreply.github.com": "konsisumer",
     "23434080+sicnuyudidi@users.noreply.github.com": "sicnuyudidi",
     "haimu0x0@proton.me": "haimu0x",
     "abdelmajidnidnasser1@gmail.com": "NIDNASSER-Abdelmajid",
@@ -1337,6 +1338,7 @@ AUTHOR_MAP = {
     "220110965+Saurav0989@users.noreply.github.com": "Saurav0989",
     "aviarchi1994@gmail.com": "avifenesh",  # PR #25902 (docs: computer-use-linux MCP)
     "55848801+avifenesh@users.noreply.github.com": "avifenesh",
+    "maplestoryjuni222@gmail.com": "BROCCOLO1D",
     "279959838+BROCCOLO1D@users.noreply.github.com": "BROCCOLO1D",  # PR #26796 (docs: spotify + HA)
     "m@matthewlai.ca": "matthewlai",  # PR #25293 (feat: gemma 4 reasoning allowlist)
     "4296245+matthewlai@users.noreply.github.com": "matthewlai",
@@ -1517,6 +1519,7 @@ AUTHOR_MAP = {
     "andreas@schwarz-ketsch.de": "Nea74",  # PR #40022 co-author credit (same Windows ConPTY bridge design)
     "chanhokyim@gmail.com": "joel611",  # PR #33958 salvage (DISCORD_ALLOWED_ROLES role_authorized gateway flag)
     "desg38@gmail.com": "dschnurbusch",  # PR #42373 salvage (archive compressed conversation lineages)
+    "claw3649@gmail.com": "claw3649",
 }
 
 
