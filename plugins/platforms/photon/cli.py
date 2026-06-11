@@ -332,13 +332,16 @@ def _install_sidecar() -> int:
             file=sys.stderr,
         )
         return 1
-    # Always pull the newest published spectrum-ts so every setup runs against
-    # the latest SDK. `spectrum-ts@latest` bumps package.json + package-lock.json
-    # to the current release before installing — a plain `npm install` would
-    # stay pinned to whatever the committed lockfile already resolved.
-    print(f"  $ cd {_SIDECAR_DIR} && {npm} install spectrum-ts@latest")
+    # Respect the committed package-lock.json so setup uses the SDK version
+    # Hermes was tested with. Installing `spectrum-ts@latest` here can silently
+    # rewrite package.json/package-lock.json and pull incompatible major SDKs.
+    if (_SIDECAR_DIR / "package-lock.json").exists():
+        command = [npm, "ci"]
+    else:
+        command = [npm, "install"]
+    print(f"  $ cd {_SIDECAR_DIR} && {' '.join(command)}")
     proc = subprocess.run(  # noqa: S603
-        [npm, "install", "spectrum-ts@latest"],
+        command,
         cwd=str(_SIDECAR_DIR),
         check=False,
     )
