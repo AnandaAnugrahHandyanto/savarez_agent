@@ -649,6 +649,7 @@ def cronjob(
                     _job_has_required_live_delivery_context,
                     _job_requires_live_delivery_context,
                     _queue_manual_run_for_tick,
+                    _restore_manual_run_schedule,
                     _resolve_live_delivery_context,
                     run_job_immediate,
                 )
@@ -668,6 +669,10 @@ def cronjob(
                 else:
                     dispatched, dispatch_error = run_job_immediate(job_id, schedule_snapshot=schedule_snapshot)
             except Exception as _e:
+                try:
+                    _restore_manual_run_schedule(job_id, schedule_snapshot)
+                except Exception:
+                    pass
                 dispatched, dispatch_error = False, str(_e)
             current_job = resolve_job_ref(job_id) or updated
             result = {

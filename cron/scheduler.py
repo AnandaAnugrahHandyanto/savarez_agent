@@ -1457,7 +1457,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return _run_job_impl(job)
 
 
-
 def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -2359,12 +2358,12 @@ def run_job_immediate(job_id: str, schedule_snapshot: Optional[dict] = None) -> 
             if _job_requires_sequential_pool(job)
             else _get_parallel_pool(_resolve_max_parallel_workers())
         )
+        _ctx = contextvars.copy_context()
+        adapters, loop = _resolve_live_delivery_context()
     except Exception:
         _release_running_job(job["id"], run_lock)
         _restore_manual_run_schedule(job["id"], schedule_snapshot)
         raise
-    _ctx = contextvars.copy_context()
-    adapters, loop = _resolve_live_delivery_context()
 
     def _run_and_release(j=job, ctx=_ctx, job_lock=run_lock):
         try:

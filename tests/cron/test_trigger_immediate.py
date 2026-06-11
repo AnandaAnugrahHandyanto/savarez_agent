@@ -111,6 +111,55 @@ class TestActionRunDispatchesImmediately:
         sched._running_job_ids.discard(job_id)
         sched._shutdown_parallel_pool()
 
+    def test_action_run_restores_schedule_after_sync_dispatch_error(self, monkeypatch):
+        """A synchronous dispatch error must undo action='run' schedule edits."""
+        import cron.scheduler as sched
+        from cron.jobs import create_job, resolve_job_ref, update_job
+        from tools.cronjob_tools import cronjob
+
+        sched._parallel_pool = None
+        sched._parallel_pool_max_workers = None
+        sched._running_job_ids.clear()
+
+        job = create_job(
+            prompt="test prompt",
+            schedule="every 5m",
+            name="sync-dispatch-error-test"
+        )
+        job_id = job["id"]
+        update_job(
+            job_id,
+            {
+                "enabled": False,
+                "state": "paused",
+                "paused_at": "2026-01-01T00:00:00+00:00",
+                "paused_reason": "test pause",
+                "next_run_at": "2026-01-02T00:00:00+00:00",
+            },
+        )
+
+        monkeypatch.setattr(sched, "_resolve_live_delivery_context", lambda: (None, None))
+        monkeypatch.setattr(sched, "_job_requires_live_delivery_context", lambda *_a, **_kw: False)
+        monkeypatch.setattr(
+            sched,
+            "run_job_immediate",
+            lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("submit failed")),
+        )
+
+        result = json.loads(cronjob(action="run", job_id=job_id))
+
+        restored = resolve_job_ref(job_id)
+        assert result["success"] is True
+        assert result["dispatched"] is False
+        assert restored["enabled"] is False
+        assert restored["state"] == "paused"
+        assert restored["paused_at"] == "2026-01-01T00:00:00+00:00"
+        assert restored["paused_reason"] == "test pause"
+        assert restored["next_run_at"] == "2026-01-02T00:00:00+00:00"
+        assert restored.get("manual_run_schedule_snapshot") is None
+
+        sched._shutdown_parallel_pool()
+
     def test_action_run_returns_not_found_error(self, monkeypatch):
         """action='run' with invalid job_id returns error (trigger_job fails)."""
         import cron.scheduler as sched
@@ -816,6 +865,31 @@ class TestRunJobImmediate:
         monkeypatch.setattr(sched, "_get_parallel_pool", lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("pool boom")))
 
         with pytest.raises(RuntimeError, match="pool boom"):
+            sched.run_job_immediate(job_id)
+
+        assert job_id not in sched._running_job_ids
+
+        sched._shutdown_parallel_pool()
+
+    def test_run_job_immediate_releases_claim_if_context_resolution_fails(self, monkeypatch):
+        """Context-resolution failures must not strand the per-job running lock."""
+        import cron.scheduler as sched
+        from cron.jobs import create_job
+
+        sched._parallel_pool = None
+        sched._parallel_pool_max_workers = None
+        sched._running_job_ids.clear()
+
+        job = create_job(
+            prompt="test prompt",
+            schedule="every 5m",
+            name="context-resolution-failure-cleanup"
+        )
+        job_id = job["id"]
+
+        monkeypatch.setattr(sched, "_resolve_live_delivery_context", lambda: (_ for _ in ()).throw(RuntimeError("context boom")))
+
+        with pytest.raises(RuntimeError, match="context boom"):
             sched.run_job_immediate(job_id)
 
         assert job_id not in sched._running_job_ids
