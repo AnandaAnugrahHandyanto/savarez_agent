@@ -18,6 +18,7 @@ import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { isRemoteGateway } from '@/lib/media'
 import { setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
@@ -650,7 +651,11 @@ export function useMessageStream({
             runtimeInfo.provider = payload!.provider || ''
           }
 
-          if (typeof payload?.cwd === 'string') {
+          // In remote-gateway mode the backend's cwd lives on the gateway
+          // machine, not this one.  Accepting it would overwrite a valid
+          // local path with a remote VPS path, causing the file browser to
+          // show ENOENT.
+          if (!isRemoteGateway() && typeof payload?.cwd === 'string') {
             setCurrentCwd(payload.cwd)
             runtimeInfo.cwd = payload.cwd
           }
