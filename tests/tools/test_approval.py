@@ -14,7 +14,10 @@ from tools.approval import (
     _get_approval_mode,
     _smart_approve,
     approve_session,
+    check_all_command_guards,
+    check_dangerous_command,
     detect_dangerous_command,
+    detect_hardline_command,
     is_approved,
     load_permanent,
     prompt_dangerous_approval,
@@ -1608,3 +1611,49 @@ class TestApprovalTimeoutIsNotConsent:
         assert last_post.get("choice") == "timeout", (
             f"hook choice should be 'timeout' on no-response, got {last_post.get('choice')!r}"
         )
+
+
+class TestGatewaySelfRestartHardline:
+    def test_systemctl_user_restart_hermes_gateway_is_hardline_blocked(self):
+        is_hardline, desc = detect_hardline_command(
+            "systemctl --user restart hermes-gateway.service"
+        )
+
+        assert is_hardline is True
+        assert "hermes gateway" in desc.lower()
+
+    def test_systemctl_user_restart_hermes_gateway_bypasses_yolo(self, monkeypatch):
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", True)
+
+        direct_result = check_dangerous_command(
+            "systemctl --user restart hermes-gateway.service",
+            "local",
+        )
+        combined_result = check_all_command_guards(
+            "systemctl --user restart hermes-gateway.service",
+            "local",
+        )
+
+        assert direct_result["approved"] is False
+        assert direct_result.get("hardline") is True
+        assert combined_result["approved"] is False
+        assert combined_result.get("hardline") is True
+
+    def test_plain_systemctl_restart_other_service_stays_dangerous_not_hardline(self):
+        is_hardline, desc = detect_hardline_command(
+            "systemctl --user restart some-other.service"
+        )
+        dangerous, _, danger_desc = detect_dangerous_command(
+            "systemctl --user restart some-other.service"
+        )
+
+        assert is_hardline is False
+        assert desc is None
+        assert dangerous is True
+        assert "service" in danger_desc.lower()
+
+    def test_hermes_gateway_restart_is_hardline_blocked(self):
+        is_hardline, desc = detect_hardline_command("hermes gateway restart")
+
+        assert is_hardline is True
+        assert "hermes gateway" in desc.lower()

@@ -274,6 +274,17 @@ HARDLINE_PATTERNS = [
     (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
     (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
     (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+    # Gateway self-lifecycle operations are not host-catastrophic, but they are
+    # unrecoverable from inside a gateway-handled turn: systemd tears down the
+    # cgroup that is currently running the agent/tool subprocess, which can
+    # strand the service between stop/restart and drop visible replies.  Block
+    # these even in yolo and tell the user to use the platform /restart path or
+    # run the service command from a real terminal outside the agent.
+    (
+        _CMDPOS + r'systemctl\b(?=[^\n;|&]*\b(?:stop|restart|kill)\b)(?=[^\n;|&]*\bhermes-gateway(?:\.service)?\b)',
+        "hermes gateway self-restart/stop via systemctl",
+    ),
+    (_CMDPOS + r'hermes\s+gateway\s+(?:stop|restart)\b', "hermes gateway self-restart/stop"),
 ]
 
 # Pre-compiled variant used by the hot-path matcher. Building these at module
@@ -415,8 +426,10 @@ DANGEROUS_PATTERNS = [
     (r'\bfind\b.*-exec(?:dir)?\s+(/\S*/)?rm\b', "find -exec/-execdir rm"),
     (r'\bfind\b.*-delete\b', "find -delete"),
     # Gateway lifecycle protection: prevent the agent from killing its own
-    # gateway process.  These commands trigger a gateway restart/stop that
-    # terminates all running agents mid-work.
+    # gateway process.  These remain in DANGEROUS_PATTERNS for older callers,
+    # but HARDLINE_PATTERNS above is the real guardrail: self-restart/stop must
+    # be blocked even with yolo/approvals off because it kills the process that
+    # is executing the current turn.
     (r'\bhermes\s+gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
     # Docker container lifecycle — any user with docker.sock mounted (a common
