@@ -9835,6 +9835,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             request_overrides=turn_route.get("request_overrides"),
         ):
             return None
+        if getattr(self, "_suppress_single_query_post_turn_prefetch", False):
+            setattr(self.agent, "_suppress_post_turn_prefetch", True)
         
         # Route image attachments based on the active model's vision capability.
         # "native" → pass pixels as OpenAI-style content parts (adapters
@@ -13566,6 +13568,7 @@ def main(
             sys.exit(1)
         try:
             query, single_query_images = _collect_query_images(query, image)
+            cli._suppress_single_query_post_turn_prefetch = True
             # Kanban workers spawn with ``hermes chat -q "work kanban task <id>"``;
             # the actual task description lives in the task body. Mirror the
             # gateway/CLI behaviour for inbound images by scanning the body for
@@ -13673,6 +13676,11 @@ def main(
                     ):
                         cli.agent.quiet_mode = True
                         cli.agent.suppress_status_output = True
+                        # Non-interactive single-query runs exit immediately after
+                        # this turn, so there is no next turn to warm.  Suppress
+                        # post-turn memory prefetch to avoid spawning Honcho
+                        # background threads that can race interpreter shutdown.
+                        cli.agent._suppress_post_turn_prefetch = True
                         # Suppress streaming display callbacks so stdout stays
                         # machine-readable (no styled "Hermes" box, no tool-gen
                         # status lines).  The response is printed once below.

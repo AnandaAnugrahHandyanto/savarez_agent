@@ -391,9 +391,19 @@ class CLIAgentSetupMixin:
                 notice_callback=self._on_notice,
                 notice_clear_callback=self._on_notice_clear,
             )
-            # Store reference for atexit memory provider shutdown
-            global _active_agent_ref
-            _active_agent_ref = self.agent
+            # Store reference for atexit memory provider shutdown.
+            # This mixin lives in ``hermes_cli.cli_agent_setup_mixin``, but
+            # cleanup reads ``_active_agent_ref`` from the module that owns the
+            # concrete HermesCLI class: ``cli`` for installed/imported entry
+            # points, ``__main__`` for ``python cli.py``/Fire.  Assign that
+            # owner module explicitly; a bare ``global`` here would create/update
+            # a shadow variable in this mixin module and leave cleanup blind to
+            # the live agent.
+            _cli_mod = sys.modules.get(self.__class__.__module__)
+            if _cli_mod is None or not hasattr(_cli_mod, "_active_agent_ref"):
+                _cli_mod = sys.modules.get("cli")
+            if _cli_mod is not None:
+                setattr(_cli_mod, "_active_agent_ref", self.agent)
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
