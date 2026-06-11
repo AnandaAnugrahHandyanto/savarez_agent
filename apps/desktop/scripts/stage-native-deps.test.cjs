@@ -47,10 +47,14 @@ test('stageManagerBinary replaces stale destination with the prebuilt manager', 
   withTempLayout(({ appRoot, repoRoot }) => {
     const sourceDir = path.join(repoRoot, 'apps', 'hermes-manager', 'target', 'release')
     const source = path.join(sourceDir, 'hermes-manager.exe')
+    const scriptsDir = path.join(repoRoot, 'scripts')
     const destDir = path.join(appRoot, 'build', 'hermes-manager')
     fs.mkdirSync(sourceDir, { recursive: true })
+    fs.mkdirSync(scriptsDir, { recursive: true })
     fs.mkdirSync(destDir, { recursive: true })
     fs.writeFileSync(source, 'fresh')
+    fs.writeFileSync(path.join(scriptsDir, 'install.ps1'), '# install ps1\n')
+    fs.writeFileSync(path.join(scriptsDir, 'install.sh'), '#!/usr/bin/env bash\n')
     fs.writeFileSync(path.join(destDir, 'extra-stale-file'), 'stale')
 
     const logs = []
@@ -76,6 +80,18 @@ test('stageManagerBinary replaces stale destination with the prebuilt manager', 
         sha256: 'd098ab5e44b9aabb755f76d806598f43573c662b35e4a2eab1e312ec9ad195e2'
       }
     ])
+    assert.deepEqual(
+      manifest.embedded_resources.map(resource => ({
+        kind: resource.kind,
+        name: resource.name,
+        size_bytes: resource.size_bytes,
+        sha256Length: resource.sha256.length
+      })),
+      [
+        { kind: 'install_script', name: 'install.ps1', size_bytes: 14, sha256Length: 64 },
+        { kind: 'install_script', name: 'install.sh', size_bytes: 20, sha256Length: 64 }
+      ]
+    )
     assert.equal(logs.length, 1)
     assert.match(logs[0], /hermes-manager: copied build[\\/]hermes-manager[\\/]hermes-manager\.exe/)
   })

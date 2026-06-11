@@ -18,6 +18,8 @@ pub struct BundledManifest {
     pub hermes_version: String,
     pub source_commit: String,
     pub resources: Vec<BundledResource>,
+    #[serde(default)]
+    pub embedded_resources: Vec<EmbeddedResource>,
 }
 
 /// A single bundled resource entry.
@@ -25,6 +27,15 @@ pub struct BundledManifest {
 pub struct BundledResource {
     pub kind: ResourceKind,
     pub path: String,
+    pub sha256: String,
+}
+
+/// A resource embedded inside another release binary rather than staged as a file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmbeddedResource {
+    pub kind: EmbeddedResourceKind,
+    pub name: String,
+    pub size_bytes: u64,
     pub sha256: String,
 }
 
@@ -36,6 +47,13 @@ pub enum ResourceKind {
     CoreWheelhouse,
     PythonRuntime,
     Tool,
+}
+
+/// Embedded resource types the manager can validate as metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddedResourceKind {
+    InstallScript,
 }
 
 impl BundledManifest {
@@ -87,6 +105,27 @@ impl BundledManifest {
                 return Err(ManagerError::InvalidManifest(format!(
                     "resource {} has invalid sha256",
                     resource.path
+                )));
+            }
+        }
+        for resource in &self.embedded_resources {
+            if resource.name.trim().is_empty() {
+                return Err(ManagerError::InvalidManifest(
+                    "embedded resource name is empty".into(),
+                ));
+            }
+            if resource.size_bytes == 0 {
+                return Err(ManagerError::InvalidManifest(format!(
+                    "embedded resource {} is empty",
+                    resource.name
+                )));
+            }
+            if resource.sha256.len() != 64
+                || !resource.sha256.chars().all(|ch| ch.is_ascii_hexdigit())
+            {
+                return Err(ManagerError::InvalidManifest(format!(
+                    "embedded resource {} has invalid sha256",
+                    resource.name
                 )));
             }
         }
@@ -144,6 +183,7 @@ mod tests {
                 path: path.into(),
                 sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             }],
+            embedded_resources: Vec::new(),
         }
     }
 
@@ -168,6 +208,7 @@ mod tests {
                 path: "resources/agent".into(),
                 sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             }],
+            embedded_resources: Vec::new(),
         };
 
         let err = manifest.validate().expect_err("schema should be rejected");
@@ -238,6 +279,7 @@ mod tests {
                 sha256: "6ee4a469cd4e91053847f5d3fcb61dbcc91e8f0ef10be7748da4c4a1ba382d17"
                     .into(),
             }],
+            embedded_resources: Vec::new(),
         };
 
         manifest
@@ -257,5 +299,24 @@ mod tests {
             .expect_err("checksum mismatch should be rejected");
 
         assert!(err.to_string().contains("checksum mismatch"));
+    }
+
+    #[test]
+    fn validates_embedded_resource_metadata() {
+        let mut manifest = valid_manifest_with_resource_path("resources/agent");
+        manifest.embedded_resources.push(EmbeddedResource {
+            kind: EmbeddedResourceKind::InstallScript,
+            name: "install.ps1".into(),
+            size_bytes: 14,
+            sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+        });
+
+        manifest.validate().expect("embedded metadata should validate");
+
+        manifest.embedded_resources[0].sha256 = "bad".into();
+        let err = manifest
+            .validate()
+            .expect_err("invalid embedded sha should be rejected");
+        assert!(err.to_string().contains("embedded resource install.ps1 has invalid sha256"));
     }
 }

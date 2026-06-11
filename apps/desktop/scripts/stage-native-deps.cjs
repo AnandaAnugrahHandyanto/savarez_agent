@@ -107,11 +107,28 @@ function sha256File(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')
 }
 
+function embeddedInstallScripts(repoRoot = REPO_ROOT) {
+  return ['install.ps1', 'install.sh']
+    .map(name => {
+      const file = path.join(repoRoot, 'scripts', name)
+      if (!fs.existsSync(file)) return null
+      const bytes = fs.readFileSync(file)
+      return {
+        kind: 'install_script',
+        name,
+        size_bytes: bytes.length,
+        sha256: crypto.createHash('sha256').update(bytes).digest('hex')
+      }
+    })
+    .filter(Boolean)
+}
+
 function writeManagerManifest({
   appRoot = APP_ROOT,
   hermesVersion = readPackageVersion(appRoot),
   managerDest,
   platform,
+  repoRoot = REPO_ROOT,
   sourceCommit = resolveSourceCommit(REPO_ROOT)
 }) {
   const managerName = platform === 'win32' ? 'hermes-manager.exe' : 'hermes-manager'
@@ -125,7 +142,8 @@ function writeManagerManifest({
         path: managerName,
         sha256: sha256File(managerDest)
       }
-    ]
+    ],
+    embedded_resources: embeddedInstallScripts(repoRoot)
   }
   fs.writeFileSync(
     path.join(path.dirname(managerDest), 'bundled-manifest.json'),
@@ -232,6 +250,7 @@ function stageManagerBinary({
       hermesVersion: hermesVersion || readPackageVersion(appRoot),
       managerDest,
       platform,
+      repoRoot,
       sourceCommit: sourceCommit || resolveSourceCommit(repoRoot)
     })
     log(`[stage-native-deps] hermes-manager: copied ${path.relative(appRoot, managerDest)}`)
@@ -253,7 +272,7 @@ function main() {
   stageManagerBinary()
 }
 
-module.exports = { normalizeTargetPlatform, stageManagerBinary, writeManagerManifest }
+module.exports = { embeddedInstallScripts, normalizeTargetPlatform, stageManagerBinary, writeManagerManifest }
 
 if (require.main === module) {
   main()
