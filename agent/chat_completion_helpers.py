@@ -51,7 +51,7 @@ def _ra():
     return run_agent
 
 
-from agent.redact import _redact_message_content
+from agent.redact import _redact_message_content, _redact_message_object
 
 
 def estimate_request_context_tokens(api_payload: Any) -> int:
@@ -209,10 +209,10 @@ def interruptible_api_call(agent, api_kwargs: dict):
             if messages:
                 redacted_messages = copy.deepcopy(messages)
                 for msg in redacted_messages:
-                    if isinstance(msg, dict) and "content" in msg:
-                        msg["content"] = _redact_message_content(msg["content"], redact_sensitive_text)
+                    if isinstance(msg, dict):
+                        _redact_message_object(msg, redact_sensitive_text)
                 api_kwargs["messages"] = redacted_messages
-            # ────────────────────────────────────────────────────────────────
+            # ──────────────────────────────────────────────────────────────────
             if agent.api_mode == "codex_responses":
                 request_client = _set_request_client(
                     agent._create_request_openai_client(
@@ -581,11 +581,11 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
     # might be structurally transformed by provider adapters.
     if api_messages and isinstance(api_messages, list):
         import copy
-        from agent.redact import _redact_message_content, redact_sensitive_text
+        from agent.redact import _redact_message_object, redact_sensitive_text
         redacted = copy.deepcopy(api_messages)
         for msg in redacted:
-            if isinstance(msg, dict) and "content" in msg:
-                msg["content"] = _redact_message_content(msg["content"], redact_sensitive_text)
+            if isinstance(msg, dict):
+                _redact_message_object(msg, redact_sensitive_text)
         # Replace in-place — the caller's reference stays correct, but the
         # original dict objects are preserved via deepcopy.
         api_messages[:] = redacted
@@ -2236,8 +2236,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         if messages:
             redacted_messages = copy.deepcopy(messages)
             for msg in redacted_messages:
-                if isinstance(msg, dict) and "content" in msg:
-                    msg["content"] = _redact_message_content(msg["content"], redact_sensitive_text)
+                if isinstance(msg, dict):
+                    _redact_message_object(msg, redact_sensitive_text)
             api_kwargs["messages"] = redacted_messages
         # ────────────────────────────────────────────────────────────────
 

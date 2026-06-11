@@ -3828,11 +3828,11 @@ def run_conversation(
                 # handled (or missed) the redaction.
                 if messages:
                     import copy
-                    from agent.redact import _redact_message_content, redact_sensitive_text
+                    from agent.redact import _redact_message_object, redact_sensitive_text
                     redacted_msgs = copy.deepcopy(messages)
                     for msg in redacted_msgs:
-                        if isinstance(msg, dict) and "content" in msg:
-                            msg["content"] = _redact_message_content(msg["content"], redact_sensitive_text)
+                        if isinstance(msg, dict):
+                            _redact_message_object(msg, redact_sensitive_text)
                     messages = redacted_msgs
                 # ────────────────────────────────────────────────────────────
                 agent._session_messages = messages

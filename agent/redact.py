@@ -518,6 +518,40 @@ def _redact_message_content(content: Any, redact_fn) -> Any:
     return content
 
 
+def _redact_message_object(msg: dict, redact_fn) -> dict:
+    """Redact sensitive text across ALL fields of a message dict.
+
+    Covers content, tool_calls[].function.arguments, and legacy
+    function_call.arguments. Mutates the passed dict in-place for
+    performance — callers that need immutability should deep-copy
+    before calling.
+
+    Args:
+        msg: A single message dict (OpenAI-format).
+        redact_fn: Typically ``redact_sensitive_text``.
+
+    Returns:
+        The same dict, mutated with redacted fields.
+    """
+    # Redact content field
+    if "content" in msg:
+        msg["content"] = _redact_message_content(msg["content"], redact_fn)
+
+    # Redact tool_calls — modern format (OpenAI Chat Completions)
+    for tc in msg.get("tool_calls", []):
+        if isinstance(tc, dict):
+            fn = tc.get("function")
+            if isinstance(fn, dict) and isinstance(fn.get("arguments"), str):
+                fn["arguments"] = redact_fn(fn["arguments"], force=True)
+
+    # Redact legacy function_call format (deprecated but still spec-valid)
+    fc = msg.get("function_call")
+    if isinstance(fc, dict) and isinstance(fc.get("arguments"), str):
+        fc["arguments"] = redact_fn(fc["arguments"], force=True)
+
+    return msg
+
+
 def _has_known_prefix_substring(text: str) -> bool:
     """Return True if ``text`` contains any known credential prefix substring.
 
