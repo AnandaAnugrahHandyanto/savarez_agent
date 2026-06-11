@@ -8,7 +8,7 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
-import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd, setSessions } from '@/store/session'
+import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd, setSessions, setSessionsTotal } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { EmptyState, ListRow, LoadingState, SectionHeading, SettingsContent } from './primitives'
@@ -83,6 +83,8 @@ export function SessionsSettings() {
     try {
       await deleteSession(session.id, session.profile)
       setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+      setSessions(prev => prev.filter(s => s.id !== session.id))
+      setSessionsTotal(prev => Math.max(0, prev - 1))
       triggerHaptic('warning')
     } catch (err) {
       notifyError(err, s.deleteFailed)

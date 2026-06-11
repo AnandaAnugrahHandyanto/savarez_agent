@@ -2,7 +2,7 @@ import type { MutableRefObject } from 'react'
 import { useCallback, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
-import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
+import { deleteSession, getSessionMessages, listSessions, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
@@ -789,6 +789,14 @@ export function useSessionActions({
         }
 
         await deleteSession(storedSessionId, removed?.profile)
+        // Refresh the session list from the server to keep the UI in sync.
+        try {
+          const fresh = await listSessions(200, 0, undefined, removed?.profile)
+          setSessions(fresh.sessions)
+          setSessionsTotal(fresh.total)
+        } catch {
+          // Non-fatal: the optimistic removal already handled the UI.
+        }
         clearQueuedPrompts(storedSessionId)
 
         if (closingRuntimeId) {
