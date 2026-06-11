@@ -122,7 +122,23 @@ Default assignee (used when no profile fits a task): {default_assignee}
 
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
+_LARGE_REFACTOR_SIGNAL_RE = re.compile(
+    r"\b(refactor|extract|split|move|rename|migrat(?:e|ion)|reorganize|modulari[sz]e)\b",
+    re.IGNORECASE,
+)
+_FILE_REF_RE = re.compile(
+    r"(?:^|[\s`'\"])(?P<path>[\w./-]+\.(?:py|js|ts|tsx|jsx|md|yaml|yml|json|toml|ini|sh|bash|css|scss|html))\b",
+    re.IGNORECASE,
+)
+_LARGE_REFACTOR_FILE_REF_LIMIT = 8
+_LARGE_REFACTOR_TOKEN_LIMIT = 12_000
 
+@dataclass
+class LargeRefactorGuard:
+    active: bool = False
+    reason: str = ""
+    file_refs: int = 0
+    estimated_tokens: int = 0
 
 @dataclass
 class DecomposeOutcome:
@@ -140,6 +156,113 @@ def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1] + "…"
+
+
+def _estimate_tokens(text: str) -> int:
+    # Cheap, deterministic approximation good enough for a guardrail.
+    return max(1, len(text) // 4) if text else 0
+
+
+def _count_file_refs(text: str) -> int:
+    return len({m.group("path") for m in _FILE_REF_RE.finditer(text or "")})
+
+
+def _large_refactor_guard(title: str, body: str) -> LargeRefactorGuard:
+    text = f"{title}\n{body}".strip()
+    estimated_tokens = _estimate_tokens(text)
+    file_refs = _count_file_refs(text)
+    reasons: list[str] = []
+    signal = bool(_LARGE_REFACTOR_SIGNAL_RE.search(text))
+    if signal and (file_refs >= 3 or estimated_tokens >= 1500):
+        reasons.append("refactor/extract/move/rename wording with broad scope")
+    if file_refs > _LARGE_REFACTOR_FILE_REF_LIMIT:
+        reasons.append(f"{file_refs} file references")
+    if estimated_tokens > _LARGE_REFACTOR_TOKEN_LIMIT:
+        reasons.append(f"~{estimated_tokens} estimated tokens")
+    return LargeRefactorGuard(
+        active=bool(reasons),
+        reason=", ".join(reasons),
+        file_refs=file_refs,
+        estimated_tokens=estimated_tokens,
+    )
+
+
+def _short_task_subject(title: str) -> str:
+    cleaned = re.sub(r"\s+", " ", title or "").strip(" .")
+    return _truncate(cleaned or "large refactor", 48)
+
+
+def _bounded_large_refactor_children(task: kb.Task, guard: LargeRefactorGuard, *, default_assignee: str) -> list[dict]:
+    """Return a conservative split for oversized refactor cards.
+
+    This is intentionally generic: it prevents a single worker from inheriting a
+    monster card even if the auxiliary decomposer returns ``fanout=false`` or an
+    undersized graph.  The first child narrows the implementation plan; later
+    implementation children are explicitly told to create additional child cards
+    instead of expanding past the slice limits.
+    """
+    subject = _short_task_subject(task.title or "")
+    original = (task.body or "").strip() or "(no body)"
+    common = (
+        f"Original task: {task.title}\n\n"
+        f"Guard reason: {guard.reason or 'large refactor guard'}; "
+        f"file_refs={guard.file_refs}; estimated_tokens={guard.estimated_tokens}.\n\n"
+        f"Original body:\n{_truncate(original, 2400)}\n\n"
+        "Hard limit for this child: touch at most 5 files and keep the work under "
+        "roughly 4k prompt tokens. If the needed work is larger, create narrower "
+        "child cards and complete this card with that task graph instead of doing "
+        "the whole refactor in one run."
+    )
+    return [
+        {
+            "title": f"Plan bounded slices for {subject}",
+            "body": (
+                f"Audit the large refactor request and produce a bounded implementation plan.\n\n{common}\n\n"
+                "Deliverable: list the concrete slices, files expected per slice, dependencies, "
+                "and verification commands. Do not perform the refactor here."
+            ),
+            "assignee": default_assignee,
+            "parents": [],
+        },
+        {
+            "title": f"Implement first bounded slice for {subject}",
+            "body": (
+                f"Implement the first safe, self-contained slice of the large refactor.\n\n{common}\n\n"
+                "Use the planning child output if available. Preserve existing behavior and keep "
+                "the slice independently testable."
+            ),
+            "assignee": default_assignee,
+            "parents": [0],
+        },
+        {
+            "title": f"Wire integration slice for {subject}",
+            "body": (
+                f"Implement the integration/compatibility slice of the large refactor.\n\n{common}\n\n"
+                "Focus on wiring, imports, configuration, and compatibility shims only; do not "
+                "expand into unrelated cleanup."
+            ),
+            "assignee": default_assignee,
+            "parents": [0],
+        },
+        {
+            "title": f"Verify bounded refactor for {subject}",
+            "body": (
+                f"Verify the bounded large-refactor work end to end.\n\n{common}\n\n"
+                "Run targeted tests/compile checks, inspect the diff for scope creep, and record "
+                "whether more slices are needed."
+            ),
+            "assignee": default_assignee,
+            "parents": [1, 2],
+        },
+    ]
+
+
+def _child_trips_large_refactor_guard(child: dict) -> bool:
+    guard = _large_refactor_guard(str(child.get("title") or ""), str(child.get("body") or ""))
+    return guard.active and (
+        guard.file_refs > _LARGE_REFACTOR_FILE_REF_LIMIT
+        or guard.estimated_tokens > _LARGE_REFACTOR_TOKEN_LIMIT
+    )
 
 
 def _extract_json_blob(raw: str) -> Optional[dict]:
@@ -295,6 +418,12 @@ def decompose_task(
     default_assignee = _resolve_default_assignee(cfg)
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     auto_promote = bool(kanban_cfg.get("auto_promote_children", True))
+    large_refactor_guard_enabled = bool(kanban_cfg.get("large_refactor_guard", True))
+    large_refactor_guard = (
+        _large_refactor_guard(task.title or "", task.body or "")
+        if large_refactor_guard_enabled
+        else LargeRefactorGuard()
+    )
     roster, valid_names = _build_roster()
 
     try:
@@ -352,6 +481,26 @@ def decompose_task(
 
     fanout = bool(parsed.get("fanout"))
     audit_author = author or _profile_author()
+    forced_large_refactor_split = False
+    if large_refactor_guard.active:
+        proposed_tasks = parsed.get("tasks") if fanout else []
+        undersized_graph = not isinstance(proposed_tasks, list) or len(proposed_tasks) < 3
+        oversized_child = isinstance(proposed_tasks, list) and any(
+            isinstance(child, dict) and _child_trips_large_refactor_guard(child)
+            for child in proposed_tasks
+        )
+        if not fanout or undersized_graph or oversized_child:
+            parsed = {
+                "fanout": True,
+                "rationale": f"large-refactor guard: {large_refactor_guard.reason}",
+                "tasks": _bounded_large_refactor_children(
+                    task,
+                    large_refactor_guard,
+                    default_assignee=default_assignee,
+                ),
+            }
+            fanout = True
+            forced_large_refactor_split = True
 
     if not fanout:
         # Fall back to single-task spec promotion (same effect as specify).
@@ -448,6 +597,15 @@ def decompose_task(
                 author=audit_author,
                 auto_promote=auto_promote,
             )
+            if child_ids is not None and forced_large_refactor_split:
+                kb.add_comment(
+                    conn,
+                    task_id,
+                    audit_author,
+                    "Large-refactor guard: split this oversized refactor card "
+                    f"into {len(child_ids)} bounded child cards before worker dispatch "
+                    f"({large_refactor_guard.reason}).",
+                )
     except ValueError as exc:
         return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}")
     except Exception as exc:
@@ -459,8 +617,11 @@ def decompose_task(
             task_id, False, "task moved out of triage before decomposition",
         )
 
+    reason = f"decomposed into {len(child_ids)} children"
+    if forced_large_refactor_split:
+        reason = f"large-refactor guard split into {len(child_ids)} bounded children"
     return DecomposeOutcome(
-        task_id, True, f"decomposed into {len(child_ids)} children",
+        task_id, True, reason,
         fanout=True, child_ids=child_ids,
     )
 

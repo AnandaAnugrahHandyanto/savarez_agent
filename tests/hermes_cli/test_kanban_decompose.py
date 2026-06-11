@@ -112,6 +112,103 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_large_refactor_guard_splits_undersized_llm_graph(kanban_home):
+    body = "\n".join(
+        [
+            "Extract the Discord kanban intake workflow into a separate plugin without core changes.",
+            "Preserve behavior while moving the integration in bounded slices.",
+            "Files:",
+            "gateway/platforms/discord.py",
+            "plugins/discord/thread_naming.py",
+            "packages/intake/plugin.py",
+            "tests/test_intake.py",
+        ]
+    ) + ("\nKeep this operational and verified." * 220)
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="Extract configurable kanban intake plugin", body=body, triage=True)
+
+    # The model tries to collapse the broad refactor back to one worker. The
+    # guard must override that with bounded children before anything dispatches.
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single implementer can do it",
+        "title": "Implement configurable kanban intake plugin",
+        "body": body,
+        "assignee": "engineer",
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer", "fallback"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"default_assignee": "fallback"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is True
+    assert outcome.child_ids and len(outcome.child_ids) == 4
+    assert outcome.reason.startswith("large-refactor guard split")
+
+    with kb.connect() as conn:
+        root = kb.get_task(conn, tid)
+        children = [kb.get_task(conn, cid) for cid in outcome.child_ids]
+        comments = kb.list_comments(conn, tid)
+    assert root is not None
+    assert root.status == "todo"
+    assert children[0] is not None and children[0].status == "ready"
+    assert children[1] is not None and children[1].status == "todo"
+    assert children[2] is not None and children[2].status == "todo"
+    assert children[3] is not None and children[3].status == "todo"
+    assert all(child and child.assignee == "fallback" for child in children)
+    assert "touch at most 5 files" in (children[1].body or "")
+    assert any("Large-refactor guard" in c.body for c in comments)
+
+
+def test_small_refactor_still_uses_llm_single_task_path(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Rename helper function",
+            body="Rename one helper in hermes_cli/kanban.py and update its direct test.",
+            triage=True,
+        )
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "small scoped rename",
+        "title": "Rename helper function",
+        "body": "Rename the helper and run its focused test.",
+        "assignee": "engineer",
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer", "fallback"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"default_assignee": "fallback"}},
+        ):
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.fanout is False
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.title == "Rename helper function"
+    assert task.assignee == "engineer"
+
+
 def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="just one thing", triage=True)
