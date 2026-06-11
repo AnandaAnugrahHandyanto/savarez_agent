@@ -1049,8 +1049,22 @@ def skill_view(
                     _record(found_skill_md.parent, found_skill_md)
 
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
+            # Exclude files nested inside another skill's directory (any ancestor
+            # between found_md and search_dir that contains its own SKILL.md).
+            # Those are reference/template assets, not standalone skills.
             for found_md in search_dir.rglob(f"{name}.md"):
-                if found_md.name != "SKILL.md":
+                if found_md.name == "SKILL.md":
+                    continue
+                in_other_skill = False
+                for p in found_md.parents:
+                    if p == search_dir:
+                        break
+                    if search_dir not in p.parents:
+                        break
+                    if (p / "SKILL.md").exists():
+                        in_other_skill = True
+                        break
+                if not in_other_skill:
                     _record(None, found_md)
 
         if len(candidates) > 1:
