@@ -1,17 +1,18 @@
-"""Phase 5 Step 2 — AgentTaskRegistry dual-write from tools/delegate_tool.py.
+"""Phase 5 — AgentTaskRegistry writes from tools/delegate_tool.py.
 
-The registry is a parallel ledger next to the legacy ``_active_subagents``
-dict (central-brain-openclaw.md §"Step 2"): ``_run_single_child`` registers an
-``AgentTaskRecord`` right after ``_register_subagent`` and completes it in the
-same ``finally`` that owns ``_unregister_subagent``.  These tests pin:
+Born as the Step 2 dual-write pins (registry next to the legacy
+``_active_subagents`` dict); since the Step 7 cutover the registry is the
+single ledger and ``list_active_subagents()`` is a thin view over it
+(central-brain-openclaw.md §"Step 7").  These tests pin:
 
-- register happens alongside _register_subagent (record present + RUNNING
-  while the child runs, weakref agent_ref resolves to the child)
+- register makes the record visible (present + RUNNING while the child
+  runs, surfaced by list_active_subagents(), weakref agent_ref resolves
+  to the child)
 - complete on normal exit (terminal record mirroring the entry status,
   agent_ref dropped)
 - complete(None) -> FAILED when the run dies without a result dict
   (BaseException / interrupt path)
-- a broken registry can never break a real delegate run (guarded dual-write)
+- a broken registry can never break a real delegate run (guarded writes)
 - the legacy result dict shape is unchanged (additive-only)
 """
 
@@ -80,7 +81,7 @@ def _make_child(
     return child
 
 
-# ── register alongside _register_subagent ──────────────────────────────
+# ── register makes the running child visible ───────────────────────────
 
 
 def test_record_registered_and_running_during_run(registry):
@@ -117,7 +118,7 @@ def test_record_registered_and_running_during_run(registry):
     )
 
     assert result["status"] == "completed"
-    # Registered alongside the legacy dict, with _register_subagent's fields.
+    # Registered in the single ledger, surfaced with the legacy view fields.
     assert seen["in_active"] is True
     assert seen["status"] is TaskStatus.RUNNING
     assert seen["goal"] == "dual write"
@@ -286,6 +287,8 @@ def test_run_killed_without_entry_completes_failed_with_none_result(registry):
 def test_registry_failure_does_not_break_delegate_run(monkeypatch):
     from tools import delegate_tool
 
+    real_get_registry = delegate_tool.get_registry
+
     def _boom():
         raise RuntimeError("registry down")
 
@@ -297,9 +300,13 @@ def test_registry_failure_does_not_break_delegate_run(monkeypatch):
         task_index=0, goal="survive", child=child, parent_agent=_make_parent()
     )
 
-    # Legacy result shape and cleanup are untouched by the registry failure.
+    # Legacy result shape is untouched by the registry failure.
     assert result["status"] == "completed"
     assert result["summary"] == "all done"
+    # Step 7 cutover: list_active_subagents() reads the registry itself, so
+    # the no-leak check must go through the real one — with the registry
+    # down for the whole run, nothing was ever registered.
+    monkeypatch.setattr(delegate_tool, "get_registry", real_get_registry)
     assert all(
         r["subagent_id"] != sid for r in delegate_tool.list_active_subagents()
     )

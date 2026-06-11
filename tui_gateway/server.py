@@ -4459,8 +4459,10 @@ def _(rid, params: dict) -> dict:
 
 # ── Delegation: subagent tree observability + controls ───────────────
 # Powers the TUI's /agents overlay (see ui-tui/src/components/agentsOverlay).
-# The registry lives in tools/delegate_tool — these handlers are thin
-# translators between JSON-RPC and the Python API.
+# Since the Phase 5 Step 7 cutover the single store is the AgentTaskRegistry;
+# tools/delegate_tool keeps the public wrapper names (list_active_subagents,
+# is_spawn_paused, ...) over it — these handlers are thin translators
+# between JSON-RPC and that Python API.
 
 
 @method("delegation.status")
@@ -4489,9 +4491,10 @@ def _(rid, params: dict) -> dict:
     from tools.delegate_tool import set_spawn_paused
 
     paused = bool(params.get("paused", True))
-    # Dual-write era (Phase 5 Step 3): mirror the flag into the registry,
-    # but keep the old global authoritative — delegate_task still reads it
-    # until the Step 7 cutover.
+    # Post-Step-7 cutover both writes hit the same AgentTaskRegistry flag
+    # (set_spawn_paused is now a thin wrapper over pause_spawns).  The
+    # direct registry call is kept so the flag is still set when tests (or
+    # embedders) stub the tools.delegate_tool module out of sys.modules.
     get_registry().pause_spawns(paused)
     return _ok(rid, {"paused": set_spawn_paused(paused)})
 
@@ -4504,10 +4507,13 @@ def _(rid, params: dict) -> dict:
     subagent_id = str(params.get("subagent_id") or "").strip()
     if not subagent_id:
         return _err(rid, 4000, "subagent_id required")
-    # Registry first (Phase 5 Step 3); fall back to the legacy dict for
-    # spawn paths that don't register into the registry yet (Step 7 cutover
-    # removes the fallback). The reason mirrors the human-readable interrupt
-    # message the legacy interrupt_subagent path attaches.
+    # Registry-first with a second-chance call through the delegate_tool
+    # seam.  Post-Step-7 cutover interrupt_subagent is itself a thin wrapper
+    # over registry.interrupt, so on a registry miss the fallback is
+    # redundant in production — it stays because it is behaviorally free and
+    # keeps working when tests (or embedders) stub tools.delegate_tool in
+    # sys.modules.  The reason matches the message interrupt_subagent
+    # attaches, so the agent sees the same text on either path.
     ok = get_registry().interrupt(
         subagent_id, reason=f"Interrupted via TUI ({subagent_id})"
     ) or interrupt_subagent(subagent_id)

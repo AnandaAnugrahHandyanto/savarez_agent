@@ -109,6 +109,15 @@ class AgentTaskRecord:
     # as "error".  Never synthesized on the result=None path
     # (honest-status: no message exists).
     error: Optional[str] = None
+    # Step 7 cutover discriminator: True only for children spawned by the
+    # delegate engine (``_run_single_child``).  The registry is now the
+    # single ledger behind ``delegate_tool.list_active_subagents()``, which
+    # must show exactly what the legacy ``_active_subagents`` dict held —
+    # engine children, never ``task.submit intent="delegate"`` batch
+    # parents or bg_*/preview_* records.  ``intent`` can't discriminate
+    # (batch parents are also "delegate").  Never serialized: snapshots
+    # stay byte-identical (additive-first ruling).
+    is_subagent: bool = False
 
     def snapshot(self) -> dict:
         """Serializable view — no ``agent_ref``; result as the rich wire dict."""

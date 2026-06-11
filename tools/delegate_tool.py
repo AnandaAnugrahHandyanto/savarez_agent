@@ -143,21 +143,22 @@ _MIN_SPAWN_DEPTH = 1
 
 
 # ---------------------------------------------------------------------------
-# Runtime state: pause flag + active subagent registry
+# Runtime state: pause flag + active subagent ledger
 #
 # Consumed by the TUI observability layer (overlay/control surface) and the
 # gateway RPCs `delegation.pause`, `delegation.status`, `subagent.interrupt`.
-# Kept module-level so they span every delegate_task invocation in the
-# process, including nested orchestrator -> worker chains.
+#
+# Phase 5 Step 7 cutover (central-brain-openclaw.md §"Step 7"): the
+# AgentTaskRegistry is the single store — the legacy module globals
+# (_active_subagents, _spawn_paused and their locks) are gone.  The public
+# names below remain as thin wrappers so callers (tui_gateway/server.py RPC
+# handlers, tests) keep their seams; the registry singleton spans every
+# delegate_task invocation in the process, including nested
+# orchestrator -> worker chains, exactly as the globals did.
+#
+# NOT touched by this cutover (doc risk R2): AIAgent._active_children — the
+# agent-internal recursive interrupt chain is a separate tree by design.
 # ---------------------------------------------------------------------------
-
-_spawn_pause_lock = threading.Lock()
-_spawn_paused: bool = False
-
-_active_subagents_lock = threading.Lock()
-# subagent_id -> mutable record tracking the live child agent.  Stays only
-# for the lifetime of the run; _run_single_child is the owner.
-_active_subagents: Dict[str, Dict[str, Any]] = {}
 
 
 def set_spawn_paused(paused: bool) -> bool:
@@ -165,65 +166,67 @@ def set_spawn_paused(paused: bool) -> bool:
 
     Active children keep running; only NEW calls to delegate_task fail fast
     with a "spawning paused" error until unblocked.  Returns the new state.
+    Thin wrapper over the AgentTaskRegistry pause flag (Step 7 cutover).
     """
-    global _spawn_paused
-    with _spawn_pause_lock:
-        _spawn_paused = bool(paused)
-        return _spawn_paused
+    registry = get_registry()
+    registry.pause_spawns(paused)
+    return registry.spawns_paused()
 
 
 def is_spawn_paused() -> bool:
-    with _spawn_pause_lock:
-        return _spawn_paused
+    return get_registry().spawns_paused()
 
 
-def _register_subagent(record: Dict[str, Any]) -> None:
-    sid = record.get("subagent_id")
-    if not sid:
-        return
-    with _active_subagents_lock:
-        _active_subagents[sid] = record
-
-
-def _unregister_subagent(subagent_id: str) -> None:
-    with _active_subagents_lock:
-        _active_subagents.pop(subagent_id, None)
-
-
-def interrupt_subagent(subagent_id: str) -> bool:
+def interrupt_subagent(subagent_id: str, reason: Optional[str] = None) -> bool:
     """Request that a single running subagent stop at its next iteration boundary.
 
     Does not hard-kill the worker thread (Python can't); sets the child's
     interrupt flag which propagates to in-flight tools and recurses into
     grandchildren via AIAgent.interrupt().  Returns True if a matching
-    subagent was found.
+    RUNNING task was found and interrupted.
+
+    Thin wrapper over ``AgentTaskRegistry.interrupt`` (Step 7 cutover).
+    The default *reason* is the same human-readable message the legacy
+    path always attached.
     """
-    with _active_subagents_lock:
-        record = _active_subagents.get(subagent_id)
-    if not record:
-        return False
-    agent = record.get("agent")
-    if agent is None:
-        return False
-    try:
-        agent.interrupt(f"Interrupted via TUI ({subagent_id})")
-    except Exception as exc:
-        logger.debug("interrupt_subagent(%s) failed: %s", subagent_id, exc)
-        return False
-    return True
+    if reason is None:
+        reason = f"Interrupted via TUI ({subagent_id})"
+    return get_registry().interrupt(subagent_id, reason=reason)
 
 
 def list_active_subagents() -> List[Dict[str, Any]]:
     """Snapshot of the currently running subagent tree.
 
     Each record: {subagent_id, parent_id, depth, goal, model, started_at,
-    tool_count, status}.  Safe to call from any thread — returns a copy.
+    status, tool_count} plus "last_tool" once the child has run a tool —
+    the exact shape the legacy ``_active_subagents`` dict gave
+    ``delegation.status``.  Safe to call from any thread — returns fresh
+    dicts.
+
+    Thin wrapper over ``AgentTaskRegistry.list_active()`` (Step 7 cutover),
+    filtered to engine-spawned children (``is_subagent``) so batch parents
+    registered by ``task.submit intent="delegate"`` and bg_*/preview_*
+    records never leak into the TUI's /agents overlay.
     """
-    with _active_subagents_lock:
-        return [
-            {k: v for k, v in r.items() if k != "agent"}
-            for r in _active_subagents.values()
-        ]
+    views: List[Dict[str, Any]] = []
+    for rec in get_registry().list_active():
+        if not rec.is_subagent:
+            continue
+        view: Dict[str, Any] = {
+            "subagent_id": rec.task_id,
+            "parent_id": rec.parent_task_id,
+            "depth": rec.depth,
+            "goal": rec.goal,
+            "model": rec.model,
+            "started_at": rec.started_at,
+            "status": rec.status.value,
+            "tool_count": rec.tool_count,
+        }
+        if rec.last_tool is not None:
+            # Legacy parity: the key appears only after the first tool ran.
+            view["last_tool"] = rec.last_tool
+        views.append(view)
+    return views
 
 
 def _extract_output_tail(
@@ -863,15 +866,10 @@ def _build_child_progress_callback(
         # TASK_TOOL_STARTED — display and batch for parent relay
         _tool_count[0] += 1
         if subagent_id is not None:
-            with _active_subagents_lock:
-                rec = _active_subagents.get(subagent_id)
-                if rec is not None:
-                    rec["tool_count"] = _tool_count[0]
-                    rec["last_tool"] = tool_name or ""
-            # Phase 5 dual-write: mirror live progress into the
-            # AgentTaskRegistry so task.status/task.list show
-            # tool_count/last_tool while the child runs.  Guarded — a
-            # registry bug must never break the progress relay.
+            # Step 7 cutover: the AgentTaskRegistry is the single live ledger
+            # — this update is what delegation.status, task.status and
+            # task.list read for tool_count/last_tool while the child runs.
+            # Guarded — a registry bug must never break the progress relay.
             try:
                 get_registry().update_progress(
                     subagent_id,
@@ -963,7 +961,7 @@ def _build_child_agent(
 
     # ── Subagent identity (stable across events, 0-indexed for TUI) ─────
     # subagent_id is generated here so the progress callback, the
-    # spawn_requested event, and the _active_subagents registry all share
+    # spawn_requested event, and the AgentTaskRegistry record all share
     # one key.  parent_id is non-None when THIS parent is itself a subagent
     # (nested orchestrator -> worker chain).
     subagent_id = f"sa-{task_index}-{_uuid.uuid4().hex[:8]}"
@@ -1553,39 +1551,22 @@ def _run_single_child(
 
     _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
 
-    # Register the live agent in the module-level registry so the TUI can
-    # target it by subagent_id (kill, pause, status queries).  Unregistered
-    # in the finally block, even when the child raises.  Test doubles that
-    # hand us a MagicMock don't carry stable ids; skip registration then.
+    # Register the live agent in the AgentTaskRegistry — the single ledger
+    # after the Step 7 cutover (central-brain-openclaw.md §"Step 7") — so the
+    # TUI can target it by subagent_id (kill, pause, status queries) and
+    # task.status/task.list see it.  Completed in the finally block, even
+    # when the child raises.  Test doubles that hand us a MagicMock don't
+    # carry stable ids; skip registration then.  Guarded — a registry bug
+    # must never break a real delegate run.
+    # session_id ties the record to the parent's persistent session so
+    # complete() appends the snapshot to that session's _tasks.jsonl
+    # (Step 6a); test doubles without a string session_id skip it.
     _raw_sid = getattr(child, "_subagent_id", None)
     _subagent_id = _raw_sid if isinstance(_raw_sid, str) else None
     if _subagent_id:
         _raw_depth = getattr(child, "_delegate_depth", 1)
         _tui_depth = max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0
         _parent_sid = getattr(child, "_parent_subagent_id", None)
-        _register_subagent(
-            {
-                "subagent_id": _subagent_id,
-                "parent_id": _parent_sid if isinstance(_parent_sid, str) else None,
-                "depth": _tui_depth,
-                "goal": goal,
-                "model": (
-                    getattr(child, "model", None)
-                    if isinstance(getattr(child, "model", None), str)
-                    else None
-                ),
-                "started_at": time.time(),
-                "status": "running",
-                "tool_count": 0,
-                "agent": child,
-            }
-        )
-        # Phase 5 Step 2 dual-write (central-brain-openclaw.md): mirror the
-        # record into the AgentTaskRegistry.  Strictly additive — a registry
-        # bug must never break a real delegate run, hence the broad guard.
-        # session_id ties the record to the parent's persistent session so
-        # complete() appends the snapshot to that session's _tasks.jsonl
-        # (Step 6a); test doubles without a string session_id skip it.
         _raw_session = getattr(parent_agent, "session_id", None)
         try:
             get_registry().register(
@@ -1609,10 +1590,13 @@ def _run_single_child(
                     ),
                     # weakref: the registry must not prolong the child's life.
                     agent_ref=weakref.ref(child),
+                    # Engine-child marker: list_active_subagents() filters on
+                    # this so delegation.status keeps the legacy content.
+                    is_subagent=True,
                 )
             )
         except Exception:
-            logger.debug("registry dual-write register failed", exc_info=True)
+            logger.debug("registry register failed", exc_info=True)
 
     # Result dict for the registry dual-write in the finally block.  Bound by
     # every exit path below; stays None when the run dies before producing
@@ -2005,20 +1989,19 @@ def _run_single_child(
         if _heartbeat_thread.ident is not None:
             _heartbeat_thread.join(timeout=5)
 
-        # Drop the TUI-facing registry entry.  Safe to call even if the
-        # child was never registered (e.g. ID missing on test doubles).
+        # Close out the AgentTaskRegistry record — the single ledger after
+        # the Step 7 cutover.  This finally guarantees symmetric cleanup on
+        # every exit path (doc R1), so a live record can never outlast its
+        # run.  entry is None when the run died before producing a result
+        # dict; complete() maps that to FAILED.  No-op if registration was
+        # skipped (ID missing on test doubles) or failed.
         if _subagent_id:
-            _unregister_subagent(_subagent_id)
-            # Phase 5 Step 2 dual-write: close out the AgentTaskRegistry
-            # record in the same finally that owns _unregister_subagent
-            # (doc R1 — symmetric cleanup).  entry is None when the run died
-            # before producing a result dict; complete() maps that to FAILED.
             try:
                 get_registry().complete(
                     _subagent_id, _entry_to_execution_result(entry)
                 )
             except Exception:
-                logger.debug("registry dual-write complete failed", exc_info=True)
+                logger.debug("registry complete failed", exc_info=True)
 
         if child_pool is not None and leased_cred_id is not None:
             try:

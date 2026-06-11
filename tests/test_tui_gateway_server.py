@@ -261,7 +261,16 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
 def test_write_json_drops_detached_ws_frames(monkeypatch):
     out = _ChunkyStdout()
     monkeypatch.setattr(server, "_real_stdout", out)
-    server._sessions["detached-sid"] = {"transport": server._detached_ws_transport}
+    # Fresh timestamps: on the dead detached transport with created_at/
+    # last_active missing (read as 0.0), this session would be instantly
+    # evictable, and an idle-reaper tick landing mid-test would pop it via
+    # the real _close_session_by_id. See _session()'s comment.
+    now = time.time()
+    server._sessions["detached-sid"] = {
+        "transport": server._detached_ws_transport,
+        "created_at": now,
+        "last_active": now,
+    }
     try:
         assert server.write_json({
             "jsonrpc": "2.0",
@@ -1110,6 +1119,15 @@ def _session(agent=None, **extra):
     # SessionState (not a bare dict) so tests mirror the real creation sites
     # (_init_session / session.create) now that handlers call its lock-dance
     # methods (snapshot_history / end_turn / ...). Phase 3 Step 2.
+    # created_at/last_active are stamped fresh for the same fidelity reason:
+    # every real creation site sets both, and the module-level idle reaper
+    # (_start_idle_reaper, ticking every _REAPER_SCAN_S) reads missing
+    # timestamps as 0.0 — idle since the epoch — making any seeded session
+    # whose transport is (or becomes) dead/detached instantly evictable. A
+    # reaper tick landing mid-test then pops it via _close_session_by_id (see
+    # test_tui_gateway_ws.py's _fresh_session for the original post-mortem).
+    # Explicit **extra values still override.
+    now = time.time()
     return SessionState({
         "agent": agent if agent is not None else types.SimpleNamespace(),
         "session_key": "session-key",
@@ -1123,6 +1141,8 @@ def _session(agent=None, **extra):
         "slash_worker": None,
         "show_reasoning": False,
         "tool_progress_mode": "all",
+        "created_at": now,
+        "last_active": now,
         **extra,
     })
 
@@ -6761,8 +6781,21 @@ def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
     transport = object()  # the disconnecting transport
     server._sessions.clear()
-    server._sessions["a"] = SessionState({"transport": transport, "close_on_disconnect": True})
-    server._sessions["b"] = SessionState({"transport": transport, "close_on_disconnect": False})
+    # Fresh timestamps: "b" is repointed to the dead _detached_ws_transport
+    # below, and with created_at/last_active missing (read as 0.0) it would
+    # be instantly evictable — an idle-reaper tick landing between the
+    # repoint and the asserts would append ("b", "idle_timeout") to `seen`
+    # through the monkeypatched _close_session_by_id. Same flake and fix as
+    # test_tui_gateway_ws.py's _fresh_session.
+    now = time.time()
+    server._sessions["a"] = SessionState({
+        "transport": transport, "close_on_disconnect": True,
+        "created_at": now, "last_active": now,
+    })
+    server._sessions["b"] = SessionState({
+        "transport": transport, "close_on_disconnect": False,
+        "created_at": now, "last_active": now,
+    })
     try:
         server._close_sessions_for_transport(transport, end_reason="ws_disconnect")
         assert seen == [("a", "ws_disconnect")]  # only the flagged one closed
@@ -6863,6 +6896,11 @@ def test_reap_idle_sessions_closes_only_evictable(monkeypatch):
     server._sessions["fresh"] = _idle_evictable_session(now) | {"last_active": now}
     try:
         server._reap_idle_sessions()
-        assert closed == [("stale", "idle_timeout")]
+        # Set-compare: "stale" is deliberately evictable, so the module-level
+        # background reaper (300s tick) can race this explicit scan — both
+        # collect "stale" as a victim before either close runs — and an
+        # exact-list assert would see a duplicate. Duplicates are harmless in
+        # production (_close_session_by_id is pop-guarded idempotent).
+        assert set(closed) == {("stale", "idle_timeout")}
     finally:
         server._sessions.clear()
