@@ -1430,6 +1430,9 @@ class HermesACPAgent(acp.Agent):
 
         tool_call_ids: dict[str, Deque[str]] = defaultdict(deque)
         tool_call_meta: dict[str, dict[str, Any]] = {}
+        # Live delegate_task progress polls, keyed by the batch tool_call_id.
+        # Shared between the progress (start) and step (stop) callbacks.
+        delegate_polls: dict[str, Any] = {}
         previous_approval_cb = None
         edit_approval_requester = None
 
@@ -1443,9 +1446,13 @@ class HermesACPAgent(acp.Agent):
                 tool_call_ids,
                 tool_call_meta,
                 edit_approval_policy_getter=lambda: self._edit_approval_policy_for_state(state),
+                delegate_polls=delegate_polls,
             )
             reasoning_cb = make_thinking_cb(conn, session_id, loop)
-            step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
+            step_cb = make_step_cb(
+                conn, session_id, loop, tool_call_ids, tool_call_meta,
+                delegate_polls=delegate_polls,
+            )
             message_cb = make_message_cb(conn, session_id, loop)
 
             def stream_delta_cb(text: str) -> None:
