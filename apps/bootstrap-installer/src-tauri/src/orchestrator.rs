@@ -985,7 +985,7 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
     }
     if matches!(
         name.to_ascii_lowercase().as_str(),
-        "uv" | "python" | "git" | "node" | "system-packages"
+        "uv" | "python" | "git" | "node" | "system-packages" | "platform-sdks"
     ) {
         return StageExecutionMode::ProbeThenScript;
     }
@@ -1062,11 +1062,12 @@ mod tests {
             stage("repository"),
             stage("path"),
             stage("uv"),
+            stage("platform-sdks"),
             stage("venv"),
         ];
         let plan = build_stage_plan(&stages, false);
 
-        assert_eq!(plan.len(), 4);
+        assert_eq!(plan.len(), 5);
         assert_eq!(plan[0].name, "repository");
         assert_eq!(plan[0].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[0].script_fallback, true);
@@ -1076,9 +1077,12 @@ mod tests {
         assert_eq!(plan[2].name, "uv");
         assert_eq!(plan[2].execution, StageExecutionMode::ProbeThenScript);
         assert_eq!(plan[2].rust_probe, true);
-        assert_eq!(plan[3].name, "venv");
-        assert_eq!(plan[3].execution, StageExecutionMode::Script);
-        assert_eq!(plan[3].rust_probe, false);
+        assert_eq!(plan[3].name, "platform-sdks");
+        assert_eq!(plan[3].execution, StageExecutionMode::ProbeThenScript);
+        assert_eq!(plan[3].rust_probe, true);
+        assert_eq!(plan[4].name, "venv");
+        assert_eq!(plan[4].execution, StageExecutionMode::Script);
+        assert_eq!(plan[4].rust_probe, false);
     }
 
     #[test]
