@@ -361,7 +361,17 @@ def _apply_profile_override() -> None:
             profile_name = None
             consume = 0
 
-    # 1.5 If HERMES_HOME is already set and no explicit flag was given, trust it
+    # 1c. Support HERMES_PROFILE as the env-var equivalent of --profile.
+    # It must be resolved before config modules import get_hermes_home();
+    # otherwise commands like `HERMES_PROFILE=artisan hermes config set ...`
+    # silently write the default/root config.
+    if profile_name is None:
+        env_profile = os.environ.get("HERMES_PROFILE", "").strip()
+        if env_profile:
+            profile_name = env_profile
+            consume = 0
+
+    # 1.5 If HERMES_HOME is already set and no explicit flag/env was given, trust it
     # only when it already points to a specific profile directory.  The
     # distinguishing heuristic: a profile path has "profiles" as its immediate
     # parent directory name (e.g. ~/.hermes/profiles/coder or
