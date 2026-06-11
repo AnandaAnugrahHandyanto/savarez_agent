@@ -37,6 +37,33 @@ impl RepoArchiveSpec {
     }
 }
 
+/// Download a GitHub repository archive and extract it into a fresh install root.
+pub async fn download_and_extract_fresh(
+    spec: &RepoArchiveSpec,
+    cache_dir: &Path,
+    install_root: &Path,
+) -> Result<PathBuf> {
+    let archive_path = archive_cache_path(cache_dir, spec)?;
+    crate::artifact::download_to_cache(
+        crate::artifact::DownloadSpec {
+            url: spec.github_zip_url()?,
+            user_agent: "hermes-setup/0.0.1",
+            expected_sha256: None,
+        },
+        &archive_path,
+    )
+    .await
+    .context("downloading repository archive")?;
+    extract_repo_archive_to_install_root(&archive_path, install_root)?;
+    Ok(archive_path)
+}
+
+/// Return the cache path for a repository ZIP archive.
+pub fn archive_cache_path(cache_dir: &Path, spec: &RepoArchiveSpec) -> Result<PathBuf> {
+    let archive_ref = sanitize_ref(spec.archive_ref()?);
+    Ok(cache_dir.join(format!("{}-{}.zip", spec.repo, archive_ref)))
+}
+
 /// Extract a GitHub archive ZIP into `install_root`, stripping its single root dir.
 ///
 /// The function intentionally refuses to write into an existing install root.
@@ -194,4 +221,33 @@ mod tests {
         assert_eq!(std::fs::read(install_root.join("local.txt")).unwrap(), b"user");
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn archive_cache_path_sanitizes_refs() {
+        let cache_dir = std::path::PathBuf::from("C:/cache");
+        let spec = RepoArchiveSpec {
+            owner: "NousResearch".into(),
+            repo: "hermes-agent".into(),
+            commit: None,
+            branch: Some("feature/native repo".into()),
+        };
+
+        assert_eq!(
+            archive_cache_path(&cache_dir, &spec).unwrap(),
+            cache_dir.join("hermes-agent-feature_native_repo.zip")
+        );
+    }
+}
+
+fn sanitize_ref(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }

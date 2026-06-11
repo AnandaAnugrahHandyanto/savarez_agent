@@ -173,6 +173,131 @@ pub fn configure_templates(hermes_home: &Path, install_root: &Path) -> Result<se
     }))
 }
 
+/// Build a native Windows PATH stage report without mutating user state.
+pub fn windows_path_stage_plan(
+    hermes_home: &Path,
+    install_root: &Path,
+    current_user_path: Option<String>,
+    current_user_hermes_home: Option<String>,
+) -> serde_json::Value {
+    let path_plan = hermes_manager::platform::plan_path_update(install_root, current_user_path, true);
+    let desired_home = hermes_home.display().to_string();
+    let hermes_home_changed = current_user_hermes_home
+        .as_deref()
+        .map(|value| !value.eq_ignore_ascii_case(&desired_home))
+        .unwrap_or(true);
+
+    serde_json::json!({
+        "hermesHome": hermes_home,
+        "hermesBin": path_plan.hermes_bin,
+        "pathChanged": path_plan.changed,
+        "hermesHomeChanged": hermes_home_changed,
+        "applied": false,
+    })
+}
+
+/// Apply the native Windows PATH stage.
+#[cfg(target_os = "windows")]
+pub fn configure_windows_path_stage(hermes_home: &Path, install_root: &Path) -> Result<serde_json::Value> {
+    let current_user_path = hermes_manager::platform::read_windows_user_path()?;
+    let current_user_hermes_home =
+        hermes_manager::platform::read_windows_user_env_var("HERMES_HOME")?;
+    let mut report = windows_path_stage_plan(
+        hermes_home,
+        install_root,
+        current_user_path.clone(),
+        current_user_hermes_home.clone(),
+    );
+    let path_plan = hermes_manager::platform::plan_path_update(install_root, current_user_path, true);
+    let path_applied = hermes_manager::platform::write_windows_user_path_update(&path_plan)?;
+    let desired_home = hermes_home.display().to_string();
+    let home_changed = current_user_hermes_home
+        .as_deref()
+        .map(|value| !value.eq_ignore_ascii_case(&desired_home))
+        .unwrap_or(true);
+    if home_changed {
+        hermes_manager::platform::write_windows_user_env_var("HERMES_HOME", &desired_home)?;
+    }
+    std::env::set_var("HERMES_HOME", &desired_home);
+    refresh_process_path(install_root);
+    report["applied"] = serde_json::Value::Bool(path_applied || home_changed);
+    Ok(report)
+}
+
+/// Keep Unix path setup script-backed until symlink/profile parity is complete.
+#[cfg(not(target_os = "windows"))]
+pub fn configure_windows_path_stage(_hermes_home: &Path, _install_root: &Path) -> Result<serde_json::Value> {
+    Err(anyhow!("native PATH stage is only available on Windows"))
+}
+
+#[cfg(target_os = "windows")]
+fn refresh_process_path(install_root: &Path) {
+    let current = std::env::var("PATH").ok();
+    let plan = hermes_manager::platform::plan_path_update(install_root, current, true);
+    std::env::set_var("PATH", plan.next_path);
+}
+
+/// Build the repository archive selector used by the native fresh-install path.
+pub fn repository_archive_spec(commit: Option<&str>, branch: Option<&str>) -> crate::repo_archive::RepoArchiveSpec {
+    crate::repo_archive::RepoArchiveSpec {
+        owner: "NousResearch".to_string(),
+        repo: "hermes-agent".to_string(),
+        commit: commit.filter(|value| !value.trim().is_empty()).map(str::to_string),
+        branch: branch.filter(|value| !value.trim().is_empty()).map(str::to_string),
+    }
+}
+
+/// Download a GitHub archive into a fresh install root and prepare best-effort Git metadata.
+pub async fn install_repository_archive_fresh(
+    install_root: &Path,
+    commit: Option<&str>,
+    branch: Option<&str>,
+) -> Result<serde_json::Value> {
+    if install_root.exists() {
+        return Err(anyhow!(
+            "install root already exists; native archive fallback is fresh-install only: {}",
+            install_root.display()
+        ));
+    }
+
+    let spec = repository_archive_spec(commit, branch);
+    let archive_path =
+        crate::repo_archive::download_and_extract_fresh(&spec, &crate::paths::bootstrap_cache_dir(), install_root)
+            .await?;
+    let git_initialized = initialize_archive_git_repo(install_root);
+
+    Ok(serde_json::json!({
+        "installRoot": install_root,
+        "archive": archive_path,
+        "gitInitialized": git_initialized,
+    }))
+}
+
+fn initialize_archive_git_repo(install_root: &Path) -> bool {
+    if !run_git(install_root, ["init"]) {
+        return false;
+    }
+    let _ = run_git(install_root, ["config", "windows.appendAtomically", "false"]);
+    let _ = run_git(install_root, ["config", "core.autocrlf", "false"]);
+    let _ = run_git(
+        install_root,
+        ["remote", "add", "origin", "https://github.com/NousResearch/hermes-agent.git"],
+    );
+    true
+}
+
+fn run_git<const N: usize>(install_root: &Path, args: [&str; N]) -> bool {
+    Command::new("git")
+        .args(["-c", "windows.appendAtomically=false"])
+        .args(args)
+        .current_dir(install_root)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 fn ensure_file_from_template(dest: &Path, template: &Path, empty_fallback: Option<&str>) -> Result<bool> {
     if dest.exists() {
         return Ok(false);
@@ -488,5 +613,36 @@ mod tests {
 
         assert_eq!(env.0, "HERMES_HOME");
         assert_eq!(env.1, hermes_home);
+    }
+
+    #[test]
+    fn windows_path_stage_plan_reports_path_and_hermes_home_changes() {
+        let hermes_home = PathBuf::from("C:/Users/example/AppData/Local/hermes");
+        let install_root = hermes_home.join("hermes-agent");
+
+        let report = windows_path_stage_plan(
+            &hermes_home,
+            &install_root,
+            Some("C:/Windows/System32".to_string()),
+            Some("C:/old/hermes".to_string()),
+        );
+
+        assert_eq!(
+            report["hermesBin"],
+            install_root.join("venv").join("Scripts").display().to_string()
+        );
+        assert_eq!(report["pathChanged"], true);
+        assert_eq!(report["hermesHomeChanged"], true);
+        assert_eq!(report["applied"], false);
+    }
+
+    #[test]
+    fn repository_archive_spec_prefers_commit_and_keeps_branch() {
+        let spec = repository_archive_spec(Some("abcdef123"), Some("main"));
+
+        assert_eq!(spec.owner, "NousResearch");
+        assert_eq!(spec.repo, "hermes-agent");
+        assert_eq!(spec.commit.as_deref(), Some("abcdef123"));
+        assert_eq!(spec.branch.as_deref(), Some("main"));
     }
 }

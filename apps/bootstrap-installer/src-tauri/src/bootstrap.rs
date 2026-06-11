@@ -552,6 +552,23 @@ async fn run_bootstrap(
                     &hermes_home,
                     &install_root,
                 ))
+            } else if cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("path") {
+                Some(crate::orchestrator::configure_windows_path_stage(
+                    &hermes_home,
+                    &install_root,
+                ))
+            } else if cfg!(target_os = "windows")
+                && stage.name.eq_ignore_ascii_case("repository")
+                && !install_root.exists()
+            {
+                Some(
+                    crate::orchestrator::install_repository_archive_fresh(
+                        &install_root,
+                        pin.commit.as_deref(),
+                        pin.branch.as_deref(),
+                    )
+                    .await,
+                )
             } else {
                 None
             }
