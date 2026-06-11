@@ -62,6 +62,7 @@ except ModuleNotFoundError:
     pass
 
 import os
+import re
 import sys
 
 
@@ -5348,6 +5349,37 @@ def _find_stale_dashboard_pids(
         "hermes_cli.main dashboard",
         "hermes_cli/main.py dashboard",
     ]
+    # When --profile (or other flags) appear between the binary and
+    # "dashboard" the contiguous-substring patterns above miss the process.
+    # Fall back to a regex that allows optional arguments in between.
+    _HERMES_BIN = re.compile(
+        r"hermes(?:_cli[./]main(?:\.py)?)?"
+    )
+    def _is_dashboard_command(cmd: str) -> bool:
+        """Return True if *cmd* looks like a ``hermes dashboard`` invocation."""
+        if any(p in cmd for p in patterns):
+            return True
+        # When --profile (or other global flags) appear between the entry-
+        # point and the subcommand, the contiguous-substring patterns above
+        # miss the process.  Fall back to scanning tokens after the binary.
+        #
+        # Strategy: skip flags (--foo) and their values (bare words after
+        # flags), and look for "dashboard" as the first subcommand.
+        m = _HERMES_BIN.search(cmd)
+        if m:
+            rest = cmd[m.end():]
+            for part in rest.split():
+                if part == "dashboard":
+                    return True
+                if part.startswith("-"):
+                    continue  # flag name, skip
+                if part in _BUILTIN_SUBCOMMANDS:
+                    return False  # different subcommand appeared first
+                # Bare word after a flag is likely its value (e.g. the
+                # "default" in "--profile default"); keep scanning.
+            return False
+        return False
+
     self_pid = os.getpid()
     dashboard_pids: list[int] = []
 
@@ -5378,7 +5410,7 @@ def _find_stale_dashboard_pids(
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
                     if (
-                        any(p in current_cmd for p in patterns)
+                        _is_dashboard_command(current_cmd)
                         and int(pid_str) != self_pid
                     ):
                         try:
@@ -5411,7 +5443,7 @@ def _find_stale_dashboard_pids(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if _is_dashboard_command(command) and pid != self_pid:
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
