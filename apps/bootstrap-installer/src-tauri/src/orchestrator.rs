@@ -4,7 +4,8 @@
 //! stage planning in Rust while the actual stage execution still falls back to
 //! `install.ps1` / `install.sh` until individual stages reach parity.
 
-use crate::events::StageInfo;
+use crate::events::{Manifest, StageInfo};
+use crate::install_script::ScriptKind;
 use anyhow::{anyhow, Context, Result};
 use chrono::{SecondsFormat, Utc};
 use std::ffi::OsStr;
@@ -44,6 +45,18 @@ pub enum StageExecutionMode {
     NativeWithScriptFallback,
     ProbeThenScript,
     Script,
+}
+
+/// Build the bootstrap stage manifest without invoking the platform script.
+pub fn native_bootstrap_manifest(kind: ScriptKind, include_desktop: bool) -> Manifest {
+    let stages = match kind {
+        ScriptKind::Ps1 => windows_manifest_stages(include_desktop),
+        ScriptKind::Sh => unix_manifest_stages(include_desktop),
+    };
+    Manifest {
+        stages,
+        protocol_version: Some(1),
+    }
 }
 
 /// Build a read-only state report without including user config or session data.
@@ -128,6 +141,125 @@ pub fn summarize_plan(report: &InstallStateReport, plan: &[PlannedStage]) -> Str
         plan.len(),
         tool_summary
     )
+}
+
+fn windows_manifest_stages(include_desktop: bool) -> Vec<StageInfo> {
+    let mut stages = vec![
+        stage_info("uv", "Installing uv package manager", "prereqs", false),
+        stage_info("python", "Verifying Python 3.11", "prereqs", false),
+        stage_info("git", "Installing Git", "prereqs", false),
+        stage_info("node", "Detecting Node.js", "prereqs", false),
+        stage_info(
+            "system-packages",
+            "Installing ripgrep and ffmpeg",
+            "prereqs",
+            false,
+        ),
+        stage_info("repository", "Cloning Hermes repository", "install", false),
+        stage_info(
+            "venv",
+            "Creating Python virtual environment",
+            "install",
+            false,
+        ),
+        stage_info(
+            "dependencies",
+            "Installing Python dependencies",
+            "install",
+            false,
+        ),
+        stage_info("node-deps", "Installing Node.js dependencies", "install", false),
+    ];
+    if include_desktop {
+        stages.push(stage_info("desktop", "Building desktop app", "install", false));
+    }
+    stages.extend([
+        stage_info("path", "Adding Hermes to PATH", "finalize", false),
+        stage_info(
+            "config-templates",
+            "Writing configuration templates",
+            "finalize",
+            false,
+        ),
+        stage_info(
+            "platform-sdks",
+            "Installing messaging platform SDKs",
+            "finalize",
+            false,
+        ),
+        stage_info(
+            "bootstrap-marker",
+            "Marking install complete",
+            "finalize",
+            false,
+        ),
+        stage_info(
+            "configure",
+            "Configuring API keys and models",
+            "post-install",
+            true,
+        ),
+        stage_info(
+            "gateway",
+            "Starting messaging gateway",
+            "post-install",
+            true,
+        ),
+    ]);
+    stages
+}
+
+fn unix_manifest_stages(include_desktop: bool) -> Vec<StageInfo> {
+    let mut stages = vec![
+        stage_info("prerequisites", "System prerequisites", "runtime", false),
+        stage_info("repository", "Download Hermes Agent", "runtime", false),
+        stage_info(
+            "venv",
+            "Create Python virtual environment",
+            "runtime",
+            false,
+        ),
+        stage_info(
+            "python-deps",
+            "Install Python dependencies",
+            "runtime",
+            false,
+        ),
+        stage_info(
+            "node-deps",
+            "Install browser-tool dependencies",
+            "runtime",
+            false,
+        ),
+        stage_info("path", "Install hermes command", "runtime", false),
+        stage_info("config", "Prepare config and skills", "configuration", false),
+        stage_info(
+            "setup",
+            "Configure API keys and settings",
+            "configuration",
+            true,
+        ),
+        stage_info(
+            "gateway",
+            "Configure gateway service",
+            "configuration",
+            true,
+        ),
+    ];
+    if include_desktop {
+        stages.push(stage_info("desktop", "Build desktop app", "runtime", false));
+    }
+    stages.push(stage_info("complete", "Finish install", "runtime", false));
+    stages
+}
+
+fn stage_info(name: &str, title: &str, category: &str, needs_user_input: bool) -> StageInfo {
+    StageInfo {
+        name: name.to_string(),
+        title: title.to_string(),
+        category: category.to_string(),
+        needs_user_input,
+    }
 }
 
 /// Write the bootstrap-complete marker consumed by the desktop launcher.
@@ -677,6 +809,70 @@ mod tests {
         assert!(summary.contains("script_stages=1"));
         assert!(summary.contains("total_stages=4"));
         assert!(summary.contains("uv=missing"));
+    }
+
+    #[test]
+    fn native_bootstrap_manifest_matches_windows_stage_contract() {
+        let manifest = native_bootstrap_manifest(crate::install_script::ScriptKind::Ps1, true);
+        let names = manifest
+            .stages
+            .iter()
+            .map(|stage| stage.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(manifest.protocol_version, Some(1));
+        assert_eq!(
+            names,
+            vec![
+                "uv",
+                "python",
+                "git",
+                "node",
+                "system-packages",
+                "repository",
+                "venv",
+                "dependencies",
+                "node-deps",
+                "desktop",
+                "path",
+                "config-templates",
+                "platform-sdks",
+                "bootstrap-marker",
+                "configure",
+                "gateway",
+            ]
+        );
+        assert_eq!(manifest.stages[9].title, "Building desktop app");
+        assert!(manifest.stages[14].needs_user_input);
+    }
+
+    #[test]
+    fn native_bootstrap_manifest_matches_unix_stage_contract() {
+        let manifest = native_bootstrap_manifest(crate::install_script::ScriptKind::Sh, false);
+        let names = manifest
+            .stages
+            .iter()
+            .map(|stage| stage.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(manifest.protocol_version, Some(1));
+        assert_eq!(
+            names,
+            vec![
+                "prerequisites",
+                "repository",
+                "venv",
+                "python-deps",
+                "node-deps",
+                "path",
+                "config",
+                "setup",
+                "gateway",
+                "complete",
+            ]
+        );
+        assert_eq!(manifest.stages[6].title, "Prepare config and skills");
+        assert!(manifest.stages[7].needs_user_input);
     }
 
     #[test]

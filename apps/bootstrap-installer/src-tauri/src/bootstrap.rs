@@ -8,7 +8,7 @@
 //! Lifecycle:
 //!   1. `start_bootstrap` (Tauri command) → spawns the worker task.
 //!   2. Worker resolves install script (dev/cache/download).
-//!   3. Worker calls `install.ps1 -Manifest` → emits `manifest` event.
+//!   3. Worker builds a native manifest → emits `manifest` event.
 //!   4. Worker iterates stages, calling `install.ps1 -Stage NAME -NonInteractive -Json`.
 //!   5. On success → `complete`. On any stage failure → `failed`. On cancel → `failed`.
 
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{mpsc, Mutex};
 
-use crate::events::{BootstrapEvent, LogStream, Manifest, StageState};
+use crate::events::{BootstrapEvent, LogStream, StageState};
 use crate::install_script::{self, Pin, ScriptKind, ScriptSource};
 use crate::powershell::{self, StreamSink};
 use crate::AppState;
@@ -416,61 +416,15 @@ async fn run_bootstrap(
         .join(", ");
     emit_log(&format!("[bootstrap] bundled scripts [{bundled_scripts}]"));
 
-    // 2. Fetch manifest
-    //
-    // -IncludeDesktop MUST be passed to the manifest call too — install.ps1
-    // gates the desktop stage inclusion on this flag, so without it here
-    // the manifest comes back missing the desktop stage and we never run
-    // it. The per-stage call below also passes -IncludeDesktop to keep
-    // the contracts identical.
+    // 2. Build manifest natively. The script remains the executor for stages
+    // that have not reached Rust parity, but bootstrapping no longer needs a
+    // shell process just to learn the stage list.
     let manifest_args = build_pin_args(&script);
-    let mut manifest_args_full = vec!["-Manifest".to_string()];
-    manifest_args_full.extend(manifest_args.clone());
-    if args.include_desktop {
-        manifest_args_full.push("-IncludeDesktop".to_string());
-    }
-
-    let manifest_result = run_install_script(
-        &app,
-        &script.path,
-        &manifest_args_full,
-        args.hermes_home.as_deref(),
-        &[],
-        None,
-        Some("__manifest__".to_string()),
-    )
-    .await?;
-
-    if manifest_result.exit_code != Some(0) {
-        let err = format!(
-            "install.ps1 -Manifest failed: exit {:?}\n{}",
-            manifest_result.exit_code,
-            manifest_result.stderr.trim()
-        );
-        emit_event(
-            &app,
-            BootstrapEvent::Failed {
-                stage: None,
-                error: err.clone(),
-            },
-        );
-        return Err(anyhow!(err));
-    }
-
-    let manifest: Manifest = powershell::parse_manifest(&manifest_result.stdout).ok_or_else(|| {
-        let err = format!(
-            "install.ps1 -Manifest produced no parseable JSON payload\n{}",
-            truncate(&manifest_result.stdout, 4000)
-        );
-        emit_event(
-            &app,
-            BootstrapEvent::Failed {
-                stage: None,
-                error: err.clone(),
-            },
-        );
-        anyhow!(err)
-    })?;
+    let manifest = crate::orchestrator::native_bootstrap_manifest(kind, args.include_desktop);
+    emit_log(&format!(
+        "[bootstrap] native manifest generated: stages={}",
+        manifest.stages.len()
+    ));
 
     let hermes_home_for_report = args
         .hermes_home
@@ -1126,14 +1080,6 @@ fn option_env_string(key: &str) -> Option<String> {
         _ => None,
     };
     val.map(|s| s.to_string())
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max])
-    }
 }
 
 #[cfg(test)]

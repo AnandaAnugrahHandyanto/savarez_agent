@@ -142,6 +142,8 @@ language-specific setup where needed.
   archive contents.
 - Rust stage planning now reports native-first, probe-only, and script-only coverage counts so later bootstrap work can
   target the remaining script-owned dependency stages explicitly.
+- Bootstrap stage manifests are now generated in Rust for both Windows and Unix scripts, so setup no longer starts
+  PowerShell or bash just to discover the stage list.
 - `bootstrap-marker` now runs as a native Rust stage in the Tauri bootstrapper.
 - `config-templates` and the Unix `config` stage now run as native Rust stages while preserving Python
   `tools/skills_sync.py` when available and retaining the existing bundled-skill copy fallback.

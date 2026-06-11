@@ -20,11 +20,10 @@ pub struct StreamSink {
 }
 
 /// Outcome of a script invocation. Mirrors bootstrap-runner.cjs's
-/// `{stdout, stderr, code, signal, killed}` shape.
+/// `{stdout, code, signal, killed}` shape.
 #[derive(Debug)]
 pub struct ScriptResult {
     pub stdout: String,
-    pub stderr: String,
     pub exit_code: Option<i32>,
     pub killed: bool,
 }
@@ -152,7 +151,6 @@ pub async fn run_script(
 
     Ok(ScriptResult {
         stdout: combined_stdout,
-        stderr: combined_stderr,
         exit_code: status.code(),
         killed,
     })
@@ -287,6 +285,7 @@ pub fn parse_stage_result(stdout: &str) -> Option<crate::events::StageResultPayl
 
 /// Same logic but for the `-Manifest` payload (the LAST line with a `stages`
 /// array). Returns the parsed manifest.
+#[cfg(test)]
 pub fn parse_manifest(stdout: &str) -> Option<crate::events::Manifest> {
     for line in stdout.lines().rev() {
         let trimmed = line.trim();
