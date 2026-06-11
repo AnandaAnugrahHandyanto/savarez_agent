@@ -5006,6 +5006,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
 
 
+
     def _install_tool_callbacks(self) -> None:
         """Install tool callbacks that need the live prompt UI."""
         if getattr(self, "_tool_callbacks_installed", False):
@@ -5040,6 +5041,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     )
         except Exception:
             pass
+
 
     
     def _show_security_advisories(self):
@@ -7664,6 +7666,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         
         return True
     
+
 
     @staticmethod
     def _try_launch_chrome_debug(port: int, system: str) -> bool:
