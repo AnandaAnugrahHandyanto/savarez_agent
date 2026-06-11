@@ -1413,6 +1413,8 @@ def _config_model_target() -> tuple[str, str]:
     provider = ""
     if isinstance(cfg_model, dict):
         provider = str(cfg_model.get("provider") or "").strip()
+        if provider.lower() == "auto":
+            provider = ""
     return model, provider
 
 
@@ -2021,8 +2023,6 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
     # Record first so a broken config gets one attempt per edit, not per turn.
     session["config_model_seen"] = target
     if target == seen:
-        return
-    if seen is None and target[0] == (getattr(agent, "model", "") or ""):
         return
     model, provider = target
     raw = f"{model} --provider {provider}" if provider else model
