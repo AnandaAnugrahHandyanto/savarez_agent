@@ -2219,7 +2219,7 @@ class TestMemoryContextPreserved:
         # The exemption must be positive (active/authoritative), not just "not deprecated"
         assert "always authoritative" in lower or "always active" in lower
 
-    def test_summary_prefix_instucts_agent_not_to_ignore_memory(self):
+    def test_summary_prefix_instructs_agent_not_to_ignore_memory(self):
         """SUMMARY_PREFIX tells agent to never deprioritize memory.
 
         This is the key behavioral contract: after compaction, the agent
