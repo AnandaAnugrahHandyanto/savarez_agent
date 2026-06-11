@@ -506,6 +506,7 @@ class HermesACPAgent(acp.Agent):
     _MODE_ACCEPT_EDITS = "accept_edits"
     _MODE_DONT_ASK = "dont_ask"
     _MODE_PLAN = "plan"
+    _MODE_OBSERVE = "observe"
     _MODE_TO_EDIT_APPROVAL_POLICY = {
         _MODE_DEFAULT: "ask",
         _MODE_ACCEPT_EDITS: "workspace_session",
@@ -514,9 +515,20 @@ class HermesACPAgent(acp.Agent):
         # thread tool-whitelist in prompt(); its edit-approval fallback stays
         # "ask" for the edge case of a tool that slips past the whitelist.
         _MODE_PLAN: "ask",
+        # Observe mode (proactive background turns) gates ONLY command execution
+        # via the whitelist; edits stay "ask" so the client receives the
+        # request_permission and captures the proposed diff into its changeset.
+        _MODE_OBSERVE: "ask",
     }
+    # Reverse map: restore a mode from a persisted edit-approval policy config
+    # (the Zed config-option path). Mapped explicitly to each policy's canonical
+    # user-selectable mode — plan and observe are behavioral modes that share a
+    # policy, so they must NOT win this lookup (a comprehension over the forward
+    # map would non-deterministically map "ask" to plan/observe).
     _EDIT_APPROVAL_POLICY_TO_MODE = {
-        value: key for key, value in _MODE_TO_EDIT_APPROVAL_POLICY.items()
+        "ask": _MODE_DEFAULT,
+        "workspace_session": _MODE_ACCEPT_EDITS,
+        "session": _MODE_DONT_ASK,
     }
 
     def __init__(self, session_manager: SessionManager | None = None):
@@ -568,6 +580,12 @@ class HermesACPAgent(acp.Agent):
                     description="Propose a plan and run read-only tools only; wait for "
                     "your approval (switch out of Plan mode) before editing or running commands.",
                 ),
+                SessionMode(
+                    id=self._MODE_OBSERVE,
+                    name="Observe",
+                    description="Read and propose file edits (for review) but never run "
+                    "commands. Used for proactive background turns.",
+                ),
             ],
         )
 
@@ -577,22 +595,34 @@ class HermesACPAgent(acp.Agent):
         return policy, state.cwd
 
     def _install_plan_gate(self, state: SessionState) -> bool:
-        """In plan mode, restrict the agent's executor thread to non-mutating
-        tools via the thread tool-whitelist so the agent can plan but not act
-        until the user switches out of plan mode (FR-19). Returns True if the
-        gate was installed. MUST be called on the executor thread.
+        """Install the executor-thread tool whitelist for a gated mode, so the
+        agent is restricted at the source. Returns True if a gate was installed.
+        MUST be called on the executor thread.
+
+          - Plan mode (FR-19): withhold ALL mutating tools (edit + execute) — the
+            agent plans but cannot act until the user switches out of plan mode.
+          - Observe mode: withhold ONLY command execution — the agent may read
+            and propose edits (the client captures them for review) but can
+            never run a command (proactive background turns).
         """
-        if str(getattr(state, "mode", "")) != self._MODE_PLAN:
+        mode = str(getattr(state, "mode", ""))
+        if mode not in (self._MODE_PLAN, self._MODE_OBSERVE):
             return False
         try:
             from hermes_cli.plugins import set_thread_tool_whitelist
-            from acp_adapter.plan_gate import plan_mode_allowed_tools, PLAN_BLOCK_FMT
             from acp_adapter.tools import _POLISHED_TOOLS
 
-            set_thread_tool_whitelist(plan_mode_allowed_tools(_POLISHED_TOOLS), PLAN_BLOCK_FMT)
+            if mode == self._MODE_PLAN:
+                from acp_adapter.plan_gate import plan_mode_allowed_tools, PLAN_BLOCK_FMT
+
+                set_thread_tool_whitelist(plan_mode_allowed_tools(_POLISHED_TOOLS), PLAN_BLOCK_FMT)
+            else:  # observe
+                from acp_adapter.plan_gate import observe_mode_allowed_tools, OBSERVE_BLOCK_FMT
+
+                set_thread_tool_whitelist(observe_mode_allowed_tools(_POLISHED_TOOLS), OBSERVE_BLOCK_FMT)
             return True
         except Exception:
-            logger.debug("Could not install plan-mode tool whitelist", exc_info=True)
+            logger.debug("Could not install %s-mode tool whitelist", mode, exc_info=True)
             return False
 
     @staticmethod
