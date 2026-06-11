@@ -625,6 +625,11 @@ async fn run_bootstrap(
                     &install_root,
                     &hermes_home,
                 ))
+            } else if stage.name.eq_ignore_ascii_case("platform-sdks") {
+                Some(crate::orchestrator::install_platform_sdks_stage(
+                    &hermes_home,
+                    &install_root,
+                ))
             } else if should_try_native_repository_archive(&stage.name, &install_root) {
                 Some(
                     crate::orchestrator::install_repository_archive_fresh(
@@ -965,6 +970,7 @@ fn should_fallback_native_stage(stage_name: &str, install_root: &std::path::Path
         || stage_name.eq_ignore_ascii_case("venv")
         || stage_name.eq_ignore_ascii_case("python")
         || is_python_dependencies_stage(stage_name)
+        || stage_name.eq_ignore_ascii_case("platform-sdks")
 }
 
 fn is_python_dependencies_stage(stage_name: &str) -> bool {
@@ -1342,6 +1348,7 @@ mod tests {
         assert!(should_fallback_native_stage("python", &install_root));
         assert!(should_fallback_native_stage("dependencies", &install_root));
         assert!(should_fallback_native_stage("python-deps", &install_root));
+        assert!(should_fallback_native_stage("platform-sdks", &install_root));
         assert!(!should_fallback_native_stage("node", &install_root));
 
         let _ = std::fs::remove_dir_all(&root);

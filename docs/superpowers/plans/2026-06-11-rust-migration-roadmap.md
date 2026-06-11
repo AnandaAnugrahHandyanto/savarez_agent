@@ -159,8 +159,9 @@ language-specific setup where needed.
   `UV_PROJECT_ENVIRONMENT` pinned to `venv`, while the script keeps all PyPI fallback tiers.
 - `node-deps` now uses a Rust no-op skip when npm is unavailable on every platform, matching the existing script
   behavior without starting PowerShell or bash for a stage that can only skip.
-- Windows `platform-sdks` now skips natively when `.env` has no configured messaging platform tokens, while preserving
-  the existing script-backed SDK verification and recovery path whenever a token is present.
+- Windows `platform-sdks` now skips natively when `.env` has no configured messaging platform tokens, and runs
+  native-first SDK import checks plus targeted `pip install` recovery when tokens are present, while preserving script
+  fallback if the native recovery path fails.
 - `bootstrap-marker` now runs as a native Rust stage in the Tauri bootstrapper.
 - `config-templates` and the Unix `config` stage now run as native Rust stages while preserving Python
   `tools/skills_sync.py` when available and retaining the existing bundled-skill copy fallback.
@@ -168,8 +169,7 @@ language-specific setup where needed.
 
 **Still script-backed:**
 - Language/runtime setup: uv, Python dependency fallback tiers when `uv.lock` sync is unavailable, Node installation
-  when missing, npm dependencies when npm is available, desktop build, and platform SDK verification when messaging
-  tokens are configured.
+  when missing, npm dependencies when npm is available, desktop build, and script fallback for platform SDK recovery.
 - Repository clone/update stage execution until the Git/ZIP fallback matrix has a parity suite and native stage wiring.
 - Remaining platform shell/profile edge cases that are not covered by the current Rust path-stage helpers.
 

@@ -62,6 +62,21 @@ pub struct PythonDependenciesStagePlan {
     pub lockfile: PathBuf,
 }
 
+/// Messaging-platform SDK requirement derived from user configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlatformSdkRequirement {
+    pub env_var: &'static str,
+    pub import_name: &'static str,
+    pub pip_spec: &'static str,
+}
+
+/// Native platform SDK verification stage execution plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlatformSdkStagePlan {
+    pub python: PathBuf,
+    pub requirements: Vec<PlatformSdkRequirement>,
+}
+
 /// How a bootstrap stage is currently handled by the Rust orchestrator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StageExecutionMode {
@@ -316,32 +331,168 @@ pub fn platform_sdks_skip_result(
     })
 }
 
+/// Build the native platform SDK verification stage plan.
+pub fn platform_sdk_stage_plan(
+    hermes_home: &Path,
+    install_root: &Path,
+) -> Result<PlatformSdkStagePlan> {
+    let env_path = hermes_home.join(".env");
+    let env_text = fs::read_to_string(&env_path)
+        .with_context(|| format!("reading {}", env_path.display()))?;
+    let requirements = platform_sdk_requirements_from_env(&env_text);
+    if requirements.is_empty() {
+        return Err(anyhow!("no messaging platform tokens configured"));
+    }
+    let python = venv_python_path(&install_root.join("venv"));
+    if !python.is_file() {
+        return Err(anyhow!("venv Python not found at {}", python.display()));
+    }
+    Ok(PlatformSdkStagePlan {
+        python,
+        requirements,
+    })
+}
+
+/// Verify and install configured messaging platform SDKs natively.
+pub fn install_platform_sdks_stage(
+    hermes_home: &Path,
+    install_root: &Path,
+) -> Result<serde_json::Value> {
+    let plan = platform_sdk_stage_plan(hermes_home, install_root)?;
+    let missing = plan
+        .requirements
+        .iter()
+        .copied()
+        .filter(|sdk| !python_import_available(&plan.python, sdk.import_name))
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(serde_json::json!({
+            "python": plan.python,
+            "checked": plan.requirements.len(),
+            "installed": [],
+        }));
+    }
+    ensure_pip_available(&plan.python)?;
+    for sdk in &missing {
+        install_pip_spec(&plan.python, sdk.pip_spec)?;
+    }
+    Ok(serde_json::json!({
+        "python": plan.python,
+        "checked": plan.requirements.len(),
+        "installed": missing.iter().map(|sdk| sdk.pip_spec).collect::<Vec<_>>(),
+    }))
+}
+
 fn platform_env_has_configured_tokens(env_path: &Path) -> bool {
     let Ok(text) = fs::read_to_string(env_path) else {
         return false;
     };
-    text.lines().any(platform_env_line_has_configured_token)
+    !platform_sdk_requirements_from_env(&text).is_empty()
 }
 
-fn platform_env_line_has_configured_token(line: &str) -> bool {
-    if line.trim_start().starts_with('#') {
-        return false;
-    }
-    const PLATFORM_TOKEN_VARS: [&str; 5] = [
-        "TELEGRAM_BOT_TOKEN",
-        "DISCORD_BOT_TOKEN",
-        "SLACK_BOT_TOKEN",
-        "SLACK_APP_TOKEN",
-        "WHATSAPP_ENABLED",
+fn platform_sdk_requirements_from_env(text: &str) -> Vec<PlatformSdkRequirement> {
+    const SDK_MAP: [PlatformSdkRequirement; 5] = [
+        PlatformSdkRequirement {
+            env_var: "TELEGRAM_BOT_TOKEN",
+            import_name: "telegram",
+            pip_spec: "python-telegram-bot[webhooks]>=22.6,<23",
+        },
+        PlatformSdkRequirement {
+            env_var: "DISCORD_BOT_TOKEN",
+            import_name: "discord",
+            pip_spec: "discord.py[voice]>=2.7.1,<3",
+        },
+        PlatformSdkRequirement {
+            env_var: "SLACK_BOT_TOKEN",
+            import_name: "slack_sdk",
+            pip_spec: "slack-sdk>=3.27.0,<4",
+        },
+        PlatformSdkRequirement {
+            env_var: "SLACK_APP_TOKEN",
+            import_name: "slack_bolt",
+            pip_spec: "slack-bolt>=1.18.0,<2",
+        },
+        PlatformSdkRequirement {
+            env_var: "WHATSAPP_ENABLED",
+            import_name: "qrcode",
+            pip_spec: "qrcode>=7.0,<8",
+        },
     ];
-    let lower = line.to_ascii_lowercase();
-    if lower.contains("your-token-here") {
-        return false;
-    }
-    PLATFORM_TOKEN_VARS.iter().any(|var| {
-        let prefix = format!("{}=", var.to_ascii_lowercase());
-        lower.starts_with(&prefix) && line.len() > prefix.len()
+    SDK_MAP
+        .into_iter()
+        .filter(|sdk| env_has_configured_platform_value(text, sdk.env_var))
+        .collect()
+}
+
+fn env_has_configured_platform_value(text: &str, env_var: &str) -> bool {
+    text.lines().any(|line| {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            return false;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            return false;
+        };
+        if key != env_var {
+            return false;
+        }
+        let value = value.trim();
+        if value.is_empty() || value.eq_ignore_ascii_case("your-token-here") {
+            return false;
+        }
+        if env_var == "WHATSAPP_ENABLED" {
+            return value.eq_ignore_ascii_case("true");
+        }
+        true
     })
+}
+
+fn python_import_available(python: &Path, import_name: &str) -> bool {
+    Command::new(python)
+        .args(["-c", &format!("import {import_name}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn ensure_pip_available(python: &Path) -> Result<()> {
+    let has_pip = Command::new(python)
+        .args(["-m", "pip", "--version"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if has_pip {
+        return Ok(());
+    }
+    let status = Command::new(python)
+        .args(["-m", "ensurepip", "--upgrade"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .with_context(|| format!("running ensurepip with {}", python.display()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("ensurepip failed with exit {:?}", status.code()))
+    }
+}
+
+fn install_pip_spec(python: &Path, spec: &str) -> Result<()> {
+    let status = Command::new(python)
+        .args(["-m", "pip", "install", spec])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .with_context(|| format!("installing {spec} with {}", python.display()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!("pip install {spec} failed with exit {:?}", status.code()))
+    }
 }
 
 /// Return a compact log line for the current Rust orchestration coverage.
@@ -1203,7 +1354,7 @@ fn node_version_string_satisfies_build(version: &str) -> bool {
 fn stage_execution_mode(name: &str) -> StageExecutionMode {
     if matches!(
         name.to_ascii_lowercase().as_str(),
-        "repository" | "python" | "venv" | "dependencies" | "python-deps"
+        "repository" | "python" | "venv" | "dependencies" | "python-deps" | "platform-sdks"
     ) {
         return StageExecutionMode::NativeWithScriptFallback;
     }
@@ -1215,7 +1366,7 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
     }
     if matches!(
         name.to_ascii_lowercase().as_str(),
-        "uv" | "python" | "git" | "node" | "system-packages" | "platform-sdks" | "node-deps"
+        "uv" | "python" | "git" | "node" | "system-packages" | "node-deps"
     ) {
         return StageExecutionMode::ProbeThenScript;
     }
@@ -1315,8 +1466,8 @@ mod tests {
         assert_eq!(plan[3].execution, StageExecutionMode::ProbeThenScript);
         assert_eq!(plan[3].rust_probe, true);
         assert_eq!(plan[4].name, "platform-sdks");
-        assert_eq!(plan[4].execution, StageExecutionMode::ProbeThenScript);
-        assert_eq!(plan[4].rust_probe, true);
+        assert_eq!(plan[4].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[4].script_fallback, true);
         assert_eq!(plan[5].name, "node-deps");
         assert_eq!(plan[5].execution, StageExecutionMode::ProbeThenScript);
         assert_eq!(plan[5].rust_probe, true);
@@ -1621,6 +1772,57 @@ mod tests {
             false,
         );
         assert!(platform_sdks_skip_result(&config, &hermes_home).is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn platform_sdk_requirements_map_real_tokens_to_imports_and_specs() {
+        let env = concat!(
+            "# TELEGRAM_BOT_TOKEN=ignored\n",
+            "TELEGRAM_BOT_TOKEN=abc123\n",
+            "DISCORD_BOT_TOKEN=your-token-here\n",
+            "SLACK_BOT_TOKEN=xoxb-test\n",
+            "WHATSAPP_ENABLED=false\n",
+            "SLACK_APP_TOKEN=\n",
+        );
+
+        let requirements = platform_sdk_requirements_from_env(env);
+        let names = requirements
+            .iter()
+            .map(|sdk| (sdk.env_var, sdk.import_name, sdk.pip_spec))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                (
+                    "TELEGRAM_BOT_TOKEN",
+                    "telegram",
+                    "python-telegram-bot[webhooks]>=22.6,<23",
+                ),
+                ("SLACK_BOT_TOKEN", "slack_sdk", "slack-sdk>=3.27.0,<4"),
+            ]
+        );
+    }
+
+    #[test]
+    fn platform_sdk_stage_plan_uses_venv_python_and_configured_requirements() {
+        let root = std::env::temp_dir().join(format!("hermes-platform-plan-{}", std::process::id()));
+        let hermes_home = root.join("home");
+        let install_root = hermes_home.join("hermes-agent");
+        let venv_python = venv_python_path(&install_root.join("venv"));
+        std::fs::create_dir_all(venv_python.parent().unwrap()).unwrap();
+        std::fs::write(&venv_python, b"python").unwrap();
+        std::fs::create_dir_all(&hermes_home).unwrap();
+        std::fs::write(hermes_home.join(".env"), "WHATSAPP_ENABLED=true\n").unwrap();
+
+        let plan = platform_sdk_stage_plan(&hermes_home, &install_root).unwrap();
+
+        assert_eq!(plan.python, venv_python);
+        assert_eq!(plan.requirements.len(), 1);
+        assert_eq!(plan.requirements[0].import_name, "qrcode");
+        assert_eq!(plan.requirements[0].pip_spec, "qrcode>=7.0,<8");
 
         let _ = std::fs::remove_dir_all(&root);
     }
