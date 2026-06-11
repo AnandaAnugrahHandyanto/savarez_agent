@@ -36,6 +36,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -152,6 +153,69 @@ def _should_fall_back(code: int, detail: str) -> bool:
 
 def _is_access_denied(detail: str) -> bool:
     return bool(_ACCESS_DENIED_PATTERN.search(detail or ""))
+
+
+def _replace_or_insert_xml_setting(xml: str, tag: str, value: str) -> str:
+    """Return ``xml`` with a top-level Task Settings child set to ``value``.
+
+    Windows' ``schtasks /Create /SC ONLOGON`` applies workstation defaults that
+    are unsafe for a long-lived gateway on laptops: stop on battery and a finite
+    execution time limit.  We harden the generated task by querying its XML and
+    re-importing it with explicit daemon-safe settings.
+    """
+    replacement = f"<{tag}>{value}</{tag}>"
+    pattern = re.compile(rf"<{re.escape(tag)}>.*?</{re.escape(tag)}>", re.DOTALL)
+    if pattern.search(xml):
+        return pattern.sub(replacement, xml, count=1)
+    settings_match = re.search(r"</Settings>", xml)
+    if not settings_match:
+        return xml
+    indent = "    "
+    return xml[: settings_match.start()] + f"{indent}{replacement}\n" + xml[settings_match.start() :]
+
+
+def _harden_scheduled_task_settings(task_name: str) -> tuple[bool, str]:
+    """Patch a Scheduled Task's XML so it behaves like a daemon.
+
+    ``schtasks``' simple ``/Create /SC ONLOGON`` path is convenient but leaves
+    power-management and lifetime defaults up to Windows.  The observed Hifumi
+    gateway log had repeated fresh starts with no traceback and no clean
+    shutdown record; the installed task XML also had ``StopIfGoingOnBatteries``
+    enabled and the default 72-hour execution limit.  Re-importing explicit XML
+    makes the task robust across battery transitions and long uptimes.
+    """
+    code, out, err = _exec_schtasks(["/Query", "/TN", task_name, "/XML"])
+    if code != 0 or not out.strip():
+        return (False, f"schtasks /Query /XML failed (code {code}): {(err or out).strip()}")
+
+    xml = out
+    for tag, value in (
+        ("DisallowStartIfOnBatteries", "false"),
+        ("StopIfGoingOnBatteries", "false"),
+        ("StartWhenAvailable", "true"),
+        ("AllowStartOnDemand", "true"),
+        ("RunOnlyIfIdle", "false"),
+        ("ExecutionTimeLimit", "PT0S"),
+    ):
+        xml = _replace_or_insert_xml_setting(xml, tag, value)
+    xml = _replace_or_insert_xml_setting(xml, "StopOnIdleEnd", "false")
+
+    tmp_name = None
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".xml", delete=False, encoding="utf-16", newline="") as fh:
+            tmp_name = fh.name
+            fh.write(xml)
+        import_code, import_out, import_err = _exec_schtasks(["/Create", "/F", "/TN", task_name, "/XML", tmp_name])
+    finally:
+        if tmp_name:
+            try:
+                Path(tmp_name).unlink()
+            except OSError:
+                pass
+
+    if import_code != 0:
+        return (False, f"schtasks /Create /XML failed (code {import_code}): {(import_err or import_out).strip()}")
+    return (True, f"Hardened Scheduled Task {task_name!r} power/lifetime settings")
 
 
 def _is_running_as_admin() -> bool:
@@ -484,7 +548,10 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
     for argv in variants:
         code, out, err = _exec_schtasks(argv)
         if code == 0:
-            return (True, f"Created Scheduled Task {task_name!r}")
+            hardened, harden_detail = _harden_scheduled_task_settings(task_name)
+            if hardened:
+                return (True, f"Created Scheduled Task {task_name!r}; {harden_detail}")
+            return (True, f"Created Scheduled Task {task_name!r}; warning: {harden_detail}")
         last_code, last_err = code, (err or out or "")
     if delete_detail and "cannot find" not in delete_detail.lower():
         last_err = f"{last_err.strip()} (delete detail: {delete_detail})"

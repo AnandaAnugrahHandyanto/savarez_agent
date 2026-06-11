@@ -239,6 +239,12 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     """Install must delete+create so stale minute-repeat task settings are not preserved."""
     calls = []
     script_path = tmp_path / "Hermes_Gateway_alice.cmd"
+    task_xml = """<?xml version=\"1.0\"?>
+<Task><Settings>
+<DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>
+<StopIfGoingOnBatteries>true</StopIfGoingOnBatteries>
+<ExecutionTimeLimit>PT72H</ExecutionTimeLimit>
+</Settings></Task>"""
 
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
 
@@ -246,6 +252,8 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
         calls.append(tuple(args))
         if args[0] == "/Delete":
             return (0, "SUCCESS", "")
+        if args[:3] == ["/Query", "/TN", "Hermes_Gateway_alice"]:
+            return (0, task_xml, "")
         if args[0] == "/Create":
             return (0, "SUCCESS", "")
         raise AssertionError(f"unexpected schtasks args: {args}")
@@ -259,6 +267,42 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert calls[1][0] == "/Create"
     assert "/SC" in calls[1]
     assert "ONLOGON" in calls[1]
+    assert calls[2] == ("/Query", "/TN", "Hermes_Gateway_alice", "/XML")
+    assert calls[3][0:4] == ("/Create", "/F", "/TN", "Hermes_Gateway_alice")
+    assert "/XML" in calls[3]
+    assert "Hardened Scheduled Task" in detail
+
+
+def test_harden_scheduled_task_settings_reimports_daemon_safe_xml(monkeypatch):
+    imported = {}
+    original_xml = """<?xml version=\"1.0\"?>
+<Task><Settings>
+<DisallowStartIfOnBatteries>true</DisallowStartIfOnBatteries>
+<StopIfGoingOnBatteries>true</StopIfGoingOnBatteries>
+<ExecutionTimeLimit>PT72H</ExecutionTimeLimit>
+</Settings></Task>"""
+
+    monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+
+    def fake_schtasks(args):
+        if args == ["/Query", "/TN", "Hermes_Gateway", "/XML"]:
+            return (0, original_xml, "")
+        if args[:4] == ["/Create", "/F", "/TN", "Hermes_Gateway"]:
+            xml_path = Path(args[-1])
+            imported["xml"] = xml_path.read_text(encoding="utf-16")
+            return (0, "SUCCESS", "")
+        raise AssertionError(f"unexpected schtasks args: {args}")
+
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_schtasks)
+
+    ok, detail = gateway_windows._harden_scheduled_task_settings("Hermes_Gateway")
+
+    assert ok is True
+    assert "Hardened Scheduled Task" in detail
+    assert "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>" in imported["xml"]
+    assert "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>" in imported["xml"]
+    assert "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>" in imported["xml"]
+    assert "<StartWhenAvailable>true</StartWhenAvailable>" in imported["xml"]
 
 
 def test_install_scheduled_task_success_start_now_uses_direct_spawn_not_task_run(monkeypatch, tmp_path, capsys):
