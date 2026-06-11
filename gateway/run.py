@@ -14219,7 +14219,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 history,
                 channel_prompt=channel_prompt,
             )
-            
+
+            # Realign the DB-flush cursor to the current history length so
+            # a cached agent with a stale _last_flushed_db_idx from the
+            # previous turn does not skip persisting this turn's assistant
+            # row.  (#44327)
+            agent._last_flushed_db_idx = len(agent_history)
+
             # Collect MEDIA paths already in history so we can exclude them
             # from the current turn's extraction. This is compression-safe:
             # even if the message list shrinks, we know which paths are old.

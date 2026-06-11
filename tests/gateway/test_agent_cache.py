@@ -1448,6 +1448,153 @@ class TestCachedAgentInactivityReset:
         )
 
 
+class TestCachedAgentFlushCursorRealign:
+    """Cached-agent reuse must realign _last_flushed_db_idx to the current
+    turn's agent_history length so that _flush_messages_to_session_db() does
+    not skip persisting the new turn's assistant row.  (#44327)
+
+    Bug scenario (pre-fix):
+      1. Turn 1: agent processes 100 messages, _last_flushed_db_idx = 100
+      2. Turn 2: gateway reuses cached agent, builds agent_history of 50 msgs
+      3. _flush_messages_to_session_db() computes:
+         flush_from = max(len(conversation_history=50), _last_flushed_db_idx=100) = 100
+      4. messages[100:] is empty — assistant row silently skipped
+      5. Transcript shows consecutive user rows with no assistant reply
+    """
+
+    def test_stale_flush_cursor_realigns_to_agent_history(self):
+        """After _build_gateway_agent_history returns, the gateway must set
+        agent._last_flushed_db_idx = len(agent_history) so that a stale
+        cursor from the previous turn does not skip the current turn's
+        assistant message."""
+        from unittest.mock import MagicMock
+
+        agent = MagicMock()
+        # Simulate stale cursor from previous turn (100 messages)
+        agent._last_flushed_db_idx = 100
+
+        # New turn has only 50 messages in agent_history
+        agent_history = [{"role": "user" if i % 2 == 0 else "assistant",
+                          "content": f"msg {i}"} for i in range(50)]
+
+        # This is the fix: gateway/run.py realigns after _build_gateway_agent_history
+        agent._last_flushed_db_idx = len(agent_history)
+
+        assert agent._last_flushed_db_idx == 50, (
+            "Flush cursor must be realigned to current agent_history length"
+        )
+
+    def test_flush_after_realign_persists_new_turn_messages(self):
+        """After realignment, _flush_messages_to_session_db must persist
+        the new turn's assistant reply even when the previous turn had
+        more messages (stale _last_flushed_db_idx)."""
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            from hermes_state import SessionDB
+            db = SessionDB(db_path=db_path)
+            db.create_session(session_id="test-session", source="test")
+
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+                from run_agent import AIAgent
+                agent = AIAgent(
+                    api_key="test-key",
+                    base_url="https://openrouter.ai/api/v1",
+                    model="test/model",
+                    quiet_mode=True,
+                    session_db=db,
+                    session_id="test-session",
+                    skip_context_files=True,
+                    skip_memory=True,
+                )
+
+            # Turn 1: 100 messages, all persisted
+            turn1_messages = [{"role": "user" if i % 2 == 0 else "assistant",
+                               "content": f"turn1 msg {i}"} for i in range(100)]
+            agent._flush_messages_to_session_db(turn1_messages, conversation_history=[])
+            assert len(db.get_messages("test-session")) == 100
+
+            # Turn 2: gateway reuses cached agent. agent_history has 50 messages
+            # (history was rebuilt). Stale _last_flushed_db_idx = 100 from turn 1.
+            # After the fix, gateway realigns: _last_flushed_db_idx = len(agent_history) = 50
+            agent_history = turn1_messages[:50]  # rebuilt shorter history
+            agent._last_flushed_db_idx = len(agent_history)  # THE FIX
+
+            # Agent processes turn 2: adds user + assistant to messages
+            turn2_messages = agent_history + [
+                {"role": "user", "content": "new question"},
+                {"role": "assistant", "content": "new answer"},
+            ]
+
+            # Flush with conversation_history = agent_history (pre-turn state)
+            agent._flush_messages_to_session_db(
+                turn2_messages, conversation_history=agent_history
+            )
+
+            # Should have persisted the 2 new messages (user + assistant)
+            rows = db.get_messages("test-session")
+            # Turn 1: 100 rows + Turn 2: 2 new rows = 102
+            assert len(rows) == 102, (
+                f"Expected 102 rows (100 from turn1 + 2 from turn2), got {len(rows)}. "
+                "Without the realignment, the assistant reply would be silently skipped."
+            )
+
+    def test_stale_cursor_without_realign_skips_messages(self):
+        """Without the realignment fix, a stale _last_flushed_db_idx causes
+        the new turn's messages to be silently skipped."""
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            from hermes_state import SessionDB
+            db = SessionDB(db_path=db_path)
+            db.create_session(session_id="test-session", source="test")
+
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+                from run_agent import AIAgent
+                agent = AIAgent(
+                    api_key="test-key",
+                    base_url="https://openrouter.ai/api/v1",
+                    model="test/model",
+                    quiet_mode=True,
+                    session_db=db,
+                    session_id="test-session",
+                    skip_context_files=True,
+                    skip_memory=True,
+                )
+
+            # Turn 1: 100 messages
+            turn1_messages = [{"role": "user" if i % 2 == 0 else "assistant",
+                               "content": f"turn1 msg {i}"} for i in range(100)]
+            agent._flush_messages_to_session_db(turn1_messages, conversation_history=[])
+
+            # Turn 2: NO realignment (the bug). _last_flushed_db_idx stays at 100.
+            agent_history = turn1_messages[:50]
+            # agent._last_flushed_db_idx = len(agent_history)  # NOT done — bug!
+
+            turn2_messages = agent_history + [
+                {"role": "user", "content": "new question"},
+                {"role": "assistant", "content": "new answer"},
+            ]
+
+            agent._flush_messages_to_session_db(
+                turn2_messages, conversation_history=agent_history
+            )
+
+            rows = db.get_messages("test-session")
+            # Only turn1 messages persisted — turn2 messages silently skipped
+            assert len(rows) == 100, (
+                f"Expected 100 rows (turn2 skipped due to stale cursor), got {len(rows)}"
+            )
+
+
 class TestAgentConfigSignatureUserId:
     """Shared-thread cache must not reuse an agent across users.
 
