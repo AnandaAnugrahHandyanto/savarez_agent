@@ -101,6 +101,20 @@ pub struct WindowsUvRuntimeStagePlan {
     pub uv_exe: PathBuf,
 }
 
+/// Native Windows Git runtime installation plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsGitRuntimeStagePlan {
+    pub tag: &'static str,
+    pub version: &'static str,
+    pub archive_name: String,
+    pub download_url: String,
+    pub archive_path: PathBuf,
+    pub install_dir: PathBuf,
+    pub git_exe: PathBuf,
+    pub bash_exe: PathBuf,
+    pub is_zip: bool,
+}
+
 /// Messaging-platform SDK requirement derived from user configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlatformSdkRequirement {
@@ -1002,6 +1016,92 @@ pub async fn install_windows_uv_runtime_stage(hermes_home: &Path) -> Result<serd
     }))
 }
 
+/// Build a Windows Git runtime plan matching install.ps1's pinned release.
+pub fn windows_git_runtime_stage_plan(
+    hermes_home: &Path,
+    arch: &str,
+) -> Result<WindowsGitRuntimeStagePlan> {
+    let tag = "v2.54.0.windows.1";
+    let version = "2.54.0";
+    let (archive_name, is_zip, bash_relative) = match arch {
+        "arm64" => (
+            format!("PortableGit-{version}-arm64.7z.exe"),
+            false,
+            PathBuf::from("bin").join("bash.exe"),
+        ),
+        "x64" => (
+            format!("PortableGit-{version}-64-bit.7z.exe"),
+            false,
+            PathBuf::from("bin").join("bash.exe"),
+        ),
+        "x86" => (
+            format!("MinGit-{version}-32-bit.zip"),
+            true,
+            PathBuf::from("usr").join("bin").join("bash.exe"),
+        ),
+        other => return Err(anyhow!("unsupported Windows architecture for Git: {other}")),
+    };
+    let download_url =
+        format!("https://github.com/git-for-windows/git/releases/download/{tag}/{archive_name}");
+    let archive_path = hermes_home
+        .join("bootstrap-cache")
+        .join(&archive_name);
+    let install_dir = hermes_home.join("git");
+    let git_exe = install_dir.join("cmd").join("git.exe");
+    let bash_exe = install_dir.join(bash_relative);
+    Ok(WindowsGitRuntimeStagePlan {
+        tag,
+        version,
+        archive_name,
+        download_url,
+        archive_path,
+        install_dir,
+        git_exe,
+        bash_exe,
+        is_zip,
+    })
+}
+
+/// Install Git for Windows natively before falling back to PowerShell.
+pub async fn install_windows_git_runtime_stage(hermes_home: &Path) -> Result<serde_json::Value> {
+    if !cfg!(target_os = "windows") {
+        return Err(anyhow!("native Git stage is only available on Windows"));
+    }
+    let arch = windows_node_arch_slug();
+    let plan = windows_git_runtime_stage_plan(hermes_home, &arch)?;
+    crate::artifact::download_to_cache(
+        crate::artifact::DownloadSpec {
+            url: plan.download_url.clone(),
+            user_agent: "Hermes-Setup",
+            expected_sha256: None,
+        },
+        &plan.archive_path,
+    )
+    .await
+    .with_context(|| format!("downloading {}", plan.archive_name))?;
+    install_windows_git_archive(&plan)?;
+    if !plan.git_exe.is_file() {
+        return Err(anyhow!("Git extraction did not produce {}", plan.git_exe.display()));
+    }
+    let path_entries = [
+        plan.install_dir.join("cmd"),
+        plan.install_dir.join("bin"),
+        plan.install_dir.join("usr").join("bin"),
+    ];
+    prepend_process_paths(&path_entries);
+    persist_windows_path_entries(&path_entries)?;
+    let bash = find_windows_git_bash(&plan.install_dir);
+    if let Some(bash) = &bash {
+        persist_windows_env_var("HERMES_GIT_BASH_PATH", &bash.display().to_string())?;
+        std::env::set_var("HERMES_GIT_BASH_PATH", bash);
+    }
+    Ok(serde_json::json!({
+        "git": plan.git_exe,
+        "bash": bash,
+        "archive": plan.archive_name,
+    }))
+}
+
 /// Build the native Python virtual environment stage plan.
 pub fn python_venv_stage_plan<P>(
     install_root: &Path,
@@ -1713,6 +1813,39 @@ fn install_windows_uv_archive(archive_path: &Path, install_dir: &Path) -> Result
     cleanup
 }
 
+fn install_windows_git_archive(plan: &WindowsGitRuntimeStagePlan) -> Result<()> {
+    remove_path_if_exists(&plan.install_dir)?;
+    fs::create_dir_all(&plan.install_dir)
+        .with_context(|| format!("creating Git install dir {}", plan.install_dir.display()))?;
+    if plan.is_zip {
+        crate::artifact::extract_zip_archive(&plan.archive_path, &plan.install_dir)?;
+        return Ok(());
+    }
+    let output_arg = format!("-o{}", plan.install_dir.display());
+    let status = Command::new(&plan.archive_path)
+        .args([output_arg.as_str(), "-y"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .with_context(|| format!("extracting {}", plan.archive_path.display()))?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "PortableGit extraction failed with exit {:?}",
+        status.code()
+    ))
+}
+
+fn find_windows_git_bash(install_dir: &Path) -> Option<PathBuf> {
+    [
+        install_dir.join("bin").join("bash.exe"),
+        install_dir.join("usr").join("bin").join("bash.exe"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
+
 fn find_file_named(root: &Path, name: &str) -> Result<PathBuf> {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -1788,8 +1921,27 @@ fn prepend_process_path(entry: &Path) {
     }
 }
 
+fn prepend_process_paths(entries: &[PathBuf]) {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut parts = entries.to_vec();
+    parts.extend(std::env::split_paths(&current));
+    if let Ok(next) = std::env::join_paths(parts) {
+        std::env::set_var("PATH", next);
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn persist_windows_path_entry(entry: &Path) -> Result<()> {
+    persist_windows_path_entries(&[entry.to_path_buf()])
+}
+
+#[cfg(not(target_os = "windows"))]
+fn persist_windows_path_entry(_entry: &Path) -> Result<()> {
+    Err(anyhow!("Windows PATH persistence is only available on Windows"))
+}
+
+#[cfg(target_os = "windows")]
+fn persist_windows_path_entries(entries: &[PathBuf]) -> Result<()> {
     let current = hermes_manager::platform::read_windows_user_path()?;
     let mut parts = current
         .as_deref()
@@ -1798,20 +1950,37 @@ fn persist_windows_path_entry(entry: &Path) -> Result<()> {
         .filter(|part| !part.trim().is_empty())
         .map(ToString::to_string)
         .collect::<Vec<_>>();
-    let entry_text = entry.display().to_string();
-    let exists = parts
-        .iter()
-        .any(|part| part.eq_ignore_ascii_case(&entry_text));
-    if !exists {
-        parts.insert(0, entry_text.clone());
-        hermes_manager::platform::write_windows_user_env_var("Path", &parts.join(";"))?;
+    let mut changed = false;
+    for entry in entries.iter().rev() {
+        let entry_text = entry.display().to_string();
+        let exists = parts
+            .iter()
+            .any(|part| part.eq_ignore_ascii_case(&entry_text));
+        if !exists {
+            parts.insert(0, entry_text);
+            changed = true;
+        }
+    }
+    if changed {
+        persist_windows_env_var("Path", &parts.join(";"))?;
     }
     Ok(())
 }
 
 #[cfg(not(target_os = "windows"))]
-fn persist_windows_path_entry(_entry: &Path) -> Result<()> {
+fn persist_windows_path_entries(_entries: &[PathBuf]) -> Result<()> {
     Err(anyhow!("Windows PATH persistence is only available on Windows"))
+}
+
+#[cfg(target_os = "windows")]
+fn persist_windows_env_var(name: &str, value: &str) -> Result<()> {
+    hermes_manager::platform::write_windows_user_env_var(name, value)?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn persist_windows_env_var(_name: &str, _value: &str) -> Result<()> {
+    Err(anyhow!("Windows environment persistence is only available on Windows"))
 }
 
 fn find_node_executable<P>(hermes_home: &Path, path_env: P, pathext: &str) -> Option<PathBuf>
@@ -1966,6 +2135,9 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
     if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("uv") {
         return StageExecutionMode::NativeWithScriptFallback;
     }
+    if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("git") {
+        return StageExecutionMode::NativeWithScriptFallback;
+    }
     if matches!(
         name.to_ascii_lowercase().as_str(),
         "bootstrap-marker" | "config" | "config-templates" | "complete" | "path"
@@ -2052,6 +2224,7 @@ mod tests {
             stage("path"),
             stage("python"),
             stage("uv"),
+            stage("git"),
             stage("node"),
             stage("platform-sdks"),
             stage("node-deps"),
@@ -2062,7 +2235,7 @@ mod tests {
         ];
         let plan = build_stage_plan(&stages, false);
 
-        assert_eq!(plan.len(), 11);
+        assert_eq!(plan.len(), 12);
         assert_eq!(plan[0].name, "repository");
         assert_eq!(plan[0].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[0].script_fallback, true);
@@ -2081,45 +2254,54 @@ mod tests {
         assert_eq!(plan[3].execution, uv_execution);
         assert_eq!(plan[3].rust_probe, !cfg!(target_os = "windows"));
         assert_eq!(plan[3].script_fallback, true);
+        let git_execution = if cfg!(target_os = "windows") {
+            StageExecutionMode::NativeWithScriptFallback
+        } else {
+            StageExecutionMode::ProbeThenScript
+        };
+        assert_eq!(plan[4].name, "git");
+        assert_eq!(plan[4].execution, git_execution);
+        assert_eq!(plan[4].rust_probe, !cfg!(target_os = "windows"));
+        assert_eq!(plan[4].script_fallback, true);
         let node_execution = if cfg!(target_os = "windows") {
             StageExecutionMode::NativeWithScriptFallback
         } else {
             StageExecutionMode::ProbeThenScript
         };
-        assert_eq!(plan[4].name, "node");
-        assert_eq!(plan[4].execution, node_execution);
-        assert_eq!(plan[4].rust_probe, !cfg!(target_os = "windows"));
-        assert_eq!(plan[4].script_fallback, true);
-        assert_eq!(plan[5].name, "platform-sdks");
-        assert_eq!(plan[5].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[5].name, "node");
+        assert_eq!(plan[5].execution, node_execution);
+        assert_eq!(plan[5].rust_probe, !cfg!(target_os = "windows"));
         assert_eq!(plan[5].script_fallback, true);
+        assert_eq!(plan[6].name, "platform-sdks");
+        assert_eq!(plan[6].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[6].script_fallback, true);
         let node_deps_execution = if cfg!(target_os = "windows") {
             StageExecutionMode::NativeWithScriptFallback
         } else {
             StageExecutionMode::ProbeThenScript
         };
-        assert_eq!(plan[6].name, "node-deps");
-        assert_eq!(plan[6].execution, node_deps_execution);
-        assert_eq!(plan[6].rust_probe, !cfg!(target_os = "windows"));
-        assert_eq!(plan[6].script_fallback, true);
-        assert_eq!(plan[7].name, "desktop");
+        assert_eq!(plan[7].name, "node-deps");
+        assert_eq!(plan[7].execution, node_deps_execution);
+        assert_eq!(plan[7].rust_probe, !cfg!(target_os = "windows"));
+        assert_eq!(plan[7].script_fallback, true);
+        assert_eq!(plan[8].name, "desktop");
         let desktop_execution = if cfg!(target_os = "windows") {
             StageExecutionMode::NativeWithScriptFallback
         } else {
             StageExecutionMode::ProbeThenScript
         };
-        assert_eq!(plan[7].execution, desktop_execution);
-        assert_eq!(plan[7].rust_probe, !cfg!(target_os = "windows"));
-        assert_eq!(plan[7].script_fallback, true);
-        assert_eq!(plan[8].name, "venv");
-        assert_eq!(plan[8].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[8].execution, desktop_execution);
+        assert_eq!(plan[8].rust_probe, !cfg!(target_os = "windows"));
         assert_eq!(plan[8].script_fallback, true);
-        assert_eq!(plan[9].name, "dependencies");
+        assert_eq!(plan[9].name, "venv");
         assert_eq!(plan[9].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[9].script_fallback, true);
-        assert_eq!(plan[10].name, "python-deps");
+        assert_eq!(plan[10].name, "dependencies");
         assert_eq!(plan[10].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[10].script_fallback, true);
+        assert_eq!(plan[11].name, "python-deps");
+        assert_eq!(plan[11].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[11].script_fallback, true);
     }
 
     #[test]
@@ -2497,6 +2679,40 @@ mod tests {
         assert_eq!(arm_plan.archive_name, "uv-aarch64-pc-windows-msvc.zip");
         let x86_plan = windows_uv_runtime_stage_plan(&hermes_home, "x86").unwrap();
         assert_eq!(x86_plan.archive_name, "uv-i686-pc-windows-msvc.zip");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn windows_git_runtime_stage_plan_matches_pinned_portable_git_assets() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-git-runtime-plan-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+
+        let x64 = windows_git_runtime_stage_plan(&hermes_home, "x64").unwrap();
+
+        assert_eq!(x64.tag, "v2.54.0.windows.1");
+        assert_eq!(x64.version, "2.54.0");
+        assert_eq!(x64.archive_name, "PortableGit-2.54.0-64-bit.7z.exe");
+        assert_eq!(
+            x64.download_url,
+            concat!(
+                "https://github.com/git-for-windows/git/releases/download/",
+                "v2.54.0.windows.1/PortableGit-2.54.0-64-bit.7z.exe"
+            )
+        );
+        assert_eq!(x64.install_dir, hermes_home.join("git"));
+        assert_eq!(x64.git_exe, hermes_home.join("git").join("cmd").join("git.exe"));
+        assert_eq!(x64.bash_exe, hermes_home.join("git").join("bin").join("bash.exe"));
+        assert_eq!(x64.is_zip, false);
+
+        let arm = windows_git_runtime_stage_plan(&hermes_home, "arm64").unwrap();
+        assert_eq!(arm.archive_name, "PortableGit-2.54.0-arm64.7z.exe");
+        let x86 = windows_git_runtime_stage_plan(&hermes_home, "x86").unwrap();
+        assert_eq!(x86.archive_name, "MinGit-2.54.0-32-bit.zip");
+        assert_eq!(x86.is_zip, true);
 
         let _ = std::fs::remove_dir_all(&root);
     }

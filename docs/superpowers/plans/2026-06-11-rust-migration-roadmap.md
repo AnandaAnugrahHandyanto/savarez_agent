@@ -152,6 +152,10 @@ language-specific setup where needed.
 - Windows `uv` now has a Rust native-first GitHub release ZIP path for x64, ARM64, and x86, installing `uv.exe` into
   `$HERMES_HOME/bin` and preserving the PowerShell astral installer as fallback for download, extraction, or version
   check failures.
+- Windows `git` now has a Rust native-first path for the same pinned Git for Windows release used by `install.ps1`,
+  downloading PortableGit or 32-bit MinGit into `$HERMES_HOME/git`, updating current/User PATH entries, and persisting
+  `HERMES_GIT_BASH_PATH` when Bash is available; the PowerShell stage remains fallback for download/extraction/PATH
+  failures.
 - Windows `node` now has a Rust native-first portable ZIP path for Node.js v22, including official index resolution,
   ZIP download/extraction into `$HERMES_HOME/node`, current-process PATH update, and User PATH persistence; the
   PowerShell stage remains fallback for download, extraction, PATH, or version-verification failures.
@@ -183,8 +187,8 @@ language-specific setup where needed.
 **Still script-backed:**
 - Language/runtime setup: uv, Python dependency fallback tiers when `uv.lock` sync is unavailable, Node installation
   on Unix or Windows fallback paths, Unix npm dependency installation when npm is available, Unix desktop build when
-  the desktop package is present, and script fallback for Windows uv, Windows Node, Windows npm, Windows desktop
-  recovery, and platform SDK recovery.
+  the desktop package is present, and script fallback for Windows uv, Windows Git, Windows Node, Windows npm, Windows
+  desktop recovery, and platform SDK recovery.
 - Repository clone/update stage execution until the Git/ZIP fallback matrix has a parity suite and native stage wiring.
 - Remaining platform shell/profile edge cases that are not covered by the current Rust path-stage helpers.
 
