@@ -20,6 +20,7 @@ from pathlib import Path
 def _run_apply_profile_override(
     tmp_path, monkeypatch, *, hermes_home: str | None, active_profile: str | None,
     argv: list[str] | None = None,
+    hermes_profile: str | None = None,
 ):
     """Run _apply_profile_override in isolation.
 
@@ -34,12 +35,18 @@ def _run_apply_profile_override(
 
     if active_profile and active_profile != "default":
         (hermes_root / "profiles" / active_profile).mkdir(parents=True, exist_ok=True)
+    if hermes_profile and hermes_profile != "default":
+        (hermes_root / "profiles" / hermes_profile).mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     if hermes_home is not None:
         monkeypatch.setenv("HERMES_HOME", hermes_home)
     else:
         monkeypatch.delenv("HERMES_HOME", raising=False)
+    if hermes_profile is not None:
+        monkeypatch.setenv("HERMES_PROFILE", hermes_profile)
+    else:
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
 
     monkeypatch.setattr(sys, "argv", argv or ["hermes", "gateway", "start"])
 
@@ -138,3 +145,58 @@ class TestApplyProfileOverrideHermesHomeGuard:
         _apply_profile_override()
 
         assert os.environ.get("HERMES_HOME") is None
+
+    def test_hermes_profile_env_redirects_to_profile_when_home_unset(
+        self, tmp_path, monkeypatch
+    ):
+        """HERMES_PROFILE is the env-var equivalent of --profile.
+
+        Regression for `HERMES_PROFILE=artisan hermes config set ...`: the
+        CLI must resolve HERMES_HOME to .../profiles/artisan before config.py
+        imports and binds get_config_path().
+        """
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile=None,
+            hermes_profile="artisan",
+        )
+
+        assert result is not None
+        assert result.endswith("profiles/artisan")
+
+    def test_hermes_profile_env_redirects_when_home_points_at_root(
+        self, tmp_path, monkeypatch
+    ):
+        """HERMES_HOME=<root> must not suppress explicit HERMES_PROFILE."""
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=str(hermes_root),
+            active_profile=None,
+            hermes_profile="artisan",
+        )
+
+        assert result == str(hermes_root / "profiles" / "artisan")
+
+    def test_profile_flag_takes_precedence_over_hermes_profile_env(
+        self, tmp_path, monkeypatch
+    ):
+        """Explicit --profile remains stronger than HERMES_PROFILE."""
+        (tmp_path / ".hermes" / "profiles" / "coder").mkdir(parents=True)
+
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile=None,
+            hermes_profile="artisan",
+            argv=["hermes", "--profile", "coder", "config", "path"],
+        )
+
+        assert result is not None
+        assert result.endswith("profiles/coder")
