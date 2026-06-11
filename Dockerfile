@@ -199,13 +199,19 @@ COPY --chown=hermes:hermes . .
 # /opt/hermes/gateway is runtime-writable: Python may create __pycache__ and
 # gateway state artifacts beneath the package after services drop privileges,
 # especially when the hermes UID is remapped at boot (#27221).
+# /opt/hermes/scripts/whatsapp-bridge is runtime-writable: the WhatsApp
+# setup wizard (hermes_cli/main.py) runs `npm install` there at first use
+# to build the Node bridge's node_modules, so the directory must stay
+# writable by the (possibly UID-remapped) hermes user — otherwise setup
+# fails with `EACCES: mkdir '.../whatsapp-bridge/node_modules'`. Mirrored
+# in docker/stage2-hook.sh's build-tree chown.
 # The .venv MUST remain hermes-writable so lazy_deps.py can install
 # remaining optional platform packages and future pin bumps at first use.
 # Without this, `uv pip install` fails with EACCES and adapters silently
 # fail to load.  See tools/lazy_deps.py.
 USER root
 RUN chmod -R a+rX /opt/hermes && \
-    chown -R hermes:hermes /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/gateway /opt/hermes/node_modules
+    chown -R hermes:hermes /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/gateway /opt/hermes/node_modules /opt/hermes/scripts/whatsapp-bridge
 # Start as root so the s6-overlay stage2 hook can usermod/groupmod and chown
 # the data volume. Each supervised service then drops to the hermes user via
 # `s6-setuidgid hermes` in its run script. If HERMES_UID is unset, services
