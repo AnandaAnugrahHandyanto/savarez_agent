@@ -701,16 +701,20 @@ realtime_voice:
     - start_agent_task
     - get_agent_task_status
     - summarize_agent_task
+    - ask_context
 ```
 
 Realtime voice uses a provider-neutral runtime layer. To add another provider, implement a `RealtimeVoiceSession` adapter and register it through `gateway.realtime_voice.providers`; Discord command handling should not need provider-specific changes.
 
 The default Hermes realtime tools are:
 
-- `ask_agent`: ask Hermes for a concise answer and return it to the realtime provider.
-- `start_agent_task`: start a bounded background Hermes task and immediately return a `task_id`.
-- `get_agent_task_status`: check a realtime background task by `task_id`.
-- `summarize_agent_task`: return the completed task result or current task state.
+- `ask_agent`: ask Hermes for a concise answer and return it to the realtime provider. If the tool result includes separate `speak`, `display`, or `artifacts`, only `speak` is sent back to audio; display/artifact content is posted to the text channel.
+- `start_agent_task`: start a bounded background Hermes task and immediately return an internal `task_id` plus a human-readable `title`. User-facing Discord status messages use the title, not the raw id.
+- `get_agent_task_status`: check a realtime background task by `task_id` or title.
+- `summarize_agent_task`: return the completed task result or current task state by `task_id` or title.
+- `ask_context`: read-only lookup over durable memory and past session history for narrow continuity questions. It does not write memory or execute side effects.
+
+Background realtime agents also receive a private `realtime_task_update` local tool. That tool is injected only into the inner agent for the current realtime task, not into the global Hermes tool registry, plugin list, MCP discovery, or unrelated agents. When the inner agent calls it, Hermes posts a one-line progress update to the Discord text channel while the voice conversation stays responsive.
 
 Set `discord.voice_backend: turn_based` or omit it to keep the existing behavior.
 
