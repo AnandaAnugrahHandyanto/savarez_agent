@@ -1,13 +1,14 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect, useState } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { Thread } from './thread'
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
 
 const resizeObservers = new Set<TestResizeObserver>()
+const animationFrameTimers = new Set<number>()
 
 class TestResizeObserver {
   private target: Element | null = null
@@ -44,10 +45,47 @@ class TestResizeObserver {
 }
 
 vi.stubGlobal('ResizeObserver', TestResizeObserver)
-vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
-  window.setTimeout(() => callback(performance.now()), 0)
-)
-vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
+
+function requestAnimationFrameStub(callback: FrameRequestCallback) {
+  const targetWindow = window
+  const id = targetWindow.setTimeout(() => {
+    animationFrameTimers.delete(id)
+    if (typeof window === 'undefined' || window !== targetWindow) {
+      return
+    }
+
+    callback(targetWindow.performance.now())
+  }, 0)
+  animationFrameTimers.add(id)
+  return id
+}
+
+function cancelAnimationFrameStub(id: number) {
+  animationFrameTimers.delete(id)
+  window.clearTimeout(id)
+}
+
+function installAnimationFrameStub() {
+  Object.defineProperty(window, 'requestAnimationFrame', {
+    configurable: true,
+    value: requestAnimationFrameStub,
+    writable: true
+  })
+  Object.defineProperty(window, 'cancelAnimationFrame', {
+    configurable: true,
+    value: cancelAnimationFrameStub,
+    writable: true
+  })
+  vi.stubGlobal('requestAnimationFrame', requestAnimationFrameStub)
+  vi.stubGlobal('cancelAnimationFrame', cancelAnimationFrameStub)
+}
+
+function clearPendingAnimationFrames() {
+  for (const id of animationFrameTimers) {
+    window.clearTimeout(id)
+  }
+  animationFrameTimers.clear()
+}
 
 Element.prototype.scrollTo = function scrollTo() {}
 
@@ -398,6 +436,13 @@ function IntroHarness() {
 
 describe('assistant-ui streaming renderer', () => {
   beforeEach(() => {
+    installAnimationFrameStub()
+    resizeObservers.clear()
+  })
+
+  afterEach(() => {
+    cleanup()
+    clearPendingAnimationFrames()
     resizeObservers.clear()
   })
 
