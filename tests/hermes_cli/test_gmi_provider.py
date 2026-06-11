@@ -150,7 +150,7 @@ class TestGmiDoctor:
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
         (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
-        (home / ".env").write_text("GMI_API_KEY=*** encoding="utf-8")
+        (home / ".env").write_text("GMI_API_KEY=***\n", encoding="utf-8")
         project = tmp_path / "project"
         project.mkdir(exist_ok=True)
 
