@@ -19,6 +19,14 @@ import { setThreadScrolledUp } from '@/store/thread-scroll'
 const ESTIMATED_ITEM_HEIGHT = 220
 const OVERSCAN = 4
 const AT_BOTTOM_THRESHOLD = 4
+// When the user is mid-conversation (not parked at bottom), skip virtualizer
+// scroll adjustments whose delta falls within this threshold. These are
+// measurement noise from async rendering (Shiki highlighting, image loading)
+// that creates a feedback loop: measure → adjust → re-measure → re-adjust,
+// producing visible rubber-banding / content jumping.
+// The browser's native CSS overflow-anchor handles real content growth/shrink
+// without fighting the virtualizer.
+const MEASUREMENT_NOISE_THRESHOLD = 50
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -102,6 +110,12 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
     // adjust creates a feedback loop where the two fight each other,
     // producing visible rubber-banding (the view snaps to the composer
     // then jumps back up).
+    // Extended: when the user is mid-conversation (not at bottom), skip small
+    // measurement adjustments (≤ MEASUREMENT_NOISE_THRESHOLD) that cause the
+    // same rubber-banding — async rendering (Shiki, images) changes item
+    // heights, the virtualizer adjusts, re-measures, adjusts again, and the
+    // viewport visibly jumps up/down. The browser's native overflow-anchor
+    // handles real content growth without feedback loops.
     scrollToFn: (offset, _options, instance) => {
       const el = instance.scrollElement
 
@@ -109,13 +123,32 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
         return
       }
 
-      if (stickyBottomRef.current) {
-        const maxScroll = el.scrollHeight - el.clientHeight
-        const distFromBottom = maxScroll - el.scrollTop
+      const maxScroll = el.scrollHeight - el.clientHeight
+      const distFromBottom = maxScroll - el.scrollTop
+      const delta = offset - el.scrollTop
 
-        if (distFromBottom <= AT_BOTTOM_THRESHOLD && offset < maxScroll) {
+      // Case 1: User is parked at or near the bottom — existing guard.
+      // Skip virtualizer adjustments that would scroll up; our
+      // pinToBottom loop handles this for streaming turns.
+      if (distFromBottom <= AT_BOTTOM_THRESHOLD) {
+        // Only skip if the adjustment would scroll us away from bottom.
+        if (offset < maxScroll) {
           return
         }
+        // Otherwise (offset >= maxScroll, i.e. it's a scroll-to-bottom),
+        // fall through and let it execute.
+      }
+
+      // Case 2: User is reading mid-conversation (not at bottom).
+      // Block small offset changes from virtualizer measurement
+      // corrections. These are triggered by item height changes after
+      // async rendering (Shiki highlighting, image load) and create a
+      // feedback loop that makes the content visibly jump.
+      // Large offsets (session change, jumpToBottom, user scroll) always
+      // pass through. Browser native overflow-anchor auto handles real
+      // content growth without fighting the virtualizer.
+      if (distFromBottom > AT_BOTTOM_THRESHOLD && Math.abs(delta) <= MEASUREMENT_NOISE_THRESHOLD) {
+        return
       }
 
       ;(el as HTMLElement).scrollTo(0, offset)
