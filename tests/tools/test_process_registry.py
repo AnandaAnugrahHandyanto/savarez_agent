@@ -335,30 +335,44 @@ class TestStdinHelpers:
         proc.stdin.close.assert_not_called()
         guard.assert_called_once()
 
-    def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
-        session = registry.spawn_local(
-            'python3 -c "import sys; print(sys.stdin.read().strip())"',
-            cwd=str(tmp_path),
-            use_pty=False,
-        )
+    def test_close_stdin_allows_eof_driven_process_to_finish(
+        self, registry, tmp_path
+    ):
+        # This test verifies EOF-driven stdin completion, not approval
+        # behavior. The stdin guard reframes buffered stdin as an equivalent
+        # one-shot command (here ``python3 -c hello``) and runs it through
+        # check_all_command_guards, which flags ``-c`` script execution for
+        # approval whenever HERMES_INTERACTIVE/HERMES_EXEC_ASK are set. Other
+        # suites toggle those on process-global os.environ from background
+        # threads, so the guard's verdict is racy under xdist. Patch the guard
+        # to approve so this test deterministically exercises the stdin path.
+        with patch(
+            "tools.process_registry.check_all_command_guards",
+            return_value={"approved": True, "message": None},
+        ):
+            session = registry.spawn_local(
+                'python3 -c "import sys; print(sys.stdin.read().strip())"',
+                cwd=str(tmp_path),
+                use_pty=False,
+            )
 
-        try:
-            time.sleep(0.5)
-            assert registry.submit_stdin(session.id, "hello")["status"] == "ok"
-            assert registry.close_stdin(session.id)["status"] == "ok"
+            try:
+                time.sleep(0.5)
+                assert registry.submit_stdin(session.id, "hello")["status"] == "ok"
+                assert registry.close_stdin(session.id)["status"] == "ok"
 
-            deadline = time.time() + 5
-            while time.time() < deadline:
-                poll = registry.poll(session.id)
-                if poll["status"] == "exited":
-                    assert poll["exit_code"] == 0
-                    assert "hello" in poll["output_preview"]
-                    return
-                time.sleep(0.2)
+                deadline = time.time() + 5
+                while time.time() < deadline:
+                    poll = registry.poll(session.id)
+                    if poll["status"] == "exited":
+                        assert poll["exit_code"] == 0
+                        assert "hello" in poll["output_preview"]
+                        return
+                    time.sleep(0.2)
 
-            pytest.fail("process did not exit after stdin was closed")
-        finally:
-            registry.kill_process(session.id)
+                pytest.fail("process did not exit after stdin was closed")
+            finally:
+                registry.kill_process(session.id)
 
 
 # =========================================================================
