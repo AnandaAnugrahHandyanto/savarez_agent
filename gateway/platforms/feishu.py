@@ -137,6 +137,8 @@ try:
         Settings,
         SettingsCardRequest,
         SettingsCardRequestBody,
+        UpdateCardRequest,
+        UpdateCardRequestBody,
     )
 
     HAS_CARDKIT = True
@@ -149,6 +151,8 @@ except (ImportError, AttributeError):
     Settings = None  # type: ignore[assignment,misc]
     SettingsCardRequest = None  # type: ignore[assignment,misc]
     SettingsCardRequestBody = None  # type: ignore[assignment,misc]
+    UpdateCardRequest = None  # type: ignore[assignment,misc]
+    UpdateCardRequestBody = None  # type: ignore[assignment,misc]
 
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
@@ -1995,12 +1999,21 @@ class FeishuAdapter(BasePlatformAdapter):
             "header": {
                 "title": {
                     "tag": "lark_md",
-                    "content": f"🪶 {_display_name}",
+                    "content": f"\U0001f916 {_display_name}",
+                },
+                "subtitle": {
+                    "tag": "plain_text",
+                    "content": "正在思考...",
                 },
                 "text_tag_list": [
                     {
                         "tag": "text_tag",
                         "text": {"tag": "plain_text", "content": "AI"},
+                        "color": "blue",
+                    },
+                    {
+                        "tag": "text_tag",
+                        "text": {"tag": "plain_text", "content": "生成中"},
                         "color": "blue",
                     },
                 ],
@@ -2194,14 +2207,96 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=str(exc))
 
+    @staticmethod
+    def _build_finalized_header_json(
+        *,
+        bot_name: str = "Hermes",
+        status: str = "completed",
+        error_summary: str = "",
+    ) -> str:
+        """Build a card JSON with status-appropriate header for post-stream update."""
+        _display_name = bot_name or "Hermes"
+        if status == "error":
+            template = "red"
+            icon_color = "red"
+            tags = [
+                {"tag": "text_tag", "text": {"tag": "plain_text", "content": "AI"}, "color": "red"},
+                {"tag": "text_tag", "text": {"tag": "plain_text", "content": "错误"}, "color": "red"},
+            ]
+            subtitle = {"tag": "plain_text", "content": error_summary[:80]} if error_summary else None
+        else:
+            template = "turquoise"
+            icon_color = "turquoise"
+            tags = [
+                {"tag": "text_tag", "text": {"tag": "plain_text", "content": "AI"}, "color": "turquoise"},
+            ]
+            subtitle = None
+
+        header: Dict[str, Any] = {
+            "title": {"tag": "lark_md", "content": f"\U0001f916 {_display_name}"},
+            "text_tag_list": tags,
+            "template": template,
+            "ud_icon": {"token": "larkcommunity_colorful", "style": {"color": icon_color}},
+        }
+        if subtitle:
+            header["subtitle"] = subtitle
+
+        card: Dict[str, Any] = {
+            "schema": "2.0",
+            "header": header,
+            "config": {"streaming_mode": True},
+            "body": {"elements": []},
+        }
+        return json.dumps(card, ensure_ascii=False)
+
+    async def _update_card_header(
+        self,
+        card_id: str,
+        card_state: Dict[str, Any],
+        *,
+        bot_name: str = "Hermes",
+        status: str = "completed",
+        error_summary: str = "",
+    ) -> None:
+        """Update the streaming card header to reflect completion/error status."""
+        if not HAS_CARDKIT:
+            return
+        try:
+            seq = card_state.get("sequence", 0) + 1
+            card_json = self._build_finalized_header_json(
+                bot_name=bot_name, status=status, error_summary=error_summary,
+            )
+            from lark_oapi.api.cardkit.v1.model import Card as CardKitCard
+            card_obj = CardKitCard.builder() \
+                .type("card_json") \
+                .data(card_json) \
+                .build()
+            body = UpdateCardRequestBody.builder() \
+                .card(card_obj) \
+                .sequence(seq) \
+                .uuid(str(uuid.uuid4())) \
+                .build()
+            request = UpdateCardRequest.builder() \
+                .card_id(card_id) \
+                .request_body(body) \
+                .build()
+            await asyncio.to_thread(
+                self._client.cardkit.v1.card.update, request,
+            )
+            card_state["sequence"] = seq
+        except Exception as exc:
+            logger.debug("[Feishu] Card header update failed (non-fatal): %s", exc)
+
     async def _close_streaming_card(
         self,
         chat_id: str,
         card_id: str,
         *,
         card_state: Optional[Dict[str, Any]] = None,
+        status: str = "completed",
+        error_summary: str = "",
     ) -> None:
-        """Close a card's streaming mode and remove it from tracking.
+        """Close a card's streaming mode and update header, then remove from tracking.
 
         *card_state* can be passed directly when the caller has already
         popped the cards dict from ``_streaming_cards`` (e.g.
@@ -2213,6 +2308,11 @@ class FeishuAdapter(BasePlatformAdapter):
                 # Get the current sequence for this card (need strict increment)
                 if card_state is None:
                     card_state = self._streaming_cards.get(chat_id, {}).get(card_id, {})
+                # Update header to reflect completion/error status
+                await self._update_card_header(
+                    card_id, card_state,
+                    bot_name=self._bot_name, status=status, error_summary=error_summary,
+                )
                 seq = card_state.get("sequence", 0) + 1
 
                 config = Config.builder() \
