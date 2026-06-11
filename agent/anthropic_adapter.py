@@ -2282,8 +2282,21 @@ def build_anthropic_kwargs(
 
     if anthropic_tools:
         kwargs["tools"] = anthropic_tools
-        # Map OpenAI tool_choice to Anthropic format
-        if tool_choice == "auto" or tool_choice is None:
+        # Map OpenAI tool_choice to Anthropic format.
+        # DeepSeek's /anthropic endpoint only accepts
+        #   {"type": "function", "function": {"name": "..."}}
+        # and rejects Anthropic-native {"type": "auto"} / {"type": "any"}.
+        # Omit tool_choice for "auto" (defaults to auto) and for "required"
+        # (DeepSeek has no equivalent); only emit for a specific tool name.
+        _is_deepseek = _is_deepseek_anthropic_endpoint(base_url)
+        if _is_deepseek:
+            if isinstance(tool_choice, str) and tool_choice not in ("auto", "required", "none"):
+                # Specific tool name — DeepSeek supports this variant.
+                kwargs["tool_choice"] = {"type": "function", "function": {"name": tool_choice}}
+            elif tool_choice == "none":
+                kwargs.pop("tools", None)
+            # else: "auto"/None/"required" — omit tool_choice, default is auto.
+        elif tool_choice == "auto" or tool_choice is None:
             kwargs["tool_choice"] = {"type": "auto"}
         elif tool_choice == "required":
             kwargs["tool_choice"] = {"type": "any"}
