@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
+import { copyTextWithFeedback } from '@/components/ui/copy-button'
 import {
   Dialog,
   DialogContent,
@@ -258,10 +259,13 @@ function ProfileDetail({
 
     try {
       const { command } = await getProfileSetupCommand(profile.name)
-      await navigator.clipboard.writeText(command)
-      notify({ kind: 'success', title: p.setupCopied, message: command })
-    } catch (err) {
-      notifyError(err, p.failedCopy)
+      await copyTextWithFeedback(command, {
+        errorMessage: p.failedCopy,
+        successMessage: command,
+        successTitle: p.setupCopied
+      })
+    } catch {
+      // copyTextWithFeedback already posts the failure toast.
     } finally {
       setCopying(false)
     }
