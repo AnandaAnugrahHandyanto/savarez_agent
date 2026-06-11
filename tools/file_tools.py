@@ -198,19 +198,17 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     live = _get_live_tracking_cwd(task_id)
     configured = _configured_terminal_cwd()
     raw_base = Path(configured).expanduser() if configured else None
-    if live and task_id not in ("", "default"):
-        # A concrete tool task id with live terminal state is the most precise
-        # source of truth for relative file operations and stale-read tracking.
-        # This should win over process/session-level TERMINAL_CWD values that
-        # can be inherited from the parent gateway/CLI context.
+    if live:
+        # The live terminal cwd is the directory the agent is actually working
+        # in, so it remains authoritative whenever it is available.  This must
+        # win even for the default task id: gateway/CLI sessions can carry an
+        # inherited absolute TERMINAL_CWD while the terminal has since moved to
+        # the real worktree/workspace.
         base = Path(live).expanduser()
     elif raw_base is not None and raw_base.is_absolute():
-        # An explicit absolute workspace from the gateway/config is already
-        # authoritative and should not be displaced by stale shared default
-        # terminal state left behind by another test/session.
+        # A sentinel-free absolute workspace from the gateway/config anchors a
+        # fresh session before any terminal command has populated live cwd.
         base = raw_base
-    elif live:
-        base = Path(live).expanduser()
     else:
         base = raw_base if raw_base is not None else Path(os.getcwd())
     if not base.is_absolute():
