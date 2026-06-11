@@ -1,6 +1,7 @@
 import { type MutableRefObject, useEffect, useRef } from 'react'
 
 import { isNewChatRoute } from '@/app/routes'
+import { getLastActiveSessionFromStorage } from '@/store/session'
 
 interface RouteResumeOptions {
   activeSessionId: string | null
@@ -122,7 +123,16 @@ export function useRouteResume({
       (selectedStoredSessionId || activeSessionId || !freshDraftReady) &&
       !rawHashLooksLikeSession()
     ) {
-      startFreshSessionDraft(true)
+      // If the app was closed with an active session, resume it instead of
+      // starting a fresh draft. This restores the user's conversation context
+      // across app restarts.
+      const lastSession = !selectedStoredSessionId && !activeSessionId ? getLastActiveSessionFromStorage() : null
+
+      if (lastSession) {
+        void resumeSession(lastSession, true)
+      } else {
+        startFreshSessionDraft(true)
+      }
     }
   }, [
     activeSessionId,

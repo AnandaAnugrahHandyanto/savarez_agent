@@ -4,6 +4,12 @@ import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { persistString, storedString } from '@/lib/storage'
+
+const LAST_ACTIVE_SESSION_KEY = 'hermes.desktop.lastActiveSession'
+
+export function getLastActiveSessionFromStorage(): string | null {
+  return storedString(LAST_ACTIVE_SESSION_KEY)
+}
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
@@ -155,7 +161,10 @@ export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
 export const setWorkingSessionIds = (next: Updater<string[]>) => updateAtom($workingSessionIds, next)
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
-export const setSelectedStoredSessionId = (next: Updater<string | null>) => updateAtom($selectedStoredSessionId, next)
+export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
+  updateAtom($selectedStoredSessionId, next)
+  persistString(LAST_ACTIVE_SESSION_KEY, $selectedStoredSessionId.get())
+}
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 export const setBusy = (next: Updater<boolean>) => updateAtom($busy, next)
