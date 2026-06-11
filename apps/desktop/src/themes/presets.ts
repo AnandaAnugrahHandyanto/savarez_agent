@@ -307,6 +307,35 @@ const GITHUB_DARK_COLORBLIND_COLORS: DesktopThemeColors = {
   userBubbleBorder: '#30363d'
 }
 
+const GITHUB_LIGHT_COLORBLIND_COLORS: DesktopThemeColors = {
+  background: '#ffffff',
+  foreground: '#24292f',
+  card: '#f6f8fa',
+  cardForeground: '#24292f',
+  muted: '#eaeef2',
+  mutedForeground: '#57606a',
+  popover: '#ffffff',
+  popoverForeground: '#24292f',
+  primary: '#0969da',
+  primaryForeground: '#ffffff',
+  secondary: '#ebecf0',
+  secondaryForeground: '#24292f',
+  accent: '#ddf4ff',
+  accentForeground: '#0969da',
+  border: '#d0d7de',
+  input: '#ffffff',
+  ring: '#0969da',
+  midground: '#0969da',
+  midgroundForeground: '#ffffff',
+  composerRing: '#0969da',
+  destructive: '#b35900',
+  destructiveForeground: '#ffffff',
+  sidebarBackground: '#f6f8fa',
+  sidebarBorder: '#d0d7de',
+  userBubble: '#ddf4ff',
+  userBubbleBorder: '#d0d7de'
+}
+
 /**
  * GitHub Dark Colorblind — faithful desktop clone of the GitHub Theme VS Code
  * extension's `GitHub Dark Colorblind (Beta)` palette. The source theme is MIT
@@ -363,6 +392,62 @@ export const githubDarkColorblindTheme: DesktopTheme = {
   }
 }
 
+/**
+ * GitHub Light Colorblind — faithful desktop clone of the GitHub Theme VS Code
+ * extension's `GitHub Light Colorblind (Beta)` palette. The source theme is MIT
+ * licensed in primer/github-vscode-theme (Copyright © 2020 Primer) and swaps
+ * red/green status colors for orange/blue cues for protanopia/deuteranopia
+ * accessibility.
+ */
+export const githubLightColorblindTheme: DesktopTheme = {
+  name: 'github-light-colorblind',
+  label: 'GitHub Light Colorblind',
+  description: 'GitHub light colorblind palette — blue/orange accessible contrast',
+  colors: GITHUB_LIGHT_COLORBLIND_COLORS,
+  darkColors: GITHUB_LIGHT_COLORBLIND_COLORS,
+  typography: {
+    fontMono: `"Cascadia Code", "JetBrains Mono", ${SYSTEM_MONO}`
+  },
+  terminal: {
+    foreground: '#24292f',
+    black: '#24292f',
+    red: '#b35900',
+    green: '#0550ae',
+    yellow: '#4d2d00',
+    blue: '#0969da',
+    magenta: '#8250df',
+    cyan: '#1b7c83',
+    white: '#6e7781',
+    brightBlack: '#57606a',
+    brightRed: '#8a4600',
+    brightGreen: '#0969da',
+    brightYellow: '#633c01',
+    brightBlue: '#218bff',
+    brightMagenta: '#a475f9',
+    brightCyan: '#3192aa',
+    brightWhite: '#8c959f'
+  },
+  darkTerminal: {
+    foreground: '#24292f',
+    black: '#24292f',
+    red: '#b35900',
+    green: '#0550ae',
+    yellow: '#4d2d00',
+    blue: '#0969da',
+    magenta: '#8250df',
+    cyan: '#1b7c83',
+    white: '#6e7781',
+    brightBlack: '#57606a',
+    brightRed: '#8a4600',
+    brightGreen: '#0969da',
+    brightYellow: '#633c01',
+    brightBlue: '#218bff',
+    brightMagenta: '#a475f9',
+    brightCyan: '#3192aa',
+    brightWhite: '#8c959f'
+  }
+}
+
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   nous: nousTheme,
   midnight: midnightTheme,
@@ -370,7 +455,8 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
   slate: slateTheme,
-  'github-dark-colorblind': githubDarkColorblindTheme
+  'github-dark-colorblind': githubDarkColorblindTheme,
+  'github-light-colorblind': githubLightColorblindTheme
 }
 
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)
