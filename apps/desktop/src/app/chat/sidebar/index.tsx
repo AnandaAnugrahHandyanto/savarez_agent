@@ -55,6 +55,7 @@ import {
   $sidebarRecentsOpen,
   $sidebarSessionOrderIds,
   $sidebarWorkspaceOrderIds,
+  $sidebarHideToolSessions,
   pinSession,
   reorderPinnedSession,
   SESSION_SEARCH_FOCUS_EVENT,
@@ -322,6 +323,7 @@ export function ChatSidebar({
   const contentVisible = sidebarOpen || overlayMounted
   const panesFlipped = useStore($panesFlipped)
   const agentsGrouped = useStore($sidebarAgentsGrouped)
+  const hideToolSessions = useStore($sidebarHideToolSessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
@@ -404,8 +406,11 @@ export function ChatSidebar({
   )
 
   const sortedSessions = useMemo(
-    () => [...visibleSessions].sort((a, b) => sessionTime(b) - sessionTime(a)),
-    [visibleSessions]
+    () => {
+      const sorted = [...visibleSessions].sort((a, b) => sessionTime(b) - sessionTime(a))
+      return hideToolSessions ? sorted.filter(s => s.source !== 'tool') : sorted
+    },
+    [visibleSessions, hideToolSessions]
   )
 
   const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
@@ -932,27 +937,48 @@ export function ChatSidebar({
                   // Grouping operates on unpinned recents; if everything is pinned
                   // the toggle does nothing, and it's irrelevant in the ALL-profiles
                   // view (always grouped by profile), so hide the button (not the slot).
-                  <div className="grid size-6 shrink-0 place-items-center">
+                  <div className="flex shrink-0 items-center gap-0.5">
                     {!showAllProfiles && agentSessions.length > 0 ? (
-                      <Tip label={agentsGrouped ? s.groupTitleGrouped : s.groupTitleUngrouped}>
+                      <Tip label={hideToolSessions ? s.showToolSessions : s.hideToolSessions}>
                         <Button
-                          aria-label={agentsGrouped ? s.groupAriaGrouped : s.groupAriaUngrouped}
+                          aria-label={hideToolSessions ? s.showToolSessions : s.hideToolSessions}
                           className={cn(
                             'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
-                            agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+                            hideToolSessions && 'bg-(--ui-control-active-background) text-foreground opacity-100'
                           )}
                           onClick={event => {
                             event.stopPropagation()
-                            setSidebarRecentsOpen(true)
-                            setSidebarAgentsGrouped(!agentsGrouped)
+                            $sidebarHideToolSessions.set(!hideToolSessions)
                           }}
                           size="icon-xs"
                           variant="ghost"
                         >
-                          <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
+                          <Codicon name={hideToolSessions ? 'eye-closed' : 'eye'} size="0.75rem" />
                         </Button>
                       </Tip>
                     ) : null}
+                    <div className="grid size-6 shrink-0 place-items-center">
+                      {!showAllProfiles && agentSessions.length > 0 ? (
+                        <Tip label={agentsGrouped ? s.groupTitleGrouped : s.groupTitleUngrouped}>
+                          <Button
+                            aria-label={agentsGrouped ? s.groupAriaGrouped : s.groupAriaUngrouped}
+                            className={cn(
+                              'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
+                              agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+                            )}
+                            onClick={event => {
+                              event.stopPropagation()
+                              setSidebarRecentsOpen(true)
+                              setSidebarAgentsGrouped(!agentsGrouped)
+                            }}
+                            size="icon-xs"
+                            variant="ghost"
+                          >
+                            <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
+                          </Button>
+                        </Tip>
+                      ) : null}
+                    </div>
                   </div>
                 }
                 label={s.sessions}

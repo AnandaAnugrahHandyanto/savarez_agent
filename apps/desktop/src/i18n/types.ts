@@ -836,6 +836,8 @@ export interface Translations {
     groupAriaUngrouped: string
     groupTitleGrouped: string
     groupTitleUngrouped: string
+    hideToolSessions: string
+    showToolSessions: string
     allPinned: string
     shiftClickHint: string
     noWorkspace: string

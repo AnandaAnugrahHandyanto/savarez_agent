@@ -1275,6 +1275,8 @@ export const zh: Translations = {
     groupAriaUngrouped: '按工作区分组会话',
     groupTitleGrouped: '取消分组',
     groupTitleUngrouped: '按工作区分组',
+    hideToolSessions: '隐藏工具会话',
+    showToolSessions: '显示工具会话',
     allPinned: '这里的全部已置顶。取消置顶某个对话即可在最近中显示。',
     shiftClickHint: 'Shift+ 单击对话以置顶 · 拖动以重新排序',
     noWorkspace: '无工作区',
