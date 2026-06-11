@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
 from utils import atomic_replace
+from cron.audit import audit_event, completion_details, removal_details, update_details
 
 try:
     from croniter import croniter
@@ -708,6 +709,12 @@ def create_job(
     jobs = load_jobs()
     jobs.append(job)
     save_jobs(jobs)
+    audit_event(
+        job["id"],
+        job.get("name", ""),
+        "created",
+        {"schedule": job.get("schedule_display", ""), "deliver": job.get("deliver")},
+    )
 
     return job
 
@@ -767,7 +774,13 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     return jobs
 
 
-def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def update_job(
+    job_id: str,
+    updates: Dict[str, Any],
+    *,
+    audit_action: str = "updated",
+    audit_details: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
     # Block mutation of immutable fields. ``id`` in particular is a filesystem
     # path component under OUTPUT_DIR — letting an update change it leaks
@@ -829,7 +842,14 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
         jobs[i] = updated
         save_jobs(jobs)
-        return _normalize_job_record(jobs[i])
+        normalized = _normalize_job_record(jobs[i])
+        audit_event(
+            normalized["id"],
+            normalized.get("name", ""),
+            audit_action,
+            audit_details if audit_details is not None else update_details(updates),
+        )
+        return normalized
     return None
 
 
@@ -846,6 +866,8 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
             "paused_at": _hermes_now().isoformat(),
             "paused_reason": reason,
         },
+        audit_action="paused",
+        audit_details={"reason": reason} if reason else {},
     )
 
 
@@ -865,6 +887,8 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
             "paused_reason": None,
             "next_run_at": next_run_at,
         },
+        audit_action="resumed",
+        audit_details={},
     )
 
 
@@ -882,6 +906,8 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
             "paused_reason": None,
             "next_run_at": _hermes_now().isoformat(),
         },
+        audit_action="triggered",
+        audit_details={},
     )
 
 
@@ -903,6 +929,7 @@ def remove_job(job_id: str) -> bool:
         # Clean up output directory to prevent orphaned dirs accumulating
         if job_output_dir.exists():
             shutil.rmtree(job_output_dir)
+        audit_event(canonical_id, job.get("name", ""), "removed", removal_details("manual"))
         return True
     return False
 
@@ -938,8 +965,11 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                     completed = job["repeat"]["completed"]
                     if times is not None and times > 0 and completed >= times:
                         # Remove the job (limit reached)
+                        job_name = job.get("name", "")
                         jobs.pop(i)
                         save_jobs(jobs)
+                        audit_event(job_id, job_name, "completed" if success else "failed", completion_details(success, error, delivery_error))
+                        audit_event(job_id, job_name, "removed", removal_details("repeat_limit"))
                         return
                 
                 # Compute next run
@@ -971,10 +1001,12 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                     else:
                         job["enabled"] = False
                         job["state"] = "completed"
+                        audit_event(job_id, job.get("name", ""), "disabled", removal_details("oneshot_completed"))
                 elif job.get("state") != "paused":
                     job["state"] = "scheduled"
 
                 save_jobs(jobs)
+                audit_event(job_id, job.get("name", ""), "completed" if success else "failed", completion_details(success, error, delivery_error))
                 return
 
         logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
