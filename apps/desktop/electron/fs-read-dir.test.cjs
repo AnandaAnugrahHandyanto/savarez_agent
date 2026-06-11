@@ -288,3 +288,77 @@ test('readDirForIpc stats symbolic links and unknown entries without dropping th
     { name: 'unknown-entry', path: path.join(resolved, 'unknown-entry'), isDirectory: false }
   ])
 })
+
+test('readDirForIpc bounds concurrent stats while preserving complete sorted output', async () => {
+  const input = path.join('virtual-root')
+  const resolved = path.resolve(input)
+  const names = Array.from({ length: 105 }, (_, index) => `entry-${String(104 - index).padStart(3, '0')}`)
+  const failedName = 'entry-100'
+  const directoryNames = new Set(names.filter((_, index) => index % 10 === 4))
+  const successfulDirectoryNames = new Set([...directoryNames].filter(name => name !== failedName))
+  const statCalls = []
+  let active = 0
+  let peak = 0
+  let releaseStats
+  let markFirstStatStarted
+  const statsReleased = new Promise(resolve => {
+    releaseStats = resolve
+  })
+  const firstStatStarted = new Promise(resolve => {
+    markFirstStatStarted = resolve
+  })
+  const fsImpl = {
+    promises: {
+      readdir: async () => [
+        fakeDirent('node_modules', { symlink: true }),
+        ...names.map((name, index) => fakeDirent(name, { symlink: index % 2 === 0 }))
+      ],
+      stat: async fullPath => {
+        if (fullPath === resolved) {
+          return { isDirectory: () => true }
+        }
+
+        statCalls.push(fullPath)
+        active += 1
+        peak = Math.max(peak, active)
+        markFirstStatStarted()
+        await statsReleased
+        active -= 1
+
+        const name = path.basename(fullPath)
+        if (name === failedName) {
+          throw Object.assign(new Error('gone'), { code: 'ENOENT' })
+        }
+
+        return { isDirectory: () => successfulDirectoryNames.has(name) }
+      }
+    }
+  }
+
+  const resultPromise = readDirForIpc(input, { fs: fsImpl })
+  await firstStatStarted
+  await new Promise(resolve => setImmediate(resolve))
+  releaseStats()
+  const result = await resultPromise
+
+  const expectedNames = [
+    ...names.filter(name => successfulDirectoryNames.has(name)).sort(),
+    ...names.filter(name => !successfulDirectoryNames.has(name)).sort()
+  ]
+
+  assert.equal(result.error, undefined)
+  assert.equal(result.entries.length, names.length)
+  assert.equal(statCalls.length, names.length)
+  assert.equal(statCalls.some(fullPath => fullPath.endsWith(`${path.sep}node_modules`)), false)
+  assert.ok(peak > 1, `expected concurrent stats, observed peak ${peak}`)
+  assert.ok(peak <= 16, `expected at most 16 concurrent stats, observed peak ${peak}`)
+  assert.deepEqual(
+    result.entries.map(entry => entry.name),
+    expectedNames
+  )
+  assert.equal(result.entries.find(entry => entry.name === failedName)?.isDirectory, false)
+  assert.equal(
+    result.entries.filter(entry => entry.isDirectory).length,
+    successfulDirectoryNames.size
+  )
+})

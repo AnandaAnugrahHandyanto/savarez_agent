@@ -94,6 +94,18 @@ test('path helpers reject blank non-string NUL and Windows device syntax', async
   await rejectsWithCode(resolveReadableFileForIpc('file:///%E0%A4%A', { purpose: 'File preview' }), 'invalid-path')
 })
 
+test('resolveRequestedPathForIpc resolves relative paths from the trimmed base directory', () => {
+  const baseDir = path.join(os.tmpdir(), 'hermes-desktop-base')
+
+  assert.equal(
+    resolveRequestedPathForIpc('notes.txt', {
+      baseDir: `  ${baseDir}  `,
+      purpose: 'File preview'
+    }),
+    path.resolve(baseDir, 'notes.txt')
+  )
+})
+
 test('resolveReadableFileForIpc validates existence type size and sensitivity', async t => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-desktop-hardening-'))
   t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }))

@@ -161,8 +161,8 @@ function resolveRequestedPathForIpc(filePath, options = {}) {
   }
 
   const baseInput = typeof options.baseDir === 'string' && options.baseDir.trim() ? options.baseDir : process.cwd()
-  rejectUnsafePathSyntax(baseInput, purpose)
-  const resolvedBase = path.resolve(baseInput)
+  const safeBaseInput = rejectUnsafePathSyntax(baseInput, purpose)
+  const resolvedBase = path.resolve(safeBaseInput)
   rejectUnsafePathSyntax(resolvedBase, purpose)
   const resolvedPath = path.resolve(resolvedBase, raw)
   rejectUnsafePathSyntax(resolvedPath, purpose)

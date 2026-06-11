@@ -4,6 +4,8 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { resolveDirectoryForIpc } = require('./hardening.cjs')
 
+const FS_READDIR_STAT_CONCURRENCY = 16
+
 // Always-hidden noise (covers non-git projects too; gitignore catches many of
 // these, but the project tree should keep the same hygiene without one).
 const FS_READDIR_HIDDEN = new Set([
@@ -55,6 +57,25 @@ async function entryForDirent(dirent, resolved, fsImpl) {
   return { name: dirent.name, path: fullPath, isDirectory }
 }
 
+async function mapWithStatConcurrency(items, mapper) {
+  const results = new Array(items.length)
+  let nextIndex = 0
+
+  async function runWorker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex
+      nextIndex += 1
+      results[index] = await mapper(items[index])
+    }
+  }
+
+  const workerCount = Math.min(FS_READDIR_STAT_CONCURRENCY, items.length)
+  const workers = Array.from({ length: workerCount }, () => runWorker())
+  await Promise.all(workers)
+
+  return results
+}
+
 async function readDirForIpc(dirPath, options = {}) {
   const fsImpl = options.fs || fs
   let resolved
@@ -70,15 +91,10 @@ async function readDirForIpc(dirPath, options = {}) {
 
   try {
     const dirents = await fsImpl.promises.readdir(resolved, { withFileTypes: true })
-    const entries = []
-
-    for (const dirent of dirents) {
-      if (FS_READDIR_HIDDEN.has(dirent.name)) {
-        continue
-      }
-
-      entries.push(await entryForDirent(dirent, resolved, fsImpl))
-    }
+    const visibleDirents = dirents.filter(dirent => !FS_READDIR_HIDDEN.has(dirent.name))
+    const entries = await mapWithStatConcurrency(visibleDirents, dirent =>
+      entryForDirent(dirent, resolved, fsImpl)
+    )
 
     entries.sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.localeCompare(b.name))
 
