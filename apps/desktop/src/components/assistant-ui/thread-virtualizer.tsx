@@ -391,15 +391,29 @@ function useThreadScrollAnchor({
   // while the user is parked at the bottom. Uses useLayoutEffect so it
   // runs after React commits DOM mutations but before the browser paints
   // to avoid fighting with the virtualizer's own scrollToFn adjustments.
+  //
+  // Pins are coalesced to at most once per animation frame via a pending
+  // flag — during streaming, tokens arrive rapidly and getTotalSize()
+  // changes with each one. Without coalescing this would fire pinToBottom()
+  // on every render, causing excessive scrollTop writes and layout work.
   const prevTotalSizeRef = useRef(0)
+  const pinPendingRef = useRef(false)
   const totalSize = virtualizer.getTotalSize()
   useLayoutEffect(() => {
     if (!enabled) return
 
     if (totalSize > prevTotalSizeRef.current && stickyBottomRef.current) {
-      pinToBottom()
+      prevTotalSizeRef.current = totalSize
+      if (!pinPendingRef.current) {
+        pinPendingRef.current = true
+        requestAnimationFrame(() => {
+          pinPendingRef.current = false
+          if (stickyBottomRef.current) {
+            pinToBottom()
+          }
+        })
+      }
     }
-    prevTotalSizeRef.current = totalSize
   }, [totalSize, enabled, pinToBottom])
 
   // Jump to bottom on session change OR when an empty thread first gets
