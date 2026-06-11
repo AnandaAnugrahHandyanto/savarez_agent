@@ -249,7 +249,7 @@ def _validate_frontmatter(content: str) -> Optional[str]:
     if "version" not in parsed:
         return "Frontmatter must include 'version' field (e.g. version: 1.0.0). See team SOP for details."
     if "last_updated" not in parsed:
-        return "Frontmatter must include 'last_updated' field (e.g. last_updated: "2026-06-10"). See team SOP for details."
+        return "Frontmatter must include 'last_updated' field (e.g. last_updated: '2026-06-10'). See team SOP for details."
 
     body = content[end_match.end() + 3:].strip()
     if not body:
