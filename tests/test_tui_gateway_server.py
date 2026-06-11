@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
@@ -1098,7 +1100,7 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
     )
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
-        lambda requested=None, target_model=None: {
+        lambda **kwargs: {
             "provider": "openai-codex",
             "base_url": "https://chatgpt.com/backend-api/codex",
             "api_key": "token",
@@ -1115,6 +1117,88 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
     assert agent.model == "gpt-5.5"
     assert captured["fallback_model"] == fallback_chain
     assert captured["platform"] == "tui"
+
+
+def test_make_agent_falls_back_on_primary_auth_error(monkeypatch):
+    """Desktop must not hard-error when primary OAuth is dead but fallback works (#43588)."""
+    from hermes_cli.auth import AuthError
+
+    captured = {}
+    fallback_chain = [
+        {"provider": "openrouter", "model": "meta-llama/llama-4-maverick"},
+    ]
+    calls = []
+
+    def fake_resolve(**kwargs):
+        requested = kwargs.get("requested")
+        calls.append(requested)
+        if requested in (None, "xai-oauth"):
+            raise AuthError(
+                "xAI OAuth state is missing access_token. Re-authenticate with `hermes model`."
+            )
+        return {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "fallback-key",
+            "api_mode": "openai_chat",
+            "credential_pool": None,
+        }
+
+    def fake_agent(**kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(model=kwargs.get("model"))
+
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "model": {"default": "grok-3", "provider": "xai-oauth"},
+            "fallback_providers": fallback_chain,
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        fake_resolve,
+    )
+    monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    agent = server._make_agent("sid", "session-key")
+
+    assert calls[:2] == [None, "openrouter"]
+    assert agent.model == "meta-llama/llama-4-maverick"
+    assert captured["provider"] == "openrouter"
+    assert captured["api_key"] == "fallback-key"
+    assert captured["fallback_model"] == fallback_chain
+
+
+def test_make_agent_auth_error_without_fallback_raises(monkeypatch):
+    from hermes_cli.auth import AuthError
+
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"model": {"default": "grok-3", "provider": "xai-oauth"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AuthError("xAI OAuth state is missing access_token.")
+        ),
+    )
+    monkeypatch.setattr("run_agent.AIAgent", lambda **kwargs: types.SimpleNamespace())
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: [])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    with pytest.raises(RuntimeError, match="access_token"):
+        server._make_agent("sid", "session-key")
 
 
 def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):

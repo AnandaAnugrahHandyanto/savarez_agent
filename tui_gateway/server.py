@@ -2807,6 +2807,86 @@ def _load_fallback_model():
     return get_fallback_chain(_load_cfg())
 
 
+def _resolve_runtime_with_auth_fallback(
+    *,
+    requested: str | None = None,
+    target_model: str | None = None,
+    explicit_base_url: str | None = None,
+    explicit_api_key: str | None = None,
+) -> tuple[dict, str | None]:
+    """Resolve provider credentials; try ``fallback_providers`` on ``AuthError``.
+
+    Mirrors gateway ``_resolve_runtime_agent_kwargs`` / CLI
+    ``_ensure_runtime_credentials`` so Desktop does not hard-error on a dead
+    primary OAuth provider when a configured fallback chain is healthy.
+
+    Returns ``(runtime_dict, fallback_model_or_none)``. When the second value
+    is set, callers should use it as the agent model.
+    """
+    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_cli.runtime_provider import (
+        format_runtime_provider_error,
+        resolve_runtime_provider,
+    )
+
+    try:
+        runtime = resolve_runtime_provider(
+            requested=requested,
+            target_model=target_model,
+            explicit_base_url=explicit_base_url,
+            explicit_api_key=explicit_api_key,
+        )
+        return runtime, None
+    except AuthError as auth_exc:
+        if is_rate_limited_auth_error(auth_exc):
+            logger.warning(
+                "Primary provider rate-limited (429): %s — trying fallback",
+                auth_exc,
+            )
+        else:
+            logger.warning(
+                "Primary provider auth failed: %s — trying fallback",
+                auth_exc,
+            )
+
+        fb_list = _load_fallback_model()
+        if not fb_list:
+            raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
+
+        for entry in fb_list:
+            try:
+                fb_provider = entry.get("provider")
+                fb_model = entry.get("model")
+                fb_api_key = entry.get("api_key")
+                if not fb_api_key:
+                    key_env = str(
+                        entry.get("key_env") or entry.get("api_key_env") or ""
+                    ).strip()
+                    if key_env:
+                        fb_api_key = os.getenv(key_env, "").strip() or None
+                runtime = resolve_runtime_provider(
+                    requested=fb_provider,
+                    target_model=fb_model,
+                    explicit_base_url=entry.get("base_url"),
+                    explicit_api_key=fb_api_key,
+                )
+                logger.info(
+                    "Fallback provider resolved: %s model=%s",
+                    fb_provider or runtime.get("provider"),
+                    fb_model,
+                )
+                return runtime, fb_model
+            except Exception as fb_exc:
+                logger.debug(
+                    "Fallback entry %s failed: %s",
+                    entry.get("provider"),
+                    fb_exc,
+                )
+                continue
+
+        raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
+
+
 def _agent_fallback_model(agent):
     """Return an agent's fallback chain without rehydrating deliberately empty chains."""
     if hasattr(agent, "_fallback_chain"):
@@ -3024,7 +3104,6 @@ def _make_agent(
     service_tier_override: str | None = None,
 ):
     from run_agent import AIAgent
-    from hermes_cli.runtime_provider import resolve_runtime_provider
 
     # MCP tool discovery runs in a background daemon thread at startup so a
     # dead server can't freeze the shell (see tui_gateway/entry.py).  The agent
@@ -3065,10 +3144,12 @@ def _make_agent(
         override_base_url = model_override.get("base_url")
         override_api_key = model_override.get("api_key")
         override_api_mode = model_override.get("api_mode")
-        runtime = resolve_runtime_provider(
+        runtime, fallback_model = _resolve_runtime_with_auth_fallback(
             requested=requested_provider,
             target_model=model or None,
         )
+        if fallback_model:
+            model = fallback_model
         # The switch already resolved concrete credentials/endpoint; honor them
         # so a custom/named endpoint survives the rebuild even if global
         # resolution would pick a different one.
@@ -3084,10 +3165,12 @@ def _make_agent(
             model = model_override
         if provider_override:
             requested_provider = provider_override
-        runtime = resolve_runtime_provider(
+        runtime, fallback_model = _resolve_runtime_with_auth_fallback(
             requested=requested_provider,
             target_model=model or None,
         )
+        if fallback_model:
+            model = fallback_model
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
