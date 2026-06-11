@@ -19,6 +19,7 @@ pub const HERMES_PROFILE_END: &str = "# <<< Hermes Agent PATH <<<";
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct PathUpdatePlan {
     pub hermes_bin: PathBuf,
+    pub path_entries: Vec<PathBuf>,
     pub changed: bool,
     pub next_path: String,
 }
@@ -41,32 +42,65 @@ pub fn plan_path_update(
     current_path: Option<String>,
     windows: bool,
 ) -> PathUpdatePlan {
+    plan_path_update_with_extra_entries(install_root, &[], current_path, windows)
+}
+
+/// Compute a PATH update that also exposes additional managed tool directories.
+pub fn plan_path_update_with_extra_entries(
+    install_root: &Path,
+    extra_entries: &[PathBuf],
+    current_path: Option<String>,
+    windows: bool,
+) -> PathUpdatePlan {
     let hermes_bin = if windows {
         install_root.join("venv").join("Scripts")
     } else {
         install_root.join("venv").join("bin")
     };
+    let mut path_entries = vec![hermes_bin.clone()];
+    for entry in extra_entries {
+        let duplicate = path_entries.iter().any(|candidate| {
+            path_eq_for_platform(&candidate.display().to_string(), entry, windows)
+        });
+        if !duplicate {
+            path_entries.push(entry.clone());
+        }
+    }
     let delimiter = if windows { ';' } else { ':' };
     let current_path = current_path.unwrap_or_default();
     let mut parts = split_path_like(&current_path, delimiter);
-    let already_present = parts
-        .iter()
-        .any(|part| path_eq_for_platform(part, &hermes_bin, windows));
+    let mut changed = false;
 
-    if !already_present {
-        parts.insert(0, hermes_bin.display().to_string());
+    for entry in path_entries.iter().rev() {
+        let already_present = parts
+            .iter()
+            .any(|part| path_eq_for_platform(part, entry, windows));
+        if !already_present {
+            parts.insert(0, entry.display().to_string());
+            changed = true;
+        }
     }
 
     PathUpdatePlan {
         hermes_bin,
-        changed: !already_present,
+        path_entries,
+        changed,
         next_path: parts.join(&delimiter.to_string()),
     }
 }
 
 /// Return a shell profile line users can apply on Unix-like platforms.
 pub fn shell_profile_hint(plan: &PathUpdatePlan) -> String {
-    format!("export PATH=\"{}:$PATH\"", plan.hermes_bin.display())
+    let entries = if plan.path_entries.is_empty() {
+        plan.hermes_bin.display().to_string()
+    } else {
+        plan.path_entries
+            .iter()
+            .map(|entry| entry.display().to_string())
+            .collect::<Vec<_>>()
+            .join(":")
+    };
+    format!("export PATH=\"{entries}:$PATH\"")
 }
 
 /// Write or replace the Hermes-managed PATH block in a shell profile file.
@@ -440,16 +474,48 @@ mod tests {
     }
 
     #[test]
+    fn path_plan_prepends_unix_managed_tool_bin() {
+        let install_root = PathBuf::from("/home/user/.hermes/hermes-agent");
+        let managed_tools = PathBuf::from("/home/user/.hermes/bin");
+        let plan = plan_path_update_with_extra_entries(
+            &install_root,
+            &[managed_tools.clone()],
+            Some("/usr/bin:/bin".to_string()),
+            false,
+        );
+
+        assert_eq!(plan.hermes_bin, install_root.join("venv").join("bin"));
+        assert_eq!(
+            plan.path_entries,
+            vec![plan.hermes_bin.clone(), managed_tools]
+        );
+        assert_eq!(plan.changed, true);
+        assert_eq!(
+            plan.next_path,
+            format!(
+                "{}:/home/user/.hermes/bin:/usr/bin:/bin",
+                plan.hermes_bin.display()
+            )
+        );
+    }
+
+    #[test]
     fn shell_profile_hint_uses_export_line_for_unix() {
         let plan = PathUpdatePlan {
             hermes_bin: PathBuf::from("/home/user/.hermes/hermes-agent/venv/bin"),
+            path_entries: vec![
+                PathBuf::from("/home/user/.hermes/hermes-agent/venv/bin"),
+                PathBuf::from("/home/user/.hermes/bin"),
+            ],
             changed: true,
             next_path: String::new(),
         };
 
         let hint = shell_profile_hint(&plan);
 
-        assert!(hint.contains("export PATH=\"/home/user/.hermes/hermes-agent/venv/bin:$PATH\""));
+        assert!(hint.contains(
+            "export PATH=\"/home/user/.hermes/hermes-agent/venv/bin:/home/user/.hermes/bin:$PATH\""
+        ));
     }
 
     #[test]
@@ -459,6 +525,7 @@ mod tests {
         std::fs::write(&profile, "alias ll='ls -la'\n").unwrap();
         let plan = PathUpdatePlan {
             hermes_bin: PathBuf::from("/home/user/.hermes/hermes-agent/venv/bin"),
+            path_entries: vec![PathBuf::from("/home/user/.hermes/hermes-agent/venv/bin")],
             changed: true,
             next_path: String::new(),
         };
@@ -483,6 +550,7 @@ mod tests {
         .unwrap();
         let plan = PathUpdatePlan {
             hermes_bin: PathBuf::from("/new/hermes/bin"),
+            path_entries: vec![PathBuf::from("/new/hermes/bin")],
             changed: true,
             next_path: String::new(),
         };
@@ -538,6 +606,7 @@ mod tests {
     fn windows_user_path_write_reports_unsupported_off_windows() {
         let plan = PathUpdatePlan {
             hermes_bin: PathBuf::from("/home/user/.hermes/hermes-agent/venv/bin"),
+            path_entries: vec![PathBuf::from("/home/user/.hermes/hermes-agent/venv/bin")],
             changed: true,
             next_path: String::new(),
         };

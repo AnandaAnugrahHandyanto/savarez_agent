@@ -1940,18 +1940,29 @@ pub fn configure_windows_path_stage(_hermes_home: &Path, _install_root: &Path) -
 }
 
 /// Apply the native Unix shell-profile PATH stage.
-pub fn configure_unix_path_stage(install_root: &Path) -> Result<serde_json::Value> {
+pub fn configure_unix_path_stage(hermes_home: &Path, install_root: &Path) -> Result<serde_json::Value> {
     let profile_path = default_unix_profile_path()
         .ok_or_else(|| anyhow!("could not resolve a writable Unix shell profile path"))?;
-    configure_unix_path_stage_with_profile(install_root, &profile_path, std::env::var("PATH").ok())
+    configure_unix_path_stage_with_profile(
+        hermes_home,
+        install_root,
+        &profile_path,
+        std::env::var("PATH").ok(),
+    )
 }
 
 fn configure_unix_path_stage_with_profile(
+    hermes_home: &Path,
     install_root: &Path,
     profile_path: &Path,
     current_path: Option<String>,
 ) -> Result<serde_json::Value> {
-    let plan = hermes_manager::platform::plan_path_update(install_root, current_path, false);
+    let plan = hermes_manager::platform::plan_path_update_with_extra_entries(
+        install_root,
+        &[hermes_home.join("bin")],
+        current_path,
+        false,
+    );
     let before = std::fs::read_to_string(profile_path).ok();
     hermes_manager::platform::write_shell_profile_update(profile_path, &plan)
         .map_err(|err| anyhow!("writing Unix shell profile update: {err}"))?;
@@ -1960,6 +1971,7 @@ fn configure_unix_path_stage_with_profile(
     Ok(serde_json::json!({
         "profilePath": profile_path.display().to_string(),
         "hermesBin": plan.hermes_bin,
+        "pathEntries": plan.path_entries,
         "pathChanged": plan.changed,
         "profileChanged": before != after,
         "applied": plan.changed || before != after,
@@ -4412,12 +4424,14 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         std::fs::write(&profile, "alias ll='ls -la'\n").unwrap();
 
-        let report = configure_unix_path_stage_with_profile(&install_root, &profile, None).unwrap();
+        let report =
+            configure_unix_path_stage_with_profile(&home, &install_root, &profile, None).unwrap();
 
         let text = std::fs::read_to_string(&profile).unwrap();
         assert!(text.contains("alias ll='ls -la'"));
         assert!(text.contains("Hermes Agent PATH"));
         assert!(text.contains(&install_root.join("venv").join("bin").display().to_string()));
+        assert!(text.contains(&home.join("bin").display().to_string()));
         assert_eq!(report["profilePath"], profile.display().to_string());
         assert_eq!(report["profileChanged"], true);
         assert_eq!(report["pathChanged"], true);

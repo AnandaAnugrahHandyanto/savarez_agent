@@ -194,6 +194,8 @@ language-specific setup where needed.
   voice-message support.
 - Unix `system-packages` now mirrors that native-first ripgrep path with pinned Linux/macOS tarballs, then falls back to
   `install.sh` for ffmpeg/package-manager recovery so voice-message support remains intact.
+- Unix PATH/profile setup now includes both the Hermes virtualenv command directory and `$HERMES_HOME/bin`, so Rust
+  installed tools such as `uv` and `rg` remain available after bootstrap instead of only inside the installer process.
 - Windows `uv` now has a Rust native-first GitHub release ZIP path for x64, ARM64, and x86, installing `uv.exe` into
   `$HERMES_HOME/bin` and preserving the PowerShell astral installer as fallback for download, extraction, or version
   check failures.

@@ -276,11 +276,16 @@ fn run() -> hermes_manager::Result<()> {
             } else {
                 cfg!(target_os = "windows")
             };
-            let plan = hermes_manager::platform::plan_path_update(
-                &install_root,
-                current_path,
-                use_windows,
-            );
+            let plan = if use_windows {
+                hermes_manager::platform::plan_path_update(&install_root, current_path, true)
+            } else {
+                hermes_manager::platform::plan_path_update_with_extra_entries(
+                    &install_root,
+                    &[home.join("bin")],
+                    current_path,
+                    false,
+                )
+            };
             if cli.json {
                 let text = serde_json::to_string_pretty(&plan).map_err(|err| {
                     hermes_manager::ManagerError::InvalidManifest(err.to_string())
@@ -306,8 +311,12 @@ fn run() -> hermes_manager::Result<()> {
             let install_root =
                 install_root.unwrap_or_else(|| hermes_manager::paths::agent_root(&home));
             let current_path = std::env::var("PATH").ok();
-            let plan =
-                hermes_manager::platform::plan_path_update(&install_root, current_path, false);
+            let plan = hermes_manager::platform::plan_path_update_with_extra_entries(
+                &install_root,
+                &[home.join("bin")],
+                current_path,
+                false,
+            );
             if !dry_run {
                 hermes_manager::platform::write_shell_profile_update(&profile, &plan)?;
             }
