@@ -777,3 +777,76 @@ class TestInboundMedia:
         evt = adapter.handle_message.call_args.args[0]
         assert evt.media_urls == []
         assert evt.text == "[video]"
+
+
+# ---------------------------------------------------------------------------
+# 10. Outbound media serving (allowed-roots auto-copy + TTL)
+#
+# Regression: the agent sent a vault mp4 (Google Drive path); the message was
+# created but LINE's fetch hit the allowed-roots guard in _handle_media
+# ("refusing to serve outside allowed roots") so the video never played.
+# Senders must materialize out-of-root files into HERMES_HOME before serving.
+# ---------------------------------------------------------------------------
+
+class TestOutboundMediaServing:
+
+    @pytest.fixture
+    def adapter(self, monkeypatch, tmp_path):
+        # Fake tempdir + HERMES_HOME so tmp_path subtrees model in/out of root.
+        monkeypatch.setattr(_line.tempfile, "gettempdir", lambda: str(tmp_path / "faketmp"))
+        (tmp_path / "faketmp").mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        (tmp_path / "home").mkdir()
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+        })
+        ad = LineAdapter(cfg)
+        ad._client = MagicMock()
+        ad._client.reply = AsyncMock()
+        ad._client.push = AsyncMock()
+        ad.public_base_url = "https://media.test"
+        return ad
+
+    def _registered_paths(self, ad):
+        return [p for p, _exp in ad._media_tokens.values()]
+
+    def test_video_outside_roots_copied_into_hermes_home(self, adapter, tmp_path):
+        outside = tmp_path / "vault" / "深蹲.mp4"
+        outside.parent.mkdir()
+        outside.write_bytes(b"\x00\x00\x00\x1cftypmp42" + b"v" * 32)
+        result = asyncio.run(adapter.send_video("Uchat", str(outside)))
+        assert result.success
+        home = str((tmp_path / "home").resolve())
+        video_paths = [p for p in self._registered_paths(adapter) if p.endswith(".mp4")]
+        assert video_paths, "video not registered"
+        assert video_paths[0].startswith(home), f"served from outside HERMES_HOME: {video_paths[0]}"
+        from pathlib import Path as _P
+        assert _P(video_paths[0]).read_bytes() == outside.read_bytes()
+        # Copy is temp-tracked for cleanup.
+        assert video_paths[0] in adapter._media_temp_paths
+
+    def test_video_inside_roots_served_in_place(self, adapter, tmp_path):
+        inside = tmp_path / "faketmp" / "ok.mp4"
+        inside.write_bytes(b"\x00\x00\x00\x1cftypmp42" + b"v" * 32)
+        result = asyncio.run(adapter.send_video("Uchat", str(inside)))
+        assert result.success
+        video_paths = [p for p in self._registered_paths(adapter) if p.endswith(".mp4")]
+        assert video_paths == [str(inside.resolve())]
+        assert str(inside.resolve()) not in adapter._media_temp_paths
+
+    def test_image_outside_roots_copied(self, adapter, tmp_path):
+        outside = tmp_path / "vault" / "pic.jpg"
+        outside.parent.mkdir()
+        outside.write_bytes(b"\xff\xd8\xff\xe0" + b"i" * 16)
+        result = asyncio.run(adapter.send_image_file("Uchat", str(outside)))
+        assert result.success
+        home = str((tmp_path / "home").resolve())
+        img_paths = [p for p in self._registered_paths(adapter) if p.endswith(".jpg")]
+        assert img_paths and img_paths[0].startswith(home)
+
+    def test_media_ttl_covers_delayed_playback(self):
+        # LINE clients fetch the video URL on tap, which can be hours after
+        # send; 30 minutes caused 410s. Must cover at least a day.
+        assert _line.MEDIA_TOKEN_TTL_SECONDS >= 24 * 3600
