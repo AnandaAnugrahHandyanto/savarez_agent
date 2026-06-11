@@ -34,6 +34,9 @@ function localSessionIds(sessions: SessionInfo[]): Set<string> {
     if (s._lineage_root_id) {
       ids.add(s._lineage_root_id)
     }
+    for (const id of s._lineage_ids ?? []) {
+      ids.add(id)
+    }
   }
   return ids
 }

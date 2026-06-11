@@ -715,6 +715,7 @@ class TestWebServerEndpoints:
         # ...carrying the durable lineage root so the desktop can match pins.
         tip = next(r for r in rows if r["id"] == "tip-new")
         assert tip.get("_lineage_root_id") == "root-old"
+        assert tip.get("_lineage_ids") == ["root-old", "tip-new"]
 
     def test_get_sessions_total_counts_surfaced_conversations(self):
         """Hidden child rows must not inflate the desktop session total."""

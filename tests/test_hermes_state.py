@@ -2733,6 +2733,7 @@ class TestListSessionsRich:
         # Projection surfaces the tip's id in the root's slot.
         assert top[0]["id"] == "tip1"
         assert top[0]["_lineage_root_id"] == "root1"
+        assert top[0]["_lineage_ids"] == ["root1", "tip1"]
 
     def test_rich_list_includes_title(self, db):
         db.create_session("s1", "cli")
@@ -2921,6 +2922,9 @@ class TestCompressionChainProjection:
         import time as _time
         self._build_compression_chain(db, _time.time() - 3600)
         assert db._batch_compression_tips(["root1"]) == {"root1": "tip1"}
+        assert db._batch_compression_lineages(["root1"]) == {
+            "root1": {"tip_id": "tip1", "ids": ["root1", "mid1", "tip1"]},
+        }
 
     def test_batch_compression_tips_multiple_roots(self, db):
         import time as _time
@@ -2929,6 +2933,10 @@ class TestCompressionChainProjection:
         tips = db._batch_compression_tips(["root1", "solo"])
         # solo has no continuation chain, so it is omitted (maps to itself)
         assert tips == {"root1": "tip1"}
+        assert db._batch_compression_lineages(["root1", "solo"]) == {
+            "root1": {"tip_id": "tip1", "ids": ["root1", "mid1", "tip1"]},
+            "solo": {"tip_id": "solo", "ids": ["solo"]},
+        }
 
     def test_list_surfaces_tip_for_compressed_root(self, db):
         """The list must show the tip's id/message_count/preview in place of
@@ -2955,6 +2963,7 @@ class TestCompressionChainProjection:
         # The row surfaces the tip's identity but preserves the root's start
         # timestamp for stable ordering and lineage tracking.
         assert tip_row["_lineage_root_id"] == "root1"
+        assert tip_row["_lineage_ids"] == ["root1", "mid1", "tip1"]
         assert tip_row["preview"].startswith("latest message")
         assert tip_row["ended_at"] is None  # tip is still live
         assert tip_row["end_reason"] is None
@@ -4088,3 +4097,21 @@ class TestSessionIdSearch:
 
         assert [s["id"] for s in matches] == [tip]
         assert matches[0]["_lineage_root_id"] == root
+
+    def test_search_sessions_by_id_matches_projected_intermediate_lineage_id(self, db):
+        root = "20260602_235959_root99"
+        mid = "20260603_003000_mid99"
+        tip = "20260603_010000_tip01"
+        db.create_session(session_id=root, source="cli")
+        db.append_message(root, role="user", content="root conversation")
+        db.end_session(root, "compression")
+        db.create_session(session_id=mid, source="cli", parent_session_id=root)
+        db.append_message(mid, role="user", content="middle conversation")
+        db.end_session(mid, "compression")
+        db.create_session(session_id=tip, source="cli", parent_session_id=mid)
+        db.append_message(tip, role="user", content="continued conversation")
+
+        matches = db.search_sessions_by_id("mid99")
+
+        assert [s["id"] for s in matches] == [tip]
+        assert matches[0]["_lineage_ids"] == [root, mid, tip]

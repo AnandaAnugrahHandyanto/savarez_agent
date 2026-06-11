@@ -90,6 +90,33 @@ function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
 export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id'>): string =>
   session._lineage_root_id ?? session.id
 
+export const sessionAliasIds = (session: Pick<SessionInfo, '_lineage_ids' | '_lineage_root_id' | 'id'>): string[] => {
+  const aliases = [session.id, session._lineage_root_id, ...(session._lineage_ids ?? [])].filter(
+    (id): id is string => typeof id === 'string' && id.length > 0
+  )
+
+  return [...new Set(aliases)]
+}
+
+function dedupeSessionsByAlias(sessions: SessionInfo[]): SessionInfo[] {
+  const seen = new Set<string>()
+  const deduped: SessionInfo[] = []
+
+  for (const session of sessions) {
+    const aliases = sessionAliasIds(session)
+    if (aliases.some(id => seen.has(id))) {
+      continue
+    }
+
+    for (const id of aliases) {
+      seen.add(id)
+    }
+    deduped.push(session)
+  }
+
+  return deduped.length === sessions.length ? sessions : deduped
+}
+
 /** Merge a fresh server session page into the in-memory list, keeping any
  *  row the server omitted that we still want visible — both still-"working"
  *  sessions and pinned sessions.
@@ -110,7 +137,8 @@ export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id
  *  `keepIds` carries both the working set and the pinned set. Pins are stored
  *  on the durable lineage-root id (see {@link sessionPinId}), while the loaded
  *  row surfaces under its live compression tip, so we match a survivor by
- *  either its live `id` or its `_lineage_root_id`. Optimistic deletes/archives
+ *  its live `id`, `_lineage_root_id`, or any historical `_lineage_ids` alias.
+ *  Optimistic deletes/archives
  *  drop the row from `previous` (and unpin it), so a removed session can't be
  *  resurrected here. */
 export function mergeSessionPage(
@@ -124,15 +152,16 @@ export function mergeSessionPage(
     return incoming
   }
 
-  const incomingIds = new Set(incoming.map(session => session.id))
+  const dedupedIncoming = dedupeSessionsByAlias(incoming)
+  const incomingAliases = new Set(dedupedIncoming.flatMap(sessionAliasIds))
 
   const survivors = previous.filter(
     session =>
-      !incomingIds.has(session.id) &&
-      (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
+      !sessionAliasIds(session).some(id => incomingAliases.has(id)) &&
+      sessionAliasIds(session).some(id => keep.has(id))
   )
 
-  return survivors.length ? [...survivors, ...incoming] : incoming
+  return survivors.length ? [...survivors, ...dedupedIncoming] : dedupedIncoming
 }
 
 export const $connection = atom<HermesConnection | null>(null)
