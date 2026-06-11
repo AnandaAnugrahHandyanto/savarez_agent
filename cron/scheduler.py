@@ -2389,7 +2389,7 @@ def run_job_immediate(job_id: str, schedule_snapshot: Optional[dict] = None) -> 
                 success = False
                 error = "Agent completed but produced empty response"
             mark_job_run(j["id"], success, error, delivery_error=delivery_error)
-            if not success:
+            if schedule_snapshot:
                 _restore_manual_run_schedule(j["id"], schedule_snapshot)
         except Exception as e:
             logger.error("Immediate run of job %s failed: %s", j["id"], e)

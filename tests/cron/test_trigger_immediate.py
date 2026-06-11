@@ -466,6 +466,59 @@ class TestRunJobImmediate:
 
         sched._shutdown_parallel_pool()
 
+    def test_run_job_immediate_success_restores_manual_schedule_snapshot(self, monkeypatch):
+        """A successful immediate run must clear queued manual-run metadata."""
+        import cron.scheduler as sched
+        from cron.jobs import create_job, resolve_job_ref, update_job
+
+        sched._parallel_pool = None
+        sched._parallel_pool_max_workers = None
+        sched._running_job_ids.clear()
+
+        job = create_job(
+            prompt="test prompt",
+            schedule="every 1h",
+            name="successful-manual-run-restore"
+        )
+        job_id = job["id"]
+        schedule_snapshot = {
+            "enabled": job.get("enabled", True),
+            "state": job.get("state"),
+            "paused_at": job.get("paused_at"),
+            "paused_reason": job.get("paused_reason"),
+            "next_run_at": job.get("next_run_at"),
+        }
+        update_job(
+            job_id,
+            {
+                "next_run_at": "2000-01-01T00:00:00+00:00",
+                "manual_run_schedule_snapshot": schedule_snapshot,
+                "manual_run_gateway_only": True,
+            },
+        )
+
+        class _InlinePool:
+            def submit(self, fn):
+                fn()
+                return MagicMock()
+
+        monkeypatch.setattr(sched, "_get_parallel_pool", lambda *_a, **_kw: _InlinePool())
+        monkeypatch.setattr(sched, "_get_sequential_pool", lambda: _InlinePool())
+        monkeypatch.setattr(sched, "run_job", lambda *_a, **_kw: (True, "output", "response", None))
+        monkeypatch.setattr(sched, "save_job_output", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "_deliver_result", lambda *_a, **_kw: None)
+
+        dispatched, error = sched.run_job_immediate(job_id, schedule_snapshot=schedule_snapshot)
+
+        restored = resolve_job_ref(job_id)
+        assert dispatched is True
+        assert error is None
+        assert restored["next_run_at"] == schedule_snapshot["next_run_at"]
+        assert restored.get("manual_run_schedule_snapshot") is None
+        assert restored.get("manual_run_gateway_only") is None
+
+        sched._shutdown_parallel_pool()
+
     def test_action_run_does_not_force_due_timestamp_before_dispatch(self, monkeypatch):
         """Manual runs should not stamp next_run_at=now before the immediate worker starts."""
         import cron.scheduler as sched
