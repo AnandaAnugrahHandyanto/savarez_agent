@@ -227,6 +227,12 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
     "always": "Approved permanently",
     "deny": "Denied",
 }
+_SLASH_CONFIRM_CHOICES = frozenset({"once", "always", "cancel"})
+_SLASH_CONFIRM_LABEL_MAP: Dict[str, str] = {
+    "once": "Approved once",
+    "always": "Always approved",
+    "cancel": "Cancelled",
+}
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 
@@ -1470,6 +1476,8 @@ class FeishuAdapter(BasePlatformAdapter):
         # Update prompt button state (prompt_id → {session_key, message_id, chat_id})
         self._update_prompt_state: Dict[int, Dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
+        # Slash-confirm button state (confirm_id → {session_key, message_id, chat_id})
+        self._slash_confirm_state: Dict[str, Dict[str, Any]] = {}
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
@@ -1931,6 +1939,91 @@ class FeishuAdapter(BasePlatformAdapter):
             return result
         except Exception as exc:
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+    @staticmethod
+    def _build_slash_confirm_card(*, title: str, message: str, confirm_id: str) -> Dict[str, Any]:
+        preview = message[:3800] + "..." if len(message) > 3800 else message
+
+        def _btn(label: str, choice: str, btn_type: str = "default") -> dict:
+            return {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": label},
+                "type": btn_type,
+                "value": {
+                    "hermes_slash_confirm_action": choice,
+                    "slash_confirm_id": confirm_id,
+                },
+            }
+
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": title or "⚠️ Confirmation Required", "tag": "plain_text"},
+                "template": "orange",
+            },
+            "elements": [
+                {"tag": "markdown", "content": preview},
+                {
+                    "tag": "action",
+                    "actions": [
+                        _btn("✅ Approve Once", "once", "primary"),
+                        _btn("🔒 Always Approve", "always"),
+                        _btn("❌ Cancel", "cancel", "danger"),
+                    ],
+                },
+            ],
+        }
+
+    async def send_slash_confirm(
+        self,
+        chat_id: str,
+        title: str,
+        message: str,
+        session_key: str,
+        confirm_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a generic slash-command confirmation as a Feishu card."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        confirm_id = str(confirm_id)
+        self._prune_slash_confirm_state()
+        state = {
+            "session_key": session_key,
+            "message_id": "",
+            "chat_id": chat_id,
+            "metadata": dict(metadata or {}),
+            "created_at": time.time(),
+        }
+        # Pre-register before sending so a very fast callback cannot race the
+        # API response. Failure paths remove the entry and let the gateway use
+        # its text fallback.
+        self._slash_confirm_state[confirm_id] = state
+
+        try:
+            payload = json.dumps(
+                self._build_slash_confirm_card(title=title, message=message, confirm_id=confirm_id),
+                ensure_ascii=False,
+            )
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=None,
+                metadata=metadata,
+            )
+
+            result = self._finalize_send_result(response, "send_slash_confirm failed")
+            if result.success:
+                state["message_id"] = result.message_id or ""
+                return result
+            self._slash_confirm_state.pop(confirm_id, None)
+            return result
+        except Exception as exc:
+            self._slash_confirm_state.pop(confirm_id, None)
+            logger.warning("[Feishu] send_slash_confirm failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
     @staticmethod
@@ -2540,11 +2633,21 @@ class FeishuAdapter(BasePlatformAdapter):
             action_value.get("hermes_update_prompt_action")
             if isinstance(action_value, dict) else None
         )
+        slash_confirm_action = (
+            action_value.get("hermes_slash_confirm_action")
+            if isinstance(action_value, dict) else None
+        )
 
         if hermes_action:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
         if update_prompt_action:
             return self._handle_update_prompt_card_action(
+                event=event,
+                action_value=action_value,
+                loop=loop,
+            )
+        if slash_confirm_action:
+            return self._handle_slash_confirm_card_action(
                 event=event,
                 action_value=action_value,
                 loop=loop,
@@ -2583,6 +2686,155 @@ class FeishuAdapter(BasePlatformAdapter):
         if not allowed_ids:
             return True
         return "*" in allowed_ids or normalized in allowed_ids
+
+    def _prune_slash_confirm_state(self) -> None:
+        """Drop Feishu slash-confirm state older than the core pending timeout."""
+        try:
+            from tools import slash_confirm as _slash_confirm_mod
+            ttl = float(getattr(_slash_confirm_mod, "DEFAULT_TIMEOUT_SECONDS", 300))
+        except Exception:
+            ttl = 300.0
+        now = time.time()
+        stale = [
+            confirm_id for confirm_id, state in self._slash_confirm_state.items()
+            if now - float(state.get("created_at", 0) or 0) > ttl
+        ]
+        for confirm_id in stale:
+            self._slash_confirm_state.pop(confirm_id, None)
+
+    @staticmethod
+    def _build_resolved_slash_confirm_card(*, choice: str, user_name: str) -> Dict[str, Any]:
+        expired = choice == "expired"
+        if expired:
+            title = "⌛ Confirmation expired"
+            template = "grey"
+            content = "This confirmation was already handled, superseded, or expired."
+        else:
+            icon = "❌" if choice == "cancel" else "✅"
+            label = _SLASH_CONFIRM_LABEL_MAP.get(choice, "Resolved")
+            title = f"{icon} {label}"
+            template = "red" if choice == "cancel" else "green"
+            content = f"{icon} **{label}** by {user_name}"
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": title, "tag": "plain_text"},
+                "template": template,
+            },
+            "elements": [{"tag": "markdown", "content": content}],
+        }
+
+    def _slash_confirm_pending_matches(self, *, session_key: str, confirm_id: str) -> bool:
+        try:
+            from tools import slash_confirm as _slash_confirm_mod
+            _slash_confirm_mod.clear_if_stale(session_key)
+            pending = _slash_confirm_mod.get_pending(session_key)
+        except Exception:
+            logger.debug("[Feishu] Failed to inspect slash-confirm pending state", exc_info=True)
+            return True
+        return bool(pending and str(pending.get("confirm_id", "")) == str(confirm_id))
+
+    def _slash_confirm_operator_allowed(
+        self,
+        *,
+        state: Dict[str, Any],
+        open_id: str,
+        user_id: str,
+        chat_id: str,
+    ) -> bool:
+        operator_ids = {str(v).strip() for v in (open_id, user_id) if str(v or "").strip()}
+        if not operator_ids:
+            return False
+        metadata_value = state.get("metadata")
+        metadata = metadata_value if isinstance(metadata_value, dict) else {}
+        requester_ids = {
+            str(metadata.get("slash_confirm_requester_user_id", "")).strip(),
+            str(metadata.get("slash_confirm_requester_user_id_alt", "")).strip(),
+        } - {""}
+        if requester_ids:
+            if operator_ids & requester_ids:
+                return True
+            if operator_ids & set(self._admins):
+                return True
+            return False
+        sender_id = SimpleNamespace(open_id=open_id, user_id=user_id)
+        return self._allow_group_message(sender_id, chat_id, is_bot=False)
+
+    def _handle_slash_confirm_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
+        """Schedule slash-confirm resolution and build the synchronous callback response."""
+        confirm_id = str(action_value.get("slash_confirm_id", "") or "")
+        if not confirm_id:
+            logger.debug("[Feishu] Card action missing slash_confirm_id, ignoring")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        self._prune_slash_confirm_state()
+        state = self._slash_confirm_state.get(confirm_id)
+        if not state:
+            logger.debug("[Feishu] Slash confirm %s already resolved or unknown", confirm_id)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        choice = str(action_value.get("hermes_slash_confirm_action", "") or "").strip().lower()
+        if choice not in _SLASH_CONFIRM_CHOICES:
+            logger.debug("[Feishu] Card action has invalid slash confirm choice=%r", choice)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        session_key = str(state.get("session_key", "") or "")
+        if not self._slash_confirm_pending_matches(session_key=session_key, confirm_id=confirm_id):
+            self._slash_confirm_state.pop(confirm_id, None)
+            if P2CardActionTriggerResponse is None:
+                return None
+            response = P2CardActionTriggerResponse()
+            if CallBackCard is not None:
+                card = CallBackCard()
+                card.type = "raw"
+                card.data = self._build_resolved_slash_confirm_card(choice="expired", user_name="")
+                response.card = card
+            return response
+
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        user_id = str(getattr(operator, "user_id", "") or "")
+        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if not callback_chat_id or not expected_chat_id or callback_chat_id != expected_chat_id:
+            logger.warning(
+                "[Feishu] Slash confirm callback chat mismatch for %s (expected=%s, got=%s)",
+                confirm_id,
+                expected_chat_id,
+                callback_chat_id,
+            )
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        if not self._slash_confirm_operator_allowed(
+            state=state,
+            open_id=open_id,
+            user_id=user_id,
+            chat_id=expected_chat_id,
+        ):
+            logger.warning("[Feishu] Unauthorized slash confirm click by %s", open_id or user_id or "<unknown>")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        user_name = self._get_cached_sender_name(open_id) or open_id or user_id
+        if not self._submit_on_loop(
+            loop,
+            self._resolve_slash_confirm(
+                confirm_id,
+                choice,
+                user_name,
+                open_id=open_id,
+                user_id=user_id,
+                chat_id=callback_chat_id,
+            ),
+        ):
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        if CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = self._build_resolved_slash_confirm_card(choice=choice, user_name=user_name)
+            response.card = card
+        return response
 
     def _handle_approval_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
         """Schedule approval resolution and build the synchronous callback response."""
@@ -2696,6 +2948,66 @@ class FeishuAdapter(BasePlatformAdapter):
             card.data = self._build_resolved_update_prompt_card(answer=answer, user_name=user_name)
             response.card = card
         return response
+
+    async def _resolve_slash_confirm(
+        self,
+        confirm_id: str,
+        choice: str,
+        user_name: str,
+        *,
+        open_id: str = "",
+        user_id: str = "",
+        chat_id: str = "",
+    ) -> None:
+        """Resolve a Feishu slash-confirm button click through the core primitive."""
+        state = self._slash_confirm_state.get(confirm_id)
+        if not state:
+            logger.debug("[Feishu] Slash confirm %s already resolved or unknown", confirm_id)
+            return
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if expected_chat_id and chat_id and expected_chat_id != chat_id:
+            logger.warning(
+                "[Feishu] Slash confirm %s chat mismatch (expected=%s, got=%s)",
+                confirm_id,
+                expected_chat_id,
+                chat_id,
+            )
+            return
+        if not self._slash_confirm_operator_allowed(
+            state=state,
+            open_id=open_id,
+            user_id=user_id,
+            chat_id=expected_chat_id,
+        ):
+            logger.warning(
+                "[Feishu] Unauthorized slash confirm click by %s for confirm %s",
+                open_id or user_id or "<unknown>",
+                confirm_id,
+            )
+            return
+
+        state = self._slash_confirm_state.pop(confirm_id, None)
+        if not state:
+            logger.debug("[Feishu] Slash confirm %s already resolved while validating callback", confirm_id)
+            return
+
+        session_key = str(state.get("session_key", "") or "")
+        metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else None
+        try:
+            from tools import slash_confirm as _slash_confirm_mod
+            result_text = await _slash_confirm_mod.resolve(session_key, confirm_id, choice)
+            logger.info(
+                "Feishu slash confirm resolved for session %s (choice=%s, user=%s)",
+                session_key, choice, user_name,
+            )
+            if result_text:
+                await self.send(
+                    chat_id=str(state.get("chat_id", "") or expected_chat_id),
+                    content=result_text,
+                    metadata=metadata,
+                )
+        except Exception as exc:
+            logger.error("Failed to resolve Feishu slash confirm: %s", exc)
 
     async def _resolve_approval(
         self,

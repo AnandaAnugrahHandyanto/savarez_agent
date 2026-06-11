@@ -153,6 +153,33 @@ async def test_gate_on_pending_confirm_registered(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_button_path_passes_requester_metadata_without_text_fallback():
+    """Button-capable adapters get requester metadata for callback auth and
+    suppress the text fallback when card delivery succeeds."""
+    runner = _make_runner()
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
+    session_key = build_session_key(_make_source())
+    runner._session_key_for_source = lambda src: session_key
+    runner.adapters[Platform.TELEGRAM].send_slash_confirm = AsyncMock(
+        return_value=SimpleNamespace(success=True)
+    )
+
+    execute = AsyncMock(return_value="reset done")
+    result = await runner._maybe_confirm_destructive_slash(
+        event=_make_event("/new"),
+        command="new",
+        title="/new",
+        detail="Discards history.",
+        execute=execute,
+    )
+
+    assert result is None
+    execute.assert_not_awaited()
+    kwargs = runner.adapters[Platform.TELEGRAM].send_slash_confirm.call_args.kwargs
+    assert kwargs["metadata"]["slash_confirm_requester_user_id"] == "u1"
+
+
+@pytest.mark.asyncio
 async def test_resolve_once_runs_execute_and_returns_result():
     """Resolving the pending confirm with 'once' runs the destructive
     action and returns its output."""

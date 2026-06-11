@@ -10697,6 +10697,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         adapter = self.adapters.get(source.platform)
         metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+        metadata = dict(metadata or {})
+        if getattr(source, "user_id", None):
+            metadata["slash_confirm_requester_user_id"] = str(source.user_id)
+        if getattr(source, "user_id_alt", None):
+            metadata["slash_confirm_requester_user_id_alt"] = str(source.user_id_alt)
 
         used_buttons = False
         if adapter is not None:
