@@ -157,6 +157,46 @@ class TestFindStaleDashboardPids:
             pids = _find_stale_dashboard_pids()
         assert pids == [12345]
 
+    def test_profile_flag_before_subcommand(self):
+        """Flags between entry point and subcommand must not break detection.
+
+        Regression test for #44035: ``--profile $PROFILE`` between
+        ``hermes_cli.main`` and ``dashboard`` caused the stale-PID scan
+        to miss the process.
+        """
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(
+                        12345,
+                        "$HOME/.hermes/hermes-agent/venv/bin/python "
+                        "-m hermes_cli.main "
+                        "--profile prod dashboard "
+                        "--host 0.0.0.0 --port 9119 --no-open --skip-build",
+                    ),
+                    _ps_line(
+                        22222,
+                        "hermes --profile prod dashboard --port 9120",
+                    ),
+                ]) + "\n",
+                stderr="",
+            )
+            pids = _find_stale_dashboard_pids()
+        assert 12345 in pids
+        assert 22222 in pids
+
+    def test_short_profile_flag_before_subcommand(self):
+        """``-p`` (short form of ``--profile``) must also be handled."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=_ps_line(12345, "hermes -p dev dashboard --port 9119") + "\n",
+                stderr="",
+            )
+            pids = _find_stale_dashboard_pids()
+        assert 12345 in pids
+
     def test_grep_lines_ignored(self):
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(

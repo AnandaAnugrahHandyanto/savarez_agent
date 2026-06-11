@@ -5314,6 +5314,25 @@ def cmd_gui(args: argparse.Namespace):
     sys.exit(launch_result.returncode)
 
 
+def _cmd_is_dashboard_subcommand(cmd: str) -> bool:
+    """Return True if *cmd* looks like a ``hermes dashboard`` invocation where
+    flags (e.g. ``--profile``) sit between the entry point and the subcommand.
+
+    The existing fixed-substring patterns (``"hermes dashboard"``, etc.)
+    require the entry point and ``dashboard`` to be adjacent.  This helper
+    covers the gap: it accepts *any* flags in between, as long as
+    ``dashboard`` appears as a standalone whitespace-delimited token.
+    """
+    _ENTRY_POINTS = ("hermes_cli.main", "hermes_cli/main.py", "hermes")
+    if not any(ep in cmd for ep in _ENTRY_POINTS):
+        return False
+    # ``dashboard`` must appear as a standalone token — surrounded by
+    # whitespace or at a string boundary.  This avoids matching the word
+    # inside quoted arguments (where a trailing quote follows) or as part
+    # of a hyphenated name (e.g. grafana-dashboard-server).
+    return " dashboard " in cmd or cmd.endswith(" dashboard")
+
+
 def _find_stale_dashboard_pids(
     *,
     exclude_pids: set[int] | None = None,
@@ -5343,7 +5362,9 @@ def _find_stale_dashboard_pids(
 
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
     """
-    patterns = [
+    # Exact-substring patterns for the common case (no flags between entry
+    # point and subcommand).
+    _EXACT_DASHBOARD = [
         "hermes dashboard",
         "hermes_cli.main dashboard",
         "hermes_cli/main.py dashboard",
@@ -5378,8 +5399,9 @@ def _find_stale_dashboard_pids(
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
                     if (
-                        any(p in current_cmd for p in patterns)
-                        and int(pid_str) != self_pid
+                        int(pid_str) != self_pid
+                        and (any(p in current_cmd for p in _EXACT_DASHBOARD)
+                             or _cmd_is_dashboard_subcommand(current_cmd))
                     ):
                         try:
                             dashboard_pids.append(int(pid_str))
@@ -5411,7 +5433,7 @@ def _find_stale_dashboard_pids(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if pid != self_pid and (any(p in command for p in _EXACT_DASHBOARD) or _cmd_is_dashboard_subcommand(command)):
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []
