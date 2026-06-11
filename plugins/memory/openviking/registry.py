@@ -36,10 +36,12 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+from hermes_constants import get_hermes_home
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-_HERMES_HOME = os.path.expanduser("~/.hermes")
+_HERMES_HOME = str(get_hermes_home())
 _SESSION_DB_PATH = os.path.join(_HERMES_HOME, "openviking-sessions.db")
 
 # ---------------------------------------------------------------------------

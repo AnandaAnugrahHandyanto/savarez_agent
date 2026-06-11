@@ -33,10 +33,12 @@ from .registry import (
     mark_dead,
 )
 
+from hermes_constants import get_hermes_home
+
 logger = logging.getLogger(__name__)
 
 # Paths
-_HERMES_HOME = os.path.expanduser("~/.hermes")
+_HERMES_HOME = str(get_hermes_home())
 _STATE_DB = os.path.join(_HERMES_HOME, "state.db")
 _REPAIR_DIR = os.path.join(_HERMES_HOME, "openviking-repair")
 _RECOVERY_DIR = os.path.join(_HERMES_HOME, "openviking-recovery")

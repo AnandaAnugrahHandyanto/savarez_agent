@@ -51,6 +51,8 @@ from .registry import (
     update_state as _update_registry_state,
 )
 
+from hermes_constants import get_hermes_home
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
@@ -59,7 +61,7 @@ _REMOTE_RESOURCE_PREFIXES = ("http://", "https://", "git@", "ssh://", "git://")
 
 # Cache and persistence limits
 _MAX_CACHED_MESSAGES = int(os.environ.get("OPENVIKING_CACHE_SIZE", "10000"))
-_RECOVERY_DIR = os.path.join(os.path.expanduser("~"), ".hermes", "openviking-recovery")
+_RECOVERY_DIR = os.path.join(str(get_hermes_home()), "openviking-recovery")
 
 # Maps the viking_remember `category` enum to a viking:// subdirectory.
 # Keep in sync with REMEMBER_SCHEMA.parameters.properties.category.enum.
@@ -811,7 +813,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         """
         try:
             repair_dir = os.path.join(
-                os.path.expanduser("~"), ".hermes", "openviking-repair",
+                str(get_hermes_home()), "openviking-repair",
             )
             os.makedirs(repair_dir, exist_ok=True)
             journal_path = os.path.join(repair_dir, f"{session_id}.jsonl")
@@ -832,7 +834,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         """
         try:
             repair_dir = os.path.join(
-                os.path.expanduser("~"), ".hermes", "openviking-repair",
+                str(get_hermes_home()), "openviking-repair",
             )
             os.makedirs(repair_dir, exist_ok=True)
             marker_path = os.path.join(repair_dir, f"{self._session_id}.json")
