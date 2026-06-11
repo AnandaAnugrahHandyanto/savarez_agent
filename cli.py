@@ -452,6 +452,7 @@ def load_cli_config() -> Dict[str, Any]:
             "resume_max_assistant_lines": 3,
             "resume_skip_tool_only": True,
             "show_reasoning": False,
+            "show_response_borders": True,
             "streaming": True,
             "busy_input_mode": "interrupt",
             "persistent_output": True,
@@ -3185,6 +3186,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
+        # show_response_borders: draw ╭─/╰─ borders around streaming and non-streamed
+        # assistant responses. Set false for a cleaner, borderless display.
+        self.show_response_borders = CLI_CONFIG["display"].get("show_response_borders", True)
         _configure_output_history(
             enabled=CLI_CONFIG["display"].get("persistent_output", True),
             max_lines=CLI_CONFIG["display"].get("persistent_output_max_lines", 200),
@@ -4568,13 +4572,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return paste_ref_re.sub(_expand_ref, text)
 
     def _print_user_message_preview(self, user_input: str) -> None:
-        """Render a user message using the normal chat scrollback style."""
-        ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+        """Render a user message with background highlight (Claude-style)."""
         text = str(user_input or "")
         if "\n" in text:
             ChatConsole().print(self._format_submitted_user_message_preview(text))
         else:
-            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
+            _cprint(f"\033[1;36m❯ {_escape(text)}\033[0m")
 
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning/thinking tokens into a dim box above the response.
@@ -4809,11 +4812,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._stream_text_ansi = f"\033[38;2;{_r};{_g};{_b}m"
             except (ValueError, IndexError):
                 self._stream_text_ansi = ""
-            if self.show_timestamps:
-                label = f"{label} {datetime.now().strftime('%H:%M')}"
-            w = self._scrollback_box_width()
-            fill = w - 2 - HermesCLI._status_bar_display_width(label)
-            _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            if self.show_response_borders:
+                if self.show_timestamps:
+                    label = f"{label} {datetime.now().strftime('%H:%M')}"
+                w = self._scrollback_box_width()
+                fill = w - 2 - HermesCLI._status_bar_display_width(label)
+                _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            else:
+                _cprint("")
 
         self._stream_buf += text
 
@@ -4910,8 +4916,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
             self._stream_buf = ""
 
-        # Close the response box
-        if self._stream_box_opened:
+        # Close the response box if borders are enabled
+        if self._stream_box_opened and self.show_response_borders:
             w = self._scrollback_box_width()
             _cprint(f"{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
 
@@ -9954,12 +9960,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     nonlocal _streaming_box_opened
                     if not _streaming_box_opened:
                         _streaming_box_opened = True
-                        w = self._scrollback_box_width(getattr(self.console, "width", 80))
-                        label = " ⚕ Hermes "
-                        if self.show_timestamps:
-                            label = f"{label}{datetime.now().strftime('%H:%M')} "
-                        fill = w - 2 - HermesCLI._status_bar_display_width(label)
-                        _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+                        if self.show_response_borders:
+                            w = self._scrollback_box_width(getattr(self.console, "width", 80))
+                            label = " ⚕ Hermes "
+                            if self.show_timestamps:
+                                label = f"{label}{datetime.now().strftime('%H:%M')} "
+                            fill = w - 2 - HermesCLI._status_bar_display_width(label)
+                            _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
                     _cprint(f"{_STREAM_PAD}{sentence.rstrip()}")
 
                 tts_thread = threading.Thread(
@@ -10305,25 +10312,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 is_error_response = result and (result.get("failed") or result.get("partial"))
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:
-                    # Text was already printed sentence-by-sentence; just close the box
-                    w = self._scrollback_box_width()
-                    _cprint(f"\n{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
+                    # Text was already printed sentence-by-sentence; close the box if borders enabled
+                    if self.show_response_borders:
+                        w = self._scrollback_box_width()
+                        _cprint(f"\n{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
                 elif already_streamed:
                     # Response was already streamed token-by-token with box framing;
                     # _flush_stream() already closed the box. Skip Rich Panel.
                     pass
                 else:
                     _chat_console = ChatConsole()
-                    _chat_console.print(Panel(
-                        _render_final_assistant_content(response, mode=self.final_response_markdown),
-                        title=f"[{_resp_color} bold]{label}[/]",
-                        title_align="left",
-                        border_style=_resp_color,
-                        style=_resp_text,
-                        box=rich_box.HORIZONTALS,
-                        padding=(1, 4),
-                        width=self._scrollback_box_width(),
-                    ))
+                    if self.show_response_borders:
+                        _chat_console.print(Panel(
+                            _render_final_assistant_content(response, mode=self.final_response_markdown),
+                            title=f"[{_resp_color} bold]{label}[/]",
+                            title_align="left",
+                            border_style=_resp_color,
+                            style=_resp_text,
+                            box=rich_box.HORIZONTALS,
+                            padding=(1, 4),
+                            width=self._scrollback_box_width(),
+                        ))
+                    else:
+                        _chat_console.print(_render_final_assistant_content(response, mode=self.final_response_markdown))
 
 
             # Play terminal bell when agent finishes (if enabled).
