@@ -7,8 +7,9 @@ at startup, by THREE separate code paths:
   1. cli.py            -> ``env_mappings`` dict (CLI / TUI startup)
   2. gateway/run.py    -> ``_terminal_env_map`` dict (gateway / messaging
                           platforms)
-  3. hermes_cli/config.py:save_config_value
-                       -> ``_config_to_env_sync`` dict (one-shot when the
+  3. hermes_cli/config.py:set_config_value
+                       -> ``TERMINAL_CONFIG_ENV_MAP`` via
+                          terminal_config_env_var_for_key (one-shot when the
                           user runs ``hermes config set …``)
 
 If any one of these is missing a key, the corresponding config.yaml setting
@@ -89,12 +90,11 @@ def _gateway_env_map_keys() -> set[str]:
 def _save_config_env_sync_keys() -> set[str]:
     """terminal config keys bridged by ``hermes config set foo bar``."""
     from hermes_cli import config as hc_config
-    source = inspect.getsource(hc_config.set_config_value)
-    keys = _extract_dict_keys(source, "_config_to_env_sync")
-    # set_config_value uses fully-qualified ``terminal.foo`` keys; strip the
-    # prefix so we can compare against the other two maps which use bare
-    # leaf keys.
-    return {k.split(".", 1)[1] for k in keys if k.startswith("terminal.")}
+    source = inspect.getsource(hc_config)
+    keys = _extract_dict_keys(source, "TERMINAL_CONFIG_ENV_MAP")
+    # set_config_value deliberately skips terminal.cwd: that key is applied
+    # by process-launch paths, not mirrored by `hermes config set`.
+    return keys - {"cwd"}
 
 
 # Keys present in cli.py env_mappings but intentionally absent from
@@ -157,7 +157,7 @@ def test_cli_and_gateway_env_maps_agree():
 def test_save_config_set_supports_critical_bridged_keys():
     """``hermes config set terminal.X true`` must propagate to .env for
     known-critical keys.  This used to be an all-keys invariant but the SSH
-    terminal keys (ssh_*) aren't in _config_to_env_sync and are instead
+    terminal keys (ssh_*) aren't in the config-set env sync path and are instead
     handled via the separate api_keys TERMINAL_SSH_* fallback path or
     user-edits-yaml-directly.
 
@@ -180,8 +180,8 @@ def test_save_config_set_supports_critical_bridged_keys():
     missing = required - save_keys
     assert not missing, (
         f"`hermes config set terminal.X` doesn't sync these load-bearing "
-        f"keys to .env: {sorted(missing)}.  Add them to _config_to_env_sync "
-        f"in hermes_cli/config.py:set_config_value."
+        f"keys to .env: {sorted(missing)}.  Add them to "
+        f"TERMINAL_CONFIG_ENV_MAP in hermes_cli/config.py."
     )
 
 
@@ -269,7 +269,7 @@ def test_docker_volumes_is_bridged_everywhere():
 
     The JSON list of ``host:container`` bind mounts was bridged by cli.py and
     gateway/run.py and consumed by terminal_tool (via json.loads), but was
-    missing from set_config_value's _config_to_env_sync.  So
+    missing from set_config_value's env sync map.  So
     ``hermes config set terminal.docker_volumes '["/host:/workspace"]'`` wrote
     config.yaml yet left the running process's TERMINAL_DOCKER_VOLUMES stale —
     the mounts didn't apply until a full restart.  Same four-site bridge
@@ -287,7 +287,7 @@ def test_docker_forward_env_is_bridged_everywhere():
 
     The JSON list of host env-var names forwarded into the container was
     bridged by cli.py and gateway/run.py and consumed by terminal_tool (via
-    json.loads), but missing from set_config_value's _config_to_env_sync, so
+    json.loads), but missing from set_config_value's env sync map, so
     ``hermes config set terminal.docker_forward_env '["GITHUB_TOKEN"]'`` had no
     effect on the running process until restart.
     """
