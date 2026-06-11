@@ -72,6 +72,14 @@ pub struct NodeDependenciesStagePlan {
     pub tui_dir: Option<PathBuf>,
 }
 
+/// Native desktop build stage execution plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopBuildStagePlan {
+    pub npm: PathBuf,
+    pub cwd: PathBuf,
+    pub desktop_dir: PathBuf,
+}
+
 /// Messaging-platform SDK requirement derived from user configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlatformSdkRequirement {
@@ -1044,6 +1052,57 @@ pub fn install_windows_node_dependencies_stage(
     }))
 }
 
+/// Build the native desktop app stage plan.
+pub fn desktop_build_stage_plan<P>(
+    install_root: &Path,
+    hermes_home: &Path,
+    path_env: P,
+    pathext: &str,
+) -> Result<DesktopBuildStagePlan>
+where
+    P: AsRef<OsStr>,
+{
+    let npm = find_npm_executable(hermes_home, path_env, pathext)
+        .ok_or_else(|| anyhow!("npm is not available"))?;
+    let desktop_dir = install_root.join("apps").join("desktop");
+    if !desktop_dir.join("package.json").is_file() {
+        return Err(anyhow!(
+            "desktop package not found at {}",
+            desktop_dir.join("package.json").display()
+        ));
+    }
+    Ok(DesktopBuildStagePlan {
+        npm,
+        cwd: install_root.to_path_buf(),
+        desktop_dir,
+    })
+}
+
+/// Build the desktop app natively on Windows before falling back to PowerShell.
+pub fn build_windows_desktop_stage(
+    install_root: &Path,
+    hermes_home: &Path,
+) -> Result<serde_json::Value> {
+    if !cfg!(target_os = "windows") {
+        return Err(anyhow!("native desktop stage is only available on Windows"));
+    }
+    let path_env = std::env::var_os("PATH").unwrap_or_default();
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let plan = desktop_build_stage_plan(install_root, hermes_home, path_env, &pathext)?;
+    if run_node_dependency_command(&plan.npm, ["ci"], &plan.cwd).is_err() {
+        run_node_dependency_command(&plan.npm, ["install"], &plan.cwd)
+            .context("installing desktop workspace Node dependencies")?;
+    }
+    run_desktop_pack_command(&plan.npm, &plan.desktop_dir)?;
+    let desktop_exe = find_built_windows_desktop_exe(install_root)
+        .ok_or_else(|| anyhow!("desktop build completed but Hermes.exe was not found"))?;
+    Ok(serde_json::json!({
+        "npm": plan.npm,
+        "desktopDir": plan.desktop_dir,
+        "desktopExe": desktop_exe,
+    }))
+}
+
 /// Build a native Windows PATH stage report without mutating user state.
 pub fn windows_path_stage_plan(
     hermes_home: &Path,
@@ -1451,6 +1510,37 @@ fn run_node_dependency_command<const N: usize>(
     ))
 }
 
+fn run_desktop_pack_command(npm: &Path, desktop_dir: &Path) -> Result<()> {
+    let status = Command::new(npm)
+        .args(["run", "pack"])
+        .current_dir(desktop_dir)
+        .env("CSC_IDENTITY_AUTO_DISCOVERY", "false")
+        .env("WIN_CSC_LINK", "")
+        .env("WIN_CSC_KEY_PASSWORD", "")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .with_context(|| format!("running {} run pack", npm.display()))?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "{} run pack failed with exit {:?}",
+        npm.display(),
+        status.code()
+    ))
+}
+
+fn find_built_windows_desktop_exe(install_root: &Path) -> Option<PathBuf> {
+    let release = install_root.join("apps").join("desktop").join("release");
+    [
+        release.join("win-unpacked").join("Hermes.exe"),
+        release.join("win-arm64-unpacked").join("Hermes.exe"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
+
 fn node_version_satisfies_build(node: &Path) -> bool {
     let output = Command::new(node)
         .arg("--version")
@@ -1495,6 +1585,9 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
         return StageExecutionMode::NativeWithScriptFallback;
     }
     if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("node-deps") {
+        return StageExecutionMode::NativeWithScriptFallback;
+    }
+    if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("desktop") {
         return StageExecutionMode::NativeWithScriptFallback;
     }
     if matches!(
@@ -1618,8 +1711,14 @@ mod tests {
         assert_eq!(plan[5].rust_probe, !cfg!(target_os = "windows"));
         assert_eq!(plan[5].script_fallback, true);
         assert_eq!(plan[6].name, "desktop");
-        assert_eq!(plan[6].execution, StageExecutionMode::ProbeThenScript);
-        assert_eq!(plan[6].rust_probe, true);
+        let desktop_execution = if cfg!(target_os = "windows") {
+            StageExecutionMode::NativeWithScriptFallback
+        } else {
+            StageExecutionMode::ProbeThenScript
+        };
+        assert_eq!(plan[6].execution, desktop_execution);
+        assert_eq!(plan[6].rust_probe, !cfg!(target_os = "windows"));
+        assert_eq!(plan[6].script_fallback, true);
         assert_eq!(plan[7].name, "venv");
         assert_eq!(plan[7].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[7].script_fallback, true);
@@ -1902,6 +2001,37 @@ mod tests {
         )
         .unwrap();
         assert!(desktop_stage_skip_result(&desktop, &root).is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn desktop_build_stage_plan_requires_npm_and_desktop_package() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-desktop-build-plan-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+        let install_root = root.join("checkout");
+        let desktop_dir = install_root.join("apps").join("desktop");
+        std::fs::create_dir_all(&desktop_dir).unwrap();
+        std::fs::write(desktop_dir.join("package.json"), b"{}").unwrap();
+
+        assert!(
+            desktop_build_stage_plan(&install_root, &hermes_home, "", ".EXE;.CMD").is_err()
+        );
+
+        let npm_name = if cfg!(target_os = "windows") { "npm.cmd" } else { "bin/npm" };
+        let npm = hermes_home.join("node").join(npm_name);
+        std::fs::create_dir_all(npm.parent().unwrap()).unwrap();
+        std::fs::write(&npm, b"npm").unwrap();
+
+        let plan =
+            desktop_build_stage_plan(&install_root, &hermes_home, "", ".EXE;.CMD").unwrap();
+
+        assert_eq!(plan.npm, npm);
+        assert_eq!(plan.cwd, install_root);
+        assert_eq!(plan.desktop_dir, desktop_dir);
 
         let _ = std::fs::remove_dir_all(&root);
     }

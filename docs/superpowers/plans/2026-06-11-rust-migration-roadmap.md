@@ -163,6 +163,9 @@ language-specific setup where needed.
   dependencies, while preserving the PowerShell stage as fallback for missing `npx` or failed npm/Playwright commands.
 - `desktop` now uses a Rust no-op skip when `apps/desktop/package.json` is absent, matching the existing script
   behavior without starting PowerShell or bash for a stage that can only skip.
+- Windows `desktop` now has a Rust native-first build path for workspace npm install and `npm run pack`, verifies the
+  produced `Hermes.exe`, and still creates shortcuts through the Rust manager; the PowerShell stage remains fallback
+  for dependency/build failures so its cache purge and Electron mirror recovery are preserved.
 - Windows `platform-sdks` now skips natively when `.env` has no configured messaging platform tokens, and runs
   native-first SDK import checks plus targeted `pip install` recovery when tokens are present, while preserving script
   fallback if the native recovery path fails.
@@ -173,8 +176,8 @@ language-specific setup where needed.
 
 **Still script-backed:**
 - Language/runtime setup: uv, Python dependency fallback tiers when `uv.lock` sync is unavailable, Node installation
-  when missing, Unix npm dependency installation when npm is available, desktop build when the desktop package is
-  present, and script fallback for Windows npm and platform SDK recovery.
+  when missing, Unix npm dependency installation when npm is available, Unix desktop build when the desktop package is
+  present, and script fallback for Windows npm, Windows desktop recovery, and platform SDK recovery.
 - Repository clone/update stage execution until the Git/ZIP fallback matrix has a parity suite and native stage wiring.
 - Remaining platform shell/profile edge cases that are not covered by the current Rust path-stage helpers.
 

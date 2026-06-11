@@ -651,6 +651,11 @@ async fn run_bootstrap(
                     &hermes_home,
                     &install_root,
                 ))
+            } else if cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("desktop") {
+                Some(crate::orchestrator::build_windows_desktop_stage(
+                    &install_root,
+                    &hermes_home,
+                ))
             } else if should_try_native_repository_archive(&stage.name, &install_root) {
                 Some(
                     crate::orchestrator::install_repository_archive_fresh(
@@ -668,6 +673,14 @@ async fn run_bootstrap(
         if let Some(native_stage_result) = native_stage_result {
             match native_stage_result {
                 Ok(data) => {
+                    if cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("desktop") {
+                        if let Err(err) = create_windows_desktop_shortcuts(&install_root) {
+                            tracing::warn!(?err, "failed to create desktop shortcuts via manager");
+                            emit_log(&format!(
+                                "[bootstrap] warning: could not create desktop shortcuts: {err}"
+                            ));
+                        }
+                    }
                     emit_event(
                         &app,
                         BootstrapEvent::Stage {
@@ -993,6 +1006,7 @@ fn should_fallback_native_stage(stage_name: &str, install_root: &std::path::Path
         || is_python_dependencies_stage(stage_name)
         || stage_name.eq_ignore_ascii_case("platform-sdks")
         || (cfg!(target_os = "windows") && stage_name.eq_ignore_ascii_case("node-deps"))
+        || (cfg!(target_os = "windows") && stage_name.eq_ignore_ascii_case("desktop"))
 }
 
 fn is_python_dependencies_stage(stage_name: &str) -> bool {
@@ -1373,6 +1387,10 @@ mod tests {
         assert!(should_fallback_native_stage("platform-sdks", &install_root));
         assert_eq!(
             should_fallback_native_stage("node-deps", &install_root),
+            cfg!(target_os = "windows")
+        );
+        assert_eq!(
+            should_fallback_native_stage("desktop", &install_root),
             cfg!(target_os = "windows")
         );
         assert!(!should_fallback_native_stage("node", &install_root));
