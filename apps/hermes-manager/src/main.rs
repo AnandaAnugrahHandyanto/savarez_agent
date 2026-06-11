@@ -46,6 +46,45 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Plan PATH changes needed to expose the Hermes command.
+    PlanPath {
+        /// Override install root; defaults to HERMES_HOME/hermes-agent.
+        #[arg(long)]
+        install_root: Option<PathBuf>,
+        /// Current user PATH value to plan from; defaults to HKCU Environment Path.
+        #[arg(long)]
+        current_path: Option<String>,
+        /// Plan using Windows PATH conventions.
+        #[arg(long, conflicts_with = "unix")]
+        windows: bool,
+        /// Plan using Unix PATH conventions.
+        #[arg(long, conflicts_with = "windows")]
+        unix: bool,
+    },
+    /// Write an idempotent Hermes PATH block to a shell profile file.
+    WriteProfileHint {
+        /// Shell profile path to update.
+        #[arg(long)]
+        profile: PathBuf,
+        /// Override install root; defaults to HERMES_HOME/hermes-agent.
+        #[arg(long)]
+        install_root: Option<PathBuf>,
+        /// Do not write the profile; only report what would happen.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Write Hermes to the current user's Windows PATH.
+    WriteUserPath {
+        /// Override install root; defaults to HERMES_HOME/hermes-agent.
+        #[arg(long)]
+        install_root: Option<PathBuf>,
+        /// Current PATH value to plan from; defaults to the process PATH.
+        #[arg(long)]
+        current_path: Option<String>,
+        /// Do not write the registry; only report what would happen.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -55,6 +94,31 @@ struct CommandReport {
     #[serde(rename = "dryRun")]
     dry_run: bool,
     paths: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProfileReport {
+    ok: bool,
+    command: &'static str,
+    #[serde(rename = "dryRun")]
+    dry_run: bool,
+    profile: String,
+    #[serde(rename = "hermesBin")]
+    hermes_bin: String,
+    changed: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct PathApplyReport {
+    ok: bool,
+    command: &'static str,
+    #[serde(rename = "dryRun")]
+    dry_run: bool,
+    target: String,
+    #[serde(rename = "hermesBin")]
+    hermes_bin: String,
+    changed: bool,
+    applied: bool,
 }
 
 fn main() {
@@ -141,6 +205,106 @@ fn run() -> hermes_manager::Result<()> {
                 println!("repair_clean=ok");
             }
         }
+        Command::PlanPath {
+            install_root,
+            current_path,
+            windows,
+            unix,
+        } => {
+            let install_root = install_root.unwrap_or_else(|| hermes_manager::paths::agent_root(&home));
+            let current_path = current_path.or_else(|| std::env::var("PATH").ok());
+            let use_windows = if windows {
+                true
+            } else if unix {
+                false
+            } else {
+                cfg!(target_os = "windows")
+            };
+            let plan =
+                hermes_manager::platform::plan_path_update(&install_root, current_path, use_windows);
+            if cli.json {
+                let text = serde_json::to_string_pretty(&plan)
+                    .map_err(|err| hermes_manager::ManagerError::InvalidManifest(err.to_string()))?;
+                println!("{text}");
+            } else {
+                println!("hermes_bin={}", plan.hermes_bin.display());
+                println!("path_changed={}", plan.changed);
+                println!("next_path={}", plan.next_path);
+                if !use_windows {
+                    println!("profile_hint={}", hermes_manager::platform::shell_profile_hint(&plan));
+                }
+            }
+        }
+        Command::WriteProfileHint {
+            profile,
+            install_root,
+            dry_run,
+        } => {
+            let install_root =
+                install_root.unwrap_or_else(|| hermes_manager::paths::agent_root(&home));
+            let current_path = std::env::var("PATH").ok();
+            let plan = hermes_manager::platform::plan_path_update(&install_root, current_path, false);
+            if !dry_run {
+                hermes_manager::platform::write_shell_profile_update(&profile, &plan)?;
+            }
+            if cli.json {
+                let text = serde_json::to_string_pretty(&ProfileReport {
+                    ok: true,
+                    command: "write-profile-hint",
+                    dry_run,
+                    profile: profile.display().to_string(),
+                    hermes_bin: plan.hermes_bin.display().to_string(),
+                    changed: true,
+                })
+                .map_err(|err| hermes_manager::ManagerError::InvalidManifest(err.to_string()))?;
+                println!("{text}");
+            } else {
+                let action = if dry_run { "would_update" } else { "updated" };
+                println!("{action}={}", profile.display());
+                println!("profile_hint={}", hermes_manager::platform::shell_profile_hint(&plan));
+            }
+        }
+        Command::WriteUserPath {
+            install_root,
+            current_path,
+            dry_run,
+        } => {
+            let install_root =
+                install_root.unwrap_or_else(|| hermes_manager::paths::agent_root(&home));
+            let current_path = match current_path {
+                Some(value) => Some(value),
+                None => hermes_manager::platform::read_windows_user_path()?,
+            };
+            let plan = hermes_manager::platform::plan_path_update(&install_root, current_path, true);
+            let applied = if dry_run {
+                false
+            } else {
+                hermes_manager::platform::write_windows_user_path_update(&plan)?
+            };
+            if cli.json {
+                let text = serde_json::to_string_pretty(&PathApplyReport {
+                    ok: true,
+                    command: "write-user-path",
+                    dry_run,
+                    target: "user".to_string(),
+                    hermes_bin: plan.hermes_bin.display().to_string(),
+                    changed: plan.changed,
+                    applied,
+                })
+                .map_err(|err| hermes_manager::ManagerError::InvalidManifest(err.to_string()))?;
+                println!("{text}");
+            } else {
+                let action = if dry_run {
+                    "would_update_user_path"
+                } else if applied {
+                    "updated_user_path"
+                } else {
+                    "user_path_unchanged"
+                };
+                println!("{action}=Path");
+                println!("hermes_bin={}", plan.hermes_bin.display());
+            }
+        }
     }
 
     Ok(())
@@ -172,5 +336,31 @@ mod tests {
         assert_eq!(value["command"], "uninstall-lite");
         assert_eq!(value["dryRun"], true);
         assert_eq!(value["paths"][0], "/tmp/hermes/hermes-agent");
+    }
+
+    #[test]
+    fn path_apply_report_serializes_machine_readable_result() {
+        let report = PathApplyReport {
+            ok: true,
+            command: "write-user-path",
+            dry_run: true,
+            target: "user".to_string(),
+            hermes_bin: "C:/Users/example/hermes/hermes-agent/venv/Scripts".to_string(),
+            changed: true,
+            applied: false,
+        };
+
+        let value = serde_json::to_value(report).expect("report should serialize");
+
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["command"], "write-user-path");
+        assert_eq!(value["dryRun"], true);
+        assert_eq!(value["target"], "user");
+        assert_eq!(
+            value["hermesBin"],
+            "C:/Users/example/hermes/hermes-agent/venv/Scripts"
+        );
+        assert_eq!(value["changed"], true);
+        assert_eq!(value["applied"], false);
     }
 }
