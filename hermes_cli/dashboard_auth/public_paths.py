@@ -46,4 +46,14 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # Read-only theme + plugin manifests for the dashboard skin engine.
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
+    # Cross-process hook delivery. These bypass the dashboard auth gates
+    # because they carry their OWN auth model: a bearer token minted fresh
+    # into ``dashboard.json`` each dashboard startup, verified inside the
+    # route handlers themselves (gateway/hook_forwarder.py posts to them
+    # without a session cookie). They are NOT unauthenticated — the
+    # handler rejects a missing/wrong bearer — so they're safe to expose
+    # to the three audiences above (the handler 401s anyone without the
+    # token). See gateway/hook_forwarder.py + hermes_cli/hook_ingest.py.
+    "/api/hooks/health",
+    "/api/hooks/ingest",
 })
