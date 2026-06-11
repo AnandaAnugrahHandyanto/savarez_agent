@@ -249,6 +249,32 @@ function resolveHermesHome() {
 }
 
 const HERMES_HOME = resolveHermesHome()
+const ENV_PATH = path.join(HERMES_HOME, '.env')
+
+/** Read HERMES_DASHBOARD_SESSION_TOKEN from the .env file. */
+function readSessionTokenFromEnvFile() {
+  try {
+    if (!fs.existsSync(ENV_PATH)) return null
+    const content = fs.readFileSync(ENV_PATH, 'utf8')
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim()
+      if (trimmed.startsWith('#')) continue
+      const eqIdx = trimmed.indexOf('=')
+      if (eqIdx === -1) continue
+      const key = trimmed.slice(0, eqIdx).trim()
+      if (key === 'HERMES_DASHBOARD_SESSION_TOKEN') {
+        let value = trimmed.slice(eqIdx + 1).trim()
+        if ((value.startsWith('"') && value.endsWith('"')) ||
+            (value.startsWith("'") && value.endsWith("'"))) {
+          value = value.slice(1, -1)
+        }
+        return value
+      }
+    }
+  } catch { /* best effort */ }
+  return null
+}
+
 // ACTIVE_HERMES_ROOT — the canonical mutable Hermes install. Same path
 // install.ps1 / install.sh use, so a desktop-only user and a CLI-only user end
 // up with identical layouts and can share one install.
@@ -4726,7 +4752,13 @@ async function startHermes() {
 
     await advanceBootProgress('backend.port', 'Finding an open local port', 16)
     const port = await pickPort()
-    const token = crypto.randomBytes(32).toString('base64url')
+    // Use the HERMES_DASHBOARD_SESSION_TOKEN from the .env file.  When
+    // Bitwarden Secrets Manager is active it applies secrets to the spawned
+    // child process (overriding any random token we set in the env), so the
+    // renderer must present the same token the backend will end up using.
+    // Reading from .env is safe — it is the same file the backend reads at
+    // import time.
+    const token = readSessionTokenFromEnvFile() || crypto.randomBytes(32).toString('base64url')
     const dashboardArgs = ['dashboard', '--no-open', '--host', '127.0.0.1', '--port', String(port)]
     // Pin the desktop's chosen profile via the global --profile flag. This is
     // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
