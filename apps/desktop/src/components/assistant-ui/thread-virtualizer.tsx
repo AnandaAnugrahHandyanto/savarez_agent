@@ -256,6 +256,9 @@ function useThreadScrollAnchor({
   const programmaticScrollPendingRef = useRef(0)
   const prevSessionKeyRef = useRef(sessionKey)
   const prevGroupCountRef = useRef(0)
+  const enabledRef = useRef(enabled)
+
+  enabledRef.current = enabled
 
   const pinToBottom = useCallback(() => {
     const el = scrollerRef.current
@@ -389,9 +392,10 @@ function useThreadScrollAnchor({
 
   // Streaming auto-follow: pin the viewport to the bottom when the
   // virtualizer's total content size grows (new streaming tokens)
-  // while the user is parked at the bottom. Uses useLayoutEffect so it
-  // runs after React commits DOM mutations but before the browser paints
-  // to avoid fighting with the virtualizer's own scrollToFn adjustments.
+  // while the user is parked at the bottom. useLayoutEffect observes the
+  // committed size change immediately after React mutates the DOM, then the
+  // actual pin is deferred to requestAnimationFrame so rapid token updates
+  // coalesce to at most one scroll write per frame.
   //
   // Pins are coalesced to at most once per animation frame via a pending
   // flag — during streaming, tokens arrive rapidly and getTotalSize()
@@ -401,22 +405,24 @@ function useThreadScrollAnchor({
   // content as "grew" — auto-follow only triggers on subsequent growth.
   const prevTotalSizeRef = useRef<number | null>(null)
   const pinPendingRef = useRef(false)
-  const rafIdRef = useRef(0)
-  const totalSize = virtualizer.getTotalSize()
-  useLayoutEffect(() => {
-    const cancelPendingPin = () => {
-      if (rafIdRef.current) {
-        cancelAnimationFrame(rafIdRef.current)
-        rafIdRef.current = 0
-      }
+  const rafIdRef = useRef<number | null>(null)
+  const totalSize = enabled ? virtualizer.getTotalSize() : null
 
-      pinPendingRef.current = false
+  const cancelPendingPin = useCallback(() => {
+    if (rafIdRef.current !== null) {
+      cancelAnimationFrame(rafIdRef.current)
+      rafIdRef.current = null
     }
 
-    if (!enabled) {
-      cancelPendingPin()
+    pinPendingRef.current = false
+  }, [])
 
-      return cancelPendingPin
+  useLayoutEffect(() => {
+    if (!enabled || totalSize === null) {
+      cancelPendingPin()
+      prevTotalSizeRef.current = null
+
+      return
     }
 
     const prevSize = prevTotalSizeRef.current
@@ -428,17 +434,25 @@ function useThreadScrollAnchor({
         pinPendingRef.current = true
         rafIdRef.current = requestAnimationFrame(() => {
           pinPendingRef.current = false
-          rafIdRef.current = 0
+          rafIdRef.current = null
 
-          if (enabled && stickyBottomRef.current) {
+          if (enabledRef.current && stickyBottomRef.current) {
             pinToBottom()
           }
         })
       }
     }
 
-    return cancelPendingPin
-  }, [enabled, pinToBottom, stickyBottomRef, totalSize])
+  }, [cancelPendingPin, enabled, pinToBottom, stickyBottomRef, totalSize])
+
+  // Unmount-only cleanup: canceling on every totalSize change would keep
+  // pushing the coalesced RAF forward during rapid streaming updates.
+  useLayoutEffect(() => {
+    return () => {
+      cancelPendingPin()
+      prevTotalSizeRef.current = null
+    }
+  }, [cancelPendingPin])
 
   // Jump to bottom on session change OR when an empty thread first gets
   // content. Both share the same intent and the same effect.
