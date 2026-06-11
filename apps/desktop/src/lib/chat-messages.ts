@@ -61,6 +61,8 @@ export type GatewayEventPayload = {
   // secret.request (skill credential capture)
   env_var?: string
   prompt?: string
+  // session.info mcp status
+  mcp_servers?: unknown[]
   // terminal.read.request (GUI agent reading the in-app terminal pane)
   start?: number
   count?: number
