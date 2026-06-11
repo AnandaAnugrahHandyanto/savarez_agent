@@ -10332,6 +10332,8 @@ def cmd_dashboard(args):
         _launch_profile not in ("default", "custom")
         and not getattr(args, "isolated", False)
         and not getattr(args, "open_profile", "")
+        # Desktop pool backends are intentionally per-profile.
+        and os.environ.get("HERMES_DESKTOP") != "1"
     ):
         url = f"http://{args.host or '127.0.0.1'}:{args.port}/?profile={_launch_profile}"
         if _dashboard_listening(args.host, args.port):
@@ -10430,6 +10432,20 @@ def cmd_dashboard(args):
         # log and proceed; the gate's fail-closed branch will surface
         # the missing-provider state if it matters.
         print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
+
+    # Desktop chat uses the dashboard's in-process /api/ws gateway.
+    try:
+        from hermes_cli.mcp_startup import start_background_mcp_discovery
+
+        start_background_mcp_discovery(
+            logger=logger,
+            thread_name="dashboard-mcp-discovery",
+        )
+    except Exception:
+        logger.debug(
+            "Background MCP tool discovery failed at dashboard startup",
+            exc_info=True,
+        )
 
     from hermes_cli.web_server import start_server
 
