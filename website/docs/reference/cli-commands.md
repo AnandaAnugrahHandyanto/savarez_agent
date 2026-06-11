@@ -1178,9 +1178,9 @@ Manage MCP (Model Context Protocol) server configurations and run Savarez as an 
 |------------|-------------|
 | *(none)* or `picker` | Interactive catalog picker — browse Nous-approved MCPs and install/enable/disable. |
 | `catalog` | List Nous-approved MCPs (plain text, scriptable). |
-| `install <name>` | Install a catalog entry (e.g. `savarez mcp install n8n`). |
-| `serve [-v\|--verbose]` | Run Savarez as an MCP server — expose conversations to other agents. |
-| `add <name> [--url URL] [--command CMD] [--args ...] [--auth oauth\|header]` | Add a custom MCP server with automatic tool discovery. |
+| `install <name>` | Install a catalog entry (e.g. `hermes mcp install n8n`). |
+| `serve [-v\|--verbose]` | Run Hermes as an MCP server — expose conversations to other agents. |
+| `add <name> [--url URL] [--command CMD] [--auth oauth\|header] [--args ...]` | Add a custom MCP server with automatic tool discovery. `--args` passes the remaining argv to the stdio command, so put it last. |
 | `remove <name>` (alias: `rm`) | Remove an MCP server from config. |
 | `list` (alias: `ls`) | List configured MCP servers. |
 | `test <name>` | Test connection to an MCP server. |
@@ -1350,15 +1350,20 @@ Launch the web dashboard — a browser-based UI for managing configuration, API 
 | `--host` | `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
 | `--insecure` | off | Allow binding to non-localhost hosts. Exposes dashboard credentials on the network; use only behind trusted network controls. |
-| `--stop` | — | Stop running `savarez dashboard` processes and exit. |
-| `--status` | — | List running `savarez dashboard` processes and exit. |
+| `--isolated` | off | When launched from a named profile (`worker dashboard`), run a dedicated per-profile server instead of routing to the machine dashboard. |
+| `--stop` | — | Stop running `hermes dashboard` processes and exit. |
+| `--status` | — | List running `hermes dashboard` processes and exit. |
 
 ```bash
 # Default — opens browser to http://127.0.0.1:9119
 savarez dashboard
 
 # Custom port, no browser
-savarez dashboard --port 8080 --no-open
+hermes dashboard --port 8080 --no-open
+
+# From a profile alias — routes to the machine dashboard with the
+# profile preselected in the sidebar switcher (attach if running)
+worker dashboard
 ```
 
 ## `hermes profile`

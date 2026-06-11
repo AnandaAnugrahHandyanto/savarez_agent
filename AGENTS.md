@@ -458,8 +458,8 @@ cd ui-tui
 npm install       # first time
 npm run dev       # watch mode (rebuilds savarez-ink + tsx --watch)
 npm start         # production
-npm run build     # full build (savarez-ink + tsc)
-npm run type-check # typecheck only (tsc --noEmit)
+npm run build     # full build (hermes-ink + tsc)
+npm run typecheck # typecheck only (tsc --noEmit)
 npm run lint      # eslint
 npm run fmt       # prettier
 npm test          # vitest
