@@ -202,6 +202,8 @@ Common issues:
   `voice()` content builders via the sidecar's `/send-attachment`
   endpoint. Captions arrive as a separate iMessage bubble after the
   media.
+- **Reactions/tapbacks are supported.** Hermes sends native reactions through
+  spectrum-ts' `reaction()` builder via the sidecar's `/react` endpoint.
 - **Photon's free quotas:** 5,000 messages per server per day,
   50 new-conversation initiations per shared line per day. Increases
   available — email `help@photon.codes`.

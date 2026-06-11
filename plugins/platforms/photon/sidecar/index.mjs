@@ -24,6 +24,8 @@
 //       body: {"spaceId": "...", "path": "...", "name": "..." | null,
 //              "mimeType": "..." | null, "caption": "..." | null,
 //              "kind": "attachment" | "voice"}
+//   - POST /react       -> {"ok": true}
+//       body: {"spaceId": "...", "messageId": "...", "emoji": "👍"}
 //   - POST /typing      -> {"ok": true}
 //       body: {"spaceId": "...", "state": "start" | "stop"}
 //   - POST /shutdown    -> {"ok": true}; then process exits
@@ -70,11 +72,12 @@ if (!projectId || !projectSecret || !sharedToken) {
 
 // Lazy-load spectrum-ts so a missing install fails with a clear message
 // instead of a cryptic module-resolution error during import.
-let Spectrum, imessage, attachment, voice, spectrumText, spectrumTyping;
+let Spectrum, imessage, attachment, spectrumReaction, voice, spectrumText, spectrumTyping;
 try {
   ({
     Spectrum,
     attachment,
+    reaction: spectrumReaction,
     voice,
     text: spectrumText,
     typing: spectrumTyping,
@@ -485,6 +488,21 @@ const server = http.createServer(async (req, res) => {
         }
       }
       return ok(res, { messageId: result?.id || null });
+    }
+    if (req.url === "/react") {
+      const { spaceId, messageId, emoji } = body || {};
+      if (!spaceId || !messageId || typeof emoji !== "string" || !emoji.trim()) {
+        return badRequest(res, "spaceId, messageId and emoji are required");
+      }
+      const space = await resolveSpace(spaceId);
+      const target = {
+        id: String(messageId),
+        content: await spectrumText("reaction target").build(),
+        sender: { id: "unknown" },
+        space: { id: spaceId },
+      };
+      await space.send(spectrumReaction(emoji.trim(), target));
+      return ok(res, {});
     }
     if (req.url === "/typing") {
       const { spaceId, state = "start" } = body || {};
