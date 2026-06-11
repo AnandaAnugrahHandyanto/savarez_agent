@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { useCallback, useEffect, useMemo } from 'react'
 
-import { clearProjectDirCache, readProjectDir } from './ipc'
+import { clearProjectDirCache, type ProjectTreeEntry, readProjectDir } from './ipc'
 
 export interface TreeNode {
   /** Absolute filesystem path. Doubles as react-arborist node id. */
@@ -22,6 +22,27 @@ const PLACEHOLDER_ID = '__loading__'
 
 function makeNode(path: string, name: string, isDirectory: boolean): TreeNode {
   return { id: path, isDirectory, name }
+}
+
+// react-arborist throws during render — taking out the *entire* tree with a
+// "Tree error" — if two nodes share an id. Node ids are filesystem paths, which
+// are unique within a directory, but we never want a single malformed readDir
+// entry (an empty path, or a duplicate from an odd remote `ls`) to blank the
+// whole browser. Drop empty-path/duplicate entries defensively. (#38369)
+function entriesToNodes(entries: ProjectTreeEntry[]): TreeNode[] {
+  const seen = new Set<string>()
+  const nodes: TreeNode[] = []
+
+  for (const entry of entries) {
+    if (!entry?.path || seen.has(entry.path)) {
+      continue
+    }
+
+    seen.add(entry.path)
+    nodes.push(makeNode(entry.path, entry.name, entry.isDirectory))
+  }
+
+  return nodes
 }
 
 function patchNode(nodes: TreeNode[] | undefined | null, id: string, patch: (n: TreeNode) => TreeNode): TreeNode[] {
@@ -56,6 +77,7 @@ export interface UseProjectTreeResult {
   collapseAll: () => void
   loadChildren: (id: string) => Promise<void>
   refreshRoot: () => Promise<void>
+  refreshDir: (dirPath: string) => Promise<void>
   setNodeOpen: (id: string, open: boolean) => void
 }
 
@@ -136,7 +158,7 @@ async function loadRoot(cwd: string, { force = false }: { force?: boolean } = {}
 
     return {
       ...latest,
-      data: error ? [] : entries.map(e => makeNode(e.path, e.name, e.isDirectory)),
+      data: error ? [] : entriesToNodes(entries),
       loaded: true,
       rootError: error || null,
       rootLoading: false
@@ -227,12 +249,33 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
             ...n,
             loading: false,
             error: error || undefined,
-            children: error ? [] : entries.map(e => makeNode(e.path, e.name, e.isDirectory))
+            children: error ? [] : entriesToNodes(entries)
           }))
         }
       })
     },
     [cwd]
+  )
+
+  // Reload a single directory after a mutation (create/rename/delete/upload).
+  // Root changes go through loadRoot; a nested folder just refetches its own
+  // children so the rest of the tree's expand state is untouched.
+  const refreshDir = useCallback(
+    async (dirPath: string) => {
+      clearProjectDirCache(dirPath)
+
+      const norm = (p: string) => p.replace(/[/\\]+$/, '')
+
+      if (!dirPath || norm(dirPath) === norm(cwd)) {
+        await loadRoot(cwd, { force: true })
+
+        return
+      }
+
+      inflight.delete(dirPath)
+      await loadChildren(dirPath)
+    },
+    [cwd, loadChildren]
   )
 
   useEffect(() => {
@@ -247,6 +290,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
       loadChildren,
       openState: state.cwd === cwd ? state.openState : {},
       refreshRoot,
+      refreshDir,
       rootError: state.cwd === cwd ? state.rootError : null,
       rootLoading: state.cwd === cwd ? state.rootLoading : Boolean(cwd),
       setNodeOpen
@@ -256,6 +300,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
       cwd,
       loadChildren,
       refreshRoot,
+      refreshDir,
       setNodeOpen,
       state.collapseNonce,
       state.cwd,
