@@ -1605,6 +1605,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     #    scopes the install to ui-tui so launch does not pull desktop/web
     #    dependencies into the hot path.
     did_install = False
+    npm_install_failed = False
     termux_startup = _is_termux_startup_environment()
     termux_need_rebuild = False
     if termux_startup and not tui_dev:
@@ -1652,11 +1653,27 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if result.returncode != 0:
             combined = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
             preview = "\n".join(combined.splitlines()[-30:])
-            print("npm install failed.")
-            if preview:
-                print(preview)
-            sys.exit(1)
-        did_install = True
+            # If a prebuilt bundle is available, recover by launching it
+            # directly.  The self-contained bundle does not need npm's
+            # dependency-tree verification, and re-running npm on every
+            # launch (the default below) just crashes the same way again
+            # on environments where npm teardown is broken (Rocky 9 etc).
+            # The prebuilt bundle is rebuilt during ``hermes update``, so
+            # in the common update-then-crash case it is current.
+            prebuilt_entry = tui_dir / "dist" / "entry.js"
+            if prebuilt_entry.is_file():
+                if not os.environ.get("HERMES_QUIET"):
+                    print("npm install failed; falling back to prebuilt bundle.")
+                    if preview:
+                        print(preview)
+                npm_install_failed = True
+            else:
+                print("npm install failed.")
+                if preview:
+                    print(preview)
+                sys.exit(1)
+        else:
+            did_install = True
 
     if tui_dev:
         # Keep the local @hermes/ink package exports in sync with source.
@@ -1691,6 +1708,11 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     should_build = True
     if termux_startup:
         should_build = did_install or termux_need_rebuild
+    if should_build and npm_install_failed:
+        # npm crashed mid-install.  The esbuild rebuild would also fail
+        # (``node_modules/esbuild`` was never installed), and the prebuilt
+        # ``dist/entry.js`` is already current — launch it directly.
+        should_build = False
 
     if should_build:
         npm = _node_bin("npm")
