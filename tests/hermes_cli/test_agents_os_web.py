@@ -345,6 +345,30 @@ def test_jarvis_reply_falls_back_to_text_only_without_audio(agents_home):
     assert Path(payload["reply_artifact_path"]).exists()
 
 
+def test_jarvis_reply_can_prepare_hume_octave_request_draft_without_api_call(agents_home):
+    paths = resolve_paths(None)
+
+    payload = jarvis_reply_payload(
+        paths,
+        {
+            "text": "Presuda. Jarvis radi lokalno.",
+            "provider": "hume-octave",
+            "voice_description": "calm Croatian operator voice, concise and warm",
+            "format": "mp3",
+        },
+    )
+
+    assert payload["execution_created"] is False
+    assert payload["status"] == "provider_unconfigured"
+    assert payload["tts"]["provider"] == "hume-octave"
+    assert payload["tts"]["requires_api_key"] is True
+    assert payload["tts"]["api_called"] is False
+    assert payload["audio_artifact_path"] is None
+    assert payload["hume_octave_request"]["utterances"][0]["text"] == "Presuda. Jarvis radi lokalno."
+    assert payload["hume_octave_request"]["utterances"][0]["description"] == "calm Croatian operator voice, concise and warm"
+    assert payload["hume_octave_request"]["format"]["type"] == "mp3"
+
+
 def test_root_html_contains_jarvis_oracle_briefing_panel(agents_home):
     service = AgentsOSService(resolve_paths(None))
     html = mission_control_html(service)

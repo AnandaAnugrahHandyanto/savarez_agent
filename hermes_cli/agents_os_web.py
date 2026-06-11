@@ -566,6 +566,21 @@ def _jarvis_gate_text(raw_text: str, cleaned_text: str) -> str:
     return raw_text
 
 
+def _hume_octave_request(text: str, data: dict[str, Any]) -> dict[str, Any]:
+    voice_description = data.get("voice_description") or data.get("description") or "calm Croatian operator voice, concise, warm, and clear"
+    fmt = data.get("format") or data.get("audio_format") or "mp3"
+    return {
+        "utterances": [
+            {
+                "text": text,
+                "description": voice_description,
+            }
+        ],
+        "format": {"type": fmt},
+        "num_generations": int(data.get("num_generations") or 1),
+    }
+
+
 def jarvis_reply_payload(paths: AgentsOSPaths, data: dict[str, Any]) -> dict[str, Any]:
     text = (data.get("text") or data.get("voice_reply_short") or "").strip()
     if not text:
@@ -581,19 +596,28 @@ def jarvis_reply_payload(paths: AgentsOSPaths, data: dict[str, Any]) -> dict[str
         audio_path = audio_dir / f"{stamp}-jarvis-reply{_jarvis_audio_suffix(data.get('audio_mime'))}"
         audio_path.write_bytes(audio_bytes)
     provider = data.get("provider") or ("hermes-tts" if audio_bytes else "text-only-fallback")
+    hume_request = _hume_octave_request(text, data) if provider == "hume-octave" else None
+    hume_key_present = bool(os.environ.get("HUME_API_KEY"))
     reply_path = reply_dir / f"{stamp}-jarvis-reply.md"
+    status = "audio_ready" if audio_path else ("provider_unconfigured" if provider == "hume-octave" and not hume_key_present else "text_only")
     payload = {
         "local_only": True,
         "execution_created": False,
-        "status": "audio_ready" if audio_path else "text_only",
+        "status": status,
         "text": text,
         "audio_artifact_path": str(audio_path) if audio_path else None,
         "tts": {
             "provider": provider,
             "mime": data.get("audio_mime") if audio_path else None,
             "fallback": audio_path is None,
+            "requires_api_key": provider == "hume-octave",
+            "api_key_present": hume_key_present if provider == "hume-octave" else None,
+            "api_called": False,
+            "supported_formats": ["mp3", "wav", "pcm"] if provider == "hume-octave" else None,
         },
     }
+    if hume_request:
+        payload["hume_octave_request"] = hume_request
     reply_path.write_text(f"# Jarvis voice reply\n\n```json\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n```\n", encoding="utf-8")
     artifact_id = f"artifact-jarvis-reply-{stamp}"
     with connect(paths) as conn:
