@@ -22,6 +22,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 import os
+import re
 import threading
 import time
 from concurrent.futures import (
@@ -357,6 +358,67 @@ def _normalize_role(r: Optional[str]) -> str:
         return r_norm
     logger.warning("Unknown delegate_task role=%r, coercing to 'leaf'", r)
     return "leaf"
+
+
+# Persona slugs are filenames: lowercase alnum plus - and _, no dots or
+# separators, so a slug can never escape the personas directory.
+_PERSONA_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _personas_dir() -> str:
+    """Directory holding persona profile markdown files.
+
+    Configurable via delegation.personas_dir; defaults to
+    <hermes_home>/personas.  Uses the same _load_config() path as the
+    rest of delegate_task so config priority stays consistent.
+    """
+    cfg = _load_config()
+    custom = cfg.get("personas_dir")
+    if custom:
+        return os.path.expanduser(str(custom))
+    from hermes_constants import get_hermes_home
+
+    return os.path.join(get_hermes_home(), "personas")
+
+
+def _list_available_personas() -> List[str]:
+    try:
+        return sorted(
+            f[:-3]
+            for f in os.listdir(_personas_dir())
+            if f.endswith(".md") and _PERSONA_SLUG_RE.match(f[:-3])
+        )
+    except OSError:
+        return []
+
+
+def _load_persona(slug: str) -> tuple:
+    """Resolve a persona slug to its profile text.
+
+    Returns (profile, None) on success or (None, error_message) when the
+    slug is invalid or unknown.  Unknown personas fail loud with the
+    available list -- a silent fallback would defeat the point of
+    pinning a subagent's identity.
+    """
+    if not _PERSONA_SLUG_RE.match(slug):
+        return None, (
+            f"Invalid persona name {slug!r}. Personas are lowercase slugs "
+            f"(a-z, 0-9, '-', '_') matching a .md file in {_personas_dir()}."
+        )
+    path = os.path.join(_personas_dir(), f"{slug}.md")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            profile = f.read().strip()
+    except OSError:
+        available = _list_available_personas()
+        listing = ", ".join(available) if available else "(none found)"
+        return None, (
+            f"Unknown persona {slug!r}. Available personas in "
+            f"{_personas_dir()}: {listing}"
+        )
+    if not profile:
+        return None, f"Persona file for {slug!r} is empty: {path}"
+    return profile, None
 
 
 def _get_max_concurrent_children() -> int:
@@ -1976,14 +2038,22 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    persona: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, toolsets, role, persona)
+      - Batch:  provide tasks array [{goal, context, toolsets, role, persona}, ...]
+
+    The 'persona' parameter names a profile markdown file in
+    delegation.personas_dir (default: <hermes_home>/personas/<slug>.md)
+    whose content is prepended to the child's context, pinning the
+    subagent's identity deterministically instead of relying on the
+    parent to paste profiles by hand.  Per-task persona beats the
+    top-level one; unknown personas fail loud with the available list.
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
@@ -2070,13 +2140,42 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "role": top_role,
+                "persona": persona,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
     if not task_list:
         return tool_error("No tasks provided.")
+
+    # Resolve persona profiles before building children (per-task beats
+    # top-level, mirroring role).  The profile is prepended to the task's
+    # context so _build_child_system_prompt needs no changes.
+    for t in task_list:
+        if not isinstance(t, dict):
+            # Non-object tasks are rejected with a precise error by the
+            # validation pass below; skip them here.
+            continue
+        raw_slug = t.get("persona") or persona
+        if not raw_slug or not str(raw_slug).strip():
+            t["persona"] = None
+            continue
+        slug = str(raw_slug).strip().lower()
+        profile, persona_err = _load_persona(slug)
+        if persona_err:
+            return tool_error(persona_err)
+        t["persona"] = slug
+        base_context = t.get("context")
+        if base_context and str(base_context).strip():
+            t["context"] = f"## PERSONA\n{profile}\n\n## CONTEXT\n{base_context}"
+        else:
+            t["context"] = f"## PERSONA\n{profile}"
 
     # Validate each task has a goal
     for i, task in enumerate(task_list):
@@ -2264,6 +2363,15 @@ def delegate_task(
 
         # Sort by task_index so results match input order
         results.sort(key=lambda r: r["task_index"])
+
+    # Stamp the resolved persona into each result entry so persona usage
+    # is auditable from session history (state.db) without log archaeology.
+    for entry in results:
+        _idx = entry.get("task_index")
+        if isinstance(_idx, int) and 0 <= _idx < len(task_list):
+            _p = task_list[_idx].get("persona")
+            if _p:
+                entry["persona"] = _p
 
     # Notify parent's memory provider of delegation outcomes
     if (
@@ -2849,6 +2957,10 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "persona": {
+                            "type": "string",
+                            "description": "Per-task persona override. See top-level 'persona' for semantics.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2861,6 +2973,16 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "persona": {
+                "type": "string",
+                "description": (
+                    "Name of a persona profile to pin the subagent's identity. "
+                    "Resolves <slug>.md in delegation.personas_dir (default: "
+                    "<hermes_home>/personas/) and prepends its content to the "
+                    "subagent's context. Unknown names fail with the available "
+                    "list. Per-task 'persona' inside tasks overrides this."
+                ),
             },
             "acp_command": {
                 "type": "string",
@@ -2906,6 +3028,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        persona=args.get("persona"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,
