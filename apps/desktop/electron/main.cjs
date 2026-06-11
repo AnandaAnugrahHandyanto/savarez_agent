@@ -21,6 +21,7 @@ const fs = require('node:fs')
 const http = require('node:http')
 const https = require('node:https')
 const net = require('node:net')
+const os = require('node:os')
 const path = require('node:path')
 const { fileURLToPath, pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
@@ -31,6 +32,7 @@ const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
+const remoteSsh = require('./remote-ssh.cjs')
 const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -4002,7 +4004,10 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     remoteTokenSet: Boolean(remoteToken),
     // The env override only forces the global/primary connection; a per-profile
     // scope is never overridden by HERMES_DESKTOP_REMOTE_URL.
-    envOverride
+    envOverride,
+    sshUser: String(block.sshUser || ''),
+    sshPort: Number(block.sshPort) || 22,
+    sshKey: String(block.sshKey || '')
   }
 }
 
@@ -4033,6 +4038,19 @@ function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnect
       : { encoding: 'plain', value: incomingToken }
     : existingBlock.token
 
+  // SSH workspace settings live on the global remote block only (the File
+  // Explorer / Terminal follow the active connection). Preserve existing values
+  // unless explicitly provided.
+  const sshUser = input.sshUser !== undefined ? String(input.sshUser).trim() : existing.remote?.sshUser
+  const sshKey = input.sshKey !== undefined ? String(input.sshKey).trim() : existing.remote?.sshKey
+  const sshPortRaw = input.sshPort !== undefined ? input.sshPort : existing.remote?.sshPort
+  const sshPort = Number(sshPortRaw) || undefined
+  const sshFields = {
+    ...(sshUser ? { sshUser } : {}),
+    ...(sshKey ? { sshKey } : {}),
+    ...(sshPort && sshPort !== 22 ? { sshPort } : {})
+  }
+
   if (key) {
     // Per-profile scope: a remote entry pins this profile to its own backend; a
     // local entry clears the override so the profile inherits the default.
@@ -4047,8 +4065,8 @@ function coerceDesktopConnectionConfig(input = {}, existing = readDesktopConnect
 
   const nextRemote =
     mode === 'remote'
-      ? buildRemoteBlock(remoteUrl, authMode, nextToken)
-      : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
+      ? { ...buildRemoteBlock(remoteUrl, authMode, nextToken), ...sshFields }
+      : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken, ...sshFields }
 
   // Preserve per-profile overrides when saving the global connection.
   return { mode, remote: nextRemote, profiles: existing.profiles || {} }
@@ -4260,6 +4278,44 @@ async function probeRemoteAuthMode(rawUrl) {
     version: status?.version || null,
     error: null
   }
+}
+
+// SSH coordinates for routing the desktop's File Explorer / Terminal to the
+// remote workspace (#38671). Returns null when not in remote mode, so callers
+// fall back to local fs/PTY. The host comes from the gateway URL; user/port/key
+// come from env overrides, the saved connection config, or sensible defaults
+// (current OS user, port 22, the SSH agent / default key).
+async function resolveRemoteSshConfig() {
+  let remote = null
+
+  try {
+    remote = await resolveRemoteBackend()
+  } catch {
+    return null
+  }
+
+  if (!remote) {
+    return null
+  }
+
+  let host = ''
+
+  try {
+    host = new URL(remote.baseUrl).hostname
+  } catch {
+    return null
+  }
+
+  if (!host) {
+    return null
+  }
+
+  const config = readDesktopConnectionConfig()
+  const user = process.env.HERMES_DESKTOP_SSH_USER || config.remote?.sshUser || os.userInfo().username
+  const port = Number(process.env.HERMES_DESKTOP_SSH_PORT || config.remote?.sshPort || 22) || 22
+  const keyPath = process.env.HERMES_DESKTOP_SSH_KEY || config.remote?.sshKey || ''
+
+  return { host, user, port, keyPath }
 }
 
 async function testDesktopConnectionConfig(input = {}) {
@@ -5373,7 +5429,39 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
   return true
 })
 
+// File previews must read from the machine that actually holds the file. A
+// remote *workspace* file (opened from the File Explorer) resolves to an
+// absolute POSIX path (/home/…) on the gateway host and is read over SSH. But a
+// file the user attached from their own disk while connected to a remote
+// gateway carries a client-OS path (e.g. C:\Users\…\Downloads\…) that the
+// remote host can't see — reading it over SSH fails with "cannot read C:\…".
+// The remote side is always POSIX (see remote-ssh.cjs), so only absolute POSIX
+// paths are remote; everything else (Windows drive/UNC paths, relative paths)
+// is a local-client file and must be read here. (#38369)
+function previewReadsFromRemote(filePath) {
+  return String(filePath || '').startsWith('/')
+}
+
 ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
+  const ssh = previewReadsFromRemote(filePath) ? await resolveRemoteSshConfig() : null
+
+  if (ssh) {
+    const remotePath = String(filePath || '')
+    const info = await remoteSsh.statFile(ssh, remotePath)
+
+    if (!info || !info.isFile) {
+      throw new Error(`File preview unavailable: cannot read ${remotePath}`)
+    }
+
+    if (info.size > DATA_URL_READ_MAX_BYTES) {
+      throw new Error('File is too large to preview.')
+    }
+
+    const buffer = await remoteSsh.readFileBytes(ssh, remotePath, DATA_URL_READ_MAX_BYTES)
+
+    return `data:${mimeTypeForPath(remotePath)};base64,${buffer.toString('base64')}`
+  }
+
   const { resolvedPath } = await resolveReadableFileForIpc(filePath, {
     maxBytes: DATA_URL_READ_MAX_BYTES,
     purpose: 'File preview'
@@ -5383,6 +5471,30 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
 })
 
 ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
+  const ssh = previewReadsFromRemote(filePath) ? await resolveRemoteSshConfig() : null
+
+  if (ssh) {
+    const remotePath = String(filePath || '')
+    const info = await remoteSsh.statFile(ssh, remotePath)
+
+    if (!info || !info.isFile) {
+      throw new Error(`Text preview unavailable: cannot read ${remotePath}`)
+    }
+
+    const buffer = await remoteSsh.readFileBytes(ssh, remotePath, TEXT_PREVIEW_MAX_BYTES)
+    const remoteExt = path.extname(remotePath).toLowerCase()
+
+    return {
+      binary: looksBinary(buffer.subarray(0, Math.min(buffer.length, 4096))),
+      byteSize: info.size,
+      language: PREVIEW_LANGUAGE_BY_EXT[remoteExt] || 'text',
+      mimeType: mimeTypeForPath(remotePath),
+      path: remotePath,
+      text: buffer.toString('utf8'),
+      truncated: info.size > TEXT_PREVIEW_MAX_BYTES
+    }
+  }
+
   const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, {
     maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,
     purpose: 'Text preview'
@@ -5767,6 +5879,12 @@ function disposeTerminalSession(id) {
 }
 
 ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => {
+  const ssh = await resolveRemoteSshConfig()
+
+  if (ssh) {
+    return remoteSsh.readDir(ssh, dirPath)
+  }
+
   const resolved = path.resolve(String(dirPath || ''))
 
   if (!resolved) {
@@ -5794,6 +5912,12 @@ ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => {
 })
 
 ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => {
+  const ssh = await resolveRemoteSshConfig()
+
+  if (ssh) {
+    return remoteSsh.gitRoot(ssh, startPath)
+  }
+
   const input = String(startPath || '')
   const resolved = input.startsWith('file:') ? fileURLToPath(input) : path.resolve(input)
 
@@ -5807,6 +5931,118 @@ ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => {
   }
 })
 
+// File Explorer mutations. Each routes to the remote host over SSH/SCP when a
+// remote gateway is selected (#38671), otherwise operates on the local fs.
+
+ipcMain.handle('hermes:fs:mkdir', async (_event, dirPath) => {
+  const ssh = await resolveRemoteSshConfig()
+
+  if (ssh) {
+    return remoteSsh.mkdir(ssh, dirPath)
+  }
+
+  try {
+    await fs.promises.mkdir(path.resolve(String(dirPath || '')), { recursive: true })
+
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error?.code || 'mkdir-failed' }
+  }
+})
+
+ipcMain.handle('hermes:fs:newFile', async (_event, filePath) => {
+  const ssh = await resolveRemoteSshConfig()
+
+  if (ssh) {
+    return remoteSsh.newFile(ssh, filePath)
+  }
+
+  try {
+    // 'wx' fails when the file already exists, so we never truncate one.
+    const handle = await fs.promises.open(path.resolve(String(filePath || '')), 'wx')
+    await handle.close()
+
+    return { ok: true }
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      return { ok: true }
+    }
+
+    return { ok: false, error: error?.code || 'create-failed' }
+  }
+})
+
+ipcMain.handle('hermes:fs:rename', async (_event, fromPath, toPath) => {
+  const ssh = await resolveRemoteSshConfig()
+
+  if (ssh) {
+    return remoteSsh.rename(ssh, fromPath, toPath)
+  }
+
+  try {
+    await fs.promises.rename(path.resolve(String(fromPath || '')), path.resolve(String(toPath || '')))
+
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error?.code || 'rename-failed' }
+  }
+})
+
+ipcMain.handle('hermes:fs:delete', async (_event, targetPath) => {
+  const ssh = await resolveRemoteSshConfig()
+
+  if (ssh) {
+    return remoteSsh.remove(ssh, targetPath)
+  }
+
+  try {
+    await fs.promises.rm(path.resolve(String(targetPath || '')), { recursive: true, force: true })
+
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error?.code || 'delete-failed' }
+  }
+})
+
+ipcMain.handle('hermes:fs:upload', async (_event, localPath, destDir) => {
+  const ssh = await resolveRemoteSshConfig()
+
+  if (ssh) {
+    return remoteSsh.upload(ssh, localPath, destDir)
+  }
+
+  try {
+    const src = path.resolve(String(localPath || ''))
+    const dest = path.join(path.resolve(String(destDir || '')), path.basename(src))
+    await fs.promises.copyFile(src, dest)
+
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error?.code || 'upload-failed' }
+  }
+})
+
+// Overwrite a file's contents from the in-app editor (local or remote-over-SSH).
+// Mirror the preview read split: only an absolute POSIX path is a remote
+// workspace file written over SSH; a client-OS path (e.g. a local attachment
+// opened from C:\…) is written on this machine. (#38369)
+ipcMain.handle('hermes:fs:writeFile', async (_event, filePath, content) => {
+  const ssh = previewReadsFromRemote(filePath) ? await resolveRemoteSshConfig() : null
+  const text = typeof content === 'string' ? content : String(content ?? '')
+
+  if (ssh) {
+    return remoteSsh.writeFile(ssh, String(filePath || ''), text)
+  }
+
+  try {
+    await fs.promises.writeFile(path.resolve(String(filePath || '')), text, 'utf8')
+
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: error?.code || 'write-failed' }
+  }
+})
+
 ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   if (!nodePty) {
     throw new Error('PTY support is unavailable. Reinstall desktop dependencies and restart Hermes.')
@@ -5815,13 +6051,31 @@ ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   ensureSpawnHelperExecutable()
 
   const id = crypto.randomUUID()
-  const { args, command, name } = terminalShellCommand()
-  const cwd = safeTerminalCwd(payload?.cwd)
+  const ssh = await resolveRemoteSshConfig()
   const cols = Math.max(2, Number.parseInt(String(payload?.cols || 80), 10) || 80)
   const rows = Math.max(2, Number.parseInt(String(payload?.rows || 24), 10) || 24)
+
+  // Remote mode: node-pty owns a local PTY wrapping `ssh -tt`, which allocates
+  // the remote PTY and forwards resizes. The requested cwd is a *remote* path,
+  // so it's applied by the remote shell (in terminalSpawn), not validated
+  // locally; the local ssh client process just runs from the user's home.
+  let command
+  let args
+  let name
+  let cwd
+
+  if (ssh) {
+    ;({ command, args } = remoteSsh.terminalSpawn(ssh, String(payload?.cwd || '')))
+    name = `ssh:${ssh.host}`
+    cwd = String(payload?.cwd || '')
+  } else {
+    ;({ args, command, name } = terminalShellCommand())
+    cwd = safeTerminalCwd(payload?.cwd)
+  }
+
   const ptyProcess = nodePty.spawn(command, args, {
     cols,
-    cwd,
+    cwd: ssh ? app.getPath('home') : cwd,
     env: terminalShellEnv(),
     name: 'xterm-256color',
     rows
@@ -6142,6 +6396,15 @@ ipcMain.handle('hermes:vscode-theme:fetch', async (_event, id) => fetchMarketpla
 
 // Search the Marketplace for color-theme extensions (empty query = top installs).
 ipcMain.handle('hermes:vscode-theme:search', async (_event, query) => searchMarketplaceThemes(String(query || ''), 20))
+
+// Identity of the machine the desktop's Terminal and File Explorer actually run
+// on. These surfaces use local Node fs/PTY (see hermes:fs:* and hermes:terminal:*
+// above), so when the chat session targets a remote gateway the UI must say so
+// explicitly rather than imply everything shares one host (#38369).
+ipcMain.handle('hermes:host:info', async () => ({
+  hostname: os.hostname(),
+  platform: process.platform
+}))
 
 app.whenReady().then(() => {
   if (IS_MAC) {

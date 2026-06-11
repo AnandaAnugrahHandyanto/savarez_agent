@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import type { ReactNode } from 'react'
+import { type ReactNode, useState } from 'react'
 
 import { ErrorBoundary } from '@/components/error-boundary'
 import { Button } from '@/components/ui/button'
@@ -12,10 +12,12 @@ import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { setCurrentSessionPreviewTarget } from '@/store/preview'
-import { $currentCwd } from '@/store/session'
+import { $connection, $currentCwd } from '@/store/session'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
+import { ExecTargetBadge } from './exec-target-badge'
+import { RemoteFolderPicker } from './files/remote-folder-picker'
 import { ProjectTree } from './files/tree'
 import { useProjectTree } from './files/use-project-tree'
 
@@ -29,8 +31,24 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
   const { t } = useI18n()
   const r = t.rightSidebar
   const panesFlipped = useStore($panesFlipped)
+  const connection = useStore($connection)
   const currentCwd = useStore($currentCwd).trim()
   const hasCwd = currentCwd.length > 0
+
+  // In remote mode the File Explorer reads the remote host over SSH, so the
+  // folder picker must browse there too — the OS-native dialog only sees the
+  // local disk (#38369).
+  const isRemote = connection?.mode === 'remote'
+
+  const remoteHost = (() => {
+    try {
+      return connection?.baseUrl ? new URL(connection.baseUrl).host || 'remote backend' : 'remote backend'
+    } catch {
+      return 'remote backend'
+    }
+  })()
+
+  const [remotePickerOpen, setRemotePickerOpen] = useState(false)
 
   const cwdName = hasCwd
     ? (currentCwd
@@ -45,6 +63,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
     data,
     loadChildren,
     openState,
+    refreshDir,
     refreshRoot,
     rootError,
     rootLoading,
@@ -54,6 +73,13 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
   const canCollapse = Object.values(openState).some(Boolean)
 
   const chooseFolder = async () => {
+    // Remote workspace: browse the remote host (the native dialog can't).
+    if (isRemote) {
+      setRemotePickerOpen(true)
+
+      return
+    }
+
     const selected = await window.hermesDesktop?.selectPaths({
       defaultPath: hasCwd ? currentCwd : undefined,
       directories: true,
@@ -107,7 +133,19 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
         onNodeOpenChange={setNodeOpen}
         onPreviewFile={previewFile}
         onRefresh={() => void refreshRoot()}
+        onRefreshDir={refreshDir}
         openState={openState}
+      />
+
+      <RemoteFolderPicker
+        hostLabel={remoteHost}
+        initialPath={currentCwd}
+        onClose={() => setRemotePickerOpen(false)}
+        onSelect={path => {
+          setRemotePickerOpen(false)
+          void onChangeCwd(path)
+        }}
+        open={remotePickerOpen}
       />
     </aside>
   )
@@ -147,6 +185,7 @@ function FilesystemTab({
   onNodeOpenChange,
   onPreviewFile,
   onRefresh,
+  onRefreshDir,
   openState
 }: FilesystemTabProps) {
   const { t } = useI18n()
@@ -164,6 +203,7 @@ function FilesystemTab({
             <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
           </button>
         </Tip>
+        <ExecTargetBadge className="max-w-44 shrink-0" />
         <Button
           aria-label={r.refreshTree}
           className={HEADER_ACTION_CLASS}
@@ -205,6 +245,7 @@ function FilesystemTab({
         onLoadChildren={onLoadChildren}
         onNodeOpenChange={onNodeOpenChange}
         onPreviewFile={onPreviewFile}
+        onRefreshDir={onRefreshDir}
         openState={openState}
       />
     </div>
@@ -226,6 +267,7 @@ interface FileTreeBodyProps {
   onLoadChildren: (id: string) => void | Promise<void>
   onNodeOpenChange: (id: string, open: boolean) => void
   onPreviewFile?: (path: string) => void
+  onRefreshDir?: (dirPath: string) => void | Promise<void>
   openState: ReturnType<typeof useProjectTree>['openState']
 }
 
@@ -240,6 +282,7 @@ function FileTreeBody({
   onLoadChildren,
   onNodeOpenChange,
   onPreviewFile,
+  onRefreshDir,
   openState
 }: FileTreeBodyProps) {
   const { t } = useI18n()
@@ -287,6 +330,7 @@ function FileTreeBody({
         onLoadChildren={onLoadChildren}
         onNodeOpenChange={onNodeOpenChange}
         onPreviewFile={onPreviewFile}
+        onRefreshDir={onRefreshDir}
         openState={openState}
       />
     </ErrorBoundary>
