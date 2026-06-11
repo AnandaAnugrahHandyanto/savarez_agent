@@ -319,6 +319,7 @@ class TestGmiMainFlow:
         recorded: dict[str, str] = {}
 
         monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda *args, **kwargs: None)
+        monkeypatch.setattr("builtins.input", lambda *args: "n")
 
         def fake_prompt_provider_choice(choices, default=0):
             return next(i for i, label in enumerate(choices) if label.startswith("GMI Cloud"))
