@@ -11162,7 +11162,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 buf.apply_completion(completion)
             elif buf.suggestion and buf.suggestion.text:
                 # No completion menu, but there's a ghost text auto-suggestion — accept it
-                buf.insert_text(buf.suggestion.text)
+                suggestion = buf.suggestion
+                insert = getattr(suggestion, 'insert_text', suggestion.text)
+                buf.insert_text(insert)
             else:
                 # No menu and no suggestion — start completions from scratch
                 buf.start_completion()
@@ -12585,6 +12587,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         )
         _disable_prompt_toolkit_cpr_warning(app)
         self._app = app  # Store reference for clarify_callback
+
+        # If a plugin pre-filled a session suggestion before the app was
+        # created, consume it now and inject it directly into the
+        # prompt_toolkit Buffer — bypasses the AutoSuggest.get_suggestion()
+        # caching so the ghost text appears on the very first render.
+        try:
+            from hermes_cli.plugins import get_plugin_manager as _gpm
+            _suggestion_text = _gpm().consume_session_suggestion()
+            if _suggestion_text:
+                from prompt_toolkit.auto_suggest import Suggestion as _Suggestion
+                if isinstance(_suggestion_text, _Suggestion):
+                    input_area.buffer.suggestion = _suggestion_text
+                else:
+                    input_area.buffer.suggestion = _Suggestion(_suggestion_text)
+        except Exception:
+            pass
 
         # ── Fix ghost status-bar lines on terminal resize ──────────────
         # Resize handling: monkey-patch prompt_toolkit's _output_screen_diff
