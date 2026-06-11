@@ -1994,11 +1994,16 @@ fn refresh_process_path(install_root: &Path) {
 
 /// Build the repository archive selector used by the native fresh-install path.
 pub fn repository_archive_spec(commit: Option<&str>, branch: Option<&str>) -> crate::repo_archive::RepoArchiveSpec {
+    let commit = commit.filter(|value| !value.trim().is_empty()).map(str::to_string);
+    let branch = branch
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("main")
+        .to_string();
     crate::repo_archive::RepoArchiveSpec {
         owner: "NousResearch".to_string(),
         repo: "hermes-agent".to_string(),
-        commit: commit.filter(|value| !value.trim().is_empty()).map(str::to_string),
-        branch: branch.filter(|value| !value.trim().is_empty()).map(str::to_string),
+        commit,
+        branch: Some(branch),
     }
 }
 
@@ -4515,5 +4520,17 @@ mod tests {
         assert_eq!(spec.repo, "hermes-agent");
         assert_eq!(spec.commit.as_deref(), Some("abcdef123"));
         assert_eq!(spec.branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn repository_archive_spec_defaults_to_main_without_pin() {
+        let spec = repository_archive_spec(None, None);
+
+        assert_eq!(spec.commit, None);
+        assert_eq!(spec.branch.as_deref(), Some("main"));
+        assert_eq!(
+            spec.github_zip_url().unwrap(),
+            "https://github.com/NousResearch/hermes-agent/archive/main.zip"
+        );
     }
 }

@@ -178,6 +178,8 @@ language-specific setup where needed.
 - Fresh bootstrap runs now defer the separate Git stage on Windows, Linux, and macOS while the Rust repository archive
   path is available, so new archive-based installs do not install Git unless archive fallback or later update recovery
   actually needs it.
+- Repository archive fresh installs now default to `main` when neither a commit nor branch pin is available, keeping
+  detached development builds on the no-Git archive path instead of failing into script-backed clone recovery.
 - Rust ZIP extraction now rejects symlink entries as well as path traversal entries before materializing repository
   archive contents.
 - Rust stage planning now reports native-first, probe-only, and script-only coverage counts so later bootstrap work can
@@ -266,7 +268,7 @@ language-specific setup where needed.
 - Language/runtime setup: Python dependency fallback tiers when `uv.lock` sync is unavailable, script fallback for
   Windows/macOS/Linux npm recovery, Windows uv, Windows Git, Windows Node, Windows/macOS/Linux desktop recovery, and
   platform SDK recovery.
-- Repository clone/update stage execution until the Git/ZIP fallback matrix has a parity suite and native stage wiring.
+- Repository update refresh parity and broader Git/ZIP fallback coverage beyond the current native fresh-install path.
 - Remaining platform shell/profile edge cases that are not covered by the current Rust path-stage helpers.
 
 **Exit Criteria:**
