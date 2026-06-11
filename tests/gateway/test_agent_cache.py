@@ -1448,6 +1448,54 @@ class TestCachedAgentInactivityReset:
         )
 
 
+    def test_flush_cursor_reset_on_fresh_turn(self):
+        """_last_flushed_db_idx must be reset to 0 on every cached-agent
+        turn so _flush_messages_to_session_db recomputes flush_from from
+        the new turn's conversation_history length (#44327)."""
+        from gateway.run import GatewayRunner
+
+        agent = self._fake_agent()
+        agent._last_flushed_db_idx = 42  # stale from previous turn
+
+        with patch("gateway.run.time") as mock_time:
+            mock_time.time.return_value = _FAKE_NOW
+            GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
+
+        assert agent._last_flushed_db_idx == 0, (
+            "_last_flushed_db_idx must be reset on cached-agent reuse; "
+            "stale cursor causes _flush_messages_to_session_db to skip "
+            "assistant replies, producing consecutive-user transcript rows"
+        )
+
+    def test_flush_cursor_reset_on_interrupt_turn(self):
+        """_last_flushed_db_idx must be reset even on interrupt-recursive
+        turns (depth>0) — the flush cursor is turn-scoped, not
+        watchdog-scoped."""
+        from gateway.run import GatewayRunner
+
+        agent = self._fake_agent()
+        agent._last_flushed_db_idx = 30
+
+        GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=1)
+
+        assert agent._last_flushed_db_idx == 0, (
+            "_last_flushed_db_idx must reset at any interrupt depth"
+        )
+
+    def test_flush_cursor_reset_when_already_zero(self):
+        """Reset is idempotent — no-op when cursor is already 0."""
+        from gateway.run import GatewayRunner
+
+        agent = self._fake_agent()
+        agent._last_flushed_db_idx = 0
+
+        with patch("gateway.run.time") as mock_time:
+            mock_time.time.return_value = _FAKE_NOW
+            GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
+
+        assert agent._last_flushed_db_idx == 0
+
+
 class TestAgentConfigSignatureUserId:
     """Shared-thread cache must not reuse an agent across users.
 

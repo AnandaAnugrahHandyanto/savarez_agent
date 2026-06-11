@@ -12433,6 +12433,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent._last_activity_ts = time.time()
             agent._last_activity_desc = "starting new turn (cached)"
         agent._api_call_count = 0
+        # Reset the SessionDB flush cursor so _flush_messages_to_session_db
+        # recomputes flush_from from the new turn's conversation_history
+        # length instead of carrying over a stale offset from the previous
+        # turn.  Without this, a cached agent with _last_flushed_db_idx=N
+        # skips persisting the assistant reply when the new turn's history
+        # length is ≤N, producing consecutive user rows in the transcript
+        # and context-corrupting replay on subsequent turns (#44327).
+        agent._last_flushed_db_idx = 0
 
     def _release_evicted_agent_soft(self, agent: Any) -> None:
         """Soft cleanup for cache-evicted agents — preserves session tool state.
