@@ -625,7 +625,7 @@ def switch_model(
         a. Resolve provider via resolve_provider_full()
         b. Resolve credentials
         c. If model given, resolve alias on target provider or use as-is
-        d. If no model, auto-detect from endpoint
+        d. If no model, use provider default, falling back to endpoint auto-detect
 
       If no --provider:
         a. Try alias resolution on current provider
@@ -700,9 +700,16 @@ def switch_model(
 
         target_provider = pdef.id
 
-        # If no model specified, try auto-detect from endpoint
+        # If no model specified, prefer the provider's curated/default model.
+        # Hosted providers often have a base_url but no listable local model;
+        # endpoint autodetection is only a fallback for custom/local servers.
         if not new_model:
-            if pdef.base_url:
+            from hermes_cli.models import get_default_model_for_provider
+
+            default_model = get_default_model_for_provider(target_provider)
+            if default_model:
+                new_model = default_model
+            elif pdef.base_url:
                 from hermes_cli.runtime_provider import _auto_detect_local_model
                 detected = _auto_detect_local_model(pdef.base_url)
                 if detected:
