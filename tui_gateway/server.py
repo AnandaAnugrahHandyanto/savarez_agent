@@ -1001,8 +1001,32 @@ def _start_agent_build(sid: str, session: dict) -> None:
     threading.Thread(target=_build, daemon=True).start()
 
 
+def _rebind_ws_transport(session: dict | None) -> None:
+    """Upgrade a stdio-parked session to the calling WS transport.
+
+    When a websocket drops mid-turn, ``handle_ws`` points every session it
+    owned at ``_stdio_transport`` — in dashboard mode a black hole with no
+    reader, so the rest of the turn (deltas, message.complete) vanishes.
+    Any session-scoped RPC arriving over a live WS proves the rightful
+    client is back, so re-bind the stream to it. Only sessions parked on
+    the stdio transport are upgraded: a second live client cannot hijack
+    another websocket's stream, and real stdio gateways (Ink TUI, where
+    stdio has a genuine peer) dispatch with ``_stdio_transport`` as the
+    current transport and are left untouched.
+    """
+    if not session:
+        return
+    t = current_transport()
+    if t is None or t is _stdio_transport:
+        return
+    if session.get("transport") is _stdio_transport:
+        session["transport"] = t
+
+
 def _sess_nowait(params, rid):
     s = _sessions.get(params.get("session_id") or "")
+    if s is not None:
+        _rebind_ws_transport(s)
     return (s, None) if s else (None, _err(rid, 4001, "session not found"))
 
 
@@ -1163,6 +1187,51 @@ def _ensure_session_db_row(session: dict) -> None:
         )
     except Exception:
         logger.debug("failed to persist desktop session row", exc_info=True)
+    finally:
+        if close_db:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+
+def _persist_session_history(session: dict, history: list) -> None:
+    """Write the session's transcript to its state.db at turn end.
+
+    Until now a finished turn lived only in this process's memory; the next
+    prompt.submit (or a /retry-style rewrite) was the first thing to persist
+    it. Any backend restart between turns — desktop profile switch, sidecar
+    respawn, crash — therefore lost every completed exchange: the session row
+    existed (and got a generated title) but message_count stayed 0 and a
+    resume painted an empty transcript. Mirrors _ensure_session_db_row's
+    profile-home routing so global-remote-mode sessions persist into their
+    own profile's state.db.
+    """
+    key = session.get("session_key")
+    if not key:
+        return
+    close_db = False
+    profile_home = session.get("profile_home")
+    if profile_home:
+        from hermes_state import SessionDB
+
+        try:
+            db = SessionDB(db_path=Path(profile_home) / "state.db")
+            close_db = True
+        except Exception:
+            logger.debug("failed to open profile db for history persist", exc_info=True)
+            return
+    else:
+        db = _get_db()
+    if db is None:
+        return
+    try:
+        db.replace_messages(key, history)
+    except Exception as exc:
+        print(
+            f"[tui_gateway] turn-end history persist failed: {exc}",
+            file=sys.stderr,
+        )
     finally:
         if close_db:
             try:
@@ -5246,6 +5315,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
             last_reasoning = None
             status_note = None
+            turn_history = None
             if isinstance(result, dict):
                 if isinstance(result.get("messages"), list):
                     with session["history_lock"]:
@@ -5253,6 +5323,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         if current_version == history_version:
                             session["history"] = result["messages"]
                             session["history_version"] = history_version + 1
+                            turn_history = list(result["messages"])
                         else:
                             # History mutated externally during the turn
                             # (undo/compress/retry/rollback now guard on
@@ -5282,6 +5353,13 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 _sync_session_key_after_compress(
                     sid, session, clear_pending_title=False, restart_slash_worker=True,
                 )
+
+                # Durable transcript: persist the finished turn NOW (after any
+                # compression key rotation) instead of waiting for the next
+                # prompt.submit — a backend restart between turns must not
+                # erase a completed exchange.
+                if turn_history is not None:
+                    _persist_session_history(session, turn_history)
 
                 raw = result.get("final_response", "")
                 status = (
