@@ -3411,6 +3411,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # rebuild the agent when provider / model / base_url changes across
         # turns (e.g. after /model or credential rotation).
         self._active_agent_route_signature = None
+        self._runtime_headers: Dict[str, str] = {}
 
         # Agent will be initialized on first use
         self.agent: Optional[Any] = None
