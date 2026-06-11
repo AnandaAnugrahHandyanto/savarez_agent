@@ -87,6 +87,7 @@ import {
   $sessionsLoading,
   $sessionsTotal,
   $workingSessionIds,
+  sessionAliasIds,
   sessionPinId
 } from '@/store/session'
 
@@ -1194,10 +1195,12 @@ function SidebarSessionsSection({
   const dndActive = sortable && !!onReorder
 
   const renderRow = (session: SessionInfo) => {
+    const aliases = sessionAliasIds(session)
+
     const rowProps = {
       isPinned: pinned,
-      isSelected: session.id === activeSessionId,
-      isWorking: workingSessionIdSet.has(session.id),
+      isSelected: !!activeSessionId && aliases.includes(activeSessionId),
+      isWorking: aliases.some(id => workingSessionIdSet.has(id)),
       onArchive: () => onArchiveSession(session.id),
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),

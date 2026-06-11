@@ -3731,6 +3731,16 @@ def test_session_info_includes_mcp_servers(monkeypatch):
     assert info["mcp_servers"] == fake_status
 
 
+def test_session_info_includes_live_session_key(monkeypatch):
+    monkeypatch.setattr(server, "_git_branch_for_cwd", lambda cwd: "")
+    agent = types.SimpleNamespace(tools=[], model="", session_id="agent-tip")
+
+    info = server._session_info(agent, {"session_key": "continuation", "running": True})
+
+    assert info["session_key"] == "continuation"
+    assert info["running"] is True
+
+
 # ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either
@@ -5174,7 +5184,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
     monkeypatch.setattr(server, "_get_db", lambda: None)
-    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
+    monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": agent.model})
 
     def _emit(event, sid, payload=None):
         if event == "message.complete":
@@ -5230,7 +5240,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
 
 
 def test_session_activate_switches_live_session_without_closing_siblings(monkeypatch):
-    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
+    monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": agent.model})
     server._sessions["sid-a"] = _session(
         agent=types.SimpleNamespace(model="model-a"),
         history=[{"role": "user", "content": "old"}],

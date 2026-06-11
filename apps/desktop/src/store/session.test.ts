@@ -7,10 +7,13 @@ import {
   $attentionSessionIds,
   $connection,
   $currentCwd,
+  $selectedStoredSessionId,
+  $sessions,
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
   getRecentlySettledSessionIds,
   mergeSessionPage,
+  reconcileLiveSessionKey,
   sessionPinId,
   setCurrentCwd,
   setSessionAttention,
@@ -152,6 +155,7 @@ describe('mergeSessionPage', () => {
       session({ id: 'tip-4', _lineage_root_id: 'root' }),
       session({ id: 'other' }),
     ] as SessionInfo[]
+
     const incoming = [
       session({ id: 'tip-5', _lineage_root_id: 'root' }),
     ] as SessionInfo[]
@@ -173,6 +177,7 @@ describe('mergeSessionPage', () => {
       session({ id: 'a-old', _lineage_root_id: 'lineage-a' }),
       session({ id: 'b', _lineage_root_id: 'lineage-b' }),
     ] as SessionInfo[]
+
     const incoming = [
       session({ id: 'a-new', _lineage_root_id: 'lineage-a' }),
     ] as SessionInfo[]
@@ -180,6 +185,54 @@ describe('mergeSessionPage', () => {
     const merged = mergeSessionPage(previous, incoming, ['b'])
 
     expect(merged.map(s => s.id)).toEqual(['b', 'a-new'])
+  })
+})
+
+describe('reconcileLiveSessionKey', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    $sessions.set([])
+    $selectedStoredSessionId.set(null)
+  })
+
+  it('rekeys the visible parent row to the live compression continuation', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_700_000_000_000)
+    $sessions.set([
+      session({
+        id: 'parent',
+        _lineage_root_id: 'root',
+        _lineage_ids: ['root', 'parent'],
+        last_active: 100,
+        message_count: 172,
+        title: 'Job Status Summary #11'
+      })
+    ])
+
+    reconcileLiveSessionKey('parent', 'continuation')
+
+    expect($sessions.get()).toHaveLength(1)
+    expect($sessions.get()[0]).toMatchObject({
+      id: 'continuation',
+      _lineage_root_id: 'root',
+      _lineage_ids: ['root', 'parent', 'continuation'],
+      ended_at: null,
+      is_active: true,
+      message_count: 172,
+      title: 'Job Status Summary #11'
+    })
+    expect($sessions.get()[0]?.last_active).toBe(1_700_000_000)
+  })
+
+  it('removes a stale parent row when the live row already exists', () => {
+    $sessions.set([
+      session({ id: 'parent' }),
+      session({ id: 'continuation', _lineage_root_id: 'parent', _lineage_ids: ['parent', 'continuation'] })
+    ])
+
+    reconcileLiveSessionKey('parent', 'continuation')
+
+    expect($sessions.get().map(s => s.id)).toEqual(['continuation'])
   })
 })
 
