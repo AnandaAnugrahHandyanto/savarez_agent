@@ -1542,7 +1542,118 @@ def _resolve_nous_context_length(
     return None, ""
 
 
+# ---------------------------------------------------------------------------
+# Optional process-level resolution memo (Brain Host, HERMES_BRAIN_HOST=1).
+#
+# ``_resolve_model_context_length`` can pay a live network round-trip per
+# call: the Ollama ``/api/show`` probe at step 5e POSTs to the active
+# base_url and only persists successful probes, so non-Ollama endpoints
+# (OpenRouter, Anthropic, …) re-probe on every call — measured at ~0.8 s
+# per AIAgent construction (TASK 2.6 profiling).  The Brain Host installs
+# a process-level memo here via :func:`install_context_length_cache`; the
+# default (``None``) keeps this module byte-identical to the uncached
+# behaviour, and the gate tests pin that ``agent.brain_host`` is never
+# even imported when the flag is off.
+#
+# Safety:
+#   * the key captures every resolution input (model, base_url, provider,
+#     config override, api_key identity, custom_providers fingerprint);
+#   * providers whose context length is transient or portal-authoritative
+#     are never cached — LM Studio (user can reload the model with a new
+#     context at any time) and Nous (portal /v1/models is authoritative
+#     per call): the same two exclusions the persistent disk cache at
+#     step 1 of the resolver already encodes;
+#   * entries expire after ``_CONTEXT_LENGTH_CACHE_TTL_S`` (matches the
+#     1 h ``fetch_model_metadata`` catalog horizon, so a cached value can
+#     never outlive the refresh window the uncached path itself observes);
+#   * probe-down fallbacks (``DEFAULT_FALLBACK_CONTEXT``) get a short TTL
+#     so a transient network outage at construction time cannot freeze an
+#     under-reported window for the full hour.
+_brain_host_context_length_cache: Optional[Dict[tuple, Tuple[float, int]]] = None
+_CONTEXT_LENGTH_CACHE_TTL_S = 3600.0
+_CONTEXT_LENGTH_FALLBACK_TTL_S = 60.0
+_CONTEXT_LENGTH_CACHE_MAX = 64
+
+
+def install_context_length_cache(
+    cache: Optional[Dict[tuple, Tuple[float, int]]],
+) -> None:
+    """Install (or remove, with ``None``) the Brain Host resolution memo.
+
+    Called only by ``agent.brain_host.BrainHost.build_agent`` — the dict
+    lives on the BrainHost singleton so flag-off processes never allocate
+    or consult it.
+    """
+    global _brain_host_context_length_cache
+    _brain_host_context_length_cache = cache
+
+
+def _context_length_cache_key(
+    model: str,
+    base_url: str,
+    api_key: Any,
+    config_context_length: Optional[int],
+    provider: str,
+    custom_providers: Optional[list],
+) -> Optional[tuple]:
+    """Cache key for one resolution, or ``None`` when caching is unsafe."""
+    norm_provider = (provider or "").strip().lower()
+    if norm_provider in {"lmstudio", "nous"}:
+        return None
+    if base_url and _infer_provider_from_url(base_url) == "nous":
+        return None
+    # api_key influences live probes (Anthropic /v1/models, Codex /models);
+    # non-string credentials (Azure token providers) key on object identity.
+    key_fp = api_key if isinstance(api_key, str) else id(api_key)
+    cp_fp = repr(custom_providers) if custom_providers else ""
+    return (model, base_url, norm_provider, config_context_length, key_fp, cp_fp)
+
+
 def get_model_context_length(
+    model: str,
+    base_url: str = "",
+    api_key: str = "",
+    config_context_length: int | None = None,
+    provider: str = "",
+    custom_providers: list | None = None,
+) -> int:
+    """Resolve a model's context length (see :func:`_resolve_model_context_length`).
+
+    When the Brain Host memo is installed (HERMES_BRAIN_HOST=1 only), the
+    resolved value is reused for identical inputs within the TTL; otherwise
+    this is a plain passthrough to the resolver.
+    """
+    cache = _brain_host_context_length_cache
+    key = None
+    if cache is not None:
+        key = _context_length_cache_key(
+            model, base_url, api_key, config_context_length, provider, custom_providers
+        )
+        if key is not None:
+            hit = cache.get(key)
+            if hit is not None and time.monotonic() < hit[0]:
+                return hit[1]
+    result = _resolve_model_context_length(
+        model,
+        base_url=base_url,
+        api_key=api_key,
+        config_context_length=config_context_length,
+        provider=provider,
+        custom_providers=custom_providers,
+    )
+    if key is not None:
+        if len(cache) >= _CONTEXT_LENGTH_CACHE_MAX:
+            cache.pop(next(iter(cache)))  # evict oldest (mirrors model_tools memo)
+        ttl = (
+            _CONTEXT_LENGTH_FALLBACK_TTL_S
+            if result == DEFAULT_FALLBACK_CONTEXT
+            else _CONTEXT_LENGTH_CACHE_TTL_S
+        )
+        cache[key] = (time.monotonic() + ttl, result)
+    return result
+
+
+def _resolve_model_context_length(
     model: str,
     base_url: str = "",
     api_key: str = "",
