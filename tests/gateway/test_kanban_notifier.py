@@ -54,6 +54,17 @@ def _create_completed_subscription(summary="done once"):
         conn.close()
 
 
+def _create_blocked_subscription(reason="blocked once"):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="blocked notify once", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.block_task(conn, tid, reason=reason)
+        return tid
+    finally:
+        conn.close()
+
+
 def _unseen_terminal_events(tid):
     conn = kb.connect()
     try:
@@ -119,6 +130,56 @@ def test_kanban_notifier_rewinds_claim_if_adapter_disconnects(tmp_path, monkeypa
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert [ev.kind for ev in _unseen_terminal_events(tid)] == ["completed"]
+
+
+def test_kanban_notifier_sends_full_completed_run_summary(tmp_path, monkeypatch):
+    """Completion pings must not silently cut the worker handoff.
+
+    The completed event payload intentionally stores only a compact first-line
+    summary for event-log/dashboard reads. The notifier should hydrate the run
+    row and send the full summary, leaving platform adapters to split long
+    messages for transport limits.
+    """
+    db_path = tmp_path / "full-summary.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    tail = "TAIL_SENTINEL after old two-hundred and four-hundred char caps"
+    summary = (
+        "Accepted prior implementation. "
+        + "root cause and verification details " * 20
+        + tail
+    )
+    tid = _create_completed_subscription(summary=summary)
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert tid in text
+    assert tail in text
+    assert "root cause and verification details" in text
+
+
+def test_kanban_notifier_sends_full_blocked_reason(tmp_path, monkeypatch):
+    """Blocked pings should not truncate the operator-visible decision point."""
+    db_path = tmp_path / "full-blocked-reason.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    tail = "BLOCKED_TAIL_SENTINEL after old one-sixty char cap"
+    reason = "review-required: " + ("context detail " * 20) + tail
+    tid = _create_blocked_subscription(reason=reason)
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert tid in text
+    assert tail in text
+    assert reason in text
 
 
 def test_kanban_db_path_is_test_isolated_from_real_home():
