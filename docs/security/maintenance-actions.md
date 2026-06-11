@@ -25,11 +25,15 @@ The validator follows a default-deny contract:
 - missing or malformed `exact_argv` blocks;
 - malformed requested argv blocks;
 - exact argv mismatch blocks;
-- shell strings and shell-wrapper forms such as `sh -c` / `bash -lc` block;
+- shell strings and shell-wrapper forms such as `sh -c`, `bash -lc`, and
+  `/usr/bin/env bash -lc` block;
 - unattended contexts such as cron, background, scheduler, and unattended runs
   block by default;
+- malformed unattended policy values block;
 - missing preflight metadata blocks;
+- malformed preflight metadata blocks;
 - missing postcheck metadata blocks;
+- malformed postcheck metadata blocks;
 - current-user approval is required by default even after all static gates pass.
 
 The exact-argv rule is intentionally strict. A maintenance action policy names

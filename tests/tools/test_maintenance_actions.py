@@ -129,12 +129,22 @@ class TestMaintenanceActionMalformedPolicy:
         assert result.allowed is False
         assert result.reason == "action_invalid"
 
-    @pytest.mark.parametrize("exact_argv", [None, "ssh host command", [], ["ssh", ""]])
+    @pytest.mark.parametrize(
+        "exact_argv",
+        [
+            None,
+            "ssh host command",
+            [],
+            ["ssh", ""],
+            ["bash", "-lc", "ssh host command"],
+            ["/usr/bin/env", "bash", "-lc", "ssh host command"],
+        ],
+    )
     def test_missing_or_invalid_exact_argv_blocks(self, exact_argv):
         policy = _policy()
         policy["actions"]["caspian_inference_restart"]["exact_argv"] = exact_argv
 
-        result = evaluate_maintenance_action(policy, "caspian_inference_restart", SAFE_ARGV)
+        result = evaluate_maintenance_action(policy, "caspian_inference_restart", exact_argv)
 
         assert result.allowed is False
         assert result.reason == "exact_argv_invalid"
@@ -154,9 +164,12 @@ class TestMaintenanceActionContext:
         "invocation_context",
         ["cron", "unattended", "background", "scheduler", "CrOn"],
     )
-    def test_unattended_context_blocks_by_default(self, invocation_context):
+    @pytest.mark.parametrize("unattended_policy", [None, False, "none", "NONE", "false"])
+    def test_unattended_context_blocks_by_default(
+        self, invocation_context, unattended_policy
+    ):
         result = evaluate_maintenance_action(
-            _policy(),
+            _policy(unattended_policy=unattended_policy),
             "caspian_inference_restart",
             SAFE_ARGV,
             invocation_context=invocation_context,
@@ -164,6 +177,22 @@ class TestMaintenanceActionContext:
 
         assert result.allowed is False
         assert result.reason == "unattended_forbidden"
+        assert result.eligible is False
+
+    @pytest.mark.parametrize("unattended_policy", [True, "allow", "manual", [], {}])
+    def test_malformed_unattended_policy_blocks_unattended_context(
+        self, unattended_policy
+    ):
+        result = evaluate_maintenance_action(
+            _policy(unattended_policy=unattended_policy),
+            "caspian_inference_restart",
+            SAFE_ARGV,
+            invocation_context="cron",
+            current_user_approved=True,
+        )
+
+        assert result.allowed is False
+        assert result.reason == "unattended_policy_invalid"
         assert result.eligible is False
 
     def test_current_user_approval_allows_when_required_gates_pass(self):
@@ -191,6 +220,50 @@ class TestMaintenanceActionContext:
 
         assert result.allowed is False
         assert result.reason == "missing_preflight_profile"
+
+    @pytest.mark.parametrize("preflight_profile", [True, [], {}])
+    def test_malformed_preflight_profile_blocks(self, preflight_profile):
+        policy = _policy()
+        policy["actions"]["caspian_inference_restart"]["preflight_profile"] = preflight_profile
+
+        result = evaluate_maintenance_action(
+            policy,
+            "caspian_inference_restart",
+            SAFE_ARGV,
+            current_user_approved=True,
+        )
+
+        assert result.allowed is False
+        assert result.reason == "invalid_preflight_profile"
+
+    def test_missing_postcheck_profile_blocks(self):
+        policy = _policy()
+        del policy["actions"]["caspian_inference_restart"]["postcheck_profile"]
+
+        result = evaluate_maintenance_action(
+            policy,
+            "caspian_inference_restart",
+            SAFE_ARGV,
+            current_user_approved=True,
+        )
+
+        assert result.allowed is False
+        assert result.reason == "missing_postcheck_profile"
+
+    @pytest.mark.parametrize("postcheck_profile", [True, [], {}])
+    def test_malformed_postcheck_profile_blocks(self, postcheck_profile):
+        policy = _policy()
+        policy["actions"]["caspian_inference_restart"]["postcheck_profile"] = postcheck_profile
+
+        result = evaluate_maintenance_action(
+            policy,
+            "caspian_inference_restart",
+            SAFE_ARGV,
+            current_user_approved=True,
+        )
+
+        assert result.allowed is False
+        assert result.reason == "invalid_postcheck_profile"
 
 
 class TestMaintenanceActionClassifier:

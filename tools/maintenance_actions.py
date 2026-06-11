@@ -13,8 +13,10 @@ from typing import Any
 
 
 _SHELL_WRAPPERS = {"sh", "bash", "zsh", "ksh", "fish", "python", "python3", "perl", "ruby"}
+_SHELL_INDIRECTORS = {"env"}
 _SHELL_EVAL_FLAGS = {"-c", "-lc", "-ec", "-e"}
 _UNATTENDED_CONTEXTS = {"cron", "unattended", "background", "scheduler"}
+_UNATTENDED_FORBIDDEN_VALUES = {"", "none", "false", "off", "disabled", "forbidden"}
 
 
 @dataclass(frozen=True)
@@ -63,13 +65,24 @@ def _approved(action_id: str, action: dict[str, Any]) -> MaintenanceActionDecisi
     )
 
 
+def _basename(value: Any) -> str:
+    return str(value).rsplit("/", 1)[-1]
+
+
 def _looks_like_shell_wrapping(argv: list[Any]) -> bool:
     if not argv:
         return False
-    head = str(argv[0]).rsplit("/", 1)[-1]
-    if head not in _SHELL_WRAPPERS:
-        return False
-    return any(str(part) in _SHELL_EVAL_FLAGS for part in argv[1:3])
+
+    head = _basename(argv[0])
+    if head in _SHELL_WRAPPERS:
+        return any(str(part) in _SHELL_EVAL_FLAGS for part in argv[1:3])
+
+    if head in _SHELL_INDIRECTORS and len(argv) >= 3:
+        indirect_target = _basename(argv[1])
+        if indirect_target in _SHELL_WRAPPERS:
+            return any(str(part) in _SHELL_EVAL_FLAGS for part in argv[2:4])
+
+    return False
 
 
 def _valid_exact_argv(value: Any) -> bool:
@@ -77,6 +90,7 @@ def _valid_exact_argv(value: Any) -> bool:
         isinstance(value, list)
         and bool(value)
         and all(isinstance(part, str) and part for part in value)
+        and not _looks_like_shell_wrapping(value)
     )
 
 
@@ -86,6 +100,18 @@ def _valid_requested_argv(value: Any) -> bool:
         and bool(value)
         and all(isinstance(part, str) and part for part in value)
     )
+
+
+def _unattended_policy_reason(value: Any) -> str:
+    if value is None or value is False:
+        return "unattended_forbidden"
+    if isinstance(value, str) and value.strip().lower() in _UNATTENDED_FORBIDDEN_VALUES:
+        return "unattended_forbidden"
+    return "unattended_policy_invalid"
+
+
+def _valid_profile_ref(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
 
 
 def evaluate_maintenance_action(
@@ -113,8 +139,8 @@ def evaluate_maintenance_action(
         return _blocked("policy_disabled", action_id=action_id)
 
     if str(invocation_context or "").lower() in _UNATTENDED_CONTEXTS:
-        if policy.get("unattended_policy", "none") in (None, "none", False):
-            return _blocked("unattended_forbidden", action_id=action_id)
+        unattended_reason = _unattended_policy_reason(policy.get("unattended_policy", "none"))
+        return _blocked(unattended_reason, action_id=action_id)
 
     actions = policy.get("actions")
     if not isinstance(actions, dict):
@@ -141,10 +167,17 @@ def evaluate_maintenance_action(
     if requested_argv != expected_argv:
         return _blocked("argv_mismatch", action_id=action_id, action=action)
 
-    if not action.get("preflight_profile"):
+    if "preflight_profile" not in action or action.get("preflight_profile") is None:
         return _blocked("missing_preflight_profile", action_id=action_id, action=action)
-    if not action.get("postcheck_profile"):
+    preflight_profile = action.get("preflight_profile")
+    if not _valid_profile_ref(preflight_profile):
+        return _blocked("invalid_preflight_profile", action_id=action_id, action=action)
+
+    if "postcheck_profile" not in action or action.get("postcheck_profile") is None:
         return _blocked("missing_postcheck_profile", action_id=action_id, action=action)
+    postcheck_profile = action.get("postcheck_profile")
+    if not _valid_profile_ref(postcheck_profile):
+        return _blocked("invalid_postcheck_profile", action_id=action_id, action=action)
 
     if policy.get("require_interactive_user_approval", True) and not current_user_approved:
         return _requires_approval(action_id, action)
