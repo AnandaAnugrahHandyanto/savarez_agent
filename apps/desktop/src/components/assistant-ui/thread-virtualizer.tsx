@@ -414,20 +414,24 @@ function useThreadScrollAnchor({
         pinPendingRef.current = true
         rafIdRef.current = requestAnimationFrame(() => {
           pinPendingRef.current = false
+          rafIdRef.current = 0
           if (enabled && stickyBottomRef.current) {
             pinToBottom()
           }
         })
       }
     }
-
-    return () => {
-      if (rafIdRef.current) {
-        cancelAnimationFrame(rafIdRef.current)
-        pinPendingRef.current = false
-      }
-    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [totalSize, enabled, pinToBottom])
+
+  // Cancel any pending RAF on unmount or when disabled.
+  useLayoutEffect(() => {
+    if (!enabled && rafIdRef.current) {
+      cancelAnimationFrame(rafIdRef.current)
+      rafIdRef.current = 0
+      pinPendingRef.current = false
+    }
+  }, [enabled])
 
   // Jump to bottom on session change OR when an empty thread first gets
   // content. Both share the same intent and the same effect.
