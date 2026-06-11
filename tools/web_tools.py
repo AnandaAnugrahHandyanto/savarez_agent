@@ -149,7 +149,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai", "anysearch"}:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -236,6 +236,13 @@ def _is_backend_available(backend: str) -> bool:
             from tools.xai_http import has_xai_credentials
             return has_xai_credentials()
         except Exception:
+            return False
+    if backend == "anysearch":
+        # AnySearch MCP is always available (free, no key). Only needs httpx.
+        try:
+            import httpx  # noqa: F401
+            return True
+        except ImportError:
             return False
     return False
 
