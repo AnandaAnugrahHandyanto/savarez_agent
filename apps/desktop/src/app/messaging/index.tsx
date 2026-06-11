@@ -184,11 +184,12 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     try {
       await updateMessagingPlatform(platform.id, { enabled })
 
-      // 联动 gateway：开启任意消息平台 → 自动启动 gateway
-      // 关闭不自动停 gateway（有其他平台可能在用），由用户通过 /cron 或 gateway CLI 管理
+      // Start gateway whenever a messaging platform is enabled.
+      // Don't auto-stop on disable — other platforms may still be
+      // using the gateway.  Users control lifecycle via /cron or CLI.
       if (enabled) {
-        startGateway().catch((err: unknown) =>
-          console.warn('gateway start (post-enable) failed', err)
+        startGateway().catch(() =>
+          notify({ kind: 'warning', title: m.gatewayStopped, message: m.hintGatewayStopped })
         )
       }
 

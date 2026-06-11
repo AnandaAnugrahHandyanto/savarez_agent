@@ -7568,7 +7568,7 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle):
 
 
 @app.post("/api/gateway/start")
-async def start_gateway():
+async def start_gateway(request: Request):
     """Start Hermes Gateway.
 
     Delegates to ``hermes gateway start`` which dispatches to the
@@ -7579,6 +7579,7 @@ async def start_gateway():
     If a gateway is already running, the handler returns immediately
     and we still write the ``desktop_managed`` flag so the cron
     health-check knows the Desktop is in charge."""
+    _require_token(request)
     try:
         # 1 — Check if already running (fast path — mark as managed)
         try:
@@ -7603,24 +7604,25 @@ async def start_gateway():
         #     _write_runtime_status() which also writes gateway_state.json
         #     and would overwrite our flag.
         _write_desktop_managed_flag(True)
-    except Exception as exc:
+    except Exception:
         _log.exception("Failed to spawn gateway start")
-        raise HTTPException(status_code=500, detail=f"Failed to start gateway: {exc}")
+        raise HTTPException(status_code=500, detail="Internal server error")
     return {"ok": True, "pid": proc.pid, "name": "gateway-start"}
 
 
 @app.post("/api/gateway/stop")
-async def stop_gateway():
+async def stop_gateway(request: Request):
     """Stop Hermes Gateway (called from Desktop toggle).
 
     Also clears the desktop_managed flag so the cron health-check
     does not attempt to restart a gateway the user explicitly stopped."""
+    _require_token(request)
     try:
         proc = _spawn_hermes_action(["gateway", "stop"], "gateway-stop")
         _write_desktop_managed_flag(False)
-    except Exception as exc:
+    except Exception:
         _log.exception("Failed to spawn gateway stop")
-        raise HTTPException(status_code=500, detail=f"Failed to stop gateway: {exc}")
+        raise HTTPException(status_code=500, detail="Internal server error")
     return {"ok": True, "pid": proc.pid, "name": "gateway-stop"}
 
 
