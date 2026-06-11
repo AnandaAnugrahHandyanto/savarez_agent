@@ -133,8 +133,8 @@ language-specific setup where needed.
 - Rust ZIP extraction now rejects symlink entries as well as path traversal entries before materializing repository
   archive contents.
 - `bootstrap-marker` now runs as a native Rust stage in the Tauri bootstrapper.
-- `config-templates` now runs as a native Rust stage while preserving Python `tools/skills_sync.py` when available and
-  retaining the existing bundled-skill copy fallback.
+- `config-templates` and the Unix `config` stage now run as native Rust stages while preserving Python
+  `tools/skills_sync.py` when available and retaining the existing bundled-skill copy fallback.
 - CI runs bootstrap-installer Rust unit tests in addition to the manager and desktop platform tests.
 
 **Still script-backed:**

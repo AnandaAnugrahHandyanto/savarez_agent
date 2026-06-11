@@ -571,7 +571,7 @@ async fn run_bootstrap(
                     pin.commit.as_deref(),
                     pin.branch.as_deref(),
                 ))
-            } else if stage.name.eq_ignore_ascii_case("config-templates") {
+            } else if is_config_template_stage(&stage.name) {
                 Some(crate::orchestrator::configure_templates(
                     &hermes_home,
                     &install_root,
@@ -882,6 +882,10 @@ fn stage_script_args(stage_name: &str, manifest_args: &[String], include_desktop
         stage_args.push("-SkipDesktopShortcuts".to_string());
     }
     stage_args
+}
+
+fn is_config_template_stage(stage_name: &str) -> bool {
+    stage_name.eq_ignore_ascii_case("config-templates") || stage_name.eq_ignore_ascii_case("config")
 }
 
 fn should_use_native_repository_archive(install_root: &std::path::Path) -> bool {
@@ -1301,5 +1305,13 @@ mod tests {
         assert!(!should_fallback_repository_archive("repository", &install_root));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn config_template_stage_accepts_windows_and_unix_names() {
+        assert!(is_config_template_stage("config-templates"));
+        assert!(is_config_template_stage("config"));
+        assert!(is_config_template_stage("CONFIG"));
+        assert!(!is_config_template_stage("configure"));
     }
 }
