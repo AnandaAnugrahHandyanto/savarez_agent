@@ -39,6 +39,9 @@ enum Command {
         /// Report paths that would be removed without deleting them.
         #[arg(long)]
         dry_run: bool,
+        /// Also remove Hermes Start Menu/Desktop shortcuts when supported.
+        #[arg(long)]
+        shortcuts: bool,
     },
     /// Remove runtime checkout state so launch can repair it.
     RepairClean {
@@ -206,12 +209,21 @@ fn run() -> hermes_manager::Result<()> {
             hermes_manager::commands::install_metadata(&home)?;
             println!("install_metadata=ok");
         }
-        Command::UninstallLite { dry_run } => {
-            let paths = if dry_run {
+        Command::UninstallLite { dry_run, shortcuts } => {
+            let mut paths = if dry_run {
                 hermes_manager::commands::uninstall_lite_plan(&home)?
             } else {
                 hermes_manager::commands::uninstall_lite(&home)?
             };
+            if shortcuts {
+                let plans = resolve_shortcut_plans(&home, None, None, None, None);
+                let shortcut_paths = if dry_run {
+                    hermes_manager::platform::existing_shortcut_paths(&plans)
+                } else {
+                    hermes_manager::platform::remove_windows_shortcuts(&plans)?
+                };
+                paths.extend(shortcut_paths.iter().map(|path| path.display().to_string()));
+            }
             if cli.json {
                 print_json_report(CommandReport {
                     ok: true,
@@ -472,6 +484,17 @@ mod tests {
         assert_eq!(value["command"], "uninstall-lite");
         assert_eq!(value["dryRun"], true);
         assert_eq!(value["paths"][0], "/tmp/hermes/hermes-agent");
+    }
+
+    #[test]
+    fn uninstall_lite_parses_shortcuts_flag() {
+        let cli = Cli::try_parse_from(["hermes-manager", "uninstall-lite", "--shortcuts"])
+            .expect("shortcut cleanup flag should parse");
+
+        match cli.command {
+            Command::UninstallLite { shortcuts, .. } => assert!(shortcuts),
+            _ => panic!("expected uninstall-lite command"),
+        }
     }
 
     #[test]

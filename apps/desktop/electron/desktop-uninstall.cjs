@@ -62,13 +62,23 @@ function resolveHermesManagerPath(resourcesPath, platform = process.platform) {
  * Returns null for unsupported modes or when the packaged manager is absent,
  * preserving the Python uninstaller as the complete fallback path.
  */
-function buildManagerCommandForMode({ mode, managerPath, hermesHome, managerExists = fs.existsSync }) {
+function buildManagerCommandForMode({
+  mode,
+  managerPath,
+  hermesHome,
+  managerExists = fs.existsSync,
+  platform = process.platform
+}) {
   if (mode !== 'lite' || !managerPath || !managerExists(managerPath)) {
     return null
   }
+  const args = ['--hermes-home', hermesHome, 'uninstall-lite']
+  if (platform === 'win32') {
+    args.push('--shortcuts')
+  }
   return {
     command: managerPath,
-    args: ['--hermes-home', hermesHome, 'uninstall-lite']
+    args
   }
 }
 

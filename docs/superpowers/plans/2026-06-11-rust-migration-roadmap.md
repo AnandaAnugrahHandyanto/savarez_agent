@@ -166,6 +166,9 @@ language-specific setup where needed.
 - Tauri bootstrap now passes an internal `-SkipDesktopShortcuts` flag for Windows desktop stages and creates Start
   Menu/Desktop shortcuts through the Rust manager after the desktop build succeeds, while direct `install.ps1`
   invocations keep the legacy PowerShell fallback.
+- Windows desktop lite uninstall now asks `hermes-manager uninstall-lite --shortcuts` to remove Rust-managed Start
+  Menu/Desktop shortcuts. The manager only removes planned `.lnk` files whose shortcut target still points at the
+  packaged Hermes desktop executable.
 
 **Exit Criteria:**
 - Rust manager can perform platform cleanup with parity to Python/shell uninstall.

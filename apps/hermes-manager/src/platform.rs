@@ -113,6 +113,15 @@ pub fn plan_windows_shortcuts(
         .collect()
 }
 
+/// Return planned shortcut paths that currently exist.
+pub fn existing_shortcut_paths(plans: &[ShortcutPlan]) -> Vec<PathBuf> {
+    plans
+        .iter()
+        .filter(|plan| plan.path.exists())
+        .map(|plan| plan.path.clone())
+        .collect()
+}
+
 /// Create or replace the planned Windows shortcuts.
 #[cfg(target_os = "windows")]
 pub fn write_windows_shortcuts(plans: &[ShortcutPlan]) -> Result<()> {
@@ -127,6 +136,29 @@ pub fn write_windows_shortcuts(plans: &[ShortcutPlan]) -> Result<()> {
 pub fn write_windows_shortcuts(_plans: &[ShortcutPlan]) -> Result<()> {
     Err(ManagerError::InvalidManifest(
         "write-shortcuts is only supported on Windows".to_string(),
+    ))
+}
+
+/// Remove planned Windows shortcuts that still point at Hermes.
+#[cfg(target_os = "windows")]
+pub fn remove_windows_shortcuts(plans: &[ShortcutPlan]) -> Result<Vec<PathBuf>> {
+    let mut removed = Vec::new();
+    for plan in plans {
+        if !plan.path.exists() {
+            continue;
+        }
+        if remove_one_windows_shortcut(plan)? {
+            removed.push(plan.path.clone());
+        }
+    }
+    Ok(removed)
+}
+
+/// Return an actionable error on non-Windows platforms.
+#[cfg(not(target_os = "windows"))]
+pub fn remove_windows_shortcuts(_plans: &[ShortcutPlan]) -> Result<Vec<PathBuf>> {
+    Err(ManagerError::InvalidManifest(
+        "remove-shortcuts is only supported on Windows".to_string(),
     ))
 }
 
@@ -168,6 +200,42 @@ fn write_one_windows_shortcut(plan: &ShortcutPlan) -> Result<()> {
             plan.path.display(),
             status
         )))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn remove_one_windows_shortcut(plan: &ShortcutPlan) -> Result<bool> {
+    use std::os::windows::process::CommandExt;
+
+    let script = r#"
+& {
+    param($LinkPath, $TargetPath)
+    $ErrorActionPreference = 'Stop'
+    if (-not (Test-Path -LiteralPath $LinkPath)) { exit 2 }
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($LinkPath)
+    if (-not [string]::Equals($shortcut.TargetPath, $TargetPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        exit 3
+    }
+    Remove-Item -LiteralPath $LinkPath -Force
+}
+"#;
+
+    let status = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .arg(&plan.path)
+        .arg(&plan.target)
+        .creation_flags(0x0800_0000)
+        .status()
+        .map_err(|err| ManagerError::io(&plan.path, err))?;
+    match status.code() {
+        Some(0) => Ok(true),
+        Some(2 | 3) => Ok(false),
+        _ => Err(ManagerError::InvalidManifest(format!(
+            "failed to remove shortcut {}: exit {}",
+            plan.path.display(),
+            status
+        ))),
     }
 }
 
@@ -433,6 +501,21 @@ mod tests {
             .replace('\\', "/")
             .ends_with("resources/icon.ico,0"));
         assert_eq!(plans[0].description, "Hermes Agent");
+    }
+
+    #[test]
+    fn existing_shortcut_paths_reports_only_present_planned_links() {
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let target = dir.path().join("Hermes.exe");
+        let programs = dir.path().join("Programs");
+        let desktop = dir.path().join("Desktop");
+        std::fs::create_dir_all(&programs).expect("programs dir should be created");
+        std::fs::write(programs.join("Hermes.lnk"), "stub").expect("shortcut should be created");
+        let plans = plan_windows_shortcuts(&target, &programs, &desktop, false);
+
+        let existing = existing_shortcut_paths(&plans);
+
+        assert_eq!(existing, vec![programs.join("Hermes.lnk")]);
     }
 
     #[test]

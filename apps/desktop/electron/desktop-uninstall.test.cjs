@@ -67,7 +67,8 @@ test('buildManagerCommandForMode only enables the Rust manager for available lit
       mode: 'lite',
       managerPath,
       hermesHome: '/home/x/.hermes',
-      managerExists: exists
+      managerExists: exists,
+      platform: 'linux'
     }),
     {
       command: managerPath,
@@ -91,6 +92,25 @@ test('buildManagerCommandForMode only enables the Rust manager for available lit
       managerExists: exists
     }),
     null
+  )
+})
+
+test('buildManagerCommandForMode asks the Rust manager to remove Windows shortcuts', () => {
+  const managerPath = 'C:\\Hermes\\resources\\hermes-manager\\hermes-manager.exe'
+  const exists = file => file === managerPath
+
+  assert.deepEqual(
+    buildManagerCommandForMode({
+      mode: 'lite',
+      managerPath,
+      hermesHome: 'C:\\Users\\x\\.hermes',
+      managerExists: exists,
+      platform: 'win32'
+    }),
+    {
+      command: managerPath,
+      args: ['--hermes-home', 'C:\\Users\\x\\.hermes', 'uninstall-lite', '--shortcuts']
+    }
   )
 })
 
