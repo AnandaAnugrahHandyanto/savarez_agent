@@ -596,12 +596,24 @@ fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
         hermes_home.as_os_str().to_os_string(),
     )];
     if let Some(path) = path_with_prepended_entries(&[
-        hermes_home.join("node").join("bin"),
+        managed_node_dir(&hermes_home),
         venv_bin_dir(install_root),
     ]) {
         envs.push(("PATH".to_string(), path));
     }
     envs
+}
+
+fn managed_node_dir(hermes_home: &Path) -> PathBuf {
+    managed_node_dir_for(hermes_home, cfg!(target_os = "windows"))
+}
+
+fn managed_node_dir_for(hermes_home: &Path, windows: bool) -> PathBuf {
+    if windows {
+        hermes_home.join("node")
+    } else {
+        hermes_home.join("node").join("bin")
+    }
 }
 
 fn venv_bin_dir(install_root: &Path) -> PathBuf {
@@ -911,6 +923,22 @@ mod tests {
             Some(PathBuf::from("/Applications/Hermes.app"))
         );
         assert_eq!(target_app_from_args(["--target-app", "/tmp/not-an-app"]), None);
+    }
+
+    #[test]
+    fn managed_node_dir_matches_installer_layout() {
+        let hermes_home = Path::new("/tmp/hermes-home");
+
+        assert_eq!(
+            managed_node_dir_for(hermes_home, true),
+            hermes_home.join("node"),
+            "Windows portable Node is installed directly under HERMES_HOME/node"
+        );
+        assert_eq!(
+            managed_node_dir_for(hermes_home, false),
+            hermes_home.join("node").join("bin"),
+            "Unix-style managed Node installs expose binaries through node/bin"
+        );
     }
 
     // Helpers for the swap tests: make a throwaway dir tree we can rename.
