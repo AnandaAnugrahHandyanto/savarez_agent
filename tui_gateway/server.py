@@ -3150,15 +3150,18 @@ def _make_agent(
         )
         if fallback_model:
             model = fallback_model
-        # The switch already resolved concrete credentials/endpoint; honor them
-        # so a custom/named endpoint survives the rebuild even if global
-        # resolution would pick a different one.
-        if override_base_url:
-            runtime["base_url"] = override_base_url
-        if override_api_key:
-            runtime["api_key"] = override_api_key
-        if override_api_mode:
-            runtime["api_mode"] = override_api_mode
+        elif override_base_url or override_api_key or override_api_mode:
+            # The switch already resolved concrete credentials/endpoint; honor them
+            # so a custom/named endpoint survives the rebuild even if global
+            # resolution would pick a different one. Skip when we fell back —
+            # stale persisted overrides from a dead primary must not clobber
+            # healthy fallback credentials.
+            if override_base_url:
+                runtime["base_url"] = override_base_url
+            if override_api_key:
+                runtime["api_key"] = override_api_key
+            if override_api_mode:
+                runtime["api_mode"] = override_api_mode
     else:
         model, requested_provider = _resolve_startup_runtime()
         if isinstance(model_override, str) and model_override:

@@ -1176,6 +1176,60 @@ def test_make_agent_falls_back_on_primary_auth_error(monkeypatch):
     assert captured["fallback_model"] == fallback_chain
 
 
+def test_make_agent_auth_fallback_skips_stale_session_overrides(monkeypatch):
+    """Resumed session overrides from a dead primary must not poison fallback creds."""
+    from hermes_cli.auth import AuthError
+
+    captured = {}
+
+    def fake_resolve(**kwargs):
+        requested = kwargs.get("requested")
+        if requested in (None, "xai-oauth"):
+            raise AuthError("xAI OAuth state is missing access_token.")
+        return {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "fallback-key",
+            "api_mode": "openai_chat",
+        }
+
+    def fake_agent(**kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(model=kwargs.get("model"))
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "meta-llama/llama-4-maverick"},
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        fake_resolve,
+    )
+    monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: [])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    server._make_agent(
+        "sid",
+        "session-key",
+        model_override={
+            "model": "grok-3",
+            "provider": "xai-oauth",
+            "base_url": "https://api.x.ai/v1",
+            "api_key": "stale-oauth-token",
+        },
+    )
+
+    assert captured["provider"] == "openrouter"
+    assert captured["api_key"] == "fallback-key"
+    assert captured["base_url"] == "https://openrouter.ai/api/v1"
+
+
 def test_make_agent_auth_error_without_fallback_raises(monkeypatch):
     from hermes_cli.auth import AuthError
 
