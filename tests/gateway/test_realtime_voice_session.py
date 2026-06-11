@@ -229,6 +229,35 @@ async def test_realtime_tool_bridge_executes_ask_agent_and_returns_provider_resu
 
 
 @pytest.mark.asyncio
+async def test_realtime_tool_bridge_ask_context_uses_read_only_context_provider():
+    """Realtime voice can ask for prior context without exposing broad tools."""
+    from gateway.realtime_voice.tool_bridge import RealtimeToolBridge, hermes_realtime_tool_definitions
+
+    definitions = hermes_realtime_tool_definitions(["ask_context"])
+    assert [definition.name for definition in definitions] == ["ask_context"]
+    assert definitions[0].parameters["required"] == ["question"]
+
+    async def ask_context(question: str) -> str:
+        return f"Context says: {question} -> Monday plan"
+
+    provider_session = _ToolResultSession()
+    bridge = RealtimeToolBridge(
+        RealtimeVoiceConfig(allow_tools=("ask_context",)),
+        ask_agent=lambda _prompt: "unused",
+        ask_context=ask_context,
+    )
+
+    await bridge.handle_tool_call(
+        provider_session,
+        RealtimeToolCall("ask_context", {"question": "what did we decide Monday?"}, "call_context"),
+    )
+
+    assert provider_session.results == [
+        ("call_context", "Context says: what did we decide Monday? -> Monday plan")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_realtime_tool_bridge_splits_spoken_result_from_display_artifacts():
     """Provider audio gets speak-safe text while Discord text can receive artifacts.
 

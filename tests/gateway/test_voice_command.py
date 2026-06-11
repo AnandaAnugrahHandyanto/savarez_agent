@@ -1227,6 +1227,29 @@ class TestVoiceChannelCommands:
         assert "https://example.com/reference" in message
 
     @pytest.mark.asyncio
+    async def test_realtime_context_question_reads_memory_and_session_search(self, runner, monkeypatch):
+        """ask_context uses a small read-only lookup surface, not broad tool execution."""
+
+        class FakeMemoryStore:
+            user_entries = ["Kamell decided Monday that realtime status belongs in Discord text."]
+            memory_entries = []
+
+            def load_from_disk(self):
+                return None
+
+        monkeypatch.setattr("tools.memory_tool.MemoryStore", FakeMemoryStore)
+        monkeypatch.setattr(
+            "tools.session_search_tool.session_search",
+            lambda **_kwargs: '{"success": true, "matches": ["Monday realtime voice plan"]}',
+        )
+
+        output = await runner._answer_realtime_context_question("What did we decide Monday about realtime status?")
+
+        assert "Read-only context lookup" in output
+        assert "Discord text" in output
+        assert "Monday realtime voice plan" in output
+
+    @pytest.mark.asyncio
     async def test_realtime_task_update_local_tool_posts_progress(self, runner, monkeypatch):
         """Inner realtime agents get a private progress tool that posts Discord status."""
         sent_updates = []

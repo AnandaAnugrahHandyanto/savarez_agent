@@ -10,6 +10,7 @@ DEFAULT_REALTIME_TOOLS: tuple[str, ...] = (
     "start_agent_task",
     "get_agent_task_status",
     "summarize_agent_task",
+    "ask_context",
 )
 
 

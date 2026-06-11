@@ -11361,6 +11361,9 @@ class GatewayRunner:
         async def _ask_agent(prompt: str) -> str:
             return await self._run_realtime_voice_agent_prompt(guild_id, text_channel_id, prompt, adapter)
 
+        async def _ask_context(question: str) -> str:
+            return await self._answer_realtime_context_question(question)
+
         async def _on_task_update(update: dict[str, str]) -> None:
             await self._send_realtime_voice_task_update(adapter, text_channel_id, update)
 
@@ -11370,6 +11373,7 @@ class GatewayRunner:
         bridge = RealtimeToolBridge(
             self._get_realtime_voice_config(),
             ask_agent=_ask_agent,
+            ask_context=_ask_context,
             on_task_update=_on_task_update,
             on_tool_display=_on_tool_display,
         )
@@ -11435,6 +11439,57 @@ class GatewayRunner:
             return str(result or "")
 
         return await asyncio.to_thread(_run_sync)
+
+    async def _answer_realtime_context_question(self, question: str) -> str:
+        """Answer a realtime context question from read-only memory/session sources."""
+        clean = str(question or "").strip()
+        if not clean:
+            return "Ask a specific context question."
+
+        def _lookup() -> str:
+            chunks: list[str] = []
+            terms = [term.lower() for term in clean.replace("?", " ").replace(",", " ").split() if len(term) > 2]
+            try:
+                from tools.memory_tool import MemoryStore
+
+                store = MemoryStore()
+                store.load_from_disk()
+                matches = []
+                for label, entries in (("user memory", store.user_entries), ("agent memory", store.memory_entries)):
+                    for entry in entries:
+                        lowered = entry.lower()
+                        if any(term in lowered for term in terms):
+                            matches.append(f"{label}: {entry}")
+                        if len(matches) >= 4:
+                            break
+                    if len(matches) >= 4:
+                        break
+                if matches:
+                    chunks.append("Memory matches:\n" + "\n".join(f"- {item}" for item in matches))
+            except Exception:
+                logger.debug("Realtime context memory lookup failed", exc_info=True)
+
+            try:
+                from tools.session_search_tool import session_search as _session_search
+
+                db = getattr(self, "_session_db", None)
+                session_result = _session_search(
+                    query=clean,
+                    role_filter="user,assistant",
+                    limit=3,
+                    sort="newest",
+                    db=db,
+                )
+                if session_result:
+                    chunks.append("Session search:\n" + str(session_result)[:2200])
+            except Exception:
+                logger.debug("Realtime context session lookup failed", exc_info=True)
+
+            if not chunks:
+                return "I don't have enough saved context to answer that reliably."
+            return "Read-only context lookup. Use this as evidence, not certainty.\n\n" + "\n\n".join(chunks)[:3000]
+
+        return await asyncio.to_thread(_lookup)
 
     def _make_realtime_task_update_local_tool(self, *, guild_id: int, text_channel_id: str, adapter: Any, loop: asyncio.AbstractEventLoop) -> dict[str, Any]:
         """Build the private progress-update tool for a realtime inner agent."""

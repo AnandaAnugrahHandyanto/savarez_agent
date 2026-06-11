@@ -22,6 +22,7 @@ from gateway.realtime_voice.session import RealtimeToolCall
 logger = logging.getLogger(__name__)
 
 AskAgentCallable = Callable[[str], Awaitable[str] | str]
+AskContextCallable = Callable[[str], Awaitable[str] | str]
 TaskUpdateCallable = Callable[[dict[str, str]], Awaitable[None] | None]
 ToolDisplayCallable = Callable[[dict[str, Any]], Awaitable[None] | None]
 
@@ -30,6 +31,7 @@ _HERMES_TOOL_NAMES = {
     "start_agent_task",
     "get_agent_task_status",
     "summarize_agent_task",
+    "ask_context",
 }
 
 
@@ -117,6 +119,21 @@ def hermes_realtime_tool_definitions(allow_tools: tuple[str, ...] | list[str] | 
                 "additionalProperties": False,
             },
         ),
+        "ask_context": RealtimeToolDefinition(
+            name="ask_context",
+            description="Ask a narrow read-only question about prior conversation context or durable memory. Does not write memory and does not execute side effects.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The specific context question to answer from memory/session history.",
+                    }
+                },
+                "required": ["question"],
+                "additionalProperties": False,
+            },
+        ),
     }
     return [definitions[name] for name in definitions if name in allowed]
 
@@ -140,11 +157,13 @@ class RealtimeToolBridge:
         config: RealtimeVoiceConfig,
         *,
         ask_agent: AskAgentCallable,
+        ask_context: AskContextCallable | None = None,
         on_task_update: TaskUpdateCallable | None = None,
         on_tool_display: ToolDisplayCallable | None = None,
     ) -> None:
         self.config = config
         self.ask_agent = ask_agent
+        self.ask_context = ask_context
         self.on_task_update = on_task_update
         self.on_tool_display = on_tool_display
         self.allowed_tools = {
@@ -183,6 +202,8 @@ class RealtimeToolBridge:
                     str(arguments.get("task_id") or ""),
                     title=str(arguments.get("title") or ""),
                 )
+            elif name == "ask_context":
+                output = await self._ask_context(str(arguments.get("question") or ""))
             else:  # pragma: no cover - guarded by _HERMES_TOOL_NAMES
                 output = f"Tool {name!r} is not implemented."
         except Exception:
@@ -211,6 +232,17 @@ class RealtimeToolBridge:
         if display or artifacts:
             await self._notify_tool_display(tool_name, display=display, artifacts=artifacts)
         return _safe_text(speak)
+
+    async def _ask_context(self, question: str) -> str:
+        clean = question.strip()
+        if not clean:
+            return "No question was provided for ask_context."
+        if self.ask_context is None:
+            return "No realtime context provider is configured."
+        result = self.ask_context(clean)
+        if inspect.isawaitable(result):
+            result = await result
+        return _safe_text(result)
 
     async def _start_agent_task(self, prompt: str, *, title: str = "") -> str:
         clean = prompt.strip()
