@@ -4671,6 +4671,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "BLUEBUBBLES_ALLOWED_USERS",
             "QQ_ALLOWED_USERS",
             "YUANBAO_ALLOWED_USERS",
+            "CARBONVOICE_ALLOWED_USERS",
             "GATEWAY_ALLOWED_USERS",
         )
         _builtin_allow_all_vars = (
@@ -4686,6 +4687,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "BLUEBUBBLES_ALLOW_ALL_USERS",
             "QQ_ALLOW_ALL_USERS",
             "YUANBAO_ALLOW_ALL_USERS",
+            "CARBONVOICE_ALLOW_ALL_USERS",
         )
         # Also pick up plugin-registered platforms — each entry can declare
         # its own allowed_users_env / allow_all_env, so the warning stays
@@ -6280,6 +6282,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning("Yuanbao: websockets not installed. Run: pip install websockets")
                 return None
             return YuanbaoAdapter(config)
+
+        elif platform == Platform.CARBONVOICE:
+            from gateway.platforms.carbonvoice import (
+                CarbonVoiceAdapter,
+                check_carbonvoice_requirements,
+            )
+            if not check_carbonvoice_requirements():
+                logger.warning(
+                    "Carbon Voice: httpx not installed. "
+                    "Run: pip install httpx 'python-socketio[asyncio_client]'"
+                )
+                return None
+            return CarbonVoiceAdapter(config)
 
         return None
 

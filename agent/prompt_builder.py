@@ -639,6 +639,16 @@ PLATFORM_HINTS = {
         "image and is the WRONG path. Bare Unicode emoji in text is also not a substitute "
         "— when a sticker is the right response, use yb_send_sticker."
     ),
+    "carbonvoice": (
+        "You are on Carbon Voice, a voice-first messaging platform. Voice messages "
+        "are transcribed to text before you see them, and your text replies may be "
+        "read back to the user as audio — so write the way you'd want to be heard: "
+        "natural, conversational, not a document. Avoid heavy markdown (bullet lists, "
+        "headers, code fences) since it doesn't render well when spoken; short "
+        "paragraphs and plain sentences work best. Keep replies focused — long walls "
+        "of text are hard to follow as audio. You can see inbound images that users "
+        "attach (they arrive as image attachments alongside the transcript)."
+    ),
     "api_server": (
         "You're responding through an API server. The rendering layer is unknown — "
         "assume plain text. No markdown formatting (no asterisks, bullets, headers, "
