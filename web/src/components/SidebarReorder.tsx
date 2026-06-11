@@ -2,15 +2,13 @@
  * SidebarReorder — drag-and-drop reorderable list for sidebar nav items.
  *
  * Uses @dnd-kit/sortable for reliable cross-platform drag-and-drop.
- * Uses DropdownMenu from @nous-research/ui for icon selection.
+ * Icon picker uses CSS anchor positioning (same pattern as @nous-research/ui DropdownMenu).
  * Supports two modes:
  * - folded=false: two independent lists (core + plugin) with separate order
  * - folded=true: single unified list
- *
- * Also supports inline label editing and icon customization.
  */
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useEffect, useId, useRef } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -31,8 +29,41 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Menu, Pencil, Check, X } from "lucide-react";
-import { DropdownMenu } from "@nous-research/ui/ui/components/dropdown-menu";
+import {
+  Menu,
+  Pencil,
+  Check,
+  X,
+  MessageSquare,
+  BarChart3,
+  Cpu,
+  FileText,
+  Clock,
+  Package,
+  Plug,
+  KeyRound,
+  Shield,
+  Users,
+  Settings,
+  Globe,
+  Database,
+  Activity,
+  Zap,
+  Star,
+  Heart,
+  Terminal,
+  Code,
+  BookOpen,
+  Wrench,
+  Radio,
+  Sparkles,
+  Eye,
+  Download,
+  Webhook,
+  RotateCw,
+  ShieldCheck,
+  type LucideIcon,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface ReorderItem {
@@ -47,17 +78,21 @@ interface ItemCustomization {
   icon?: string;
 }
 
-/* ── Available icons for sidebar items ───────────────────────────── */
+/* ── Icon registry ──────────────────────────────────────────────── */
 
-const AVAILABLE_ICONS = [
-  "MessageSquare", "BarChart3", "Cpu", "FileText", "Clock",
-  "Package", "Plug", "KeyRound", "Shield", "Users", "Settings",
-  "Globe", "Database", "Activity", "Zap", "Star", "Heart",
-  "Terminal", "Code", "BookOpen", "Wrench", "Radio", "Sparkles",
-  "Eye", "Download", "Webhook", "RotateCw", "ShieldCheck",
-];
+const ICON_REGISTRY: Record<string, LucideIcon> = {
+  MessageSquare, BarChart3, Cpu, FileText, Clock,
+  Package, Plug, KeyRound, Shield, Users, Settings,
+  Globe, Database, Activity, Zap, Star, Heart,
+  Terminal, Code, BookOpen, Wrench, Radio, Sparkles,
+  Eye, Download, Webhook, RotateCw, ShieldCheck,
+};
 
-/* ── Icon picker using DropdownMenu ──────────────────────────────── */
+const ICON_NAMES = Object.keys(ICON_REGISTRY);
+
+/* ── Icon picker using CSS anchor positioning (same as DropdownMenu) */
+
+type AnchorStyle = React.CSSProperties & Record<string, string | number>;
 
 function IconPicker({
   currentIcon,
@@ -66,18 +101,96 @@ function IconPicker({
   currentIcon?: string;
   onSelect: (icon: string) => void;
 }) {
-  const options = [
-    { label: "Default", value: "" },
-    ...AVAILABLE_ICONS.map((name) => ({ label: name, value: name })),
-  ];
+  const id = useId();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  const anchor = `--icon-picker-${id.replace(/:/g, "")}`;
+
+  const panelStyle: AnchorStyle = {
+    position: "fixed",
+    positionAnchor: anchor,
+    positionTryFallbacks: "flip-block, flip-inline",
+    left: "calc(anchor(left) - 0.5rem)",
+    top: "calc(anchor(top) - 0.5rem)",
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const ac = new AbortController();
+    document.addEventListener(
+      "mousedown",
+      (e) => {
+        if (!ref.current?.contains(e.target as Node)) {
+          setOpen(false);
+        }
+      },
+      { signal: ac.signal },
+    );
+    return () => ac.abort();
+  }, [open]);
+
+  const CurrentIcon = currentIcon ? ICON_REGISTRY[currentIcon] : null;
 
   return (
-    <DropdownMenu
-      value={currentIcon ?? ""}
-      onChange={(val: string) => onSelect(val)}
-      options={options}
-      direction="right"
-    />
+    <span className="relative inline-block align-top" ref={ref}>
+      <button
+        onClick={() => setOpen(!open)}
+        style={{ anchorName: anchor } as AnchorStyle}
+        className={cn(
+          "flex h-6 w-6 items-center justify-center rounded transition-colors",
+          "hover:bg-secondary/50",
+          open && "bg-secondary/50",
+        )}
+        title="Change icon"
+      >
+        {CurrentIcon ? (
+          <CurrentIcon className="h-4 w-4 text-text-tertiary" />
+        ) : (
+          <span className="text-[10px] text-text-tertiary">…</span>
+        )}
+      </button>
+
+      {open && (
+        <div
+          className="z-50 grid grid-cols-6 gap-1 rounded-lg border border-border bg-background-base p-2 shadow-lg"
+          style={panelStyle}
+        >
+          {ICON_NAMES.map((name) => {
+            const Icon = ICON_REGISTRY[name];
+            return (
+              <button
+                key={name}
+                onClick={() => {
+                  onSelect(name);
+                  setOpen(false);
+                }}
+                className={cn(
+                  "flex h-8 w-8 items-center justify-center rounded-md transition-colors",
+                  "hover:bg-secondary/50",
+                  currentIcon === name && "bg-midground/30 ring-1 ring-midground",
+                )}
+                title={name}
+              >
+                <Icon className="h-4 w-4" />
+              </button>
+            );
+          })}
+          <button
+            onClick={() => {
+              onSelect("");
+              setOpen(false);
+            }}
+            className={cn(
+              "col-span-6 mt-1 flex items-center justify-center gap-1 rounded-md px-2 py-1",
+              "text-xs text-text-tertiary transition-colors hover:bg-secondary/30",
+              !currentIcon && "bg-midground/30",
+            )}
+          >
+            Reset to default
+          </button>
+        </div>
+      )}
+    </span>
   );
 }
 

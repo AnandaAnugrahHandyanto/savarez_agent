@@ -72,16 +72,20 @@ export const en: Translations = {
     nav: {
       analytics: "Analytics",
       chat: "Chat",
+      channels: "Channels",
       config: "Config",
       cron: "Cron",
       documentation: "Documentation",
       keys: "Keys",
       logs: "Logs",
       models: "Models",
+      pairing: "Pairing",
       profiles: "Profiles",
       plugins: "Plugins",
       sessions: "Sessions",
       skills: "Skills",
+      webhooks: "Webhooks",
+      system: "System",
     },
     modelToolsSheetSubtitle: "& tools",
     modelToolsSheetTitle: "Model",
@@ -389,6 +393,10 @@ export const en: Translations = {
     authRequired: "Auth required",
     authRequiredHint: "Run this command to authenticate:",
     updateGit: "Git pull",
+    pull: "Pull",
+    pullSuccess: "Plugin updated successfully.",
+    sourceRemote: "Remote",
+    sourceLocal: "Local",
     versionBadge: "Version",
     showInSidebar: "Show in sidebar",
     hideFromSidebar: "Hide from sidebar",
@@ -769,6 +777,7 @@ export const en: Translations = {
       ready: "Ready",
       running: "In Progress",
       blocked: "Blocked",
+      review: "Review",
       done: "Done",
       archived: "Archived",
     },
@@ -779,6 +788,7 @@ export const en: Translations = {
       ready: "Dependencies satisfied; assign a profile to dispatch",
       running: "Claimed by a worker — in-flight",
       blocked: "Worker asked for human input",
+      review: "Completed, awaiting human review",
       done: "Completed",
       archived: "Archived",
     },
@@ -807,5 +817,33 @@ export const en: Translations = {
       "workspace path (optional, derived from assignee if blank)",
     logTruncated: "(showing last 100 KB — full log at ",
     logAt: ")",
+  },
+
+  // ── Dashboard Settings ──
+  dashboardSettings: {
+    title: "Dashboard Settings",
+    subtitle: "Customize which columns and tabs are visible.",
+    kanbanColumns: {
+      title: "Kanban Columns",
+      description:
+        "Toggle visibility of Kanban board columns. Hidden columns are still accessible via the API.",
+    },
+    sideMenuTabs: {
+      title: "Side Menu",
+      description:
+        "Toggle visibility of sidebar navigation tabs. Hidden tabs are still accessible via direct URL.",
+    },
+    sidebarOrder: {
+      title: "Sidebar Order",
+      description:
+        "Drag and drop to reorder sidebar navigation items. Enable folding to merge plugins into the main nav.",
+      foldToggle: "Fold plugins into sidebar",
+      foldToggleHint:
+        "When enabled, plugin items are merged into the main navigation and can be reordered alongside built-in items.",
+      mainItems: "Main Items",
+      pluginItems: "Plugin Items",
+      unifiedItems: "All Items",
+      dragHint: "Drag handle to reorder",
+    },
   },
 };

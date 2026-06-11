@@ -2,7 +2,7 @@
 Hermes Plugin System
 ====================
 
-Discovers, loads, and manages plugins from four sources:
+Discovers, loads, and manages plugins from five sources:
 
 1. **Bundled plugins** – ``<repo>/plugins/<name>/`` (shipped with hermes-agent;
    ``memory/`` and ``context_engine/`` subdirs are excluded — they have their
@@ -12,6 +12,12 @@ Discovers, loads, and manages plugins from four sources:
    ``HERMES_ENABLE_PROJECT_PLUGINS``)
 4. **Pip plugins**     – packages that expose the ``hermes_agent.plugins``
    entry-point group.
+5. **GitHub/remote plugins** – listed under ``plugins.remote`` in
+   ``config.yaml``. Each entry specifies a Git URL, an optional branch/ref,
+   and an optional path within the repo. The loader shallow-clones the repo
+   into ``~/.hermes/plugin-repos/`` and scans for ``plugin.yaml`` manifests.
+   Remote plugins participate in the same enabled/disabled gating as user
+   plugins and take precedence over bundled plugins on key collision.
 
 Later sources override earlier ones on name collision, so a user or project
 plugin with the same name as a bundled plugin replaces it.
@@ -34,17 +40,21 @@ so plugin-defined tools appear alongside the built-in tools.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.metadata
 import importlib.util
 import inspect
 import logging
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Union, Iterator, Tuple
 
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled
@@ -243,8 +253,15 @@ class PluginManifest:
     requires_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
     provides_tools: List[str] = field(default_factory=list)
     provides_hooks: List[str] = field(default_factory=list)
-    source: str = ""        # "user", "project", or "entrypoint"
+    source: str = ""        # "user", "project", "entrypoint", or "github"
     path: Optional[str] = None
+    # Remote source metadata — populated when source == "github".
+    # These fields come from the plugin.yaml ``source`` block and are used
+    # by the loader to clone or update the repo before local discovery.
+    source_type: str = "local"   # "local" or "github"
+    repo_url: str = ""           # full Git HTTPS/SSH URL
+    repo_ref: str = ""           # branch, tag, or commit SHA (empty = default branch)
+    repo_path: str = ""          # subdirectory within the repo that holds plugin.yaml
     # Plugin kind — see plugins.py module docstring for semantics.
     # ``standalone`` (default): hooks/tools of its own; opt-in via
     #                           ``plugins.enabled``.
@@ -1138,7 +1155,10 @@ class PluginManager:
         logger.debug("  entrypoints: %d manifest(s)", len(ep_manifests))
         manifests.extend(ep_manifests)
 
-        # Load each manifest (skip user-disabled plugins).
+        # 5. GitHub / remote plugins (plugins.remote config key)
+        remote_manifests = self._scan_github_sources()
+        logger.debug("  remote: %d manifest(s)", len(remote_manifests))
+        manifests.extend(remote_manifests)
         # Later sources override earlier ones on key collision — user
         # plugins take precedence over bundled, project plugins take
         # precedence over user. Dedup here so we only load the final
@@ -1294,6 +1314,9 @@ class PluginManager:
                     manifest_file, child, source, prefix
                 )
                 if manifest is not None:
+                    # If plugin dir has .git, mark source as "git" instead of "user"/"project"
+                    if source in ("user", "project") and (child / ".git").exists():
+                        manifest.source = "git"
                     manifests.append(manifest)
                 continue
 
@@ -1385,6 +1408,32 @@ class PluginManager:
                     except Exception:
                         pass
 
+            # -- remote source block -------------------------------------------
+            source_type = "local"
+            repo_url = ""
+            repo_ref = ""
+            repo_path_str = ""
+            raw_source = data.get("source")
+            if isinstance(raw_source, dict):
+                raw_type = raw_source.get("type", "local")
+                if raw_type == "github":
+                    source_type = "github"
+                    repo_url = str(raw_source.get("url", "")).strip()
+                    repo_ref = str(raw_source.get("ref", "") or raw_source.get("branch", "") or "").strip()
+                    repo_path_str = str(raw_source.get("path", "") or "").strip().strip("/")
+                    if not repo_url:
+                        logger.warning(
+                            "Plugin %s: source.type is 'github' but no url provided; "
+                            "treating as local.",
+                            key,
+                        )
+                        source_type = "local"
+                elif raw_type and raw_type != "local":
+                    logger.warning(
+                        "Plugin %s: unknown source.type %r; treating as local.",
+                        key, raw_type,
+                    )
+
             logger.debug(
                 "Parsed manifest: key=%s name=%s kind=%s source=%s path=%s",
                 key, name, kind, source, plugin_dir,
@@ -1401,6 +1450,10 @@ class PluginManager:
                 path=str(plugin_dir),
                 kind=kind,
                 key=key,
+                source_type=source_type,
+                repo_url=repo_url,
+                repo_ref=repo_ref,
+                repo_path=repo_path_str,
             )
         except Exception as exc:
             logger.warning(
@@ -1439,6 +1492,202 @@ class PluginManager:
         return manifests
 
     # -----------------------------------------------------------------------
+    # GitHub remote source resolution
+    # -----------------------------------------------------------------------
+
+    def _cache_dir_for_repo(self, repo_url: str) -> Path:
+        """Return a stable local cache directory for a remote repo URL.
+
+        The directory lives under ``~/.hermes/plugin-repos/`` and is
+        derived from a hash of the URL so that different repos never
+        collide while the same repo always maps to the same path.
+        """
+        url_hash = hashlib.sha256(repo_url.encode("utf-8")).hexdigest()[:16]
+        repo_root = get_hermes_home() / "plugin-repos"
+        repo_root.mkdir(parents=True, exist_ok=True)
+        return repo_root / url_hash
+
+    def _resolve_git_repo(
+        self,
+        repo_url: str,
+        repo_ref: str = "",
+        *,
+        cache_root: Optional[Path] = None,
+    ) -> Path:
+        """Clone or pull *repo_url* into a local cache directory.
+
+        When *repo_ref* is non-empty it is checked out after cloning or
+        fetching (``git clone --branch <ref>`` / ``git checkout <ref>``).
+
+        Returns the local ``Path`` to the cached repo.
+
+        Raises ``subprocess.CalledProcessError`` on git failure.
+        Raises ``RuntimeError`` when ``git`` binary is not found.
+        """
+        git_bin = shutil.which("git")
+        if git_bin is None:
+            raise RuntimeError(
+                "Cannot resolve git-based plugin source: 'git' binary not found "
+                "in PATH. Install git or use local plugins."
+            )
+
+        if cache_root is None:
+            cache_root = self._cache_dir_for_repo(repo_url)
+        cache_root.mkdir(parents=True, exist_ok=True)
+
+        git_dir = cache_root / ".git"
+        ref = repo_ref.strip() if repo_ref else ""
+
+        if git_dir.exists():
+            # Repo already cloned — fetch latest and checkout ref.
+            fetch_cmd = [git_bin, "fetch", "--quiet", "--tags", "--force"]
+            if ref:
+                fetch_cmd += ["origin", ref]
+            else:
+                fetch_cmd.append("origin")
+            subprocess.run(
+                fetch_cmd,
+                cwd=str(cache_root),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            checkout_target = ref if ref else "HEAD"
+            subprocess.run(
+                [git_bin, "checkout", "--quiet", "--force", checkout_target],
+                cwd=str(cache_root),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            # Pull to get latest commits on the tracked branch
+            if not ref:
+                subprocess.run(
+                    [git_bin, "pull", "--quiet", "--ff-only"],
+                    cwd=str(cache_root),
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            logger.debug(
+                "Updated cached repo: %s -> %s (ref=%s)",
+                repo_url, cache_root, ref or "default",
+            )
+        else:
+            # Fresh clone — use shallow clone for speed.
+            clone_cmd = [git_bin, "clone", "--quiet", "--depth=1"]
+            if ref:
+                clone_cmd += ["--branch", ref]
+            clone_cmd += [repo_url, str(cache_root)]
+            subprocess.run(
+                clone_cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            logger.debug(
+                "Cloned repo: %s -> %s (ref=%s)",
+                repo_url, cache_root, ref or "default",
+            )
+
+        return cache_root
+
+    def _scan_github_sources(self) -> List[PluginManifest]:
+        """Scan GitHub-sourced plugins from the ``plugins.remote`` config.
+
+        Expects ``config.yaml`` like::
+
+            plugins:
+              remote:
+                - name: my-optional-key
+                  url: https://github.com/org/plugin-repo.git
+                  ref: main          # or a tag / commit SHA
+                  path: plugins/foo  # optional — sub-path within repo holding plugin.yaml
+
+        Each entry is cloned (or pulled) into a cache directory, the
+        subdirectory indicated by ``path`` (if any) is scanned with
+        ``_scan_directory``, and the resulting manifests are tagged with
+        ``source="github"`` and the corresponding ``source_type="github"``,
+        ``repo_url``, ``repo_ref``, ``repo_path``.
+        """
+        manifests: List[PluginManifest] = []
+        try:
+            from hermes_cli.config import load_config
+            config = load_config()
+        except Exception:
+            return manifests
+
+        plugins_cfg = config.get("plugins") if isinstance(config, dict) else None
+        if not isinstance(plugins_cfg, dict):
+            return manifests
+
+        remote_entries = plugins_cfg.get("remote")
+        if not isinstance(remote_entries, list) or not remote_entries:
+            return manifests
+
+        for idx, entry in enumerate(remote_entries):
+            if not isinstance(entry, dict):
+                logger.warning(
+                    "plugins.remote[%d]: expected dict, got %s — skipping.",
+                    idx, type(entry).__name__,
+                )
+                continue
+
+            url = str(entry.get("url", "")).strip()
+            if not url:
+                logger.warning(
+                    "plugins.remote[%d]: no 'url' key — skipping.", idx
+                )
+                continue
+
+            ref = str(entry.get("ref", "") or entry.get("branch", "") or "").strip()
+            path = str(entry.get("path", "") or "").strip().strip("/")
+            name = str(entry.get("name", "") or "").strip()
+
+            try:
+                repo_local = self._resolve_git_repo(url, ref or "")
+            except RuntimeError as exc:
+                logger.warning(
+                    "plugins.remote[%d]: cannot resolve git repo %s: %s",
+                    idx, url, exc,
+                )
+                continue
+            except subprocess.CalledProcessError as exc:
+                logger.warning(
+                    "plugins.remote[%d]: git command failed for %s: %s",
+                    idx, url, exc,
+                )
+                continue
+
+            scan_root = repo_local / path if path else repo_local
+            if not scan_root.is_dir():
+                logger.warning(
+                    "plugins.remote[%d]: path %r does not exist in repo %s",
+                    idx, path or ".", url,
+                )
+                continue
+
+            sub_manifests = self._scan_directory(
+                scan_root,
+                source="github",
+            )
+            for m in sub_manifests:
+                m.source_type = "github"
+                m.repo_url = url
+                m.repo_ref = ref
+                m.repo_path = path
+                if name and not m.key:
+                    m.key = name
+                logger.debug(
+                    "Remote plugin found: key=%s name=%s repo=%s ref=%s",
+                    m.key or m.name, m.name, url, ref or "default",
+                )
+
+            manifests.extend(sub_manifests)
+
+        return manifests
+
+    # -----------------------------------------------------------------------
     # Loading
     # -----------------------------------------------------------------------
 
@@ -1451,7 +1700,7 @@ class PluginManager:
         )
 
         try:
-            if manifest.source in {"user", "project", "bundled"}:
+            if manifest.source in {"user", "project", "bundled", "github"}:
                 module = self._load_directory_module(manifest)
             else:
                 module = self._load_entrypoint_module(manifest)

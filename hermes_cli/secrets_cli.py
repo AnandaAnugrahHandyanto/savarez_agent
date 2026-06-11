@@ -169,9 +169,16 @@ def cmd_setup(args: argparse.Namespace) -> int:
         return 1
     if not token.startswith("0."):
         console.print(
-            "  [yellow]Warning: token doesn't start with '0.' — usually that means "
-            "you pasted something other than a BSM access token.  Continuing anyway.[/yellow]"
+            "  [red]✗ Token doesn't start with '0.' — this usually means you pasted "
+            "the wrong credential.[/red]\n"
+            "  [yellow]Bitwarden Secrets Manager access tokens start with '0.' and are "
+            "generated at:[/yellow]\n"
+            "  [yellow]Secrets Manager → Machine accounts → [your account] → "
+            "Access tokens → Create access token[/yellow]\n"
+            "  [yellow]A UUID like the one you pasted is typically a machine account "
+            "ID, not an access token.[/yellow]"
         )
+        return 1
 
     save_env_value(token_env, token)
     os.environ[token_env] = token  # so the test fetch below sees it

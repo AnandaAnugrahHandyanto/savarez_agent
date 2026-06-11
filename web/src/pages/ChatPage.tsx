@@ -771,6 +771,60 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
   }, [isActive]);
 
+  // --- Tab visibility: heartbeat + reconnect + terminal re-sync -----------
+  //
+  // Chrome (and other browsers) throttle JS timers to 1 event/min in
+  // background tabs.  A WebSocket idle for ~30s can be closed by
+  // intermediate proxies or the browser itself.  Two mechanisms prevent
+  // that and recover cleanly:
+  //
+  //  1. Heartbeat — null-byte over the PTY socket every 25s.
+  //     The PTY child silently discards it; Chrome keeps the socket alive.
+  //
+  //  2. Visibility listener — on tab-reappear:
+  //     a. Resync terminal dimensions (display:none collapses the host
+  //        so ResizeObserver can't fire while hidden).
+  //     b. If the WebSocket died while hidden, close and re-trigger the
+  //        main effect (dependency on `channel`) to reconnect.
+  useEffect(() => {
+    if (!isActive) return;
+
+    const HEARTBEAT_MS = 25_000;
+    let heartbeatId: ReturnType<typeof setInterval> | undefined;
+
+    // Start heartbeat — sends a null byte every 25s to prevent
+    // intermediate proxies / browsers from closing idle WebSockets.
+    heartbeatId = setInterval(() => {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send("\0");
+      }
+    }, HEARTBEAT_MS);
+
+    // Visibility listener: re-sync terminal and reconnect if needed.
+    const onVisibility = () => {
+      if (document.hidden) return;
+
+      // Force terminal re-measurement — display:none collapses the host
+      // so ResizeObserver can't fire while hidden.
+      syncMetricsRef.current?.();
+
+      const ws = wsRef.current;
+      if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+        // WebSocket died while hidden — close and re-trigger the main
+        // effect (which depends on `channel`) to reconnect.
+        wsRef.current = null;
+        ws?.close();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      if (heartbeatId !== undefined) clearInterval(heartbeatId);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [isActive]);
+
   // Keep the live xterm theme in sync when the active theme's terminal
   // background changes (e.g. user switches to a custom YAML theme mid-session).
   useEffect(() => {

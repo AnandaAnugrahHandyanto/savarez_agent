@@ -1156,7 +1156,8 @@ def _build_child_agent(
         log_prefix=f"[subagent-{task_index}]",
         platform=parent_agent.platform,
         skip_context_files=True,
-        skip_memory=True,
+        skip_memory=(effective_role != "orchestrator"),  # orchestrators get memory; leaf workers don't
+        agent_context="orchestrator" if effective_role == "orchestrator" else "primary",
         clarify_callback=None,
         thinking_callback=child_thinking_cb,
         session_db=getattr(parent_agent, "_session_db", None),

@@ -89,16 +89,20 @@ export interface Translations {
     nav: {
       analytics: string;
       chat: string;
+      channels: string;
       config: string;
       cron: string;
       documentation: string;
       keys: string;
       logs: string;
       models: string;
+      pairing: string;
       profiles: string;
       plugins: string;
       sessions: string;
       skills: string;
+      webhooks: string;
+      system: string;
     };
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;
@@ -344,6 +348,10 @@ export interface Translations {
     versionBadge: string;
     showInSidebar: string;
     hideFromSidebar: string;
+    pull: string;
+    pullSuccess: string;
+    sourceRemote: string;
+    sourceLocal: string;
   };
 
   // ── Profiles page ──
@@ -778,6 +786,7 @@ export interface Translations {
       ready: string;
       running: string;
       blocked: string;
+      review: string;
       done: string;
       archived: string;
     };
@@ -788,6 +797,7 @@ export interface Translations {
       ready: string;
       running: string;
       blocked: string;
+      review: string;
       done: string;
       archived: string;
     };
@@ -808,5 +818,29 @@ export interface Translations {
     workspacePathOptional: string;
     logTruncated: string;
     logAt: string;
+  };
+
+  // ── Dashboard Settings ──
+  dashboardSettings: {
+    title: string;
+    subtitle: string;
+    kanbanColumns: {
+      title: string;
+      description: string;
+    };
+    sideMenuTabs: {
+      title: string;
+      description: string;
+    };
+    sidebarOrder?: {
+      title: string;
+      description: string;
+      foldToggle: string;
+      foldToggleHint: string;
+      mainItems: string;
+      pluginItems: string;
+      unifiedItems: string;
+      dragHint: string;
+    };
   };
 }

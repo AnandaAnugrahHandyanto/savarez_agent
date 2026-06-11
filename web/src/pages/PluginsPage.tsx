@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ExternalLink, RefreshCw, Trash2, Eye, EyeOff } from "lucide-react";
+import { ExternalLink, Github, HardDrive, RefreshCw, Trash2, Eye, EyeOff } from "lucide-react";
 import type { Translations } from "@/i18n/types";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
@@ -380,6 +380,10 @@ interface PluginRowCardProps {
   t: Translations;
 }
 
+function sourceType(source: string): "remote" | "local" {
+  return source === "github" || source === "git" ? "remote" : "local";
+}
+
 function PluginRowCard(props: PluginRowCardProps) {
   const {
     row,
@@ -417,7 +421,12 @@ function PluginRowCard(props: PluginRowCardProps) {
 
             <span className="truncate font-semibold">{row.name}</span>
 
-            <Badge tone="outline">
+            <Badge tone="outline" className="inline-flex items-center gap-1.5">
+              {sourceType(row.source) === "remote" ? (
+                <Github className="h-3 w-3" />
+              ) : (
+                <HardDrive className="h-3 w-3" />
+              )}
               {t.pluginsPage.sourceBadge}: {row.source}
             </Badge>
 
@@ -475,7 +484,7 @@ function PluginRowCard(props: PluginRowCardProps) {
               </Link>
             ) : null}
 
-            {row.can_update_git ? (
+            {row.can_update_git && sourceType(row.source) === "remote" ? (
 
               <Button
                 disabled={busy}
@@ -484,12 +493,12 @@ function PluginRowCard(props: PluginRowCardProps) {
                 onClick={() => {
                   void setRuntimeLoading(row.name, async () => {
                     await api.updateAgentPlugin(row.name);
-                    showToast(t.pluginsPage.updateGit, "success");
+                    showToast(t.pluginsPage.pullSuccess, "success");
                   });
                 }}
               >
-                {busy ? <Spinner /> : null}
-                {t.pluginsPage.updateGit}
+                {busy ? <Spinner /> : <Github className="h-3.5 w-3.5" />}
+                {t.pluginsPage.pull}
               </Button>
             ) : null}
 
