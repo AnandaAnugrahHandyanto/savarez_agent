@@ -10,7 +10,7 @@ import {
   writeSessionDrag
 } from '@/app/chat/composer/inline-refs'
 
-import { sessionDropAnchor, useSessionDropZone } from './use-session-drop-zone'
+import { placeSessionIdAtAnchor, previewItemsAtAnchor, sessionDropAnchor, useSessionDropZone } from './use-session-drop-zone'
 
 // jsdom has no DataTransfer; a plain object with the same surface is enough
 // for both the writer (setData/effectAllowed) and the zone (types/getData).
@@ -55,18 +55,44 @@ const PINNED_ROW: SessionDragPayload = {
 
 function Probe({
   acceptPinned,
+  children,
+  draggingSessionId,
   onDropSession
 }: {
   acceptPinned: boolean
+  children?: React.ReactNode
+  draggingSessionId?: null | string
   onDropSession: (session: SessionDragPayload) => void
 }) {
-  const { active, dropHandlers } = useSessionDropZone({ acceptPinned, onDropSession })
+  const { active, anchor, dropHandlers } = useSessionDropZone({
+    accepts: flags => flags.pinned === acceptPinned,
+    draggingSessionId,
+    onDropSession
+  })
 
   return (
-    <div data-active={active ? 'true' : 'false'} data-testid="zone" {...dropHandlers}>
+    <div
+      data-active={active ? 'true' : 'false'}
+      data-anchor={anchor ? `${anchor.before ? 'before' : 'after'}:${anchor.sessionId}` : ''}
+      data-testid="zone"
+      {...dropHandlers}
+    >
       <span data-testid="zone-child">rows</span>
+      {children}
     </div>
   )
+}
+
+function dragEvent(type: string, dataTransfer: DataTransfer, clientY = 0) {
+  const event = new Event(type, {
+    bubbles: true,
+    cancelable: true
+  })
+
+  Object.defineProperty(event, 'clientY', { value: clientY })
+  Object.defineProperty(event, 'dataTransfer', { value: dataTransfer })
+
+  return event
 }
 
 afterEach(cleanup)
@@ -117,7 +143,7 @@ describe('useSessionDropZone', () => {
 
     fireEvent.drop(zone, { dataTransfer: transfer })
     // The drop event rides along so handlers can compute the drop position.
-    expect(onDropSession).toHaveBeenCalledWith(UNPINNED_ROW, expect.objectContaining({ type: 'drop' }))
+    expect(onDropSession).toHaveBeenCalledWith(UNPINNED_ROW, expect.objectContaining({ type: 'drop' }), null)
     expect(zone.dataset.active).toBe('false')
   })
 
@@ -131,7 +157,7 @@ describe('useSessionDropZone', () => {
     expect(zone.dataset.active).toBe('true')
 
     fireEvent.drop(zone, { dataTransfer: transfer })
-    expect(onDropSession).toHaveBeenCalledWith(PINNED_ROW, expect.objectContaining({ type: 'drop' }))
+    expect(onDropSession).toHaveBeenCalledWith(PINNED_ROW, expect.objectContaining({ type: 'drop' }), null)
   })
 
   it('ignores drags whose pin-state it would not act on', () => {
@@ -197,6 +223,32 @@ describe('useSessionDropZone', () => {
   })
 })
 
+describe('session drop ordering helpers', () => {
+  it('places a row after the anchor without drifting when moving downward', () => {
+    expect(placeSessionIdAtAnchor(['a', 'b', 'c'], 'a', { before: false, sessionId: 'b' })).toEqual(['b', 'a', 'c'])
+  })
+
+  it('places a row before the anchor when moving upward', () => {
+    expect(placeSessionIdAtAnchor(['a', 'b', 'c'], 'c', { before: true, sessionId: 'b' })).toEqual(['a', 'c', 'b'])
+  })
+
+  it('returns null for no-op anchors', () => {
+    expect(placeSessionIdAtAnchor(['a', 'b'], 'a', null)).toBeNull()
+    expect(placeSessionIdAtAnchor(['a', 'b'], 'a', { before: true, sessionId: 'a' })).toBeNull()
+    expect(placeSessionIdAtAnchor(['a', 'b'], 'a', { before: true, sessionId: 'missing' })).toBeNull()
+  })
+
+  it('previews a cross-section row at the hovered slot', () => {
+    expect(
+      previewItemsAtAnchor(
+        [{ id: 'a' }, { id: 'b' }],
+        { id: 'x' },
+        { before: false, sessionId: 'a' }
+      ).map(item => item.id)
+    ).toEqual(['a', 'x', 'b'])
+  })
+})
+
 describe('sessionDropAnchor', () => {
   // jsdom layout is all zeros; give the row a real box so the midpoint
   // math has something to bisect.
@@ -212,6 +264,10 @@ describe('sessionDropAnchor', () => {
 
   function dropEventAt(target: Element, clientY: number) {
     return { clientY, target } as unknown as React.DragEvent
+  }
+
+  function scopedDropEvent(container: Element, target: Element, clientY: number) {
+    return { clientY, currentTarget: container, target } as unknown as React.DragEvent
   }
 
   afterEach(() => {
@@ -243,5 +299,87 @@ describe('sessionDropAnchor', () => {
     document.body.appendChild(header)
 
     expect(sessionDropAnchor(dropEventAt(header, 10))).toBeNull()
+  })
+
+  it('keeps the previous anchor while the pointer is in a row middle band', () => {
+    const row = rowWithRect('s-anchor', 100, 28)
+    const previous = { before: true, sessionId: 's-prev' }
+
+    expect(sessionDropAnchor(dropEventAt(row, 114), { previous })).toEqual(previous)
+    expect(sessionDropAnchor(dropEventAt(row, 101), { previous })).toEqual({ before: true, sessionId: 's-anchor' })
+    expect(sessionDropAnchor(dropEventAt(row, 127), { previous })).toEqual({ before: false, sessionId: 's-anchor' })
+  })
+
+  it('ignores the dragged row as a hover target to avoid animated snapback', () => {
+    const container = document.createElement('div')
+    const moving = rowWithRect('moving', 100, 28)
+    const target = rowWithRect('target', 132, 28)
+    container.append(moving, target)
+    document.body.appendChild(container)
+
+    expect(sessionDropAnchor(scopedDropEvent(container, moving, 114), { movingSessionId: 'moving' })).toEqual({
+      before: true,
+      sessionId: 'target'
+    })
+  })
+})
+
+describe('useSessionDropZone stable anchor state', () => {
+  it('drops with the last stable anchor when the dragged row is under the pointer', () => {
+    const onDropSession = vi.fn()
+    const transfer = sessionTransfer(UNPINNED_ROW)
+    const targetRect = { bottom: 128, height: 28, left: 0, right: 240, top: 100, width: 240 } as DOMRect
+    const movingRect = { bottom: 160, height: 28, left: 0, right: 240, top: 132, width: 240 } as DOMRect
+
+    render(
+      <Probe acceptPinned={false} draggingSessionId="live-1" onDropSession={onDropSession}>
+        <div
+          data-session-id="target"
+          ref={node => {
+            if (node) {
+              node.getBoundingClientRect = () => targetRect
+            }
+          }}
+        />
+        <div
+          data-session-id="live-1"
+          ref={node => {
+            if (node) {
+              node.getBoundingClientRect = () => movingRect
+            }
+          }}
+        />
+      </Probe>
+    )
+
+    const zone = screen.getByTestId('zone')
+    fireEvent(zone, dragEvent('dragenter', transfer, 127))
+    expect(zone.dataset.anchor).toBe('after:target')
+
+    fireEvent(zone, dragEvent('dragover', transfer, 140))
+    expect(zone.dataset.anchor).toBe('after:target')
+
+    fireEvent(zone, dragEvent('drop', transfer, 140))
+    expect(onDropSession).toHaveBeenCalledWith(
+      UNPINNED_ROW,
+      expect.objectContaining({ type: 'drop' }),
+      { before: false, sessionId: 'target' }
+    )
+  })
+
+  it('clears section highlight when local session drag ends without a matching leave', () => {
+    const transfer = sessionTransfer(UNPINNED_ROW)
+
+    const { rerender } = render(
+      <Probe acceptPinned={false} draggingSessionId="live-1" onDropSession={vi.fn()} />
+    )
+
+    const zone = screen.getByTestId('zone')
+
+    fireEvent.dragEnter(zone, { dataTransfer: transfer })
+    expect(zone.dataset.active).toBe('true')
+
+    rerender(<Probe acceptPinned={false} draggingSessionId={null} onDropSession={vi.fn()} />)
+    expect(zone.dataset.active).toBe('false')
   })
 })
