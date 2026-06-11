@@ -29,6 +29,13 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     session.add_argument("--launcher-exe", default="")
     session.add_argument("--timeout-seconds", type=int, default=None)
 
+    graphics_session = subs.add_parser(
+        "graphics-session",
+        help="Run FH6VR OpenXR graphics-bound session and swapchain-format probe",
+    )
+    graphics_session.add_argument("--launcher-exe", default="")
+    graphics_session.add_argument("--timeout-seconds", type=int, default=None)
+
     unity_scan = subs.add_parser("unity-scan", help="Scan Unity/VCC projects")
     unity_scan.add_argument("--project-path", default="")
     unity_scan.add_argument("--max-projects", type=int, default=None)
@@ -39,7 +46,10 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 def questframe_command(args: argparse.Namespace) -> int:
     command = getattr(args, "questframe_command", None)
     if not command:
-        print("usage: hermes questframe {setup,status,preflight,session-readiness,unity-scan}")
+        print(
+            "usage: hermes questframe "
+            "{setup,status,preflight,session-readiness,graphics-session,unity-scan}"
+        )
         return 2
     if command == "setup":
         return _print(
@@ -66,6 +76,15 @@ def questframe_command(args: argparse.Namespace) -> int:
         return _print(
             core.run_launcher(
                 "session-readiness-selftest",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=["--json"],
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "graphics-session":
+        return _print(
+            core.run_launcher(
+                "graphics-session-selftest",
                 launcher_exe=getattr(args, "launcher_exe", "") or None,
                 extra_args=["--json"],
                 timeout_seconds=getattr(args, "timeout_seconds", None),

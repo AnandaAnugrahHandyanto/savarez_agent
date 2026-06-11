@@ -15,6 +15,12 @@ _TOOLS = (
         core.handle_session_readiness,
         "Q",
     ),
+    (
+        "questframe_graphics_session",
+        core.GRAPHICS_SESSION_SCHEMA,
+        core.handle_graphics_session,
+        "Q",
+    ),
     ("questframe_unity_scan", core.UNITY_SCAN_SCHEMA, core.handle_unity_scan, "Q"),
 )
 
@@ -36,7 +42,7 @@ def register(ctx) -> None:
         "questframe",
         handler=core.handle_slash,
         description="Run QuestFrame PCVR and FH6VR bridge diagnostics.",
-        args_hint="[status|preflight|session|unity-scan]",
+        args_hint="[status|preflight|session|graphics-session|unity-scan]",
     )
     ctx.register_cli_command(
         name="questframe",

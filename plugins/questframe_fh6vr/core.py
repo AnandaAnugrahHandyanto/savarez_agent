@@ -110,6 +110,26 @@ SESSION_READINESS_SCHEMA = {
     },
 }
 
+GRAPHICS_SESSION_SCHEMA = {
+    "name": "questframe_graphics_session",
+    "description": "Run the FH6VR OpenXR D3D11 graphics-bound session and swapchain-format probe.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 300,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
 UNITY_SCAN_SCHEMA = {
     "name": "questframe_unity_scan",
     "description": "Read-only scan of Unity/VCC project packages for VRChat tool risk.",
@@ -493,6 +513,7 @@ def status() -> dict[str, Any]:
             "questframe_setup",
             "questframe_fh6vr_preflight",
             "questframe_session_readiness",
+            "questframe_graphics_session",
             "questframe_unity_scan",
         ],
         "next_step": (
@@ -539,6 +560,18 @@ def handle_session_readiness(args: dict[str, Any] | None = None, **_: Any) -> st
     )
 
 
+def handle_graphics_session(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    return _json(
+        run_launcher(
+            "graphics-session-selftest",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=["--json"],
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
 def handle_unity_scan(args: dict[str, Any] | None = None, **_: Any) -> str:
     args = args or {}
     return _json(
@@ -553,6 +586,7 @@ HELP = """questframe commands:
   /questframe status
   /questframe preflight
   /questframe session
+  /questframe graphics-session
   /questframe unity-scan [project_path]
 """
 
@@ -568,6 +602,8 @@ def handle_slash(raw_args: str) -> str:
         return handle_preflight({})
     if command in {"session", "session-readiness"}:
         return handle_session_readiness({})
+    if command in {"graphics-session", "graphics"}:
+        return handle_graphics_session({})
     if command == "unity-scan":
         project = argv[1] if len(argv) > 1 else None
         return _json(scan_unity_projects(project_path=project))

@@ -29,6 +29,33 @@ def test_run_launcher_parses_json(monkeypatch, tmp_path):
     assert result["json"]["Overall"] == "Pass"
 
 
+def test_graphics_session_handler_runs_launcher_probe(monkeypatch):
+    seen = {}
+
+    def fake_run_launcher(command, **kwargs):
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+        return {
+            "ok": True,
+            "json": {
+                "Status": "Pass",
+                "SessionCreated": True,
+                "SwapchainFormats": [{"Name": "DXGI_FORMAT_R8G8B8A8_UNORM_SRGB"}],
+            },
+        }
+
+    monkeypatch.setattr(core, "run_launcher", fake_run_launcher)
+
+    raw = core.handle_graphics_session({"timeout_seconds": 30})
+    result = json.loads(raw)
+
+    assert result["ok"] is True
+    assert result["json"]["SessionCreated"] is True
+    assert seen["command"] == "graphics-session-selftest"
+    assert seen["kwargs"]["extra_args"] == ["--json"]
+    assert seen["kwargs"]["timeout_seconds"] == 30
+
+
 def test_unity_scan_detects_vrchat_packages(tmp_path):
     project = tmp_path / "AvatarProject"
     (project / "Assets").mkdir(parents=True)

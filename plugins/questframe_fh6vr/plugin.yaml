@@ -11,6 +11,7 @@ provides_tools:
   - questframe_setup
   - questframe_fh6vr_preflight
   - questframe_session_readiness
+  - questframe_graphics_session
   - questframe_unity_scan
 provides_cli:
   - questframe
