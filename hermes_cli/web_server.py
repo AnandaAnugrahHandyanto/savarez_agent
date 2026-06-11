@@ -4259,67 +4259,68 @@ def _restart_gateway_after_telegram_onboarding() -> dict[str, Any]:
 
 @app.post("/api/messaging/telegram/onboarding/{pairing_id}/apply")
 async def apply_telegram_onboarding(
-    pairing_id: str, body: TelegramOnboardingApply
+    pairing_id: str, body: TelegramOnboardingApply, profile: Optional[str] = None
 ):
-    allowed_user_ids = []
-    seen = set()
-    for raw_id in body.allowed_user_ids:
-        normalized = _normalize_telegram_user_id(raw_id)
-        if not normalized:
+    with _profile_scope(profile):
+        allowed_user_ids = []
+        seen = set()
+        for raw_id in body.allowed_user_ids:
+            normalized = _normalize_telegram_user_id(raw_id)
+            if not normalized:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Allowed Telegram user IDs must be numeric.",
+                )
+            if normalized not in seen:
+                seen.add(normalized)
+                allowed_user_ids.append(normalized)
+        if not allowed_user_ids:
             raise HTTPException(
                 status_code=400,
-                detail="Allowed Telegram user IDs must be numeric.",
+                detail="Add at least one allowed Telegram user ID.",
             )
-        if normalized not in seen:
-            seen.add(normalized)
-            allowed_user_ids.append(normalized)
-    if not allowed_user_ids:
-        raise HTTPException(
-            status_code=400,
-            detail="Add at least one allowed Telegram user ID.",
-        )
 
-    with _telegram_onboarding_lock:
-        _prune_telegram_onboarding_pairings()
-        record = _telegram_onboarding_pairings.get(pairing_id)
-        if not record:
+        with _telegram_onboarding_lock:
+            _prune_telegram_onboarding_pairings()
+            record = _telegram_onboarding_pairings.get(pairing_id)
+            if not record:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Telegram setup session was not found. Start a new setup.",
+                )
+            bot_token = record.bot_token
+            bot_username = record.bot_username
+            if not bot_token:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Telegram setup is not ready yet.",
+                )
+
+        try:
+            save_env_value("TELEGRAM_BOT_TOKEN", bot_token)
+            save_env_value("TELEGRAM_ALLOWED_USERS", ",".join(allowed_user_ids))
+            _write_platform_enabled("telegram", True)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            _log.exception("Telegram onboarding apply failed")
             raise HTTPException(
-                status_code=404,
-                detail="Telegram setup session was not found. Start a new setup.",
-            )
-        bot_token = record.bot_token
-        bot_username = record.bot_username
-        if not bot_token:
-            raise HTTPException(
-                status_code=409,
-                detail="Telegram setup is not ready yet.",
-            )
+                status_code=500,
+                detail="Failed to save Telegram setup.",
+            ) from exc
 
-    try:
-        save_env_value("TELEGRAM_BOT_TOKEN", bot_token)
-        save_env_value("TELEGRAM_ALLOWED_USERS", ",".join(allowed_user_ids))
-        _write_platform_enabled("telegram", True)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        _log.exception("Telegram onboarding apply failed")
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to save Telegram setup.",
-        ) from exc
+        with _telegram_onboarding_lock:
+            _telegram_onboarding_pairings.pop(pairing_id, None)
 
-    with _telegram_onboarding_lock:
-        _telegram_onboarding_pairings.pop(pairing_id, None)
+        restart_result = _restart_gateway_after_telegram_onboarding()
 
-    restart_result = _restart_gateway_after_telegram_onboarding()
-
-    return {
-        "ok": True,
-        "platform": "telegram",
-        "bot_username": bot_username,
-        "needs_restart": not restart_result["restart_started"],
-        **restart_result,
-    }
+        return {
+            "ok": True,
+            "platform": "telegram",
+            "bot_username": bot_username,
+            "needs_restart": not restart_result["restart_started"],
+            **restart_result,
+        }
 
 
 @app.delete("/api/messaging/telegram/onboarding/{pairing_id}")
@@ -4330,104 +4331,107 @@ async def cancel_telegram_onboarding(pairing_id: str):
 
 
 @app.get("/api/messaging/platforms")
-async def get_messaging_platforms():
-    env_on_disk = load_env()
-    runtime = read_runtime_status()
-    return {
-        "platforms": [
-            _messaging_platform_payload(entry, env_on_disk, runtime)
-            for entry in _messaging_platform_catalog()
-        ]
-    }
+async def get_messaging_platforms(profile: Optional[str] = None):
+    with _profile_scope(profile):
+        env_on_disk = load_env()
+        runtime = read_runtime_status()
+        return {
+            "platforms": [
+                _messaging_platform_payload(entry, env_on_disk, runtime)
+                for entry in _messaging_platform_catalog()
+            ]
+        }
 
 
 @app.put("/api/messaging/platforms/{platform_id}")
-async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpdate):
-    entry = _catalog_lookup(platform_id)
-    if not entry:
-        raise HTTPException(
-            status_code=404, detail=f"Unknown messaging platform: {platform_id}"
-        )
+async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpdate, profile: Optional[str] = None):
+    with _profile_scope(profile):
+        entry = _catalog_lookup(platform_id)
+        if not entry:
+            raise HTTPException(
+                status_code=404, detail=f"Unknown messaging platform: {platform_id}"
+            )
 
-    allowed_env = set(entry["env_vars"])
-    try:
-        for key in body.clear_env:
-            if key not in allowed_env:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"{key} is not configurable for {entry['name']}",
-                )
-            remove_env_value(key)
+        allowed_env = set(entry["env_vars"])
+        try:
+            for key in body.clear_env:
+                if key not in allowed_env:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"{key} is not configurable for {entry['name']}",
+                    )
+                remove_env_value(key)
 
-        for key, value in body.env.items():
-            if key not in allowed_env:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"{key} is not configurable for {entry['name']}",
-                )
-            trimmed = value.strip()
-            if trimmed:
-                save_env_value(key, trimmed)
+            for key, value in body.env.items():
+                if key not in allowed_env:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"{key} is not configurable for {entry['name']}",
+                    )
+                trimmed = value.strip()
+                if trimmed:
+                    save_env_value(key, trimmed)
 
-        if body.enabled is not None:
-            _write_platform_enabled(platform_id, body.enabled)
+            if body.enabled is not None:
+                _write_platform_enabled(platform_id, body.enabled)
 
-        return {"ok": True, "platform": platform_id}
-    except HTTPException:
-        raise
-    except Exception:
-        _log.exception("PUT /api/messaging/platforms/%s failed", platform_id)
-        raise HTTPException(status_code=500, detail="Internal server error")
+            return {"ok": True, "platform": platform_id}
+        except HTTPException:
+            raise
+        except Exception:
+            _log.exception("PUT /api/messaging/platforms/%s failed", platform_id)
+            raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.post("/api/messaging/platforms/{platform_id}/test")
-async def test_messaging_platform(platform_id: str):
-    entry = _catalog_lookup(platform_id)
-    if not entry:
-        raise HTTPException(
-            status_code=404, detail=f"Unknown messaging platform: {platform_id}"
-        )
+async def test_messaging_platform(platform_id: str, profile: Optional[str] = None):
+    with _profile_scope(profile):
+        entry = _catalog_lookup(platform_id)
+        if not entry:
+            raise HTTPException(
+                status_code=404, detail=f"Unknown messaging platform: {platform_id}"
+            )
 
-    env_on_disk = load_env()
-    payload = _messaging_platform_payload(entry, env_on_disk, read_runtime_status())
-    if not payload["enabled"]:
-        message = f"{entry['name']} is disabled. Enable it, then restart the gateway."
-        return {"ok": False, "state": payload["state"], "message": message}
-    if not payload["configured"]:
-        missing = [
-            field["key"]
-            for field in payload["env_vars"]
-            if field["required"] and not field["is_set"]
-        ]
-        message = (
-            f"Missing required setup: {', '.join(missing)}"
-            if missing
-            else "Platform setup is incomplete."
-        )
-        return {"ok": False, "state": payload["state"], "message": message}
-    if not payload["gateway_running"]:
+        env_on_disk = load_env()
+        payload = _messaging_platform_payload(entry, env_on_disk, read_runtime_status())
+        if not payload["enabled"]:
+            message = f"{entry['name']} is disabled. Enable it, then restart the gateway."
+            return {"ok": False, "state": payload["state"], "message": message}
+        if not payload["configured"]:
+            missing = [
+                field["key"]
+                for field in payload["env_vars"]
+                if field["required"] and not field["is_set"]
+            ]
+            message = (
+                f"Missing required setup: {', '.join(missing)}"
+                if missing
+                else "Platform setup is incomplete."
+            )
+            return {"ok": False, "state": payload["state"], "message": message}
+        if not payload["gateway_running"]:
+            return {
+                "ok": False,
+                "state": payload["state"],
+                "message": "Gateway is not running. Restart the gateway to connect this platform.",
+            }
+        if payload["state"] == "connected":
+            return {
+                "ok": True,
+                "state": payload["state"],
+                "message": f"{entry['name']} is connected.",
+            }
+        if payload.get("error_message"):
+            return {
+                "ok": False,
+                "state": payload["state"],
+                "message": payload["error_message"],
+            }
         return {
             "ok": False,
             "state": payload["state"],
-            "message": "Gateway is not running. Restart the gateway to connect this platform.",
+            "message": "Setup looks complete, but the gateway has not reported a connection yet. Restart the gateway.",
         }
-    if payload["state"] == "connected":
-        return {
-            "ok": True,
-            "state": payload["state"],
-            "message": f"{entry['name']} is connected.",
-        }
-    if payload.get("error_message"):
-        return {
-            "ok": False,
-            "state": payload["state"],
-            "message": payload["error_message"],
-        }
-    return {
-        "ok": False,
-        "state": payload["state"],
-        "message": "Setup looks complete, but the gateway has not reported a connection yet. Restart the gateway.",
-    }
 
 
 # ---------------------------------------------------------------------------
