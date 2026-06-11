@@ -1,0 +1,574 @@
+"""Core implementation for the QuestFrame Hermes plugin."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+try:
+    from hermes_constants import get_hermes_home
+except Exception:  # pragma: no cover - early import safety
+    def get_hermes_home() -> Path:  # type: ignore[no-redef]
+        return Path.home() / ".hermes"
+
+
+PLUGIN_ID = "questframe-fh6vr"
+PLUGIN_NAME = "questframe-fh6vr"
+CONFIG_ALIASES = (PLUGIN_ID, "questframe_fh6vr", "questframe")
+DEFAULT_TIMEOUT_SECONDS = 60
+
+KNOWN_VPM_PACKAGES = {
+    "com.vrchat.avatars": "VRChat SDK Avatars",
+    "com.vrchat.worlds": "VRChat SDK Worlds",
+    "com.vrchat.base": "VRChat SDK Base",
+    "nadena.dev.modular-avatar": "Modular Avatar",
+    "nadena.dev.ndmf": "NDMF",
+    "jp.lilxyzw.liltoon": "lilToon",
+    "com.poiyomi.toon": "Poiyomi Toon",
+    "com.poiyomi.shader": "Poiyomi Shader",
+    "com.vrcfury.vrcfury": "VRCFury",
+    "com.anatawa12.avatar-optimizer": "Avatar Optimizer",
+    "com.blackstartx.gesture-manager": "Gesture Manager",
+    "com.vrchat.gesture-manager": "Gesture Manager",
+}
+
+STATUS_SCHEMA = {
+    "name": "questframe_status",
+    "description": "Show QuestFrame Hermes bridge readiness without mutating user files.",
+    "parameters": {"type": "object", "properties": {}},
+}
+
+SETUP_SCHEMA = {
+    "name": "questframe_setup",
+    "description": "Save non-secret QuestFrame bridge paths to Hermes config.yaml.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Path to FH6VR.Launcher executable.",
+            },
+            "vcc_project_roots": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Unity/VCC project roots to scan.",
+            },
+            "unity_python": {
+                "type": "string",
+                "description": "Optional Python executable for future Unity bridge helpers.",
+            },
+        },
+    },
+}
+
+PREFLIGHT_SCHEMA = {
+    "name": "questframe_fh6vr_preflight",
+    "description": "Run the FH6VR C# launcher preflight through the Hermes bridge.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "report_path": {
+                "type": "string",
+                "description": "Optional JSON report path for FH6VR preflight output.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 300,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
+SESSION_READINESS_SCHEMA = {
+    "name": "questframe_session_readiness",
+    "description": "Run the FH6VR OpenXR session-readiness probe.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 300,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
+UNITY_SCAN_SCHEMA = {
+    "name": "questframe_unity_scan",
+    "description": "Read-only scan of Unity/VCC project packages for VRChat tool risk.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "project_path": {
+                "type": "string",
+                "description": "Optional Unity project path. If omitted, configured roots are scanned.",
+            },
+            "max_projects": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "description": "Maximum projects to inspect when scanning roots.",
+            },
+        },
+    },
+}
+
+
+@dataclass
+class LauncherRun:
+    ok: bool
+    returncode: int
+    command: list[str]
+    stdout: str
+    stderr: str
+    parsed: Any
+
+
+def check_available() -> bool:
+    return True
+
+
+def _json(data: dict[str, Any]) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def _now_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _load_config_readonly() -> dict[str, Any]:
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        cfg = load_config_readonly()
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception:
+        return {}
+
+
+def _plugin_config() -> dict[str, Any]:
+    plugins = _load_config_readonly().get("plugins", {})
+    if not isinstance(plugins, dict):
+        return {}
+    entries = plugins.get("entries", {})
+    if not isinstance(entries, dict):
+        return {}
+    for key in CONFIG_ALIASES:
+        value = entries.get(key)
+        if isinstance(value, dict):
+            return dict(value)
+    return {}
+
+
+def save_setup_values(values: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from hermes_cli.config import load_config, save_config
+    except Exception as exc:
+        return {"ok": False, "error": f"Hermes config writer unavailable: {exc}"}
+
+    cfg = load_config()
+    plugins = cfg.setdefault("plugins", {})
+    if not isinstance(plugins, dict):
+        plugins = {}
+        cfg["plugins"] = plugins
+    entries = plugins.setdefault("entries", {})
+    if not isinstance(entries, dict):
+        entries = {}
+        plugins["entries"] = entries
+    entry = entries.setdefault(PLUGIN_ID, {})
+    if not isinstance(entry, dict):
+        entry = {}
+        entries[PLUGIN_ID] = entry
+
+    saved: list[str] = []
+    launcher = str(values.get("launcher_exe") or "").strip()
+    if launcher:
+        entry["launcher_exe"] = launcher
+        saved.append("launcher_exe")
+
+    unity_python = str(values.get("unity_python") or "").strip()
+    if unity_python:
+        entry["unity_python"] = unity_python
+        saved.append("unity_python")
+
+    roots = values.get("vcc_project_roots")
+    if isinstance(roots, list):
+        clean_roots = [str(root).strip() for root in roots if str(root).strip()]
+        if clean_roots:
+            entry["vcc_project_roots"] = clean_roots
+            saved.append("vcc_project_roots")
+
+    save_config(cfg)
+    return {"ok": True, "saved": saved, "config_key": f"plugins.entries.{PLUGIN_ID}"}
+
+
+def _path_or_empty(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def resolve_launcher_path(explicit: str | None = None) -> Path | None:
+    cfg = _plugin_config()
+    candidates = [
+        explicit,
+        cfg.get("launcher_exe"),
+        cfg.get("launcher_path"),
+        os.environ.get("QUESTFRAME_FH6VR_EXE"),
+        os.environ.get("FH6VR_LAUNCHER_EXE"),
+    ]
+    for raw in candidates:
+        text = _path_or_empty(raw)
+        if not text:
+            continue
+        return Path(text).expanduser()
+    return None
+
+
+def _bounded(text: str, limit: int = 12000) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n[TRUNCATED]"
+
+
+def _parse_json_stdout(stdout: str) -> Any:
+    text = stdout.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                return json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                return None
+    return None
+
+
+def run_launcher(
+    command: str,
+    *,
+    launcher_exe: str | None = None,
+    extra_args: list[str] | None = None,
+    timeout_seconds: int | None = None,
+) -> dict[str, Any]:
+    launcher = resolve_launcher_path(launcher_exe)
+    if launcher is None:
+        return {
+            "ok": False,
+            "error": "FH6VR launcher path is not configured.",
+            "configure": f"hermes questframe setup --launcher-exe <path-to-FH6VR.Launcher>",
+        }
+    if not launcher.exists():
+        return {
+            "ok": False,
+            "error": "FH6VR launcher path does not exist.",
+            "launcher_exe": str(launcher),
+        }
+
+    timeout = max(5, min(int(timeout_seconds or DEFAULT_TIMEOUT_SECONDS), 300))
+    argv = [str(launcher), command]
+    argv.extend(extra_args or [])
+    try:
+        completed = subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "ok": False,
+            "error": f"FH6VR launcher timed out after {timeout}s.",
+            "launcher_exe": str(launcher),
+            "command": argv,
+            "stdout": _bounded(exc.stdout or ""),
+            "stderr": _bounded(exc.stderr or ""),
+        }
+    except OSError as exc:
+        return {
+            "ok": False,
+            "error": f"Could not start FH6VR launcher: {exc}",
+            "launcher_exe": str(launcher),
+            "command": argv,
+        }
+
+    parsed = _parse_json_stdout(completed.stdout or "")
+    return {
+        "ok": completed.returncode == 0,
+        "returncode": completed.returncode,
+        "launcher_exe": str(launcher),
+        "command": argv,
+        "stdout": _bounded(completed.stdout or ""),
+        "stderr": _bounded(completed.stderr or ""),
+        "json": parsed,
+    }
+
+
+def _vcc_roots() -> list[Path]:
+    cfg = _plugin_config()
+    configured = cfg.get("vcc_project_roots")
+    roots: list[Path] = []
+    if isinstance(configured, list):
+        roots.extend(Path(str(item)).expanduser() for item in configured if str(item).strip())
+
+    user_profile = Path(os.environ.get("USERPROFILE") or str(Path.home()))
+    roots.extend(
+        [
+            user_profile / "Documents" / "VRChat Projects",
+            user_profile / "Documents" / "Unity",
+        ]
+    )
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for root in roots:
+        key = str(root).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(root)
+    return unique
+
+
+def _is_unity_project(path: Path) -> bool:
+    return (path / "Assets").is_dir() and (path / "Packages" / "manifest.json").is_file()
+
+
+def _candidate_projects(root: Path, max_projects: int) -> list[Path]:
+    if _is_unity_project(root):
+        return [root]
+    if not root.is_dir():
+        return []
+    found: list[Path] = []
+    for child in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+        if child.is_dir() and _is_unity_project(child):
+            found.append(child)
+            if len(found) >= max_projects:
+                break
+    return found
+
+
+def _read_project_version(project: Path) -> str:
+    version_path = project / "ProjectSettings" / "ProjectVersion.txt"
+    if not version_path.exists():
+        return ""
+    try:
+        for line in version_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.strip().startswith("m_EditorVersion:"):
+                return line.split(":", 1)[1].strip()
+    except OSError:
+        return ""
+    return ""
+
+
+def _read_package_manifest(project: Path) -> dict[str, str]:
+    manifest_path = project / "Packages" / "manifest.json"
+    try:
+        raw = json.loads(manifest_path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    deps = raw.get("dependencies", {})
+    if not isinstance(deps, dict):
+        return {}
+    return {str(key): str(value) for key, value in deps.items()}
+
+
+def _limited_unitypackage_markers(project: Path, limit: int = 20) -> list[str]:
+    assets = project / "Assets"
+    markers: list[str] = []
+    if not assets.is_dir():
+        return markers
+    try:
+        iterator = assets.rglob("*.unitypackage")
+        for path in iterator:
+            markers.append(str(path))
+            if len(markers) >= limit:
+                break
+    except OSError:
+        return markers
+    return markers
+
+
+def scan_unity_project(project: Path) -> dict[str, Any]:
+    packages = _read_package_manifest(project)
+    detected = [
+        {
+            "id": package_id,
+            "name": KNOWN_VPM_PACKAGES[package_id],
+            "version": packages.get(package_id, ""),
+        }
+        for package_id in sorted(KNOWN_VPM_PACKAGES)
+        if package_id in packages
+    ]
+    sdk_avatar = "com.vrchat.avatars" in packages
+    sdk_world = "com.vrchat.worlds" in packages
+    risks: list[str] = []
+    if not packages:
+        risks.append("package manifest missing or unreadable")
+    if not sdk_avatar and not sdk_world:
+        risks.append("VRChat SDK package not detected")
+    if sdk_avatar and sdk_world:
+        risks.append("both Avatar and World SDK packages detected")
+    markers = _limited_unitypackage_markers(project)
+    if markers:
+        risks.append("legacy .unitypackage files are present under Assets")
+
+    return {
+        "project_path": str(project),
+        "exists": project.exists(),
+        "unity_project": _is_unity_project(project),
+        "unity_version": _read_project_version(project),
+        "package_count": len(packages),
+        "detected_packages": detected,
+        "risks": risks,
+        "unitypackage_markers": markers,
+    }
+
+
+def scan_unity_projects(
+    *, project_path: str | None = None, max_projects: int | None = None
+) -> dict[str, Any]:
+    limit = max(1, min(int(max_projects or 25), 100))
+    if project_path:
+        projects = [Path(project_path).expanduser()]
+        roots = []
+    else:
+        roots = _vcc_roots()
+        projects = []
+        for root in roots:
+            remaining = limit - len(projects)
+            if remaining <= 0:
+                break
+            projects.extend(_candidate_projects(root, remaining))
+
+    scanned = [scan_unity_project(project) for project in projects[:limit]]
+    return {
+        "ok": True,
+        "scanned_at": _now_utc(),
+        "roots": [str(root) for root in roots],
+        "project_count": len(scanned),
+        "projects": scanned,
+    }
+
+
+def status() -> dict[str, Any]:
+    cfg = _plugin_config()
+    launcher = resolve_launcher_path()
+    return {
+        "ok": True,
+        "plugin": PLUGIN_NAME,
+        "hermes_home": str(get_hermes_home()),
+        "config_key": f"plugins.entries.{PLUGIN_ID}",
+        "configured": bool(cfg),
+        "launcher_exe": str(launcher) if launcher else "",
+        "launcher_exists": bool(launcher and launcher.exists()),
+        "csharp_bridge_configured": bool(launcher and launcher.exists()),
+        "python_unity_bridge": {
+            "unity_python": str(cfg.get("unity_python") or ""),
+            "vcc_project_roots": cfg.get("vcc_project_roots") or [],
+        },
+        "available_tools": [
+            "questframe_status",
+            "questframe_setup",
+            "questframe_fh6vr_preflight",
+            "questframe_session_readiness",
+            "questframe_unity_scan",
+        ],
+        "next_step": (
+            "Run questframe_setup with launcher_exe before bridge probes."
+            if not launcher
+            else "Run questframe_fh6vr_preflight or questframe_session_readiness."
+        ),
+    }
+
+
+def handle_status(args: dict[str, Any] | None = None, **_: Any) -> str:
+    return _json(status())
+
+
+def handle_setup(args: dict[str, Any] | None = None, **_: Any) -> str:
+    return _json(save_setup_values(args or {}))
+
+
+def handle_preflight(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    extra = ["--json"]
+    report_path = str(args.get("report_path") or "").strip()
+    if report_path:
+        extra.extend(["--write-report", report_path])
+    return _json(
+        run_launcher(
+            "preflight",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=extra,
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
+def handle_session_readiness(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    return _json(
+        run_launcher(
+            "session-readiness-selftest",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=["--json"],
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
+def handle_unity_scan(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    return _json(
+        scan_unity_projects(
+            project_path=str(args.get("project_path") or "") or None,
+            max_projects=int(args.get("max_projects") or 0) or None,
+        )
+    )
+
+
+HELP = """questframe commands:
+  /questframe status
+  /questframe preflight
+  /questframe session
+  /questframe unity-scan [project_path]
+"""
+
+
+def handle_slash(raw_args: str) -> str:
+    argv = (raw_args or "").strip().split()
+    if not argv or argv[0] in {"help", "-h", "--help"}:
+        return HELP
+    command = argv[0].lower()
+    if command == "status":
+        return _json(status())
+    if command == "preflight":
+        return handle_preflight({})
+    if command in {"session", "session-readiness"}:
+        return handle_session_readiness({})
+    if command == "unity-scan":
+        project = argv[1] if len(argv) > 1 else None
+        return _json(scan_unity_projects(project_path=project))
+    return f"Unknown questframe command: {command}\n\n{HELP}"

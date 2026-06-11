@@ -1,0 +1,50 @@
+"""QuestFrame PCVR Toolkit bridge for Hermes."""
+
+from __future__ import annotations
+
+from . import core
+from .cli import questframe_command, register_cli
+
+_TOOLS = (
+    ("questframe_status", core.STATUS_SCHEMA, core.handle_status, "Q"),
+    ("questframe_setup", core.SETUP_SCHEMA, core.handle_setup, "Q"),
+    ("questframe_fh6vr_preflight", core.PREFLIGHT_SCHEMA, core.handle_preflight, "Q"),
+    (
+        "questframe_session_readiness",
+        core.SESSION_READINESS_SCHEMA,
+        core.handle_session_readiness,
+        "Q",
+    ),
+    ("questframe_unity_scan", core.UNITY_SCAN_SCHEMA, core.handle_unity_scan, "Q"),
+)
+
+
+def register(ctx) -> None:
+    """Register QuestFrame tools, slash command, and CLI command."""
+    for name, schema, handler, emoji in _TOOLS:
+        ctx.register_tool(
+            name=name,
+            toolset="questframe",
+            schema=schema,
+            handler=handler,
+            check_fn=core.check_available,
+            description=schema.get("description", ""),
+            emoji=emoji,
+        )
+
+    ctx.register_command(
+        "questframe",
+        handler=core.handle_slash,
+        description="Run QuestFrame PCVR and FH6VR bridge diagnostics.",
+        args_hint="[status|preflight|session|unity-scan]",
+    )
+    ctx.register_cli_command(
+        name="questframe",
+        help="QuestFrame PCVR Toolkit bridge",
+        setup_fn=register_cli,
+        handler_fn=questframe_command,
+        description=(
+            "Inspect the QuestFrame Hermes bridge, call the FH6VR C# launcher, "
+            "and scan Unity/VCC projects for VRChat package risk."
+        ),
+    )
