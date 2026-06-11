@@ -68,9 +68,12 @@ class WslEnvironment(BaseEnvironment):
 
     _snapshot_timeout: int = 30
 
-    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
+    def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None,
+                 distro: str = ""):
         self._wsl = _find_wsl()
-        self._distro = os.getenv("TERMINAL_WSL_DISTRO", "")
+        # distro priority: explicit parameter > env dict > process environment
+        _env = env or {}
+        self._distro = distro or _env.get("TERMINAL_WSL_DISTRO") or os.getenv("TERMINAL_WSL_DISTRO", "")
         if not cwd:
             cwd = _probe_wsl_home(self._wsl, self._distro)
         super().__init__(cwd=cwd, timeout=timeout, env=env)

@@ -1140,13 +1140,15 @@ def _get_env_config() -> Dict[str, Any]:
                         cwd, env_type, default_cwd)
             cwd = default_cwd
     elif env_type == "wsl" and cwd:
-        # WSL is not a container — reject Windows/relative cwd (let
-        # WslEnvironment probe $HOME via _probe_wsl_home instead).
-        is_host_path = any(cwd.startswith(p) for p in host_prefixes)
-        is_relative = not os.path.isabs(cwd)
-        if (is_host_path or is_relative) and cwd != default_cwd:
+        # WSL is not a container.  Reject any cwd that isn't a Linux
+        # absolute path: Windows drive letters, UNC paths, and relative
+        # paths are all invalid inside WSL's bash.  Let WslEnvironment
+        # probe $HOME instead.
+        def _is_linux_absolute(p: str) -> bool:
+            return os.path.isabs(p) and p.startswith("/") and ":" not in p
+        if not _is_linux_absolute(cwd):
             logger.info("Ignoring TERMINAL_CWD=%r for wsl backend "
-                        "(host/relative path invalid in WSL). "
+                        "(not a Linux absolute path). "
                         "Falling back to $HOME probe.",
                         cwd)
             cwd = ""  # empty → WslEnvironment probes $HOME
@@ -1165,6 +1167,7 @@ def _get_env_config() -> Dict[str, Any]:
         "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
         "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
         # SSH-specific config
+        "wsl_distro": os.getenv("TERMINAL_WSL_DISTRO", ""),
         "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
         "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
         "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
@@ -1352,6 +1355,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             cwd=cwd,
             timeout=timeout,
             env={"TERMINAL_WSL_DISTRO": cc.get("wsl_distro", "")} if cc else None,
+            distro=cc.get("wsl_distro", ""),
         )
 
     elif env_type == "ssh":
