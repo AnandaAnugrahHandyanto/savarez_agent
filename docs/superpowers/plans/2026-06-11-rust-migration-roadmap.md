@@ -175,6 +175,8 @@ language-specific setup where needed.
   behavior without starting PowerShell or bash for a stage that can only skip.
 - Windows `node-deps` now has a Rust native-first path for root npm dependencies, Playwright Chromium, and TUI npm
   dependencies, while preserving the PowerShell stage as fallback for missing `npx` or failed npm/Playwright commands.
+- macOS `node-deps` now uses the same Rust native-first npm/Playwright/TUI dependency path as Windows, while Linux
+  remains script-backed so distribution-specific Playwright system-library recovery remains intact.
 - `desktop` now uses a Rust no-op skip when `apps/desktop/package.json` is absent, matching the existing script
   behavior without starting PowerShell or bash for a stage that can only skip.
 - Windows `desktop` now has a Rust native-first build path for workspace npm install and `npm run pack`, verifies the
@@ -189,9 +191,10 @@ language-specific setup where needed.
 - CI runs bootstrap-installer Rust unit tests in addition to the manager and desktop platform tests.
 
 **Still script-backed:**
-- Language/runtime setup: uv, Python dependency fallback tiers when `uv.lock` sync is unavailable, Unix npm dependency
+- Language/runtime setup: uv, Python dependency fallback tiers when `uv.lock` sync is unavailable, Linux npm dependency
   installation when npm is available, Unix desktop build when the desktop package is present, and script fallback for
-  Unix Node, Windows uv, Windows Git, Windows Node, Windows npm, Windows desktop recovery, and platform SDK recovery.
+  Unix Node, Windows/macOS npm, Windows uv, Windows Git, Windows Node, Windows desktop recovery, and platform SDK
+  recovery.
 - Repository clone/update stage execution until the Git/ZIP fallback matrix has a parity suite and native stage wiring.
 - Remaining platform shell/profile edge cases that are not covered by the current Rust path-stage helpers.
 

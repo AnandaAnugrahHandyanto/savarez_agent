@@ -1409,6 +1409,12 @@ pub fn node_dependencies_stage_plan<P>(
 where
     P: AsRef<OsStr>,
 {
+    if !install_root.is_dir() {
+        return Err(anyhow!(
+            "install root does not exist: {}",
+            install_root.display()
+        ));
+    }
     let npm = find_npm_executable(hermes_home, path_env.as_ref(), pathext)
         .ok_or_else(|| anyhow!("npm is not available"))?;
     let npx = find_npx_executable(&npm, path_env, pathext);
@@ -1427,14 +1433,11 @@ where
     })
 }
 
-/// Install Node dependencies natively on Windows before falling back to PowerShell.
-pub fn install_windows_node_dependencies_stage(
+/// Install Node dependencies natively for platforms with no OS package-manager browser fallback.
+pub fn install_node_dependencies_stage(
     install_root: &Path,
     hermes_home: &Path,
 ) -> Result<serde_json::Value> {
-    if !cfg!(target_os = "windows") {
-        return Err(anyhow!("native node-deps stage is only available on Windows"));
-    }
     let path_env = std::env::var_os("PATH").unwrap_or_default();
     let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
     let plan = node_dependencies_stage_plan(install_root, hermes_home, path_env, &pathext)?;
@@ -2492,7 +2495,9 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
     ) {
         return StageExecutionMode::NativeWithScriptFallback;
     }
-    if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("node-deps") {
+    if (cfg!(target_os = "windows") || cfg!(target_os = "macos"))
+        && name.eq_ignore_ascii_case("node-deps")
+    {
         return StageExecutionMode::NativeWithScriptFallback;
     }
     if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("desktop") {
@@ -3107,6 +3112,31 @@ mod tests {
         assert_eq!(plan.cwd, install_root);
         assert_eq!(plan.browser_tools, true);
         assert_eq!(plan.tui_dir.as_deref(), Some(install_root.join("ui-tui").as_path()));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn node_dependencies_stage_plan_errors_when_install_root_is_missing() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-node-deps-missing-root-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+        let npm_name = if cfg!(target_os = "windows") { "npm.cmd" } else { "bin/npm" };
+        let npm = hermes_home.join("node").join(npm_name);
+        std::fs::create_dir_all(npm.parent().unwrap()).unwrap();
+        std::fs::write(&npm, b"npm").unwrap();
+
+        let err = node_dependencies_stage_plan(
+            &root.join("missing-checkout"),
+            &hermes_home,
+            "",
+            ".EXE;.CMD",
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("install root does not exist"));
 
         let _ = std::fs::remove_dir_all(&root);
     }
