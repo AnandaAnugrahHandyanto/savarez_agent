@@ -190,6 +190,7 @@ export default function DashboardSettingsPage() {
       cron: t.app.nav.cron,
       skills: t.app.nav.skills,
       plugins: t.app.nav.plugins,
+      mcp: "MCP",
       channels: t.app.nav.channels,
       webhooks: t.app.nav.webhooks,
       pairing: t.app.nav.pairing,
@@ -198,8 +199,15 @@ export default function DashboardSettingsPage() {
       env: t.app.nav.keys,
       system: t.app.nav.system,
       docs: t.app.nav.documentation,
+      // Plugin manifest labels (by id derived from tab.path)
+      ...Object.fromEntries(
+        manifests.map((m) => [
+          m.tab.path.replace(/^\//, ""),
+          m.label,
+        ]),
+      ),
     }),
-    [t.app.nav],
+    [t.app.nav, manifests],
   );
 
   // Build reorder items from saved order, falling back to defaults when empty
@@ -318,11 +326,6 @@ export default function DashboardSettingsPage() {
         description={kanbanSectionDesc}
         icon={LayoutDashboard}
       >
-        <ToggleRow
-          label="MCP"
-          checked={isSideMenuTabVisible("mcp")}
-          onToggle={() => toggleSideMenuTab("mcp")}
-        />
         {KANBAN_COLUMN_KEYS.map(({ key, labelKey, helpKey }) => (
           <ToggleRow
             key={key}
