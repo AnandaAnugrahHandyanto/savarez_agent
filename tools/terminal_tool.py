@@ -1112,11 +1112,31 @@ def _get_env_config() -> Dict[str, Any]:
     else:
         default_cwd = "/root"
 
-    # Read TERMINAL_CWD but sanity-check it for container backends.
-    # If Docker cwd passthrough is explicitly enabled, remap the host path to
-    # /workspace and track the original host path separately. Otherwise keep the
-    # normal sandbox behavior and discard host paths.
-    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    # Per-backend CWD — allows each backend to remember its working directory
+    # independently.  On first use, auto-populate a sensible default and save it
+    # so subsequent switches restore the same directory.
+    _backend_cwd_env = f"TERMINAL_{env_type.upper()}_CWD"
+    _backend_cwd = os.getenv(_backend_cwd_env)
+    if _backend_cwd:
+        cwd = _backend_cwd
+        logger.debug("Using per-backend CWD %s=%r", _backend_cwd_env, cwd)
+    else:
+        # Read TERMINAL_CWD but sanity-check it for container backends.
+        # If Docker cwd passthrough is explicitly enabled, remap the host path to
+        # /workspace and track the original host path separately. Otherwise keep the
+        # normal sandbox behavior and discard host paths.
+        cwd = os.getenv("TERMINAL_CWD", default_cwd)
+
+    # Auto-populate per-backend CWD on first use so the user's choice persists.
+    if not _backend_cwd and cwd and cwd != default_cwd:
+        try:
+            # Don't block on config write failures — best effort only.
+            from hermes_cli.config import set_config_value
+            _backend_key = f"terminal.{env_type}_cwd"
+            set_config_value(_backend_key, cwd, source="auto:per-backend-cwd")
+            logger.info("Auto-saved %s=%r for %s backend", _backend_key, cwd, env_type)
+        except Exception:
+            pass
     if cwd:
         cwd = os.path.expanduser(cwd)
     host_cwd = None

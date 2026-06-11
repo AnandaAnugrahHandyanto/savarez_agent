@@ -449,7 +449,10 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     singularityImage: 'Image used when the execution backend is Singularity.',
     modalImage: 'Image used when the execution backend is Modal.',
     daytonaImage: 'Image used when the execution backend is Daytona.',
-    wslDistro: 'WSL distribution name when the execution backend is WSL (e.g. Debian).'
+    wslDistro: 'WSL distribution name when the execution backend is WSL (e.g. Debian).',
+      wslCwd: 'Working directory inside WSL2 (e.g. /home/agents). Auto-detected on first use.',
+      localCwd: 'Working directory on the Windows host (e.g. C:\\Users\\...).',
+      dockerCwd: 'Working directory inside the Docker container (e.g. /workspace).'
   },
   codeExecution: {
     mode: 'How strictly code execution is scoped to the current project.'
