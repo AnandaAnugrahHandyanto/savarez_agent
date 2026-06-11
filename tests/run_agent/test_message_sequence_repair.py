@@ -203,20 +203,13 @@ def test_repair_preserves_system_messages():
 
 # ── #24187: repair must not desync SessionDB persistence ───────────────────
 #
-# repair_message_sequence() used to run on the canonical ``messages`` list
-# before the API call. Shrinking that list in place left the positional
-# persistence cursor in _flush_messages_to_session_db() pointing past the
-# end, so the current turn's assistant/tool rows were silently never
-# written to SessionDB. Gateway-style integrations (fresh AIAgent per
-# inbound message, history reloaded from SessionDB each turn) then kept
-# re-loading the same stale history: every lost assistant reply created a
-# new user/user alternation violation, which made the next repair shrink
-# the list further — a self-reinforcing replay loop that persisted until a
-# manual session reset.
-#
-# The fix runs repair on the per-call ``api_messages`` copy only (same
-# pattern as sanitize_api_messages / drop_thinking_only_and_merge_users).
-# These tests pin both halves of the contract.
+# repair_message_sequence() used to run on the canonical ``messages`` list,
+# shrinking it under the positional flush cursor in
+# _flush_messages_to_session_db() so the current turn's assistant/tool rows
+# were silently never written. The fix runs repair on the per-call
+# ``api_messages`` copy only. These tests pin both halves of the contract;
+# the end-to-end gateway replay spiral is reproduced in
+# test_24187_replay_spiral.py.
 
 
 class _FakeSessionDB:

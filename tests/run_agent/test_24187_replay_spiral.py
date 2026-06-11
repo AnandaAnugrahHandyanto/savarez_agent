@@ -5,26 +5,16 @@ Drives the **real** ``run_conversation()`` across a multi-turn gateway loop
 ``hermes_state.SessionDB`` each turn, mocked provider) and proves the
 self-reinforcing replay spiral cannot start.
 
-The function-level contract is pinned in ``test_message_sequence_repair.py``.
-Those tests call ``_repair_message_sequence`` / ``_flush_messages_to_session_db``
-in isolation. This one closes the gap their docstring calls out: nothing
-exercised the bug through the actual ``run_conversation()`` call site and the
-real persistence machinery.
+The function-level contract is pinned in ``test_message_sequence_repair.py``;
+this closes the gap those tests' docstring calls out — nothing exercised the
+bug through the actual ``run_conversation()`` call site.
 
 Production evidence (session 20260609_160142_0c197c39): one interrupted turn
 seeded a user/user alternation violation; from then on normally-paced turns
 lost their assistant replies — 5 replies generated and delivered to Matrix
 with no corresponding rows in state.db, the "Repaired N" counter climbing 1→10.
-
-Before the fix, ``run_conversation`` repaired the canonical ``messages`` list
-in place; merging consecutive user turns shrank it under the positional flush
-cursor in ``_flush_messages_to_session_db``, so each turn's assistant reply was
-silently never written. The unanswered user row then left a fresh user/user
-violation, so the next repair had one more to fix — the spiral. Run against
-that wiring (parent commit a72bb03) this test fails: zero assistant rows
-persist and the repair counter climbs 1,2,3,4,5. Against the shipped fix
-(repair on the per-call ``api_messages`` copy) every reply persists and the
-counter stays flat.
+The test is bug-sensitive: against the pre-fix wiring (repair on the canonical
+list) it fails with zero assistant rows persisted and the counter climbing 1→5.
 """
 
 import tempfile

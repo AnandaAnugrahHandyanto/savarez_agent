@@ -698,15 +698,11 @@ def run_conversation(
         # empty content on malformed sequences, which would otherwise
         # retrigger the empty-retry loop indefinitely.
         #
-        # Runs on the per-call ``api_messages`` copy only — same
-        # API-call-time-only pattern as the sanitizer and thinking-only
-        # passes above. The canonical ``messages`` list keeps the raw
-        # event sequence (consecutive user turns are legal there).
-        # Mutating ``messages`` in place here shrank the list under the
-        # positional persistence cursor in
-        # ``_flush_messages_to_session_db``, silently dropping the
-        # current turn's assistant/tool rows from SessionDB and causing
-        # a self-reinforcing replay loop (#24187).
+        # Runs on the per-call ``api_messages`` copy, never the canonical
+        # ``messages`` list — same API-call-time pattern as the sanitizer
+        # and thinking-only passes above. Repairing canonical shrinks it
+        # under the persistence cursor and silently drops the turn
+        # (#24187; see the repair_message_sequence docstring).
         repaired_seq = agent._repair_message_sequence(api_messages)
         if repaired_seq > 0:
             request_logger.info(
