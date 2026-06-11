@@ -459,6 +459,30 @@ stt:
 
 **Custom local CLI fallback** — Set `HERMES_LOCAL_STT_COMMAND` if you want Hermes to call a local transcription command directly. The command template supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders. Your command must write a `.txt` transcript somewhere under `{output_dir}`.
 
+#### Example: whisper.cpp / Vulkan / Metal local STT
+
+Use a command provider when you want Hermes to call a `whisper.cpp` build such as `whisper-cli` directly. This is especially useful on machines where `faster-whisper` would run CPU-only but `whisper.cpp` can use a non-CUDA backend such as Vulkan, Metal, or OpenVINO.
+
+```yaml
+stt:
+  enabled: true
+  provider: whispercpp
+  providers:
+    whispercpp:
+      type: command
+      command: "whisper-cli -m {model} -f {input_path} -l {language} -otxt -of {output_dir}/transcript -np"
+      model: "/absolute/path/to/ggml-base.bin"
+      language: pl
+      format: txt
+      timeout: 300
+```
+
+Notes:
+
+- `model` should be an absolute path to a `ggml*.bin` model file. The `{model}` placeholder is shell-quoted automatically.
+- `whisper-cli -of` expects the output path without an extension; `{output_dir}/transcript` makes `whisper-cli` write `{output_dir}/transcript.txt`, which Hermes then reads.
+- Do not add `-ng` / `--no-gpu` unless you intentionally want CPU-only transcription. GPU use depends on how your `whisper.cpp` binary was built.
+
 #### Example: Doubao / Volcengine ASR
 
 If you use [`doubao-speech`](https://pypi.org/project/doubao-speech/) for Doubao TTS (see [above](#example-doubao-chinese-seed-tts-20)), the same package handles speech-to-text via the local-command STT surface:

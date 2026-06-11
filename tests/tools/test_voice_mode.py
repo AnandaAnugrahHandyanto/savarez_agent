@@ -498,6 +498,43 @@ class TestCheckVoiceRequirements:
         assert result["stt_available"] is False
         assert "STT provider: MISSING" in result["details"]
 
+    def test_command_stt_provider_reports_ok(self, monkeypatch):
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+                            lambda: {"available": True, "warnings": []})
+        stt_config = {
+            "enabled": True,
+            "provider": "whispercpp",
+            "providers": {
+                "whispercpp": {
+                    "type": "command",
+                    "command": "whisper-cli -m {model} -f {input_path} -otxt -of {output_dir}/transcript",
+                },
+            },
+        }
+        monkeypatch.setattr("tools.transcription_tools._load_stt_config", lambda: stt_config)
+
+        from tools.voice_mode import check_voice_requirements
+
+        result = check_voice_requirements()
+        assert result["available"] is True
+        assert result["stt_available"] is True
+        assert "STT provider: OK (command provider: whispercpp)" in result["details"]
+        assert "STT provider: MISSING" not in result["details"]
+
+    def test_local_command_provider_reports_ok(self, monkeypatch):
+        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+                            lambda: {"available": True, "warnings": []})
+        monkeypatch.setattr("tools.transcription_tools._get_provider", lambda cfg: "local_command")
+
+        from tools.voice_mode import check_voice_requirements
+
+        result = check_voice_requirements()
+        assert result["available"] is True
+        assert result["stt_available"] is True
+        assert "STT provider: OK (local command)" in result["details"]
+
 
 # ============================================================================
 # AudioRecorder
