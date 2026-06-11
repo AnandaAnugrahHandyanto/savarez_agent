@@ -1457,6 +1457,672 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return _run_job_impl(job)
 
 
+
+def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
+    """
+    Execute a single cron job.
+    
+    Returns:
+        Tuple of (success, full_output_doc, final_response, error_message)
+    """
+    job_id = job["id"]
+    job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
+
+    # ---------------------------------------------------------------
+    # no_agent short-circuit — the script IS the job, no LLM involvement.
+    # ---------------------------------------------------------------
+    # This mirrors the classic "run a bash script on a timer, send its
+    # stdout to telegram" watchdog pattern. The agent path is skipped
+    # entirely: no AIAgent, no prompt, no tool loop, no token spend.
+    #
+    # We check this BEFORE importing run_agent / constructing SessionDB so
+    # a pure-script tick never pays for the agent machinery it isn't going
+    # to use. Keep this block self-contained.
+    #
+    # Semantics:
+    #   - script stdout (trimmed) → delivered verbatim as the final message
+    #   - empty stdout            → silent run (no delivery, success=True)
+    #   - non-zero exit / timeout → delivered as an error alert, success=False
+    #   - wakeAgent=false gate    → treated like empty stdout (silent), since
+    #                               the whole point of no_agent is that there
+    #                               is no agent to wake
+    if job.get("no_agent"):
+        script_path = job.get("script")
+        if not script_path:
+            err = "no_agent=True but no script is set for this job"
+            logger.error("Job '%s': %s", job_id, err)
+            return False, "", "", err
+
+        # Apply workdir if configured — lets scripts use predictable relative
+        # paths. For no_agent jobs this is just the subprocess cwd (not an
+        # agent TERMINAL_CWD bridge).
+        _job_workdir = (job.get("workdir") or "").strip() or None
+        _prior_cwd = None
+        if _job_workdir and Path(_job_workdir).is_dir():
+            _prior_cwd = os.getcwd()
+            try:
+                os.chdir(_job_workdir)
+            except OSError:
+                _prior_cwd = None
+
+        try:
+            ok, output = _run_job_script(script_path)
+        finally:
+            if _prior_cwd is not None:
+                try:
+                    os.chdir(_prior_cwd)
+                except OSError:
+                    pass
+
+        now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if not ok:
+            # Script crashed / timed out / exited non-zero.  Deliver the
+            # error so the user knows the watchdog itself broke — silent
+            # failure for an alerting job is the worst-case outcome.
+            alert = (
+                f"⚠ Cron watchdog '{job_name}' script failed\n\n"
+                f"{output}\n\n"
+                f"Time: {now_iso}"
+            )
+            doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {now_iso}\n"
+                f"**Mode:** no_agent (script)\n"
+                f"**Status:** script failed\n\n"
+                f"{output}\n"
+            )
+            return False, doc, alert, output
+
+        # Honour the wakeAgent gate as a silent signal — `wakeAgent: false`
+        # means "nothing to report this tick", same as empty stdout.
+        if not _parse_wake_gate(output):
+            logger.info(
+                "Job '%s' (no_agent): wakeAgent=false gate — silent run", job_id
+            )
+            silent_doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {now_iso}\n"
+                f"**Mode:** no_agent (script)\n"
+                f"**Status:** silent (wakeAgent=false)\n"
+            )
+            return True, silent_doc, SILENT_MARKER, None
+
+        if not output.strip():
+            logger.info("Job '%s' (no_agent): empty stdout — silent run", job_id)
+            silent_doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {now_iso}\n"
+                f"**Mode:** no_agent (script)\n"
+                f"**Status:** silent (empty output)\n"
+            )
+            return True, silent_doc, SILENT_MARKER, None
+
+        doc = (
+            f"# Cron Job: {job_name}\n\n"
+            f"**Job ID:** {job_id}\n"
+            f"**Run Time:** {now_iso}\n"
+            f"**Mode:** no_agent (script)\n\n"
+            f"---\n\n"
+            f"{output}\n"
+        )
+        return True, doc, output, None
+
+    # ---------------------------------------------------------------
+    # Default (LLM) path — import and construct the agent machinery now
+    # that we know we actually need it. Doing these imports here instead of
+    # at module top keeps no_agent ticks from paying for AIAgent / SessionDB
+    # construction costs.
+    # ---------------------------------------------------------------
+    from run_agent import AIAgent
+
+    # Initialize SQLite session store so cron job messages are persisted
+    # and discoverable via session_search (same pattern as gateway/run.py).
+    _session_db = None
+    try:
+        from hermes_state import SessionDB
+        _session_db = SessionDB()
+    except Exception as e:
+        logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
+
+    # Wake-gate: if this job has a pre-check script, run it BEFORE building
+    # the prompt so a ``{"wakeAgent": false}`` response can short-circuit
+    # the whole agent run. We pass the result into _build_job_prompt so
+    # the script is only executed once.
+    prerun_script = None
+    script_path = job.get("script")
+    if script_path:
+        prerun_script = _run_job_script(script_path)
+        _ran_ok, _script_output = prerun_script
+        if _ran_ok and not _parse_wake_gate(_script_output):
+            logger.info(
+                "Job '%s' (ID: %s): wakeAgent=false, skipping agent run",
+                job_name, job_id,
+            )
+            silent_doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+                "Script gate returned `wakeAgent=false` — agent skipped.\n"
+            )
+            return True, silent_doc, SILENT_MARKER, None
+
+    try:
+        prompt = _build_job_prompt(job, prerun_script=prerun_script)
+    except CronPromptInjectionBlocked as block_exc:
+        # Assembled prompt (user prompt + loaded skill content) tripped the
+        # injection scanner. Refuse to run the agent this tick and surface
+        # a clear failure to the operator so they see WHY the scheduled job
+        # didn't run and can audit the offending skill.
+        logger.warning(
+            "Job '%s' (ID: %s): blocked by prompt-injection scanner — %s",
+            job_name, job_id, block_exc,
+        )
+        blocked_doc = (
+            f"# Cron Job: {job_name}\n\n"
+            f"**Job ID:** {job_id}\n"
+            f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"**Status:** BLOCKED\n\n"
+            "The assembled prompt (user prompt + loaded skill content) tripped "
+            "the cron injection scanner and the agent was NOT run.\n\n"
+            f"**Scanner result:** {block_exc}\n\n"
+            "Audit the skill(s) attached to this job for prompt-injection "
+            "payloads or invisible-unicode markers. If the skill is legitimate "
+            "and the match is a false positive, rephrase the content to avoid "
+            "the threat pattern (`tools/cronjob_tools.py::_CRON_THREAT_PATTERNS`)."
+        )
+        return False, blocked_doc, "", str(block_exc)
+    if prompt is None:
+        logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
+        return True, "", SILENT_MARKER, None
+    origin = _resolve_origin(job)
+    _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+
+    logger.info("Running job '%s' (ID: %s)", job_name, job_id)
+    logger.info("Prompt: %s", prompt[:100])
+
+    agent = None
+
+    # Mark this as a cron session so the approval system can apply cron_mode.
+    # This env var is process-wide and persists for the lifetime of the
+    # scheduler process — every job this process runs is a cron job.
+    os.environ["HERMES_CRON_SESSION"] = "1"
+
+    # Use ContextVars for per-job session/delivery state so parallel jobs
+    # don't clobber each other's targets (os.environ is process-global).
+    from gateway.session_context import set_session_vars, clear_session_vars, _VAR_MAP
+
+    # Cron execution is an internal scheduler context, not a live inbound
+    # gateway message. Do not seed HERMES_SESSION_* contextvars from the
+    # stored ``origin`` (which is delivery routing metadata, not a sender
+    # identity). Several tool consumers branch on these vars during job
+    # execution and would otherwise behave as if a real user from the
+    # origin chat was driving the agent:
+    #   - tools/terminal_tool.py: background-process notification routing
+    #     (notify_on_complete / watch_patterns) reads HERMES_SESSION_PLATFORM
+    #     and HERMES_SESSION_CHAT_ID to populate watcher_platform / chat_id,
+    #     which would route completion notifications to the origin chat
+    #     instead of via HERMES_CRON_AUTO_DELIVER_* below.
+    #   - tools/tts_tool.py: picks Opus vs MP3 based on
+    #     HERMES_SESSION_PLATFORM == "telegram".
+    #   - tools/skills_tool.py + agent/prompt_builder.py: per-platform
+    #     skill-disable lists and the system-prompt cache key both consume
+    #     HERMES_SESSION_PLATFORM.
+    #   - tools/send_message_tool.py: mirror source labelling and the
+    #     send_message gate read HERMES_SESSION_PLATFORM.
+    # Cron output delivery itself reads job["origin"] directly via
+    # _resolve_origin(job) and the HERMES_CRON_AUTO_DELIVER_* vars set
+    # below, so clearing HERMES_SESSION_* here does not affect delivery.
+    _ctx_tokens = set_session_vars(
+        platform="",
+        chat_id="",
+        chat_name="",
+    )
+    _cron_delivery_vars = (
+        "HERMES_CRON_AUTO_DELIVER_PLATFORM",
+        "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
+        "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+    )
+    for _var_name in _cron_delivery_vars:
+        _VAR_MAP[_var_name].set("")
+
+    # Per-job working directory.  When set (and validated at create/update
+    # time), we point TERMINAL_CWD at it so:
+    #   - build_context_files_prompt() picks up AGENTS.md / CLAUDE.md /
+    #     .cursorrules from the job's project dir, AND
+    #   - the terminal, file, and code-exec tools run commands from there.
+    #
+    # tick() serializes workdir-jobs outside the parallel pool, so mutating
+    # os.environ["TERMINAL_CWD"] here is safe for those jobs.  For workdir-less
+    # jobs we leave TERMINAL_CWD untouched — preserves the original behaviour
+    # (skip_context_files=True, tools use whatever cwd the scheduler has).
+    _job_workdir = (job.get("workdir") or "").strip() or None
+    if _job_workdir and not Path(_job_workdir).is_dir():
+        # Directory was removed between create-time validation and now.  Log
+        # and drop back to old behaviour rather than crashing the job.
+        logger.warning(
+            "Job '%s': configured workdir %r no longer exists — running without it",
+            job_id, _job_workdir,
+        )
+        _job_workdir = None
+    _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
+    if _job_workdir:
+        os.environ["TERMINAL_CWD"] = _job_workdir
+        logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
+
+    try:
+        # Re-read .env and config.yaml fresh every run so provider/key
+        # changes take effect without a gateway restart.
+        from dotenv import load_dotenv
+        try:
+            load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="utf-8")
+        except UnicodeDecodeError:
+            load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="latin-1")
+
+        delivery_target = _resolve_delivery_target(job)
+        if delivery_target:
+            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(delivery_target["platform"])
+            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"].set(str(delivery_target["chat_id"]))
+            _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(
+                ""
+                if delivery_target.get("thread_id") is None
+                else str(delivery_target["thread_id"])
+            )
+
+        model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+
+        # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
+        _cfg = {}
+        try:
+            import yaml
+            _cfg_path = str(_get_hermes_home() / "config.yaml")
+            if os.path.exists(_cfg_path):
+                with open(_cfg_path, encoding="utf-8") as _f:
+                    _cfg = yaml.safe_load(_f) or {}
+                _cfg = _expand_env_vars(_cfg)
+                _model_cfg = _cfg.get("model", {})
+                if not job.get("model"):
+                    if isinstance(_model_cfg, str):
+                        model = _model_cfg
+                    elif isinstance(_model_cfg, dict):
+                        model = _model_cfg.get("default", model)
+        except Exception as e:
+            logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
+
+        # Apply IPv4 preference if configured.
+        try:
+            from hermes_constants import apply_ipv4_preference
+            _net_cfg = _cfg.get("network", {})
+            if isinstance(_net_cfg, dict) and _net_cfg.get("force_ipv4"):
+                apply_ipv4_preference(force=True)
+        except Exception:
+            pass
+
+        # Reasoning config from config.yaml
+        from hermes_constants import parse_reasoning_effort
+        effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
+        reasoning_config = parse_reasoning_effort(effort)
+
+        # Prefill messages from env or config.yaml. The top-level
+        # prefill_messages_file key is canonical; agent.prefill_messages_file is
+        # retained as a legacy fallback for older CLI/godmode configs.
+        prefill_messages = None
+        agent_cfg = _cfg.get("agent", {}) if isinstance(_cfg.get("agent", {}), dict) else {}
+        prefill_file = (
+            os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
+            or _cfg.get("prefill_messages_file", "")
+            or agent_cfg.get("prefill_messages_file", "")
+        )
+        if prefill_file:
+            pfpath = Path(prefill_file).expanduser()
+            if not pfpath.is_absolute():
+                pfpath = _get_hermes_home() / pfpath
+            if pfpath.exists():
+                try:
+                    with open(pfpath, "r", encoding="utf-8") as _pf:
+                        prefill_messages = json.load(_pf)
+                    if not isinstance(prefill_messages, list):
+                        prefill_messages = None
+                except Exception as e:
+                    logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
+                    prefill_messages = None
+
+        # Max iterations
+        max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+
+        # Provider routing
+        pr = _cfg.get("provider_routing", {})
+
+        from hermes_cli.runtime_provider import (
+            resolve_runtime_provider,
+            format_runtime_provider_error,
+        )
+        from hermes_cli.auth import AuthError
+        try:
+            # Do not inject HERMES_INFERENCE_PROVIDER here. resolve_runtime_provider()
+            # already prefers persisted config over stale shell/env overrides when
+            # no explicit provider is requested. Passing the env var here short-
+            # circuits that precedence and can resurrect old providers (for
+            # example DeepSeek) for cron jobs that do not pin provider/model.
+            runtime_kwargs = {
+                "requested": job.get("provider"),
+            }
+            if job.get("base_url"):
+                runtime_kwargs["explicit_base_url"] = job.get("base_url")
+            runtime = resolve_runtime_provider(**runtime_kwargs)
+        except AuthError as auth_exc:
+            # Primary provider auth failed — try fallback chain before giving up.
+            logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)
+            fb = _cfg.get("fallback_providers") or _cfg.get("fallback_model")
+            fb_list = (fb if isinstance(fb, list) else [fb]) if fb else []
+            runtime = None
+            for entry in fb_list:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    fb_kwargs = {"requested": entry.get("provider")}
+                    if entry.get("base_url"):
+                        fb_kwargs["explicit_base_url"] = entry["base_url"]
+                    if entry.get("api_key"):
+                        fb_kwargs["explicit_api_key"] = entry["api_key"]
+                    runtime = resolve_runtime_provider(**fb_kwargs)
+                    logger.info("Job '%s': fallback resolved to %s", job_id, runtime.get("provider"))
+                    break
+                except Exception as fb_exc:
+                    logger.debug("Job '%s': fallback %s failed: %s", job_id, entry.get("provider"), fb_exc)
+            if runtime is None:
+                raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
+        except Exception as exc:
+            message = format_runtime_provider_error(exc)
+            raise RuntimeError(message) from exc
+
+        fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
+        credential_pool = None
+        runtime_provider = str(runtime.get("provider") or "").strip().lower()
+        if runtime_provider:
+            try:
+                from agent.credential_pool import load_pool
+                pool = load_pool(runtime_provider)
+                if pool.has_credentials():
+                    credential_pool = pool
+                    logger.info(
+                        "Job '%s': loaded credential pool for provider %s with %d entries",
+                        job_id,
+                        runtime_provider,
+                        len(pool.entries()),
+                    )
+            except Exception as e:
+                logger.debug("Job '%s': failed to load credential pool for %s: %s", job_id, runtime_provider, e)
+
+        # Initialize MCP servers so configured mcp_servers are available to
+        # the agent's tool registry before AIAgent is constructed. Without
+        # this, cron jobs never saw any MCP tools — only the gateway / CLI
+        # paths called discover_mcp_tools() at startup. Idempotent: subsequent
+        # ticks short-circuit on already-connected servers inside
+        # register_mcp_servers(). Non-fatal on failure: a broken MCP server
+        # shouldn't kill an otherwise-working cron job. See #4219.
+        try:
+            from tools.mcp_tool import discover_mcp_tools
+            _mcp_tools = discover_mcp_tools()
+            if _mcp_tools:
+                logger.info(
+                    "Job '%s': %d MCP tool(s) available",
+                    job_id, len(_mcp_tools),
+                )
+        except Exception as _mcp_exc:
+            logger.warning(
+                "Job '%s': MCP initialization failed (non-fatal): %s",
+                job_id, _mcp_exc,
+            )
+
+        agent = AIAgent(
+            model=model,
+            api_key=runtime.get("api_key"),
+            base_url=runtime.get("base_url"),
+            provider=runtime.get("provider"),
+            api_mode=runtime.get("api_mode"),
+            acp_command=runtime.get("command"),
+            acp_args=runtime.get("args"),
+            max_iterations=max_iterations,
+            reasoning_config=reasoning_config,
+            prefill_messages=prefill_messages,
+            fallback_model=fallback_model,
+            credential_pool=credential_pool,
+            providers_allowed=pr.get("only"),
+            providers_ignored=pr.get("ignore"),
+            providers_order=pr.get("order"),
+            provider_sort=pr.get("sort"),
+            openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
+            enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
+            disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
+            quiet_mode=True,
+            # Cron jobs should always inherit the user's SOUL.md identity from
+            # HERMES_HOME. When a workdir is configured, also inject project
+            # context files (AGENTS.md / CLAUDE.md / .cursorrules) from there.
+            # Without a workdir, keep cwd context discovery disabled.
+            skip_context_files=not bool(_job_workdir),
+            load_soul_identity=True,
+            skip_memory=True,  # Cron system prompts would corrupt user representations
+            platform="cron",
+            session_id=_cron_session_id,
+            session_db=_session_db,
+        )
+        
+        # Run the agent with an *inactivity*-based timeout: the job can run
+        # for hours if it's actively calling tools / receiving stream tokens,
+        # but a hung API call or stuck tool with no activity for the configured
+        # duration is caught and killed.  Default 600s (10 min inactivity);
+        # override via HERMES_CRON_TIMEOUT env var.  0 = unlimited.
+        #
+        # Uses the agent's built-in activity tracker (updated by
+        # _touch_activity() on every tool call, API call, and stream delta).
+        _raw_cron_timeout = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+        if _raw_cron_timeout:
+            try:
+                _cron_timeout = float(_raw_cron_timeout)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Invalid HERMES_CRON_TIMEOUT=%r; using default 600s",
+                    _raw_cron_timeout,
+                )
+                _cron_timeout = 600.0
+        else:
+            _cron_timeout = 600.0
+        _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
+        _POLL_INTERVAL = 5.0
+        _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        # Preserve scheduler-scoped ContextVar state (for example skill-declared
+        # env passthrough registrations) when the cron run hops into the worker
+        # thread used for inactivity timeout monitoring.
+        _cron_context = contextvars.copy_context()
+        _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+        _inactivity_timeout = False
+        try:
+            if _cron_inactivity_limit is None:
+                # Unlimited — just wait for the result.
+                result = _cron_future.result()
+            else:
+                result = None
+                while True:
+                    done, _ = concurrent.futures.wait(
+                        {_cron_future}, timeout=_POLL_INTERVAL,
+                    )
+                    if done:
+                        result = _cron_future.result()
+                        break
+                    # Agent still running — check inactivity.
+                    _idle_secs = 0.0
+                    if hasattr(agent, "get_activity_summary"):
+                        try:
+                            _act = agent.get_activity_summary()
+                            _idle_secs = _act.get("seconds_since_activity", 0.0)
+                        except Exception:
+                            pass
+                    if _idle_secs >= _cron_inactivity_limit:
+                        _inactivity_timeout = True
+                        break
+        except Exception:
+            _cron_pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        finally:
+            _cron_pool.shutdown(wait=False, cancel_futures=True)
+
+        if _inactivity_timeout:
+            # Build diagnostic summary from the agent's activity tracker.
+            _activity = {}
+            if hasattr(agent, "get_activity_summary"):
+                try:
+                    _activity = agent.get_activity_summary()
+                except Exception:
+                    pass
+            _last_desc = _activity.get("last_activity_desc", "unknown")
+            _secs_ago = _activity.get("seconds_since_activity", 0)
+            _cur_tool = _activity.get("current_tool")
+            _iter_n = _activity.get("api_call_count", 0)
+            _iter_max = _activity.get("max_iterations", 0)
+
+            logger.error(
+                "Job '%s' idle for %.0fs (inactivity limit %.0fs) "
+                "| last_activity=%s | iteration=%s/%s | tool=%s",
+                job_name, _secs_ago, _cron_inactivity_limit,
+                _last_desc, _iter_n, _iter_max,
+                _cur_tool or "none",
+            )
+            if hasattr(agent, "interrupt"):
+                agent.interrupt("Cron job timed out (inactivity)")
+            raise TimeoutError(
+                f"Cron job '{job_name}' idle for "
+                f"{int(_secs_ago)}s (limit {int(_cron_inactivity_limit)}s) "
+                f"— last activity: {_last_desc}"
+            )
+
+        # Guard against non-dict returns from run_conversation under error conditions
+        if not isinstance(result, dict):
+            raise RuntimeError(
+                f"agent.run_conversation returned {type(result).__name__} instead of dict: {result!r}"
+            )
+
+        # If the agent itself reported failure (e.g. all retries exhausted on
+        # API errors, model abort, mid-run interrupt), do not silently mark the
+        # job as successful. run_agent populates `failed=True`/`completed=False`
+        # on these paths and may put the error into `final_response`, which
+        # would otherwise be delivered as if it were the agent's reply and the
+        # job's `last_status` set to "ok". Raise so the except handler below
+        # builds the proper failure tuple. (issue #17855)
+        if result.get("failed") is True or result.get("completed") is False:
+            _err_text = (
+                result.get("error")
+                or (result.get("final_response") or "").strip()
+                or "agent reported failure"
+            )
+            raise RuntimeError(_err_text)
+
+        final_response = result.get("final_response", "") or ""
+        # Strip leaked placeholder text that upstream may inject on empty completions.
+        if final_response.strip() == "(No response generated)":
+            final_response = ""
+        # Use a separate variable for log display; keep final_response clean
+        # for delivery logic (empty response = no delivery).
+        logged_response = final_response if final_response else "(No response generated)"
+        
+        output = f"""# Cron Job: {job_name}
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+
+## Prompt
+
+{prompt}
+
+## Response
+
+{logged_response}
+"""
+        
+        logger.info("Job '%s' completed successfully", job_name)
+        return True, output, final_response, None
+        
+    except Exception as e:
+        error_msg = f"{type(e).__name__}: {str(e)}"
+        logger.exception("Job '%s' failed: %s", job_name, error_msg)
+        
+        output = f"""# Cron Job: {job_name} (FAILED)
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+
+## Prompt
+
+{prompt}
+
+## Error
+
+```
+{error_msg}
+```
+"""
+        return False, output, "", error_msg
+
+    finally:
+        # Restore TERMINAL_CWD to whatever it was before this job ran.  We
+        # only ever mutate it when the job has a workdir; see the setup block
+        # at the top of run_job for the serialization guarantee.
+        if _job_workdir:
+            if _prior_terminal_cwd == "_UNSET_":
+                os.environ.pop("TERMINAL_CWD", None)
+            else:
+                os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
+        # Clean up ContextVar session/delivery state for this job.
+        clear_session_vars(_ctx_tokens)
+        for _var_name in _cron_delivery_vars:
+            _VAR_MAP[_var_name].set("")
+        if _session_db:
+            # Title the cron session from the job (name → short prompt → id) so
+            # sidebars/history show a meaningful label instead of the injected
+            # "[IMPORTANT: …]" hint that is the session's first message. Set here
+            # (not at create time) so the agent's own INSERT keeps model /
+            # system_prompt; this only UPDATEs the title column. The run-time
+            # suffix keeps it unique against the sessions.title index across runs.
+            try:
+                _title_base = " ".join(job_name.split())[:60].strip() or f"cron {job_id}"
+                _cron_title = f"{_title_base} · {_hermes_now().strftime('%b %d %H:%M')}"
+                _session_db.set_session_title(_cron_session_id, _cron_title)
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug("Job '%s': failed to set cron session title: %s", job_id, e)
+            try:
+                _session_db.end_session(_cron_session_id, "cron_complete")
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug("Job '%s': failed to end session: %s", job_id, e)
+            try:
+                _session_db.close()
+            except (Exception, KeyboardInterrupt) as e:
+                logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
+        # Release subprocesses, terminal sandboxes, browser daemons, and the
+        # main OpenAI/httpx client held by this ephemeral cron agent. Without
+        # this, a gateway that ticks cron every N minutes leaks fds per job
+        # until it hits EMFILE (#10200 / "too many open files").
+        try:
+            if agent is not None:
+                agent.close()
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
+        # Each cron run spins up a short-lived worker thread whose event loop
+        # dies as soon as the ``ThreadPoolExecutor`` shuts down. Any async
+        # httpx clients cached under that loop are now unusable — reap them
+        # so their transports don't accumulate in the process-global cache.
+        try:
+            from agent.auxiliary_client import cleanup_stale_async_clients
+            cleanup_stale_async_clients()
+        except Exception as e:
+            logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
+
+
+
 def _job_requires_sequential_pool(job: dict) -> bool:
     """Return True when the job mutates process-global runtime state."""
     return bool((job.get("workdir") or "").strip() or (job.get("profile") or "").strip())
