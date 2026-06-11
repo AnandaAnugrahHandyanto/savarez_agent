@@ -5,6 +5,12 @@ import type { ModelOptionProvider } from '@/types/hermes'
 
 const STORAGE_KEY = 'hermes.desktop.visible-models'
 
+/** Providers the user has already customized. A provider in this set with zero
+ *  visible keys means the user deliberately hid all of its models — we must NOT
+ *  resurrect its defaults. A provider absent from this set is genuinely new and
+ *  still gets seeded so it shows up by default after an update adds it. */
+const KNOWN_PROVIDERS_KEY = 'hermes.desktop.known-model-providers'
+
 /** Models shown per provider in the status-bar dropdown before the user has
  *  customized the list. Backend `models` are already relevance-ordered. */
 export const DEFAULT_VISIBLE_PER_PROVIDER = 50
@@ -71,11 +77,41 @@ function loadVisible(): Set<string> | null {
  *  hasn't customized — in which case the curated default applies. */
 export const $visibleModels = atom<Set<string> | null>(loadVisible())
 
+/** Provider slugs the user has customized at least once. Seeded lazily by
+ *  {@link setVisibleModels}; null until the first customization. */
+export const $knownProviders = atom<Set<string> | null>(loadKnownProviders())
+
 export const $modelVisibilityOpen = atom(false)
 
-export function setVisibleModels(keys: Set<string>): void {
+function loadKnownProviders(): Set<string> | null {
+  const raw = storedString(KNOWN_PROVIDERS_KEY)
+
+  if (!raw) {
+    return null
+  }
+
+  try {
+    const parsed = JSON.parse(raw)
+
+    return Array.isArray(parsed) ? new Set(parsed.filter((x): x is string => typeof x === 'string')) : null
+  } catch {
+    return null
+  }
+}
+
+/** Persist the visible key set. Pass `knownProviderSlugs` (the provider slugs
+ *  currently on screen) whenever the change is a user customization so a
+ *  provider the user empties stays empty instead of being re-seeded. The known
+ *  set is unioned so transient/partial provider lists never drop a slug. */
+export function setVisibleModels(keys: Set<string>, knownProviderSlugs?: Iterable<string>): void {
   $visibleModels.set(new Set(keys))
   persistString(STORAGE_KEY, JSON.stringify([...keys]))
+
+  if (knownProviderSlugs !== undefined) {
+    const known = new Set([...($knownProviders.get() ?? []), ...knownProviderSlugs])
+    $knownProviders.set(known)
+    persistString(KNOWN_PROVIDERS_KEY, JSON.stringify([...known]))
+  }
 }
 
 export function setModelVisibilityOpen(open: boolean): void {
@@ -102,7 +138,8 @@ export function defaultVisibleKeys(providers: readonly ModelOptionProvider[]): S
  *  configured, otherwise the curated default for the given providers. */
 export function effectiveVisibleKeys(
   stored: Set<string> | null,
-  providers: readonly ModelOptionProvider[]
+  providers: readonly ModelOptionProvider[],
+  known?: Set<string> | null
 ): Set<string> {
   if (!stored) {
     return defaultVisibleKeys(providers)
@@ -119,6 +156,14 @@ export function effectiveVisibleKeys(
     const hasStoredProvider = [...stored].some(key => key.startsWith(providerPrefix))
 
     if (hasStoredProvider) {
+      continue
+    }
+
+    // Zero stored keys for this provider. Seed its curated defaults only when
+    // the provider is genuinely new (never customized). If the user has already
+    // customized it — i.e. they hid every model down to the last one — keep it
+    // empty rather than resurrecting every toggle they just turned off.
+    if (known?.has(provider.slug)) {
       continue
     }
 
