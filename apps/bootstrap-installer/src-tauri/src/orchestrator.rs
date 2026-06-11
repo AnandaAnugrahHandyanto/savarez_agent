@@ -1493,13 +1493,13 @@ where
     })
 }
 
-/// Build the desktop app natively on Windows before falling back to PowerShell.
-pub fn build_windows_desktop_stage(
+/// Build the desktop app natively where no post-build platform fixup is required.
+pub fn build_desktop_stage(
     install_root: &Path,
     hermes_home: &Path,
 ) -> Result<serde_json::Value> {
-    if !cfg!(target_os = "windows") {
-        return Err(anyhow!("native desktop stage is only available on Windows"));
+    if cfg!(target_os = "linux") {
+        return Err(anyhow!("native desktop stage is script-backed on Linux"));
     }
     let path_env = std::env::var_os("PATH").unwrap_or_default();
     let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
@@ -1509,13 +1509,17 @@ pub fn build_windows_desktop_stage(
             .context("installing desktop workspace Node dependencies")?;
     }
     run_desktop_pack_command(&plan.npm, &plan.desktop_dir)?;
-    let desktop_exe = find_built_windows_desktop_exe(install_root)
-        .ok_or_else(|| anyhow!("desktop build completed but Hermes.exe was not found"))?;
-    Ok(serde_json::json!({
+    let desktop_app = find_built_desktop_app(install_root, std::env::consts::OS)
+        .ok_or_else(|| anyhow!("desktop build completed but no app was found"))?;
+    let mut result = serde_json::json!({
         "npm": plan.npm,
         "desktopDir": plan.desktop_dir,
-        "desktopExe": desktop_exe,
-    }))
+        "desktopApp": &desktop_app,
+    });
+    if cfg!(target_os = "windows") {
+        result["desktopExe"] = serde_json::json!(&desktop_app);
+    }
+    Ok(result)
 }
 
 /// Build a native Windows PATH stage report without mutating user state.
@@ -2442,14 +2446,30 @@ fn run_desktop_pack_command(npm: &Path, desktop_dir: &Path) -> Result<()> {
     ))
 }
 
-fn find_built_windows_desktop_exe(install_root: &Path) -> Option<PathBuf> {
+fn find_built_desktop_app(install_root: &Path, target_os: &str) -> Option<PathBuf> {
     let release = install_root.join("apps").join("desktop").join("release");
-    [
-        release.join("win-unpacked").join("Hermes.exe"),
-        release.join("win-arm64-unpacked").join("Hermes.exe"),
-    ]
-    .into_iter()
-    .find(|path| path.is_file())
+    let candidates = match target_os {
+        "windows" => vec![
+            release.join("win-unpacked").join("Hermes.exe"),
+            release.join("win-arm64-unpacked").join("Hermes.exe"),
+        ],
+        "macos" => vec![
+            release.join("mac-arm64").join("Hermes.app"),
+            release.join("mac").join("Hermes.app"),
+        ],
+        "linux" => vec![
+            release.join("linux-unpacked").join("Hermes"),
+            release.join("linux-unpacked").join("hermes"),
+        ],
+        _ => Vec::new(),
+    };
+    candidates.into_iter().find(|path| {
+        if target_os == "macos" {
+            path.is_dir()
+        } else {
+            path.is_file()
+        }
+    })
 }
 
 fn node_version_satisfies_build(node: &Path) -> bool {
@@ -2500,7 +2520,9 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
     {
         return StageExecutionMode::NativeWithScriptFallback;
     }
-    if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("desktop") {
+    if (cfg!(target_os = "windows") || cfg!(target_os = "macos"))
+        && name.eq_ignore_ascii_case("desktop")
+    {
         return StageExecutionMode::NativeWithScriptFallback;
     }
     if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("node") {
@@ -3197,6 +3219,44 @@ mod tests {
         assert_eq!(plan.npm, npm);
         assert_eq!(plan.cwd, install_root);
         assert_eq!(plan.desktop_dir, desktop_dir);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn built_desktop_app_resolver_finds_platform_outputs() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-desktop-output-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let release = root
+            .join("apps")
+            .join("desktop")
+            .join("release");
+
+        let win_exe = release.join("win-unpacked").join("Hermes.exe");
+        std::fs::create_dir_all(win_exe.parent().unwrap()).unwrap();
+        std::fs::write(&win_exe, b"exe").unwrap();
+        assert_eq!(
+            find_built_desktop_app(&root, "windows").as_deref(),
+            Some(win_exe.as_path())
+        );
+
+        let mac_app = release.join("mac-arm64").join("Hermes.app");
+        std::fs::create_dir_all(&mac_app).unwrap();
+        assert_eq!(
+            find_built_desktop_app(&root, "macos").as_deref(),
+            Some(mac_app.as_path())
+        );
+
+        let linux_app = release.join("linux-unpacked").join("Hermes");
+        std::fs::create_dir_all(linux_app.parent().unwrap()).unwrap();
+        std::fs::write(&linux_app, b"bin").unwrap();
+        assert_eq!(
+            find_built_desktop_app(&root, "linux").as_deref(),
+            Some(linux_app.as_path())
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

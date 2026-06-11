@@ -693,8 +693,10 @@ async fn run_bootstrap(
                     &hermes_home,
                     &install_root,
                 ))
-            } else if cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("desktop") {
-                Some(crate::orchestrator::build_windows_desktop_stage(
+            } else if (cfg!(target_os = "windows") || cfg!(target_os = "macos"))
+                && stage.name.eq_ignore_ascii_case("desktop")
+            {
+                Some(crate::orchestrator::build_desktop_stage(
                     &install_root,
                     &hermes_home,
                 ))
@@ -1052,7 +1054,8 @@ fn should_fallback_native_stage(stage_name: &str, install_root: &std::path::Path
         || stage_name.eq_ignore_ascii_case("platform-sdks")
         || ((cfg!(target_os = "windows") || cfg!(target_os = "macos"))
             && stage_name.eq_ignore_ascii_case("node-deps"))
-        || (cfg!(target_os = "windows") && stage_name.eq_ignore_ascii_case("desktop"))
+        || ((cfg!(target_os = "windows") || cfg!(target_os = "macos"))
+            && stage_name.eq_ignore_ascii_case("desktop"))
 }
 
 fn is_python_dependencies_stage(stage_name: &str) -> bool {

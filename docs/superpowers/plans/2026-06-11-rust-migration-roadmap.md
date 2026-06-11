@@ -182,6 +182,8 @@ language-specific setup where needed.
 - Windows `desktop` now has a Rust native-first build path for workspace npm install and `npm run pack`, verifies the
   produced `Hermes.exe`, and still creates shortcuts through the Rust manager; the PowerShell stage remains fallback
   for dependency/build failures so its cache purge and Electron mirror recovery are preserved.
+- macOS `desktop` now uses the same Rust native-first workspace npm install and `npm run pack` path as Windows, verifies
+  the produced `Hermes.app`, and preserves shell fallback for dependency or build recovery.
 - Windows `platform-sdks` now skips natively when `.env` has no configured messaging platform tokens, and runs
   native-first SDK import checks plus targeted `pip install` recovery when tokens are present, while preserving script
   fallback if the native recovery path fails.
@@ -192,9 +194,9 @@ language-specific setup where needed.
 
 **Still script-backed:**
 - Language/runtime setup: uv, Python dependency fallback tiers when `uv.lock` sync is unavailable, Linux npm dependency
-  installation when npm is available, Unix desktop build when the desktop package is present, and script fallback for
-  Unix Node, Windows/macOS npm, Windows uv, Windows Git, Windows Node, Windows desktop recovery, and platform SDK
-  recovery.
+  installation when npm is available, Linux desktop build because it still owns `chrome-sandbox` permission fixups, and
+  script fallback for Unix Node, Windows/macOS npm, Windows uv, Windows Git, Windows Node, Windows/macOS desktop recovery,
+  and platform SDK recovery.
 - Repository clone/update stage execution until the Git/ZIP fallback matrix has a parity suite and native stage wiring.
 - Remaining platform shell/profile edge cases that are not covered by the current Rust path-stage helpers.
 
