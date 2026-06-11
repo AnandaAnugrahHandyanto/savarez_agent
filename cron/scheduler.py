@@ -954,7 +954,7 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(script_path: str, *, cwd: str | None = None) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -976,6 +976,9 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
             are also validated to ensure they stay within the scripts dir.
+        cwd: Optional subprocess working directory.  When omitted, scripts
+            run from their own directory to preserve existing pre-check
+            behaviour.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -1007,6 +1010,12 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         return False, f"Script path is not a file: {path}"
 
     script_timeout = _get_script_timeout()
+    run_cwd = path.parent
+    if cwd:
+        run_cwd_path = Path(cwd).expanduser()
+        if not run_cwd_path.is_dir():
+            return False, f"Working directory not found: {run_cwd_path}"
+        run_cwd = run_cwd_path.resolve()
 
     # Pick an interpreter by extension.  Bash for .sh/.bash, Python for
     # everything else.  We deliberately do NOT honour the file's own
@@ -1050,7 +1059,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=script_timeout,
-            cwd=str(path.parent),
+            cwd=str(run_cwd),
             env=run_env,
             **popen_kwargs,
         )
@@ -1426,22 +1435,10 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # paths. For no_agent jobs this is just the subprocess cwd (not an
         # agent TERMINAL_CWD bridge).
         _job_workdir = (job.get("workdir") or "").strip() or None
-        _prior_cwd = None
-        if _job_workdir and Path(_job_workdir).is_dir():
-            _prior_cwd = os.getcwd()
-            try:
-                os.chdir(_job_workdir)
-            except OSError:
-                _prior_cwd = None
+        if _job_workdir and not Path(_job_workdir).is_dir():
+            _job_workdir = None
 
-        try:
-            ok, output = _run_job_script(script_path)
-        finally:
-            if _prior_cwd is not None:
-                try:
-                    os.chdir(_prior_cwd)
-                except OSError:
-                    pass
+        ok, output = _run_job_script(script_path, cwd=_job_workdir)
 
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
 
