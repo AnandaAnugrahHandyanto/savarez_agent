@@ -69,6 +69,7 @@ from gateway.platforms.base import (
     _ssrf_redirect_guard,
     cache_document_from_bytes,
     cache_image_from_bytes,
+    redact_proxy_url,
     resolve_proxy_url,
 )
 from gateway.platforms.helpers import strip_markdown
@@ -307,17 +308,29 @@ class QQAdapter(BasePlatformAdapter):
             # faster behind proxies like Cloudflare Warp (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
             # Resolve REST proxy via the shared helper (same NO_PROXY logic
-            # as the WebSocket below). We pass it explicitly *and* keep
-            # ``trust_env=False`` so httpx does not silently re-read
-            # HTTPS_PROXY and override the helper's NO_PROXY decision.
+            # as the WebSocket below) and pass it explicitly — an explicit
+            # ``proxy=`` preempts env proxies in httpx, so the helper's
+            # decision wins whenever it resolves a URL.
+            #
+            # ``trust_env`` stays True deliberately:
+            #   - httpx gates SSL_CERT_FILE / SSL_CERT_DIR handling behind
+            #     it (operators behind corporate MITM proxies rely on these);
+            #   - when the helper returns None (NO_PROXY matched), httpx
+            #     falls back to *per-request* env semantics — QQ hosts go
+            #     direct (httpx honors NO_PROXY), while non-QQ media CDNs
+            #     this client also fetches (e.g. ``qpic.cn``) keep using
+            #     HTTPS_PROXY.
             http_proxy = resolve_proxy_url(target_hosts=QQ_PROXY_TARGET_HOSTS)
             if http_proxy:
                 logger.info(
-                    "[%s] REST proxy: %s", self._log_tag, http_proxy
+                    "[%s] REST proxy: %s",
+                    self._log_tag,
+                    redact_proxy_url(http_proxy),
                 )
             else:
                 logger.info(
-                    "[%s] REST direct connect (no proxy or NO_PROXY matched)",
+                    "[%s] REST proxy: none resolved — per-request env "
+                    "handling (NO_PROXY honored)",
                     self._log_tag,
                 )
             self._http_client = httpx.AsyncClient(
@@ -325,7 +338,7 @@ class QQAdapter(BasePlatformAdapter):
                 follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]},
                 limits=platform_httpx_limits(),
-                trust_env=False,
+                trust_env=True,
                 proxy=http_proxy,
             )
 
@@ -474,19 +487,33 @@ class QQAdapter(BasePlatformAdapter):
         self._session = None
 
         # Resolve proxy via the shared helper so QQBot honors HTTPS_PROXY,
-        # WSS_PROXY, ALL_PROXY *and* NO_PROXY (aiohttp does not consult
-        # NO_PROXY on its own). Users behind a proxy that mishandles Tencent's
-        # WebSocket upgrade can set ``NO_PROXY=qq.com`` to force direct.
-        ws_proxy = resolve_proxy_url(
-            "WSS_PROXY", target_hosts=QQ_PROXY_TARGET_HOSTS
+        # WSS_PROXY, ALL_PROXY *and* NO_PROXY. The previous code read env
+        # vars manually and passed ``proxy=`` explicitly, which bypasses
+        # aiohttp's own NO_PROXY handling entirely. Users behind a proxy
+        # that mishandles Tencent's WebSocket upgrade can set
+        # ``NO_PROXY=qq.com`` to force direct.
+        #
+        # The dialed gateway host joins the static target list so a NO_PROXY
+        # entry matching it still bypasses, even if Tencent returns a
+        # gateway outside QQ_PROXY_TARGET_HOSTS.
+        gateway_host = urlparse(gateway_url).hostname
+        ws_targets = (
+            (gateway_host, *QQ_PROXY_TARGET_HOSTS)
+            if gateway_host
+            else QQ_PROXY_TARGET_HOSTS
         )
+        ws_proxy = resolve_proxy_url("WSS_PROXY", target_hosts=ws_targets)
         # trust_env=False so aiohttp does not re-read HTTPS_PROXY and override
         # our NO_PROXY decision when ``ws_proxy`` is None — the helper above
-        # is the single source of truth for proxy resolution.
+        # is the single source of truth for the WS proxy. (Unlike the REST
+        # client, this session only ever dials the gateway host, so a
+        # connection-level decision is exactly right here.)
         self._session = aiohttp.ClientSession(trust_env=False)
         if ws_proxy:
             logger.info(
-                "[%s] WebSocket proxy: %s", self._log_tag, ws_proxy
+                "[%s] WebSocket proxy: %s",
+                self._log_tag,
+                redact_proxy_url(ws_proxy),
             )
         else:
             logger.info(
