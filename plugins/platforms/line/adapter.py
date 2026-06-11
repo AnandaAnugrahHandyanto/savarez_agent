@@ -742,6 +742,7 @@ class LineAdapter(BasePlatformAdapter):
         # Pending-button slot per chat — ensures one outstanding postback
         # button per chat at a time. Postback cache request_id keyed by chat_id.
         self._pending_buttons: Dict[str, str] = {}
+        self._slow_button_tasks: Dict[str, "asyncio.Task"] = {}
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -844,6 +845,12 @@ class LineAdapter(BasePlatformAdapter):
                 pass
             self._runner = None
         self._app = None
+
+        # Cancel any pending slow-response button timers.
+        for task in list(self._slow_button_tasks.values()):
+            if not task.done():
+                task.cancel()
+        self._slow_button_tasks.clear()
 
         # Cleanup any tracked tempfiles.
         for path in list(self._media_temp_paths):
@@ -951,6 +958,12 @@ class LineAdapter(BasePlatformAdapter):
                 reply_token,
                 time.time() + LINE_REPLY_TOKEN_TTL_SECONDS,
             )
+            # Arm the slow-response postback timer against this token. If
+            # the agent finishes first the token is consumed and the timer
+            # no-ops; otherwise the token becomes a "Get answer" button
+            # before it expires, keeping slow turns deliverable without
+            # spending metered Push quota.
+            self._arm_slow_response_button(chat_id)
 
         # Handle media inbound — fetch the binary, cache it, and surface a
         # vision-tool-friendly local path on the MessageEvent.
@@ -1198,12 +1211,70 @@ class LineAdapter(BasePlatformAdapter):
     # Slow-LLM postback button — driven by _keep_typing
     # ------------------------------------------------------------------
 
-    async def _keep_typing(self, chat_id: str, *args, **kwargs) -> None:
-        """Override the base loop to fire the postback button at threshold.
+    async def _fire_postback(self, chat_id: str) -> None:
+        """After the threshold, swap the live reply token for a postback button.
 
-        We intentionally keep the base implementation behind us: it's
-        responsible for the typing-indicator heartbeat, while *this*
-        wrapper layers in the slow-LLM postback bubble at threshold.
+        Sleeps ``slow_response_threshold`` seconds; if the agent hasn't
+        responded by then (the reply token is still stashed), spends the
+        token on a Template Buttons bubble so the user can fetch the
+        eventual answer via postback — which mints a fresh reply token and
+        therefore costs no metered Push quota.
+        """
+        try:
+            await asyncio.sleep(self.slow_response_threshold)
+        except asyncio.CancelledError:
+            raise
+        # Only fire if we still have a usable reply token. If the agent
+        # already responded, _consume_reply_token has cleared it.
+        if chat_id not in self._reply_tokens:
+            return
+        if chat_id in self._pending_buttons:
+            return
+        rid = self._cache.register_pending(chat_id)
+        self._pending_buttons[chat_id] = rid
+        token, used = self._consume_reply_token(chat_id)
+        if not used:
+            self._pending_buttons.pop(chat_id, None)
+            return
+        msg = build_postback_button_message(
+            self.pending_text, self.button_label, rid
+        )
+        try:
+            await self._client.reply(token, [msg])
+            logger.info("LINE: sent slow-LLM postback button for chat %s (rid=%s)", chat_id, rid)
+        except Exception as exc:
+            logger.warning("LINE: postback button send failed: %s", exc)
+            self._pending_buttons.pop(chat_id, None)
+
+    def _arm_slow_response_button(self, chat_id: str) -> None:
+        """Start (or restart) the slow-response postback timer for a chat.
+
+        Armed directly from the inbound webhook: the gateway's processing
+        pipeline drives ``send_typing`` itself and never awaits the
+        adapter's ``_keep_typing`` loop, so a timer hung off that hook
+        would never run. A newer message for the same chat re-arms the
+        timer against its fresh reply token.
+        """
+        if self.slow_response_threshold <= 0 or not self._client or not chat_id:
+            return
+        if chat_id in self._pending_buttons:
+            return
+        prior = self._slow_button_tasks.pop(chat_id, None)
+        if prior and not prior.done():
+            prior.cancel()
+        task = asyncio.create_task(self._fire_postback(chat_id))
+        self._slow_button_tasks[chat_id] = task
+        task.add_done_callback(
+            lambda t, c=chat_id: self._slow_button_tasks.pop(c, None)
+        )
+
+    async def _keep_typing(self, chat_id: str, *args, **kwargs) -> None:
+        """Layer the slow-LLM postback timer over the typing heartbeat.
+
+        Kept for callers that do await the adapter's typing loop; the
+        primary arming site is ``_handle_message_event`` (see
+        ``_arm_slow_response_button``), which also covers the gateway
+        pipeline that drives ``send_typing`` directly.
         """
         if (
             self.slow_response_threshold <= 0
@@ -1213,43 +1284,8 @@ class LineAdapter(BasePlatformAdapter):
             await super()._keep_typing(chat_id, *args, **kwargs)
             return
 
-        async def _fire_postback() -> None:
-            try:
-                await asyncio.sleep(self.slow_response_threshold)
-            except asyncio.CancelledError:
-                raise
-            # Only fire if we still have a usable reply token. If the agent
-            # already responded, _consume_reply_token has cleared it.
-            if chat_id not in self._reply_tokens:
-                return
-            if chat_id in self._pending_buttons:
-                return
-            rid = self._cache.register_pending(chat_id)
-            self._pending_buttons[chat_id] = rid
-            token, used = self._consume_reply_token(chat_id)
-            if not used:
-                self._pending_buttons.pop(chat_id, None)
-                return
-            msg = build_postback_button_message(
-                self.pending_text, self.button_label, rid
-            )
-            try:
-                await self._client.reply(token, [msg])
-                logger.info("LINE: sent slow-LLM postback button for chat %s (rid=%s)", chat_id, rid)
-            except Exception as exc:
-                logger.warning("LINE: postback button send failed: %s", exc)
-                self._pending_buttons.pop(chat_id, None)
-
-        post_task = asyncio.create_task(_fire_postback())
-        try:
-            await super()._keep_typing(chat_id, *args, **kwargs)
-        finally:
-            if not post_task.done():
-                post_task.cancel()
-                try:
-                    await post_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+        self._arm_slow_response_button(chat_id)
+        await super()._keep_typing(chat_id, *args, **kwargs)
 
     async def interrupt_session_activity(self, session_key: str, chat_id: str) -> None:
         """Resolve any orphan PENDING postback so the button doesn't loop."""

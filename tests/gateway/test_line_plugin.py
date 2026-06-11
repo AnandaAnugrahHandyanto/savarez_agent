@@ -850,3 +850,82 @@ class TestOutboundMediaServing:
         # LINE clients fetch the video URL on tap, which can be hours after
         # send; 30 minutes caused 410s. Must cover at least a day.
         assert _line.MEDIA_TOKEN_TTL_SECONDS >= 24 * 3600
+
+
+# ---------------------------------------------------------------------------
+# 11. Slow-response postback button — armed from the inbound webhook
+#
+# Regression: the button timer lived only in _keep_typing, but the gateway
+# pipeline drives send_typing directly and never awaits the adapter's
+# _keep_typing loop, so the button NEVER fired. Slow turns (>50s reply-token
+# TTL) then fell back to metered Push — and were lost entirely once the
+# monthly Push quota was exhausted.
+# ---------------------------------------------------------------------------
+
+class TestSlowResponseButton:
+
+    @pytest.fixture
+    def adapter(self):
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+        })
+        ad = LineAdapter(cfg)
+        ad._client = MagicMock()
+        ad._client.reply = AsyncMock()
+        ad._client.push = AsyncMock()
+        ad._client.loading = AsyncMock()
+        ad.handle_message = AsyncMock()
+        return ad
+
+    def _event(self, text="hi"):
+        return {
+            "type": "message",
+            "replyToken": "rt-1",
+            "source": {"type": "user", "userId": "U9"},
+            "message": {"type": "text", "id": "m1", "text": text},
+        }
+
+    def test_slow_turn_fires_button_within_token_window(self, adapter):
+        adapter.slow_response_threshold = 0.05
+
+        async def run():
+            await adapter._handle_message_event(self._event())
+            await asyncio.sleep(0.2)
+
+        asyncio.run(run())
+        assert adapter._client.reply.called
+        sent = adapter._client.reply.call_args.args[1][0]
+        assert sent["type"] == "template"
+        assert "U9" in adapter._pending_buttons
+
+    def test_fast_turn_consumes_token_button_noop(self, adapter):
+        adapter.slow_response_threshold = 0.1
+
+        async def run():
+            await adapter._handle_message_event(self._event())
+            # Agent responds before the threshold: send() consumes the token.
+            await adapter.send("U9", "quick answer")
+            await asyncio.sleep(0.25)
+
+        asyncio.run(run())
+        assert "U9" not in adapter._pending_buttons
+        # Only the quick answer went out — no template button.
+        types = [c.args[1][0]["type"] for c in adapter._client.reply.call_args_list]
+        assert "template" not in types
+
+    def test_answer_routed_into_cache_after_button(self, adapter):
+        adapter.slow_response_threshold = 0.05
+
+        async def run():
+            await adapter._handle_message_event(self._event())
+            await asyncio.sleep(0.2)
+            return await adapter.send("U9", "slow answer")
+
+        result = asyncio.run(run())
+        assert result.success
+        rid = adapter._pending_buttons["U9"]
+        entry = adapter._cache.get(rid)
+        assert entry.state is State.READY
+        assert entry.payload == "slow answer"
