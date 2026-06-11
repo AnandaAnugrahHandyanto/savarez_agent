@@ -566,6 +566,46 @@ def _jarvis_gate_text(raw_text: str, cleaned_text: str) -> str:
     return raw_text
 
 
+def jarvis_reply_payload(paths: AgentsOSPaths, data: dict[str, Any]) -> dict[str, Any]:
+    text = (data.get("text") or data.get("voice_reply_short") or "").strip()
+    if not text:
+        raise ValueError("text is required")
+    stamp = _jarvis_slug_from_time()
+    reply_dir = paths.artifacts / "jarvis_replies"
+    audio_dir = paths.artifacts / "jarvis_reply_audio"
+    reply_dir.mkdir(parents=True, exist_ok=True)
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    audio_bytes = _decode_optional_audio(data)
+    audio_path: Path | None = None
+    if audio_bytes:
+        audio_path = audio_dir / f"{stamp}-jarvis-reply{_jarvis_audio_suffix(data.get('audio_mime'))}"
+        audio_path.write_bytes(audio_bytes)
+    provider = data.get("provider") or ("hermes-tts" if audio_bytes else "text-only-fallback")
+    reply_path = reply_dir / f"{stamp}-jarvis-reply.md"
+    payload = {
+        "local_only": True,
+        "execution_created": False,
+        "status": "audio_ready" if audio_path else "text_only",
+        "text": text,
+        "audio_artifact_path": str(audio_path) if audio_path else None,
+        "tts": {
+            "provider": provider,
+            "mime": data.get("audio_mime") if audio_path else None,
+            "fallback": audio_path is None,
+        },
+    }
+    reply_path.write_text(f"# Jarvis voice reply\n\n```json\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n```\n", encoding="utf-8")
+    artifact_id = f"artifact-jarvis-reply-{stamp}"
+    with connect(paths) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO artifacts(id,kind,title,path,task_id,workflow,created_at) VALUES(?,?,?,?,?,?,?)",
+            (artifact_id, "jarvis_voice_reply", "Jarvis voice reply", str(reply_path), None, "jarvis-voice-reply", utc_now()),
+        )
+        log_event(conn, "jarvis_voice_reply_created", payload={"artifact_id": artifact_id, "audio_path": str(audio_path) if audio_path else None, "execution_created": False})
+        conn.commit()
+    return {**payload, "reply_artifact_path": str(reply_path), "artifact_id": artifact_id}
+
+
 def jarvis_transcribe_payload(paths: AgentsOSPaths, data: dict[str, Any]) -> dict[str, Any]:
     """Persist a local push-to-talk artefact and return transcript + intent preview.
 
@@ -751,7 +791,7 @@ main {{ padding:24px 34px 60px; }} section {{ display:none; }} section.active {{
 <section id=\"operator\"><h2>Operator Loop / Judge / Evidence</h2><pre id=\"operatorPayload\"></pre></section>
 <section id=\"media\"><h2>Media Studio Browser v0</h2><div class=\"kv\">Read-only. No generation. No posting.</div><div id=\"mediaList\" class=\"grid\"></div></section>
 <section id=\"manage\"><h2>Manage / Update / Status</h2><pre id=\"managePayload\"></pre></section>
-<section id=\"voice\"><h2>Voice / Jarvis gated panel</h2><div class=\"card\"><h3>Jarvis / Oracle Briefing</h3><div class=\"kv\">wake/show/build/act · dry-run only · no always-on microphone · no computer-control</div><pre id=\"jarvisPayload\"></pre></div><div class=\"card\"><h3>Push-to-talk v0.1</h3><div class=\"kv\">Record command captures local browser audio, stores local artefacts, returns raw transcript + cleaned transcript + intent preview. Deterministic gate remains authority.</div><p><button id=\"recordJarvis\">Record command</button> <button id=\"stopJarvis\" disabled>Stop</button> <button id=\"previewJarvis\">Preview typed command</button></p><textarea id=\"jarvisTranscript\">Prikaži zadnje BP24 stanje</textarea><h3>Command Preview</h3><pre id=\"jarvisCommandCard\"></pre></div><pre id=\"voicePayload\"></pre></section>
+<section id=\"voice\"><h2>Voice / Jarvis gated panel</h2><div class=\"card\"><h3>Jarvis / Oracle Briefing</h3><div class=\"kv\">wake/show/build/act · dry-run only · no always-on microphone · no computer-control</div><pre id=\"jarvisPayload\"></pre></div><div class=\"card\"><h3>Push-to-talk v0.1</h3><div class=\"kv\">Record command captures local browser audio, stores local artefacts, returns raw transcript + cleaned transcript + intent preview. Deterministic gate remains authority.</div><p><button id=\"recordJarvis\">Record command</button> <button id=\"stopJarvis\" disabled>Stop</button> <button id=\"previewJarvis\">Preview typed command</button> <button id=\"replyJarvis\">Voice Reply</button></p><textarea id=\"jarvisTranscript\">Prikaži zadnje BP24 stanje</textarea><h3>Command Preview</h3><pre id=\"jarvisCommandCard\"></pre><h3>Voice Reply</h3><pre id=\"jarvisReply\"></pre><audio id=\"jarvisAudio\" controls></audio></div><pre id=\"voicePayload\"></pre></section>
 </main>
 <script id=\"bootstrap\" type=\"application/json\">{_json_safe(bootstrap)}</script>
 <script>
@@ -777,7 +817,9 @@ $('#draftIdea').addEventListener('click', async () => showPre('#ideaResult', awa
 $('#createIdea').addEventListener('click', async () => showPre('#ideaResult', await j('/api/idea-factory/action', {{method:'POST', body:JSON.stringify({{idea_text:$('#ideaText').value}})}})));
 let jarvisRecorder = null; let jarvisChunks = [];
 async function previewJarvisCommand() {{ showPre('#jarvisCommandCard', await j('/api/jarvis/preview', {{method:'POST', body:JSON.stringify({{transcript_text:$('#jarvisTranscript').value}})}})); }}
+async function replyJarvisCommand() {{ const payload = await j('/api/jarvis/reply', {{method:'POST', body:JSON.stringify({{text:$('#jarvisTranscript').value}})}}); showPre('#jarvisReply', payload); if (payload.audio_artifact_path) $('#jarvisAudio').src = payload.audio_artifact_path; }}
 $('#previewJarvis').addEventListener('click', previewJarvisCommand);
+$('#replyJarvis').addEventListener('click', replyJarvisCommand);
 $('#recordJarvis').addEventListener('click', async () => {{
  if (!navigator.mediaDevices || !window.MediaRecorder) {{ showPre('#jarvisCommandCard', {{status:'browser_audio_unavailable', execution_created:false}}); return; }}
  const stream = await navigator.mediaDevices.getUserMedia({{audio:true}}); jarvisChunks = []; jarvisRecorder = new MediaRecorder(stream);
@@ -853,6 +895,8 @@ class MissionControlHandler(BaseHTTPRequestHandler):
                 _send_json(self, jarvis_preview_payload(self.service.paths, data))
             elif path == "/api/jarvis/advisor":
                 _send_json(self, jarvis_model_advisor_payload(self.service.paths, data))
+            elif path == "/api/jarvis/reply":
+                _send_json(self, jarvis_reply_payload(self.service.paths, data))
             elif path == "/api/jarvis/transcribe":
                 _send_json(self, jarvis_transcribe_payload(self.service.paths, data))
             else:

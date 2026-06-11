@@ -13,6 +13,7 @@ from hermes_cli.agents_os_web import (
     jarvis_briefing_payload,
     jarvis_model_advisor_payload,
     jarvis_preview_payload,
+    jarvis_reply_payload,
     jarvis_transcribe_payload,
     knowledge_index_payload,
     media_assets_payload,
@@ -306,6 +307,44 @@ def test_jarvis_preview_gates_risky_commands_without_execution(agents_home):
     assert security["command_card"]["execution_created"] is False
 
 
+def test_jarvis_reply_stores_tts_audio_artifact_without_execution(agents_home):
+    paths = resolve_paths(None)
+
+    payload = jarvis_reply_payload(
+        paths,
+        {
+            "text": "Presuda. Rezultat. Sljedeći korak.",
+            "audio_base64": "SUQz",
+            "audio_mime": "audio/mpeg",
+            "provider": "hermes-tts",
+            "voice_reply_short": "Presuda. Rezultat. Sljedeći korak.",
+        },
+    )
+
+    assert payload["local_only"] is True
+    assert payload["execution_created"] is False
+    assert payload["status"] == "audio_ready"
+    assert payload["tts"]["provider"] == "hermes-tts"
+    assert payload["tts"]["fallback"] is False
+    assert Path(payload["audio_artifact_path"]).exists()
+    assert Path(payload["reply_artifact_path"]).exists()
+    assert "Presuda. Rezultat. Sljedeći korak." in Path(payload["reply_artifact_path"]).read_text(encoding="utf-8")
+
+
+def test_jarvis_reply_falls_back_to_text_only_without_audio(agents_home):
+    paths = resolve_paths(None)
+
+    payload = jarvis_reply_payload(paths, {"text": "Ovo treba odobrenje. Ništa ne izvršavam."})
+
+    assert payload["local_only"] is True
+    assert payload["execution_created"] is False
+    assert payload["status"] == "text_only"
+    assert payload["tts"]["provider"] == "text-only-fallback"
+    assert payload["tts"]["fallback"] is True
+    assert payload["audio_artifact_path"] is None
+    assert Path(payload["reply_artifact_path"]).exists()
+
+
 def test_root_html_contains_jarvis_oracle_briefing_panel(agents_home):
     service = AgentsOSService(resolve_paths(None))
     html = mission_control_html(service)
@@ -316,4 +355,6 @@ def test_root_html_contains_jarvis_oracle_briefing_panel(agents_home):
     assert "/api/jarvis/briefing" in html
     assert "/api/jarvis/transcribe" in html
     assert "/api/jarvis/preview" in html
+    assert "/api/jarvis/reply" in html
+    assert "Voice Reply" in html
     assert "wake/show/build/act" in html
