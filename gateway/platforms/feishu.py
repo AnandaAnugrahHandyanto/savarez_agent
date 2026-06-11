@@ -151,11 +151,11 @@ class _CardPhase(int):
 
 _PHASE_TRANSITIONS: Dict[int, set] = {
     _CardPhase.IDLE: {_CardPhase.CREATING},
-    _CardPhase.CREATING: {_CardPhase.STREAMING, _CardPhase.CREATION_FAILED, _CardPhase.TERMINATED},
+    _CardPhase.CREATING: {_CardPhase.STREAMING, _CardPhase.CREATION_FAILED, _CardPhase.TERMINATED, _CardPhase.IDLE},
     _CardPhase.STREAMING: {_CardPhase.COMPLETED, _CardPhase.ABORTED, _CardPhase.TERMINATED},
-    _CardPhase.COMPLETED: set(),
-    _CardPhase.ABORTED: set(),
-    _CardPhase.TERMINATED: set(),
+    _CardPhase.COMPLETED: {_CardPhase.IDLE},
+    _CardPhase.ABORTED: {_CardPhase.IDLE},
+    _CardPhase.TERMINATED: {_CardPhase.IDLE},
     _CardPhase.CREATION_FAILED: {_CardPhase.IDLE},
 }
 
@@ -311,6 +311,7 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 # delete-failures, not a capacity plan.
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
 _FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message text lookups
+_FEISHU_CLOSED_CARD_CACHE_SIZE = 500       # max tracked closed streaming card IDs (dedup)
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -1906,6 +1907,14 @@ class FeishuAdapter(BasePlatformAdapter):
             # Streaming card failed — fall through to post/text below.
             logger.warning("[Feishu] Streaming card send failed; falling back to post/text")
 
+        # --- Close any orphaned streaming card before post/text ----------------
+        # If a streaming card is still open for this chat (e.g. fallback path
+        # after edit failures, or CancelledError), close it so it doesn't get
+        # stuck in loading state alongside the new post/text message.
+        if self._streaming_card_enabled and self._streaming_cards.get(chat_id):
+            logger.info("[Feishu] Closing orphaned streaming card for chat=%s before post/text send", chat_id)
+            await self._close_streaming_siblings(chat_id)
+
         # --- Existing post/text path -----------------------------------------
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -1960,6 +1969,7 @@ class FeishuAdapter(BasePlatformAdapter):
         content: str,
         *,
         finalize: bool = False,
+        is_turn_final: bool = True,
     ) -> SendResult:
         """Edit a previously sent Feishu text/post message.
 
@@ -1973,12 +1983,14 @@ class FeishuAdapter(BasePlatformAdapter):
         # --- Streaming card edit path ----------------------------------------
         card_state = self._streaming_cards.get(chat_id, {}).get(message_id)
         if card_state is not None:
+            real_card_id = card_state.get("card_id", message_id)
             return await self._edit_streaming_card(
                 chat_id=chat_id,
-                card_id=message_id,
+                card_id=real_card_id,
                 content=content,
                 card_state=card_state,
                 finalize=finalize,
+                is_turn_final=is_turn_final,
             )
 
         # When a streaming card_id was already closed by a prior finalize call
@@ -2157,10 +2169,11 @@ class FeishuAdapter(BasePlatformAdapter):
             # send() to be called again within the same turn.
             existing = self._streaming_cards.get(chat_id)
             if existing:
-                card_id, card_state = next(iter(existing.items()))
+                _, card_state = next(iter(existing.items()))
+                real_card_id = card_state.get("card_id", next(iter(existing)))
                 result = await self._edit_streaming_card(
                     chat_id=chat_id,
-                    card_id=card_id,
+                    card_id=real_card_id,
                     content=content,
                     card_state=card_state,
                     finalize=False,
@@ -2168,7 +2181,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 if result.success:
                     logger.info(
                         "[Feishu] Reused existing streaming card: card_id=%s seq=%s",
-                        card_id, card_state.get("sequence"),
+                        real_card_id, card_state.get("sequence"),
                     )
                     return result
                 # Edit failed — close the stale card before creating new one.
@@ -2199,13 +2212,13 @@ class FeishuAdapter(BasePlatformAdapter):
                     "[Feishu] cardkit create failed: %s",
                     getattr(create_response, "msg", "unknown"),
                 )
-                self._transition_card_phase(chat_id, _CardPhase.CREATION_FAILED)
+                self._transition_card_phase(chat_id, _CardPhase.IDLE)
                 return None
 
             card_id = self._extract_response_field(create_response, "card_id")
             if not card_id:
                 logger.warning("[Feishu] cardkit create returned no card_id")
-                self._transition_card_phase(chat_id, _CardPhase.CREATION_FAILED)
+                self._transition_card_phase(chat_id, _CardPhase.IDLE)
                 return None
 
             # Step 2: Send interactive message referencing the card entity.
@@ -2225,24 +2238,32 @@ class FeishuAdapter(BasePlatformAdapter):
                     "[Feishu] Interactive card message send failed: %s",
                     getattr(msg_response, "msg", "unknown"),
                 )
-                self._transition_card_phase(chat_id, _CardPhase.CREATION_FAILED)
+                self._transition_card_phase(chat_id, _CardPhase.IDLE)
                 return None
 
             # Track streaming state (sequence starts at 1 — the initial
             # content was already baked into the card JSON).
-            self._streaming_cards.setdefault(chat_id, {})[card_id] = {
+            im_message_id = self._extract_response_field(msg_response, "message_id")
+            card_state = {
+                "card_id": card_id,
                 "sequence": 1,
-                "message_id": self._extract_response_field(msg_response, "message_id"),
+                "message_id": im_message_id,
                 "last_content": truncated,
                 "created_at": time.monotonic(),
             }
+            cards_dict = self._streaming_cards.setdefault(chat_id, {})
+            cards_dict[card_id] = card_state
+            # Also index by IM message_id so edit_message can find the card
+            # when stream_consumer passes the IM message_id back.
+            if im_message_id and im_message_id != card_id:
+                cards_dict[im_message_id] = card_state
             self._transition_card_phase(chat_id, _CardPhase.STREAMING)
 
-            logger.info("[Feishu] Streaming card created: card_id=%s msg_id=%s", card_id, self._extract_response_field(msg_response, "message_id"))
-            return SendResult(success=True, message_id=card_id)
+            logger.info("[Feishu] Streaming card created: card_id=%s msg_id=%s", card_id, im_message_id)
+            return SendResult(success=True, message_id=im_message_id or card_id)
 
         except Exception as exc:
-            self._transition_card_phase(chat_id, _CardPhase.CREATION_FAILED)
+            self._transition_card_phase(chat_id, _CardPhase.IDLE)
             logger.warning(
                 "[Feishu] Streaming card send failed: %s", exc, exc_info=True,
             )
@@ -2256,11 +2277,14 @@ class FeishuAdapter(BasePlatformAdapter):
         content: str,
         card_state: Dict[str, Any],
         finalize: bool = False,
+        is_turn_final: bool = True,
     ) -> SendResult:
         """Push updated text content to a streaming card element.
 
         Uses the cardkit v1 element-content API with an incrementing sequence
-        number.  On ``finalize=True`` the streaming mode is closed.
+        number.  On ``finalize=True AND is_turn_final=True`` the streaming
+        mode is closed.  Segment-break finalizes (tool boundaries) keep the
+        card open for reuse by the next segment.
         """
         if not HAS_CARDKIT:
             return SendResult(success=False, error="cardkit SDK not available")
@@ -2293,7 +2317,7 @@ class FeishuAdapter(BasePlatformAdapter):
             card_state["sequence"] = sequence
             card_state["last_content"] = truncated
 
-            if finalize:
+            if finalize and is_turn_final:
                 await self._close_streaming_card(chat_id, card_id, card_state=card_state)
 
             return SendResult(success=True, message_id=card_id)
@@ -2469,14 +2493,22 @@ class FeishuAdapter(BasePlatformAdapter):
                     "[Feishu] Streaming card close failed: %s", exc,
                 )
         # Remove from tracking and record as closed
-        self._streaming_cards.get(chat_id, {}).pop(card_id, None)
-        if not self._streaming_cards.get(chat_id):
-            self._streaming_cards.pop(chat_id, None)
+        chat_cards = self._streaming_cards.get(chat_id)
+        if chat_cards:
+            # Remove both the card_id key and the IM message_id alias.
+            im_msg_id = card_state.get("message_id") if card_state else None
+            chat_cards.pop(card_id, None)
+            if im_msg_id and im_msg_id != card_id:
+                chat_cards.pop(im_msg_id, None)
+            if not chat_cards:
+                self._streaming_cards.pop(chat_id, None)
         self._closed_streaming_card_ids[card_id] = None
-        if len(self._closed_streaming_card_ids) > 500:
+        if im_msg_id and im_msg_id != card_id:
+            self._closed_streaming_card_ids[im_msg_id] = None
+        while len(self._closed_streaming_card_ids) > _FEISHU_CLOSED_CARD_CACHE_SIZE:
             self._closed_streaming_card_ids.popitem(last=False)
         # Reset to IDLE so the next turn can create a new card.
-        self._card_phases[chat_id] = _CardPhase.IDLE
+        self._transition_card_phase(chat_id, _CardPhase.IDLE)
 
     async def _close_streaming_siblings(self, chat_id: str) -> None:
         """Finalize all open streaming cards for *chat_id*.
@@ -2487,11 +2519,16 @@ class FeishuAdapter(BasePlatformAdapter):
         cards = self._streaming_cards.pop(chat_id, None)
         if not cards:
             return
-        # We already popped the cards dict from _streaming_cards, so we
-        # must pass the saved state directly to _close_streaming_card
-        # rather than letting it re-read from the (now-empty) tracking dict.
-        for card_id, card_state in cards.items():
-            await self._close_streaming_card(chat_id, card_id, card_state=card_state)
+        # Dedup: multiple keys (card_id + IM message_id) may point to the
+        # same card_state object.  Close each unique card_state once.
+        seen_states = set()
+        for key, card_state in cards.items():
+            state_id = id(card_state)
+            if state_id in seen_states:
+                continue
+            seen_states.add(state_id)
+            real_card_id = card_state.get("card_id", key)
+            await self._close_streaming_card(chat_id, real_card_id, card_state=card_state)
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
