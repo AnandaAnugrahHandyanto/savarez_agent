@@ -154,9 +154,12 @@ def test_no_registration_without_stable_subagent_id(registry):
 
 
 def test_caller_parent_task_id_overrides_engine_default(registry):
-    """registry_parent_task_id relabels ONLY the registry record's
-    parent_task_id; the legacy _active_subagents dict keeps the engine's
-    _parent_subagent_id (engine behavior unchanged)."""
+    """registry_parent_task_id relabels the registry record's parent_task_id.
+
+    Post-Step-7 cutover there is a single ledger: list_active_subagents() is
+    a thin wrapper over the registry, so the legacy-shaped view reflects the
+    same caller-supplied parent (pre-cutover the dual-written TUI dict kept
+    the engine's _parent_subagent_id — that branch pins the old assertion)."""
     from tools import delegate_tool
 
     sid = "sa-0-23parent"
@@ -194,7 +197,7 @@ def test_caller_parent_task_id_overrides_engine_default(registry):
 
     assert result["status"] == "completed"
     assert seen["parent_task_id"] == "task-caller-1"
-    assert seen["legacy_parent_id"] == "sa-engine-parent"
+    assert seen["legacy_parent_id"] == "task-caller-1"
     # The terminal record keeps the caller link for snapshot/persistence.
     assert registry.get(sid).parent_task_id == "task-caller-1"
 
