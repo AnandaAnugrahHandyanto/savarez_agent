@@ -137,6 +137,17 @@ pub struct WindowsRipgrepRuntimeStagePlan {
     pub rg_exe: PathBuf,
 }
 
+/// Native Unix ripgrep runtime installation plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnixRipgrepRuntimeStagePlan {
+    pub version: &'static str,
+    pub archive_name: String,
+    pub download_url: String,
+    pub archive_path: PathBuf,
+    pub install_dir: PathBuf,
+    pub rg_bin: PathBuf,
+}
+
 /// Native Unix Node runtime installation plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnixNodeRuntimeStagePlan {
@@ -1373,6 +1384,39 @@ pub fn windows_ripgrep_runtime_stage_plan(
     })
 }
 
+/// Build a Unix ripgrep runtime plan matching pinned release assets.
+pub fn unix_ripgrep_runtime_stage_plan(
+    hermes_home: &Path,
+    target_os: &str,
+    arch: &str,
+) -> Result<UnixRipgrepRuntimeStagePlan> {
+    let version = "15.1.0";
+    let target = match (target_os, arch) {
+        ("linux", "arm64") => "aarch64-unknown-linux-gnu",
+        ("linux", "armv7l") => "armv7-unknown-linux-gnueabihf",
+        ("linux", "x64") => "x86_64-unknown-linux-musl",
+        ("macos", "arm64") => "aarch64-apple-darwin",
+        ("macos", "x64") => "x86_64-apple-darwin",
+        (os, arch) => return Err(anyhow!("unsupported Unix ripgrep target: {os}-{arch}")),
+    };
+    let archive_name = format!("ripgrep-{version}-{target}.tar.gz");
+    let download_url =
+        format!("https://github.com/BurntSushi/ripgrep/releases/download/{version}/{archive_name}");
+    let archive_path = hermes_home
+        .join("bootstrap-cache")
+        .join(&archive_name);
+    let install_dir = hermes_home.join("bin");
+    let rg_bin = install_dir.join("rg");
+    Ok(UnixRipgrepRuntimeStagePlan {
+        version,
+        archive_name,
+        download_url,
+        archive_path,
+        install_dir,
+        rg_bin,
+    })
+}
+
 /// Install Windows ripgrep natively and leave ffmpeg to script fallback if needed.
 pub async fn install_windows_system_packages_stage(
     hermes_home: &Path,
@@ -1444,6 +1488,79 @@ pub async fn install_windows_system_packages_stage(
 
     Ok(serde_json::json!({
         "ripgrep": find_executable_on_path("rg", &refreshed_path, &pathext),
+        "ffmpeg": ffmpeg,
+        "archive": archive_name,
+        "archiveSource": archive_source_kind,
+    }))
+}
+
+/// Install Unix ripgrep natively and leave ffmpeg to shell fallback if needed.
+pub async fn install_unix_system_packages_stage(
+    hermes_home: &Path,
+    bundled_tools_dir: Option<&Path>,
+) -> Result<serde_json::Value> {
+    if cfg!(target_os = "windows") {
+        return Err(anyhow!(
+            "native Unix system package stage is not available on Windows"
+        ));
+    }
+
+    let path_env = std::env::var_os("PATH").unwrap_or_default();
+    let managed_rg = managed_tool_path(hermes_home, "rg");
+    let rg_before =
+        find_executable_on_path("rg", &path_env, "").or_else(|| managed_rg.is_file().then_some(managed_rg.clone()));
+    let mut archive_name = None;
+    let mut archive_source_kind = None;
+
+    if rg_before.is_none() {
+        let arch = current_unix_node_arch_slug()?;
+        let plan = unix_ripgrep_runtime_stage_plan(hermes_home, std::env::consts::OS, &arch)?;
+        let archive_source =
+            resolve_bootstrap_archive_source(hermes_home, bundled_tools_dir, &plan.archive_name);
+        if archive_source.kind == BootstrapArchiveSourceKind::Cache {
+            crate::artifact::download_to_cache(
+                crate::artifact::DownloadSpec {
+                    url: plan.download_url.clone(),
+                    user_agent: "Hermes-Setup",
+                    expected_sha256: None,
+                },
+                &archive_source.path,
+            )
+            .await
+            .with_context(|| format!("downloading {}", plan.archive_name))?;
+        }
+
+        install_unix_ripgrep_archive(&archive_source.path, &plan.install_dir)?;
+        if !plan.rg_bin.is_file() {
+            return Err(anyhow!(
+                "ripgrep extraction did not produce {}",
+                plan.rg_bin.display()
+            ));
+        }
+        let status = Command::new(&plan.rg_bin)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .with_context(|| format!("checking {}", plan.rg_bin.display()))?;
+        if !status.success() {
+            return Err(anyhow!("installed ripgrep failed version check"));
+        }
+        prepend_process_path(&plan.install_dir);
+        archive_name = Some(plan.archive_name);
+        archive_source_kind = Some(archive_source.kind.as_str().to_string());
+    } else if rg_before.as_deref() == Some(managed_rg.as_path()) {
+        prepend_process_path(&hermes_home.join("bin"));
+    }
+
+    let refreshed_path = std::env::var_os("PATH").unwrap_or_default();
+    let ffmpeg = find_executable_on_path("ffmpeg", &refreshed_path, "");
+    if ffmpeg.is_none() {
+        return Err(anyhow!("ffmpeg is not available; shell fallback required"));
+    }
+
+    Ok(serde_json::json!({
+        "ripgrep": find_executable_on_path("rg", &refreshed_path, ""),
         "ffmpeg": ffmpeg,
         "archive": archive_name,
         "archiveSource": archive_source_kind,
@@ -2599,6 +2716,47 @@ fn install_windows_ripgrep_archive(archive_path: &Path, install_dir: &Path) -> R
     cleanup
 }
 
+fn install_unix_ripgrep_archive(archive_path: &Path, install_dir: &Path) -> Result<()> {
+    fs::create_dir_all(install_dir)
+        .with_context(|| format!("creating ripgrep install dir {}", install_dir.display()))?;
+    let tmp_dir = install_dir.join("ripgrep-extracting");
+    remove_path_if_exists(&tmp_dir)?;
+    fs::create_dir_all(&tmp_dir)
+        .with_context(|| format!("creating ripgrep extraction directory {}", tmp_dir.display()))?;
+
+    let result: Result<()> = (|| {
+        let status = Command::new("tar")
+            .args(["-xf"])
+            .arg(archive_path)
+            .arg("-C")
+            .arg(&tmp_dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .with_context(|| format!("extracting {}", archive_path.display()))?;
+        if !status.success() {
+            return Err(anyhow!(
+                "ripgrep archive extraction failed with exit {:?}",
+                status.code()
+            ));
+        }
+        let rg = find_file_named(&tmp_dir, "rg")?;
+        let rg_dest = install_dir.join("rg");
+        fs::copy(&rg, &rg_dest).with_context(|| {
+            format!(
+                "copying ripgrep binary {} to {}",
+                rg.display(),
+                rg_dest.display()
+            )
+        })?;
+        make_executable(&rg_dest)?;
+        Ok(())
+    })();
+    let cleanup = remove_path_if_exists(&tmp_dir);
+    result?;
+    cleanup
+}
+
 fn find_windows_git_bash(install_dir: &Path) -> Option<PathBuf> {
     [
         install_dir.join("bin").join("bash.exe"),
@@ -3007,6 +3165,9 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
     if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("system-packages") {
         return StageExecutionMode::NativeWithScriptFallback;
     }
+    if !cfg!(target_os = "windows") && name.eq_ignore_ascii_case("system-packages") {
+        return StageExecutionMode::NativeWithScriptFallback;
+    }
     if !cfg!(target_os = "windows") && name.eq_ignore_ascii_case("prerequisites") {
         return StageExecutionMode::ProbeThenScript;
     }
@@ -3160,14 +3321,9 @@ mod tests {
         assert_eq!(plan[5].execution, node_execution);
         assert_eq!(plan[5].rust_probe, !cfg!(target_os = "windows"));
         assert_eq!(plan[5].script_fallback, true);
-        let system_packages_execution = if cfg!(target_os = "windows") {
-            StageExecutionMode::NativeWithScriptFallback
-        } else {
-            StageExecutionMode::ProbeThenScript
-        };
         assert_eq!(plan[6].name, "system-packages");
-        assert_eq!(plan[6].execution, system_packages_execution);
-        assert_eq!(plan[6].rust_probe, !cfg!(target_os = "windows"));
+        assert_eq!(plan[6].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[6].rust_probe, false);
         assert_eq!(plan[6].script_fallback, true);
         assert_eq!(plan[7].name, "platform-sdks");
         assert_eq!(plan[7].execution, StageExecutionMode::NativeWithScriptFallback);
@@ -3503,6 +3659,45 @@ mod tests {
 
         assert_eq!(std::fs::read(install_dir.join("rg.exe")).unwrap(), b"fake rg");
         assert!(!install_dir.join("ripgrep-extracting").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unix_ripgrep_runtime_stage_plan_matches_pinned_release_assets() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-unix-ripgrep-runtime-plan-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+
+        let linux_x64 = unix_ripgrep_runtime_stage_plan(&hermes_home, "linux", "x64").unwrap();
+        assert_eq!(linux_x64.version, "15.1.0");
+        assert_eq!(
+            linux_x64.archive_name,
+            "ripgrep-15.1.0-x86_64-unknown-linux-musl.tar.gz"
+        );
+        assert_eq!(
+            linux_x64.download_url,
+            concat!(
+                "https://github.com/BurntSushi/ripgrep/releases/download/",
+                "15.1.0/ripgrep-15.1.0-x86_64-unknown-linux-musl.tar.gz"
+            )
+        );
+        assert_eq!(linux_x64.install_dir, hermes_home.join("bin"));
+        assert_eq!(linux_x64.rg_bin, hermes_home.join("bin").join("rg"));
+
+        let linux_arm = unix_ripgrep_runtime_stage_plan(&hermes_home, "linux", "arm64").unwrap();
+        assert_eq!(
+            linux_arm.archive_name,
+            "ripgrep-15.1.0-aarch64-unknown-linux-gnu.tar.gz"
+        );
+        let mac_arm = unix_ripgrep_runtime_stage_plan(&hermes_home, "macos", "arm64").unwrap();
+        assert_eq!(
+            mac_arm.archive_name,
+            "ripgrep-15.1.0-aarch64-apple-darwin.tar.gz"
+        );
+        assert!(unix_ripgrep_runtime_stage_plan(&hermes_home, "freebsd", "x64").is_err());
+
         let _ = std::fs::remove_dir_all(&root);
     }
 

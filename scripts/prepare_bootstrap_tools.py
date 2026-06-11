@@ -57,6 +57,13 @@ RIPGREP_ARCHIVE_NAMES = {
     "x86": f"ripgrep-{RIPGREP_VERSION}-i686-pc-windows-msvc.zip",
 }
 
+UNIX_RIPGREP_ARCHIVE_NAMES = {
+    ("linux", "x64"): f"ripgrep-{RIPGREP_VERSION}-x86_64-unknown-linux-musl.tar.gz",
+    ("linux", "arm64"): f"ripgrep-{RIPGREP_VERSION}-aarch64-unknown-linux-gnu.tar.gz",
+    ("macos", "x64"): f"ripgrep-{RIPGREP_VERSION}-x86_64-apple-darwin.tar.gz",
+    ("macos", "arm64"): f"ripgrep-{RIPGREP_VERSION}-aarch64-apple-darwin.tar.gz",
+}
+
 
 @dataclass(frozen=True)
 class ArchiveSpec:
@@ -154,7 +161,8 @@ def archive_specs_for_target(
         return archive_specs_for_arch(arch, node_archive_name)
 
     archive_name = UNIX_UV_ARCHIVE_NAMES.get((normalized_platform, arch))
-    if archive_name is None:
+    ripgrep_archive_name = UNIX_RIPGREP_ARCHIVE_NAMES.get((normalized_platform, arch))
+    if archive_name is None or ripgrep_archive_name is None:
         raise ValueError(f"unsupported Unix uv platform: {normalized_platform}-{arch}")
     if node_archive_name is None:
         raise ValueError("Unix bootstrap tools require a Node.js archive name")
@@ -166,7 +174,14 @@ def archive_specs_for_target(
         ArchiveSpec(
             name=archive_name,
             url=f"https://github.com/astral-sh/uv/releases/latest/download/{archive_name}",
-        )
+        ),
+        ArchiveSpec(
+            name=ripgrep_archive_name,
+            url=(
+                "https://github.com/BurntSushi/ripgrep/releases/download/"
+                f"{RIPGREP_VERSION}/{ripgrep_archive_name}"
+            ),
+        ),
     ]
 
 

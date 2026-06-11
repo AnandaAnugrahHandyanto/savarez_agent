@@ -192,6 +192,8 @@ language-specific setup where needed.
 - Windows `system-packages` now installs ripgrep natively from a bundled or cached release ZIP before falling back to
   PowerShell for ffmpeg/package-manager recovery, reducing one common package-manager dependency without dropping TTS
   voice-message support.
+- Unix `system-packages` now mirrors that native-first ripgrep path with pinned Linux/macOS tarballs, then falls back to
+  `install.sh` for ffmpeg/package-manager recovery so voice-message support remains intact.
 - Windows `uv` now has a Rust native-first GitHub release ZIP path for x64, ARM64, and x86, installing `uv.exe` into
   `$HERMES_HOME/bin` and preserving the PowerShell astral installer as fallback for download, extraction, or version
   check failures.
@@ -365,6 +367,8 @@ language-specific setup where needed.
   packaging, then writes `bootstrap-tools-manifest.json` with archive URL, size, and SHA-256 metadata for review.
 - Windows installer release preparation now includes the pinned ripgrep ZIP used by the native `system-packages`
   stage, so packaged installers can provide fast file search without first invoking winget/choco/scoop.
+- Linux and macOS release preparation now include pinned ripgrep tarballs used by the Unix native `system-packages`
+  stage, reducing first-run apt/brew work while keeping ffmpeg outside the bundled payload.
 - The same release preparation helper now supports `--platform linux|macos` for x64/arm64 Node and uv tarballs, matching
   the Unix Rust Node/uv installer asset matrix when future macOS/Linux installer packaging wires in bundled tools.
 - A manual Unix installer workflow now builds Linux and macOS Tauri setup artifacts with matching bundled Node/`uv`

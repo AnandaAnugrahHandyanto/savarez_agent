@@ -105,10 +105,14 @@ class PrepareBootstrapToolsTests(unittest.TestCase):
             [
                 "node-v22.19.1-linux-x64.tar.xz",
                 "uv-x86_64-unknown-linux-gnu.tar.gz",
+                "ripgrep-15.1.0-x86_64-unknown-linux-musl.tar.gz",
             ],
         )
         self.assertTrue(
             linux_specs[1].url.endswith("/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz")
+        )
+        self.assertTrue(
+            linux_specs[2].url.endswith("/15.1.0/ripgrep-15.1.0-x86_64-unknown-linux-musl.tar.gz")
         )
 
         mac_specs = module.archive_specs_for_target(
@@ -121,6 +125,7 @@ class PrepareBootstrapToolsTests(unittest.TestCase):
             [
                 "node-v22.19.1-darwin-arm64.tar.xz",
                 "uv-aarch64-apple-darwin.tar.gz",
+                "ripgrep-15.1.0-aarch64-apple-darwin.tar.gz",
             ],
         )
 
