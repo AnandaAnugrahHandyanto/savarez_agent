@@ -1140,21 +1140,22 @@ def _get_env_config() -> Dict[str, Any]:
                         cwd, env_type, default_cwd)
             cwd = default_cwd
     elif env_type == "wsl" and cwd:
-        # WSL is not a container.  Reject Windows-style paths (drive
-        # letters, UNC) and relative paths — all invalid inside WSL's
-        # bash.  Let WslEnvironment probe $HOME instead.
+        # WSL is not a container.  Try to convert Windows-style CWDs
+        # (C:\Users\..., D:\project) to WSL mount points so desktop
+        # users keep their working directory when switching backends.
         import re
-        _WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:")
-        def _is_linux_absolute(p: str) -> bool:
-            return (
-                os.path.isabs(p)
-                and p.startswith("/")
-                and not p.startswith("\\")
-                and not _WIN_DRIVE_RE.match(p)
-            )
-        if not _is_linux_absolute(cwd):
+        _WIN_DRIVE_RE = re.compile(r"^([A-Za-z]):[/\\]?(.*)$")
+        _m = _WIN_DRIVE_RE.match(cwd)
+        if _m:
+            drive = _m.group(1).lower()
+            tail = _m.group(2).replace("\\", "/")
+            cwd = f"/mnt/{drive}/{tail}" if tail else f"/mnt/{drive}"
+            logger.info("Converted Windows CWD %r → %r for wsl backend",
+                        _m.group(0), cwd)
+        elif not cwd.startswith("/"):
+            # Relative path or non-Windows non-Linux — fall back
             logger.info("Ignoring TERMINAL_CWD=%r for wsl backend "
-                        "(not a Linux absolute path). "
+                        "(not an absolute path). "
                         "Falling back to $HOME probe.",
                         cwd)
             cwd = ""  # empty → WslEnvironment probes $HOME

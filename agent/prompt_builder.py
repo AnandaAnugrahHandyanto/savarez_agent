@@ -727,16 +727,16 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
 _BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
 
 _WSL_BACKEND_HINT = (
-    "Terminal backend: wsl. Your `terminal` tool executes inside WSL2 "
-    "(a Linux environment running alongside Windows). "
-    "Your `read_file`, `write_file`, `patch`, and `search_files` tools "
-    "operate on the Windows host filesystem.\n"
+    "Terminal backend: wsl. ALL your tools — `terminal`, `read_file`, "
+    "`write_file`, `patch`, and `search_files` — execute inside WSL2, "
+    "a full Linux environment running on your Windows machine.\n"
     "\n"
-    "Use **Linux paths** for terminal commands (e.g. `/home/agents/...`, "
-    "`/mnt/c/Users/...` to reach Windows files from inside WSL). "
-    "Use **Windows paths** for file tools (e.g. `C:/Users/...`). "
-    "`pwd` inside terminal returns a Linux path; `read_file` and "
-    "`write_file` expect Windows paths."
+    "Use **Linux paths** consistently for all tools.  WSL mounts your "
+    "Windows drives under `/mnt/`:\n"
+    "  - `C:\\Users\\<you>\\Desktop`  →  `/mnt/c/Users/<you>/Desktop`\n"
+    "  - `D:\\project`                 →  `/mnt/d/project`\n"
+    "`pwd` returns a Linux path; `read_file` and `write_file` expect "
+    "Linux paths just like `terminal` does."
 )
 
 
