@@ -250,7 +250,7 @@ language-specific setup where needed.
 - Unix bootstrap manifests now expose the same `platform-sdks` stage after config preparation, so Linux and macOS GUI
   installs also skip SDK work when no messaging platform tokens are configured and run native-first targeted SDK
   recovery when tokens are present.
-- `bootstrap-marker` now runs as a native Rust stage in the Tauri bootstrapper.
+- `bootstrap-marker` now runs as a native Rust stage in the Tauri bootstrapper on Windows and Unix manifests.
 - `config-templates` and the Unix `config` stage now run as native Rust stages while preserving Python
   `tools/skills_sync.py` when available and retaining the existing bundled-skill copy fallback.
 - CI runs bootstrap-installer Rust unit tests in addition to the manager and desktop platform tests.

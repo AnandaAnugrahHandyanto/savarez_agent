@@ -782,6 +782,12 @@ fn unix_manifest_stages(include_desktop: bool) -> Vec<StageInfo> {
     if include_desktop {
         stages.push(stage_info("desktop", "Build desktop app", "runtime", false));
     }
+    stages.push(stage_info(
+        "bootstrap-marker",
+        "Mark install complete",
+        "runtime",
+        false,
+    ));
     stages.push(stage_info("complete", "Finish install", "runtime", false));
     stages
 }
@@ -3146,6 +3152,7 @@ mod tests {
                 "platform-sdks",
                 "setup",
                 "gateway",
+                "bootstrap-marker",
                 "complete",
             ]
         );

@@ -288,6 +288,7 @@ emit_manifest() {
         '"needs_user_input":true},' \
         '{"name":"gateway","title":"Configure gateway service","category":"configuration","needs_user_input":true},' \
         "$desktop_stage" \
+        '{"name":"bootstrap-marker","title":"Mark install complete","category":"runtime","needs_user_input":false},' \
         '{"name":"complete","title":"Finish install","category":"runtime","needs_user_input":false}]}'
     printf '\n'
 }
@@ -1841,6 +1842,28 @@ for module, spec in missing:
 PY
 }
 
+write_bootstrap_marker() {
+    local marker_path="$INSTALL_DIR/.hermes-bootstrap-complete"
+    local commit="${INSTALL_COMMIT:-}"
+    local branch="${BRANCH:-main}"
+    local completed_at
+
+    if [ -z "$commit" ] && command -v git >/dev/null 2>&1 && [ -d "$INSTALL_DIR/.git" ]; then
+        commit="$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null || true)"
+    fi
+    completed_at="$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")"
+
+    {
+        printf '{\n'
+        printf '  "schemaVersion": 1,\n'
+        printf '  "pinnedCommit": "%s",\n' "$(json_escape "$commit")"
+        printf '  "pinnedBranch": "%s",\n' "$(json_escape "$branch")"
+        printf '  "completedAt": "%s"\n' "$(json_escape "$completed_at")"
+        printf '}\n'
+    } > "$marker_path"
+    log_success "Wrote bootstrap marker: $marker_path"
+}
+
 find_system_browser() {
     # Prefer a user-specified browser path, then common Linux/macOS Chrome and
     # Chromium command names.  Arch-family distributions commonly ship plain
@@ -2811,6 +2834,12 @@ run_stage_body() {
             # so install_desktop can find npm instead of silently skipping.
             check_node
             install_desktop
+            ;;
+        bootstrap-marker)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            write_bootstrap_marker
             ;;
         complete)
             detect_os
