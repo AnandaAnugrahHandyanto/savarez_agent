@@ -18,6 +18,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shlex
 import sys
 import time
@@ -992,6 +993,38 @@ def _profile_author() -> str:
         return "user"
 
 
+def _infer_origin_subscription_from_body(body: Optional[str]) -> dict[str, str] | None:
+    """Infer a terminal ACK subscription from machine-readable body prose.
+
+    This intentionally recognizes only narrow, explicit shapes used in Kanban
+    task contracts, e.g. ``Origin/return_to: Discord ... (<#149...>)`` or
+    ``chat_id=149...``. It is a recovery rail for terminal/script-created
+    cards, not a general natural-language parser.
+    """
+    if not body:
+        return None
+    origin_line = ""
+    for line in str(body).splitlines():
+        if re.search(r"\b(?:origin|return_to|return-to)\b", line, re.I):
+            origin_line = line.strip()
+            break
+    if not origin_line:
+        return None
+    if not re.search(r"\bdiscord\b", origin_line, re.I):
+        return None
+    chat_match = re.search(r"<#(\d{5,})>", origin_line)
+    if chat_match is None:
+        chat_match = re.search(r"\bchat_id\s*[=:]\s*(\d{5,})\b", origin_line, re.I)
+    if chat_match is None:
+        return None
+    thread_match = re.search(r"\b(?:thread_id|topic_id)\s*[=:]\s*(\d{5,})\b", origin_line, re.I)
+    return {
+        "platform": "discord",
+        "chat_id": chat_match.group(1),
+        "thread_id": thread_match.group(1) if thread_match else "",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Boards management (hermes kanban boards …)
 # ---------------------------------------------------------------------------
@@ -1329,6 +1362,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    inferred_origin = _infer_origin_subscription_from_body(getattr(args, "body", None))
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
@@ -1351,6 +1385,16 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
         )
+        if inferred_origin:
+            kb.add_notify_sub(
+                conn,
+                task_id=task_id,
+                platform=inferred_origin["platform"],
+                chat_id=inferred_origin["chat_id"],
+                thread_id=inferred_origin.get("thread_id") or None,
+                notifier_profile=_profile_author(),
+                trigger_agent=True,
+            )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
         print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))

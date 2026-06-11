@@ -1,4 +1,5 @@
 import asyncio
+import json
 import pytest
 
 from pathlib import Path
@@ -105,6 +106,68 @@ def test_notify_sub_trigger_agent_persists_and_preserves_owner(kanban_home):
 
     assert len(subs) == 1
     assert subs[0]["notifier_profile"] == "owner-a"
+    assert int(subs[0]["trigger_agent"]) == 1
+
+
+def test_child_task_inherits_parent_notify_subscription(kanban_home):
+    """Graph children must inherit the parent's ACK edge."""
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="root", assignee=None)
+        kb.add_notify_sub(
+            conn,
+            task_id=parent,
+            platform="discord",
+            chat_id="1499390151393284106",
+            thread_id="123",
+            user_id="u1",
+            notifier_profile="default",
+            trigger_agent=True,
+        )
+        child = kb.create_task(
+            conn,
+            title="review child",
+            assignee="ccreviewer",
+            parents=[parent],
+        )
+        subs = kb.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "discord"
+    assert subs[0]["chat_id"] == "1499390151393284106"
+    assert subs[0]["thread_id"] == "123"
+    assert subs[0]["user_id"] == "u1"
+    assert subs[0]["notifier_profile"] == "default"
+    assert int(subs[0]["trigger_agent"]) == 1
+
+
+def test_cli_create_infers_notify_subscription_from_origin_return_to_body(kanban_home):
+    """CLI-created cards with explicit Origin/return_to prose keep ACKs."""
+    import hermes_cli.kanban as kc
+    import hermes_cli.kanban_db as kb
+
+    body = "Origin/return_to: Discord Devhub #research (<#1499390151393284106>)\nDo the work."
+    out = kc.run_slash(
+        "create 'origin prose task' "
+        f"--body {json.dumps(body)} "
+        "--assignee ccreviewer --json"
+    )
+    payload = json.loads(out)
+    task_id = payload["id"]
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, task_id)
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert subs[0]["platform"] == "discord"
+    assert subs[0]["chat_id"] == "1499390151393284106"
     assert int(subs[0]["trigger_agent"]) == 1
 
 

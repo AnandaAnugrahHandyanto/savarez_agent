@@ -2271,6 +2271,47 @@ def create_task(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),
                     )
+                if parents:
+                    # ACK-edge inheritance: if a parent/root task is already
+                    # wired for terminal notifications, every child in the
+                    # durable graph must inherit that return path. Otherwise an
+                    # impl/review child can BLOCK while the originating channel
+                    # only hears about the final fan-in (or nothing at all).
+                    placeholders = ",".join("?" * len(parents))
+                    parent_subs = conn.execute(
+                        "SELECT * FROM kanban_notify_subs "
+                        f"WHERE task_id IN ({placeholders}) "
+                        "ORDER BY created_at ASC",
+                        parents,
+                    ).fetchall()
+                    for sub in parent_subs:
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO kanban_notify_subs
+                                (task_id, platform, chat_id, thread_id, user_id,
+                                 notifier_profile, trigger_agent, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                task_id,
+                                sub["platform"],
+                                sub["chat_id"],
+                                sub["thread_id"] or "",
+                                sub["user_id"],
+                                sub["notifier_profile"],
+                                1 if sub["trigger_agent"] else 0,
+                                now,
+                            ),
+                        )
+                        if sub["trigger_agent"]:
+                            conn.execute(
+                                """
+                                UPDATE kanban_notify_subs
+                                   SET trigger_agent = 1
+                                 WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+                                """,
+                                (task_id, sub["platform"], sub["chat_id"], sub["thread_id"] or ""),
+                            )
                 _append_event(
                     conn,
                     task_id,
