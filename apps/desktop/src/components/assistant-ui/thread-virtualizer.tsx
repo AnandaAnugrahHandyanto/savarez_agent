@@ -276,6 +276,7 @@ function useThreadScrollAnchor({
       lastTopRef.current = el.scrollTop
       lastHeightRef.current = el.scrollHeight
       lastClientHeightRef.current = el.clientHeight
+
       return
     }
 
@@ -403,7 +404,20 @@ function useThreadScrollAnchor({
   const rafIdRef = useRef(0)
   const totalSize = virtualizer.getTotalSize()
   useLayoutEffect(() => {
-    if (!enabled) return
+    const cancelPendingPin = () => {
+      if (rafIdRef.current) {
+        cancelAnimationFrame(rafIdRef.current)
+        rafIdRef.current = 0
+      }
+
+      pinPendingRef.current = false
+    }
+
+    if (!enabled) {
+      cancelPendingPin()
+
+      return cancelPendingPin
+    }
 
     const prevSize = prevTotalSizeRef.current
     const grew = prevSize !== null && totalSize > prevSize
@@ -415,23 +429,16 @@ function useThreadScrollAnchor({
         rafIdRef.current = requestAnimationFrame(() => {
           pinPendingRef.current = false
           rafIdRef.current = 0
+
           if (enabled && stickyBottomRef.current) {
             pinToBottom()
           }
         })
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [totalSize, enabled, pinToBottom])
 
-  // Cancel any pending RAF on unmount or when disabled.
-  useLayoutEffect(() => {
-    if (!enabled && rafIdRef.current) {
-      cancelAnimationFrame(rafIdRef.current)
-      rafIdRef.current = 0
-      pinPendingRef.current = false
-    }
-  }, [enabled])
+    return cancelPendingPin
+  }, [enabled, pinToBottom, stickyBottomRef, totalSize])
 
   // Jump to bottom on session change OR when an empty thread first gets
   // content. Both share the same intent and the same effect.
