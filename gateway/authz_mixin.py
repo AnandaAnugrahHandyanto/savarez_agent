@@ -87,6 +87,70 @@ class GatewayAuthorizationMixin:
                 policy = extra.get("dm_policy")
         return str(policy or "").strip().lower()
 
+    def _adapter_group_policy(self, platform: Optional[Platform]) -> str:
+        """Best-effort read of an own-policy adapter's effective group policy."""
+        if not platform:
+            return ""
+        adapters = getattr(self, "adapters", None) or {}
+        adapter = adapters.get(platform)
+        policy = getattr(adapter, "_group_policy", None) if adapter is not None else None
+        if policy is None:
+            config = getattr(self, "config", None)
+            platform_cfg = (
+                config.platforms.get(platform)
+                if config is not None and hasattr(config, "platforms")
+                else None
+            )
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict):
+                policy = extra.get("group_policy")
+        return str(policy or "").strip().lower()
+
+    def _open_policy_opted_in(self, platform: Optional[Platform]) -> bool:
+        """Whether the operator explicitly opted into open-world access."""
+        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+            return True
+        platform_allow_all_map = {
+            Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
+            Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
+            Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
+            Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
+            Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
+            Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
+            Platform.SMS: "SMS_ALLOW_ALL_USERS",
+            Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
+            Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
+            Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
+            Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
+            Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
+            Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOW_ALL_USERS",
+            Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
+            Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
+            Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
+            Platform.YUANBAO: "YUANBAO_ALLOW_ALL_USERS",
+        }
+        if platform and platform not in platform_allow_all_map:
+            try:
+                from gateway.platform_registry import platform_registry
+                entry = platform_registry.get(platform.value)
+                if entry and entry.allow_all_env:
+                    platform_allow_all_map[platform] = entry.allow_all_env
+            except Exception:
+                pass
+        allow_all_var = platform_allow_all_map.get(platform or "", "")
+        return bool(
+            allow_all_var
+            and os.getenv(allow_all_var, "").lower() in {"true", "1", "yes"}
+        )
+
+    def _adapter_has_open_policy(self, source: SessionSource) -> bool:
+        """True when the adapter's effective policy admits all senders."""
+        if not source.platform:
+            return False
+        if source.chat_type in {"group", "forum"}:
+            return self._adapter_group_policy(source.platform) == "open"
+        return self._adapter_dm_policy(source.platform) == "open"
+
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
@@ -256,7 +320,13 @@ class GatewayAuthorizationMixin:
                     source.chat_type == "dm"
                     and self._adapter_dm_policy(source.platform) == "pairing"
                 ):
-                    return True
+                    if (
+                        self._adapter_has_open_policy(source)
+                        and not self._open_policy_opted_in(source.platform)
+                    ):
+                        pass
+                    else:
+                        return True
             # No allowlists configured -- check global allow-all flag
             return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
 

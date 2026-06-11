@@ -96,3 +96,13 @@ def test_status_preserves_existing_fields(loopback_client):
     }
     missing = expected_keys - set(body.keys())
     assert not missing, f"/api/status dropped fields: {missing}"
+
+
+def test_status_hides_paths_when_auth_gate_engaged(gated_client):
+    """Public /api/status must not disclose filesystem layout on gated hosts."""
+    r = gated_client.get("/api/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert "hermes_home" not in body
+    assert "config_path" not in body
+    assert "env_path" not in body

@@ -1292,12 +1292,16 @@ async def get_status():
         # Module not importable yet (early startup) — leave as [].
         pass
 
-    return {
+    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
+    _loopback_hosts = {"127.0.0.1", "localhost", "::1"}
+    expose_paths = (
+        not auth_required
+        and (not bound_host or bound_host in _loopback_hosts)
+    )
+
+    payload = {
         "version": __version__,
         "release_date": __release_date__,
-        "hermes_home": str(get_hermes_home()),
-        "config_path": str(get_config_path()),
-        "env_path": str(get_env_path()),
         "config_version": current_ver,
         "latest_config_version": latest_ver,
         "gateway_running": gateway_running,
@@ -1311,6 +1315,11 @@ async def get_status():
         "auth_required": auth_required,
         "auth_providers": auth_providers,
     }
+    if expose_paths:
+        payload["hermes_home"] = str(get_hermes_home())
+        payload["config_path"] = str(get_config_path())
+        payload["env_path"] = str(get_env_path())
+    return payload
 
 
 @app.get("/api/system/stats")
