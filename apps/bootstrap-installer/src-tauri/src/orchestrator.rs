@@ -1598,14 +1598,11 @@ where
     })
 }
 
-/// Build the desktop app natively where no post-build platform fixup is required.
+/// Build the desktop app natively and apply platform-specific post-build fixups.
 pub fn build_desktop_stage(
     install_root: &Path,
     hermes_home: &Path,
 ) -> Result<serde_json::Value> {
-    if cfg!(target_os = "linux") {
-        return Err(anyhow!("native desktop stage is script-backed on Linux"));
-    }
     let path_env = std::env::var_os("PATH").unwrap_or_default();
     let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
     let plan = desktop_build_stage_plan(install_root, hermes_home, path_env, &pathext)?;
@@ -1616,6 +1613,9 @@ pub fn build_desktop_stage(
     run_desktop_pack_command(&plan.npm, &plan.desktop_dir)?;
     let desktop_app = find_built_desktop_app(install_root, std::env::consts::OS)
         .ok_or_else(|| anyhow!("desktop build completed but no app was found"))?;
+    if cfg!(target_os = "linux") {
+        configure_linux_chrome_sandbox(install_root)?;
+    }
     let mut result = serde_json::json!({
         "npm": plan.npm,
         "desktopDir": plan.desktop_dir,
@@ -2712,6 +2712,75 @@ fn find_built_desktop_app(install_root: &Path, target_os: &str) -> Option<PathBu
     })
 }
 
+fn linux_chrome_sandbox_path(install_root: &Path) -> PathBuf {
+    install_root
+        .join("apps")
+        .join("desktop")
+        .join("release")
+        .join("linux-unpacked")
+        .join("chrome-sandbox")
+}
+
+fn configure_linux_chrome_sandbox(install_root: &Path) -> Result<()> {
+    let sandbox = linux_chrome_sandbox_path(install_root);
+    let metadata = match fs::symlink_metadata(&sandbox) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("reading sandbox metadata {}", sandbox.display()))
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Ok(());
+    }
+    if current_process_is_root() {
+        run_privileged_file_command("chown", ["root:root"], &sandbox)?;
+        run_privileged_file_command("chmod", ["4755"], &sandbox)?;
+        return Ok(());
+    }
+    if find_executable_on_path("sudo", std::env::var_os("PATH").unwrap_or_default(), "").is_none() {
+        return Err(anyhow!(
+            "Cannot configure Electron sandbox helper without sudo: {}",
+            sandbox.display()
+        ));
+    }
+    run_privileged_file_command("sudo", ["chown", "root:root"], &sandbox)?;
+    run_privileged_file_command("sudo", ["chmod", "4755"], &sandbox)
+}
+
+fn current_process_is_root() -> bool {
+    let output = Command::new("id")
+        .arg("-u")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+    matches!(output, Ok(output) if output.status.success()
+        && String::from_utf8_lossy(&output.stdout).trim() == "0")
+}
+
+fn run_privileged_file_command<const N: usize>(
+    program: &str,
+    args: [&str; N],
+    path: &Path,
+) -> Result<()> {
+    let status = Command::new(program)
+        .args(args)
+        .arg(path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .with_context(|| format!("running {program} for {}", path.display()))?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "{program} failed for {} with exit {:?}",
+        path.display(),
+        status.code()
+    ))
+}
+
 fn node_version_satisfies_build(node: &Path) -> bool {
     let output = Command::new(node)
         .arg("--version")
@@ -2759,9 +2828,8 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
         && name.eq_ignore_ascii_case("node-deps") {
         return StageExecutionMode::NativeWithScriptFallback;
     }
-    if (cfg!(target_os = "windows") || cfg!(target_os = "macos"))
-        && name.eq_ignore_ascii_case("desktop")
-    {
+    if desktop_stage_is_native_first_for_target(std::env::consts::OS)
+        && name.eq_ignore_ascii_case("desktop") {
         return StageExecutionMode::NativeWithScriptFallback;
     }
     if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("node") {
@@ -2792,6 +2860,10 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
 }
 
 fn node_deps_stage_is_native_first_for_target(target_os: &str) -> bool {
+    matches!(target_os, "windows" | "macos" | "linux")
+}
+
+fn desktop_stage_is_native_first_for_target(target_os: &str) -> bool {
     matches!(target_os, "windows" | "macos" | "linux")
 }
 
@@ -2923,7 +2995,7 @@ mod tests {
         assert_eq!(plan[7].rust_probe, !node_deps_native);
         assert_eq!(plan[7].script_fallback, true);
         assert_eq!(plan[8].name, "desktop");
-        let desktop_native = cfg!(target_os = "windows") || cfg!(target_os = "macos");
+        let desktop_native = desktop_stage_is_native_first_for_target(std::env::consts::OS);
         let desktop_execution = if desktop_native {
             StageExecutionMode::NativeWithScriptFallback
         } else {
@@ -2952,6 +3024,17 @@ mod tests {
             );
         }
         assert!(!node_deps_stage_is_native_first_for_target("freebsd"));
+    }
+
+    #[test]
+    fn desktop_stage_is_native_first_on_desktop_platforms() {
+        for target_os in ["windows", "macos", "linux"] {
+            assert!(
+                desktop_stage_is_native_first_for_target(target_os),
+                "{target_os} should run desktop build natively before script fallback"
+            );
+        }
+        assert!(!desktop_stage_is_native_first_for_target("freebsd"));
     }
 
     #[test]
@@ -3536,6 +3619,21 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn linux_chrome_sandbox_path_uses_desktop_release_dir() {
+        let install_root = PathBuf::from("/tmp/hermes-agent");
+
+        assert_eq!(
+            linux_chrome_sandbox_path(&install_root),
+            install_root
+                .join("apps")
+                .join("desktop")
+                .join("release")
+                .join("linux-unpacked")
+                .join("chrome-sandbox")
+        );
     }
 
     #[test]

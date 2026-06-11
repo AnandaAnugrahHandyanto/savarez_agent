@@ -195,6 +195,9 @@ language-specific setup where needed.
   for dependency/build failures so its cache purge and Electron mirror recovery are preserved.
 - macOS `desktop` now uses the same Rust native-first workspace npm install and `npm run pack` path as Windows, verifies
   the produced `Hermes.app`, and preserves shell fallback for dependency or build recovery.
+- Linux `desktop` now uses the same Rust native-first workspace npm install and `npm run pack` path, verifies the
+  produced unpacked app, and configures Electron's `chrome-sandbox` helper while preserving script fallback for build
+  recovery or privileged sandbox setup failures.
 - Windows `platform-sdks` now skips natively when `.env` has no configured messaging platform tokens, and runs
   native-first SDK import checks plus targeted `pip install` recovery when tokens are present, while preserving script
   fallback if the native recovery path fails.
@@ -204,9 +207,9 @@ language-specific setup where needed.
 - CI runs bootstrap-installer Rust unit tests in addition to the manager and desktop platform tests.
 
 **Still script-backed:**
-- Language/runtime setup: Python dependency fallback tiers when `uv.lock` sync is unavailable, Linux desktop build
-  because it still owns `chrome-sandbox` permission fixups, and script fallback for Unix Node, Unix uv, Windows/macOS/Linux
-  npm recovery, Windows uv, Windows Git, Windows Node, Windows/macOS desktop recovery, and platform SDK recovery.
+- Language/runtime setup: Python dependency fallback tiers when `uv.lock` sync is unavailable, script fallback for Unix
+  Node, Unix uv, Windows/macOS/Linux npm recovery, Windows uv, Windows Git, Windows Node, Windows/macOS/Linux desktop
+  recovery, and platform SDK recovery.
 - Repository clone/update stage execution until the Git/ZIP fallback matrix has a parity suite and native stage wiring.
 - Remaining platform shell/profile edge cases that are not covered by the current Rust path-stage helpers.
 
