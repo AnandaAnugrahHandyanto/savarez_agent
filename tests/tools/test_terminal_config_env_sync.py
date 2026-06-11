@@ -8,9 +8,8 @@ at startup, by THREE separate code paths:
   2. gateway/run.py    -> ``_terminal_env_map`` dict (gateway / messaging
                           platforms)
   3. hermes_cli/config.py:set_config_value
-                       -> ``TERMINAL_CONFIG_ENV_MAP`` via
-                          terminal_config_env_var_for_key (one-shot when the
-                          user runs ``hermes config set …``)
+                       -> bridges via the canonical ``TERMINAL_CONFIG_ENV_MAP``
+                          (one-shot when the user runs ``hermes config set …``)
 
 If any one of these is missing a key, the corresponding config.yaml setting
 silently does nothing for that entry-point.  This bug already shipped once
@@ -88,13 +87,20 @@ def _gateway_env_map_keys() -> set[str]:
 
 
 def _save_config_env_sync_keys() -> set[str]:
-    """terminal config keys bridged by ``hermes config set foo bar``."""
+    """terminal config keys bridged by ``hermes config set foo bar``.
+
+    ``set_config_value`` no longer carries its own ``_config_to_env_sync``
+    dict — it bridges through the canonical ``TERMINAL_CONFIG_ENV_MAP`` via
+    ``terminal_config_env_var_for_key()`` (config.py), excluding ``cwd``
+    (handled separately).  Read the live map so this test tracks the actual
+    source of truth that the config-set path uses, rather than a string
+    literal that the consolidation removed.
+    """
     from hermes_cli import config as hc_config
-    source = inspect.getsource(hc_config)
-    keys = _extract_dict_keys(source, "TERMINAL_CONFIG_ENV_MAP")
-    # set_config_value deliberately skips terminal.cwd: that key is applied
-    # by process-launch paths, not mirrored by `hermes config set`.
-    return keys - {"cwd"}
+    # set_config_value bridges every TERMINAL_CONFIG_ENV_MAP key except
+    # terminal.cwd (see the ``key != "terminal.cwd"`` guard in
+    # set_config_value); mirror that exclusion here.
+    return {k for k in hc_config.TERMINAL_CONFIG_ENV_MAP if k != "cwd"}
 
 
 # Keys present in cli.py env_mappings but intentionally absent from
@@ -157,7 +163,7 @@ def test_cli_and_gateway_env_maps_agree():
 def test_save_config_set_supports_critical_bridged_keys():
     """``hermes config set terminal.X true`` must propagate to .env for
     known-critical keys.  This used to be an all-keys invariant but the SSH
-    terminal keys (ssh_*) aren't in the config-set env sync path and are instead
+    terminal keys (ssh_*) aren't in _config_to_env_sync and are instead
     handled via the separate api_keys TERMINAL_SSH_* fallback path or
     user-edits-yaml-directly.
 
@@ -180,8 +186,8 @@ def test_save_config_set_supports_critical_bridged_keys():
     missing = required - save_keys
     assert not missing, (
         f"`hermes config set terminal.X` doesn't sync these load-bearing "
-        f"keys to .env: {sorted(missing)}.  Add them to "
-        f"TERMINAL_CONFIG_ENV_MAP in hermes_cli/config.py."
+        f"keys to .env: {sorted(missing)}.  Add them to TERMINAL_CONFIG_ENV_MAP "
+        f"in hermes_cli/config.py (set_config_value bridges through it)."
     )
 
 
@@ -269,7 +275,7 @@ def test_docker_volumes_is_bridged_everywhere():
 
     The JSON list of ``host:container`` bind mounts was bridged by cli.py and
     gateway/run.py and consumed by terminal_tool (via json.loads), but was
-    missing from set_config_value's env sync map.  So
+    missing from set_config_value's _config_to_env_sync.  So
     ``hermes config set terminal.docker_volumes '["/host:/workspace"]'`` wrote
     config.yaml yet left the running process's TERMINAL_DOCKER_VOLUMES stale —
     the mounts didn't apply until a full restart.  Same four-site bridge
@@ -287,7 +293,7 @@ def test_docker_forward_env_is_bridged_everywhere():
 
     The JSON list of host env-var names forwarded into the container was
     bridged by cli.py and gateway/run.py and consumed by terminal_tool (via
-    json.loads), but missing from set_config_value's env sync map, so
+    json.loads), but missing from set_config_value's _config_to_env_sync, so
     ``hermes config set terminal.docker_forward_env '["GITHUB_TOKEN"]'`` had no
     effect on the running process until restart.
     """
