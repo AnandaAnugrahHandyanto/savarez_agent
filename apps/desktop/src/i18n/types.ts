@@ -708,6 +708,14 @@ export interface Translations {
     deleted: string
     setupCopied: string
     soulSaved: string
+    pictureLabel: string
+    pictureOptional: string
+    choosePicture: string
+    changePicture: string
+    removePicture: string
+    pictureHint: string
+    pickPictureTitle: string
+    pictureSaved: string
     failedLoad: string
     failedDelete: string
     failedCopy: string
@@ -715,6 +723,8 @@ export interface Translations {
     failedSaveSoul: string
     failedCreate: string
     failedRename: string
+    failedSavePicture: string
+    failedRemovePicture: string
   }
 
   cron: {

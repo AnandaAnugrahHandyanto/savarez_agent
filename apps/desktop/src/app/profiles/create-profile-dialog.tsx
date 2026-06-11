@@ -6,10 +6,13 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { createProfile, updateProfileSoul } from '@/hermes'
+import { createProfile, updateProfileAvatar, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { setProfileAvatarLocal } from '@/store/profile'
+
+import { AvatarField } from './avatar-field'
 
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
@@ -34,6 +37,7 @@ export function CreateProfileDialog({
   const [name, setName] = useState('')
   const [cloneFromDefault, setCloneFromDefault] = useState(true)
   const [soul, setSoul] = useState('')
+  const [avatar, setAvatar] = useState<null | string>(null)
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
 
@@ -45,6 +49,7 @@ export function CreateProfileDialog({
     setName('')
     setCloneFromDefault(true)
     setSoul('')
+    setAvatar(null)
     setError(null)
     setStatus('idle')
   }, [open])
@@ -70,6 +75,11 @@ export function CreateProfileDialog({
 
       if (soul.trim()) {
         await updateProfileSoul(trimmed, soul)
+      }
+
+      if (avatar) {
+        await updateProfileAvatar(trimmed, avatar)
+        setProfileAvatarLocal(trimmed, avatar)
       }
 
       await onCreated?.(trimmed)
@@ -106,6 +116,8 @@ export function CreateProfileDialog({
               {p.nameHint}
             </p>
           </div>
+
+          <AvatarField busy={busy} name={trimmed} onChange={setAvatar} onError={setError} value={avatar} />
 
           <label className="flex cursor-pointer select-none items-start gap-2.5 px-0.5 py-1">
             <Checkbox

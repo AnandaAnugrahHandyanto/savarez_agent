@@ -20,6 +20,7 @@ import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
+import { ProfileAvatar } from '@/components/profile-avatar'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -1388,7 +1389,9 @@ function SidebarWorkspaceGroup({
           onClick={() => setOpen(value => !value)}
           type="button"
         >
-          {group.color ? (
+          {isProfileGroup ? (
+            <ProfileAvatar className="size-4 rounded-[4px] text-[0.5625rem]" name={group.id} />
+          ) : group.color ? (
             <span
               aria-hidden="true"
               className="size-2 shrink-0 rounded-full"
