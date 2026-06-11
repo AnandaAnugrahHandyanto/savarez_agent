@@ -1,5 +1,8 @@
 """Tests for _normalize_chat_content in the API server adapter."""
 
+from types import SimpleNamespace
+
+from gateway.platforms.api_server import APIServerAdapter
 from gateway.platforms.api_server import _normalize_chat_content
 
 
@@ -85,3 +88,38 @@ class TestNormalizeChatContent:
 
     def test_empty_list_returns_empty(self):
         assert _normalize_chat_content([]) == ""
+
+    def test_raw_content_block_repr_extracts_visible_text(self):
+        raw = "[SimpleNamespace(type='output_text', text='Visible answer', annotations=[])]"
+        assert _normalize_chat_content(raw) == "Visible answer"
+
+    def test_known_leak_payload_json_is_suppressed(self):
+        raw = (
+            '{"events": [{"created_at": "2026-01-01T00:00:00Z", "run_id": "run_123"}], '
+            '"worker_context": "internal", "summary": "debug"}'
+        )
+        assert _normalize_chat_content(raw) == ""
+
+    def test_message_response_normalizes_structured_content_and_reasoning(self):
+        payload = APIServerAdapter._message_response(
+            {
+                "id": "msg_1",
+                "role": "assistant",
+                "content": [
+                    SimpleNamespace(type="output_text", text="Hello from content"),
+                ],
+                "reasoning": "[SimpleNamespace(type='summary_text', text='Think step', annotations=[])]",
+                "reasoning_content": [{"type": "output_text", "text": "Shown reasoning"}],
+            }
+        )
+        assert payload["content"] == "Hello from content"
+        assert payload["reasoning"] == "Think step"
+        assert payload["reasoning_content"] == "Shown reasoning"
+
+    def test_extract_output_items_final_message_normalizes_leak_repr(self):
+        items = APIServerAdapter._extract_output_items(
+            {
+                "final_response": "[SimpleNamespace(type='output_text', text='Visible answer', annotations=[])]",
+            }
+        )
+        assert items[-1]["content"][0]["text"] == "Visible answer"
