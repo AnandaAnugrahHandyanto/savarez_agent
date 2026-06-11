@@ -152,7 +152,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
                 &app,
                 Some("update"),
                 LogStream::Stdout,
-                "[update] archive-created checkout is missing .git; using ZIP update path for main",
+                "[update] archive-created checkout is missing .git; using ZIP update path",
             );
         }
     }
@@ -652,11 +652,11 @@ fn archive_checkout_without_git(install_root: &Path) -> bool {
         )
 }
 
-fn needs_archive_git_checkout_prepare(install_root: &Path, update_branch: &str) -> bool {
+fn needs_archive_git_checkout_prepare(install_root: &Path, _update_branch: &str) -> bool {
     if !archive_checkout_without_git(install_root) {
         return false;
     }
-    !(cfg!(target_os = "windows") && update_branch.trim() == "main")
+    !cfg!(target_os = "windows")
 }
 
 fn archive_git_prepare_plan(marker: &serde_json::Value) -> Result<ArchiveGitPreparePlan> {
@@ -1213,10 +1213,10 @@ mod tests {
             r#"{"schemaVersion":1,"method":"github_archive","ref":"main"}"#,
         )
         .unwrap();
-        assert!(needs_archive_git_checkout_prepare(
-            &install_root,
-            "feature/rust-release"
-        ));
+        assert_eq!(
+            needs_archive_git_checkout_prepare(&install_root, "feature/rust-release"),
+            !cfg!(target_os = "windows")
+        );
 
         std::fs::create_dir_all(install_root.join(".git")).unwrap();
         assert!(!needs_archive_git_checkout_prepare(
@@ -1242,10 +1242,10 @@ mod tests {
             needs_archive_git_checkout_prepare(&install_root, "main"),
             !cfg!(target_os = "windows")
         );
-        assert!(needs_archive_git_checkout_prepare(
-            &install_root,
-            "feature/rust-release"
-        ));
+        assert_eq!(
+            needs_archive_git_checkout_prepare(&install_root, "feature/rust-release"),
+            !cfg!(target_os = "windows")
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

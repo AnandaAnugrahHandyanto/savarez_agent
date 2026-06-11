@@ -768,28 +768,41 @@ class TestCmdUpdateCheckBranchFlag:
         assert "bb/gui" in out
 
 
-class TestCmdUpdateZipBranchRefusal:
-    """``hermes update --branch=<non-main>`` must refuse on the ZIP fallback path.
+class TestCmdUpdateZipBranchFallback:
+    """``hermes update --branch=<non-main>`` uses that branch on the ZIP fallback path."""
 
-    The ZIP fallback hard-codes a GitHub archive URL for main.zip; honoring
-    --branch arbitrarily would require remote-branch existence checks the
-    fallback can't easily do. Refusing is the right move — silently lying
-    about which branch got installed is the bug --branch was meant to prevent.
-    """
+    def test_zip_fallback_uses_requested_branch_archive(self, tmp_path, monkeypatch):
+        import zipfile
 
-    def test_zip_fallback_refuses_non_main_branch(self, capsys):
-        from hermes_cli.main import _update_via_zip
+        from hermes_cli import main as hm
 
-        args = SimpleNamespace(branch="bb/gui")
-        with pytest.raises(SystemExit) as exc_info:
-            _update_via_zip(args)
-        assert exc_info.value.code == 1
+        fake_root = tmp_path / "install_dir"
+        fake_root.mkdir()
+        downloaded_urls = []
 
-        out = capsys.readouterr().out
-        assert "bb/gui" in out
-        assert "not supported" in out
-        # No actual download attempted.
-        assert "Downloading latest version" not in out
+        def fake_urlretrieve(url, dest):
+            downloaded_urls.append(url)
+            with zipfile.ZipFile(dest, "w") as zf:
+                zf.writestr("hermes-agent-bb-gui/README.md", "branch ok\n")
+            return dest, None
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", fake_root)
+        monkeypatch.setattr(
+            hm,
+            "_install_python_dependencies_with_optional_fallback",
+            lambda *args, **kwargs: None,
+        )
+        monkeypatch.setattr(hm, "_update_node_dependencies", lambda: None)
+        monkeypatch.setattr(hm, "_build_web_ui", lambda *args, **kwargs: None)
+        monkeypatch.setattr(hm, "_kill_stale_dashboard_processes", lambda: None)
+        monkeypatch.setattr("urllib.request.urlretrieve", fake_urlretrieve)
+
+        hm._update_via_zip(SimpleNamespace(branch="bb/gui"))
+
+        assert downloaded_urls == [
+            "https://github.com/NousResearch/hermes-agent/archive/refs/heads/bb/gui.zip"
+        ]
+        assert (fake_root / "README.md").read_text() == "branch ok\n"
 
 
 def test_is_termux_env_true_for_termux_prefix():
