@@ -3496,6 +3496,102 @@ def test_snapshot_restore_is_blocked_from_tui_worker():
     )
 
 
+def test_command_dispatch_compress_calls_helper(monkeypatch):
+    """command.dispatch routes /compress to _compress_session_history."""
+    seen = {"compress": False, "sync": False, "emit": False}
+
+    def _fake_compress(session, focus_topic=None, **_kw):
+        seen["compress"] = True
+        return 5, {}
+
+    def _fake_sync(sid, session):
+        seen["sync"] = True
+
+    def _fake_emit(event, sid, payload=None):
+        seen["emit"] = True
+
+    agent = types.SimpleNamespace()
+    agent.model = "test-model"
+    server._sessions["sid"] = _session(agent=agent, history=[{"role": "user", "content": "x"}] * 6)
+    monkeypatch.setattr(server, "_compress_session_history", _fake_compress)
+    monkeypatch.setattr(server, "_sync_session_key_after_compress", _fake_sync)
+    monkeypatch.setattr(server, "_emit", _fake_emit)
+    monkeypatch.setattr(server, "_session_info", lambda a, s: {})
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "command.dispatch",
+                "params": {"name": "compress", "session_id": "sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert seen["compress"]
+    assert seen["sync"]
+    assert seen["emit"]
+    assert resp["result"]["type"] == "exec"
+    assert "removed 5 messages" in resp["result"]["output"]
+
+
+def test_command_dispatch_compress_noop(monkeypatch):
+    """command.dispatch /compress reports no-op when nothing was removed."""
+    monkeypatch.setattr(
+        server, "_compress_session_history", lambda s, f=None, **kw: (0, {})
+    )
+    monkeypatch.setattr(
+        server, "_sync_session_key_after_compress", lambda sid, s: None
+    )
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_session_info", lambda a, s: {})
+    agent = types.SimpleNamespace()
+    server._sessions["sid"] = _session(agent=agent)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "command.dispatch",
+                "params": {"name": "compress", "session_id": "sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["type"] == "exec"
+    assert "No compression needed" in resp["result"]["output"]
+
+
+def test_command_dispatch_compress_rejects_while_running():
+    """command.dispatch /compress rejects when session is busy."""
+    server._sessions["sid"] = _session(running=True)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "command.dispatch",
+                "params": {"name": "compress", "session_id": "sid"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["error"]["code"] == 4009
+    assert "session busy" in resp["error"]["message"]
+
+
+def test_command_dispatch_compress_no_session():
+    """command.dispatch /compress rejects when session_id is missing."""
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "command.dispatch",
+            "params": {"name": "compress", "session_id": "nonexistent"},
+        }
+    )
+    assert resp["error"]["code"] == 4001
+
+
 def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
     monkeypatch.setattr(
         server,

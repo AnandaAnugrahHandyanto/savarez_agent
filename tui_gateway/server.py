@@ -7881,6 +7881,45 @@ def _(rid, params: dict) -> dict:
                 },
             )
 
+    # /compress — handled here (not via the slash worker) because
+    # compression needs direct access to the live session's agent and
+    # history, which the worker subprocess doesn't share.  Mirrors the
+    # compress branch in _mirror_slash_side_effects.
+    if name == "compress":
+        if not session:
+            return _err(rid, 4001, "no active session to compress")
+        if session.get("running"):
+            return _err(
+                rid,
+                4009,
+                "session busy — /interrupt the current turn before /compress",
+            )
+        agent = session.get("agent")
+        if not agent:
+            return _err(rid, 4001, "no agent in session")
+        try:
+            removed, _usage = _compress_session_history(session, arg or None)
+            sid = params.get("session_id", "")
+            _sync_session_key_after_compress(sid, session)
+            _emit("session.info", sid, _session_info(agent, session))
+            if removed:
+                return _ok(
+                    rid,
+                    {
+                        "type": "exec",
+                        "output": f"🗜️ Compressed: removed {removed} messages.",
+                    },
+                )
+            return _ok(
+                rid,
+                {
+                    "type": "exec",
+                    "output": "🗜️ No compression needed — context is already compact.",
+                },
+            )
+        except Exception as exc:
+            return _err(rid, 5005, f"compress failed: {exc}")
+
     return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
 
 
