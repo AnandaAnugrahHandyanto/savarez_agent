@@ -739,7 +739,6 @@ fn unix_manifest_stages(include_desktop: bool) -> Vec<StageInfo> {
             "runtime",
             false,
         ),
-        stage_info("prerequisites", "System prerequisites", "runtime", false),
         stage_info("repository", "Download Hermes Agent", "runtime", false),
         stage_info(
             "venv",
@@ -3132,7 +3131,6 @@ mod tests {
                 "node",
                 "python",
                 "system-packages",
-                "prerequisites",
                 "repository",
                 "venv",
                 "python-deps",
@@ -3144,8 +3142,8 @@ mod tests {
                 "complete",
             ]
         );
-        assert_eq!(manifest.stages[10].title, "Prepare config and skills");
-        assert!(manifest.stages[11].needs_user_input);
+        assert_eq!(manifest.stages[9].title, "Prepare config and skills");
+        assert!(manifest.stages[10].needs_user_input);
     }
 
     #[test]

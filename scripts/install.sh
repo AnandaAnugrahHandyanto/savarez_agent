@@ -275,7 +275,6 @@ emit_manifest() {
         '{"name":"python","title":"Verify Python 3.11","category":"runtime","needs_user_input":false},' \
         '{"name":"system-packages","title":"Install system packages","category":"runtime",' \
         '"needs_user_input":false},' \
-        '{"name":"prerequisites","title":"System prerequisites","category":"runtime","needs_user_input":false},' \
         '{"name":"repository","title":"Download Hermes Agent","category":"runtime","needs_user_input":false},' \
         '{"name":"venv","title":"Create Python virtual environment","category":"runtime","needs_user_input":false},' \
         '{"name":"python-deps","title":"Install Python dependencies","category":"runtime","needs_user_input":false},' \
