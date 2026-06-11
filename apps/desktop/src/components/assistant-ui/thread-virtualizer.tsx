@@ -393,27 +393,23 @@ function useThreadScrollAnchor({
   // before the browser paints — this avoids fighting with the
   // virtualizer's own scrollToFn adjustments which happen during the
   // same layout pass.
-  //
-  // We key on virtualizer.getTotalSize() rather than reading
-  // el.scrollHeight directly to avoid forcing synchronous layout on
-  // every render. The virtualizer already tracks its total size
-  // internally, so we only re-run when content can actually change.
-  //
-  // eslint-disable-next-line react-hooks/exhaustive-deps — intentionally
-  // omits stickyBottomRef (a ref) and pinToBottom (stable callback);
-  // re-running on every render is the design.
-  const prevTotalSizeRef = useRef(0)
+  // Streaming auto-follow: pin the viewport to the bottom when the
+  // virtualizer's total content size grows (new streaming tokens)
+  // while the user is parked at the bottom. Uses useLayoutEffect so it
+  // runs after React commits DOM mutations but before the browser paints
+  // to avoid fighting with the virtualizer's own scrollToFn adjustments.
+  const totalSize = virtualizer.getTotalSize()
+  // eslint-disable-next-line react-hooks/exhaustive-deps — only re-run
+  // when totalSize changes or enabled toggles; stickyBottomRef and
+  // pinToBottom are refs/callbacks and don't need to be deps.
   useLayoutEffect(() => {
     if (!enabled) return
 
-    const currentSize = virtualizer.getTotalSize()
-    const grew = currentSize > prevTotalSizeRef.current
-    prevTotalSizeRef.current = currentSize
-
-    if (grew && stickyBottomRef.current) {
+    if (totalSize > prevTotalSizeRef.current && stickyBottomRef.current) {
       pinToBottom()
     }
-  })
+    prevTotalSizeRef.current = totalSize
+  }, [totalSize, enabled])
 
   // Jump to bottom on session change OR when an empty thread first gets
   // content. Both share the same intent and the same effect.
