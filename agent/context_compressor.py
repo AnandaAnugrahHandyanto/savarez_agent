@@ -21,7 +21,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.auxiliary_client import call_llm, _is_connection_error
 from agent.context_engine import ContextEngine
@@ -1608,6 +1608,86 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     # Tool-call / tool-result pair integrity helpers
     # ------------------------------------------------------------------
 
+def sanitize_tool_pairs(
+    messages: List[Dict[str, Any]],
+    *,
+    quiet: bool = True,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Fix orphaned tool_call / tool_result pairs so the message list is always
+    well-formed for API submission.
+
+    Two failure modes are repaired:
+
+    1. A tool **result** references a call_id whose assistant tool_call was
+       removed.  These orphaned results are dropped — the API rejects them
+       with ``"No tool call found for function call output with call_id …"``.
+    2. An assistant message has tool_calls whose results were dropped.
+       Stub tool results are inserted so every tool_call is followed by a
+       matching tool result.
+
+    This is called both after compression (where summarisation can orphan
+    pairs) and in the general pre-API-request sanitization pipeline (where
+    session save/load corruption can produce the same breakage, #44394).
+
+    Returns ``(messages, repair_count)`` — the caller owns the original list
+    and should replace it with the returned value.
+    """
+    # ── Collect surviving tool_call ids ──────────────────────────────
+    surviving_call_ids: set = set()
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                if isinstance(tc, dict):
+                    cid = tc.get("call_id", "") or tc.get("id", "") or ""
+                else:
+                    cid = getattr(tc, "call_id", "") or getattr(tc, "id", "") or ""
+                if cid:
+                    surviving_call_ids.add(cid)
+
+    result_call_ids: set = set()
+    for msg in messages:
+        if msg.get("role") == "tool":
+            cid = msg.get("tool_call_id")
+            if cid:
+                result_call_ids.add(cid)
+
+    repaired = 0
+
+    # ── 1. Drop orphaned tool results ────────────────────────────────
+    orphaned_results = result_call_ids - surviving_call_ids
+    if orphaned_results:
+        messages = [
+            m for m in messages
+            if not (m.get("role") == "tool" and m.get("tool_call_id") in orphaned_results)
+        ]
+        repaired += len(orphaned_results)
+
+    # ── 2. Insert stub results for orphaned tool_calls ───────────────
+    missing_results = surviving_call_ids - result_call_ids
+    if missing_results:
+        patched: List[Dict[str, Any]] = []
+        for msg in messages:
+            patched.append(msg)
+            if msg.get("role") == "assistant":
+                for tc in msg.get("tool_calls") or []:
+                    if isinstance(tc, dict):
+                        cid = tc.get("call_id", "") or tc.get("id", "") or ""
+                    else:
+                        cid = getattr(tc, "call_id", "") or getattr(tc, "id", "") or ""
+                    if cid in missing_results:
+                        patched.append({
+                            "role": "tool",
+                            "content": "[Result from earlier conversation — see context summary above]",
+                            "tool_call_id": cid,
+                        })
+        messages = patched
+        repaired += len(missing_results)
+
+    if not quiet and repaired:
+        logger.info("Tool-pair sanitizer: repaired %d message(s)", repaired)
+
+    return messages, repaired
+
     @staticmethod
     def _get_tool_call_id(tc) -> str:
         """Extract the call ID from a tool_call entry (dict or SimpleNamespace)."""
@@ -1618,61 +1698,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     def _sanitize_tool_pairs(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Fix orphaned tool_call / tool_result pairs after compression.
 
-        Two failure modes:
-        1. A tool *result* references a call_id whose assistant tool_call was
-           removed (summarized/truncated).  The API rejects this with
-           "No tool call found for function call output with call_id ...".
-        2. An assistant message has tool_calls whose results were dropped.
-           The API rejects this because every tool_call must be followed by
-           a tool result with the matching call_id.
-
-        This method removes orphaned results and inserts stub results for
-        orphaned calls so the message list is always well-formed.
+        Delegates to the standalone ``sanitize_tool_pairs()`` so the same
+        repair logic is available to the pre-API-request sanitization
+        pipeline without requiring a compressor instance (#44394).
         """
-        surviving_call_ids: set = set()
-        for msg in messages:
-            if msg.get("role") == "assistant":
-                for tc in msg.get("tool_calls") or []:
-                    cid = self._get_tool_call_id(tc)
-                    if cid:
-                        surviving_call_ids.add(cid)
-
-        result_call_ids: set = set()
-        for msg in messages:
-            if msg.get("role") == "tool":
-                cid = msg.get("tool_call_id")
-                if cid:
-                    result_call_ids.add(cid)
-
-        # 1. Remove tool results whose call_id has no matching assistant tool_call
-        orphaned_results = result_call_ids - surviving_call_ids
-        if orphaned_results:
-            messages = [
-                m for m in messages
-                if not (m.get("role") == "tool" and m.get("tool_call_id") in orphaned_results)
-            ]
-            if not self.quiet_mode:
-                logger.info("Compression sanitizer: removed %d orphaned tool result(s)", len(orphaned_results))
-
-        # 2. Add stub results for assistant tool_calls whose results were dropped
-        missing_results = surviving_call_ids - result_call_ids
-        if missing_results:
-            patched: List[Dict[str, Any]] = []
-            for msg in messages:
-                patched.append(msg)
-                if msg.get("role") == "assistant":
-                    for tc in msg.get("tool_calls") or []:
-                        cid = self._get_tool_call_id(tc)
-                        if cid in missing_results:
-                            patched.append({
-                                "role": "tool",
-                                "content": "[Result from earlier conversation — see context summary above]",
-                                "tool_call_id": cid,
-                            })
-            messages = patched
-            if not self.quiet_mode:
-                logger.info("Compression sanitizer: added %d stub tool result(s)", len(missing_results))
-
+        messages, repaired = sanitize_tool_pairs(messages, quiet=self.quiet_mode)
+        if repaired and not self.quiet_mode:
+            logger.info("Compression sanitizer: repaired %d tool-pair(s)", repaired)
         return messages
 
     def _align_boundary_forward(self, messages: List[Dict[str, Any]], idx: int) -> int:
