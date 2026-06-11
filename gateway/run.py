@@ -12532,7 +12532,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
 
     @staticmethod
-    def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
+    def _init_cached_agent_for_turn(
+        agent: Any,
+        interrupt_depth: int,
+        *,
+        max_iterations: Optional[int] = None,
+    ) -> None:
         """Reset per-turn state on a cached agent before a new turn starts.
 
         Both _last_activity_ts and _last_activity_desc are only reset for
@@ -12544,11 +12549,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         timeout (#15654).  The depth-0 reset is still needed: a session
         idle for 29 min would otherwise trip the watchdog before the new
         turn makes its first API call (#9051).
+
+        ``max_iterations`` is refreshed on every turn when provided. The
+        gateway allows ``agent.max_turns`` edits while it keeps reusing the
+        same cached AIAgent instance; without updating the live attribute
+        here, cached sessions would silently keep the old budget until some
+        unrelated cache-busting event rebuilt the agent.
         """
         if interrupt_depth == 0:
             agent._last_activity_ts = time.time()
             agent._last_activity_desc = "starting new turn (cached)"
         agent._api_call_count = 0
+        if max_iterations is not None:
+            agent.max_iterations = max_iterations
 
     def _release_evicted_agent_soft(self, agent: Any) -> None:
         """Soft cleanup for cache-evicted agents — preserves session tool state.
@@ -13819,9 +13832,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
-            # Read from env var or use default (same as CLI)
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
-            
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
@@ -13839,6 +13849,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # keys may change without restart). Keep config.yaml authoritative for
             # runtime budget settings bridged into env vars.
             _reload_runtime_env_preserving_config_authority()
+
+            # Read runtime budgets AFTER the per-turn reload so edits to
+            # config.yaml agent.max_turns (or fresh dotenv fallbacks when the
+            # config key is absent) take effect on this very turn.
+            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
             try:
                 model, runtime_kwargs = self._resolve_session_agent_runtime(
@@ -13998,7 +14013,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 _cache.move_to_end(session_key)
                             except KeyError:
                                 pass
-                        self._init_cached_agent_for_turn(agent, _interrupt_depth)
+                        self._init_cached_agent_for_turn(
+                            agent,
+                            _interrupt_depth,
+                            max_iterations=max_iterations,
+                        )
                         logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:
