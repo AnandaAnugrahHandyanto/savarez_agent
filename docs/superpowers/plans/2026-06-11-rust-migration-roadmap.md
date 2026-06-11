@@ -166,6 +166,8 @@ language-specific setup where needed.
   Successful preflight installs `$HERMES_HOME/node`, updates the bootstrap process PATH, and creates Node/npm/npx
   symlinks, so the script can skip its own Node curl/tar path while still owning uv, Python, Git, system package, and
   network fallback behavior.
+- Unix Node preflight now prefers matching bundled Node tarballs from `bootstrap-tools/` before downloading from
+  nodejs.org, matching the Windows bundled archive behavior for packaged installers.
 - Unix `uv` now has a Rust native-first GitHub release tarball path for Linux and macOS x64/arm64, installing `uv` and
   `uvx` into `$HERMES_HOME/bin` while preserving `install.sh` fallback for unsupported platforms, Termux, download,
   extraction, or version-check failures.
@@ -297,8 +299,8 @@ language-specific setup where needed.
   runtime stages prefer matching bundled archives before falling back to the download cache.
 - Windows installer release workflow prepares x64 Node v22, uv, and pinned Git for Windows archives before Tauri
   packaging, then writes `bootstrap-tools-manifest.json` with archive URL, size, and SHA-256 metadata for review.
-- The same release preparation helper now supports `--platform linux|macos` for x64/arm64 uv tarballs, matching the
-  Unix Rust uv installer asset matrix when future macOS/Linux installer packaging wires in bundled tools.
+- The same release preparation helper now supports `--platform linux|macos` for x64/arm64 Node and uv tarballs, matching
+  the Unix Rust Node/uv installer asset matrix when future macOS/Linux installer packaging wires in bundled tools.
 
 ## Phase 7: Larger Runtime Rust Candidates
 

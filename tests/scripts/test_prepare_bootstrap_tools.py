@@ -37,6 +37,21 @@ class PrepareBootstrapToolsTests(unittest.TestCase):
             "node-v22.19.0-win-x64.zip",
         )
 
+    def test_select_latest_unix_node_archive_prefers_xz(self):
+        module = _load_script_module()
+        html = """
+            <a href="node-v22.18.0-linux-x64.tar.gz">node-v22.18.0-linux-x64.tar.gz</a>
+            <a href="node-v22.19.1-linux-arm64.tar.xz">node-v22.19.1-linux-arm64.tar.xz</a>
+            <a href="node-v22.19.0-linux-x64.tar.gz">node-v22.19.0-linux-x64.tar.gz</a>
+            <a href="node-v22.19.1-linux-x64.tar.xz">node-v22.19.1-linux-x64.tar.xz</a>
+            <a href="node-v21.99.0-linux-x64.tar.xz">node-v21.99.0-linux-x64.tar.xz</a>
+        """
+
+        self.assertEqual(
+            module.select_latest_unix_node_archive(html, "linux", "x64"),
+            "node-v22.19.1-linux-x64.tar.xz",
+        )
+
     def test_archive_specs_match_installer_runtime_assets(self):
         module = _load_script_module()
 
@@ -75,23 +90,37 @@ class PrepareBootstrapToolsTests(unittest.TestCase):
     def test_unix_archive_specs_match_uv_runtime_assets(self):
         module = _load_script_module()
 
-        linux_specs = module.archive_specs_for_target("linux", "x64")
+        linux_specs = module.archive_specs_for_target(
+            "linux",
+            "x64",
+            "node-v22.19.1-linux-x64.tar.xz",
+        )
         self.assertEqual(
             [spec.name for spec in linux_specs],
-            ["uv-x86_64-unknown-linux-gnu.tar.gz"],
+            [
+                "node-v22.19.1-linux-x64.tar.xz",
+                "uv-x86_64-unknown-linux-gnu.tar.gz",
+            ],
         )
         self.assertTrue(
-            linux_specs[0].url.endswith("/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz")
+            linux_specs[1].url.endswith("/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz")
         )
 
-        mac_specs = module.archive_specs_for_target("macos", "arm64")
+        mac_specs = module.archive_specs_for_target(
+            "macos",
+            "arm64",
+            "node-v22.19.1-darwin-arm64.tar.xz",
+        )
         self.assertEqual(
             [spec.name for spec in mac_specs],
-            ["uv-aarch64-apple-darwin.tar.gz"],
+            [
+                "node-v22.19.1-darwin-arm64.tar.xz",
+                "uv-aarch64-apple-darwin.tar.gz",
+            ],
         )
 
         with self.assertRaisesRegex(ValueError, "unsupported Unix uv platform"):
-            module.archive_specs_for_target("linux", "x86")
+            module.archive_specs_for_target("linux", "x86", "node-v22.19.1-linux-x86.tar.xz")
 
     def test_manifest_records_archive_size_and_sha256(self):
         module = _load_script_module()

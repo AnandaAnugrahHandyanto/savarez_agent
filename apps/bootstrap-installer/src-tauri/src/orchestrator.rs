@@ -1036,6 +1036,17 @@ pub fn unix_node_runtime_stage_plan_from_index(
     let version_major = 22;
     let archive_name = latest_unix_node_archive_name(index_html, version_major, node_os, arch)
         .ok_or_else(|| anyhow!("Node.js v{version_major} {node_os}-{arch} archive not found"))?;
+    unix_node_runtime_stage_plan_from_archive_name(hermes_home, archive_name)
+}
+
+fn unix_node_runtime_stage_plan_from_archive_name(
+    hermes_home: &Path,
+    archive_name: String,
+) -> Result<UnixNodeRuntimeStagePlan> {
+    let version_major = node_archive_version_tuple(&archive_name).0;
+    if version_major == 0 {
+        return Err(anyhow!("invalid Node.js archive name: {archive_name}"));
+    }
     let download_url =
         format!("https://nodejs.org/dist/latest-v{version_major}.x/{archive_name}");
     let archive_path = bootstrap_archive_cache_path(hermes_home, &archive_name);
@@ -1054,7 +1065,10 @@ pub fn unix_node_runtime_stage_plan_from_index(
 }
 
 /// Install a Hermes-managed Unix Node.js runtime from the official tarball.
-pub async fn install_unix_node_runtime_stage(hermes_home: &Path) -> Result<serde_json::Value> {
+pub async fn install_unix_node_runtime_stage(
+    hermes_home: &Path,
+    bundled_tools_dir: Option<&Path>,
+) -> Result<serde_json::Value> {
     if cfg!(target_os = "windows") {
         return Err(anyhow!("native Unix Node runtime stage is not available on Windows"));
     }
@@ -1071,28 +1085,38 @@ pub async fn install_unix_node_runtime_stage(hermes_home: &Path) -> Result<serde
     let node_os = unix_node_os_slug()?;
     let arch = current_unix_node_arch_slug()?;
     let version_major = 22;
-    let index_url = format!("https://nodejs.org/dist/latest-v{version_major}.x/");
-    let index_html = reqwest::Client::new()
-        .get(&index_url)
-        .header("User-Agent", "Hermes-Setup")
-        .send()
+    let plan = if let Some(archive_name) =
+        latest_bundled_unix_node_archive_name(bundled_tools_dir, version_major, &node_os, &arch)
+    {
+        unix_node_runtime_stage_plan_from_archive_name(hermes_home, archive_name)?
+    } else {
+        let index_url = format!("https://nodejs.org/dist/latest-v{version_major}.x/");
+        let index_html = reqwest::Client::new()
+            .get(&index_url)
+            .header("User-Agent", "Hermes-Setup")
+            .send()
+            .await
+            .with_context(|| format!("GET {index_url}"))?
+            .text()
+            .await
+            .with_context(|| format!("reading body of {index_url}"))?;
+        unix_node_runtime_stage_plan_from_index(hermes_home, &node_os, &arch, &index_html)?
+    };
+    let archive_source =
+        resolve_bootstrap_archive_source(hermes_home, bundled_tools_dir, &plan.archive_name);
+    if archive_source.kind == BootstrapArchiveSourceKind::Cache {
+        crate::artifact::download_to_cache(
+            crate::artifact::DownloadSpec {
+                url: plan.download_url.clone(),
+                user_agent: "Hermes-Setup",
+                expected_sha256: None,
+            },
+            &archive_source.path,
+        )
         .await
-        .with_context(|| format!("GET {index_url}"))?
-        .text()
-        .await
-        .with_context(|| format!("reading body of {index_url}"))?;
-    let plan = unix_node_runtime_stage_plan_from_index(hermes_home, &node_os, &arch, &index_html)?;
-    crate::artifact::download_to_cache(
-        crate::artifact::DownloadSpec {
-            url: plan.download_url.clone(),
-            user_agent: "Hermes-Setup",
-            expected_sha256: None,
-        },
-        &plan.archive_path,
-    )
-    .await
-    .with_context(|| format!("downloading {}", plan.archive_name))?;
-    install_unix_node_archive(&plan.archive_path, &plan.install_dir)?;
+        .with_context(|| format!("downloading {}", plan.archive_name))?;
+    }
+    install_unix_node_archive(&archive_source.path, &plan.install_dir)?;
     if !node_version_satisfies_build(&plan.node_bin) {
         return Err(anyhow!(
             "installed Node.js does not satisfy desktop build requirements"
@@ -1103,6 +1127,7 @@ pub async fn install_unix_node_runtime_stage(hermes_home: &Path) -> Result<serde
     Ok(serde_json::json!({
         "node": plan.node_bin,
         "archive": plan.archive_name,
+        "archiveSource": archive_source.kind.as_str(),
         "installDir": plan.install_dir,
     }))
 }
@@ -2050,6 +2075,51 @@ fn latest_bundled_windows_node_archive_name(
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| entry.file_name().into_string().ok())
         .filter(|name| windows_node_archive_matches(name, version_major, arch))
+        .max_by(|left, right| compare_node_archive_versions(left, right))
+}
+
+fn latest_bundled_unix_node_archive_name(
+    bundled_tools_dir: Option<&Path>,
+    version_major: u32,
+    node_os: &str,
+    arch: &str,
+) -> Option<String> {
+    latest_bundled_unix_node_archive_name_with_extension(
+        bundled_tools_dir,
+        version_major,
+        node_os,
+        arch,
+        "tar.xz",
+    )
+    .or_else(|| {
+        latest_bundled_unix_node_archive_name_with_extension(
+            bundled_tools_dir,
+            version_major,
+            node_os,
+            arch,
+            "tar.gz",
+        )
+    })
+}
+
+fn latest_bundled_unix_node_archive_name_with_extension(
+    bundled_tools_dir: Option<&Path>,
+    version_major: u32,
+    node_os: &str,
+    arch: &str,
+    extension: &str,
+) -> Option<String> {
+    let bundled_tools_dir = bundled_tools_dir?;
+    let entries = fs::read_dir(bundled_tools_dir).ok()?;
+    let expected_suffix = format!("-{node_os}-{arch}.{extension}");
+    entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| {
+            name.starts_with("node-v")
+                && name.ends_with(&expected_suffix)
+                && node_archive_version_tuple(name).0 == version_major
+        })
         .max_by(|left, right| compare_node_archive_versions(left, right))
 }
 
@@ -3268,6 +3338,32 @@ mod tests {
         let picked = latest_bundled_windows_node_archive_name(Some(&bundled), 22, "x64");
 
         assert_eq!(picked.as_deref(), Some("node-v22.19.1-win-x64.zip"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bundled_unix_node_archive_picker_prefers_matching_xz() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-bundled-unix-node-archive-test-{}",
+            std::process::id()
+        ));
+        let bundled = root.join("resources").join("bootstrap-tools");
+        std::fs::create_dir_all(&bundled).unwrap();
+        for name in [
+            "node-v22.18.0-linux-x64.tar.xz",
+            "node-v22.20.1-linux-arm64.tar.xz",
+            "node-v22.19.1-linux-x64.tar.gz",
+            "node-v22.19.2-linux-x64.tar.xz",
+            "node-v21.7.3-linux-x64.tar.xz",
+        ] {
+            std::fs::write(bundled.join(name), b"node").unwrap();
+        }
+
+        let picked =
+            latest_bundled_unix_node_archive_name(Some(&bundled), 22, "linux", "x64");
+
+        assert_eq!(picked.as_deref(), Some("node-v22.19.2-linux-x64.tar.xz"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

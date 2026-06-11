@@ -84,6 +84,27 @@ def select_latest_node_archive(index_html: str, arch: str, major: int = NODE_MAJ
     return max(matches, key=lambda item: item[0])[1]
 
 
+def select_latest_unix_node_archive(
+    index_html: str,
+    node_os: str,
+    arch: str,
+    major: int = NODE_MAJOR,
+) -> str:
+    """Return the newest Node.js Unix tarball name, preferring xz over gzip."""
+
+    for extension in ("tar.xz", "tar.gz"):
+        pattern = re.compile(
+            rf"node-v({major})\.(\d+)\.(\d+)-{re.escape(node_os)}-{re.escape(arch)}\.{extension}"
+        )
+        matches: list[tuple[tuple[int, int, int], str]] = []
+        for match in pattern.finditer(index_html):
+            version = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+            matches.append((version, match.group(0)))
+        if matches:
+            return max(matches, key=lambda item: item[0])[1]
+    raise ValueError(f"Node.js v{major} {node_os}-{arch} archive not found")
+
+
 def archive_specs_for_arch(arch: str, node_archive_name: str) -> list[ArchiveSpec]:
     """Build the archive list that matches the Rust installer runtime matrix."""
 
@@ -121,7 +142,13 @@ def archive_specs_for_target(
     archive_name = UNIX_UV_ARCHIVE_NAMES.get((normalized_platform, arch))
     if archive_name is None:
         raise ValueError(f"unsupported Unix uv platform: {normalized_platform}-{arch}")
+    if node_archive_name is None:
+        raise ValueError("Unix bootstrap tools require a Node.js archive name")
     return [
+        ArchiveSpec(
+            name=node_archive_name,
+            url=f"{NODE_INDEX_URL}{node_archive_name}",
+        ),
         ArchiveSpec(
             name=archive_name,
             url=f"https://github.com/astral-sh/uv/releases/latest/download/{archive_name}",
@@ -216,14 +243,14 @@ def prepare_archives(
     """Resolve and optionally download all archives for the requested architectures."""
 
     normalized_platform = "macos" if platform == "darwin" else platform
-    index_html = fetch_text(NODE_INDEX_URL) if normalized_platform == "windows" else ""
+    index_html = fetch_text(NODE_INDEX_URL)
     downloaded: list[PreparedArchive] = []
     for arch in arches:
-        node_archive = (
-            select_latest_node_archive(index_html, arch)
-            if normalized_platform == "windows"
-            else None
-        )
+        if normalized_platform == "windows":
+            node_archive = select_latest_node_archive(index_html, arch)
+        else:
+            node_os = "darwin" if normalized_platform == "macos" else normalized_platform
+            node_archive = select_latest_unix_node_archive(index_html, node_os, arch)
         for spec in archive_specs_for_target(normalized_platform, arch, node_archive):
             if dry_run:
                 print(f"[bootstrap-tools] would download {spec.name} <- {spec.url}")

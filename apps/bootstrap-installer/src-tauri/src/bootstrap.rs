@@ -613,7 +613,12 @@ async fn run_bootstrap(
         }
 
         if !cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("prerequisites") {
-            match crate::orchestrator::install_unix_node_runtime_stage(&hermes_home).await {
+            match crate::orchestrator::install_unix_node_runtime_stage(
+                &hermes_home,
+                bundled_tools_dir.as_deref(),
+            )
+            .await
+            {
                 Ok(data) => emit_log(&format!(
                     "[bootstrap] native Unix Node preparation succeeded: {data}"
                 )),
