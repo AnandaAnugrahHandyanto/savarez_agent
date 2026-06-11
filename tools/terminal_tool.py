@@ -1159,6 +1159,18 @@ def _get_env_config() -> Dict[str, Any]:
                         "Falling back to $HOME probe.",
                         cwd)
             cwd = ""  # empty → WslEnvironment probes $HOME
+    elif env_type in {"local", "ssh"} and cwd and cwd.startswith("/mnt/"):
+        # Convert WSL /mnt/drive/... paths back to Windows when switching
+        # from WSL to a Windows-hosted backend (local or SSH).
+        import re
+        _MNT_RE = re.compile(r"^/mnt/([a-z])(/.*)?$")
+        _m = _MNT_RE.match(cwd)
+        if _m:
+            drive = _m.group(1).upper() + ":"
+            tail = (_m.group(2) or "").replace("/", "\\")
+            cwd = drive + tail if tail else drive + "\\"
+            logger.info("Converted WSL CWD %r → %r for %s backend",
+                        _m.group(0), cwd, env_type)
 
     return {
         "env_type": env_type,
