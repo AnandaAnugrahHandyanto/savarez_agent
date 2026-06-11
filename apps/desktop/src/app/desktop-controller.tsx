@@ -11,7 +11,6 @@ import { Pane, PaneMain } from '@/components/pane-shell'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
-import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import {
   autoArchiveOldSessions,
@@ -87,6 +86,7 @@ import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store
 import { isSecondaryWindow } from '../store/windows'
 
 import { ChatView } from './chat'
+import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
 import {
   ChatPreviewRail,
@@ -284,18 +284,23 @@ export function DesktopController() {
       if (!payload || payload.kind !== 'blueprint' || !payload.name) {
         return
       }
+
       const slots = Object.entries(payload.params || {})
         .map(([k, v]) => {
           const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
+
           return `${k}=${sval}`
         })
         .join(' ')
+
       const command = `/blueprint ${payload.name}${slots ? ' ' + slots : ''}`
       requestComposerInsert(command, { mode: 'block', target: 'main' })
       requestComposerFocus('main')
     })
+
     // Tell the main process the renderer is ready to receive deep links.
     void window.hermesDesktop?.signalDeepLinkReady?.()
+
     return () => unsubscribe?.()
   }, [])
 
