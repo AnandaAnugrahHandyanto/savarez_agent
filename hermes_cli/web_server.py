@@ -1655,6 +1655,7 @@ async def get_status():
         "active_sessions": active_sessions,
         "auth_required": auth_required,
         "auth_providers": auth_providers,
+        "desktop_managed": _read_desktop_managed_flag(),
     }
 
 
@@ -2107,12 +2108,19 @@ def _write_desktop_managed_flag(managed: bool) -> None:
     ``gateway_state.json`` to avoid a race with the gateway's own
     ``_write_runtime_status()`` which also writes gateway_state.json
     and would overwrite our ``desktop_managed`` field.
+
+    Uses tmp+replace for atomic write — concurrent start/stop cannot
+    produce a torn file.
     """
     try:
-        (get_hermes_home() / _DESKTOP_MANAGED_FLAG).write_text(
+        home = get_hermes_home()
+        tmp = home / f"{_DESKTOP_MANAGED_FLAG}.tmp"
+        target = home / _DESKTOP_MANAGED_FLAG
+        tmp.write_text(
             json.dumps({"desktop_managed": managed}, indent=2),
             encoding="utf-8",
         )
+        tmp.replace(target)
     except Exception:
         pass  # best-effort; not on the critical path
 
@@ -4765,10 +4773,10 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
         if body.enabled is not None:
             _write_platform_enabled(platform_id, body.enabled)
 
-            # 联动 gateway：任意消息平台被启用 → 自动启动 gateway（fire-and-forget）
+            # Record desktop_managed intent — frontend's toggle
+            # handler will POST /api/gateway/start separately.
             if body.enabled:
                 try:
-                    _spawn_hermes_action(["gateway", "start"], "gateway-start")
                     _write_desktop_managed_flag(True)
                 except Exception:
                     pass  # best-effort
