@@ -11,6 +11,7 @@ from hermes_cli.agents_os_web import (
     artifacts_payload,
     create_idea_action,
     jarvis_briefing_payload,
+    jarvis_model_advisor_payload,
     jarvis_preview_payload,
     jarvis_transcribe_payload,
     knowledge_index_payload,
@@ -164,12 +165,59 @@ def test_jarvis_transcribe_writes_local_artifacts_without_execution(agents_home)
     assert payload["local_only"] is True
     assert payload["execution_created"] is False
     assert payload["status"] == "transcribed"
+    assert payload["stt"]["provider"] == "provided_transcript"
+    assert payload["advisor"]["provider"] == "deterministic"
     assert payload["transcript"]["text"] == "Prikaži zadnje BP24 stanje"
     assert payload["intent_preview"]["risk_class"] == "safe_local"
     assert payload["intent_preview"]["approval_required"] is False
     assert Path(payload["audio_artifact_path"]).exists()
     assert Path(payload["transcript_artifact_path"]).exists()
     assert "Prikaži zadnje BP24 stanje" in Path(payload["transcript_artifact_path"]).read_text(encoding="utf-8")
+
+
+def test_jarvis_transcribe_uses_stt_adapter_when_transcript_missing(agents_home):
+    paths = resolve_paths(None)
+
+    payload = jarvis_transcribe_payload(
+        paths,
+        {
+            "audio_base64": "UklGRg==",
+            "audio_mime": "audio/webm",
+            "stt_result": {"text": "Deployaj BP24", "provider": "local-faster-whisper", "confidence": 0.91},
+        },
+    )
+
+    assert payload["execution_created"] is False
+    assert payload["stt"]["provider"] == "local-faster-whisper"
+    assert payload["stt"]["confidence"] == 0.91
+    assert payload["transcript"]["text"] == "Deployaj BP24"
+    assert payload["command_card"]["risk_class"] == "public_gated"
+    assert payload["command_card"]["approval_required"] is True
+
+
+def test_jarvis_model_advisor_keeps_deterministic_gate_authoritative(agents_home):
+    paths = resolve_paths(None)
+    deterministic = jarvis_preview_payload(paths, {"transcript_text": "Deployaj BP24"})
+
+    payload = jarvis_model_advisor_payload(
+        paths,
+        {
+            "transcript_text": "Deployaj BP24",
+            "deterministic_preview": deterministic,
+            "model_result": {"semantic_intent": "deploy production", "risk_class": "safe_local", "voice_reply_short": "Mogu deployati."},
+            "provider": "minimax",
+            "model": "MiniMax-M3",
+        },
+    )
+
+    assert payload["execution_created"] is False
+    assert payload["provider"] == "minimax"
+    assert payload["model"] == "MiniMax-M3"
+    assert payload["authoritative_risk_class"] == "public_gated"
+    assert payload["model_risk_class"] == "safe_local"
+    assert payload["risk_disagreement"] is True
+    assert payload["command_card"]["risk_class"] == "public_gated"
+    assert payload["command_card"]["approval_required"] is True
 
 
 def test_jarvis_preview_gates_risky_commands_without_execution(agents_home):
