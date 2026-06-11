@@ -3,26 +3,31 @@ import time
 
 from tui_gateway import server
 from tui_gateway import ws as ws_mod
+from tui_gateway.session_state import SessionState
 
 
 def _fresh_session(**fields):
-    """Session dict seeded with the timestamps every real creation site sets.
+    """Session seeded like every real creation site: a SessionState with timestamps.
 
-    Importing tui_gateway.server starts a module-level idle-reaper thread
-    (_start_idle_reaper) that scans _sessions every 300s and evicts sessions
-    whose transport is dead and whose created_at/last_active are older than
-    the 6h TTL. A bare seeded dict has neither key, so _session_is_evictable
-    reads them as 0.0 — "idle since the epoch" — and the session becomes
-    evictable the instant handle_ws's finally closes the transport. In any
-    pytest process that outlives the reaper's first tick (e.g. a single-
-    process full-suite run; per-file CI subprocesses exit long before 300s),
-    a tick landing in the close→assert window pops the session and the test
-    dies with KeyError. Real sessions are immune — _init_session and
-    session.create always stamp both fields with time.time() — so the test
-    must seed them too to exercise the same contract.
+    Two reasons this must be a SessionState (not a bare dict), each a real
+    contract the production disconnect path now relies on:
+
+    * Timestamps — importing tui_gateway.server starts a module-level
+      idle-reaper thread (_start_idle_reaper) that scans _sessions every 300s
+      and evicts sessions whose transport is dead and whose
+      created_at/last_active are older than the 6h TTL. A seed missing those
+      keys reads as 0.0 ("idle since the epoch") and becomes evictable the
+      instant handle_ws's finally closes the transport; in a process that
+      outlives the reaper's first tick, a tick in the close→assert window
+      pops the session (KeyError). Real creation sites always stamp both.
+    * Attribute access — the repoint path sets ``session.transport =
+      _detached_ws_transport`` (server.py, Phase 3 Step 3 attribute style);
+      that assignment raises AttributeError on a plain dict, silently
+      skipping the repoint so the session keeps its live WSTransport. Real
+      sessions are SessionState, so the test must be too.
     """
     now = time.time()
-    return {"created_at": now, "last_active": now, **fields}
+    return SessionState({"created_at": now, "last_active": now, **fields})
 
 
 def _run_disconnect(monkeypatch, seed):
