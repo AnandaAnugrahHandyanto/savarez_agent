@@ -140,6 +140,49 @@ class TestFindStaleDashboardPids:
         with patch("subprocess.run", side_effect=sp.TimeoutExpired("ps", 10)):
             assert _find_stale_dashboard_pids() == []
 
+    def test_profile_flag_before_subcommand_matched(self):
+        """The global --profile/-p flag may sit between the hermes
+        entrypoint and the ``dashboard`` subcommand; such processes must
+        still be detected (#44035).
+        """
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(12345, "/x/venv/bin/python -m hermes_cli.main --profile work dashboard --host 0.0.0.0 --port 9119 --no-open"),
+                    _ps_line(12346, "hermes -p work dashboard --no-open"),
+                    _ps_line(12347, "python /home/x/hermes_cli/main.py --profile=work dashboard"),
+                ]) + "\n",
+                stderr="",
+            )
+            assert sorted(_find_stale_dashboard_pids()) == [12345, 12346, 12347]
+
+    def test_profile_flag_after_subcommand_matched(self):
+        """The other argv order — profile flag after the subcommand —
+        keeps working too."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout=_ps_line(12345, "hermes dashboard --profile work --port 9119") + "\n",
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == [12345]
+
+    def test_profile_qualified_non_dashboard_not_matched(self):
+        """Anchored matching: a profile-qualified hermes process running a
+        *different* subcommand must not be picked up, even when its cmdline
+        mentions the word 'dashboard' elsewhere."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="\n".join([
+                    _ps_line(22222, "python3 -m hermes_cli.main --profile work gateway"),
+                    _ps_line(22223, "hermes --profile work chat -q 'open the dashboard'"),
+                ]) + "\n",
+                stderr="",
+            )
+            assert _find_stale_dashboard_pids() == []
+
     def test_unrelated_process_containing_word_dashboard_not_matched(self):
         """Guards against greedy pgrep-style matching catching chat sessions
         or unrelated processes whose cmdline happens to contain 'dashboard'.
