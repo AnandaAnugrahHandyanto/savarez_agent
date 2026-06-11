@@ -85,6 +85,9 @@ def _http_json(
 ) -> Dict[str, Any]:
     data = None
     request_headers = dict(headers)
+    # Some providers (notably textbee.dev behind Cloudflare) reject Python's
+    # default urllib user agent with a 403/1010. Send a stable product UA.
+    request_headers.setdefault("User-Agent", "HermesAgent/1.0")
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
         request_headers.setdefault("Content-Type", "application/json")
