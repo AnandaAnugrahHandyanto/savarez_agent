@@ -11,6 +11,7 @@ import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import {
+  $knownProviders,
   $visibleModels,
   collapseModelFamilies,
   effectiveVisibleKeys,
@@ -38,6 +39,7 @@ export function ModelVisibilityDialog({
   const copy = t.modelVisibility
   const [search, setSearch] = useState('')
   const stored = useStore($visibleModels)
+  const known = useStore($knownProviders)
 
   const modelOptions = useQuery({
     queryKey: ['model-options', sessionId || 'global'],
@@ -56,10 +58,10 @@ export function ModelVisibilityDialog({
     [modelOptions.data]
   )
 
-  const visible = effectiveVisibleKeys(stored, providers)
+  const visible = effectiveVisibleKeys(stored, providers, known)
 
   const toggle = (provider: ModelOptionProvider, model: string) => {
-    const next = new Set(effectiveVisibleKeys($visibleModels.get(), providers))
+    const next = new Set(effectiveVisibleKeys($visibleModels.get(), providers, $knownProviders.get()))
     const key = modelVisibilityKey(provider.slug, model)
 
     if (next.has(key)) {
@@ -68,7 +70,12 @@ export function ModelVisibilityDialog({
       next.add(key)
     }
 
-    setVisibleModels(next)
+    // Record every provider currently on screen as customized so emptying one
+    // (hiding its last model) keeps it empty instead of snapping back to all-on.
+    setVisibleModels(
+      next,
+      providers.map(p => p.slug)
+    )
   }
 
   const q = search.trim().toLowerCase()

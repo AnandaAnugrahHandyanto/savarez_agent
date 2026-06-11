@@ -21,6 +21,7 @@ import { useI18n } from '@/i18n'
 import { displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import {
+  $knownProviders,
   $visibleModels,
   collapseModelFamilies,
   DEFAULT_VISIBLE_PER_PROVIDER,
@@ -64,6 +65,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   const currentProvider = useStore($currentProvider)
   const currentReasoningEffort = useStore($currentReasoningEffort)
   const visibleModels = useStore($visibleModels)
+  const knownProviders = useStore($knownProviders)
 
   const modelOptions = useQuery({
     queryKey: ['model-options', activeSessionId || 'global'],
@@ -88,8 +90,8 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
   const providers = modelOptions.data?.providers
   const effectiveVisibleModels = useMemo(
-    () => effectiveVisibleKeys(visibleModels, providers ?? []),
-    [visibleModels, providers]
+    () => effectiveVisibleKeys(visibleModels, providers ?? [], knownProviders),
+    [visibleModels, providers, knownProviders]
   )
 
   const switchTo = (model: string, provider: string) =>
