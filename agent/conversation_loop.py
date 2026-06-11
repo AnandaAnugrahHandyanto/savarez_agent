@@ -3310,7 +3310,7 @@ def run_conversation(
             normalized = _transport.normalize_response(response, **_normalize_kwargs)
             assistant_message = normalized
             finish_reason = normalized.finish_reason
-            
+
             # Normalize content to string — some OpenAI-compatible servers
             # (llama-server, etc.) return content as a dict or list instead
             # of a plain string, which crashes downstream .strip() calls.
@@ -3499,23 +3499,36 @@ def run_conversation(
             if assistant_message.tool_calls:
                 if not agent.quiet_mode:
                     agent._vprint(f"{agent.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
-                
+
                 if agent.verbose_logging:
                     for tc in assistant_message.tool_calls:
                         logging.debug(f"Tool call: {tc.function.name} with args: {tc.function.arguments[:200]}...")
-                
+
                 # Validate tool call names - detect model hallucinations
                 # Repair mismatched tool names before validating
                 for tc in assistant_message.tool_calls:
+                    # DEFENSIVE FIX: Deduplicate doubled tool names (terminalterminal -> terminal)
+                    # Some providers/models occasionally emit doubled names. This guard catches
+                    # and fixes them before validation, preventing "Unknown tool" errors.
+                    if len(tc.function.name) % 2 == 0:
+                        half = len(tc.function.name) // 2
+                        if tc.function.name[:half] == tc.function.name[half:]:
+                            original = tc.function.name
+                            tc.function.name = tc.function.name[:half]
+                            if agent.verbose_logging:
+                                logging.warning(f"Deduped doubled tool name: '{original}' -> '{tc.function.name}'")
+
                     if tc.function.name not in agent.valid_tool_names:
                         repaired = agent._repair_tool_call(tc.function.name)
                         if repaired:
                             print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
                             tc.function.name = repaired
+
                 invalid_tool_calls = [
                     tc.function.name for tc in assistant_message.tool_calls
                     if tc.function.name not in agent.valid_tool_names
                 ]
+
                 if invalid_tool_calls:
                     # Track retries for invalid tool calls
                     agent._invalid_tool_retries += 1
