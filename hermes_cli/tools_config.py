@@ -1764,7 +1764,7 @@ def _configure_toolset(
     force_fresh: bool = True,
 ):
     """Configure a toolset - provider selection + API keys.
-    
+
     Uses TOOL_CATEGORIES for provider-aware config, falls back to simple
     env var prompts for toolsets not in TOOL_CATEGORIES.
     """

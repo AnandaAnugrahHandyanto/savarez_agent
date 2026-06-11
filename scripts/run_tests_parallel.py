@@ -220,7 +220,7 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
 
     if sys.platform == "win32":
         try:
-            
+
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                 stdout=subprocess.DEVNULL,

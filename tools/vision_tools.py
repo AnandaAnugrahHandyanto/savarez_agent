@@ -20,7 +20,7 @@ Features:
 Usage:
     from vision_tools import vision_analyze_tool
     import asyncio
-    
+
     # Analyze an image
     result = await vision_analyze_tool(
         image_url="https://example.com/image.jpg",
@@ -155,23 +155,23 @@ def _is_retryable_download_error(error: Exception) -> bool:
 async def _download_image(image_url: str, destination: Path, max_retries: int = 3) -> Path:
     """
     Download an image from a URL to a local destination (async) with retry logic.
-    
+
     Args:
         image_url (str): The URL of the image to download
         destination (Path): The path where the image should be saved
         max_retries (int): Maximum number of retry attempts (default: 3)
-        
+
     Returns:
         Path: The path to the downloaded image
-        
+
     Raises:
         Exception: If download fails after all retries
     """
     import asyncio
-    
+
     # Create parent directories if they don't exist
     destination.parent.mkdir(parents=True, exist_ok=True)
-    
+
     async def _ssrf_redirect_guard(response):
         """Re-validate each redirect target to prevent redirect-based SSRF.
 
@@ -223,7 +223,7 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
                 blocked = check_website_access(final_url)
                 if blocked:
                     raise PermissionError(blocked["message"])
-                
+
                 # Save the image content (double-check actual size)
                 body = response.content
                 if len(body) > _VISION_MAX_DOWNLOAD_BYTES:
@@ -231,7 +231,7 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
                         f"Image too large ({len(body)} bytes, max {_VISION_MAX_DOWNLOAD_BYTES})"
                     )
                 destination.write_bytes(body)
-            
+
             return destination
         except Exception as e:
             last_error = e
@@ -266,10 +266,10 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
 def _determine_mime_type(image_path: Path) -> str:
     """
     Determine the MIME type of an image based on its file extension.
-    
+
     Args:
         image_path (Path): Path to the image file
-        
+
     Returns:
         str: The MIME type (defaults to image/jpeg if unknown)
     """
@@ -289,26 +289,26 @@ def _determine_mime_type(image_path: Path) -> str:
 def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None) -> str:
     """
     Convert an image file to a base64-encoded data URL.
-    
+
     Args:
         image_path (Path): Path to the image file
         mime_type (Optional[str]): MIME type of the image (auto-detected if None)
-        
+
     Returns:
         str: Base64-encoded data URL (e.g., "data:image/jpeg;base64,...")
     """
     # Read the image as bytes
     data = image_path.read_bytes()
-    
+
     # Encode to base64
     encoded = base64.b64encode(data).decode("ascii")
-    
+
     # Determine MIME type
     mime = mime_type or _determine_mime_type(image_path)
-    
+
     # Create data URL
     data_url = f"data:{mime};base64,{encoded}"
-    
+
     return data_url
 
 
@@ -805,31 +805,31 @@ async def vision_analyze_tool(
 ) -> str:
     """
     Analyze an image from a URL or local file path using vision AI.
-    
+
     This tool accepts either an HTTP/HTTPS URL or a local file path. For URLs,
     it downloads the image first. In both cases, the image is converted to base64
     and processed using Gemini 3 Flash Preview via OpenRouter API.
-    
+
     The user_prompt parameter is expected to be pre-formatted by the calling
     function (typically model_tools.py) to include both full description
     requests and specific questions.
-    
+
     Args:
         image_url (str): The URL or local file path of the image to analyze.
                          Accepts http://, https:// URLs or absolute/relative file paths.
         user_prompt (str): The pre-formatted prompt for the vision model
         model (str): The vision model to use (default: google/gemini-3-flash-preview)
-    
+
     Returns:
         str: JSON string containing the analysis results with the following structure:
              {
                  "success": bool,
                  "analysis": str (defaults to error message if None)
              }
-    
+
     Raises:
         Exception: If download fails, analysis fails, or API key is not set
-        
+
     Note:
         - For URLs, temporary images are stored under $HERMES_HOME/cache/vision/ and cleaned up
         - For local file paths, the file is used directly and NOT deleted
@@ -849,13 +849,13 @@ async def vision_analyze_tool(
         "model_used": model,
         "image_size_bytes": 0
     }
-    
+
     temp_image_path = None
     # Track whether we should clean up the file after processing.
     # Local files (e.g. from the image cache) should NOT be deleted.
     should_cleanup = True
     detected_mime_type = None
-    
+
     try:
         from tools.interrupt import is_interrupted
         if is_interrupted():
@@ -863,7 +863,7 @@ async def vision_analyze_tool(
 
         logger.info("Analyzing image: %s", image_url[:60])
         logger.info("User prompt: %s", user_prompt[:100])
-        
+
         # Determine if this is a local file path or a remote URL
         # Strip file:// scheme so file URIs resolve as local paths.
         resolved_url = image_url
@@ -889,7 +889,7 @@ async def vision_analyze_tool(
             raise ValueError(
                 "Invalid image source. Provide an HTTP/HTTPS URL or a valid local file path."
             )
-        
+
         # Get image file size for logging
         image_size_bytes = temp_image_path.stat().st_size
         image_size_kb = image_size_bytes / 1024
@@ -898,7 +898,7 @@ async def vision_analyze_tool(
         detected_mime_type = _detect_image_mime_type(temp_image_path)
         if not detected_mime_type:
             raise ValueError("Only real image files are supported for vision analysis.")
-        
+
         # Convert image to base64 — send at full resolution first.
         # If the provider rejects it as too large, we auto-resize and retry.
         logger.info("Converting image to base64...")
@@ -922,10 +922,10 @@ async def vision_analyze_tool(
                 )
 
         debug_call_data["image_size_bytes"] = image_size_bytes
-        
+
         # Use the prompt as provided (model_tools.py now handles full description formatting)
         comprehensive_prompt = user_prompt
-        
+
         # Prepare the message with base64-encoded image
         messages = [
             {
@@ -944,9 +944,9 @@ async def vision_analyze_tool(
                 ]
             }
         ]
-        
+
         logger.info("Processing image with vision model...")
-        
+
         # Call the vision API via centralized router.
         # Read timeout from config.yaml (auxiliary.vision.timeout), default 120s.
         # Local vision models (llama.cpp, ollama) can take well over 30s.
@@ -991,7 +991,7 @@ async def vision_analyze_tool(
                 response = await async_call_llm(**call_kwargs)
             else:
                 raise
-        
+
         # Extract the analysis — fall back to reasoning if content is empty
         analysis = extract_content_or_reasoning(response)
 
@@ -1002,28 +1002,28 @@ async def vision_analyze_tool(
             analysis = extract_content_or_reasoning(response)
 
         analysis_length = len(analysis)
-        
+
         logger.info("Image analysis completed (%s characters)", analysis_length)
-        
+
         # Prepare successful response
         result = {
             "success": True,
             "analysis": analysis or "There was a problem with the request and the image could not be analyzed."
         }
-        
+
         debug_call_data["success"] = True
         debug_call_data["analysis_length"] = analysis_length
-        
+
         # Log debug information
         _debug.log_call("vision_analyze_tool", debug_call_data)
         _debug.save()
-        
+
         return json.dumps(result, indent=2, ensure_ascii=False)
-        
+
     except Exception as e:
         error_msg = f"Error analyzing image: {str(e)}"
         logger.error("%s", error_msg, exc_info=True)
-        
+
         # Detect vision capability errors — give the model a clear message
         # so it can inform the user instead of a cryptic API error.
         err_str = str(e).lower()
@@ -1055,20 +1055,20 @@ async def vision_analyze_tool(
                 "There was a problem with the request and the image could not "
                 f"be analyzed. Error: {e}"
             )
-        
+
         # Prepare error response
         result = {
             "success": False,
             "error": error_msg,
             "analysis": analysis,
         }
-        
+
         debug_call_data["error"] = error_msg
         _debug.log_call("vision_analyze_tool", debug_call_data)
         _debug.save()
-        
+
         return json.dumps(result, indent=2, ensure_ascii=False)
-    
+
     finally:
         # Clean up temporary image file (but NOT local/cached files)
         if should_cleanup and temp_image_path and temp_image_path.exists():
@@ -1114,26 +1114,26 @@ if __name__ == "__main__":
     """
     print("👁️ Vision Tools Module")
     print("=" * 40)
-    
+
     # Check if vision model is available
     api_available = check_vision_requirements()
-    
+
     if not api_available:
         print("❌ No auxiliary vision model available")
         print("Configure a supported multimodal backend (OpenRouter, Nous, Codex, Anthropic, or a custom OpenAI-compatible endpoint).")
         sys.exit(1)
     else:
         print("✅ Vision model available")
-    
+
     print("🛠️ Vision tools ready for use!")
-    
+
     # Show debug mode status
     if _debug.active:
         print(f"🐛 Debug mode ENABLED - Session ID: {_debug.session_id}")
         print(f"   Debug logs will be saved to: ./logs/vision_tools_debug_{_debug.session_id}.json")
     else:
         print("🐛 Debug mode disabled (set VISION_TOOLS_DEBUG=true to enable)")
-    
+
     print("\nBasic usage:")
     print("  from vision_tools import vision_analyze_tool")
     print("  import asyncio")
@@ -1145,14 +1145,14 @@ if __name__ == "__main__":
     print("      )")
     print("      print(result)")
     print("  asyncio.run(main())")
-    
+
     print("\nExample prompts:")
     print("  - 'What architectural style is this building?'")
     print("  - 'Describe the emotions and mood in this image'")
     print("  - 'What text can you read in this image?'")
     print("  - 'Identify any safety hazards visible'")
     print("  - 'What products or brands are shown?'")
-    
+
     print("\nDebug mode:")
     print("  # Enable debug logging")
     print("  export VISION_TOOLS_DEBUG=true")
