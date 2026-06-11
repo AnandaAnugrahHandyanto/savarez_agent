@@ -457,6 +457,64 @@ def jarvis_preview_payload(paths: AgentsOSPaths, data: dict[str, Any]) -> dict[s
     }
 
 
+def _jarvis_stt_payload(data: dict[str, Any]) -> dict[str, Any]:
+    provided = (data.get("transcript_text") or data.get("text") or "").strip()
+    if provided:
+        return {"provider": "provided_transcript", "text": provided, "confidence": None, "status": "provided"}
+    stt_result = data.get("stt_result") if isinstance(data.get("stt_result"), dict) else {}
+    stt_text = (stt_result.get("text") or "").strip()
+    if stt_text:
+        return {
+            "provider": stt_result.get("provider") or "external_stt_adapter",
+            "text": stt_text,
+            "confidence": stt_result.get("confidence"),
+            "status": "transcribed",
+        }
+    return {
+        "provider": "stub_pending",
+        "text": "[stt_pending] Audio captured; STT backend not connected in this local slice.",
+        "confidence": None,
+        "status": "pending",
+    }
+
+
+def jarvis_model_advisor_payload(paths: AgentsOSPaths, data: dict[str, Any]) -> dict[str, Any]:
+    transcript_text = (data.get("transcript_text") or data.get("text") or "").strip()
+    if not transcript_text:
+        raise ValueError("transcript_text is required")
+    deterministic = data.get("deterministic_preview") if isinstance(data.get("deterministic_preview"), dict) else jarvis_preview_payload(paths, {"transcript_text": transcript_text})
+    command_card = dict(deterministic.get("command_card") or {})
+    model_result = data.get("model_result") if isinstance(data.get("model_result"), dict) else {}
+    model_risk = model_result.get("risk_class")
+    authoritative_risk = command_card.get("risk_class")
+    semantic_intent = model_result.get("semantic_intent") or command_card.get("interpreted_intent")
+    voice_reply = model_result.get("voice_reply_short") or _jarvis_voice_reply(command_card)
+    command_card["semantic_intent"] = semantic_intent
+    command_card["voice_reply_short"] = voice_reply
+    command_card["risk_class"] = authoritative_risk
+    command_card["approval_required"] = bool(command_card.get("approval_required"))
+    command_card["execution_created"] = False
+    return {
+        "local_only": True,
+        "execution_created": False,
+        "provider": data.get("provider") or "deterministic",
+        "model": data.get("model") or "none",
+        "transcript_text": transcript_text,
+        "authoritative_risk_class": authoritative_risk,
+        "model_risk_class": model_risk,
+        "risk_disagreement": bool(model_risk and model_risk != authoritative_risk),
+        "command_card": command_card,
+        "model_result": model_result,
+        "audit": {"agents_os_home": str(paths.root), "created_at": utc_now(), "policy": "deterministic_gate_authoritative"},
+    }
+
+
+def _jarvis_voice_reply(command_card: dict[str, Any]) -> str:
+    if command_card.get("approval_required"):
+        return "Ovo treba odobrenje. Pripremio sam preview, ništa ne izvršavam."
+    return "Ovo je sigurno lokalno. Pripremio sam preview, bez izvršavanja."
+
+
 def jarvis_transcribe_payload(paths: AgentsOSPaths, data: dict[str, Any]) -> dict[str, Any]:
     """Persist a local push-to-talk artefact and return transcript + intent preview.
 
@@ -464,9 +522,8 @@ def jarvis_transcribe_payload(paths: AgentsOSPaths, data: dict[str, Any]) -> dic
     deliberately does not execute commands; real STT can replace the transcript
     stub behind the same payload contract.
     """
-    transcript_text = (data.get("transcript_text") or data.get("text") or "").strip()
-    if not transcript_text:
-        transcript_text = "[stt_pending] Audio captured; STT backend not connected in this local slice."
+    stt = _jarvis_stt_payload(data)
+    transcript_text = stt["text"]
     stamp = _jarvis_slug_from_time()
     audio_bytes = _decode_optional_audio(data)
     suffix = _jarvis_audio_suffix(data.get("audio_mime"))
@@ -478,11 +535,14 @@ def jarvis_transcribe_payload(paths: AgentsOSPaths, data: dict[str, Any]) -> dic
     transcript_path = transcript_dir / f"{stamp}-jarvis-transcript.md"
     audio_path.write_bytes(audio_bytes)
     preview = jarvis_preview_payload(paths, {"transcript_text": transcript_text})
+    advisor = jarvis_model_advisor_payload(paths, {"transcript_text": transcript_text, "deterministic_preview": preview})
     transcript_body = {
         "local_only": True,
         "execution_created": False,
-        "transcript": {"text": transcript_text, "source": "browser_push_to_talk", "created_at": utc_now()},
-        "intent_preview": preview["command_card"],
+        "stt": stt,
+        "advisor": {"provider": advisor["provider"], "model": advisor["model"], "risk_disagreement": advisor["risk_disagreement"]},
+        "transcript": {"text": transcript_text, "source": stt["provider"], "created_at": utc_now()},
+        "intent_preview": advisor["command_card"],
         "audio_artifact_path": str(audio_path),
     }
     transcript_path.write_text(f"# Jarvis transcript\n\n```json\n{json.dumps(transcript_body, ensure_ascii=False, indent=2)}\n```\n", encoding="utf-8")
@@ -501,8 +561,10 @@ def jarvis_transcribe_payload(paths: AgentsOSPaths, data: dict[str, Any]) -> dic
         "audio_artifact_path": str(audio_path),
         "transcript_artifact_path": str(transcript_path),
         "transcript": transcript_body["transcript"],
-        "intent_preview": preview["command_card"],
-        "command_card": preview["command_card"],
+        "stt": stt,
+        "advisor": transcript_body["advisor"],
+        "intent_preview": advisor["command_card"],
+        "command_card": advisor["command_card"],
         "artifact_id": artifact_id,
     }
 
@@ -724,6 +786,8 @@ class MissionControlHandler(BaseHTTPRequestHandler):
                 _send_json(self, create_idea_action(self.service, data))
             elif path == "/api/jarvis/preview":
                 _send_json(self, jarvis_preview_payload(self.service.paths, data))
+            elif path == "/api/jarvis/advisor":
+                _send_json(self, jarvis_model_advisor_payload(self.service.paths, data))
             elif path == "/api/jarvis/transcribe":
                 _send_json(self, jarvis_transcribe_payload(self.service.paths, data))
             else:
