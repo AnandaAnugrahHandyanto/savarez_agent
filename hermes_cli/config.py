@@ -2357,6 +2357,12 @@ DEFAULT_CONFIG = {
         #               ignored paths — node_modules, venv, build outputs —
         #               are never touched.
         "non_interactive_local_changes": "stash",
+        # Skip Node.js dependency installation (``npm ci``) during
+        # ``hermes update`` even when lockfiles have changed.  Useful
+        # on Windows where ``npm ci`` is very slow (NTFS + antivirus
+        # overhead).  The web UI build and desktop rebuild still run
+        # when their own staleness checks trigger.
+        "skip_node_deps": False,
     },
 
     # Language Server Protocol — semantic diagnostics from real

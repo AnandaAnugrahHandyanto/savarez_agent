@@ -7380,12 +7380,50 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
     return resolve_uv() or shutil.which("uv")
 
 
+def _node_deps_install_needed() -> bool:
+    """Return True if ``npm ci`` should run because lockfiles changed.
+
+    Compares the mtime of ``package-lock.json`` against
+    ``node_modules/.package-lock.json`` (written by npm after every
+    successful ``ci``/``install``).  When the lockfile is *not* newer
+    than the marker the tree is already in sync and the expensive
+    install can be skipped.
+
+    Also honours the ``updates.skip_node_deps`` config flag — when set
+    the install is unconditionally skipped (useful on Windows where
+    ``npm ci`` takes several minutes even for an up-to-date tree).
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        if cfg.get("updates", {}).get("skip_node_deps"):
+            return False
+    except Exception:
+        pass
+
+    lockfile = PROJECT_ROOT / "package-lock.json"
+    if not lockfile.exists():
+        # No lockfile — let npm handle it (will likely fail anyway).
+        return True
+
+    marker = PROJECT_ROOT / "node_modules" / ".package-lock.json"
+    if not marker.exists():
+        # No marker — node_modules never installed.
+        return True
+
+    return lockfile.stat().st_mtime > marker.stat().st_mtime
+
+
 def _update_node_dependencies() -> None:
     npm = shutil.which("npm")
     if not npm:
         return
 
     if not (PROJECT_ROOT / "package.json").exists():
+        return
+
+    if not _node_deps_install_needed():
+        print("→ Node.js dependencies up to date (skipping npm ci)")
         return
 
     # With a single workspace lockfile the root install would cover ALL
