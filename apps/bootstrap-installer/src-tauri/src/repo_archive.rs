@@ -7,6 +7,9 @@
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 
+/// Source marker written into archive-created checkouts.
+pub const SOURCE_MARKER_NAME: &str = ".hermes-source.json";
+
 /// GitHub repository archive selector.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoArchiveSpec {
@@ -56,6 +59,49 @@ pub async fn download_and_extract_fresh(
     .context("downloading repository archive")?;
     extract_repo_archive_to_install_root(&archive_path, install_root)?;
     Ok(archive_path)
+}
+
+/// Write the install source marker for an archive-created checkout.
+pub fn write_archive_source_marker(
+    install_root: &Path,
+    spec: &RepoArchiveSpec,
+    archive_path: &Path,
+    git_initialized: bool,
+) -> Result<serde_json::Value> {
+    let marker = serde_json::json!({
+        "schemaVersion": 1,
+        "method": "github_archive",
+        "owner": spec.owner,
+        "repo": spec.repo,
+        "ref": spec.archive_ref()?,
+        "commit": spec.commit,
+        "branch": spec.branch,
+        "archive": archive_path,
+        "gitInitialized": git_initialized,
+    });
+    let text = serde_json::to_string_pretty(&marker)
+        .context("serializing repository source marker")?
+        + "\n";
+    let marker_path = install_root.join(SOURCE_MARKER_NAME);
+    std::fs::write(&marker_path, text)
+        .with_context(|| format!("writing repository source marker {}", marker_path.display()))?;
+    Ok(marker)
+}
+
+/// Read the archive source marker when present.
+pub fn read_archive_source_marker(install_root: &Path) -> Result<Option<serde_json::Value>> {
+    let marker_path = install_root.join(SOURCE_MARKER_NAME);
+    let text = match std::fs::read_to_string(&marker_path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("reading repository source marker {}", marker_path.display()));
+        }
+    };
+    serde_json::from_str(&text)
+        .with_context(|| format!("parsing repository source marker {}", marker_path.display()))
+        .map(Some)
 }
 
 /// Return the cache path for a repository ZIP archive.
@@ -236,6 +282,42 @@ mod tests {
             archive_cache_path(&cache_dir, &spec).unwrap(),
             cache_dir.join("hermes-agent-feature_native_repo.zip")
         );
+    }
+
+    #[test]
+    fn archive_source_marker_round_trips_install_source() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-repo-archive-source-{}",
+            std::process::id()
+        ));
+        let install_root = root.join("hermes-agent");
+        std::fs::create_dir_all(&install_root).unwrap();
+        let spec = RepoArchiveSpec {
+            owner: "NousResearch".into(),
+            repo: "hermes-agent".into(),
+            commit: Some("abcdef123".into()),
+            branch: Some("main".into()),
+        };
+
+        let marker = write_archive_source_marker(
+            &install_root,
+            &spec,
+            &root.join("hermes-agent-abcdef123.zip"),
+            false,
+        )
+        .unwrap();
+        let read_back = read_archive_source_marker(&install_root)
+            .unwrap()
+            .expect("marker should exist");
+
+        assert_eq!(marker["schemaVersion"], 1);
+        assert_eq!(read_back["method"], "github_archive");
+        assert_eq!(read_back["ref"], "abcdef123");
+        assert_eq!(read_back["branch"], "main");
+        assert_eq!(read_back["gitInitialized"], false);
+        let bytes = std::fs::read(install_root.join(SOURCE_MARKER_NAME)).unwrap();
+        assert!(!bytes.starts_with(&[0xef, 0xbb, 0xbf]));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 

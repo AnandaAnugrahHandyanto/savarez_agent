@@ -116,6 +116,9 @@ language-specific setup where needed.
 - Windows fresh installs now defer the script-backed `git` stage while the Rust repository archive path is available.
   If the archive path fails before creating the install root, the bootstrapper installs Git through the existing script
   stage and then falls back to the script-backed repository stage.
+- Archive-created checkouts write `.hermes-source.json` with the GitHub archive owner, repo, ref, branch/commit,
+  cached archive path, and best-effort Git initialization status, giving the update path an explicit source marker for
+  future no-Git refresh support.
 - `bootstrap-marker` now runs as a native Rust stage in the Tauri bootstrapper.
 - `config-templates` now runs as a native Rust stage while preserving Python `tools/skills_sync.py` when available and
   retaining the existing bundled-skill copy fallback.

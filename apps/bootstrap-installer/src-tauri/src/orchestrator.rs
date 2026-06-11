@@ -265,11 +265,18 @@ pub async fn install_repository_archive_fresh(
         crate::repo_archive::download_and_extract_fresh(&spec, &crate::paths::bootstrap_cache_dir(), install_root)
             .await?;
     let git_initialized = initialize_archive_git_repo(install_root);
+    let source_marker = crate::repo_archive::write_archive_source_marker(
+        install_root,
+        &spec,
+        &archive_path,
+        git_initialized,
+    )?;
 
     Ok(serde_json::json!({
         "installRoot": install_root,
         "archive": archive_path,
         "gitInitialized": git_initialized,
+        "source": source_marker,
     }))
 }
 
