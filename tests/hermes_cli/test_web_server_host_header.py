@@ -215,3 +215,47 @@ class TestWebSocketHostOriginGuard:
             },
         ):
             pass
+
+    def test_insecure_specific_bind_accepts_desktop_file_origin_after_token_auth(self, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "100.107.64.4", raising=False)
+        monkeypatch.setattr(ws.app.state, "allow_public", True, raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=desktop-remote-test"
+        with client.websocket_connect(
+            url,
+            headers={
+                "Host": "100.107.64.4:9120",
+                "Origin": "file://",
+            },
+        ):
+            pass
+
+    def test_insecure_wildcard_bind_rejects_desktop_file_origin(self, monkeypatch):
+        from fastapi.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "0.0.0.0", raising=False)
+        monkeypatch.setattr(ws.app.state, "allow_public", True, raising=False)
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=desktop-remote-test"
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(
+                url,
+                headers={
+                    "Host": "100.107.64.4:9120",
+                    "Origin": "file://",
+                },
+            ):
+                pass
+
+        assert exc.value.code == 4403

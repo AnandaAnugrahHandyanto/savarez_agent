@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Set, Any
 logger = logging.getLogger(__name__)
 
 try:
-    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup, ForceReply
     try:
         from telegram import LinkPreviewOptions
     except ImportError:
@@ -44,6 +44,7 @@ except ImportError:
     Message = Any
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
+    ForceReply = Any
     LinkPreviewOptions = None
     Application = Any
     CommandHandler = Any
@@ -87,6 +88,7 @@ from gateway.platforms.telegram_network import (
     parse_fallback_ip_env,
 )
 from utils import atomic_replace
+from hermes_constants import get_hermes_home
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
@@ -475,6 +477,14 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Assistant edit prompts: (chat_id, prompt_message_id) → stable item context.
+        # Replies to these prompts are consumed as replacement draft text and are
+        # never forwarded into the LLM conversation.
+        self._assistant_edit_reply_state: Dict[tuple[str, int], dict] = {}
+        # UA Instagram approval edit prompts: (chat_id, prompt_message_id) → approval context.
+        # Replies are consumed as replacement public-comment reply drafts and
+        # never forwarded into the LLM conversation.
+        self._ua_instagram_edit_reply_state: Dict[tuple[str, int], dict] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
@@ -1849,6 +1859,49 @@ class TelegramAdapter(BasePlatformAdapter):
         else:  # "first" (default)
             return chunk_index == 0
 
+    def _extract_telegram_inline_buttons(self, content: str) -> tuple[str, Optional[Any]]:
+        """Extract an opt-in inline keyboard marker from outgoing text.
+
+        Marker format, on its own line:
+        HERMES_TELEGRAM_BUTTONS_JSON: {"rows":[[{"text":"Send 1","callback_data":"asst:send:1"}]]}
+
+        The marker is intentionally narrow and only permits known safe callback
+        namespaces. This prevents arbitrary agent text from manufacturing
+        approval/model/update callback payloads.
+        """
+        marker_re = re.compile(r"(?m)^\s*HERMES_TELEGRAM_BUTTONS_JSON:\s*(\{.*\})\s*$")
+        match = marker_re.search(content or "")
+        if not match:
+            return content, None
+
+        stripped = marker_re.sub("", content).strip()
+        try:
+            payload = json.loads(match.group(1))
+            rows = payload.get("rows") if isinstance(payload, dict) else None
+            if not isinstance(rows, list):
+                return stripped, None
+            keyboard_rows = []
+            for row in rows[:24]:
+                if not isinstance(row, list):
+                    continue
+                keyboard_row = []
+                for button in row[:4]:
+                    if not isinstance(button, dict):
+                        continue
+                    text = str(button.get("text", ""))[:64].strip()
+                    callback_data = str(button.get("callback_data", ""))[:64].strip()
+                    if not text or not callback_data.startswith(("asst:", "sm:ro:", "uaig:")):
+                        continue
+                    keyboard_row.append(InlineKeyboardButton(text, callback_data=callback_data))
+                if keyboard_row:
+                    keyboard_rows.append(keyboard_row)
+            if not keyboard_rows:
+                return stripped, None
+            return stripped, InlineKeyboardMarkup(keyboard_rows)
+        except Exception as exc:
+            logger.warning("[%s] Invalid Telegram inline button marker ignored: %s", self.name, exc)
+            return stripped, None
+
     async def send(
         self,
         chat_id: str,
@@ -1869,6 +1922,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         
         try:
+            content, inline_keyboard = self._extract_telegram_inline_buttons(content)
+            if not content or not content.strip():
+                return SendResult(success=True, message_id=None)
             # Format and split message if needed
             formatted = self.format_message(content)
             chunks = self.truncate_message(
@@ -1956,6 +2012,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
+                                reply_markup=inline_keyboard if i == 0 else None,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
@@ -1970,6 +2027,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     text=plain_chunk,
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
+                                    reply_markup=inline_keyboard if i == 0 else None,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
@@ -3382,6 +3440,42 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._handle_model_picker_callback(query, data, chat_id)
             return
 
+        # --- Assistant action callbacks (asst:verb:key | asst:waitk:owner:key) ---
+        if data.startswith("asst:"):
+            await self._handle_assistant_action_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
+            return
+
+        # --- Shopmonkey RO action callbacks (sm:ro:<ro>:...) ---
+        if data.startswith("sm:ro:"):
+            await self._handle_shopmonkey_action_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
+            return
+
+        # --- UA Instagram marketing approval callbacks (uaig:<verb>:<id>) ---
+        if data.startswith("uaig:"):
+            await self._handle_ua_instagram_action_callback(
+                query,
+                data,
+                query_chat_id=query_chat_id,
+                query_chat_type=query_chat_type,
+                query_thread_id=query_thread_id,
+                query_user_name=query_user_name,
+            )
+            return
+
         # --- Gmail-triage callbacks (gt:verb:arg) ---
         if data.startswith("gt:"):
             await self._handle_gmail_triage_callback(
@@ -3707,6 +3801,579 @@ class TelegramAdapter(BasePlatformAdapter):
                         answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
+
+    _UAIG_CALLBACK_RE = re.compile(r"^uaig:(?:a|d|e):[A-Za-z0-9]{8,16}$")
+
+    async def _run_ua_instagram_action_script(self, argv_tail: list[str], *, timeout: int = 180) -> tuple[bool, str, int]:
+        script_path = get_hermes_home() / "scripts" / "ua_marketing_comment_approval_actions.py"
+        if not script_path.exists():
+            return False, "UA Instagram approval handler missing", 127
+        cmd = [sys.executable, str(script_path), *argv_tail]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        stdout_text = stdout_bytes.decode("utf-8", errors="replace").strip()
+        stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+        return proc.returncode == 0, (stdout_text or stderr_text), int(proc.returncode or 0)
+
+    async def _handle_ua_instagram_edit_prompt(self, query, approval_id: str) -> None:
+        try:
+            ok, output_text, rc = await self._run_ua_instagram_action_script(["edit-context", approval_id])
+        except asyncio.TimeoutError:
+            await query.answer(text="Edit context timed out")
+            return
+        except Exception as exc:
+            await query.answer(text=f"Edit context error: {exc}")
+            logger.error("[%s] UA Instagram edit prompt failed: %s", self.name, exc, exc_info=True)
+            return
+        if not ok:
+            last_line = output_text.splitlines()[-1] if output_text else f"exit {rc}"
+            await query.answer(text=f"Edit failed: {last_line[:80]}")
+            logger.error("[%s] UA Instagram edit-context failed rc=%s output=%s", self.name, rc, output_text)
+            return
+        try:
+            ctx = json.loads(output_text or "{}")
+        except Exception:
+            await query.answer(text="Invalid edit context")
+            return
+        current = str(ctx.get("reply_text") or "").strip()
+        comment = str(ctx.get("comment_excerpt") or "").strip()
+        prompt_lines = [
+            f"Edit Instagram reply {approval_id}",
+            "",
+            "Reply to this message with the replacement reply only.",
+            "Nothing posts until you tap Approve reply on the updated card.",
+        ]
+        if comment:
+            prompt_lines.extend(["", "Comment:", comment[:700]])
+        if current:
+            prompt_lines.extend(["", "Current reply:", current[:300]])
+        send_kwargs: Dict[str, Any] = {
+            "chat_id": int(query.message.chat_id),
+            "text": self.format_message("\n".join(prompt_lines)[:3800]),
+            "parse_mode": ParseMode.MARKDOWN_V2,
+            "reply_to_message_id": getattr(query.message, "message_id", None),
+            "reply_markup": ForceReply(selective=True, input_field_placeholder="Replacement reply only"),
+            **self._link_preview_kwargs(),
+        }
+        thread_id = getattr(query.message, "message_thread_id", None)
+        if thread_id is not None:
+            send_kwargs.update(
+                self._thread_kwargs_for_send(
+                    str(query.message.chat_id),
+                    str(thread_id),
+                    {"thread_id": str(thread_id)},
+                    reply_to_mode=self._reply_to_mode,
+                )
+            )
+        sent = await self._send_message_with_thread_fallback(**send_kwargs)
+        prompt_id = getattr(sent, "message_id", None)
+        if prompt_id is not None:
+            self._ua_instagram_edit_reply_state[(str(query.message.chat_id), int(prompt_id))] = {
+                "approval_id": approval_id,
+                "source_message_id": getattr(query.message, "message_id", None),
+            }
+        await query.answer(text="Reply with the edited Instagram reply")
+
+    async def _handle_ua_instagram_edit_reply(self, msg: Message) -> bool:
+        reply = getattr(msg, "reply_to_message", None)
+        prompt_id = getattr(reply, "message_id", None)
+        if prompt_id is None:
+            return False
+        state = self._ua_instagram_edit_reply_state.pop((str(msg.chat_id), int(prompt_id)), None)
+        if not state:
+            return False
+        text = str(getattr(msg, "text", "") or "").strip()
+        if not text:
+            return True
+        if text.lower() in {"cancel", "never mind", "nevermind"}:
+            await msg.reply_text("Instagram reply edit cancelled.")
+            return True
+        approval_id = str(state.get("approval_id") or "")
+        try:
+            ok, output_text, rc = await self._run_ua_instagram_action_script(["edit", approval_id, "--text", text])
+        except asyncio.TimeoutError:
+            await msg.reply_text("Instagram reply edit timed out. Tap Edit again if needed.")
+            return True
+        except Exception as exc:
+            logger.error("[%s] UA Instagram edit reply failed: %s", self.name, exc, exc_info=True)
+            await msg.reply_text(f"Instagram reply edit failed: {exc}")
+            return True
+        if not ok:
+            last_line = output_text.splitlines()[-1] if output_text else f"exit {rc}"
+            await msg.reply_text(f"Instagram reply edit failed: {last_line[:300]}")
+            return True
+        body_text, inline_keyboard = self._extract_telegram_inline_buttons(output_text[:3800])
+        await msg.reply_text(
+            self.format_message(body_text[:3800]),
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=inline_keyboard,
+            **self._link_preview_kwargs(),
+        )
+        return True
+
+    async def _handle_ua_instagram_action_callback(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+        query_user_name,
+    ) -> None:
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="Not authorized for this Instagram approval.")
+            return
+        if not self._UAIG_CALLBACK_RE.match(data or ""):
+            await query.answer(text="Invalid Instagram approval action.")
+            return
+        _, verb, approval_id = data.split(":", 2)
+        if verb == "e":
+            await self._handle_ua_instagram_edit_prompt(query, approval_id)
+            return
+        argv_tail = ["approve", approval_id, "--approved-by", "telegram-button"] if verb == "a" else ["deny", approval_id, "--denied-by", "telegram-button"]
+        await query.answer(text="Posting reply…" if verb == "a" else "Denying…")
+        try:
+            ok, output_text, rc = await self._run_ua_instagram_action_script(argv_tail, timeout=240)
+        except asyncio.TimeoutError:
+            ok, output_text, rc = False, "Instagram approval action timed out.", 124
+        except Exception as exc:
+            ok, output_text, rc = False, f"Instagram approval action error: {exc}", 1
+            logger.error("[%s] UA Instagram callback exception: %s", self.name, exc, exc_info=True)
+        if not ok:
+            last_line = output_text.splitlines()[-1] if output_text else f"exit {rc}"
+            output_text = f"Instagram approval action failed: {last_line[:300]}"
+            logger.error("[%s] UA Instagram callback failed rc=%s data=%s output=%s", self.name, rc, data, output_text)
+        if query.message:
+            try:
+                formatted = self.format_message(output_text[:3800])
+                await query.edit_message_text(
+                    text=formatted,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=None,
+                    **self._link_preview_kwargs(),
+                )
+            except Exception as exc:
+                logger.warning("[%s] UA Instagram callback edit failed: %s", self.name, exc)
+
+    _SM_CALLBACK_RE = re.compile(r"^sm:ro:\d+:(?:fast|main|full|parts|services|actions|writer|due|duecustom|status|duec:\d{4}-\d{2}-\d{2}|stc:[a-z_]+|duew:\d{4}-\d{2}-\d{2}|stw:[a-z_]+|t:[A-Za-z0-9_]{4,16})$")
+
+    async def _handle_shopmonkey_action_callback(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+        query_user_name,
+    ) -> None:
+        """Dispatch a constrained Shopmonkey RO inline-button callback."""
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to act on this RO.")
+            return
+        if not self._SM_CALLBACK_RE.match(data or ""):
+            await query.answer(text="Invalid Shopmonkey action.")
+            return
+
+        await query.answer(text="Running Shopmonkey action…")
+        cmd = ["hermes", "shopmonkey", "telegram-button", data]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=240)
+            stdout_text = stdout_bytes.decode("utf-8", errors="replace").strip()
+            stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+            output_text = stdout_text or stderr_text or f"Shopmonkey action exited {proc.returncode}"
+            if proc.returncode != 0:
+                logger.error("[%s] Shopmonkey callback failed rc=%s data=%s output=%s", self.name, proc.returncode, data, output_text)
+                output_text = f"Shopmonkey action failed: {output_text.splitlines()[-1][:300]}"
+        except asyncio.TimeoutError:
+            logger.error("[%s] Shopmonkey callback timed out: %s", self.name, data)
+            output_text = "Shopmonkey action timed out. No confirmation was sent."
+        except Exception as exc:
+            logger.error("[%s] Shopmonkey callback exception: %s", self.name, exc, exc_info=True)
+            output_text = f"Shopmonkey action error: {exc}"
+
+        if query.message:
+            try:
+                text, inline_keyboard = self._extract_telegram_inline_buttons(output_text)
+                formatted = self.format_message(text[:3800])
+                try:
+                    await query.edit_message_text(
+                        text=formatted,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=inline_keyboard,
+                        **self._link_preview_kwargs(),
+                    )
+                except Exception as edit_exc:
+                    # Keep Shopmonkey inline-button flows in-place. If Telegram
+                    # rejects an edit (for example, unchanged text), don't post a
+                    # duplicate follow-up message; just log and leave the current
+                    # message/buttons alone.
+                    logger.warning("[%s] Shopmonkey callback edit failed: %s", self.name, edit_exc)
+            except Exception as exc:
+                logger.warning("[%s] Shopmonkey callback follow-up failed: %s", self.name, exc)
+
+    _ASST_TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,48}$")
+
+    def _assistant_action_command(self, data: str) -> Optional[tuple[list[str], str, bool]]:
+        """Map a safe assistant inline-button payload to assistant_actions.py args.
+
+        Returns (argv_tail, action_label, remove_keyboard_on_success). The send
+        action passes --execute so a tap actually delivers the message; the
+        underlying handler still enforces category/draft safety checks.
+        """
+        parts = data.split(":")
+        if len(parts) < 2 or parts[0] != "asst":
+            return None
+        verb = parts[1]
+        if verb == "latest" and len(parts) == 2:
+            return (["list", "--split"], "latest queue", False)
+        if verb == "digest" and len(parts) == 2:
+            return (["digest"], "aging digest", False)
+        if verb == "loops" and len(parts) == 2:
+            return (["loops"], "open loops", False)
+        if len(parts) < 3:
+            return None
+        if verb == "waitk":
+            if len(parts) != 4:
+                return None
+            owner, token = parts[2], parts[3]
+            if owner not in {"chris", "customer", "vendor", "team", "specialist", "shop-manager", "marketing", "parts", "default"}:
+                return None
+            if not self._ASST_TOKEN_RE.match(token):
+                return None
+            return (["waiting", "--key", token, owner, "tomorrow 10am", "--reason", "telegram button"], f"wait {owner}", True)
+        if len(parts) != 3:
+            return None
+        token = parts[2]
+        if not self._ASST_TOKEN_RE.match(token):
+            return None
+        dispatch: Dict[str, tuple[list[str], str, bool]] = {
+            "handledk": (["handled", "--key", token, "--reason", "telegram button"], "handled", True),
+            "snoozek": (["snooze", "--key", token, "tomorrow 10am", "--reason", "telegram button"], "snooze", True),
+            "remindk": (["remind", "--key", token, "tomorrow 10am"], "reminder preview", False),
+            "blacklistk": (["blacklist", "--key", token], "blacklist", True),
+            "whyk": (["why", "--key", token], "why", False),
+            "draftk": (["draft", "--key", token], "draft", False),
+            "editk": (["edit-context", "--key", token], "edit context", False),
+            "sendk": (["send", "--key", token, "--execute"], "sent", True),
+            "promdonek": (["promise-action", "done", token], "promise done", True),
+            "promfupk": (["promise-action", "followup", token], "promise follow-up", True),
+            "promwaitk": (["promise-action", "wait", token], "promise waiting", True),
+        }
+        return dispatch.get(verb)
+
+    async def _run_assistant_action_script(self, argv_tail: list[str], *, timeout: int = 180) -> tuple[bool, str, int]:
+        script_path = get_hermes_home() / "scripts" / "assistant_actions.py"
+        if not script_path.exists():
+            return False, "assistant action handler missing", 127
+        cmd = [sys.executable, str(script_path), *argv_tail]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        stdout_text = stdout_bytes.decode("utf-8", errors="replace").strip()
+        stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+        return proc.returncode == 0, (stdout_text or stderr_text), int(proc.returncode or 0)
+
+    async def _handle_assistant_edit_prompt(self, query, token: str) -> None:
+        """Turn Edit button taps into a clean ForceReply prompt instead of raw JSON.
+
+        The next Telegram reply to the prompt is consumed by
+        ``_handle_assistant_edit_reply`` and stored as the replacement draft.
+        """
+        try:
+            ok, output_text, rc = await self._run_assistant_action_script(["edit-context", "--key", token])
+        except asyncio.TimeoutError:
+            await query.answer(text="❌ edit context timed out")
+            return
+        except Exception as exc:
+            await query.answer(text=f"❌ edit context error: {exc}")
+            logger.error("[%s] assistant edit prompt failed: %s", self.name, exc, exc_info=True)
+            return
+        if not ok:
+            last_line = output_text.splitlines()[-1] if output_text else f"exit {rc}"
+            if self._assistant_action_output_is_stale(output_text):
+                await self._send_assistant_latest_queue(
+                    query,
+                    reason="That edit card is outdated. Here’s the latest Assistant queue.",
+                )
+                return
+            await query.answer(text=f"❌ edit failed: {last_line[:80]}")
+            logger.error("[%s] assistant edit-context failed rc=%s output=%s", self.name, rc, output_text)
+            return
+        try:
+            ctx = json.loads(output_text or "{}")
+        except Exception:
+            await query.answer(text="❌ edit context was invalid")
+            logger.error("[%s] assistant edit-context returned invalid JSON: %s", self.name, output_text)
+            return
+        ref = str(ctx.get("ref") or "")
+        label = str(ctx.get("label") or ref or "assistant item")
+        draft = str(ctx.get("draft") or "").strip()
+        prompt_lines = [
+            f"Edit draft for {label}",
+            "",
+            "Reply to this message with the replacement draft only.",
+            "I’ll save it for this item; nothing will be sent until you tap Send.",
+        ]
+        if draft:
+            prompt_lines.extend(["", "Current draft:", draft[:900]])
+        send_kwargs: Dict[str, Any] = {
+            "chat_id": int(query.message.chat_id),
+            "text": self.format_message("\n".join(prompt_lines)[:3800]),
+            "parse_mode": ParseMode.MARKDOWN_V2,
+            "reply_to_message_id": getattr(query.message, "message_id", None),
+            "reply_markup": ForceReply(selective=True, input_field_placeholder="Replacement draft only"),
+            **self._link_preview_kwargs(),
+        }
+        thread_id = getattr(query.message, "message_thread_id", None)
+        if thread_id is not None:
+            send_kwargs.update(
+                self._thread_kwargs_for_send(
+                    str(query.message.chat_id),
+                    str(thread_id),
+                    {"thread_id": str(thread_id)},
+                    reply_to_mode=self._reply_to_mode,
+                )
+            )
+        sent = await self._send_message_with_thread_fallback(**send_kwargs)
+        prompt_id = getattr(sent, "message_id", None)
+        if prompt_id is not None:
+            self._assistant_edit_reply_state[(str(query.message.chat_id), int(prompt_id))] = {
+                "key": token,
+                "ref": ref,
+                "label": label,
+                "source_message_id": getattr(query.message, "message_id", None),
+            }
+        await query.answer(text="Reply with the edited draft")
+
+    async def _handle_assistant_edit_reply(self, msg: Message) -> bool:
+        """Consume replies to assistant edit prompts before they reach the LLM."""
+        reply = getattr(msg, "reply_to_message", None)
+        prompt_id = getattr(reply, "message_id", None)
+        if prompt_id is None:
+            return False
+        state = self._assistant_edit_reply_state.pop((str(msg.chat_id), int(prompt_id)), None)
+        if not state:
+            return False
+        text = str(getattr(msg, "text", "") or "").strip()
+        if not text:
+            return True
+        if text.lower() in {"cancel", "never mind", "nevermind"}:
+            await msg.reply_text("Edit cancelled.")
+            return True
+        key = str(state.get("key") or "")
+        ref = str(state.get("ref") or "")
+        try:
+            ok, output_text, rc = await self._run_assistant_action_script(["edit-stable", key, ref, text])
+        except asyncio.TimeoutError:
+            await msg.reply_text("Edit save timed out. Tap Edit again if needed.")
+            return True
+        except Exception as exc:
+            logger.error("[%s] assistant edit reply failed: %s", self.name, exc, exc_info=True)
+            await msg.reply_text(f"Edit save failed: {exc}")
+            return True
+        if not ok:
+            last_line = output_text.splitlines()[-1] if output_text else f"exit {rc}"
+            await msg.reply_text(f"Edit save failed: {last_line[:300]}")
+            return True
+        label = str(state.get("label") or ref or "assistant item")
+        await msg.reply_text(f"Updated draft for {label}. Tap Send on the original card when ready.")
+        return True
+
+    def _assistant_action_output_is_stale(self, output_text: str) -> bool:
+        text = str(output_text or "").lower()
+        return (
+            "target changed or expired" in text
+            or "tap edit again from the latest" in text
+            or "tap" in text and "latest assistant updates card" in text
+        )
+
+    async def _send_assistant_latest_queue(self, query, *, reason: str = "Latest Assistant queue") -> None:
+        """Send a bounded latest Assistant queue refresh after a stale button or Latest tap."""
+        try:
+            ok, output_text, rc = await self._run_assistant_action_script(["list", "--split"], timeout=180)
+        except asyncio.TimeoutError:
+            await query.answer(text="Latest queue refresh timed out")
+            return
+        except Exception as exc:
+            logger.warning("[%s] assistant latest queue refresh failed: %s", self.name, exc, exc_info=True)
+            await query.answer(text=f"Latest queue refresh failed: {exc}")
+            return
+        if not ok:
+            last_line = output_text.splitlines()[-1] if output_text else f"exit {rc}"
+            await query.answer(text=f"Latest queue failed: {last_line[:80]}")
+            logger.error("[%s] assistant latest queue command failed rc=%s output=%s", self.name, rc, output_text)
+            return
+
+        marker = "\nHERMES_ASSISTANT_MESSAGE_SPLIT\n"
+        parts = [p.strip() for p in str(output_text or "").split(marker) if p.strip()]
+        if not parts:
+            parts = ["Assistant queue is clear."]
+        max_parts = 5
+        omitted = max(0, len(parts) - max_parts)
+        if omitted:
+            parts = parts[:max_parts]
+            parts.append(f"Assistant Updates\n\n+{omitted} more current queue items. Say Message Assistance for a full manual refresh.")
+
+        for idx, part in enumerate(parts, start=1):
+            text = part if idx > 1 else f"{reason}\n\n{part}"
+            try:
+                body_text, inline_keyboard = self._extract_telegram_inline_buttons(text[:3800])
+                thread_id = getattr(query.message, "message_thread_id", None) if query.message else None
+                send_kwargs: Dict[str, Any] = {
+                    "chat_id": int(query.message.chat_id),
+                    "text": self.format_message(body_text[:3800]),
+                    "parse_mode": ParseMode.MARKDOWN_V2,
+                    "reply_to_message_id": getattr(query.message, "message_id", None) if query.message else None,
+                    "reply_markup": inline_keyboard,
+                    **self._link_preview_kwargs(),
+                }
+                if thread_id is not None:
+                    send_kwargs.update(
+                        self._thread_kwargs_for_send(
+                            str(query.message.chat_id),
+                            str(thread_id),
+                            {"thread_id": str(thread_id)},
+                            reply_to_mode=self._reply_to_mode,
+                        )
+                    )
+                await self._send_message_with_thread_fallback(**send_kwargs)
+            except Exception as exc:
+                logger.warning("[%s] assistant latest queue follow-up failed: %s", self.name, exc)
+                if idx == 1:
+                    await query.answer(text=f"Latest queue send failed: {exc}")
+                return
+        await query.answer(text="Sent latest queue")
+
+    async def _handle_assistant_action_callback(
+        self,
+        query,
+        data: str,
+        *,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+        query_user_name,
+    ) -> None:
+        """Dispatch an assistant-profile inline action callback (asst:*)."""
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to act on this item.")
+            return
+
+        mapped = self._assistant_action_command(data)
+        if mapped is None:
+            await query.answer(text="Invalid assistant action.")
+            return
+        argv_tail, action_label, remove_keyboard = mapped
+        if data == "asst:latest":
+            await self._send_assistant_latest_queue(query, reason="Latest Assistant queue")
+            return
+        if data.startswith("asst:editk:"):
+            token = data.split(":", 2)[2]
+            await self._handle_assistant_edit_prompt(query, token)
+            return
+
+        success = False
+        output_text = ""
+        try:
+            success, output_text, rc = await self._run_assistant_action_script(argv_tail)
+            if success:
+                answer_label = f"✓ {action_label}"
+                logger.info("[%s] assistant action callback ok: %s", self.name, data)
+            else:
+                last_line = output_text.splitlines()[-1] if output_text else f"exit {rc}"
+                if self._assistant_action_output_is_stale(output_text):
+                    await self._send_assistant_latest_queue(
+                        query,
+                        reason="That card is outdated. Here’s the latest Assistant queue.",
+                    )
+                    logger.info("[%s] assistant stale callback refreshed latest queue: %s", self.name, data)
+                    return
+                answer_label = f"❌ {action_label} failed: {last_line[:80]}"
+                logger.error(
+                    "[%s] assistant action callback failed: data=%s rc=%s output=%s",
+                    self.name, data, rc, output_text,
+                )
+        except asyncio.TimeoutError:
+            answer_label = f"❌ {action_label} timed out"
+            logger.error("[%s] assistant action callback timed out: %s", self.name, data)
+        except Exception as exc:
+            answer_label = f"❌ {action_label} error: {exc}"
+            logger.error("[%s] assistant action callback exception: %s", self.name, exc, exc_info=True)
+
+        await query.answer(text=answer_label)
+        if not success:
+            return
+
+        user_display = getattr(query.from_user, "first_name", "User")
+        if output_text and query.message:
+            try:
+                thread_id = getattr(query.message, "message_thread_id", None)
+                send_kwargs: Dict[str, Any] = {
+                    "chat_id": int(query.message.chat_id),
+                    "text": self.format_message(output_text[:3800]),
+                    "parse_mode": ParseMode.MARKDOWN_V2,
+                    "reply_to_message_id": getattr(query.message, "message_id", None),
+                    **self._link_preview_kwargs(),
+                }
+                if thread_id is not None:
+                    send_kwargs.update(
+                        self._thread_kwargs_for_send(
+                            str(query.message.chat_id),
+                            str(thread_id),
+                            {"thread_id": str(thread_id)},
+                            reply_to_mode=self._reply_to_mode,
+                        )
+                    )
+                await self._send_message_with_thread_fallback(**send_kwargs)
+            except Exception as exc:
+                logger.warning("[%s] assistant action callback follow-up failed: %s", self.name, exc)
+
+        if remove_keyboard and query.message:
+            original_text = getattr(query.message, "text", None) or getattr(query.message, "caption", None) or ""
+            appended = f"{original_text}\n— ✓ {action_label} by {user_display}" if original_text else f"✓ {action_label} by {user_display}"
+            try:
+                await query.edit_message_text(
+                    text=self.format_message(appended[:3800]),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
 
     # Maps `gt:<verb>` -> (script-name, extra-args, success-label, is_state).
     # Scripts live in ~/.hermes/scripts/gmail-triage/. `arg` from the callback
@@ -5351,6 +6018,10 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
+            return
+        if await self._handle_assistant_edit_reply(msg):
+            return
+        if await self._handle_ua_instagram_edit_reply(msg):
             return
         await self._ensure_forum_commands(update.message)
 

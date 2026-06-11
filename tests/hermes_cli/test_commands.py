@@ -1936,6 +1936,19 @@ class TestPluginCommandEnumeration:
         assert "my_plugin_cmd" in names
         assert "my-plugin-cmd" not in names
 
+    def test_shopmonkey_commands_are_prioritized_in_slack_native_manifest(self, monkeypatch):
+        """Shopmonkey Slack natives must survive Slack's 50-command clamp."""
+        self._patch_plugin_commands(monkeypatch, {
+            "ro": {"handler": lambda _a: "ok", "description": "RO", "args_hint": "<number>", "plugin": "shopmonkey"},
+            "po": {"handler": lambda _a: "ok", "description": "PO", "args_hint": "<number>", "plugin": "shopmonkey"},
+            "board": {"handler": lambda _a: "ok", "description": "Board", "args_hint": "", "plugin": "shopmonkey"},
+            "ar": {"handler": lambda _a: "ok", "description": "AR", "args_hint": "", "plugin": "shopmonkey"},
+        })
+        names = [name for name, _desc, _hint in slack_native_slashes()]
+        assert names[:7] == ["hermes", "btw", "bg", "ro", "po", "board", "ar"]
+        manifest_commands = {entry["command"] for entry in slack_app_manifest()["features"]["slash_commands"]}
+        assert {"/ro", "/po", "/board", "/ar"}.issubset(manifest_commands)
+
     def test_is_gateway_known_command_recognizes_plugin_commands(self, monkeypatch):
         """is_gateway_known_command() must return True for plugin commands."""
         from hermes_cli.commands import is_gateway_known_command

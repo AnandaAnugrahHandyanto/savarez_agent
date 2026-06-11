@@ -133,7 +133,22 @@ def _install_telegram_mock(monkeypatch, bot):
     # MessageEntity needed by #27865 mention-detection path; tests don't
     # inspect it but the import must succeed.
     _MessageEntity = lambda **_kw: SimpleNamespace(**_kw)
-    telegram_mod = SimpleNamespace(Bot=lambda token: bot, MessageEntity=_MessageEntity, constants=constants_mod)
+
+    class _InlineKeyboardButton(SimpleNamespace):
+        def __init__(self, text, callback_data=None, **kwargs):
+            super().__init__(text=text, callback_data=callback_data, **kwargs)
+
+    class _InlineKeyboardMarkup(SimpleNamespace):
+        def __init__(self, inline_keyboard):
+            super().__init__(inline_keyboard=inline_keyboard)
+
+    telegram_mod = SimpleNamespace(
+        Bot=lambda token: bot,
+        MessageEntity=_MessageEntity,
+        InlineKeyboardButton=_InlineKeyboardButton,
+        InlineKeyboardMarkup=_InlineKeyboardMarkup,
+        constants=constants_mod,
+    )
     monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
     monkeypatch.setitem(sys.modules, "telegram.constants", constants_mod)
 
@@ -589,6 +604,33 @@ class TestSendTelegramMediaDelivery:
         assert "error" in result
         assert "No deliverable text or media remained" in result["error"]
         bot.send_message.assert_not_awaited()
+
+    def test_inline_button_marker_is_stripped_and_sent_as_reply_markup(self, monkeypatch):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=9))
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock()
+        _install_telegram_mock(monkeypatch, bot)
+
+        body = (
+            "Assistant Updates\n\n"
+            "Draft:\nGood question, I’ll check that.\n\n"
+            'HERMES_TELEGRAM_BUTTONS_JSON: {"rows":[[{"text":"Send 16","callback_data":"asst:sendk:abc123"},{"text":"Edit 16","callback_data":"asst:editk:abc123"}]]}'
+        )
+
+        result = asyncio.run(_send_telegram("token", "12345", body))
+
+        assert result["success"] is True
+        bot.send_message.assert_awaited_once()
+        kwargs = bot.send_message.await_args.kwargs
+        assert "HERMES_TELEGRAM_BUTTONS_JSON" not in kwargs["text"]
+        assert "Good question" in kwargs["text"]
+        markup = kwargs["reply_markup"]
+        assert [[button.text for button in row] for row in markup.inline_keyboard] == [["Send 16", "Edit 16"]]
+        assert [[button.callback_data for button in row] for row in markup.inline_keyboard] == [["asst:sendk:abc123", "asst:editk:abc123"]]
 
 
 # ---------------------------------------------------------------------------
