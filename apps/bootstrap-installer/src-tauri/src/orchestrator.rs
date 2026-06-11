@@ -100,6 +100,20 @@ pub fn build_stage_plan(stages: &[StageInfo], _include_desktop: bool) -> Vec<Pla
         .collect()
 }
 
+/// Return a Rust-side skip result for stages that must be handled by UI.
+pub fn interactive_stage_skip_result(stage: &StageInfo) -> Option<crate::events::StageResultPayload> {
+    if !stage.needs_user_input {
+        return None;
+    }
+    Some(crate::events::StageResultPayload {
+        stage: stage.name.clone(),
+        ok: true,
+        skipped: true,
+        reason: Some("requires user input; handled by post-install UI".to_string()),
+        data: None,
+    })
+}
+
 /// Return a compact log line for the current Rust orchestration coverage.
 pub fn summarize_plan(report: &InstallStateReport, plan: &[PlannedStage]) -> String {
     let tool_summary = report
@@ -873,6 +887,24 @@ mod tests {
         );
         assert_eq!(manifest.stages[6].title, "Prepare config and skills");
         assert!(manifest.stages[7].needs_user_input);
+    }
+
+    #[test]
+    fn interactive_stage_skip_result_only_skips_user_input_stages() {
+        let setup = stage_info("setup", "Configure API keys and settings", "configuration", true);
+        let path = stage_info("path", "Install hermes command", "runtime", false);
+
+        let skipped = interactive_stage_skip_result(&setup).unwrap();
+
+        assert_eq!(skipped.stage, "setup");
+        assert_eq!(skipped.ok, true);
+        assert_eq!(skipped.skipped, true);
+        assert_eq!(
+            skipped.reason.as_deref(),
+            Some("requires user input; handled by post-install UI")
+        );
+        assert!(skipped.data.is_none());
+        assert!(interactive_stage_skip_result(&path).is_none());
     }
 
     #[test]

@@ -495,6 +495,20 @@ async fn run_bootstrap(
             .map(PathBuf::from)
             .unwrap_or_else(crate::paths::hermes_home);
         let install_root = hermes_home.join("hermes-agent");
+        if let Some(frame) = crate::orchestrator::interactive_stage_skip_result(stage) {
+            emit_event(
+                &app,
+                BootstrapEvent::Stage {
+                    name: stage.name.clone(),
+                    state: StageState::Skipped,
+                    duration_ms: Some(started.elapsed().as_millis() as u64),
+                    result: Some(frame),
+                    error: None,
+                },
+            );
+            continue;
+        }
+
         if should_defer_git_stage_for_archive_install(&stage.name, &install_root) {
             emit_event(
                 &app,
