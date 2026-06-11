@@ -1091,13 +1091,14 @@ fn stage_script_extra_env(
     stage_name: &str,
     install_root: &std::path::Path,
 ) -> Vec<(&'static str, &'static str)> {
-    if stage_name.eq_ignore_ascii_case("prerequisites")
-        && should_use_native_repository_archive(install_root)
-    {
-        vec![("HERMES_NATIVE_REPOSITORY_ARCHIVE", "1")]
-    } else {
-        Vec::new()
+    let mut env = Vec::new();
+    if stage_name.eq_ignore_ascii_case("prerequisites") {
+        if should_use_native_repository_archive(install_root) {
+            env.push(("HERMES_NATIVE_REPOSITORY_ARCHIVE", "1"));
+        }
+        env.push(("HERMES_NATIVE_UV_STAGE", "1"));
     }
+    env
 }
 
 fn create_windows_desktop_shortcuts(install_root: &std::path::Path) -> anyhow::Result<()> {
@@ -1496,7 +1497,10 @@ mod tests {
 
         assert_eq!(
             stage_script_extra_env("prerequisites", &install_root),
-            vec![("HERMES_NATIVE_REPOSITORY_ARCHIVE", "1")]
+            vec![
+                ("HERMES_NATIVE_REPOSITORY_ARCHIVE", "1"),
+                ("HERMES_NATIVE_UV_STAGE", "1")
+            ]
         );
         assert!(stage_script_extra_env("repository", &install_root).is_empty());
         assert!(should_try_native_repository_archive(
@@ -1506,7 +1510,10 @@ mod tests {
         assert!(should_fallback_repository_archive("repository", &install_root));
 
         std::fs::create_dir_all(&install_root).unwrap();
-        assert!(stage_script_extra_env("prerequisites", &install_root).is_empty());
+        assert_eq!(
+            stage_script_extra_env("prerequisites", &install_root),
+            vec![("HERMES_NATIVE_UV_STAGE", "1")]
+        );
         assert!(!should_try_native_repository_archive(
             "repository",
             &install_root

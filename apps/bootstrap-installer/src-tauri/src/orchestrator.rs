@@ -730,6 +730,7 @@ fn windows_manifest_stages(include_desktop: bool) -> Vec<StageInfo> {
 
 fn unix_manifest_stages(include_desktop: bool) -> Vec<StageInfo> {
     let mut stages = vec![
+        stage_info("uv", "Install uv package manager", "runtime", false),
         stage_info("prerequisites", "System prerequisites", "runtime", false),
         stage_info("repository", "Download Hermes Agent", "runtime", false),
         stage_info(
@@ -3119,6 +3120,7 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "uv",
                 "prerequisites",
                 "repository",
                 "venv",
@@ -3131,8 +3133,8 @@ mod tests {
                 "complete",
             ]
         );
-        assert_eq!(manifest.stages[6].title, "Prepare config and skills");
-        assert!(manifest.stages[7].needs_user_input);
+        assert_eq!(manifest.stages[7].title, "Prepare config and skills");
+        assert!(manifest.stages[8].needs_user_input);
     }
 
     #[test]

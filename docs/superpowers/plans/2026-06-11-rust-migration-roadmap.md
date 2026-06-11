@@ -208,6 +208,8 @@ language-specific setup where needed.
 - Unix `uv` now has a Rust native-first GitHub release tarball path for Linux and macOS x64/arm64, installing `uv` and
   `uvx` into `$HERMES_HOME/bin` while preserving `install.sh` fallback for unsupported platforms, Termux, download,
   extraction, or version-check failures.
+- Unix bootstrap manifests now expose `uv` as a separate native-first stage before `prerequisites`, and Rust passes an
+  internal skip signal so the prerequisites shell fallback does not repeat the managed `uv` install.
 - Windows `python` now uses a Rust `uv python find 3.11` preflight to skip the PowerShell stage when the required
   runtime is already available, while preserving script fallback so missing Python can still be installed by uv.
 - `python` now also runs native-first installation through Rust by invoking `uv python install 3.11`, with script
@@ -243,8 +245,8 @@ language-specific setup where needed.
 
 **Still script-backed:**
 - Language/runtime setup: Python dependency fallback tiers when `uv.lock` sync is unavailable, script fallback for Unix
-  Node, Unix uv, Windows/macOS/Linux npm recovery, Windows uv, Windows Git, Windows Node, Windows/macOS/Linux desktop
-  recovery, and platform SDK recovery.
+  Node, Windows/macOS/Linux npm recovery, Windows uv, Windows Git, Windows Node, Windows/macOS/Linux desktop recovery,
+  and platform SDK recovery.
 - Repository clone/update stage execution until the Git/ZIP fallback matrix has a parity suite and native stage wiring.
 - Remaining platform shell/profile edge cases that are not covered by the current Rust path-stage helpers.
 
@@ -362,17 +364,16 @@ language-specific setup where needed.
 
 ## Execution Order
 
-1. Correct Unix stage wiring so the native `uv` tarball installer is reachable from the normal Unix bootstrap manifest.
-2. Finish native-first runtime setup parity: make every platform's `uv`, Node, Python, venv, Python deps, npm deps, and
+1. Finish native-first runtime setup parity: make every platform's `uv`, Node, Python, venv, Python deps, npm deps, and
    desktop stages either native-first or explicitly script-only with a recorded reason.
-3. Close the release bundle loop for Linux and macOS installers by staging Node/`uv` archives into `bootstrap-tools/`
+2. Close the release bundle loop for Linux and macOS installers by staging Node/`uv` archives into `bootstrap-tools/`
    and validating them through `bootstrap-tools-manifest.json`.
-4. Expand `hermes-manager` ownership of repair and uninstall metadata after real bootstrap paths write accurate
+3. Expand `hermes-manager` ownership of repair and uninstall metadata after real bootstrap paths write accurate
    installed-file manifests.
-5. Add end-to-end smoke commands for fresh install, archive update, repair cleanup, and lite uninstall on Windows,
+4. Add end-to-end smoke commands for fresh install, archive update, repair cleanup, and lite uninstall on Windows,
    Linux, and macOS.
-6. Reduce shell usage in desktop bootstrap until scripts are only fallback or direct-install entry points.
-7. After one release with native bootstrap enabled, evaluate larger Rust runtime candidates from Phase 7 using measured
+5. Reduce shell usage in desktop bootstrap until scripts are only fallback or direct-install entry points.
+6. After one release with native bootstrap enabled, evaluate larger Rust runtime candidates from Phase 7 using measured
    install-time dependency reduction, not rewrite preference.
 
 ## Review Gates
