@@ -329,6 +329,49 @@ async def test_realtime_tool_bridge_runs_bounded_background_task_lifecycle():
 
 
 @pytest.mark.asyncio
+async def test_realtime_tool_bridge_notifies_when_background_task_completes():
+    """Promise: voice-started background work pushes completion state without polling.
+
+    Real failure caught: Kamell has to keep asking for status because realtime tasks
+    finish silently after the voice model already acknowledged the start.
+    """
+    from gateway.realtime_voice.tool_bridge import RealtimeToolBridge
+
+    release = asyncio.Event()
+    updates = []
+
+    async def ask_agent(prompt: str) -> str:
+        await release.wait()
+        return f"finished {prompt}"
+
+    async def on_task_update(update):
+        updates.append(update)
+
+    provider_session = _ToolResultSession()
+    bridge = RealtimeToolBridge(
+        RealtimeVoiceConfig.from_dict({"max_background_tasks": 1}),
+        ask_agent=ask_agent,
+        on_task_update=on_task_update,
+    )
+
+    await bridge.handle_tool_call(
+        provider_session,
+        RealtimeToolCall("start_agent_task", {"prompt": "cleanup"}, "call_start"),
+    )
+    task_id = json.loads(provider_session.results[-1][1])["task_id"]
+
+    release.set()
+    for _ in range(20):
+        if updates:
+            break
+        await asyncio.sleep(0)
+
+    assert updates == [
+        {"task_id": task_id, "status": "completed", "summary": "finished cleanup"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_xai_realtime_session_parses_provider_events():
     events = []
 

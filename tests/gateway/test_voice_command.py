@@ -1,5 +1,6 @@
 """Tests for the /voice command and auto voice reply in the gateway."""
 
+import asyncio
 import importlib.util
 import json
 import os
@@ -1124,7 +1125,78 @@ class TestVoiceChannelCommands:
 
         mock_adapter.enqueue_realtime_audio.assert_called_once_with(111, b"audio", 24000)
         mock_channel.send.assert_awaited_once()
+        for _ in range(20):
+            if fake_session.results:
+                break
+            await asyncio.sleep(0)
         assert fake_session.results == [("call_1", "agent answer")]
+
+    @pytest.mark.asyncio
+    async def test_realtime_tool_call_event_returns_immediately_so_voice_can_continue(self, runner):
+        """Realtime tool calls should not block the provider receive/conversation loop.
+
+        Real failure caught: while Hermes is using a tool, Kamell says "did you do it?"
+        repeatedly and Hazel cannot respond because the realtime provider event handler is
+        still awaiting the previous tool result.
+        """
+        from gateway.realtime_voice.session import RealtimeAudioDelta, RealtimeToolCall
+
+        class FakeRealtimeSession:
+            def __init__(self):
+                self.results = []
+
+            async def submit_tool_result(self, call_id, output):
+                self.results.append((call_id, output))
+
+        release = asyncio.Event()
+
+        async def slow_agent_prompt(*_args, **_kwargs):
+            await release.wait()
+            return "slow answer"
+
+        fake_session = FakeRealtimeSession()
+        runner._realtime_voice_sessions = {111: fake_session}
+        runner._run_realtime_voice_agent_prompt = slow_agent_prompt
+        mock_adapter = SimpleNamespace(enqueue_realtime_audio=MagicMock())
+        handler = runner._make_realtime_voice_event_handler(111, "123", mock_adapter)
+
+        await asyncio.wait_for(
+            handler(RealtimeToolCall("ask_agent", {"prompt": "slow"}, "call_slow")),
+            timeout=0.05,
+        )
+        assert fake_session.results == []
+
+        await handler(RealtimeAudioDelta(pcm16=b"next audio", sample_rate=24000))
+        mock_adapter.enqueue_realtime_audio.assert_called_once_with(111, b"next audio", 24000)
+
+        release.set()
+        for _ in range(20):
+            if fake_session.results:
+                break
+            await asyncio.sleep(0)
+        assert fake_session.results == [("call_slow", "slow answer")]
+
+    @pytest.mark.asyncio
+    async def test_realtime_task_update_posts_visible_status_indicator(self, runner):
+        """Realtime background task completion should be visible without voice polling.
+
+        Real failure caught: Hazel starts work in the background but the user gets no
+        task-complete signal in the office chat.
+        """
+        mock_channel = AsyncMock()
+        mock_adapter = SimpleNamespace(
+            _client=SimpleNamespace(get_channel=MagicMock(return_value=mock_channel))
+        )
+
+        await runner._send_realtime_voice_task_update(
+            mock_adapter,
+            "123",
+            {"task_id": "rt_123", "status": "completed", "summary": "cleanup finished"},
+        )
+
+        mock_channel.send.assert_awaited_once_with(
+            "**[Realtime task] rt_123 completed:** cleanup finished"
+        )
 
     # -- _handle_voice_channel_input --
 

@@ -1870,6 +1870,7 @@ class GatewayRunner:
         self._realtime_voice_sessions: Dict[int, Any] = {}
         self._realtime_voice_chat_ids: Dict[int, str] = {}
         self._realtime_voice_tool_bridges: Dict[int, Any] = {}
+        self._realtime_voice_tool_call_tasks: Dict[int, set[asyncio.Task]] = {}
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
@@ -11209,6 +11210,14 @@ class GatewayRunner:
             self._realtime_voice_tool_bridges = bridges
         return bridges
 
+    def _realtime_voice_tool_call_task_state(self) -> Dict[int, set[asyncio.Task]]:
+        """Return active realtime tool-call tasks keyed by guild_id."""
+        tasks = getattr(self, "_realtime_voice_tool_call_tasks", None)
+        if not isinstance(tasks, dict):
+            tasks = {}
+            self._realtime_voice_tool_call_tasks = tasks
+        return tasks
+
     def _is_discord_event(self, event: MessageEvent) -> bool:
         platform = getattr(event.source, "platform", None)
         value = getattr(platform, "value", platform)
@@ -11255,6 +11264,8 @@ class GatewayRunner:
             "You are Hazel, Kamell Perry's feminine AI agent, speaking live in a Discord voice channel.",
             "Be maximally truthful, warm, direct, and concise. This is spoken audio, so keep turns natural and don't monologue unless asked.",
             "Do not pretend you have used tools or changed files from this realtime voice session unless a separate Hermes tool call actually did it.",
+            "For side-effectful or long-running work, call start_agent_task immediately, wait for the tool result with a task_id, then say it has started. Do not use ask_agent for cleanup, file edits, servers, deploys, or other task work.",
+            "After a background task starts, continue the conversation normally. Do not stall while it runs; status/completion updates will arrive separately.",
         ]
         if voice_context:
             parts.append(voice_context)
@@ -11302,10 +11313,43 @@ class GatewayRunner:
                         provider_event.name,
                     )
                     return
-                bridge = self._get_realtime_voice_tool_bridge(guild_id, text_channel_id, adapter)
-                await bridge.handle_tool_call(provider_session, provider_event)
+                task = asyncio.create_task(
+                    self._handle_realtime_voice_tool_call(guild_id, text_channel_id, adapter, provider_session, provider_event),
+                    name=f"realtime-voice-tool-call-{guild_id}",
+                )
+                task_state = self._realtime_voice_tool_call_task_state()
+                guild_tasks = task_state.setdefault(guild_id, set())
+                guild_tasks.add(task)
+
+                def _cleanup(done: asyncio.Task) -> None:
+                    guild_tasks.discard(done)
+                    if not guild_tasks:
+                        task_state.pop(guild_id, None)
+                    try:
+                        exc = done.exception()
+                    except asyncio.CancelledError:
+                        return
+                    if exc is not None:
+                        logger.warning(
+                            "Realtime voice tool-call task failed",
+                            exc_info=(type(exc), exc, exc.__traceback__),
+                        )
+
+                task.add_done_callback(_cleanup)
+                return
 
         return _on_provider_event
+
+    async def _handle_realtime_voice_tool_call(
+        self,
+        guild_id: int,
+        text_channel_id: str,
+        adapter: Any,
+        provider_session: Any,
+        provider_event: Any,
+    ) -> None:
+        bridge = self._get_realtime_voice_tool_bridge(guild_id, text_channel_id, adapter)
+        await bridge.handle_tool_call(provider_session, provider_event)
 
     def _get_realtime_voice_tool_bridge(self, guild_id: int, text_channel_id: str, adapter: Any) -> Any:
         bridges = self._realtime_voice_tool_bridge_state()
@@ -11317,7 +11361,14 @@ class GatewayRunner:
         async def _ask_agent(prompt: str) -> str:
             return await self._run_realtime_voice_agent_prompt(guild_id, text_channel_id, prompt, adapter)
 
-        bridge = RealtimeToolBridge(self._get_realtime_voice_config(), ask_agent=_ask_agent)
+        async def _on_task_update(update: dict[str, str]) -> None:
+            await self._send_realtime_voice_task_update(adapter, text_channel_id, update)
+
+        bridge = RealtimeToolBridge(
+            self._get_realtime_voice_config(),
+            ask_agent=_ask_agent,
+            on_task_update=_on_task_update,
+        )
         bridges[guild_id] = bridge
         return bridge
 
@@ -11385,6 +11436,26 @@ class GatewayRunner:
         except Exception:
             logger.debug("Failed to post realtime voice transcript", exc_info=True)
 
+    async def _send_realtime_voice_task_update(self, adapter: Any, text_channel_id: str, update: dict[str, str]) -> None:
+        """Post provider-neutral realtime task completion/status updates to text chat."""
+        task_id = str(update.get("task_id") or "").strip()
+        status = str(update.get("status") or "").strip() or "updated"
+        summary = str(update.get("summary") or "").strip()
+        if not task_id:
+            return
+        safe_summary = summary.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+        safe_summary = safe_summary[:1200]
+        if safe_summary:
+            message = f"**[Realtime task] {task_id} {status}:** {safe_summary}"
+        else:
+            message = f"**[Realtime task] {task_id} {status}.**"
+        try:
+            channel = adapter._client.get_channel(int(text_channel_id))
+            if channel:
+                await channel.send(message)
+        except Exception:
+            logger.debug("Failed to post realtime voice task update", exc_info=True)
+
     async def _stop_realtime_voice_session(
         self,
         guild_id: int,
@@ -11396,6 +11467,12 @@ class GatewayRunner:
         sessions, chat_ids = self._realtime_voice_state()
         session = sessions.pop(guild_id, None)
         chat_ids.pop(guild_id, None)
+        tool_call_task_state = self._realtime_voice_tool_call_task_state()
+        tool_call_tasks = list(tool_call_task_state.pop(guild_id, set()))
+        for task in tool_call_tasks:
+            task.cancel()
+        if tool_call_tasks:
+            await asyncio.gather(*tool_call_tasks, return_exceptions=True)
         bridges = self._realtime_voice_tool_bridge_state()
         bridge = bridges.pop(guild_id, None)
         if bridge is not None:

@@ -22,6 +22,7 @@ from gateway.realtime_voice.session import RealtimeToolCall
 logger = logging.getLogger(__name__)
 
 AskAgentCallable = Callable[[str], Awaitable[str] | str]
+TaskUpdateCallable = Callable[[dict[str, str]], Awaitable[None] | None]
 
 _HERMES_TOOL_NAMES = {
     "ask_agent",
@@ -127,9 +128,11 @@ class RealtimeToolBridge:
         config: RealtimeVoiceConfig,
         *,
         ask_agent: AskAgentCallable,
+        on_task_update: TaskUpdateCallable | None = None,
     ) -> None:
         self.config = config
         self.ask_agent = ask_agent
+        self.on_task_update = on_task_update
         self.allowed_tools = {
             _normalize_tool_name(name)
             for name in (getattr(config, "allow_tools", ()) or ())
@@ -203,11 +206,30 @@ class RealtimeToolBridge:
             entry.status = "completed"
         except asyncio.CancelledError:
             entry.status = "cancelled"
+            await self._notify_task_update(entry)
             raise
         except Exception:
             logger.warning("Realtime voice background task %s failed", task_id, exc_info=True)
             entry.status = "failed"
             entry.error = "The Hermes realtime background task failed safely."
+        await self._notify_task_update(entry)
+
+    async def _notify_task_update(self, entry: _RealtimeBackgroundTask) -> None:
+        callback = self.on_task_update
+        if callback is None:
+            return
+        summary = entry.result if entry.status == "completed" else entry.error
+        payload = {
+            "task_id": entry.task_id,
+            "status": entry.status,
+            "summary": _safe_text(summary or ""),
+        }
+        try:
+            result = callback(payload)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.debug("Realtime voice task update callback failed", exc_info=True)
 
     def _task_status(self, task_id: str) -> str:
         entry = self._tasks.get(task_id.strip())
