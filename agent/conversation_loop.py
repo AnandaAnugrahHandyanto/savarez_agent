@@ -603,6 +603,20 @@ def run_conversation(
                 agent.session_id or "-",
             )
 
+        # Repair orphaned tool_call / tool_result pairs that may have been
+        # introduced by session save/load corruption.  Compression already
+        # runs this sanitizer, but general pre-request paths did not,
+        # causing permanently-wedged sessions when tool pairs were broken
+        # without compression firing (#44394).
+        from agent.context_compressor import sanitize_tool_pairs
+        messages, repaired_pairs = sanitize_tool_pairs(messages)
+        if repaired_pairs > 0:
+            request_logger.info(
+                "Repaired %s orphaned tool-call/result pair(s) before request (session=%s)",
+                repaired_pairs,
+                agent.session_id or "-",
+            )
+
         api_messages = []
         for idx, msg in enumerate(messages):
             api_msg = msg.copy()

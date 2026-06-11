@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
+from agent.context_compressor import ContextCompressor, sanitize_tool_pairs, SUMMARY_PREFIX
 
 
 @pytest.fixture()
@@ -2148,6 +2148,102 @@ class TestTruncateToolCallArgsJson:
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
 
+class TestSanitizeToolPairsStandalone:
+    """Standalone sanitize_tool_pairs() is usable without a compressor
+    instance, so the pre-API-request sanitization pipeline in
+    conversation_loop.py can call it (#44394)."""
+
+    def test_well_formed_pairs_pass_through(self):
+        """No repair needed when tool calls have matching results."""
+        msgs = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "call_id": "call_1", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "file content"},
+            {"role": "user", "content": "thanks"},
+        ]
+        result, repaired = sanitize_tool_pairs(msgs)
+        assert repaired == 0
+        assert result == msgs
+
+    def test_orphaned_tool_result_removed(self):
+        """A tool result whose call_id has no matching tool_call is dropped."""
+        msgs = [
+            {"role": "user", "content": "query"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "call_id": "call_1", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "good"},
+            {"role": "tool", "tool_call_id": "orphan_call", "content": "orphan result"},
+        ]
+        result, repaired = sanitize_tool_pairs(msgs)
+        assert repaired == 1
+        tool_call_ids = [m["tool_call_id"] for m in result if m.get("role") == "tool"]
+        assert tool_call_ids == ["call_1"]
+        assert "orphan_call" not in tool_call_ids
+
+    def test_orphaned_tool_call_gets_stub_result(self):
+        """An assistant tool_call with no result gets a stub inserted."""
+        msgs = [
+            {"role": "user", "content": "query"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "call_id": "call_1", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{}"}},
+            ]},
+        ]
+        result, repaired = sanitize_tool_pairs(msgs)
+        assert repaired == 1
+        assert any(m.get("role") == "tool" and m.get("tool_call_id") == "call_1"
+                   for m in result)
+
+    def test_mixed_orphans_both_directions(self):
+        """Orphaned results removed and orphaned calls get stubs simultaneously."""
+        msgs = [
+            {"role": "user", "content": "query"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_a", "call_id": "call_a", "type": "function",
+                 "function": {"name": "f", "arguments": "{}"}},
+                {"id": "call_b", "call_id": "call_b", "type": "function",
+                 "function": {"name": "f", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "call_a", "content": "result a"},
+            {"role": "tool", "tool_call_id": "orphan_x", "content": "dangling"},
+        ]
+        result, repaired = sanitize_tool_pairs(msgs)
+        assert repaired == 2
+        tool_call_ids = [m["tool_call_id"] for m in result if m.get("role") == "tool"]
+        assert "orphan_x" not in tool_call_ids
+        assert "call_a" in tool_call_ids
+        assert "call_b" in tool_call_ids
+
+    def test_no_tool_messages_unchanged(self):
+        """Messages with no tool content pass through untouched."""
+        msgs = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        result, repaired = sanitize_tool_pairs(msgs)
+        assert repaired == 0
+        assert result == msgs
+
+    def test_simple_namespace_tool_calls(self):
+        """SimpleNamespace tool_calls (from provider SDKs) are handled."""
+        from types import SimpleNamespace
+        msgs = [
+            {"role": "user", "content": "query"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                SimpleNamespace(id="ns_1", call_id="ns_call_1",
+                                type="function",
+                                function=SimpleNamespace(name="f", arguments="{}")),
+            ]},
+        ]
+        result, repaired = sanitize_tool_pairs(msgs)
+        assert repaired == 1
+        assert any(m.get("role") == "tool" and m.get("tool_call_id") == "ns_call_1"
+                   for m in result)
 
 class TestPreflightSentinelGuard:
     """Regression for #36718: the preflight token-display seed in
