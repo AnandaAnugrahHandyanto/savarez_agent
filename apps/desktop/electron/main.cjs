@@ -251,6 +251,12 @@ const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
+// Cache the successful CLI import probe used by the CLI-first runtime resolver.
+// Spawning Python is expensive on some cold-start paths (notably Windows with
+// antivirus), so a same-version Desktop launch can skip the subprocess after a
+// known-good result. The cache lives in Electron userData and is invalidated by
+// the app version, active root, and venv Python path.
+const DESKTOP_RESOLVER_CACHE_PATH = path.join(app.getPath('userData'), 'resolverCache.json')
 // active-profile.json records which Hermes profile the desktop launches its
 // local backend as. When set, startHermes() passes `hermes --profile <name>
 // dashboard …`, which deterministically pins HERMES_HOME (see
@@ -2094,12 +2100,18 @@ function resolveHermesBackend(dashboardArgs) {
     process.env.HERMES_DESKTOP_IGNORE_EXISTING !== '1' &&
     hasUsableActiveInstall({
       activeRoot: ACTIVE_HERMES_ROOT,
+      appVersion: resolveHermesVersion(),
       canImportHermesCli,
       fileExists,
       getVenvPython,
       isHermesSourceRoot,
+      readResolverCache: () => readJson(DESKTOP_RESOLVER_CACHE_PATH),
       rememberLog,
-      venvRoot: VENV_ROOT
+      venvRoot: VENV_ROOT,
+      writeResolverCache: cache => {
+        fs.mkdirSync(path.dirname(DESKTOP_RESOLVER_CACHE_PATH), { recursive: true })
+        writeFileAtomic(DESKTOP_RESOLVER_CACHE_PATH, JSON.stringify(cache, null, 2) + '\n', 'utf8')
+      }
     })
   ) {
     rememberLog(`Using existing Hermes source install at ${ACTIVE_HERMES_ROOT} without desktop bootstrap marker.`)
