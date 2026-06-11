@@ -337,12 +337,17 @@ def decide_image_input_mode(
         return "text"
 
     # auto
-    if _explicit_aux_vision_override(cfg):
-        return "text"
-
+    # Check if the main model supports vision first — if it does, use native
+    # mode even if auxiliary.vision is configured.  The user's explicit
+    # auxiliary.vision config is only used as a fallback when the main model
+    # lacks vision support (#44299).
     supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
         return "native"
+
+    if _explicit_aux_vision_override(cfg):
+        return "text"
+
     return "text"
 
 

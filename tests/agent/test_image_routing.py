@@ -98,10 +98,10 @@ class TestDecideImageInputMode:
             assert decide_image_input_mode("openrouter", "brand-new-slug", {}) == "text"
 
     def test_auto_respects_aux_vision_override_even_for_vision_model(self):
-        """If the user configured a dedicated vision backend, don't bypass it."""
+        """If the main model supports vision, use native even with aux vision config (#44299)."""
         cfg = {"auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
-            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "text"
+            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
 
     def test_none_config_is_auto(self):
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
@@ -280,14 +280,13 @@ class TestAutoModeRespectsOverride:
             assert decide_image_input_mode("custom", "unknown", {}) == "text"
 
     def test_explicit_aux_vision_override_still_wins(self):
-        # If the user has configured a dedicated vision aux backend, respect
-        # it even when supports_vision: true is also set.
+        # If the main model supports vision, use native even with aux vision config (#44299).
         cfg = {
             "model": {"supports_vision": True},
             "auxiliary": {"vision": {"provider": "openrouter", "model": "gemini-2.5-pro"}},
         }
         with patch("agent.models_dev.get_model_capabilities", return_value=None):
-            assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "text"
+            assert decide_image_input_mode("custom", "qwen3.6-35b", cfg) == "native"
 
 
 # ─── build_native_content_parts ──────────────────────────────────────────────
