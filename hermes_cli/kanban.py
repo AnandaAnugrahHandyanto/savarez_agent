@@ -1302,6 +1302,32 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
     return 0
 
 
+def _validate_skill_names(skill_names: list[str]) -> list[str]:
+    """Return *skill_names* that are not installed in any skills directory.
+
+    Scans all skill directories (local + external) for ``SKILL.md`` files
+    and checks whether each requested skill name matches an installed
+    skill.  Returns the list of unknown names (empty → all valid).
+    """
+    if not skill_names:
+        return []
+    try:
+        from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
+    except Exception:
+        # If we can't import the helpers, skip validation — don't block
+        # task creation just because of an import failure.
+        return []
+    installed: set[str] = set()
+    for skills_dir in get_all_skills_dirs():
+        if not skills_dir.exists():
+            continue
+        for skill_md in skills_dir.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
+            installed.add(skill_md.parent.name)
+    return [s for s in skill_names if s not in installed]
+
+
 def _cmd_create(args: argparse.Namespace) -> int:
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
@@ -1325,6 +1351,20 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    # Validate --skill names against the installed skill registry before
+    # creating the task.  Unknown skills would crash the worker at startup,
+    # wasting retry slots and leaving the task unresolved.
+    skills = getattr(args, "skills", None) or []
+    if skills:
+        unknown = _validate_skill_names(skills)
+        if unknown:
+            print(
+                f"kanban: unknown skill(s): {', '.join(unknown)}\n"
+                "Install them with `hermes skills install <name>` or check "
+                "available skills with `hermes skills list`.",
+                file=sys.stderr,
+            )
+            return 2
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
