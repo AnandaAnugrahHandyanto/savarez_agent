@@ -390,7 +390,7 @@ async function resolveSpace(spaceId) {
     try {
       const im = imessage(app);
       const user = await im.user(phoneTarget);
-      const space = await im.space(user);
+      const space = await im.space.create(user);
       rememberKnownSpace(spaceId, space);
       rememberKnownSpace(phoneTarget, space);
       rememberKnownSpace(space?.id, space);
