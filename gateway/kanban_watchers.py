@@ -227,6 +227,26 @@ class GatewayKanbanWatchersMixin:
                                 if not events:
                                     continue
                                 task = _kb.get_task(conn, sub["task_id"])
+                                # Completion events carry only a compact
+                                # payload summary for cheap dashboard/event-log
+                                # reads. Chat notifications are the operator's
+                                # primary feedback loop, so hydrate the
+                                # associated run while the DB is already open
+                                # and send the full worker handoff. Platform
+                                # adapters own transport splitting (Telegram
+                                # 4096 chars, etc.); the notifier should not
+                                # silently chop words mid-summary.
+                                event_runs = {}
+                                for ev in events:
+                                    run_id = getattr(ev, "run_id", None)
+                                    if run_id is None:
+                                        continue
+                                    try:
+                                        run = _kb.get_run(conn, int(run_id))
+                                    except Exception:
+                                        run = None
+                                    if run is not None:
+                                        event_runs[ev.id] = run
                                 logger.debug(
                                     "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
                                     len(events), sub["task_id"], slug, old_cursor, cursor,
@@ -236,6 +256,7 @@ class GatewayKanbanWatchersMixin:
                                     "old_cursor": old_cursor,
                                     "cursor": cursor,
                                     "events": events,
+                                    "event_runs": event_runs,
                                     "task": task,
                                     "board": slug,
                                 })
@@ -272,32 +293,34 @@ class GatewayKanbanWatchersMixin:
                             board_slug,
                         )
                         continue
-                    title = (task.title if task else sub["task_id"])[:120]
+                    title = (task.title if task else sub["task_id"]).strip()
+                    event_runs = d.get("event_runs") or {}
                     for ev in d["events"]:
                         kind = ev.kind
+                        run = event_runs.get(ev.id)
                         # Identity prefix: attribute terminal pings to the
                         # worker that did the work. Makes fleets (where one
                         # chat subscribes to many tasks) legible at a glance.
                         who = (task.assignee if task and task.assignee else None)
                         tag = f"@{who} " if who else ""
                         if kind == "completed":
-                            # Prefer the run's summary (the worker's
-                            # intentional human-facing handoff, carried
-                            # in the event payload), then fall back to
+                            # Prefer the run's full summary (the worker's
+                            # intentional human-facing handoff), then fall
+                            # back to the compact event payload and finally
                             # task.result for legacy rows written before
                             # runs shipped.
                             handoff = ""
-                            payload_summary = None
-                            if ev.payload and ev.payload.get("summary"):
-                                payload_summary = str(ev.payload["summary"])
-                            if payload_summary:
-                                lines = payload_summary.strip().splitlines()
-                                h = lines[0][:200] if lines else payload_summary[:200]
-                                handoff = f"\n{h}"
+                            handoff_text = None
+                            if run and getattr(run, "summary", None):
+                                handoff_text = str(run.summary)
+                            elif ev.payload and ev.payload.get("summary"):
+                                handoff_text = str(ev.payload["summary"])
                             elif task and task.result:
-                                lines = task.result.strip().splitlines()
-                                r = lines[0][:160] if lines else task.result[:160]
-                                handoff = f"\n{r}"
+                                handoff_text = str(task.result)
+                            if handoff_text:
+                                h = handoff_text.strip()
+                                if h:
+                                    handoff = f"\n{h}"
                             msg = (
                                 f"✔ {tag}Kanban {sub['task_id']} done"
                                 f" — {title}{handoff}"
@@ -305,12 +328,16 @@ class GatewayKanbanWatchersMixin:
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
+                                reason_text = str(ev.payload["reason"]).strip()
+                                if reason_text:
+                                    reason = f": {reason_text}"
                             msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
-                                err = f"\n{str(ev.payload['error'])[:200]}"
+                                error_text = str(ev.payload["error"]).strip()
+                                if error_text:
+                                    err = f"\n{error_text}"
                             msg = (
                                 f"✖ {tag}Kanban {sub['task_id']} gave up "
                                 f"after repeated spawn failures{err}"
