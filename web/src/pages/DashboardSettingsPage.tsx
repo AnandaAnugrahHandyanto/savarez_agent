@@ -5,12 +5,13 @@
  * Persisted in localStorage.  All toggles default to visible.
  */
 
-import { useEffect, useMemo, useCallback } from "react";
-import { LayoutDashboard, PanelLeft, FoldVertical } from "lucide-react";
+import { useEffect, useMemo, useCallback, useState } from "react";
+import { LayoutDashboard, PanelLeft, FoldVertical, RefreshCw } from "lucide-react";
 import { useI18n } from "@/i18n";
 import type { Translations } from "@/i18n/types";
 import { useDashboardSettings } from "@/contexts/dashboard-settings-context";
 import { usePlugins } from "@/plugins";
+import { api } from "@/lib/api";
 import type {
   KanbanColumnVisibility,
   SideMenuTabVisibility,
@@ -158,7 +159,7 @@ const TAB_CONFIG: Array<{
 export default function DashboardSettingsPage() {
   const { t } = useI18n();
   const { setTitle } = usePageHeader();
-  const { manifests } = usePlugins();
+  const { manifests, loading: pluginsLoading } = usePlugins();
   const {
     toggleKanbanColumn,
     toggleSideMenuTab,
@@ -168,6 +169,8 @@ export default function DashboardSettingsPage() {
     setPluginsFoldedIntoSidebar,
     settings,
   } = useDashboardSettings();
+
+  const [scanning, setScanning] = useState(false);
 
   // Set page header
   useEffect(() => {
@@ -319,8 +322,19 @@ export default function DashboardSettingsPage() {
     [setPluginsFoldedIntoSidebar, setSidebarOrderAndFold, coreItems, pluginItems, settings.sidebarItemOrder],
   );
 
+  const handleRescanPlugins = useCallback(async () => {
+    setScanning(true);
+    try {
+      await api.rescanPlugins();
+      // Force a page reload to pick up new manifests
+      window.location.reload();
+    } catch {
+      setScanning(false);
+    }
+  }, []);
+
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-6 p-4">
+    <div className="mx-auto grid max-w-5xl grid-cols-1 gap-6 p-4 md:grid-cols-2">
       <SettingsSection
         title={kanbanSectionTitle}
         description={kanbanSectionDesc}
@@ -357,25 +371,44 @@ export default function DashboardSettingsPage() {
         ))}
       </SettingsSection>
 
-      <SettingsSection
-        title={t.dashboardSettings.sidebarOrder?.title ?? "Sidebar Order"}
-        description={t.dashboardSettings.sidebarOrder?.description ?? "Drag and drop to reorder sidebar navigation items."}
-        icon={FoldVertical}
-      >
-        <SidebarReorder
-          coreItems={coreItems}
-          pluginItems={pluginItems}
-          unifiedItems={unifiedItems}
-          folded={folded}
-          onCoreReorder={handleCoreReorder}
-          onPluginReorder={handlePluginReorder}
-          onUnifiedReorder={handleUnifiedReorder}
-          onFoldToggle={handleFoldToggle}
-          mainItemsLabel={t.dashboardSettings.sidebarOrder?.mainItems ?? "Main Items"}
-          pluginItemsLabel={t.dashboardSettings.sidebarOrder?.pluginItems ?? "Plugin Items"}
-          unifiedItemsLabel={t.dashboardSettings.sidebarOrder?.unifiedItems ?? "All Items"}
-        />
-      </SettingsSection>
+      <div className="md:col-span-2">
+        <SettingsSection
+          title={t.dashboardSettings.sidebarOrder?.title ?? "Sidebar Order"}
+          description={t.dashboardSettings.sidebarOrder?.description ?? "Drag and drop to reorder sidebar navigation items."}
+          icon={FoldVertical}
+        >
+          <div className="flex items-center justify-between border-b border-border px-4 py-2">
+            <span className="text-xs text-text-tertiary">
+              {manifests.length} plugin{manifests.length !== 1 ? "s" : ""} detected
+            </span>
+            <button
+              onClick={handleRescanPlugins}
+              disabled={scanning || pluginsLoading}
+              className={cn(
+                "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs",
+                "transition-colors hover:bg-secondary/30",
+                "disabled:opacity-50 disabled:cursor-not-allowed",
+              )}
+            >
+              <RefreshCw className={cn("h-3 w-3", scanning && "animate-spin")} />
+              {scanning ? "Scanning…" : "Scan for plugins"}
+            </button>
+          </div>
+          <SidebarReorder
+            coreItems={coreItems}
+            pluginItems={pluginItems}
+            unifiedItems={unifiedItems}
+            folded={folded}
+            onCoreReorder={handleCoreReorder}
+            onPluginReorder={handlePluginReorder}
+            onUnifiedReorder={handleUnifiedReorder}
+            onFoldToggle={handleFoldToggle}
+            mainItemsLabel={t.dashboardSettings.sidebarOrder?.mainItems ?? "Main Items"}
+            pluginItemsLabel={t.dashboardSettings.sidebarOrder?.pluginItems ?? "Plugin Items"}
+            unifiedItemsLabel={t.dashboardSettings.sidebarOrder?.unifiedItems ?? "All Items"}
+          />
+        </SettingsSection>
+      </div>
     </div>
   );
 }
