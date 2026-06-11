@@ -1465,6 +1465,95 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.text, "/help test")
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_p2p_quoted_reply_ignores_thread_id(self):
+        """Feishu DMs do not support real threads; quoted replies that
+        populate thread_id/root_id must not create isolated sessions."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_dm", "name": "Feishu DM", "type": "dm"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        adapter._fetch_message_text = AsyncMock(return_value="original message")
+
+        # Simulate a quoted reply in a DM: Lark SDK populates thread_id/root_id
+        message = SimpleNamespace(
+            chat_id="oc_dm",
+            thread_id="om_thread_parent",
+            root_id="om_thread_parent",
+            parent_id="om_parent",
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"reply to you"}',
+            message_id="om_reply",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type="p2p",
+                message_id="om_reply",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertIsNone(event.source.thread_id, "thread_id must be None in DM (p2p) chats")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_group_quoted_reply_preserves_thread_id(self):
+        """Group messages with thread_id/root_id must still create
+        thread-scoped sessions (real Feishu group threads)."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_group", "name": "Team Chat", "type": "group"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        adapter._fetch_message_text = AsyncMock(return_value="original message")
+
+        message = SimpleNamespace(
+            chat_id="oc_group",
+            thread_id="om_thread_parent",
+            root_id="om_thread_parent",
+            parent_id="om_parent",
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"reply in thread"}',
+            message_id="om_reply",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type="group",
+                message_id="om_reply",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(
+            event.source.thread_id,
+            "om_thread_parent",
+            "thread_id must be preserved in group chats",
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_extract_text_file_injects_content(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
