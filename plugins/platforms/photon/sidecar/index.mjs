@@ -24,6 +24,8 @@
 //       body: {"spaceId": "...", "path": "...", "name": "..." | null,
 //              "mimeType": "..." | null, "caption": "..." | null,
 //              "kind": "attachment" | "voice"}
+//   - POST /send-effect -> {"ok": true, "messageId": "..."}
+//       body: {"spaceId": "...", "text": "...", "effect": "confetti" | ...}
 //   - POST /typing      -> {"ok": true}
 //       body: {"spaceId": "...", "state": "start" | "stop"}
 //   - POST /shutdown    -> {"ok": true}; then process exits
@@ -70,7 +72,7 @@ if (!projectId || !projectSecret || !sharedToken) {
 
 // Lazy-load spectrum-ts so a missing install fails with a clear message
 // instead of a cryptic module-resolution error during import.
-let Spectrum, imessage, attachment, voice, spectrumText, spectrumTyping;
+let Spectrum, imessage, imessageEffect, attachment, voice, spectrumText, spectrumTyping;
 try {
   ({
     Spectrum,
@@ -79,7 +81,7 @@ try {
     text: spectrumText,
     typing: spectrumTyping,
   } = await import("spectrum-ts"));
-  ({ imessage } = await import("spectrum-ts/providers/imessage"));
+  ({ imessage, effect: imessageEffect } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
   console.error(
     "photon-sidecar: spectrum-ts is not installed. Run `npm install` " +
@@ -95,6 +97,8 @@ const app = await Spectrum({
   providers: [imessage.config()],
   options: { flattenGroups: true },
 });
+
+const MESSAGE_EFFECTS = imessage.effect.message;
 
 // ---------------------------------------------------------------------------
 // Inbound: forward `app.messages` (gRPC stream) to the Python consumer.
@@ -484,6 +488,22 @@ const server = http.createServer(async (req, res) => {
           );
         }
       }
+      return ok(res, { messageId: result?.id || null });
+    }
+    if (req.url === "/send-effect") {
+      const { spaceId, text, effect } = body || {};
+      const effectName = String(effect || "").trim();
+      const effectId = MESSAGE_EFFECTS[effectName];
+      if (!spaceId || typeof text !== "string" || !text.trim()) {
+        return badRequest(res, "spaceId and text are required");
+      }
+      if (!effectId) {
+        return badRequest(res, "unsupported effect");
+      }
+      const space = await resolveSpace(spaceId);
+      const result = await space.send(
+        imessageEffect(spectrumText(text.trim()), effectId)
+      );
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/typing") {

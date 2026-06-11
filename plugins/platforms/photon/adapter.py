@@ -758,6 +758,25 @@ class PhotonAdapter(BasePlatformAdapter):
             chat_id, animation_url, caption, reply_to, metadata,
         )
 
+    async def send_effect(
+        self,
+        chat_id: str,
+        text: str,
+        effect: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send text with a native iMessage bubble or screen effect."""
+        if not text.strip() or not effect.strip():
+            return SendResult(success=False, error="text and effect are required")
+        try:
+            data = await self._sidecar_call(
+                "/send-effect",
+                {"spaceId": chat_id, "text": text.strip(), "effect": effect.strip()},
+            )
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        return SendResult(success=True, message_id=data.get("messageId"))
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         try:
             await self._sidecar_call(
