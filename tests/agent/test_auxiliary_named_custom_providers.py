@@ -491,3 +491,80 @@ class TestCustomProviderAliasCollision:
         assert isinstance(client, OpenAI)
         assert "override.example.com" in str(client.base_url)
         assert client.api_key == "override-key"
+
+
+
+class TestCustomPrefixPreservedInVision:
+    """Regression test for #44349.
+
+    When auxiliary.vision.provider is set to custom:<name> where <name>
+    matches a built-in provider (e.g. custom:minimax), the custom: prefix
+    must be preserved through resolve_vision_provider_client so
+    resolve_provider_client can look up the user's custom_providers entry
+    instead of collapsing to the built-in.
+    """
+
+    def test_custom_minimax_uses_custom_endpoint(self, tmp_path, monkeypatch):
+        """custom:minimax should resolve to the custom_providers entry, not built-in minimax."""
+        _write_config(tmp_path, {
+            "model": {"default": "test-model", "provider": "openrouter"},
+            "auxiliary": {"vision": {"provider": "custom:minimax", "model": "MiniMax-M3"}},
+            "custom_providers": [{
+                "name": "minimax",
+                "provider": "openai",
+                "base_url": "https://api.minimaxi.com/v1",
+                "api_key_env": "MINIMAX_CN_API_KEY",
+                "api_mode": "chat_completions",
+            }],
+        })
+        monkeypatch.setenv("MINIMAX_CN_API_KEY", "sk-test-cn-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_vision_provider_client
+            provider, client, model = resolve_vision_provider_client()
+
+        assert client is not None
+        # Must use the custom endpoint, not the built-in minimax
+        mock_openai.assert_called_once()
+        _, kwargs = mock_openai.call_args
+        assert "minimaxi.com" in kwargs.get("base_url", ""), (
+            f"Expected custom endpoint minimaxi.com, got {kwargs.get('base_url')!r}"
+        )
+        assert kwargs.get("api_key") == "sk-test-cn-key"
+
+    def test_custom_prefix_not_stripped_for_unknown_provider(self, tmp_path, monkeypatch):
+        """custom:myprovider with a non-builtin name should also work."""
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+            "auxiliary": {"vision": {"provider": "custom:myprovider", "model": "my-vlm"}},
+            "custom_providers": [{
+                "name": "myprovider",
+                "provider": "openai",
+                "base_url": "https://my-vlm.example.com/v1",
+                "api_key_env": "MY_VLM_KEY",
+            }],
+        })
+        monkeypatch.setenv("MY_VLM_KEY", "sk-my-vlm")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_vision_provider_client
+            provider, client, model = resolve_vision_provider_client()
+
+        assert client is not None
+        mock_openai.assert_called_once()
+        _, kwargs = mock_openai.call_args
+        assert "my-vlm.example.com" in kwargs.get("base_url", "")
+
+    def test_builtin_provider_still_normalizes(self, tmp_path, monkeypatch):
+        """Non-custom providers still go through normalization (alias resolution)."""
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+        })
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+        with patch("agent.auxiliary_client._try_openrouter") as mock_or:
+            mock_or.return_value = (MagicMock(), "google/gemini-2.5-flash")
+            from agent.auxiliary_client import resolve_vision_provider_client
+            provider, client, model = resolve_vision_provider_client(provider="openrouter")
+
+        assert provider == "openrouter"
+        assert client is not None

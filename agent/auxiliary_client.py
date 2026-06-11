@@ -4142,7 +4142,12 @@ def resolve_vision_provider_client(
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         "vision", provider, model, base_url, api_key
     )
-    requested = _normalize_vision_provider(requested)
+    # Preserve the `custom:` prefix so resolve_provider_client can look up
+    # the user's custom_providers entry.  _normalize_aux_provider strips it,
+    # causing ``custom:minimax`` to collapse to bare ``minimax`` (a built-in)
+    # and ignoring the user's custom endpoint/key.  (#44349)
+    if not (requested or '').startswith('custom:'):
+        requested = _normalize_vision_provider(requested)
 
     def _finalize(resolved_provider: str, sync_client: Any, default_model: Optional[str]):
         if sync_client is None:
