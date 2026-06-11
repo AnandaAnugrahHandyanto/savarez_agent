@@ -592,6 +592,16 @@ def run_conversation(
 
     active_system_prompt = agent._cached_system_prompt
 
+    # Crash-resilience: persist the inbound user turn as soon as the session exists.
+    try:
+        agent._persist_session(messages, conversation_history)
+    except Exception:
+        logger.warning(
+            "Early turn-start session persistence failed for session=%s",
+            agent.session_id or "none",
+            exc_info=True,
+        )
+
     # ── Preflight context compression ──
     # Before entering the main loop, check if the loaded conversation
     # history already exceeds the model's context threshold.  This handles
@@ -2748,6 +2758,46 @@ def run_conversation(
                 # A 413 is a payload-size error — the correct response is to
                 # compress history and retry, not abort immediately.
                 status_code = getattr(api_error, "status_code", None)
+
+                # Respect disabled auto-compaction on reactive overflow paths.
+                _overflow_reasons = {
+                    FailoverReason.long_context_tier,
+                    FailoverReason.payload_too_large,
+                    FailoverReason.context_overflow,
+                }
+                if (
+                    classified.reason in _overflow_reasons
+                    and not getattr(agent, "compression_enabled", True)
+                ):
+                    agent._flush_status_buffer()
+                    agent._vprint(
+                        f"{agent.log_prefix}❌ Context overflow, but auto-compaction is disabled "
+                        f"(compression.enabled: false).",
+                        force=True,
+                    )
+                    agent._vprint(
+                        f"{agent.log_prefix}   💡 Run /compress to compact manually, /new to start fresh, "
+                        f"switch to a larger-context model, or reduce attachments.",
+                        force=True,
+                    )
+                    logger.error(
+                        f"{agent.log_prefix}Context overflow ({classified.reason.value}) with "
+                        f"auto-compaction disabled, not compressing."
+                    )
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "messages": messages,
+                        "completed": False,
+                        "api_calls": api_call_count,
+                        "error": (
+                            "Context overflow and auto-compaction is disabled "
+                            "(compression.enabled: false). Run /compress to compact manually, "
+                            "/new to start fresh, or switch to a larger-context model."
+                        ),
+                        "partial": True,
+                        "failed": True,
+                        "compaction_disabled": True,
+                    }
 
                 # ── Anthropic Sonnet long-context tier gate ───────────
                 # Anthropic returns HTTP 429 "Extra usage is required for
