@@ -402,6 +402,19 @@ async fn run_bootstrap(
         script.path.display(),
         source_note
     ));
+    let bundled_scripts = install_script::bundled_script_manifest()
+        .into_iter()
+        .map(|resource| {
+            format!(
+                "{}={}b:{}",
+                resource.filename,
+                resource.size_bytes,
+                &resource.sha256[..12]
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    emit_log(&format!("[bootstrap] bundled scripts [{bundled_scripts}]"));
 
     // 2. Fetch manifest
     //

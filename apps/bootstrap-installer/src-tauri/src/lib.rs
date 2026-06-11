@@ -15,6 +15,7 @@ mod install_script;
 mod orchestrator;
 mod powershell;
 mod paths;
+pub mod repo_archive;
 mod update;
 
 use std::sync::Arc;

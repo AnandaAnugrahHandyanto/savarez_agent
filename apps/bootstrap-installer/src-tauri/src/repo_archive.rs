@@ -1,0 +1,197 @@
+//! Repository ZIP archive fallback planning.
+//!
+//! This module owns the low-level pieces needed for a future no-Git fresh
+//! install path: choosing an immutable GitHub archive URL and unpacking it into
+//! the managed checkout directory without overwriting user data.
+
+use anyhow::{anyhow, Context, Result};
+use std::path::{Path, PathBuf};
+
+/// GitHub repository archive selector.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoArchiveSpec {
+    pub owner: String,
+    pub repo: String,
+    pub commit: Option<String>,
+    pub branch: Option<String>,
+}
+
+impl RepoArchiveSpec {
+    /// Build the GitHub ZIP archive URL, preferring immutable commit pins.
+    pub fn github_zip_url(&self) -> Result<String> {
+        let archive_ref = self.archive_ref()?;
+        Ok(format!(
+            "https://github.com/{}/{}/archive/{}.zip",
+            self.owner, self.repo, archive_ref
+        ))
+    }
+
+    fn archive_ref(&self) -> Result<&str> {
+        if let Some(commit) = self.commit.as_deref().filter(|value| !value.trim().is_empty()) {
+            return Ok(commit);
+        }
+        if let Some(branch) = self.branch.as_deref().filter(|value| !value.trim().is_empty()) {
+            return Ok(branch);
+        }
+        Err(anyhow!("repo archive requires a commit or branch ref"))
+    }
+}
+
+/// Extract a GitHub archive ZIP into `install_root`, stripping its single root dir.
+///
+/// The function intentionally refuses to write into an existing install root.
+/// This keeps the first no-Git path safe while update semantics remain owned by
+/// the existing Git-based scripts.
+pub fn extract_repo_archive_to_install_root(archive_path: &Path, install_root: &Path) -> Result<()> {
+    if install_root.exists() {
+        return Err(anyhow!(
+            "install root already exists: {}",
+            install_root.display()
+        ));
+    }
+
+    let parent = install_root.parent().ok_or_else(|| {
+        anyhow!(
+            "install root has no parent directory: {}",
+            install_root.display()
+        )
+    })?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("creating install parent {}", parent.display()))?;
+
+    let tmp_dir = archive_tmp_dir(install_root);
+    remove_dir_if_exists(&tmp_dir)?;
+    std::fs::create_dir_all(&tmp_dir)
+        .with_context(|| format!("creating archive temp dir {}", tmp_dir.display()))?;
+
+    let result: Result<()> = (|| {
+        crate::artifact::extract_zip_archive(archive_path, &tmp_dir)?;
+        let archive_root = single_top_level_dir(&tmp_dir)?;
+        std::fs::rename(&archive_root, install_root).with_context(|| {
+            format!(
+                "moving extracted repo {} to {}",
+                archive_root.display(),
+                install_root.display()
+            )
+        })?;
+        Ok(())
+    })();
+
+    let cleanup = remove_dir_if_exists(&tmp_dir);
+    result?;
+    cleanup
+}
+
+fn archive_tmp_dir(install_root: &Path) -> PathBuf {
+    let name = install_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("hermes-agent");
+    install_root.with_file_name(format!("{name}.archive-tmp-{}", std::process::id()))
+}
+
+fn single_top_level_dir(tmp_dir: &Path) -> Result<PathBuf> {
+    let entries = std::fs::read_dir(tmp_dir)
+        .with_context(|| format!("reading archive temp dir {}", tmp_dir.display()))?
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("reading entries under {}", tmp_dir.display()))?;
+    if entries.len() != 1 {
+        return Err(anyhow!(
+            "repo archive must contain exactly one top-level directory, found {}",
+            entries.len()
+        ));
+    }
+    let path = entries[0].path();
+    if !path.is_dir() {
+        return Err(anyhow!(
+            "repo archive top-level entry is not a directory: {}",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
+fn remove_dir_if_exists(path: &Path) -> Result<()> {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("removing {}", path.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    fn write_test_zip(path: &std::path::Path, entries: &[(&str, &[u8])]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        for (name, bytes) in entries {
+            zip.start_file(*name, SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn archive_url_prefers_commit_over_branch() {
+        let spec = RepoArchiveSpec {
+            owner: "NousResearch".into(),
+            repo: "hermes-agent".into(),
+            commit: Some("02d26981d3d4ad50e142399b8476f59ad5953ff0".into()),
+            branch: Some("main".into()),
+        };
+
+        assert_eq!(
+            spec.github_zip_url().unwrap(),
+            "https://github.com/NousResearch/hermes-agent/archive/02d26981d3d4ad50e142399b8476f59ad5953ff0.zip"
+        );
+    }
+
+    #[test]
+    fn archive_extract_strips_single_top_level_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-repo-archive-strip-{}",
+            std::process::id()
+        ));
+        let archive = root.join("repo.zip");
+        let install_root = root.join("hermes-agent");
+        std::fs::create_dir_all(&root).unwrap();
+        write_test_zip(
+            &archive,
+            &[
+                ("hermes-agent-main/README.md", b"ok"),
+                ("hermes-agent-main/scripts/install.ps1", b"# install"),
+            ],
+        );
+
+        extract_repo_archive_to_install_root(&archive, &install_root).unwrap();
+
+        assert_eq!(std::fs::read(install_root.join("README.md")).unwrap(), b"ok");
+        assert!(install_root.join("scripts").join("install.ps1").exists());
+        assert!(!install_root.join("hermes-agent-main").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn archive_extract_refuses_to_overwrite_existing_install_root() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-repo-archive-existing-{}",
+            std::process::id()
+        ));
+        let archive = root.join("repo.zip");
+        let install_root = root.join("hermes-agent");
+        std::fs::create_dir_all(&install_root).unwrap();
+        std::fs::write(install_root.join("local.txt"), b"user").unwrap();
+        write_test_zip(&archive, &[("hermes-agent-main/README.md", b"ok")]);
+
+        let err = extract_repo_archive_to_install_root(&archive, &install_root).unwrap_err();
+
+        assert!(err.to_string().contains("install root already exists"));
+        assert_eq!(std::fs::read(install_root.join("local.txt")).unwrap(), b"user");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

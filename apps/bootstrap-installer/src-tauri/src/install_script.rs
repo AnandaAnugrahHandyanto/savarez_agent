@@ -3,9 +3,9 @@
 //! Resolution order:
 //!   1. Dev shortcut: a sibling repo checkout via $HERMES_SETUP_DEV_REPO_ROOT
 //!      env var. Lets devs iterate without re-publishing the script.
-//!   2. Bundled fallback: if the installer was bundled with a script (e.g.
-//!      tauri's `resource` mechanism), serve from there. Not used today.
-//!   3. Network: download from GitHub raw at a pinned commit or branch.
+//!   2. Bundled fallback: commit-pinned release installers serve the script
+//!      compiled into this binary, avoiding a first-run network dependency.
+//!   3. Cache/network: branch-following builds download from GitHub raw.
 //!      Commit pins are immutable; branch pins are HEAD-tracking.
 //!
 //! Mirrors `apps/desktop/electron/bootstrap-runner.cjs`'s `resolveInstallScript`,
@@ -43,6 +43,14 @@ pub enum ScriptSource {
 pub enum ScriptKind {
     Ps1,
     Sh,
+}
+
+/// Metadata for an install script embedded into this binary.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct BundledScriptResource {
+    pub filename: &'static str,
+    pub size_bytes: usize,
+    pub sha256: String,
 }
 
 impl ScriptKind {
@@ -96,7 +104,26 @@ pub async fn resolve(
         }
     }
 
-    // 2. (Not implemented) bundled fallback.
+    // 2. Bundled fallback. Commit-pinned installers should not need network
+    // just to obtain the small orchestration script shipped with this binary.
+    if should_use_bundled_script(pin) {
+        let commit = pin.commit.as_deref().expect("validated by should_use_bundled_script");
+        let bundled = bundled_cached_path(kind, commit);
+        emit_log(&format!(
+            "[bootstrap] using bundled {} for {}",
+            kind.filename(),
+            truncate_ref(commit)
+        ));
+        crate::artifact::write_atomic_verified(&bundled, bundled_script_bytes(kind), None)
+            .await
+            .with_context(|| format!("writing bundled {}", kind.filename()))?;
+        return Ok(ResolvedScript {
+            path: bundled,
+            source: ScriptSource::Bundled,
+            commit: pin.commit.clone(),
+            branch: pin.branch.clone(),
+        });
+    }
 
     // 3. Network. Pin must be a real commit or a branch ref.
     let commit_or_ref = match (&pin.commit, &pin.branch) {
@@ -160,6 +187,46 @@ fn cached_path(kind: ScriptKind, commit_or_ref: &str) -> PathBuf {
         ScriptKind::Sh => format!("install-{safe}.sh"),
     };
     paths::bootstrap_cache_dir().join(filename)
+}
+
+fn bundled_cached_path(kind: ScriptKind, commit: &str) -> PathBuf {
+    let safe = sanitize_ref(commit);
+    let filename = match kind {
+        ScriptKind::Ps1 => format!("install-{safe}-bundled.ps1"),
+        ScriptKind::Sh => format!("install-{safe}-bundled.sh"),
+    };
+    paths::bootstrap_cache_dir().join(filename)
+}
+
+fn bundled_script_bytes(kind: ScriptKind) -> &'static [u8] {
+    match kind {
+        ScriptKind::Ps1 => include_bytes!("../../../../scripts/install.ps1"),
+        ScriptKind::Sh => include_bytes!("../../../../scripts/install.sh"),
+    }
+}
+
+/// Return metadata for all install scripts compiled into this binary.
+pub fn bundled_script_manifest() -> Vec<BundledScriptResource> {
+    [ScriptKind::Ps1, ScriptKind::Sh]
+        .into_iter()
+        .map(bundled_script_resource)
+        .collect()
+}
+
+fn bundled_script_resource(kind: ScriptKind) -> BundledScriptResource {
+    let bytes = bundled_script_bytes(kind);
+    BundledScriptResource {
+        filename: kind.filename(),
+        size_bytes: bytes.len(),
+        sha256: crate::artifact::sha256_hex(bytes),
+    }
+}
+
+fn should_use_bundled_script(pin: &Pin) -> bool {
+    match pin.commit.as_deref() {
+        Some(commit) => is_valid_commit(commit),
+        None => false,
+    }
 }
 
 /// Replace anything that's not [A-Za-z0-9._-] with `_`. Branch refs can
@@ -231,5 +298,49 @@ mod tests {
         assert_eq!(sanitize_ref("bb/gui"), "bb_gui");
         assert_eq!(sanitize_ref("main"), "main");
         assert_eq!(sanitize_ref("release/1.2.3"), "release_1.2.3");
+    }
+
+    #[test]
+    fn bundled_script_is_available_for_both_platform_scripts() {
+        assert!(bundled_script_bytes(ScriptKind::Ps1).starts_with(b"#"));
+        assert!(bundled_script_bytes(ScriptKind::Sh).starts_with(b"#!/"));
+    }
+
+    #[test]
+    fn bundled_script_is_used_only_for_commit_pins() {
+        assert!(should_use_bundled_script(&Pin {
+            commit: Some("02d26981d3d4ad50e142399b8476f59ad5953ff0".into()),
+            branch: Some("main".into()),
+        }));
+        assert!(!should_use_bundled_script(&Pin {
+            commit: None,
+            branch: Some("main".into()),
+        }));
+    }
+
+    #[test]
+    fn bundled_cache_path_does_not_collide_with_download_cache_path() {
+        let commit = "02d26981d3d4ad50e142399b8476f59ad5953ff0";
+        assert_ne!(
+            cached_path(ScriptKind::Ps1, commit),
+            bundled_cached_path(ScriptKind::Ps1, commit)
+        );
+        assert_ne!(
+            cached_path(ScriptKind::Sh, commit),
+            bundled_cached_path(ScriptKind::Sh, commit)
+        );
+    }
+
+    #[test]
+    fn bundled_script_manifest_reports_size_and_checksum() {
+        let manifest = bundled_script_manifest();
+
+        assert_eq!(manifest.len(), 2);
+        assert!(manifest.iter().any(|resource| resource.filename == "install.ps1"));
+        assert!(manifest.iter().any(|resource| resource.filename == "install.sh"));
+        for resource in manifest {
+            assert!(resource.size_bytes > 0);
+            assert_eq!(resource.sha256.len(), 64);
+        }
     }
 }
