@@ -67,6 +67,10 @@ def hermes_realtime_tool_definitions(allow_tools: tuple[str, ...] | list[str] | 
             parameters={
                 "type": "object",
                 "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Short human-readable title for status updates, e.g. 'Bakery website'.",
+                    },
                     "prompt": {
                         "type": "string",
                         "description": "The task for Hermes to work on in the background.",
@@ -78,31 +82,37 @@ def hermes_realtime_tool_definitions(allow_tools: tuple[str, ...] | list[str] | 
         ),
         "get_agent_task_status": RealtimeToolDefinition(
             name="get_agent_task_status",
-            description="Get the status of a realtime background Hermes task by task_id.",
+            description="Get the status of a realtime background Hermes task by task_id or human-readable title.",
             parameters={
                 "type": "object",
                 "properties": {
                     "task_id": {
                         "type": "string",
                         "description": "The task_id returned by start_agent_task.",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "A full or partial task title returned by start_agent_task.",
                     }
                 },
-                "required": ["task_id"],
                 "additionalProperties": False,
             },
         ),
         "summarize_agent_task": RealtimeToolDefinition(
             name="summarize_agent_task",
-            description="Return the current summary/result for a realtime background Hermes task by task_id.",
+            description="Return the current summary/result for a realtime background Hermes task by task_id or human-readable title.",
             parameters={
                 "type": "object",
                 "properties": {
                     "task_id": {
                         "type": "string",
                         "description": "The task_id returned by start_agent_task.",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "A full or partial task title returned by start_agent_task.",
                     }
                 },
-                "required": ["task_id"],
                 "additionalProperties": False,
             },
         ),
@@ -113,6 +123,7 @@ def hermes_realtime_tool_definitions(allow_tools: tuple[str, ...] | list[str] | 
 @dataclass
 class _RealtimeBackgroundTask:
     task_id: str
+    title: str
     prompt: str
     task: asyncio.Task
     status: str = "running"
@@ -155,11 +166,20 @@ class RealtimeToolBridge:
             elif name == "ask_agent":
                 output = await self._ask_agent(str(arguments.get("prompt") or arguments.get("question") or ""))
             elif name == "start_agent_task":
-                output = await self._start_agent_task(str(arguments.get("prompt") or ""))
+                output = await self._start_agent_task(
+                    str(arguments.get("prompt") or ""),
+                    title=str(arguments.get("title") or ""),
+                )
             elif name == "get_agent_task_status":
-                output = self._task_status(str(arguments.get("task_id") or ""))
+                output = self._task_status(
+                    str(arguments.get("task_id") or ""),
+                    title=str(arguments.get("title") or ""),
+                )
             elif name == "summarize_agent_task":
-                output = self._task_summary(str(arguments.get("task_id") or ""))
+                output = self._task_summary(
+                    str(arguments.get("task_id") or ""),
+                    title=str(arguments.get("title") or ""),
+                )
             else:  # pragma: no cover - guarded by _HERMES_TOOL_NAMES
                 output = f"Tool {name!r} is not implemented."
         except Exception:
@@ -186,7 +206,7 @@ class RealtimeToolBridge:
             result = await result
         return _safe_text(result)
 
-    async def _start_agent_task(self, prompt: str) -> str:
+    async def _start_agent_task(self, prompt: str, *, title: str = "") -> str:
         clean = prompt.strip()
         if not clean:
             return "No prompt was provided for start_agent_task."
@@ -195,9 +215,10 @@ class RealtimeToolBridge:
         if len(running) >= self.max_background_tasks:
             return f"Maximum realtime background tasks reached ({self.max_background_tasks}). Wait for one to finish before starting another."
         task_id = f"rt_{uuid.uuid4().hex[:10]}"
+        clean_title = _task_title(title, clean)
         task = asyncio.create_task(self._run_background_task(task_id, clean), name=f"realtime-voice-tool-{task_id}")
-        self._tasks[task_id] = _RealtimeBackgroundTask(task_id=task_id, prompt=clean, task=task)
-        return json.dumps({"task_id": task_id, "status": "running"})
+        self._tasks[task_id] = _RealtimeBackgroundTask(task_id=task_id, title=clean_title, prompt=clean, task=task)
+        return json.dumps({"task_id": task_id, "title": clean_title, "status": "running"})
 
     async def _run_background_task(self, task_id: str, prompt: str) -> None:
         entry = self._tasks[task_id]
@@ -221,6 +242,7 @@ class RealtimeToolBridge:
         summary = entry.result if entry.status == "completed" else entry.error
         payload = {
             "task_id": entry.task_id,
+            "title": entry.title,
             "status": entry.status,
             "summary": _safe_text(summary or ""),
         }
@@ -231,25 +253,48 @@ class RealtimeToolBridge:
         except Exception:
             logger.debug("Realtime voice task update callback failed", exc_info=True)
 
-    def _task_status(self, task_id: str) -> str:
-        entry = self._tasks.get(task_id.strip())
-        if entry is None:
-            return f"No realtime background task found for task_id {task_id!r}."
+    def _task_status(self, task_id: str, *, title: str = "") -> str:
+        entry, error = self._resolve_task(task_id, title)
+        if error:
+            return error
+        assert entry is not None
         if entry.task.done() and entry.status == "running":
             self._finalize_done_task(entry)
-        return json.dumps({"task_id": entry.task_id, "status": entry.status})
+        return json.dumps({"task_id": entry.task_id, "title": entry.title, "status": entry.status})
 
-    def _task_summary(self, task_id: str) -> str:
-        entry = self._tasks.get(task_id.strip())
-        if entry is None:
-            return f"No realtime background task found for task_id {task_id!r}."
+    def _task_summary(self, task_id: str, *, title: str = "") -> str:
+        entry, error = self._resolve_task(task_id, title)
+        if error:
+            return error
+        assert entry is not None
         if entry.task.done() and entry.status == "running":
             self._finalize_done_task(entry)
         if entry.status == "completed":
             return entry.result or "Task completed with no text result."
         if entry.status == "failed":
             return entry.error or "The realtime background task failed."
-        return json.dumps({"task_id": entry.task_id, "status": entry.status})
+        return json.dumps({"task_id": entry.task_id, "title": entry.title, "status": entry.status})
+
+    def _resolve_task(self, task_id: str, title: str = "") -> tuple[_RealtimeBackgroundTask | None, str | None]:
+        clean_id = task_id.strip()
+        if clean_id:
+            entry = self._tasks.get(clean_id)
+            if entry is None:
+                return None, f"No realtime background task found for task_id {clean_id!r}."
+            return entry, None
+        clean_title = title.strip().lower()
+        if not clean_title:
+            return None, "Provide task_id or title for the realtime background task."
+        exact = [entry for entry in self._tasks.values() if entry.title.lower() == clean_title]
+        if len(exact) == 1:
+            return exact[0], None
+        matches = exact or [entry for entry in self._tasks.values() if clean_title in entry.title.lower()]
+        if len(matches) == 1:
+            return matches[0], None
+        if len(matches) > 1:
+            titles = ", ".join(entry.title for entry in matches[:5])
+            return None, f"Multiple realtime background tasks match title {title!r}: {titles}. Ask with a more specific title."
+        return None, f"No realtime background task found for title {title!r}."
 
     def _prune_finished_tasks(self) -> None:
         # Keep completed entries available for summary; only remove cancelled old entries.
@@ -274,6 +319,18 @@ class RealtimeToolBridge:
 
 def _normalize_tool_name(name: Any) -> str:
     return str(name or "").strip().lower()
+
+
+def _task_title(title: Any, prompt: str) -> str:
+    """Return a compact human-facing title for realtime task status."""
+
+    clean = str(title or "").strip()
+    if not clean:
+        clean = str(prompt or "").strip().splitlines()[0] if prompt else "Realtime task"
+    clean = " ".join(clean.split())
+    if len(clean) > 80:
+        clean = clean[:77].rstrip() + "..."
+    return clean or "Realtime task"
 
 
 def _safe_text(value: Any) -> str:

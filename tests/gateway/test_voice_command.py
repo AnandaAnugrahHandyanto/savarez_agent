@@ -1191,12 +1191,18 @@ class TestVoiceChannelCommands:
         await runner._send_realtime_voice_task_update(
             mock_adapter,
             "123",
-            {"task_id": "rt_123", "status": "completed", "summary": "cleanup finished"},
+            {
+                "task_id": "rt_123",
+                "title": "Office cleanup",
+                "status": "completed",
+                "summary": "cleanup finished",
+            },
         )
 
         mock_channel.send.assert_awaited_once_with(
-            "**[Realtime task] rt_123 completed:** cleanup finished"
+            "**[Realtime task] Office cleanup completed:** cleanup finished"
         )
+        assert "rt_123" not in mock_channel.send.call_args.args[0]
 
     # -- _handle_voice_channel_input --
 

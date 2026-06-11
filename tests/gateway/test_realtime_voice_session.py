@@ -367,8 +367,103 @@ async def test_realtime_tool_bridge_notifies_when_background_task_completes():
         await asyncio.sleep(0)
 
     assert updates == [
-        {"task_id": task_id, "status": "completed", "summary": "finished cleanup"}
+        {"task_id": task_id, "title": "cleanup", "status": "completed", "summary": "finished cleanup"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_realtime_tool_bridge_start_task_returns_title_and_internal_id():
+    """User-facing realtime tasks should have human titles while keeping machine ids."""
+    from gateway.realtime_voice.tool_bridge import RealtimeToolBridge
+
+    async def ask_agent(prompt: str) -> str:
+        return f"finished {prompt}"
+
+    provider_session = _ToolResultSession()
+    bridge = RealtimeToolBridge(RealtimeVoiceConfig(), ask_agent=ask_agent)
+
+    await bridge.handle_tool_call(
+        provider_session,
+        RealtimeToolCall(
+            "start_agent_task",
+            {"prompt": "Build a website for the bakery", "title": "Bakery website"},
+            "call_start",
+        ),
+    )
+
+    payload = json.loads(provider_session.results[-1][1])
+    assert payload["task_id"].startswith("rt_")
+    assert payload["title"] == "Bakery website"
+    assert payload["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_realtime_tool_bridge_status_can_be_requested_by_title():
+    """Voice users should be able to ask about a task by its title, not raw id."""
+    from gateway.realtime_voice.tool_bridge import RealtimeToolBridge
+
+    release = asyncio.Event()
+
+    async def ask_agent(prompt: str) -> str:
+        await release.wait()
+        return f"finished {prompt}"
+
+    provider_session = _ToolResultSession()
+    bridge = RealtimeToolBridge(RealtimeVoiceConfig(), ask_agent=ask_agent)
+
+    await bridge.handle_tool_call(
+        provider_session,
+        RealtimeToolCall(
+            "start_agent_task",
+            {"prompt": "Clean stale files", "title": "Office cleanup"},
+            "call_start",
+        ),
+    )
+    started = json.loads(provider_session.results[-1][1])
+
+    await bridge.handle_tool_call(
+        provider_session,
+        RealtimeToolCall("get_agent_task_status", {"title": "office"}, "call_status"),
+    )
+
+    status = json.loads(provider_session.results[-1][1])
+    assert status["task_id"] == started["task_id"]
+    assert status["title"] == "Office cleanup"
+    assert status["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_realtime_tool_bridge_title_lookup_reports_ambiguity_instead_of_guessing():
+    """Ambiguous spoken title lookups must not return the wrong task."""
+    from gateway.realtime_voice.tool_bridge import RealtimeToolBridge
+
+    release = asyncio.Event()
+
+    async def ask_agent(prompt: str) -> str:
+        await release.wait()
+        return f"finished {prompt}"
+
+    provider_session = _ToolResultSession()
+    bridge = RealtimeToolBridge(RealtimeVoiceConfig(), ask_agent=ask_agent)
+
+    await bridge.handle_tool_call(
+        provider_session,
+        RealtimeToolCall("start_agent_task", {"prompt": "Build site A", "title": "Website draft"}, "call_a"),
+    )
+    await bridge.handle_tool_call(
+        provider_session,
+        RealtimeToolCall("start_agent_task", {"prompt": "Build site B", "title": "Website polish"}, "call_b"),
+    )
+
+    await bridge.handle_tool_call(
+        provider_session,
+        RealtimeToolCall("summarize_agent_task", {"title": "website"}, "call_summary"),
+    )
+
+    output = provider_session.results[-1][1].lower()
+    assert "multiple" in output or "ambiguous" in output
+    assert "website draft" in output
+    assert "website polish" in output
 
 
 @pytest.mark.asyncio

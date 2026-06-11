@@ -11439,16 +11439,20 @@ class GatewayRunner:
     async def _send_realtime_voice_task_update(self, adapter: Any, text_channel_id: str, update: dict[str, str]) -> None:
         """Post provider-neutral realtime task completion/status updates to text chat."""
         task_id = str(update.get("task_id") or "").strip()
+        title = str(update.get("title") or "").strip()
         status = str(update.get("status") or "").strip() or "updated"
         summary = str(update.get("summary") or "").strip()
-        if not task_id:
+        label = title or task_id
+        if not label:
             return
+        safe_label = label.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+        safe_label = safe_label[:120]
         safe_summary = summary.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
         safe_summary = safe_summary[:1200]
         if safe_summary:
-            message = f"**[Realtime task] {task_id} {status}:** {safe_summary}"
+            message = f"**[Realtime task] {safe_label} {status}:** {safe_summary}"
         else:
-            message = f"**[Realtime task] {task_id} {status}.**"
+            message = f"**[Realtime task] {safe_label} {status}.**"
         try:
             channel = adapter._client.get_channel(int(text_channel_id))
             if channel:
