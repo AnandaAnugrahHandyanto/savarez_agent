@@ -46,6 +46,12 @@ pub struct PythonVenvStagePlan {
     pub venv: PathBuf,
 }
 
+/// Native Python runtime stage execution plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PythonRuntimeStagePlan {
+    pub uv: PathBuf,
+}
+
 /// How a bootstrap stage is currently handled by the Rust orchestrator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StageExecutionMode {
@@ -233,14 +239,8 @@ where
 fn python_runtime_available(hermes_home: &Path) -> bool {
     let path_env = std::env::var_os("PATH").unwrap_or_default();
     let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
-    let uv = managed_tool_path(hermes_home, "uv");
-    let uv = if uv.is_file() {
-        uv
-    } else {
-        match find_executable_on_path("uv", path_env, &pathext) {
-            Some(path) => path,
-            None => return false,
-        }
+    let Ok(uv) = uv_tool_path(hermes_home, path_env, &pathext) else {
+        return false;
     };
     Command::new(uv)
         .args(["python", "find", "3.11"])
@@ -593,6 +593,59 @@ pub fn write_install_method_stamp(hermes_home: &Path) -> Result<serde_json::Valu
     }))
 }
 
+/// Build the native Python runtime stage plan.
+pub fn python_runtime_stage_plan<P>(
+    hermes_home: &Path,
+    path_env: P,
+    pathext: &str,
+) -> Result<PythonRuntimeStagePlan>
+where
+    P: AsRef<OsStr>,
+{
+    Ok(PythonRuntimeStagePlan {
+        uv: uv_tool_path(hermes_home, path_env, pathext)?,
+    })
+}
+
+/// Install the required Python runtime natively through uv.
+pub fn install_python_runtime_stage(hermes_home: &Path) -> Result<serde_json::Value> {
+    let path_env = std::env::var_os("PATH").unwrap_or_default();
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let plan = python_runtime_stage_plan(hermes_home, path_env, &pathext)?;
+    let status = Command::new(&plan.uv)
+        .args(["python", "install", "3.11"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .with_context(|| format!("running {}", plan.uv.display()))?;
+    if !status.success() {
+        return Err(anyhow!(
+            "uv python install failed with exit {:?}",
+            status.code()
+        ));
+    }
+    let output = Command::new(&plan.uv)
+        .args(["python", "find", "3.11"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .with_context(|| format!("locating Python with {}", plan.uv.display()))?;
+    if !output.status.success() {
+        return Err(anyhow!("uv python find failed after install"));
+    }
+    let python = String::from_utf8(output.stdout)
+        .context("decoding uv python find output")?
+        .trim()
+        .to_string();
+    if python.is_empty() {
+        return Err(anyhow!("uv python find returned an empty path after install"));
+    }
+    Ok(serde_json::json!({
+        "uv": plan.uv,
+        "python": python,
+    }))
+}
+
 /// Build the native Python virtual environment stage plan.
 pub fn python_venv_stage_plan<P>(
     install_root: &Path,
@@ -609,13 +662,7 @@ where
             install_root.display()
         ));
     }
-    let managed_uv = managed_tool_path(hermes_home, "uv");
-    let uv = if managed_uv.is_file() {
-        managed_uv
-    } else {
-        find_executable_on_path("uv", path_env, pathext)
-            .ok_or_else(|| anyhow!("uv is not available for venv creation"))?
-    };
+    let uv = uv_tool_path(hermes_home, path_env, pathext)?;
     let venv = install_root.join("venv");
     Ok(PythonVenvStagePlan {
         uv,
@@ -992,6 +1039,18 @@ fn managed_tool_path(hermes_home: &Path, name: &str) -> PathBuf {
     hermes_home.join("bin").join(filename)
 }
 
+fn uv_tool_path<P>(hermes_home: &Path, path_env: P, pathext: &str) -> Result<PathBuf>
+where
+    P: AsRef<OsStr>,
+{
+    let managed = managed_tool_path(hermes_home, "uv");
+    if managed.is_file() {
+        return Ok(managed);
+    }
+    find_executable_on_path("uv", path_env, pathext)
+        .ok_or_else(|| anyhow!("uv is not available"))
+}
+
 fn find_node_executable<P>(hermes_home: &Path, path_env: P, pathext: &str) -> Option<PathBuf>
 where
     P: AsRef<OsStr>,
@@ -1059,7 +1118,10 @@ fn node_version_string_satisfies_build(version: &str) -> bool {
 }
 
 fn stage_execution_mode(name: &str) -> StageExecutionMode {
-    if name.eq_ignore_ascii_case("repository") || name.eq_ignore_ascii_case("venv") {
+    if matches!(
+        name.to_ascii_lowercase().as_str(),
+        "repository" | "python" | "venv"
+    ) {
         return StageExecutionMode::NativeWithScriptFallback;
     }
     if matches!(
@@ -1146,6 +1208,7 @@ mod tests {
         let stages = vec![
             stage("repository"),
             stage("path"),
+            stage("python"),
             stage("uv"),
             stage("platform-sdks"),
             stage("node-deps"),
@@ -1153,25 +1216,28 @@ mod tests {
         ];
         let plan = build_stage_plan(&stages, false);
 
-        assert_eq!(plan.len(), 6);
+        assert_eq!(plan.len(), 7);
         assert_eq!(plan[0].name, "repository");
         assert_eq!(plan[0].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[0].script_fallback, true);
         assert_eq!(plan[1].name, "path");
         assert_eq!(plan[1].execution, StageExecutionMode::Native);
         assert_eq!(plan[1].script_fallback, false);
-        assert_eq!(plan[2].name, "uv");
-        assert_eq!(plan[2].execution, StageExecutionMode::ProbeThenScript);
-        assert_eq!(plan[2].rust_probe, true);
-        assert_eq!(plan[3].name, "platform-sdks");
+        assert_eq!(plan[2].name, "python");
+        assert_eq!(plan[2].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[2].script_fallback, true);
+        assert_eq!(plan[3].name, "uv");
         assert_eq!(plan[3].execution, StageExecutionMode::ProbeThenScript);
         assert_eq!(plan[3].rust_probe, true);
-        assert_eq!(plan[4].name, "node-deps");
+        assert_eq!(plan[4].name, "platform-sdks");
         assert_eq!(plan[4].execution, StageExecutionMode::ProbeThenScript);
         assert_eq!(plan[4].rust_probe, true);
-        assert_eq!(plan[5].name, "venv");
-        assert_eq!(plan[5].execution, StageExecutionMode::NativeWithScriptFallback);
-        assert_eq!(plan[5].script_fallback, true);
+        assert_eq!(plan[5].name, "node-deps");
+        assert_eq!(plan[5].execution, StageExecutionMode::ProbeThenScript);
+        assert_eq!(plan[5].rust_probe, true);
+        assert_eq!(plan[6].name, "venv");
+        assert_eq!(plan[6].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[6].script_fallback, true);
     }
 
     #[test]
@@ -1403,6 +1469,23 @@ mod tests {
         );
         assert!(python_stage_skip_result_with_probe(&python, || false).is_none());
         assert!(python_stage_skip_result_with_probe(&uv, || true).is_none());
+    }
+
+    #[test]
+    fn python_runtime_stage_plan_prefers_managed_uv() {
+        let root = std::env::temp_dir().join(format!("hermes-python-plan-{}", std::process::id()));
+        let hermes_home = root.join("home");
+        let path_tools = root.join("tools");
+        std::fs::create_dir_all(hermes_home.join("bin")).unwrap();
+        std::fs::create_dir_all(&path_tools).unwrap();
+        std::fs::write(hermes_home.join("bin").join("uv.exe"), b"managed uv").unwrap();
+        std::fs::write(path_tools.join("uv.exe"), b"path uv").unwrap();
+
+        let plan = python_runtime_stage_plan(&hermes_home, &path_tools, ".EXE").unwrap();
+
+        assert_eq!(plan.uv, hermes_home.join("bin").join("uv.exe"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

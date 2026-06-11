@@ -613,6 +613,8 @@ async fn run_bootstrap(
                 Some(crate::orchestrator::configure_unix_path_stage(&install_root))
             } else if stage.name.eq_ignore_ascii_case("complete") {
                 Some(crate::orchestrator::write_install_method_stamp(&hermes_home))
+            } else if stage.name.eq_ignore_ascii_case("python") {
+                Some(crate::orchestrator::install_python_runtime_stage(&hermes_home))
             } else if stage.name.eq_ignore_ascii_case("venv") {
                 Some(crate::orchestrator::create_python_venv_stage(
                     &install_root,
@@ -956,6 +958,7 @@ fn should_fallback_repository_archive(stage_name: &str, install_root: &std::path
 fn should_fallback_native_stage(stage_name: &str, install_root: &std::path::Path) -> bool {
     should_fallback_repository_archive(stage_name, install_root)
         || stage_name.eq_ignore_ascii_case("venv")
+        || stage_name.eq_ignore_ascii_case("python")
 }
 
 fn stage_script_extra_env(
@@ -1326,6 +1329,7 @@ mod tests {
         let install_root = root.join("hermes-agent");
 
         assert!(should_fallback_native_stage("venv", &install_root));
+        assert!(should_fallback_native_stage("python", &install_root));
         assert!(!should_fallback_native_stage("dependencies", &install_root));
 
         let _ = std::fs::remove_dir_all(&root);
