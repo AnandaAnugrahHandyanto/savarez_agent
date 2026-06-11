@@ -63,6 +63,9 @@ export type GatewayEventPayload = {
   prompt?: string
   // session.info mcp status
   mcp_servers?: unknown[]
+  // terminal.read.request (GUI agent reading the in-app terminal pane)
+  start?: number
+  count?: number
 }
 
 export function textPart(text: string): ChatMessagePart {

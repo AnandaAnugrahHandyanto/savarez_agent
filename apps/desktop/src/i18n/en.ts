@@ -145,7 +145,94 @@ export const en: Translations = {
     showRightSidebar: 'Show right sidebar',
     muteHaptics: 'Mute haptics',
     unmuteHaptics: 'Unmute haptics',
-    openSettings: 'Open settings'
+    openSettings: 'Open settings',
+    openKeybinds: 'Keyboard shortcuts'
+  },
+
+  keybinds: {
+    title: 'Keyboard shortcuts',
+    subtitle: open => `Click a shortcut to rebind it · ${open} reopens this panel.`,
+    rebind: 'Rebind',
+    reset: 'Reset to default',
+    resetAll: 'Reset all',
+    pressKey: 'Press a key…',
+    set: 'set',
+    conflictWith: label => `Also bound to “${label}”`,
+    categories: {
+      composer: 'Composer',
+      profiles: 'Profiles',
+      session: 'Session',
+      navigation: 'Navigation',
+      view: 'View'
+    },
+    actions: {
+      'keybinds.openPanel': 'Open keyboard shortcuts',
+      'nav.commandPalette': 'Open command palette',
+      'nav.commandCenter': 'Open command center',
+      'nav.settings': 'Open settings',
+      'nav.profiles': 'Open profiles',
+      'nav.skills': 'Open skills',
+      'nav.messaging': 'Open messaging',
+      'nav.artifacts': 'Open artifacts',
+      'nav.cron': 'Open scheduled jobs',
+      'nav.agents': 'Open agents',
+      'session.new': 'New session',
+      'session.next': 'Next session',
+      'session.prev': 'Previous session',
+      'session.slot.1': 'Switch to recent session 1',
+      'session.slot.2': 'Switch to recent session 2',
+      'session.slot.3': 'Switch to recent session 3',
+      'session.slot.4': 'Switch to recent session 4',
+      'session.slot.5': 'Switch to recent session 5',
+      'session.slot.6': 'Switch to recent session 6',
+      'session.slot.7': 'Switch to recent session 7',
+      'session.slot.8': 'Switch to recent session 8',
+      'session.slot.9': 'Switch to recent session 9',
+      'session.focusSearch': 'Search sessions',
+      'session.togglePin': 'Pin / unpin current session',
+      'composer.focus': 'Focus composer',
+      'composer.modelPicker': 'Open model picker',
+      'view.toggleSidebar': 'Toggle sessions sidebar',
+      'view.toggleRightSidebar': 'Toggle file browser',
+      'view.showFiles': 'Show file browser',
+      'view.showTerminal': 'Show terminal',
+      'view.terminalSelection': 'Send terminal selection to composer',
+      'view.closePreviewTab': 'Close preview tab',
+      'view.flipPanes': 'Swap sidebar sides',
+      'appearance.toggleMode': 'Toggle light / dark',
+      'profile.default': 'Switch to default profile',
+      'profile.switch.1': 'Switch to profile 1',
+      'profile.switch.2': 'Switch to profile 2',
+      'profile.switch.3': 'Switch to profile 3',
+      'profile.switch.4': 'Switch to profile 4',
+      'profile.switch.5': 'Switch to profile 5',
+      'profile.switch.6': 'Switch to profile 6',
+      'profile.switch.7': 'Switch to profile 7',
+      'profile.switch.8': 'Switch to profile 8',
+      'profile.switch.9': 'Switch to profile 9',
+      'profile.switch.10': 'Switch to profile 10',
+      'profile.switch.11': 'Switch to profile 11',
+      'profile.switch.12': 'Switch to profile 12',
+      'profile.switch.13': 'Switch to profile 13',
+      'profile.switch.14': 'Switch to profile 14',
+      'profile.switch.15': 'Switch to profile 15',
+      'profile.switch.16': 'Switch to profile 16',
+      'profile.switch.17': 'Switch to profile 17',
+      'profile.switch.18': 'Switch to profile 18',
+      'profile.next': 'Next profile',
+      'profile.prev': 'Previous profile',
+      'profile.toggleAll': 'Toggle all-profiles view',
+      'profile.create': 'Create profile',
+      'composer.send': 'Send message',
+      'composer.newline': 'Insert newline',
+      'composer.steer': 'Steer the running turn',
+      'composer.sendQueued': 'Send next queued turn',
+      'composer.mention': 'Reference files, folders, URLs',
+      'composer.slash': 'Slash command palette',
+      'composer.help': 'Quick help',
+      'composer.history': 'Cycle popover / history',
+      'composer.cancel': 'Close popover · cancel run'
+    }
   },
 
   language: {
@@ -214,7 +301,18 @@ export const en: Translations = {
       technical: 'Technical',
       technicalDesc: 'Include raw tool args/results and low-level details.',
       themeTitle: 'Theme',
-      themeDesc: 'Desktop palettes only. The selected mode is applied on top.'
+      themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
+      themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`,
+      installTitle: 'Install from VS Code',
+      installDesc:
+        'Paste a Marketplace extension id (e.g. dracula-theme.theme-dracula) to convert its color theme into a desktop palette.',
+      installPlaceholder: 'publisher.extension',
+      installButton: 'Install',
+      installing: 'Installing…',
+      installError: 'Could not install that theme.',
+      installed: name => `Installed “${name}”.`,
+      removeTheme: 'Remove theme',
+      importedBadge: 'Imported'
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
@@ -244,8 +342,7 @@ export const en: Translations = {
       minAgo: count => `${count} min ago`,
       hoursAgo: count => `${count} hours ago`,
       daysAgo: count => `${count} days ago`
-    }
-    ,
+    },
     config: {
       none: 'None',
       noneParen: '(none)',
@@ -292,7 +389,8 @@ export const en: Translations = {
       appliesTo: 'Applies to',
       allProfiles: 'All profiles',
       defaultConnection: 'Default connection for every profile that has no override of its own.',
-      profileConnection: profile => `Connection used only when “${profile}” is the active profile. Set it to Local to inherit the default.`,
+      profileConnection: profile =>
+        `Connection used only when “${profile}” is the active profile. Set it to Local to inherit the default.`,
       envOverrideTitle: 'Environment variables are controlling this desktop session.',
       envOverrideDesc:
         'Unset HERMES_DESKTOP_REMOTE_URL and HERMES_DESKTOP_REMOTE_TOKEN to use the saved setting below.',
@@ -316,8 +414,7 @@ export const en: Translations = {
       authNeedsPassword: 'This gateway uses a username and password. Sign in to authorize this desktop app.',
       authNeedsOauth: provider => `This gateway uses OAuth. Sign in with ${provider} to authorize this desktop app.`,
       tokenTitle: 'Session token',
-      tokenDesc:
-        'The dashboard session token used for REST and WebSocket access. Leave blank to keep the saved token.',
+      tokenDesc: 'The dashboard session token used for REST and WebSocket access. Leave blank to keep the saved token.',
       existingToken: value => `Existing token ${value}`,
       savedToken: 'saved',
       pasteSessionToken: 'Paste session token',
@@ -408,7 +505,8 @@ export const en: Translations = {
     providers: {
       connectAccount: 'Connect an account',
       haveApiKey: 'Have an API key instead?',
-      intro: 'Sign in with a subscription — no API key to copy. Hermes runs the browser sign-in for you, right here in the app.',
+      intro:
+        'Sign in with a subscription — no API key to copy. Hermes runs the browser sign-in for you, right here in the app.',
       connected: 'Connected',
       collapse: 'Collapse',
       connectAnother: 'Connect another provider',
@@ -431,7 +529,7 @@ export const en: Translations = {
       defaultDirTitle: 'Default project directory',
       defaultDirDesc:
         'New sessions start in this folder unless you pick another. Leave it unset to use your home directory.',
-      defaultDirUpdated: 'Default project directory updated',
+      defaultDirUpdated: 'Default project directory updated — start a new chat (Ctrl/⌘+N) for it to take effect',
       defaultsTo: label => `Defaults to ${label}.`,
       change: 'Change',
       choose: 'Choose',
@@ -464,7 +562,16 @@ export const en: Translations = {
       ready: 'Ready',
       nousIncluded: 'Included with a Nous subscription — sign in to Nous Portal to activate.',
       noApiKeyRequired: 'No API key required.',
-      postSetup: step => `This provider needs an extra setup step (${step}). Run it from the CLI with hermes tools for now.`
+      postSetupHint: step =>
+        `This backend needs a one-time install (${step}). Runs on this machine — may take a few minutes.`,
+      postSetupRun: 'Run setup',
+      postSetupRunning: 'Installing…',
+      postSetupStarting: 'Starting…',
+      postSetupCompleteTitle: 'Setup complete',
+      postSetupCompleteMessage: step => `${step} installed.`,
+      postSetupErrorTitle: 'Setup finished with errors',
+      postSetupErrorMessage: step => `Check the ${step} log.`,
+      postSetupFailed: step => `Failed to run ${step} setup`
     }
   },
 
@@ -539,6 +646,17 @@ export const en: Translations = {
     settings: 'Settings',
     changeTheme: 'Change theme...',
     changeColorMode: 'Change color mode...',
+    installTheme: {
+      title: 'Install theme...',
+      placeholder: 'Search the VS Code Marketplace...',
+      loading: 'Searching the Marketplace...',
+      error: 'Could not reach the Marketplace.',
+      empty: 'No matching themes.',
+      install: 'Install',
+      installing: 'Installing...',
+      installed: 'Installed',
+      installs: count => `${count} installs`
+    },
     settingsFields: 'Settings fields',
     mcpServers: 'MCP servers',
     archivedChats: 'Archived chats',
@@ -665,7 +783,10 @@ export const en: Translations = {
         label: 'Bot token',
         help: 'Create an application in the Discord Developer Portal, add a bot, then paste its token.'
       },
-      DISCORD_ALLOWED_USERS: { label: 'Allowed Discord user IDs', help: 'Recommended. Comma-separated Discord user IDs.' },
+      DISCORD_ALLOWED_USERS: {
+        label: 'Allowed Discord user IDs',
+        help: 'Recommended. Comma-separated Discord user IDs.'
+      },
       DISCORD_REPLY_TO_MODE: { label: 'Reply style', help: 'first, all, or off.' },
       DISCORD_ALLOW_ALL_USERS: {
         label: 'Allow all Discord users',
@@ -679,7 +800,10 @@ export const en: Translations = {
         label: 'Home channel name',
         help: 'Display name for the home channel in logs and status output.'
       },
-      BLUEBUBBLES_ALLOW_ALL_USERS: { label: 'Allow all iMessage users', help: 'When true, skip the BlueBubbles allowlist.' },
+      BLUEBUBBLES_ALLOW_ALL_USERS: {
+        label: 'Allow all iMessage users',
+        help: 'When true, skip the BlueBubbles allowlist.'
+      },
       MATTERMOST_ALLOW_ALL_USERS: { label: 'Allow all Mattermost users' },
       MATTERMOST_HOME_CHANNEL: { label: 'Home channel' },
       QQ_ALLOW_ALL_USERS: { label: 'Allow all QQ users' },
@@ -698,7 +822,10 @@ export const en: Translations = {
       SLACK_ALLOWED_USERS: { label: 'Allowed Slack user IDs', help: 'Recommended. Comma-separated Slack user IDs.' },
       MATTERMOST_URL: { label: 'Server URL', placeholder: 'https://mattermost.example.com' },
       MATTERMOST_TOKEN: { label: 'Bot token' },
-      MATTERMOST_ALLOWED_USERS: { label: 'Allowed user IDs', help: 'Recommended. Comma-separated Mattermost user IDs.' },
+      MATTERMOST_ALLOWED_USERS: {
+        label: 'Allowed user IDs',
+        help: 'Recommended. Comma-separated Mattermost user IDs.'
+      },
       MATRIX_HOMESERVER: { label: 'Homeserver URL', placeholder: 'https://matrix.org' },
       MATRIX_ACCESS_TOKEN: { label: 'Access token' },
       MATRIX_USER_ID: { label: 'Bot user ID', placeholder: '@hermes:example.org' },
@@ -801,8 +928,6 @@ export const en: Translations = {
   cron: {
     close: 'Close cron',
     search: 'Search cron jobs...',
-    refresh: 'Refresh cron jobs',
-    refreshing: 'Refreshing cron jobs',
     loading: 'Loading cron jobs...',
     states: {
       enabled: 'enabled',
@@ -855,9 +980,7 @@ export const en: Translations = {
     monthlyOnDayAt: (dayOfMonth, time) => `Monthly on day ${dayOfMonth} at ${time}`,
     topOfHour: 'At the top of every hour',
     everyHourAt: minute => `Every hour at :${minute}`,
-    active: (enabled, total) => `${enabled}/${total} active`,
     newCron: 'New cron',
-    createFirst: 'Create first cron',
     emptyDescNew:
       'Schedule a prompt to run on a cron expression. Hermes will run it and deliver results to the destination you pick.',
     emptyDescSearch: 'Try a broader search query.',
@@ -865,6 +988,11 @@ export const en: Translations = {
     emptyTitleSearch: 'No matches',
     last: 'Last:',
     next: 'Next:',
+    noRuns: 'No runs yet',
+    manage: 'Manage',
+    showRuns: 'Show runs',
+    hideRuns: 'Hide runs',
+    runHistory: 'Run history',
     actionsFor: title => `Actions for ${title}`,
     actionsTitle: 'Cron job actions',
     resume: 'Resume cron',
@@ -956,12 +1084,13 @@ export const en: Translations = {
     results: 'Results',
     pinned: 'Pinned',
     sessions: 'Sessions',
+    cronJobs: 'Cron jobs',
     groupAriaGrouped: 'Show sessions as a single list',
     groupAriaUngrouped: 'Group sessions by workspace',
     groupTitleGrouped: 'Ungroup sessions',
     groupTitleUngrouped: 'Group by workspace',
     allPinned: 'Everything here is pinned. Unpin a chat to show it in recents.',
-    shiftClickHint: 'Shift-click a chat to pin · drag to reorder',
+    shiftClickHint: 'Shift-click a chat to pin',
     noWorkspace: 'No workspace',
     newSessionIn: label => `New session in ${label}`,
     reorderWorkspace: label => `Reorder workspace ${label}`,
@@ -976,12 +1105,14 @@ export const en: Translations = {
       export: 'Export',
       rename: 'Rename',
       archive: 'Archive',
+      newWindow: 'New window',
       copyIdFailed: 'Could not copy session ID',
       actionsFor: title => `Actions for ${title}`,
       sessionActions: 'Session actions',
       sessionRunning: 'Session running',
       needsInput: 'Needs your input',
       waitingForAnswer: 'Waiting for your answer',
+      handoffOrigin: platform => `Handed off from ${platform}`,
       renamed: 'Renamed',
       renameFailed: 'Rename failed',
       renameTitle: 'Rename session',
@@ -1020,7 +1151,7 @@ export const en: Translations = {
     ],
     startVoice: 'Start voice conversation',
     queueMessage: 'Queue message',
-    steer: 'Steer the current run (⌘⏎)',
+    steer: 'Steer the current run',
     stop: 'Stop',
     send: 'Send',
     speaking: 'Speaking',
@@ -1057,8 +1188,8 @@ export const en: Translations = {
       '/': 'slash command palette',
       '?': 'this quick help (delete to dismiss)',
       Enter: 'send · Shift+Enter for newline',
-      'Cmd/Ctrl+K': 'send next queued turn',
-      'Cmd/Ctrl+L': 'redraw',
+      'Cmd/Ctrl+Shift+K': 'send next queued turn',
+      'Cmd/Ctrl+/': 'all keyboard shortcuts',
       Esc: 'close popover · cancel run',
       '↑ / ↓': 'cycle popover / history'
     },
@@ -1139,9 +1270,13 @@ export const en: Translations = {
     unsupportedMessage: 'This version of Hermes can’t update itself from inside the app.',
     connectionRetry: 'Check your connection and try again.',
     latestBody: 'You’re running the latest version.',
+    latestBodyBackend: 'The backend is running the latest version.',
     allSetTitle: 'You’re all set',
     availableTitle: 'New update available',
     availableBody: 'A new version of Hermes is ready to install.',
+    availableTitleBackend: 'Backend update available',
+    availableBodyBackend: 'A newer version of the connected Hermes backend is ready to install.',
+    availableBodyNoChangelog: 'A newer version is ready. Release notes aren’t available for this install type.',
     updateNow: 'Update now',
     maybeLater: 'Maybe later',
     moreChanges: count => `+ ${count} more change${count === 1 ? '' : 's'} included.`,
@@ -1152,10 +1287,19 @@ export const en: Translations = {
     copied: 'Copied',
     done: 'Done',
     applyingBody: 'The Hermes updater will take over in its own window and reopen Hermes when it’s done.',
+    applyingBodyBackend: 'The remote backend is applying the update and will restart. Hermes reconnects automatically when it’s back.',
     applyingClose: 'Hermes will close to apply the update.',
     errorTitle: 'Update didn’t finish',
     errorBody: 'No worries — nothing was lost. You can try again now.',
-    notNow: 'Not now'
+    notNow: 'Not now',
+    applyStatus: {
+      preparing: 'Updating backend…',
+      pulling: 'Backend updating…',
+      restarting: 'Backend restarting to load the update…',
+      notAvailable: 'Update not available for this backend.',
+      failed: 'Backend update failed.',
+      noReturn: 'Backend didn’t come back online. The update may not have completed — check the backend host.'
+    }
   },
 
   install: {
@@ -1212,7 +1356,10 @@ export const en: Translations = {
     featuredPitch: 'One subscription, 300+ frontier models — the recommended way to run Hermes',
     openRouterPitch: 'One key, hundreds of models — a solid default',
     apiKeyOptions: {
-      openrouter: { short: 'one key, many models', description: 'Hosts hundreds of models behind a single key. Good default for new installs.' },
+      openrouter: {
+        short: 'one key, many models',
+        description: 'Hosts hundreds of models behind a single key. Good default for new installs.'
+      },
       openai: { short: 'GPT-class models', description: 'Direct access to OpenAI models.' },
       gemini: { short: 'Gemini models', description: 'Direct access to Google Gemini models.' },
       xai: { short: 'Grok models', description: 'Direct access to xAI Grok models.' },
@@ -1236,7 +1383,7 @@ export const en: Translations = {
     },
     startingSignIn: provider => `Starting sign-in for ${provider}...`,
     verifyingCode: provider => `Verifying your code with ${provider}...`,
-    connectedProvider: provider => `${provider} connected.`,
+    connectedProvider: provider => `${provider} connected`,
     connectedPicking: provider => `${provider} connected. Picking a default model...`,
     signInFailed: 'Sign-in failed. Try again.',
     pickDifferentProvider: 'Pick a different provider',
@@ -1262,7 +1409,7 @@ export const en: Translations = {
     free: 'Free',
     price: (input, output) => `${input} in / ${output} out per Mtok`,
     change: 'Change',
-    startChatting: 'Start chatting',
+    startChatting: 'Begin',
     docs: provider => `${provider} docs`
   },
 
@@ -1338,10 +1485,15 @@ export const en: Translations = {
       updateInProgress: 'Update in progress',
       commitsBehind: (count, branch) => `${count} commit${count === 1 ? '' : 's'} behind ${branch}`,
       desktopVersion: version => `Hermes Desktop v${version}`,
+      backendVersion: version => `Backend v${version}`,
+      clientLabel: version => `client v${version}`,
+      backendLabel: version => `backend v${version}`,
       commit: sha => `commit ${sha}`,
       branch: branch => `branch ${branch}`,
       closeCommandCenter: 'Close Command Center',
       openCommandCenter: 'Open Command Center',
+      showTerminal: 'Show terminal',
+      hideTerminal: 'Hide terminal',
       gateway: 'Gateway',
       gatewayReady: 'ready',
       gatewayNeedsSetup: 'needs setup',
@@ -1362,8 +1514,8 @@ export const en: Translations = {
       contextUsage: 'Context usage',
       session: 'Session',
       runtimeSessionElapsed: 'Runtime session elapsed',
-      yoloOn: 'YOLO on — auto-approving dangerous commands. Click to turn off.',
-      yoloOff: 'YOLO off — click to auto-approve dangerous commands.',
+      yoloOn: 'YOLO on — auto-approving dangerous commands. Click to turn off. Shift+click toggles it globally.',
+      yoloOff: 'YOLO off — click to auto-approve dangerous commands. Shift+click toggles it globally.',
       modelNone: 'none',
       noModel: 'no model',
       switchModel: 'Switch model',
@@ -1397,8 +1549,7 @@ export const en: Translations = {
     tryAgain: 'Try again',
     loadingTree: 'Loading file tree',
     loadingFiles: 'Loading files',
-    terminalFocus: 'Focus terminal view',
-    terminalSplit: 'Return to split view',
+    terminalHide: 'Hide terminal',
     addToChat: 'Add to chat'
   },
 
@@ -1459,8 +1610,7 @@ export const en: Translations = {
       showConsole: 'Show preview console',
       hideDevTools: 'Hide preview DevTools',
       openDevTools: 'Open preview DevTools',
-      finishedRestarting: message =>
-        `Hermes finished restarting the preview server${message ? `: ${message}` : ''}`,
+      finishedRestarting: message => `Hermes finished restarting the preview server${message ? `: ${message}` : ''}`,
       failedRestarting: message => `Server restart failed: ${message}`,
       unknownError: 'unknown error',
       restartedTitle: 'Preview server restarted',
@@ -1504,7 +1654,8 @@ export const en: Translations = {
       restoreCheckpoint: 'Restore checkpoint',
       restoreNext: 'Restore next checkpoint',
       goForward: 'Go forward',
-      sendEdited: 'Send edited message'
+      sendEdited: 'Send edited message',
+      attachingFile: 'Attaching…'
     },
     approval: {
       gatewayDisconnected: 'Hermes gateway is not connected',
@@ -1627,7 +1778,14 @@ export const en: Translations = {
     clipboard: 'Clipboard',
     noClipboardImage: 'No image found in clipboard',
     clipboardPasteFailed: 'Clipboard paste failed',
-    dropFiles: 'Drop files'
+    dropFiles: 'Drop files',
+    handoff: {
+      pickPlatform: 'Choose a destination',
+      success: platform => `Handed off to ${platform}. Resume here anytime.`,
+      systemNote: platform => `↻ Handed off to ${platform} — resume here anytime.`,
+      failed: error => `Handoff failed: ${error}`,
+      timedOut: 'Timed out waiting for the gateway. Is `hermes gateway` running?'
+    }
   },
 
   errors: {
