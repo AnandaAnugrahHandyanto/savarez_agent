@@ -125,6 +125,13 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
             cron_tick(verbose=False, sync=False)
         except Exception as e:
             _log.debug("Desktop cron tick error: %s", e)
+
+        # Desktop-managed gateway self-healing (same loop, same interval).
+        try:
+            _gateway_health_tick()
+        except Exception as e:
+            _log.debug("Gateway health tick error: %s", e)
+
         stop_event.wait(interval)
 
 
@@ -2099,6 +2106,11 @@ def _write_gateway_state(state: Dict[str, Any]) -> None:
 
 
 _DESKTOP_MANAGED_FLAG = ".desktop_managed"
+_GATEWAY_MAX_CRASHES_PER_HOUR = 3
+
+# Gateway crash-rate limiting — in-memory window, resets on process restart.
+_gateway_crash_count = 0
+_gateway_crash_window_start = 0.0  # time.monotonic()
 
 
 def _write_desktop_managed_flag(managed: bool) -> None:
@@ -2134,6 +2146,58 @@ def _read_desktop_managed_flag() -> bool:
     except Exception:
         pass
     return False
+
+
+def _gateway_health_tick() -> None:
+    """Check whether the Desktop-managed gateway needs a restart.
+
+    This runs inline in the Desktop cron ticker loop (every 60 s) so that
+    a crashed gateway recovers without a manual intervention or external
+    watchdog.  Only acts when ``.desktop_managed`` is ``True`` — a user
+    who stops the gateway through the Desktop toggle clears the flag and
+    the health-check becomes a no-op.
+    """
+    import time
+
+    if not _read_desktop_managed_flag():
+        return
+
+    # Is the gateway already running?  Short-circuit — nothing to do.
+    try:
+        from gateway.status import get_running_pid
+
+        existing_pid = get_running_pid(cleanup_stale=False)
+    except Exception:
+        return  # can't determine; skip this tick
+
+    if existing_pid is not None:
+        return  # healthy
+
+    # Gateway is dead — honour the crash-rate limit.
+    global _gateway_crash_count, _gateway_crash_window_start
+    now = time.monotonic()
+    if now - _gateway_crash_window_start > 3600:
+        _gateway_crash_count = 0
+        _gateway_crash_window_start = now
+
+    if _gateway_crash_count >= _GATEWAY_MAX_CRASHES_PER_HOUR:
+        _log.warning(
+            "Gateway health-check: rate-limited (%d crashes in the last hour), "
+            "not restarting",
+            _gateway_crash_count,
+        )
+        return
+
+    _gateway_crash_count += 1
+    _log.info(
+        "Gateway health-check: restarting (crash %d/%d this hour)",
+        _gateway_crash_count,
+        _GATEWAY_MAX_CRASHES_PER_HOUR,
+    )
+    try:
+        _spawn_hermes_action(["gateway", "start"], "gateway-start")
+    except Exception:
+        _log.exception("Gateway health-check: restart spawn failed")
 
 
 def _spawn_gateway_restart() -> Tuple[subprocess.Popen, bool]:
