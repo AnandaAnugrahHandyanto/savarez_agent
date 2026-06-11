@@ -34,34 +34,46 @@ import {
   Pencil,
   Check,
   X,
-  MessageSquare,
+  // --- Icons matching App.tsx ICON_MAP ---
+  Activity,
   BarChart3,
+  Clock,
   Cpu,
   FileText,
-  Clock,
-  Package,
-  Plug,
+  FolderOpen,
   KeyRound,
-  Shield,
-  Users,
+  MessageSquare,
+  Package,
   Settings,
+  Puzzle,
+  Sparkles,
+  Terminal,
   Globe,
   Database,
-  Activity,
-  Zap,
-  Star,
-  Heart,
-  Terminal,
-  Code,
-  BookOpen,
+  Shield,
+  Users,
   Wrench,
-  Radio,
-  Sparkles,
+  Zap,
+  Heart,
+  Star,
+  Code,
   Eye,
+  // --- Additional icons in the same style ---
+  BookOpen,
   Download,
-  Webhook,
+  Radio,
   RotateCw,
   ShieldCheck,
+  Webhook,
+  Server,
+  Lock,
+  Bell,
+  Calendar,
+  Search,
+  Layers,
+  Target,
+  Compass,
+  Flame,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -78,14 +90,19 @@ interface ItemCustomization {
   icon?: string;
 }
 
-/* ── Icon registry ──────────────────────────────────────────────── */
+/* ── Icon registry — matches App.tsx ICON_MAP + extras ──────────── */
 
 const ICON_REGISTRY: Record<string, LucideIcon> = {
-  MessageSquare, BarChart3, Cpu, FileText, Clock,
-  Package, Plug, KeyRound, Shield, Users, Settings,
-  Globe, Database, Activity, Zap, Star, Heart,
-  Terminal, Code, BookOpen, Wrench, Radio, Sparkles,
-  Eye, Download, Webhook, RotateCw, ShieldCheck,
+  // Core (same as App.tsx ICON_MAP)
+  Activity, BarChart3, Clock, Cpu, FileText, FolderOpen,
+  KeyRound, MessageSquare, Package, Settings, Puzzle,
+  Sparkles, Terminal, Globe, Database, Shield, Users,
+  Wrench, Zap, Heart, Star, Code, Eye,
+  // Additional imports from App.tsx not in ICON_MAP
+  BookOpen, Download, Radio, RotateCw, ShieldCheck, Webhook,
+  // New additions (same lucide style)
+  Server, Lock, Bell, Calendar, Search, Layers,
+  Target, Compass, Flame,
 };
 
 const ICON_NAMES = Object.keys(ICON_REGISTRY);
