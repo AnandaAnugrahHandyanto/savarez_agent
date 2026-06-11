@@ -532,6 +532,22 @@ async fn run_bootstrap(
             continue;
         }
 
+        if let Some(frame) =
+            crate::orchestrator::satisfied_tool_stage_skip_result_from_env(stage, &hermes_home)
+        {
+            emit_event(
+                &app,
+                BootstrapEvent::Stage {
+                    name: stage.name.clone(),
+                    state: StageState::Skipped,
+                    duration_ms: Some(started.elapsed().as_millis() as u64),
+                    result: Some(frame),
+                    error: None,
+                },
+            );
+            continue;
+        }
+
         let native_stage_result = {
             if stage.name.eq_ignore_ascii_case("bootstrap-marker") {
                 Some(crate::orchestrator::write_bootstrap_marker(

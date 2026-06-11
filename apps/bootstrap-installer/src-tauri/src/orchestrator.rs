@@ -114,6 +114,52 @@ pub fn interactive_stage_skip_result(stage: &StageInfo) -> Option<crate::events:
     })
 }
 
+/// Return a Rust-side skip result for tool stages already satisfied locally.
+pub fn satisfied_tool_stage_skip_result<P>(
+    stage: &StageInfo,
+    hermes_home: &Path,
+    path_env: P,
+    pathext: &str,
+) -> Option<crate::events::StageResultPayload>
+where
+    P: AsRef<OsStr>,
+{
+    let available = match stage.name.as_str() {
+        name if name.eq_ignore_ascii_case("uv") => {
+            managed_tool_path(hermes_home, "uv").is_file()
+                || find_executable_on_path("uv", path_env.as_ref(), pathext).is_some()
+        }
+        name if name.eq_ignore_ascii_case("git") => {
+            find_executable_on_path("git", path_env.as_ref(), pathext).is_some()
+        }
+        name if name.eq_ignore_ascii_case("system-packages") => {
+            find_executable_on_path("rg", path_env.as_ref(), pathext).is_some()
+                && find_executable_on_path("ffmpeg", path_env.as_ref(), pathext).is_some()
+        }
+        _ => false,
+    };
+    if !available {
+        return None;
+    }
+    Some(crate::events::StageResultPayload {
+        stage: stage.name.clone(),
+        ok: true,
+        skipped: true,
+        reason: Some("required tool already available".to_string()),
+        data: None,
+    })
+}
+
+/// Return a Rust-side skip result for tool stages satisfied in this process.
+pub fn satisfied_tool_stage_skip_result_from_env(
+    stage: &StageInfo,
+    hermes_home: &Path,
+) -> Option<crate::events::StageResultPayload> {
+    let path_env = std::env::var_os("PATH").unwrap_or_default();
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    satisfied_tool_stage_skip_result(stage, hermes_home, path_env, &pathext)
+}
+
 /// Return a compact log line for the current Rust orchestration coverage.
 pub fn summarize_plan(report: &InstallStateReport, plan: &[PlannedStage]) -> String {
     let tool_summary = report
@@ -685,6 +731,15 @@ fn probe_tool(name: &str) -> ToolProbe {
     }
 }
 
+fn managed_tool_path(hermes_home: &Path, name: &str) -> PathBuf {
+    let filename = if cfg!(target_os = "windows") {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
+    hermes_home.join("bin").join(filename)
+}
+
 fn stage_execution_mode(name: &str) -> StageExecutionMode {
     if name.eq_ignore_ascii_case("repository") {
         return StageExecutionMode::NativeWithScriptFallback;
@@ -905,6 +960,66 @@ mod tests {
         );
         assert!(skipped.data.is_none());
         assert!(interactive_stage_skip_result(&path).is_none());
+    }
+
+    #[test]
+    fn satisfied_tool_stage_skip_result_skips_only_when_tools_are_present() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-tool-skip-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+        let tools = root.join("tools");
+        std::fs::create_dir_all(hermes_home.join("bin")).unwrap();
+        std::fs::create_dir_all(&tools).unwrap();
+        std::fs::write(hermes_home.join("bin").join("uv.exe"), b"uv").unwrap();
+        std::fs::write(tools.join("git.exe"), b"git").unwrap();
+        std::fs::write(tools.join("rg.exe"), b"rg").unwrap();
+
+        let uv = stage_info("uv", "Installing uv package manager", "prereqs", false);
+        let git = stage_info("git", "Installing Git", "prereqs", false);
+        let system_packages = stage_info(
+            "system-packages",
+            "Installing ripgrep and ffmpeg",
+            "prereqs",
+            false,
+        );
+        let venv = stage_info(
+            "venv",
+            "Creating Python virtual environment",
+            "install",
+            false,
+        );
+
+        let uv_result = satisfied_tool_stage_skip_result(&uv, &hermes_home, &tools, ".EXE").unwrap();
+        let git_result = satisfied_tool_stage_skip_result(&git, &hermes_home, &tools, ".EXE").unwrap();
+
+        assert_eq!(uv_result.stage, "uv");
+        assert_eq!(uv_result.ok, true);
+        assert_eq!(uv_result.skipped, true);
+        assert_eq!(
+            uv_result.reason.as_deref(),
+            Some("required tool already available")
+        );
+        assert_eq!(git_result.stage, "git");
+        assert!(satisfied_tool_stage_skip_result(
+            &system_packages,
+            &hermes_home,
+            &tools,
+            ".EXE"
+        )
+        .is_none());
+        std::fs::write(tools.join("ffmpeg.exe"), b"ffmpeg").unwrap();
+        assert!(satisfied_tool_stage_skip_result(
+            &system_packages,
+            &hermes_home,
+            &tools,
+            ".EXE"
+        )
+        .is_some());
+        assert!(satisfied_tool_stage_skip_result(&venv, &hermes_home, &tools, ".EXE").is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
