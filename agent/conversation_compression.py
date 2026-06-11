@@ -425,12 +425,17 @@ def compress_context(
             except Exception as _rel_err:
                 logger.debug("compression lock release failed: %s", _rel_err)
 
-    # Notify external memory provider before compression discards context
+    # Notify external memory provider before compression discards context.
+    # The return value contains provider-extracted insights that the
+    # compressor should include in the summary prompt so they survive
+    # compaction.  Stored on the compressor instance; cleared after use.
+    _pre_compress_insights: str = ""
     if agent._memory_manager:
         try:
-            agent._memory_manager.on_pre_compress(messages)
+            _pre_compress_insights = agent._memory_manager.on_pre_compress(messages) or ""
         except Exception:
             pass
+    agent.context_compressor._pre_compress_insights = _pre_compress_insights
 
     try:
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)

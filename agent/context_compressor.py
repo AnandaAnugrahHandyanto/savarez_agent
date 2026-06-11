@@ -1234,6 +1234,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self,
         turns_to_summarize: List[Dict[str, Any]],
         focus_topic: Optional[str] = None,
+        provider_insights: str = "",
     ) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
@@ -1262,6 +1263,16 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
+
+        # Memory-provider insights captured before compression.  These are
+        # provider-extracted key facts from messages about to be discarded.
+        _insights = provider_insights.strip()
+        _insights_section = ""
+        if _insights:
+            _insights_section = (
+                "\n\nMEMORY PROVIDER INSIGHTS (extracted from messages about to "
+                "be compacted — preserve these in the summary):\n" + _insights
+            )
 
         # Current date for temporal anchoring (see ## Temporal Anchoring below).
         # Date-only granularity matches system_prompt.py:337 (PR #20451) and the
@@ -1397,7 +1408,7 @@ PREVIOUS SUMMARY:
 {self._previous_summary}
 
 NEW TURNS TO INCORPORATE:
-{content_to_summarize}
+{content_to_summarize}{_insights_section}
 
 Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
 
@@ -1409,7 +1420,7 @@ Update the summary using this exact structure. PRESERVE all existing information
 Create a structured checkpoint summary for the conversation after earlier turns are compacted. The summary should preserve enough detail for continuity without re-reading the original turns.
 
 TURNS TO SUMMARIZE:
-{content_to_summarize}
+{content_to_summarize}{_insights_section}
 
 Use this exact structure:
 
@@ -1525,7 +1536,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 else:
                     _reason = "timed out"
                 self._fallback_to_main_for_compression(e, _reason)
-                return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)  # retry immediately
+                return self._generate_summary(turns_to_summarize, focus_topic=focus_topic, provider_insights=provider_insights)  # retry immediately
 
             # Unknown-error best-effort retry on main model.  Losing N turns of
             # context is almost always worse than one extra summary attempt, so
@@ -1542,7 +1553,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 and not getattr(self, "_summary_model_fallen_back", False)
             ):
                 self._fallback_to_main_for_compression(e, "failed")
-                return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+                return self._generate_summary(turns_to_summarize, focus_topic=focus_topic, provider_insights=provider_insights)
 
             # Transient errors (timeout, rate limit, network, JSON decode,
             # streaming premature-close) — shorter cooldown for JSON decode and
@@ -1942,6 +1953,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # this, /compress would silently no-op for 30-60s after a failure.
         if force and self._summary_failure_cooldown_until > 0.0:
             self._summary_failure_cooldown_until = 0.0
+
+        # Capture and clear provider insights — they are consumed exactly
+        # once per compress() call to avoid stale data on re-entry.
+        _insights = getattr(self, "_pre_compress_insights", "").strip()
+        self._pre_compress_insights = ""
+
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
@@ -2037,7 +2054,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             )
 
         # Phase 3: Generate structured summary
-        summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+        summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic, provider_insights=_insights)
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):

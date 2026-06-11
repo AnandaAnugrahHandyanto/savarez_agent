@@ -2183,3 +2183,164 @@ class TestPreflightSentinelGuard:
         compressor.last_prompt_tokens = 50_000
         result = self._seed(compressor.last_prompt_tokens, 10_000)
         assert result == 50_000
+
+
+class TestProviderInsightsInCompression:
+    """Verify that memory-provider on_pre_compress() return values are
+    included in the compression summary prompt (#43558)."""
+
+    @pytest.fixture()
+    def compressor(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=2,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+            return c
+
+    @staticmethod
+    def _make_messages(n=10):
+        """Generate enough messages to exceed the compression threshold."""
+        msgs = [{"role": "system", "content": "You are a helpful assistant."}]
+        for i in range(n):
+            msgs.append({"role": "user", "content": f"question {i} " + "x" * 80})
+            msgs.append({"role": "assistant", "content": f"answer {i} " + "y" * 80})
+        return msgs
+
+    def test_insights_injected_into_prompt(self, compressor):
+        """Provider insights should appear in the summarizer prompt."""
+        captured_prompts = []
+
+        def fake_call_llm(**kwargs):
+            captured_prompts.append(kwargs["messages"][0]["content"])
+            return '{"summary": "## Summary\nTest summary content."}'
+
+        compressor._previous_summary = None
+        compressor._summary_failure_cooldown_until = 0.0
+
+        messages = self._make_messages(6)
+
+        with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm):
+            compressor._generate_summary(
+                messages,
+                provider_insights="User prefers Python over JavaScript.",
+            )
+        assert captured_prompts, "Expected call_llm to be called"
+        assert "MEMORY PROVIDER INSIGHTS" in captured_prompts[0]
+        assert "User prefers Python over JavaScript." in captured_prompts[0]
+
+    def test_no_insights_section_when_empty(self, compressor):
+        """When provider_insights is empty, no insights section in prompt."""
+        captured_prompts = []
+
+        def fake_call_llm(**kwargs):
+            captured_prompts.append(kwargs["messages"][0]["content"])
+            return '{"summary": "## Summary\nTest summary content."}'
+
+        compressor._previous_summary = None
+        compressor._summary_failure_cooldown_until = 0.0
+
+        messages = self._make_messages(6)
+
+        with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm):
+            compressor._generate_summary(messages, provider_insights="")
+        assert captured_prompts
+        assert "MEMORY PROVIDER INSIGHTS" not in captured_prompts[0]
+
+    def test_insights_in_iterative_update(self, compressor):
+        """Provider insights should appear in iterative update prompts too."""
+        captured_prompts = []
+
+        def fake_call_llm(**kwargs):
+            captured_prompts.append(kwargs["messages"][0]["content"])
+            return '{"summary": "## Summary\nUpdated summary content."}'
+
+        compressor._previous_summary = "Previous summary here."
+        compressor._summary_failure_cooldown_until = 0.0
+
+        messages = self._make_messages(6)
+
+        with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm):
+            compressor._generate_summary(
+                messages,
+                provider_insights="Key insight from memory provider.",
+            )
+        assert captured_prompts
+        assert "MEMORY PROVIDER INSIGHTS" in captured_prompts[0]
+        assert "Key insight from memory provider." in captured_prompts[0]
+
+    def test_insights_cleared_after_compress(self, compressor):
+        """_pre_compress_insights should be cleared after compress() returns."""
+        compressor._pre_compress_insights = "stale insights from prior call"
+
+        with patch.object(compressor, "_generate_summary", return_value="## Summary\n" + "x" * 200):
+            messages = self._make_messages(6)
+            compressor.compress(messages, current_tokens=50000)
+
+        assert compressor._pre_compress_insights == ""
+
+    def test_insights_passed_to_generate_summary(self, compressor):
+        """compress() should pass captured insights to _generate_summary."""
+        compressor._pre_compress_insights = "Important fact from memory."
+
+        captured_kwargs = {}
+
+        def spy_generate(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return "## Summary\n" + "x" * 200
+
+        with patch.object(compressor, "_generate_summary", side_effect=spy_generate):
+            messages = self._make_messages(6)
+            compressor.compress(messages, current_tokens=50000)
+
+        assert captured_kwargs.get("provider_insights") == "Important fact from memory."
+
+    def test_whitespace_only_insights_ignored(self, compressor):
+        """Whitespace-only insights should not produce an insights section."""
+        captured_prompts = []
+
+        def fake_call_llm(**kwargs):
+            captured_prompts.append(kwargs["messages"][0]["content"])
+            return '{"summary": "## Summary\nTest summary content."}'
+
+        compressor._previous_summary = None
+        compressor._summary_failure_cooldown_until = 0.0
+
+        messages = self._make_messages(6)
+
+        with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm):
+            compressor._generate_summary(messages, provider_insights="   \n  ")
+        assert captured_prompts
+        assert "MEMORY PROVIDER INSIGHTS" not in captured_prompts[0]
+
+    def test_insights_survive_retry(self, compressor):
+        """Insights should be passed through on retry after provider fallback."""
+        call_count = [0]
+        captured_prompts = []
+
+        def fake_call_llm(**kwargs):
+            call_count[0] += 1
+            captured_prompts.append(kwargs["messages"][0]["content"])
+            if call_count[0] == 1:
+                raise Exception("provider error")
+            return '{"summary": "## Summary\nRecovered summary."}'
+
+        compressor._previous_summary = None
+        compressor._summary_failure_cooldown_until = 0.0
+        # Configure a summary model so fallback path is exercised
+        compressor.summary_model = "aux/model"
+        compressor.provider = "test-provider"
+        compressor._summary_model_fallen_back = False
+
+        messages = self._make_messages(6)
+
+        with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm):
+            compressor._generate_summary(
+                messages,
+                provider_insights="Insight that must survive retry.",
+            )
+        # At least one prompt should contain the insights
+        assert any("Insight that must survive retry." in p for p in captured_prompts)
