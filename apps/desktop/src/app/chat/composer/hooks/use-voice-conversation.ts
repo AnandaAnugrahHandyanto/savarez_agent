@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notify, notifyError } from '@/store/notifications'
+import { getHermesConfig } from '@/hermes'
 
 import { useMicRecorder } from './use-mic-recorder'
 
@@ -47,6 +48,7 @@ export function useVoiceConversation({
   const busyRef = useRef(busy)
   const statusRef = useRef<ConversationStatus>('idle')
   const wasEnabledRef = useRef(enabled)
+  const autoTtsRef = useRef<boolean | null>(null)
 
   useEffect(() => {
     enabledRef.current = enabled
@@ -218,6 +220,25 @@ export function useVoiceConversation({
   }, [handle, handleTurn, onFatalError])
 
   const speak = useCallback(async (text: string) => {
+    // Read auto_tts config once and cache it
+    if (autoTtsRef.current === null) {
+      try {
+        const config = await getHermesConfig()
+        autoTtsRef.current = config.voice?.auto_tts !== false
+      } catch {
+        autoTtsRef.current = true
+      }
+    }
+
+    if (!autoTtsRef.current) {
+      // TTS disabled — skip speech, but keep conversation moving
+      if (enabledRef.current) {
+        pendingStartRef.current = true
+      }
+      setStatus('idle')
+      return
+    }
+
     setStatus('speaking')
 
     try {
