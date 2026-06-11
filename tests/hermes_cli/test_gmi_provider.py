@@ -89,7 +89,7 @@ class TestGmiModelCatalog:
             "hermes_cli.auth.resolve_api_key_provider_credentials",
             lambda provider_id: {
                 "provider": provider_id,
-                "api_key": "gmi-live-key",
+                "api_key": "***",
                 "base_url": "https://api.gmi-serving.com/v1",
                 "source": "GMI_API_KEY",
             },
@@ -112,7 +112,7 @@ class TestGmiModelCatalog:
             "hermes_cli.auth.resolve_api_key_provider_credentials",
             lambda provider_id: {
                 "provider": provider_id,
-                "api_key": "gmi-live-key",
+                "api_key": "***",
                 "base_url": "https://api.gmi-serving.com/v1",
                 "source": "GMI_API_KEY",
             },
@@ -150,7 +150,7 @@ class TestGmiDoctor:
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
         (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
-        (home / ".env").write_text("GMI_API_KEY=***\n", encoding="utf-8")
+        (home / ".env").write_text("GMI_API_KEY=*** encoding="utf-8")
         project = tmp_path / "project"
         project.mkdir(exist_ok=True)
 
@@ -319,7 +319,7 @@ class TestGmiMainFlow:
         recorded: dict[str, str] = {}
 
         monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda *args, **kwargs: None)
-        monkeypatch.setattr("builtins.input", lambda *args: "n")
+        monkeypatch.setattr("builtins.input", lambda *args: "")
 
         def fake_prompt_provider_choice(choices, default=0):
             return next(i for i, label in enumerate(choices) if label.startswith("GMI Cloud"))
