@@ -271,7 +271,15 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
-TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek")
+# minimax: M2.7 and M3 ship with strong reasoning but weak tool-persistence
+# out of the box — they tend to stop the turn after a one-sentence plan
+# ("I'll check the port") instead of issuing the tool call.  Triggered
+# the same fix as the OpenAI/Google/Qwen families above.  Matched
+# case-insensitively as a substring of agent.model.
+TOOL_USE_ENFORCEMENT_MODELS = (
+    "gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek",
+    "minimax",
+)
 
 # Universal "finish the job" guidance — applied to ALL models, not gated
 # by model family.  Addresses two cross-model failure modes:
@@ -885,6 +893,22 @@ def build_environment_hints() -> str:
                 f"`uname -a && whoami && pwd`."
             )
 
+    # Hermes desktop GUI — any agent running under the desktop app should know
+    # it. HERMES_DESKTOP marks the backend powering the chat; HERMES_DESKTOP_TERMINAL
+    # marks a hermes launched in the embedded terminal pane. Both set by main.cjs.
+    _truthy = ("1", "true", "yes")
+    _in_desktop = (os.getenv("HERMES_DESKTOP") or "").strip().lower() in _truthy
+    _in_desktop_term = (os.getenv("HERMES_DESKTOP_TERMINAL") or "").strip().lower() in _truthy
+    if _in_desktop or _in_desktop_term:
+        _desktop_hint = "Runtime surface: you're running inside the Hermes desktop GUI app."
+        if _in_desktop_term:
+            _desktop_hint += (
+                " You're in its embedded terminal pane, beside the GUI chat — the user can "
+                "select your output (⌥-drag on macOS, Shift-drag elsewhere) and press "
+                "⌘/Ctrl+L to send it to the chat composer."
+            )
+        hints.append(_desktop_hint)
+
     if is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)
 
@@ -1085,11 +1109,12 @@ def _skill_should_show(
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
+    hidden_categories: "frozenset[str] | None" = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
     Two-layer cache:
-      1. In-process LRU dict keyed by (skills_dir, tools, toolsets)
+      1. In-process LRU dict keyed by (skills_dir, tools, toolsets, hidden)
       2. Disk snapshot (``.skills_prompt_snapshot.json``) validated by
          mtime/size manifest — survives process restarts
 
@@ -1099,6 +1124,12 @@ def build_skills_system_prompt(
     scanned alongside the local ``~/.hermes/skills/`` directory.  External dirs
     are read-only — they appear in the index but new skills are always created
     in the local dir.  Local skills take precedence when names collide.
+
+    ``hidden_categories`` (e.g. from the coding posture — see
+    agent/coding_context.py) prunes whole categories from the rendered index.
+    Discovery-only: the snapshot stores everything, ``skills_list`` /
+    ``skill_view`` still reach every skill, and a footer note tells the model
+    the full catalog exists.
     """
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
@@ -1123,6 +1154,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        tuple(sorted(hidden_categories or ())),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1256,6 +1288,26 @@ def build_skills_system_prompt(
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
 
+    # Posture-driven category pruning (e.g. non-coding skills while pairing on
+    # code). Match on the top-level category segment so nested categories
+    # ("social-media/twitter") are pruned with their parent.
+    hidden_note = ""
+    if hidden_categories:
+        before = sum(len(v) for v in skills_by_category.values())
+        skills_by_category = {
+            cat: entries
+            for cat, entries in skills_by_category.items()
+            if cat.split("/", 1)[0] not in hidden_categories
+        }
+        pruned = before - sum(len(v) for v in skills_by_category.values())
+        if pruned:
+            hidden_note = (
+                f"\n(Note: {pruned} skill(s) in categories unrelated to the "
+                "current coding context are not listed here. The full catalog "
+                "is available via skills_list if the user asks for something "
+                "outside this list.)"
+            )
+
     if not skills_by_category:
         result = ""
     else:
@@ -1304,6 +1356,7 @@ def build_skills_system_prompt(
             "</available_skills>\n"
             "\n"
             "Only proceed without loading a skill if genuinely none are relevant to the task."
+            + hidden_note
         )
 
     # ── Store in LRU cache ────────────────────────────────────────────

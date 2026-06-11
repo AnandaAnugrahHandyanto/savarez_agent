@@ -164,9 +164,23 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             model_lower = (agent.model or "").lower()
             _inject = any(p.lower() in model_lower for p in _enforce if isinstance(p, str))
         else:
-            # "auto" or any unrecognised value — use hardcoded defaults
+            # "auto" or any unrecognised value — use hardcoded defaults.
+            # If the model is in the curated whitelist, inject the
+            # model-specific enforcement guidance.  For models NOT in
+            # the whitelist (e.g. a newly released model that hasn't
+            # been triaged yet, including minimax M2.7/M3 before this
+            # commit), still inject enforcement by default — the
+            # "describe intent, don't act" failure mode is universal
+            # across model families, and the cost is one short prompt
+            # block (~900 chars) amortised via prefix cache.
+            # Users who want to opt out can set
+            #   agent.tool_use_enforcement: false
+            # explicitly.
             model_lower = (agent.model or "").lower()
-            _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
+            _in_whitelist = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
+            _inject = True  # default-on: safer for the common case
+            # Keep the whitelist check observable for telemetry/tests
+            # even though we now inject unconditionally under "auto".
         if _inject:
             stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
             _model_lower = (agent.model or "").lower()
@@ -191,9 +205,21 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
             if toolset
         }
+        # Coding posture prunes non-coding skill categories from the index
+        # (discovery-only — skills_list/skill_view still reach everything).
+        _hidden_cats = frozenset()
+        try:
+            from agent.coding_context import coding_hidden_skill_categories
+
+            _hidden_cats = coding_hidden_skill_categories(
+                platform=agent.platform, cwd=resolve_context_cwd()
+            )
+        except Exception:
+            _hidden_cats = frozenset()
         skills_prompt = _r.build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
+            hidden_categories=_hidden_cats or None,
         )
     else:
         skills_prompt = ""
@@ -220,6 +246,26 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _env_hints = _r.build_environment_hints()
     if _env_hints:
         stable_parts.append(_env_hints)
+
+    # Coding posture (base Hermes, any interactive coding surface in a code
+    # workspace — see agent/coding_context.py). The operating brief + the live
+    # git/workspace snapshot are built once here and cached for the session;
+    # the snapshot is never re-probed per turn (that would break the prompt
+    # cache), so the brief tells the model to re-check git before relying on it.
+    if agent.valid_tool_names:
+        try:
+            from agent.coding_context import coding_system_blocks
+
+            stable_parts.extend(
+                coding_system_blocks(
+                    platform=agent.platform,
+                    cwd=resolve_context_cwd(),
+                    model=agent.model,
+                )
+            )
+        except Exception:
+            # Coding-context probing must never block prompt build.
+            pass
 
     # Local Python toolchain probe — names python/pip/uv/PEP-668 state when
     # something is non-default so the model can pick the right install

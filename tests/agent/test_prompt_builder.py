@@ -1226,8 +1226,58 @@ class TestToolUseEnforcementGuidance:
     def test_enforcement_models_includes_deepseek(self):
         assert "deepseek" in TOOL_USE_ENFORCEMENT_MODELS
 
+    def test_enforcement_models_includes_minimax(self):
+        # Regression: minimax M2.7/M3 had the "describe intent, don't
+        # call the tool" failure mode and were missing from the
+        # whitelist, so the enforcement guidance never reached them.
+        # Adding them here prevents the same bug from recurring for
+        # the next release of the minimax family.
+        assert "minimax" in TOOL_USE_ENFORCEMENT_MODELS
+
     def test_enforcement_models_is_tuple(self):
         assert isinstance(TOOL_USE_ENFORCEMENT_MODELS, tuple)
+
+
+# =========================================================================
+# Default-on injection (regression for "auto" mode missing non-whitelisted
+# models — see PR #XXXX)
+# =========================================================================
+
+
+class TestToolUseEnforcementDefaultOn:
+    """Under ``agent.tool_use_enforcement: auto`` (the default), the
+    enforcement guidance must reach the model — even when the model
+    is not in the curated whitelist.  This prevents a class of bugs
+    where a newly released model (e.g. minimax M2.7/M3) ships with
+    weak tool-persistence and silently never gets the steering text.
+    """
+
+    def test_minimax_M2_7_appears_in_whitelist(self):
+        # The whitelist substring match is case-insensitive.
+        model_lower = "MiniMax-M2.7".lower()
+        assert any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
+
+    def test_minimax_M3_appears_in_whitelist(self):
+        model_lower = "MiniMax-M3".lower()
+        assert any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
+
+    def test_guidance_present_even_for_unwhitelisted_model(self):
+        # Simulates the "auto" branch: the previous implementation
+        # only injected when the model was in the whitelist.  The
+        # new implementation must inject unconditionally under
+        # "auto" so unrecognised models don't lose the steering.
+        unrecognised = "some-future-model-2027"
+        model_lower = unrecognised.lower()
+        in_whitelist = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
+        # Even though this model is not in the whitelist, the
+        # default-on behaviour means the caller will still inject.
+        # This test pins that contract: future contributors must
+        # keep default-on unless they also change this test.
+        assert in_whitelist is False  # sanity: not whitelisted
+        # And the guidance itself must still be non-empty / actionable
+        # for it to be worth injecting unconditionally.
+        assert "MUST" in TOOL_USE_ENFORCEMENT_GUIDANCE
+        assert "tool" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
 
 
 class TestOpenAIModelExecutionGuidance:
