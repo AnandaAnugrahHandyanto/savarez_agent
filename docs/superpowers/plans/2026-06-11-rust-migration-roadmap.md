@@ -159,6 +159,8 @@ language-specific setup where needed.
   `UV_PROJECT_ENVIRONMENT` pinned to `venv`, while the script keeps all PyPI fallback tiers.
 - `node-deps` now uses a Rust no-op skip when npm is unavailable on every platform, matching the existing script
   behavior without starting PowerShell or bash for a stage that can only skip.
+- Windows `node-deps` now has a Rust native-first path for root npm dependencies, Playwright Chromium, and TUI npm
+  dependencies, while preserving the PowerShell stage as fallback for missing `npx` or failed npm/Playwright commands.
 - `desktop` now uses a Rust no-op skip when `apps/desktop/package.json` is absent, matching the existing script
   behavior without starting PowerShell or bash for a stage that can only skip.
 - Windows `platform-sdks` now skips natively when `.env` has no configured messaging platform tokens, and runs
@@ -171,8 +173,8 @@ language-specific setup where needed.
 
 **Still script-backed:**
 - Language/runtime setup: uv, Python dependency fallback tiers when `uv.lock` sync is unavailable, Node installation
-  when missing, npm dependencies when npm is available, desktop build when the desktop package is present, and script
-  fallback for platform SDK recovery.
+  when missing, Unix npm dependency installation when npm is available, desktop build when the desktop package is
+  present, and script fallback for Windows npm and platform SDK recovery.
 - Repository clone/update stage execution until the Git/ZIP fallback matrix has a parity suite and native stage wiring.
 - Remaining platform shell/profile edge cases that are not covered by the current Rust path-stage helpers.
 

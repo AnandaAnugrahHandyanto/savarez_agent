@@ -641,6 +641,11 @@ async fn run_bootstrap(
                     &install_root,
                     &hermes_home,
                 ))
+            } else if cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("node-deps") {
+                Some(crate::orchestrator::install_windows_node_dependencies_stage(
+                    &install_root,
+                    &hermes_home,
+                ))
             } else if stage.name.eq_ignore_ascii_case("platform-sdks") {
                 Some(crate::orchestrator::install_platform_sdks_stage(
                     &hermes_home,
@@ -987,6 +992,7 @@ fn should_fallback_native_stage(stage_name: &str, install_root: &std::path::Path
         || stage_name.eq_ignore_ascii_case("python")
         || is_python_dependencies_stage(stage_name)
         || stage_name.eq_ignore_ascii_case("platform-sdks")
+        || (cfg!(target_os = "windows") && stage_name.eq_ignore_ascii_case("node-deps"))
 }
 
 fn is_python_dependencies_stage(stage_name: &str) -> bool {
@@ -1365,6 +1371,10 @@ mod tests {
         assert!(should_fallback_native_stage("dependencies", &install_root));
         assert!(should_fallback_native_stage("python-deps", &install_root));
         assert!(should_fallback_native_stage("platform-sdks", &install_root));
+        assert_eq!(
+            should_fallback_native_stage("node-deps", &install_root),
+            cfg!(target_os = "windows")
+        );
         assert!(!should_fallback_native_stage("node", &install_root));
 
         let _ = std::fs::remove_dir_all(&root);

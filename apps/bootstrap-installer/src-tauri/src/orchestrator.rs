@@ -62,6 +62,16 @@ pub struct PythonDependenciesStagePlan {
     pub lockfile: PathBuf,
 }
 
+/// Native Node dependency stage execution plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeDependenciesStagePlan {
+    pub npm: PathBuf,
+    pub npx: Option<PathBuf>,
+    pub cwd: PathBuf,
+    pub browser_tools: bool,
+    pub tui_dir: Option<PathBuf>,
+}
+
 /// Messaging-platform SDK requirement derived from user configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlatformSdkRequirement {
@@ -969,6 +979,71 @@ pub fn sync_python_dependencies_stage(
     }))
 }
 
+/// Build the native Node dependencies stage plan.
+pub fn node_dependencies_stage_plan<P>(
+    install_root: &Path,
+    hermes_home: &Path,
+    path_env: P,
+    pathext: &str,
+) -> Result<NodeDependenciesStagePlan>
+where
+    P: AsRef<OsStr>,
+{
+    let npm = find_npm_executable(hermes_home, path_env.as_ref(), pathext)
+        .ok_or_else(|| anyhow!("npm is not available"))?;
+    let npx = find_npx_executable(&npm, path_env, pathext);
+    let tui_dir = install_root.join("ui-tui");
+    let tui_dir = if tui_dir.join("package.json").is_file() {
+        Some(tui_dir)
+    } else {
+        None
+    };
+    Ok(NodeDependenciesStagePlan {
+        npm,
+        npx,
+        cwd: install_root.to_path_buf(),
+        browser_tools: install_root.join("package.json").is_file(),
+        tui_dir,
+    })
+}
+
+/// Install Node dependencies natively on Windows before falling back to PowerShell.
+pub fn install_windows_node_dependencies_stage(
+    install_root: &Path,
+    hermes_home: &Path,
+) -> Result<serde_json::Value> {
+    if !cfg!(target_os = "windows") {
+        return Err(anyhow!("native node-deps stage is only available on Windows"));
+    }
+    let path_env = std::env::var_os("PATH").unwrap_or_default();
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let plan = node_dependencies_stage_plan(install_root, hermes_home, path_env, &pathext)?;
+    if plan.browser_tools {
+        run_node_dependency_command(&plan.npm, ["install", "--silent"], &plan.cwd)
+            .context("installing root Node dependencies")?;
+        let npx = plan
+            .npx
+            .as_ref()
+            .ok_or_else(|| anyhow!("npx is not available"))?;
+        run_node_dependency_command(
+            npx,
+            ["--yes", "playwright", "install", "chromium"],
+            &plan.cwd,
+        )
+        .context("installing Playwright Chromium")?;
+    }
+    if let Some(tui_dir) = &plan.tui_dir {
+        run_node_dependency_command(&plan.npm, ["install", "--silent"], tui_dir)
+            .context("installing TUI Node dependencies")?;
+    }
+    Ok(serde_json::json!({
+        "npm": plan.npm,
+        "npx": plan.npx,
+        "browserTools": plan.browser_tools,
+        "tui": plan.tui_dir.is_some(),
+    }))
+}
+
 /// Build a native Windows PATH stage report without mutating user state.
 pub fn windows_path_stage_plan(
     hermes_home: &Path,
@@ -1340,6 +1415,42 @@ where
     find_executable_on_path("npm", path_env, pathext)
 }
 
+fn find_npx_executable<P>(npm: &Path, path_env: P, pathext: &str) -> Option<PathBuf>
+where
+    P: AsRef<OsStr>,
+{
+    let npm_dir = npm.parent()?;
+    for candidate in executable_candidates("npx", pathext) {
+        let path = npm_dir.join(candidate);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    find_executable_on_path("npx", path_env, pathext)
+}
+
+fn run_node_dependency_command<const N: usize>(
+    command: &Path,
+    args: [&str; N],
+    cwd: &Path,
+) -> Result<()> {
+    let status = Command::new(command)
+        .args(args)
+        .current_dir(cwd)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .with_context(|| format!("running {}", command.display()))?;
+    if status.success() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "{} failed with exit {:?}",
+        command.display(),
+        status.code()
+    ))
+}
+
 fn node_version_satisfies_build(node: &Path) -> bool {
     let output = Command::new(node)
         .arg("--version")
@@ -1381,6 +1492,9 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
         name.to_ascii_lowercase().as_str(),
         "repository" | "python" | "venv" | "dependencies" | "python-deps" | "platform-sdks"
     ) {
+        return StageExecutionMode::NativeWithScriptFallback;
+    }
+    if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("node-deps") {
         return StageExecutionMode::NativeWithScriptFallback;
     }
     if matches!(
@@ -1494,9 +1608,15 @@ mod tests {
         assert_eq!(plan[4].name, "platform-sdks");
         assert_eq!(plan[4].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[4].script_fallback, true);
+        let node_deps_execution = if cfg!(target_os = "windows") {
+            StageExecutionMode::NativeWithScriptFallback
+        } else {
+            StageExecutionMode::ProbeThenScript
+        };
         assert_eq!(plan[5].name, "node-deps");
-        assert_eq!(plan[5].execution, StageExecutionMode::ProbeThenScript);
-        assert_eq!(plan[5].rust_probe, true);
+        assert_eq!(plan[5].execution, node_deps_execution);
+        assert_eq!(plan[5].rust_probe, !cfg!(target_os = "windows"));
+        assert_eq!(plan[5].script_fallback, true);
         assert_eq!(plan[6].name, "desktop");
         assert_eq!(plan[6].execution, StageExecutionMode::ProbeThenScript);
         assert_eq!(plan[6].rust_probe, true);
@@ -1720,6 +1840,39 @@ mod tests {
         assert_eq!(skipped.reason.as_deref(), Some("npm not available"));
         std::fs::write(tools.join("npm.cmd"), b"npm").unwrap();
         assert!(node_deps_skip_result(&node_deps, &hermes_home, &tools, ".EXE;.CMD").is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn node_dependencies_stage_plan_prefers_managed_tools_and_detects_packages() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-node-deps-plan-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+        let install_root = root.join("checkout");
+        let node_home = hermes_home.join("node");
+        std::fs::create_dir_all(&node_home).unwrap();
+        std::fs::create_dir_all(install_root.join("ui-tui")).unwrap();
+        let npm_name = if cfg!(target_os = "windows") { "npm.cmd" } else { "bin/npm" };
+        let npx_name = if cfg!(target_os = "windows") { "npx.CMD" } else { "bin/npx" };
+        let npm = hermes_home.join("node").join(npm_name);
+        let npx = hermes_home.join("node").join(npx_name);
+        std::fs::create_dir_all(npm.parent().unwrap()).unwrap();
+        std::fs::write(&npm, b"npm").unwrap();
+        std::fs::write(&npx, b"npx").unwrap();
+        std::fs::write(install_root.join("package.json"), b"{}").unwrap();
+        std::fs::write(install_root.join("ui-tui").join("package.json"), b"{}").unwrap();
+
+        let plan =
+            node_dependencies_stage_plan(&install_root, &hermes_home, "", ".EXE;.CMD").unwrap();
+
+        assert_eq!(plan.npm, npm);
+        assert_eq!(plan.npx.as_deref(), Some(npx.as_path()));
+        assert_eq!(plan.cwd, install_root);
+        assert_eq!(plan.browser_tools, true);
+        assert_eq!(plan.tui_dir.as_deref(), Some(install_root.join("ui-tui").as_path()));
 
         let _ = std::fs::remove_dir_all(&root);
     }
