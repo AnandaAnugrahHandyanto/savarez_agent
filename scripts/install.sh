@@ -272,6 +272,7 @@ emit_manifest() {
         '{"protocol_version":1,"stages":[' \
         '{"name":"uv","title":"Install uv package manager","category":"runtime","needs_user_input":false},' \
         '{"name":"node","title":"Detect Node.js","category":"runtime","needs_user_input":false},' \
+        '{"name":"python","title":"Verify Python 3.11","category":"runtime","needs_user_input":false},' \
         '{"name":"prerequisites","title":"System prerequisites","category":"runtime","needs_user_input":false},' \
         '{"name":"repository","title":"Download Hermes Agent","category":"runtime","needs_user_input":false},' \
         '{"name":"venv","title":"Create Python virtual environment","category":"runtime","needs_user_input":false},' \
@@ -2624,6 +2625,13 @@ run_stage_body() {
             resolve_install_layout
             check_node
             ;;
+        python)
+            print_banner
+            detect_os
+            resolve_install_layout
+            install_uv
+            check_python
+            ;;
         prerequisites)
             print_banner
             detect_os
@@ -2633,7 +2641,11 @@ run_stage_body() {
             else
                 install_uv
             fi
-            check_python
+            if [ "${HERMES_NATIVE_PYTHON_STAGE:-}" = "1" ]; then
+                log_info "Skipping Python check; native bootstrap python stage owns it"
+            else
+                check_python
+            fi
             if [ "${HERMES_NATIVE_REPOSITORY_ARCHIVE:-}" = "1" ]; then
                 log_info "Skipping Git check; native repository archive will fetch source"
             else

@@ -1088,6 +1088,7 @@ fn stage_script_extra_env(
             env.push(("HERMES_NATIVE_REPOSITORY_ARCHIVE", "1"));
         }
         env.push(("HERMES_NATIVE_NODE_STAGE", "1"));
+        env.push(("HERMES_NATIVE_PYTHON_STAGE", "1"));
         env.push(("HERMES_NATIVE_UV_STAGE", "1"));
     }
     env
@@ -1492,6 +1493,7 @@ mod tests {
             vec![
                 ("HERMES_NATIVE_REPOSITORY_ARCHIVE", "1"),
                 ("HERMES_NATIVE_NODE_STAGE", "1"),
+                ("HERMES_NATIVE_PYTHON_STAGE", "1"),
                 ("HERMES_NATIVE_UV_STAGE", "1")
             ]
         );
@@ -1507,6 +1509,7 @@ mod tests {
             stage_script_extra_env("prerequisites", &install_root),
             vec![
                 ("HERMES_NATIVE_NODE_STAGE", "1"),
+                ("HERMES_NATIVE_PYTHON_STAGE", "1"),
                 ("HERMES_NATIVE_UV_STAGE", "1")
             ]
         );
