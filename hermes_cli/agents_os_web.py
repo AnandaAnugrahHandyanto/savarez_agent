@@ -409,6 +409,16 @@ def _jarvis_preview_from_text(transcript_text: str) -> dict[str, Any]:
             "Prikazati rezultat u command preview kartici.",
             "Ne izvršiti nikakvu vanjsku ili rizičnu akciju.",
         ]
+    if any(token in normalized for token in ["sigurnosni", "security", "pentest", "penetration", "ranjiv", "vulnerability", "exploit", "scan klijent", "skeniraj"]):
+        draft["classification"] = "security_gated"
+        draft["risk_class"] = "security_gated"
+        draft["recommended_lane"] = "security-scope-gate"
+        draft["approval_required"] = True
+        draft["plan_steps"] = [
+            "Prikazati security scope i authorization zahtjev u command preview kartici.",
+            "Ne pokretati aktivni scan ili test bez eksplicitnog scope/legal approvala.",
+            "Dopustiti samo jasno označene read-only provjere nakon approval gatea.",
+        ]
     if any(token in normalized for token in ["deploy", "deployaj", "push", "pr ", "pull request", "objavi", "pošalji", "posalji", "email"]):
         draft["classification"] = "public_outbound_gated"
         draft["risk_class"] = "public_gated"

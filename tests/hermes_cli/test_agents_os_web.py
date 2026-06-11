@@ -178,6 +178,7 @@ def test_jarvis_preview_gates_risky_commands_without_execution(agents_home):
     safe = jarvis_preview_payload(paths, {"transcript_text": "Prikaži zadnje BP24 stanje"})
     public = jarvis_preview_payload(paths, {"transcript_text": "Pošalji klijentu email"})
     deploy = jarvis_preview_payload(paths, {"transcript_text": "Deployaj BP24"})
+    security = jarvis_preview_payload(paths, {"transcript_text": "Pokreni sigurnosni scan klijentove stranice"})
 
     assert safe["command_card"]["risk_class"] == "safe_local"
     assert safe["command_card"]["approval_required"] is False
@@ -188,6 +189,9 @@ def test_jarvis_preview_gates_risky_commands_without_execution(agents_home):
     assert deploy["command_card"]["risk_class"] == "public_gated"
     assert deploy["command_card"]["approval_required"] is True
     assert deploy["command_card"]["execution_created"] is False
+    assert security["command_card"]["risk_class"] == "security_gated"
+    assert security["command_card"]["approval_required"] is True
+    assert security["command_card"]["execution_created"] is False
 
 
 def test_root_html_contains_jarvis_oracle_briefing_panel(agents_home):
