@@ -134,7 +134,7 @@ from tools.browser_tool import cleanup_browser
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import sanitize_context
 from agent.error_classifier import FailoverReason
-from agent.redact import redact_sensitive_text
+from agent.redact import redact_sensitive_text, _redact_message_content
 from agent.model_metadata import (
     estimate_request_tokens_rough,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.estimate_request_tokens_rough")
     is_local_endpoint,
@@ -2163,31 +2163,15 @@ class AIAgent:
     def _redact_message_content(content):
         """Apply secret redaction to message content (str or list-of-parts).
 
+        Delegates to the canonical implementation in agent/redact.py.
         Handles both plain-string content and the OpenAI/Anthropic multimodal
-        shape where ``content`` is a list of ``{"type": "text", "text": ...}``
-        / ``{"type": "image_url", ...}`` / ``{"type": "input_text", "content": ...}``
-        parts. Image / binary parts are left untouched; only text fields are
-        passed through ``redact_sensitive_text``.
+        shape where ``content`` is a list of content parts.
 
         Respects ``HERMES_REDACT_SECRETS`` via ``redact_sensitive_text`` —
         when disabled the helper is effectively a no-op.
         """
-        if content is None:
-            return content
-        if isinstance(content, str):
-            return redact_sensitive_text(content)
-        if isinstance(content, list):
-            redacted = []
-            for part in content:
-                if isinstance(part, dict):
-                    part = dict(part)
-                    if isinstance(part.get("text"), str):
-                        part["text"] = redact_sensitive_text(part["text"])
-                    if isinstance(part.get("content"), str):
-                        part["content"] = redact_sensitive_text(part["content"])
-                redacted.append(part)
-            return redacted
-        return content
+        from agent.redact import _redact_message_content as _canonical
+        return _canonical(content, redact_sensitive_text)
 
     def _save_session_log(self, messages: List[Dict[str, Any]] = None):
         """Optional per-session JSON snapshot writer.

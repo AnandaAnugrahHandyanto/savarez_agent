@@ -1004,11 +1004,11 @@ class _AnthropicCompletionsAdapter:
         # ── DETE: redact messages before they leave the trust boundary ────
         if messages:
             import copy
-            from agent.redact import _redact_message_content, redact_sensitive_text
+            from agent.redact import _redact_message_object, redact_sensitive_text
             messages = copy.deepcopy(messages)
             for msg in messages:
-                if isinstance(msg, dict) and "content" in msg:
-                    msg["content"] = _redact_message_content(msg["content"], redact_sensitive_text)
+                if isinstance(msg, dict):
+                    _redact_message_object(msg, redact_sensitive_text)
         # ────────────────────────────────────────────────────────────────
         model = kwargs.get("model", self._model)
         tools = kwargs.get("tools")
@@ -5094,11 +5094,11 @@ def call_llm(
     # ── DETE: redact messages before they leave the trust boundary ────
     if messages:
         import copy
-        from agent.redact import _redact_message_content, redact_sensitive_text
+        from agent.redact import _redact_message_object, redact_sensitive_text
         messages = copy.deepcopy(messages)
         for msg in messages:
-            if isinstance(msg, dict) and "content" in msg:
-                msg["content"] = _redact_message_content(msg["content"], redact_sensitive_text)
+            if isinstance(msg, dict):
+                _redact_message_object(msg, redact_sensitive_text)
     # ────────────────────────────────────────────────────────────────
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
@@ -5607,11 +5607,11 @@ async def async_call_llm(
     # ── DETE: redact messages before they leave the trust boundary ────
     if messages:
         import copy
-        from agent.redact import _redact_message_content, redact_sensitive_text
+        from agent.redact import _redact_message_object, redact_sensitive_text
         messages = copy.deepcopy(messages)
         for msg in messages:
-            if isinstance(msg, dict) and "content" in msg:
-                msg["content"] = _redact_message_content(msg["content"], redact_sensitive_text)
+            if isinstance(msg, dict):
+                _redact_message_object(msg, redact_sensitive_text)
     # ────────────────────────────────────────────────────────────────
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)

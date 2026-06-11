@@ -664,11 +664,11 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     # ── DETE: redact messages before they leave the trust boundary ────
                     if _create_kwargs.get("messages"):
                         import copy
-                        from agent.redact import _redact_message_content, redact_sensitive_text
+                        from agent.redact import _redact_message_object, redact_sensitive_text
                         _create_kwargs["messages"] = copy.deepcopy(_create_kwargs["messages"])
                         for msg in _create_kwargs["messages"]:
-                            if isinstance(msg, dict) and "content" in msg:
-                                msg["content"] = _redact_message_content(msg["content"], redact_sensitive_text)
+                            if isinstance(msg, dict):
+                                _redact_message_object(msg, redact_sensitive_text)
                     # ────────────────────────────────────────────────────────────────
                     response = self.client.chat.completions.create(**_create_kwargs)
                 
