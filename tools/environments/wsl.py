@@ -13,14 +13,12 @@ for file tools.
 
 import logging
 import os
-import platform
 import shutil
 import subprocess
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 
-_IS_WINDOWS = platform.system() == "Windows"
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +84,7 @@ class WslEnvironment(BaseEnvironment):
         cmd_string: str,
         *,
         login: bool = False,
-        timeout: int = 120,
+        timeout: int = 120,   # enforced by BaseEnvironment._wait_for_process
         stdin_data: str | None = None,
     ) -> subprocess.Popen:
         wsl_args = [self._wsl]

@@ -1130,7 +1130,7 @@ def _get_env_config() -> Dict[str, Any]:
         ):
             host_cwd = candidate
             cwd = "/workspace"
-    elif env_type in {"modal", "docker", "singularity", "daytona", "wsl"} and cwd:
+    elif env_type in {"modal", "docker", "singularity", "daytona"} and cwd:
         # Host paths and relative paths that won't work inside containers
         is_host_path = any(cwd.startswith(p) for p in host_prefixes)
         is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
@@ -1139,6 +1139,17 @@ def _get_env_config() -> Dict[str, Any]:
                         "(host/relative path won't work in sandbox). Using %r instead.",
                         cwd, env_type, default_cwd)
             cwd = default_cwd
+    elif env_type == "wsl" and cwd:
+        # WSL is not a container — reject Windows/relative cwd (let
+        # WslEnvironment probe $HOME via _probe_wsl_home instead).
+        is_host_path = any(cwd.startswith(p) for p in host_prefixes)
+        is_relative = not os.path.isabs(cwd)
+        if (is_host_path or is_relative) and cwd != default_cwd:
+            logger.info("Ignoring TERMINAL_CWD=%r for wsl backend "
+                        "(host/relative path invalid in WSL). "
+                        "Falling back to $HOME probe.",
+                        cwd)
+            cwd = ""  # empty → WslEnvironment probes $HOME
 
     return {
         "env_type": env_type,
@@ -1340,6 +1351,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         return _WslEnvironment(
             cwd=cwd,
             timeout=timeout,
+            env={"TERMINAL_WSL_DISTRO": cc.get("wsl_distro", "")} if cc else None,
         )
 
     elif env_type == "ssh":
