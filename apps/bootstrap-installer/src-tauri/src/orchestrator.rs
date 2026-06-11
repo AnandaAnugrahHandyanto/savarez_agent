@@ -91,6 +91,16 @@ pub struct WindowsNodeRuntimeStagePlan {
     pub node_exe: PathBuf,
 }
 
+/// Native Windows uv runtime installation plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsUvRuntimeStagePlan {
+    pub archive_name: String,
+    pub download_url: String,
+    pub archive_path: PathBuf,
+    pub install_dir: PathBuf,
+    pub uv_exe: PathBuf,
+}
+
 /// Messaging-platform SDK requirement derived from user configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlatformSdkRequirement {
@@ -935,6 +945,63 @@ pub async fn install_windows_node_runtime_stage(
     }))
 }
 
+/// Build a Windows uv runtime plan from the GitHub release asset matrix.
+pub fn windows_uv_runtime_stage_plan(
+    hermes_home: &Path,
+    arch: &str,
+) -> Result<WindowsUvRuntimeStagePlan> {
+    let archive_name = windows_uv_archive_name(arch)
+        .ok_or_else(|| anyhow!("unsupported Windows architecture for uv: {arch}"))?
+        .to_string();
+    let download_url =
+        format!("https://github.com/astral-sh/uv/releases/latest/download/{archive_name}");
+    let archive_path = hermes_home
+        .join("bootstrap-cache")
+        .join(&archive_name);
+    let install_dir = hermes_home.join("bin");
+    let uv_exe = install_dir.join("uv.exe");
+    Ok(WindowsUvRuntimeStagePlan {
+        archive_name,
+        download_url,
+        archive_path,
+        install_dir,
+        uv_exe,
+    })
+}
+
+/// Install uv natively on Windows from the official GitHub release ZIP.
+pub async fn install_windows_uv_runtime_stage(hermes_home: &Path) -> Result<serde_json::Value> {
+    if !cfg!(target_os = "windows") {
+        return Err(anyhow!("native uv stage is only available on Windows"));
+    }
+    let arch = windows_node_arch_slug();
+    let plan = windows_uv_runtime_stage_plan(hermes_home, &arch)?;
+    crate::artifact::download_to_cache(
+        crate::artifact::DownloadSpec {
+            url: plan.download_url.clone(),
+            user_agent: "Hermes-Setup",
+            expected_sha256: None,
+        },
+        &plan.archive_path,
+    )
+    .await
+    .with_context(|| format!("downloading {}", plan.archive_name))?;
+    install_windows_uv_archive(&plan.archive_path, &plan.install_dir)?;
+    let status = Command::new(&plan.uv_exe)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .with_context(|| format!("checking {}", plan.uv_exe.display()))?;
+    if !status.success() {
+        return Err(anyhow!("installed uv failed version check"));
+    }
+    Ok(serde_json::json!({
+        "uv": plan.uv_exe,
+        "archive": plan.archive_name,
+    }))
+}
+
 /// Build the native Python virtual environment stage plan.
 pub fn python_venv_stage_plan<P>(
     install_root: &Path,
@@ -1552,6 +1619,15 @@ fn latest_windows_node_archive_name(
         .max_by(|left, right| compare_node_archive_versions(left, right))
 }
 
+fn windows_uv_archive_name(arch: &str) -> Option<&'static str> {
+    match arch {
+        "x64" => Some("uv-x86_64-pc-windows-msvc.zip"),
+        "arm64" => Some("uv-aarch64-pc-windows-msvc.zip"),
+        "x86" => Some("uv-i686-pc-windows-msvc.zip"),
+        _ => None,
+    }
+}
+
 fn compare_node_archive_versions(left: &str, right: &str) -> std::cmp::Ordering {
     node_archive_version_tuple(left).cmp(&node_archive_version_tuple(right))
 }
@@ -1601,6 +1677,63 @@ fn install_windows_node_archive(archive_path: &Path, install_dir: &Path) -> Resu
     let cleanup = remove_path_if_exists(&tmp_dir);
     result?;
     cleanup
+}
+
+fn install_windows_uv_archive(archive_path: &Path, install_dir: &Path) -> Result<()> {
+    fs::create_dir_all(install_dir)
+        .with_context(|| format!("creating uv install dir {}", install_dir.display()))?;
+    let tmp_dir = install_dir.join("uv-extracting");
+    remove_path_if_exists(&tmp_dir)?;
+    fs::create_dir_all(&tmp_dir)
+        .with_context(|| format!("creating uv extraction directory {}", tmp_dir.display()))?;
+
+    let result: Result<()> = (|| {
+        crate::artifact::extract_zip_archive(archive_path, &tmp_dir)?;
+        let uv = find_file_named(&tmp_dir, "uv.exe")?;
+        fs::copy(&uv, install_dir.join("uv.exe")).with_context(|| {
+            format!(
+                "copying uv binary {} to {}",
+                uv.display(),
+                install_dir.join("uv.exe").display()
+            )
+        })?;
+        if let Ok(uvx) = find_file_named(&tmp_dir, "uvx.exe") {
+            fs::copy(&uvx, install_dir.join("uvx.exe")).with_context(|| {
+                format!(
+                    "copying uvx binary {} to {}",
+                    uvx.display(),
+                    install_dir.join("uvx.exe").display()
+                )
+            })?;
+        }
+        Ok(())
+    })();
+    let cleanup = remove_path_if_exists(&tmp_dir);
+    result?;
+    cleanup
+}
+
+fn find_file_named(root: &Path, name: &str) -> Result<PathBuf> {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
+            let entry = entry.with_context(|| format!("reading entry under {}", dir.display()))?;
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(|value| value.eq_ignore_ascii_case(name))
+                .unwrap_or(false)
+            {
+                return Ok(path);
+            }
+        }
+    }
+    Err(anyhow!("{} not found under {}", name, root.display()))
 }
 
 fn single_child_dir(parent: &Path) -> Result<PathBuf> {
@@ -1830,6 +1963,9 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
     if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("node") {
         return StageExecutionMode::NativeWithScriptFallback;
     }
+    if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("uv") {
+        return StageExecutionMode::NativeWithScriptFallback;
+    }
     if matches!(
         name.to_ascii_lowercase().as_str(),
         "bootstrap-marker" | "config" | "config-templates" | "complete" | "path"
@@ -1936,9 +2072,15 @@ mod tests {
         assert_eq!(plan[2].name, "python");
         assert_eq!(plan[2].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[2].script_fallback, true);
+        let uv_execution = if cfg!(target_os = "windows") {
+            StageExecutionMode::NativeWithScriptFallback
+        } else {
+            StageExecutionMode::ProbeThenScript
+        };
         assert_eq!(plan[3].name, "uv");
-        assert_eq!(plan[3].execution, StageExecutionMode::ProbeThenScript);
-        assert_eq!(plan[3].rust_probe, true);
+        assert_eq!(plan[3].execution, uv_execution);
+        assert_eq!(plan[3].rust_probe, !cfg!(target_os = "windows"));
+        assert_eq!(plan[3].script_fallback, true);
         let node_execution = if cfg!(target_os = "windows") {
             StageExecutionMode::NativeWithScriptFallback
         } else {
@@ -2005,8 +2147,10 @@ mod tests {
 
         let summary = summarize_plan(&report, &plan);
 
-        assert!(summary.contains("native_stages=3"));
-        assert!(summary.contains("probe_stages=1"));
+        let native_count = if cfg!(target_os = "windows") { 4 } else { 3 };
+        let probe_count = if cfg!(target_os = "windows") { 0 } else { 1 };
+        assert!(summary.contains(&format!("native_stages={native_count}")));
+        assert!(summary.contains(&format!("probe_stages={probe_count}")));
         assert!(summary.contains("script_stages=0"));
         assert!(summary.contains("total_stages=4"));
         assert!(summary.contains("uv=missing"));
@@ -2329,6 +2473,32 @@ mod tests {
         );
         assert!(python_stage_skip_result_with_probe(&python, || false).is_none());
         assert!(python_stage_skip_result_with_probe(&uv, || true).is_none());
+    }
+
+    #[test]
+    fn windows_uv_runtime_stage_plan_maps_arch_to_release_asset() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-uv-runtime-plan-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+
+        let plan = windows_uv_runtime_stage_plan(&hermes_home, "x64").unwrap();
+
+        assert_eq!(plan.archive_name, "uv-x86_64-pc-windows-msvc.zip");
+        assert_eq!(
+            plan.download_url,
+            "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip"
+        );
+        assert_eq!(plan.install_dir, hermes_home.join("bin"));
+        assert_eq!(plan.uv_exe, hermes_home.join("bin").join("uv.exe"));
+
+        let arm_plan = windows_uv_runtime_stage_plan(&hermes_home, "arm64").unwrap();
+        assert_eq!(arm_plan.archive_name, "uv-aarch64-pc-windows-msvc.zip");
+        let x86_plan = windows_uv_runtime_stage_plan(&hermes_home, "x86").unwrap();
+        assert_eq!(x86_plan.archive_name, "uv-i686-pc-windows-msvc.zip");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

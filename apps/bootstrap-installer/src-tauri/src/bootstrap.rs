@@ -629,6 +629,11 @@ async fn run_bootstrap(
                 Some(crate::orchestrator::configure_unix_path_stage(&install_root))
             } else if stage.name.eq_ignore_ascii_case("complete") {
                 Some(crate::orchestrator::write_install_method_stamp(&hermes_home))
+            } else if cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("uv") {
+                Some(
+                    crate::orchestrator::install_windows_uv_runtime_stage(&hermes_home)
+                        .await,
+                )
             } else if stage.name.eq_ignore_ascii_case("python") {
                 Some(crate::orchestrator::install_python_runtime_stage(&hermes_home))
             } else if cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("node") {
@@ -1007,6 +1012,7 @@ fn should_fallback_repository_archive(stage_name: &str, install_root: &std::path
 fn should_fallback_native_stage(stage_name: &str, install_root: &std::path::Path) -> bool {
     should_fallback_repository_archive(stage_name, install_root)
         || stage_name.eq_ignore_ascii_case("venv")
+        || (cfg!(target_os = "windows") && stage_name.eq_ignore_ascii_case("uv"))
         || stage_name.eq_ignore_ascii_case("python")
         || (cfg!(target_os = "windows") && stage_name.eq_ignore_ascii_case("node"))
         || is_python_dependencies_stage(stage_name)
