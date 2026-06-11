@@ -1271,6 +1271,12 @@ class TestMemoryToolToolsetGate:
                 _tname = _schema.get("name", "")
                 if _tname and _tname in _existing:
                     continue
+                # Mirror agent_init.py: normalize MCP-style inputSchema → parameters
+                if "inputSchema" in _schema and "parameters" not in _schema:
+                    from tools.mcp_tool import _normalize_mcp_input_schema
+                    _schema["parameters"] = _normalize_mcp_input_schema(
+                        _schema.pop("inputSchema")
+                    )
                 tools.append({"type": "function", "function": _schema})
                 if _tname:
                     valid_tool_names.add(_tname)
@@ -1332,6 +1338,112 @@ class TestMemoryToolToolsetGate:
         mgr = self._mgr_with_tools("fact_store", "memory_search", "memory_add")
         tools, names = self._run_memory_injection(None, mgr)
         assert names == {"fact_store", "memory_search", "memory_add"}
+
+
+class TestMemoryProviderMcpSchemaNormalization:
+    """Issue #43403: memory providers emitting MCP-style schemas (with
+    \"inputSchema\" instead of \"parameters\") must have their schemas
+    normalized before injection.  Otherwise every OpenAI-compatible LLM
+    endpoint rejects the tool with a 400."""
+
+    @staticmethod
+    def _run_memory_injection(memory_manager):
+        """Simulate the injection block from agent_init.py (gate open)."""
+        tools = []
+        valid_tool_names = set()
+        if memory_manager and tools is not None:
+            _existing = set()
+            for _schema in memory_manager.get_all_tool_schemas():
+                _tname = _schema.get("name", "")
+                if _tname and _tname in _existing:
+                    continue
+                if "inputSchema" in _schema and "parameters" not in _schema:
+                    from tools.mcp_tool import _normalize_mcp_input_schema
+                    _schema["parameters"] = _normalize_mcp_input_schema(
+                        _schema.pop("inputSchema")
+                    )
+                tools.append({"type": "function", "function": _schema})
+                if _tname:
+                    valid_tool_names.add(_tname)
+                    _existing.add(_tname)
+        return tools, valid_tool_names
+
+    def test_input_schema_normalized_to_parameters(self):
+        """MCP-style inputSchema is converted to parameters."""
+        mgr = MemoryManager()
+        p = FakeMemoryProvider(
+            "mcp_provider",
+            tools=[{
+                "name": "brain_query",
+                "description": "Query the brain",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string", "description": "query"}},
+                    "required": ["q"],
+                },
+            }],
+        )
+        mgr.add_provider(p)
+        tools, names = self._run_memory_injection(mgr)
+        assert "brain_query" in names
+        fn = tools[0]["function"]
+        assert "parameters" in fn
+        assert "inputSchema" not in fn
+        assert fn["parameters"]["type"] == "object"
+        assert "q" in fn["parameters"]["properties"]
+
+    def test_parameters_passthrough_unchanged(self):
+        """Schemas already using parameters are not modified."""
+        mgr = MemoryManager()
+        p = FakeMemoryProvider(
+            "openai_provider",
+            tools=[{
+                "name": "fact_store",
+                "description": "Store facts",
+                "parameters": {"type": "object", "properties": {}},
+            }],
+        )
+        mgr.add_provider(p)
+        tools, names = self._run_memory_injection(mgr)
+        fn = tools[0]["function"]
+        assert "parameters" in fn
+        assert "inputSchema" not in fn
+        assert fn["parameters"] == {"type": "object", "properties": {}}
+
+    def test_both_keys_keeps_parameters(self):
+        """When both inputSchema and parameters exist, parameters wins."""
+        mgr = MemoryManager()
+        p = FakeMemoryProvider(
+            "mixed_provider",
+            tools=[{
+                "name": "mixed_tool",
+                "description": "Has both keys",
+                "parameters": {"type": "object", "properties": {"existing": {}}},
+                "inputSchema": {"type": "object", "properties": {"from_mcp": {}}},
+            }],
+        )
+        mgr.add_provider(p)
+        tools, names = self._run_memory_injection(mgr)
+        fn = tools[0]["function"]
+        # When both keys exist, the normalization guard skips — parameters stays
+        assert fn["parameters"] == {"type": "object", "properties": {"existing": {}}}
+        assert "inputSchema" in fn  # not popped
+
+    def test_null_input_schema_gets_default(self):
+        """inputSchema=None is normalized to a minimal object schema."""
+        mgr = MemoryManager()
+        p = FakeMemoryProvider(
+            "null_schema_provider",
+            tools=[{
+                "name": "null_tool",
+                "description": "Schema is None",
+                "inputSchema": None,
+            }],
+        )
+        mgr.add_provider(p)
+        tools, names = self._run_memory_injection(mgr)
+        fn = tools[0]["function"]
+        assert fn["parameters"] == {"type": "object", "properties": {}}
 
 
 class TestContextEngineToolsetGate:

@@ -1220,6 +1220,14 @@ def init_agent(
             _tname = _schema.get("name", "")
             if _tname and _tname in _existing_tool_names:
                 continue  # already registered via plugin path
+            # Normalize MCP-style inputSchema → parameters so that memory
+            # providers emitting MCP-format schemas are accepted by every
+            # OpenAI-compatible LLM endpoint (see issue #43403).
+            if "inputSchema" in _schema and "parameters" not in _schema:
+                from tools.mcp_tool import _normalize_mcp_input_schema
+                _schema["parameters"] = _normalize_mcp_input_schema(
+                    _schema.pop("inputSchema")
+                )
             _wrapped = {"type": "function", "function": _schema}
             agent.tools.append(_wrapped)
             if _tname:
