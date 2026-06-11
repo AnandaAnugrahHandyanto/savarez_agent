@@ -57,12 +57,19 @@ _COMMENTARY = object()
 # text right before each platform send, catches anything tag-shaped that
 # the upstream paths missed, and is idempotent.
 _THINK_KW = r'(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)'
+# Tag-name component: optional prefix that ends in a non-letter
+# (digit/underscore/dash, etc. — the kinds of chars that appear in model
+# prefixes like "M2_7", "deepseek_"), then the keyword, then a word
+# boundary so "think" in "thinkx" is not treated as a tag.  Same anchor
+# as agent/agent_runtime_helpers.py:strip_think_blocks so the two
+# scrubbers agree on what counts as a think-tag.
+_THINK_TAG_BODY = rf'(?:[^>]*[^A-Za-z>])?{_THINK_KW}\b'
 _THINK_CLOSED_PAIR_RE = re.compile(
-    rf'<[^>]*{_THINK_KW}[^>]*>.*?</[^>]*{_THINK_KW}[^>]*>',
+    rf'<{_THINK_TAG_BODY}[^>]*>.*?</{_THINK_TAG_BODY}[^>]*>',
     re.DOTALL | re.IGNORECASE,
 )
 _THINK_TAG_RE = re.compile(
-    rf'<[^>]*{_THINK_KW}[^>]*>',
+    rf'<{_THINK_TAG_BODY}[^>]*>',
     re.IGNORECASE,
 )
 
@@ -80,12 +87,15 @@ def scrub_thinking_tags_in_prose(text: str) -> str:
       3. Anything else that ends up looking like a think-tag in the
          final visible text, regardless of why.
 
-    The pattern is intentionally permissive — any tag whose name
-    contains a known reasoning keyword as a substring, case-insensitive —
-    and runs without block-boundary checks.  False positives (a model
-    legitimately using ``<thinkful>``-style names in prose) are vastly
-    less harmful than false negatives (a literal think-tag close
-    leaking raw reasoning to the user).
+    The pattern matches any tag whose name contains a known reasoning
+    keyword AS A DISTINCT TAG-NAME COMPONENT (start-of-tag or preceded
+    by a non-letter; followed by a word boundary).  This catches model
+    prefixes like ``<M2_7think>`` and ``<deepseek_thought>`` while
+    excluding English-word substrings like ``<overthink>`` and
+    ``<mythinking>``.  False positives (a model legitimately using a
+    tag like ``<thinkful>`` in prose) are vastly less harmful than
+    false negatives (a literal think-tag close leaking raw reasoning
+    to the user); when in doubt, scrub.
 
     Idempotent: running twice produces the same output as running once.
     """

@@ -204,6 +204,59 @@ class TestScrubThinkingTagsInProse:
         assert "visible" not in result  # also between two close tags → scrubbed
         assert "more" in result
 
+    # ── Model-prefixed variants with attributes / mixed suffixes ──
+
+    def test_model_prefixed_with_attribute(self):
+        """Model-prefixed tags carrying XML attributes are still stripped.
+
+        The non-letter boundary check accepts a space (between the keyword
+        and the attribute) as a valid separator.
+        """
+        assert scrub_thinking_tags_in_prose(
+            "<" + "M2_7think attr=\"x\">reasoning"
+            + "<" + "/M2_7think>kept"
+        ) == "kept"
+
+    def test_model_prefixed_underscore_keyword_with_attribute(self):
+        assert scrub_thinking_tags_in_prose(
+            "<" + "M2_7_thinking attr=\"x\">reasoning"
+            + "<" + "/M2_7_thinking>kept"
+        ) == "kept"
+
+    # ── Substring-in-English-word tags: must NOT be stripped ──
+    # These tags contain the keyword as a substring inside a real English
+    # word, not as a distinct tag-name component.  The June 9 2026
+    # permissive regex <[^>]*think[^>]*> over-matched these; the
+    # maintainer-requested refinement anchors the keyword to a non-letter
+    # (or start-of-tag) boundary, excluding them.
+
+    @pytest.mark.parametrize(
+        "tag",
+        [
+            "overthink",
+            "mythinking",
+            "rethink",
+            "doublethink",
+            "unthinking",
+            "thinkx",   # keyword followed by a word char → \b fails
+        ],
+    )
+    def test_english_word_substring_preserved(self, tag):
+        """Tags where 'think' is embedded in an English word are kept as-is.
+
+        The reasoning: 'overthink', 'mythinking', 'rethink' etc. are
+        extremely unlikely to be model-prefixed think-tag variants, and
+        stripping them would silently mutilate user-visible prose.
+        """
+        s = f"<{tag}>x</{tag}>visible"
+        # The whole thing should pass through unchanged.
+        assert scrub_thinking_tags_in_prose(s) == s
+
+    def test_english_word_substring_prose_preserved(self):
+        """Prose that mentions 'overthink' etc. is left alone."""
+        s = "Let me <overthink> this for a moment."
+        assert scrub_thinking_tags_in_prose(s) == s
+
 
 # ── Integration: _send_or_edit strips MEDIA: ─────────────────────────────
 
