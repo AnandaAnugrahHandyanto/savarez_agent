@@ -937,6 +937,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # Session DB row deferred to first run_conversation() call.
             # pending_title applied post-first-message (see cli.exec handler).
             current["agent"] = agent
+            # Baseline for the per-turn config sync; the profile home
+            # override is still active here.
+            current["config_model_seen"] = _config_model_target()
 
             try:
                 worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
@@ -1401,6 +1404,16 @@ def _resolve_model() -> str:
     if isinstance(m, str) and m:
         return m.strip()
     return "anthropic/claude-sonnet-4"
+
+
+def _config_model_target() -> tuple[str, str]:
+    """(model, provider) currently selected by env/config."""
+    model = _resolve_model()
+    cfg_model = _load_cfg().get("model")
+    provider = ""
+    if isinstance(cfg_model, dict):
+        provider = str(cfg_model.get("provider") or "").strip()
+    return model, provider
 
 
 def _resolve_startup_runtime() -> tuple[str, str | None]:
@@ -1872,6 +1885,7 @@ def _apply_model_switch(
     raw_input: str,
     *,
     confirm_expensive_model: bool = False,
+    pin_session_override: bool = True,
 ) -> dict:
     from hermes_cli.model_switch import parse_model_flags, switch_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -1975,7 +1989,7 @@ def _apply_model_switch(
     # contamination bug). agent.switch_model() above already mutated the right
     # agent in place; the override dict makes that choice survive a rebuild
     # without touching shared process state.
-    if isinstance(session, dict):
+    if pin_session_override and isinstance(session, dict):
         session["model_override"] = {
             "model": result.new_model,
             "provider": result.target_provider,
@@ -1990,6 +2004,42 @@ def _apply_model_switch(
         "warning": result.warning_message or "",
         "confirm_required": False,
     }
+
+
+def _sync_agent_model_with_config(sid: str, session: dict) -> None:
+    """Adopt a config.yaml model change at turn start, like gateways do per
+    message. Sessions pinned with /model keep their choice; a failed switch
+    keeps the current model and never blocks the turn.
+    """
+    agent = session.get("agent")
+    if agent is None or session.get("model_override"):
+        return
+    target = _config_model_target()
+    if not target[0]:
+        return
+    seen = session.get("config_model_seen")
+    # Record first so a broken config gets one attempt per edit, not per turn.
+    session["config_model_seen"] = target
+    if target == seen:
+        return
+    if seen is None and target[0] == (getattr(agent, "model", "") or ""):
+        return
+    model, provider = target
+    raw = f"{model} --provider {provider}" if provider else model
+    try:
+        _apply_model_switch(
+            sid,
+            session,
+            raw,
+            confirm_expensive_model=True,
+            pin_session_override=False,
+        )
+    except Exception as e:
+        _emit(
+            "error",
+            sid,
+            {"message": f"Could not switch to configured model {model}: {e}"},
+        )
 
 
 def _compress_session_history(
@@ -3042,6 +3092,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     finally:
         _clear_session_context(tokens)
     session["agent"] = new_agent
+    session["config_model_seen"] = _config_model_target()
     session["attached_images"] = []
     session["edit_snapshots"] = {}
     session["image_counter"] = 0
@@ -5315,6 +5366,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             # the sudo.request overlay. (secret capture is a module global, so
             # re-running is a harmless no-op.)
             _wire_callbacks(sid)
+            _sync_agent_model_with_config(sid, session)
             cwd = _session_cwd(session)
             _register_session_cwd(session)
             cols = session.get("cols", 80)
