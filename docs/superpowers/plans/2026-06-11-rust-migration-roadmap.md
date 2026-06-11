@@ -155,6 +155,8 @@ language-specific setup where needed.
   fallback preserved if uv fails to install or locate the runtime.
 - `venv` now runs native-first through Rust by invoking `uv venv venv --python 3.11` in the checkout, with script
   fallback preserved if native venv creation fails.
+- Python dependency installation now has a Rust native-first lockfile path using `uv sync --extra all --locked` with
+  `UV_PROJECT_ENVIRONMENT` pinned to `venv`, while the script keeps all PyPI fallback tiers.
 - `node-deps` now uses a Rust no-op skip when npm is unavailable on every platform, matching the existing script
   behavior without starting PowerShell or bash for a stage that can only skip.
 - Windows `platform-sdks` now skips natively when `.env` has no configured messaging platform tokens, while preserving
@@ -165,8 +167,9 @@ language-specific setup where needed.
 - CI runs bootstrap-installer Rust unit tests in addition to the manager and desktop platform tests.
 
 **Still script-backed:**
-- Language/runtime setup: uv, Python dependencies, Node installation when missing, npm dependencies when npm is
-  available, desktop build, and platform SDK verification when messaging tokens are configured.
+- Language/runtime setup: uv, Python dependency fallback tiers when `uv.lock` sync is unavailable, Node installation
+  when missing, npm dependencies when npm is available, desktop build, and platform SDK verification when messaging
+  tokens are configured.
 - Repository clone/update stage execution until the Git/ZIP fallback matrix has a parity suite and native stage wiring.
 - Remaining platform shell/profile edge cases that are not covered by the current Rust path-stage helpers.
 

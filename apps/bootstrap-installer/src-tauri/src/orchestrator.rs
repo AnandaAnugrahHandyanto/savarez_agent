@@ -52,6 +52,16 @@ pub struct PythonRuntimeStagePlan {
     pub uv: PathBuf,
 }
 
+/// Native Python dependency sync stage execution plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PythonDependenciesStagePlan {
+    pub uv: PathBuf,
+    pub cwd: PathBuf,
+    pub venv: PathBuf,
+    pub python: PathBuf,
+    pub lockfile: PathBuf,
+}
+
 /// How a bootstrap stage is currently handled by the Rust orchestrator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StageExecutionMode {
@@ -710,6 +720,79 @@ pub fn create_python_venv_stage(
     }))
 }
 
+/// Build the native Python dependencies stage plan.
+pub fn python_dependencies_stage_plan<P>(
+    install_root: &Path,
+    hermes_home: &Path,
+    path_env: P,
+    pathext: &str,
+) -> Result<PythonDependenciesStagePlan>
+where
+    P: AsRef<OsStr>,
+{
+    if !install_root.is_dir() {
+        return Err(anyhow!(
+            "install root does not exist: {}",
+            install_root.display()
+        ));
+    }
+    let lockfile = install_root.join("uv.lock");
+    if !lockfile.is_file() {
+        return Err(anyhow!("uv.lock not found at {}", lockfile.display()));
+    }
+    let uv = uv_tool_path(hermes_home, path_env, pathext)?;
+    let venv = install_root.join("venv");
+    let python = venv_python_path(&venv);
+    Ok(PythonDependenciesStagePlan {
+        uv,
+        cwd: install_root.to_path_buf(),
+        venv,
+        python,
+        lockfile,
+    })
+}
+
+/// Install Python dependencies through the hash-verified uv.lock path.
+pub fn sync_python_dependencies_stage(
+    install_root: &Path,
+    hermes_home: &Path,
+) -> Result<serde_json::Value> {
+    let path_env = std::env::var_os("PATH").unwrap_or_default();
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let plan = python_dependencies_stage_plan(install_root, hermes_home, path_env, &pathext)?;
+    let status = Command::new(&plan.uv)
+        .args(["sync", "--extra", "all", "--locked"])
+        .current_dir(&plan.cwd)
+        .env("VIRTUAL_ENV", &plan.venv)
+        .env("UV_PYTHON", &plan.python)
+        .env("UV_PROJECT_ENVIRONMENT", &plan.venv)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .with_context(|| format!("running {}", plan.uv.display()))?;
+    if !status.success() {
+        return Err(anyhow!("uv sync failed with exit {:?}", status.code()));
+    }
+    let baseline = Command::new(&plan.python)
+        .args(["-c", "import dotenv, openai, rich, prompt_toolkit"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .with_context(|| format!("checking baseline imports with {}", plan.python.display()))?;
+    if !baseline.success() {
+        return Err(anyhow!(
+            "baseline imports failed after uv sync with exit {:?}",
+            baseline.code()
+        ));
+    }
+    Ok(serde_json::json!({
+        "uv": plan.uv,
+        "venv": plan.venv,
+        "python": plan.python,
+        "tier": "hash-verified (uv.lock)",
+    }))
+}
+
 /// Build a native Windows PATH stage report without mutating user state.
 pub fn windows_path_stage_plan(
     hermes_home: &Path,
@@ -1120,7 +1203,7 @@ fn node_version_string_satisfies_build(version: &str) -> bool {
 fn stage_execution_mode(name: &str) -> StageExecutionMode {
     if matches!(
         name.to_ascii_lowercase().as_str(),
-        "repository" | "python" | "venv"
+        "repository" | "python" | "venv" | "dependencies" | "python-deps"
     ) {
         return StageExecutionMode::NativeWithScriptFallback;
     }
@@ -1213,10 +1296,12 @@ mod tests {
             stage("platform-sdks"),
             stage("node-deps"),
             stage("venv"),
+            stage("dependencies"),
+            stage("python-deps"),
         ];
         let plan = build_stage_plan(&stages, false);
 
-        assert_eq!(plan.len(), 7);
+        assert_eq!(plan.len(), 9);
         assert_eq!(plan[0].name, "repository");
         assert_eq!(plan[0].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[0].script_fallback, true);
@@ -1238,6 +1323,12 @@ mod tests {
         assert_eq!(plan[6].name, "venv");
         assert_eq!(plan[6].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[6].script_fallback, true);
+        assert_eq!(plan[7].name, "dependencies");
+        assert_eq!(plan[7].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[7].script_fallback, true);
+        assert_eq!(plan[8].name, "python-deps");
+        assert_eq!(plan[8].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[8].script_fallback, true);
     }
 
     #[test]
@@ -1689,6 +1780,35 @@ mod tests {
         assert_eq!(plan.uv, hermes_home.join("bin").join("uv.exe"));
         assert_eq!(plan.venv, install_root.join("venv"));
         assert_eq!(plan.cwd, install_root);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn python_dependencies_stage_plan_requires_lock_and_targets_venv() {
+        let root = std::env::temp_dir().join(format!("hermes-deps-plan-{}", std::process::id()));
+        let hermes_home = root.join("home");
+        let install_root = hermes_home.join("hermes-agent");
+        let path_tools = root.join("tools");
+        std::fs::create_dir_all(hermes_home.join("bin")).unwrap();
+        std::fs::create_dir_all(&install_root).unwrap();
+        std::fs::create_dir_all(&path_tools).unwrap();
+        std::fs::write(hermes_home.join("bin").join("uv.exe"), b"managed uv").unwrap();
+
+        let missing_lock =
+            python_dependencies_stage_plan(&install_root, &hermes_home, &path_tools, ".EXE")
+                .unwrap_err();
+        assert!(missing_lock.to_string().contains("uv.lock"));
+
+        std::fs::write(install_root.join("uv.lock"), b"lock").unwrap();
+        let plan =
+            python_dependencies_stage_plan(&install_root, &hermes_home, &path_tools, ".EXE")
+                .unwrap();
+
+        assert_eq!(plan.uv, hermes_home.join("bin").join("uv.exe"));
+        assert_eq!(plan.cwd, install_root);
+        assert_eq!(plan.venv, plan.cwd.join("venv"));
+        assert_eq!(plan.python, venv_python_path(&plan.venv));
 
         let _ = std::fs::remove_dir_all(&root);
     }
