@@ -5037,7 +5037,7 @@ class TestBuildTableCardPayload(unittest.TestCase):
         # Truncation warning
         last = elements[-1]
         self.assertEqual(last["tag"], "markdown")
-        self.assertIn("截断", last["content"])
+        self.assertIn("truncated", last["content"])
 
     # -- malformed table falls back ---------------------------------------
 

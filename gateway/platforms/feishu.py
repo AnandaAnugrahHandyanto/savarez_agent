@@ -582,10 +582,10 @@ def _build_table_card_payload(content: str) -> Optional[str]:
         return None
 
     # Determine card title from first table's first column value.
-    title = "📊 数据"
+    title = "📊 Data"
     for seg in segments:
         if seg["type"] == "table":
-            title = f"📊 {seg['header'][0]}" if seg["header"] else "📊 数据"
+            title = f"📊 {seg['header'][0]}" if seg["header"] else "📊 Data"
             break
 
     elements = []  # type: List[Dict[str, Any]]
@@ -698,7 +698,7 @@ def _parse_table_segments(content: str) -> List[Dict[str, Any]]:
                 segments.append({"type": "table", "header": header, "rows": rows})
                 segments.append({
                     "type": "text",
-                    "content": f"⚠️ 表格过长，已截断至前 {_TABLE_MAX_ROWS} 行",
+                    "content": f"⚠️ Table too long, truncated to first {_TABLE_MAX_ROWS} rows",
                 })
             else:
                 segments.append({"type": "table", "header": header, "rows": rows})
