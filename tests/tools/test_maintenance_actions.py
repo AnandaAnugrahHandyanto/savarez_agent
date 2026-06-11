@@ -44,6 +44,18 @@ class TestMaintenanceActionDefaultDeny:
         assert result.allowed is False
         assert result.reason == "policy_absent"
 
+    @pytest.mark.parametrize("enabled", [None, "false", "true", "no", "yes", 1, 0, [], {}])
+    def test_malformed_global_enabled_blocks(self, enabled):
+        result = evaluate_maintenance_action(
+            _policy(enabled=enabled),
+            "caspian_inference_restart",
+            SAFE_ARGV,
+            current_user_approved=True,
+        )
+
+        assert result.allowed is False
+        assert result.reason == "policy_enabled_invalid"
+
     def test_global_disabled_blocks(self):
         result = evaluate_maintenance_action(
             _policy(enabled=False), "caspian_inference_restart", SAFE_ARGV
@@ -51,6 +63,21 @@ class TestMaintenanceActionDefaultDeny:
 
         assert result.allowed is False
         assert result.reason == "policy_disabled"
+
+    @pytest.mark.parametrize("enabled", [None, "false", "true", "no", "yes", 1, 0, [], {}])
+    def test_malformed_action_enabled_blocks(self, enabled):
+        policy = _policy()
+        policy["actions"]["caspian_inference_restart"]["enabled"] = enabled
+
+        result = evaluate_maintenance_action(
+            policy,
+            "caspian_inference_restart",
+            SAFE_ARGV,
+            current_user_approved=True,
+        )
+
+        assert result.allowed is False
+        assert result.reason == "action_enabled_invalid"
 
     def test_action_disabled_blocks(self):
         policy = _policy()

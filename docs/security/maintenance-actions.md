@@ -18,9 +18,11 @@ The validator follows a default-deny contract:
 
 - absent policy blocks;
 - disabled global policy blocks;
+- malformed global enabled flags block;
 - missing or malformed `actions` blocks;
 - unknown actions block;
 - disabled actions block;
+- malformed action enabled flags block;
 - malformed action bodies block;
 - missing or malformed `exact_argv` blocks;
 - malformed requested argv blocks;

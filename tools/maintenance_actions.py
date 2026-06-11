@@ -125,8 +125,11 @@ def evaluate_maintenance_action(
         return _blocked("policy_absent", action_id=action_id)
     if not isinstance(policy, dict):
         return _blocked("policy_invalid", action_id=action_id)
-    if not policy.get("enabled", False):
+    policy_enabled = policy.get("enabled")
+    if policy_enabled is False:
         return _blocked("policy_disabled", action_id=action_id)
+    if policy_enabled is not True:
+        return _blocked("policy_enabled_invalid", action_id=action_id)
 
     if str(invocation_context or "").lower() in _UNATTENDED_CONTEXTS:
         unattended_reason = _unattended_policy_reason(policy.get("unattended_policy", "none"))
@@ -141,8 +144,11 @@ def evaluate_maintenance_action(
         return _blocked("unknown_action", action_id=action_id)
     if not isinstance(action, dict):
         return _blocked("action_invalid", action_id=action_id)
-    if not action.get("enabled", False):
+    action_enabled = action.get("enabled")
+    if action_enabled is False:
         return _blocked("action_disabled", action_id=action_id, action=action)
+    if action_enabled is not True:
+        return _blocked("action_enabled_invalid", action_id=action_id, action=action)
 
     expected_argv = action.get("exact_argv")
     if not _valid_exact_argv(expected_argv):
