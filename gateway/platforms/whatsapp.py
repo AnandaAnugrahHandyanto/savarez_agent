@@ -180,6 +180,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.whatsapp_location import parse_whatsapp_location_directive
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -992,6 +993,22 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
         try:
             import aiohttp
+
+            location = parse_whatsapp_location_directive(content)
+            if location is not None:
+                payload: Dict[str, Any] = {"chatId": chat_id, **location}
+                if reply_to:
+                    payload["replyTo"] = reply_to
+                async with self._http_session.post(
+                    f"http://127.0.0.1:{self._bridge_port}/send-location",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return SendResult(success=True, message_id=data.get("messageId"))
+                    error = await resp.text()
+                    return SendResult(success=False, error=error)
 
             # Format and chunk the message
             formatted = self.format_message(content)

@@ -247,6 +247,32 @@ class TestSendChunking:
         assert payload["message"] == "*bold text*"
 
     @pytest.mark.asyncio
+    async def test_location_directive_sends_native_pin_endpoint(self):
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "loc1"})
+        http_session = adapter._http_session
+        assert http_session is not None
+        http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter.send(
+            "chat1",
+            "LOCATION:37.7749,-122.4194|San Francisco City Hall|1 Dr Carlton B Goodlett Pl",
+        )
+
+        assert result.success
+        call_args = http_session.post.call_args
+        assert call_args.args[0] == "http://127.0.0.1:3000/send-location"
+        payload = call_args.kwargs.get("json") or call_args[1].get("json")
+        assert payload == {
+            "chatId": "chat1",
+            "latitude": 37.7749,
+            "longitude": -122.4194,
+            "name": "San Francisco City Hall",
+            "address": "1 Dr Carlton B Goodlett Pl",
+        }
+
+    @pytest.mark.asyncio
     async def test_reply_to_only_on_first_chunk(self):
         """reply_to should only be set on the first chunk."""
         adapter = _make_adapter()

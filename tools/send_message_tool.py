@@ -15,6 +15,7 @@ import time
 from email.utils import formatdate
 
 from agent.redact import redact_sensitive_text
+from gateway.platforms.whatsapp_location import parse_whatsapp_location_directive
 
 logger = logging.getLogger(__name__)
 
@@ -1094,7 +1095,27 @@ async def _send_whatsapp(extra, chat_id, message):
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
         bridge_port = extra.get("bridge_port", 3000)
+        location = parse_whatsapp_location_directive(message)
         async with aiohttp.ClientSession() as session:
+            if location is not None:
+                payload = {"chatId": chat_id, **location}
+                async with session.post(
+                    f"http://localhost:{bridge_port}/send-location",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return {
+                            "success": True,
+                            "platform": "whatsapp",
+                            "chat_id": chat_id,
+                            "message_id": data.get("messageId"),
+                            "native_location": True,
+                        }
+                    body = await resp.text()
+                    return _error(f"WhatsApp bridge location error ({resp.status}): {body}")
+
             async with session.post(
                 f"http://localhost:{bridge_port}/send",
                 json={"chatId": chat_id, "message": message},
@@ -1110,6 +1131,8 @@ async def _send_whatsapp(extra, chat_id, message):
                     }
                 body = await resp.text()
                 return _error(f"WhatsApp bridge error ({resp.status}): {body}")
+    except ValueError as e:
+        return _error(f"WhatsApp location directive error: {e}")
     except Exception as e:
         return _error(f"WhatsApp send failed: {e}")
 
