@@ -180,6 +180,14 @@ def test_hindsight_dependency_metadata_installs_embedded_runtime():
     assert "hindsight-client==0.6.1" not in hindsight_extra
     assert "hindsight-client==0.6.1" not in manifest_deps
 
+    lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    packages = {package["name"]: package for package in lock["package"]}
+    hindsight_all_deps = {
+        dep["name"]
+        for dep in packages["hindsight-all"]["dependencies"]
+    }
+    assert "hindsight-client" in hindsight_all_deps
+
 
 # ---------------------------------------------------------------------------
 # Schema tests

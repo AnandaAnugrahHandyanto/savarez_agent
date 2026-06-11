@@ -49,7 +49,6 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
-_MIN_CLIENT_VERSION = "0.4.22"
 _MIN_ALL_VERSION = "0.7.2"
 _HINDSIGHT_DEPENDENCY = f"hindsight-all>={_MIN_ALL_VERSION}"
 _HINDSIGHT_DISTRIBUTION = "hindsight-all"
