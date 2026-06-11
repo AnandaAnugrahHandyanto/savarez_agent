@@ -47,6 +47,7 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 AUTHOR_MAP = {
     "peterhao@Peters-MacBook-Air.local": "pinguarmy",
     "barronlroth@gmail.com": "barronlroth",
+    "jeevesassistant00@gmail.com": "jeeves-assistant",
     "ondrej.drapalik@gmail.com": "OndrejDrapalik",
     "tomasz.panek@gmail.com": "tomekpanek",
     "philipadsouza@gmail.com": "PhilipAD",
