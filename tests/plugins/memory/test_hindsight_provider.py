@@ -172,7 +172,7 @@ def test_hindsight_dependency_metadata_installs_embedded_runtime():
     )
     manifest_deps = manifest["pip_dependencies"]
 
-    assert hindsight_extra == ["hindsight-all>=0.7.2"]
+    assert hindsight_extra == ["hindsight-all==0.7.2"]
     assert manifest_deps == hindsight_extra
     assert LAZY_DEPS["memory.hindsight"] == tuple(hindsight_extra)
     assert _HINDSIGHT_DEPENDENCY == hindsight_extra[0]

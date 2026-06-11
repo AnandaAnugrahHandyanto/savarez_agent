@@ -50,7 +50,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
 _MIN_ALL_VERSION = "0.7.2"
-_HINDSIGHT_DEPENDENCY = f"hindsight-all>={_MIN_ALL_VERSION}"
+_HINDSIGHT_DEPENDENCY = f"hindsight-all=={_MIN_ALL_VERSION}"
 _HINDSIGHT_DISTRIBUTION = "hindsight-all"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
