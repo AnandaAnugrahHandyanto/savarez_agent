@@ -161,6 +161,25 @@ _BLOCKED_PROJECT_ENV_BASENAMES: set[str] = {
     ".envrc",
 }
 
+_BLOCKED_READ_DIR_NAMES: set[str] = {
+    ".ssh",
+    ".gnupg",
+}
+
+_BLOCKED_READ_FILE_BASENAMES: set[str] = {
+    ".aws/credentials",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+}
+
+_BLOCKED_READ_EXTENSIONS: set[str] = {
+    ".kdbx",
+    ".p12",
+    ".pem",
+    ".pfx",
+}
+
 
 def get_read_block_error(path: str) -> Optional[str]:
     """Return an error message when a read targets a denied Hermes path.
@@ -207,6 +226,7 @@ def get_read_block_error(path: str) -> Optional[str]:
     ``"auth.json"`` would otherwise miss the denylist when the task's
     terminal cwd differs from the process cwd.
     """
+    lexical = Path(os.path.abspath(os.path.expanduser(str(path))))
     resolved = Path(path).expanduser().resolve()
 
     # Resolve BOTH the active HERMES_HOME (profile-aware) AND the global
@@ -292,12 +312,43 @@ def get_read_block_error(path: str) -> Optional[str]:
             "security boundary; the terminal tool can still bypass.)"
         )
 
+    for inspected in (lexical, resolved):
+        normalized_parts = {part.lower() for part in inspected.parts}
+        for dir_name in _BLOCKED_READ_DIR_NAMES:
+            if dir_name in normalized_parts:
+                return (
+                    f"Access denied: {path} is under {dir_name}/ and cannot be read directly "
+                    "because it commonly contains credential material. "
+                    "(Defense-in-depth — not a security boundary; the terminal tool can still bypass.)"
+                )
+
+        normalized_relative = "/".join(part.lower() for part in inspected.parts[-2:])
+        if normalized_relative in _BLOCKED_READ_FILE_BASENAMES or inspected.name.lower() in _BLOCKED_READ_FILE_BASENAMES:
+            return (
+                f"Access denied: {path} is a credential-bearing config file and cannot be read directly. "
+                "(Defense-in-depth — not a security boundary; the terminal tool can still bypass.)"
+            )
+
+        if inspected.suffix.lower() in _BLOCKED_READ_EXTENSIONS:
+            return (
+                f"Access denied: {path} is a key/certificate file and cannot be read directly. "
+                "(Defense-in-depth — not a security boundary; the terminal tool can still bypass.)"
+            )
+
+        if inspected.name.lower().startswith("id_") and not inspected.name.lower().endswith(".pub"):
+            key_name = inspected.name.lower()
+            if key_name in {"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"} or key_name.startswith(("id_rsa.", "id_dsa.", "id_ecdsa.", "id_ed25519.")):
+                return (
+                    f"Access denied: {path} appears to be an SSH private key and cannot be read directly. "
+                    "(Defense-in-depth — not a security boundary; the terminal tool can still bypass.)"
+                )
+
     # Block common secret-bearing project-local .env files anywhere on disk.
     # The agent helping a user with their project rarely needs to read raw
     # .env contents — .env.example is the documented-shape substitute. The
     # terminal tool can still ``cat .env``; this is defense-in-depth, not a
     # boundary (see module docstring).
-    if resolved.name in _BLOCKED_PROJECT_ENV_BASENAMES:
+    if any(inspected.name in _BLOCKED_PROJECT_ENV_BASENAMES for inspected in (lexical, resolved)):
         return (
             f"Access denied: {path} is a secret-bearing environment file "
             "and cannot be read to prevent credential leakage. "

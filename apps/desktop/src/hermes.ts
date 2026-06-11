@@ -33,13 +33,15 @@ import type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  SessionChangesResponse,
   SessionInfo,
   SessionMessagesResponse,
   SessionSearchResponse,
   SkillInfo,
   StatusResponse,
   ToolsetConfig,
-  ToolsetInfo
+  ToolsetInfo,
+  WorkspaceGitChangesResponse
 } from '@/types/hermes'
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
@@ -54,10 +56,10 @@ export type {
   AnalyticsSkillEntry,
   AnalyticsSkillsSummary,
   AnalyticsTotals,
-  BackendUpdateCheckResponse,
   AudioSpeakResponse,
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
+  BackendUpdateCheckResponse,
   ConfigFieldSchema,
   ConfigSchemaResponse,
   CronJob,
@@ -89,6 +91,7 @@ export type {
   ProfileSoul,
   ProfilesResponse,
   RpcEvent,
+  SessionChangesResponse,
   SessionCreateResponse,
   SessionInfo,
   SessionMessage,
@@ -97,11 +100,16 @@ export type {
   SessionRuntimeInfo,
   SessionSearchResponse,
   SessionSearchResult,
+  SessionTurnChange,
+  SessionTurnChangeFile,
   SkillInfo,
   StaleAuxAssignment,
   StatusResponse,
   ToolsetConfig,
-  ToolsetInfo
+  ToolsetInfo,
+  WorkspaceGitChangeFile,
+  WorkspaceGitChangesResponse,
+  WorkspaceGitDiffLine
 } from '@/types/hermes'
 
 export class HermesGateway extends JsonRpcGatewayClient {
@@ -222,6 +230,15 @@ export function getSessionMessages(id: string, profile?: string | null): Promise
   })
 }
 
+export function getSessionChanges(id: string, profile?: string | null): Promise<SessionChangesResponse> {
+  const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+
+  return window.hermesDesktop.api<SessionChangesResponse>({
+    ...(profile ? { profile } : {}),
+    path: `/api/sessions/${encodeURIComponent(id)}/changes${suffix}`
+  })
+}
+
 export function deleteSession(id: string, profile?: string | null): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...(profile ? { profile } : {}),
@@ -285,6 +302,15 @@ export function getLogs(params: {
   return window.hermesDesktop.api<LogsResponse>({
     ...profileScoped(),
     path: suffix ? `/api/logs?${suffix}` : '/api/logs'
+  })
+}
+
+export function getWorkspaceGitChanges(cwd: string, maxFiles = 40): Promise<WorkspaceGitChangesResponse> {
+  const query = new URLSearchParams({ cwd, max_files: String(maxFiles) })
+
+  return window.hermesDesktop.api<WorkspaceGitChangesResponse>({
+    ...profileScoped(),
+    path: `/api/workspace/git/changes?${query.toString()}`
   })
 }
 

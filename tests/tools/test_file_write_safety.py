@@ -173,6 +173,19 @@ class TestAtomicWrite:
         assert res.error is None, res.error
         assert target.read_text(encoding="utf-8") == tricky
 
+    def test_write_file_tool_does_not_persist_old_content_diff(self, tmp_path: Path, monkeypatch):
+        from tools import file_tools
+
+        target = tmp_path / "settings.env"
+        target.write_text("TOKEN=old-secret\n", encoding="utf-8")
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+
+        payload = file_tools.write_file_tool(str(target), "TOKEN=new-value\n", task_id="write-diff-test")
+
+        assert "old-secret" not in payload
+        assert '"diff"' not in payload
+        assert target.read_text(encoding="utf-8") == "TOKEN=new-value\n"
+
     def test_patch_routes_through_atomic_write(self, ops, tmp_path: Path):
         target = tmp_path / "edit.py"
         target.write_text("a = 1\nb = 2\nc = 3\n")

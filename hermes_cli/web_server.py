@@ -43,6 +43,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from agent.file_safety import get_read_block_error
 from hermes_cli import __version__, __release_date__
 from hermes_cli.config import (
     cfg_get,
@@ -911,6 +912,45 @@ _MEDIA_MAX_BYTES = 25 * 1024 * 1024
 _MANAGED_FILES_ROOT_ENV = "HERMES_DASHBOARD_FILES_ROOT"
 _MANAGED_FILE_MAX_BYTES = 100 * 1024 * 1024
 _HOSTED_MANAGED_FILES_ROOT = Path("/opt/data")
+_WORKSPACE_TEXT_PREVIEW_MAX_BYTES = 512 * 1024
+_WORKSPACE_DATA_URL_MAX_BYTES = 25 * 1024 * 1024
+_WORKSPACE_DIR_MAX_ENTRIES = 500
+_WORKSPACE_HTML_EXTENSIONS = {".htm", ".html"}
+_WORKSPACE_IMAGE_EXTENSIONS = {".bmp", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"}
+_WORKSPACE_LANGUAGE_BY_EXT = {
+    ".c": "c",
+    ".conf": "ini",
+    ".cpp": "cpp",
+    ".css": "css",
+    ".csv": "csv",
+    ".go": "go",
+    ".graphql": "graphql",
+    ".h": "c",
+    ".hpp": "cpp",
+    ".html": "html",
+    ".java": "java",
+    ".js": "javascript",
+    ".json": "json",
+    ".jsx": "jsx",
+    ".log": "text",
+    ".lua": "lua",
+    ".md": "markdown",
+    ".mjs": "javascript",
+    ".py": "python",
+    ".rb": "ruby",
+    ".rs": "rust",
+    ".sh": "shell",
+    ".sql": "sql",
+    ".svg": "xml",
+    ".toml": "toml",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".txt": "text",
+    ".xml": "xml",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".zsh": "shell",
+}
 
 
 @dataclass(frozen=True)
@@ -1262,6 +1302,352 @@ async def delete_managed_file(payload: ManagedFileDelete, request: Request):
         raise HTTPException(status_code=status_code, detail=f"Could not delete path: {exc}")
 
     return {"ok": True, "path": display_path, **_managed_response_meta(policy)}
+_WORKSPACE_GIT_MAX_FILES = 80
+_WORKSPACE_GIT_MAX_DIFF_LINES = 260
+
+
+def _run_git_json(args: list[str], cwd: Path, timeout: int = 8) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def _resolve_workspace_cwd(cwd: str | None) -> Path:
+    raw = (cwd or os.getenv("TERMINAL_CWD") or os.getcwd()).strip()
+    try:
+        resolved = Path(raw).expanduser().resolve()
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid working directory: {exc}") from exc
+    if not resolved.is_dir():
+        raise HTTPException(status_code=400, detail="Working directory does not exist")
+    return resolved
+
+
+def _parse_porcelain_status(text: str) -> dict[str, dict[str, Any]]:
+    statuses: dict[str, dict[str, Any]] = {}
+    for line in text.splitlines():
+        if not line:
+            continue
+        code = line[:2]
+        raw_path = line[3:] if len(line) > 3 else ""
+        if " -> " in raw_path:
+            previous, path = raw_path.split(" -> ", 1)
+        else:
+            path = raw_path
+            previous = None
+        if not path:
+            continue
+        marker = code.strip() or code
+        if code == "??":
+            kind = "untracked"
+        elif "U" in code:
+            kind = "conflict"
+        elif "D" in code:
+            kind = "deleted"
+        elif "R" in code:
+            kind = "renamed"
+        elif "C" in code:
+            kind = "copied"
+        elif "A" in code:
+            kind = "added"
+        else:
+            kind = "modified"
+        statuses[path] = {"path": path, "previousPath": previous, "status": kind, "statusCode": marker}
+    return statuses
+
+
+def _parse_numstat(text: str) -> dict[str, dict[str, Any]]:
+    stats: dict[str, dict[str, Any]] = {}
+    for line in text.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        added_raw, removed_raw, path = parts[0], parts[1], "\t".join(parts[2:])
+        binary = added_raw == "-" or removed_raw == "-"
+        added = 0 if binary else int(added_raw or 0)
+        removed = 0 if binary else int(removed_raw or 0)
+        stats[path] = {"path": path, "added": added, "removed": removed, "binary": binary}
+    return stats
+
+
+def _diff_preview(root: Path, path_text: str, line_limit: int) -> list[dict[str, Any]]:
+    out = _run_git_json(["diff", "--unified=80", "--", path_text], root, timeout=8)
+    if out.returncode != 0 or not out.stdout:
+        return []
+    preview = []
+    for raw in out.stdout.splitlines()[:line_limit]:
+        if raw.startswith("+++") or raw.startswith("---"):
+            kind = "meta"
+        elif raw.startswith("@@"):
+            kind = "hunk"
+        elif raw.startswith("+"):
+            kind = "added"
+        elif raw.startswith("-"):
+            kind = "removed"
+        else:
+            kind = "context"
+        preview.append({"type": kind, "text": raw})
+    return preview
+
+
+def _path_is_within(child: Path, root: Path) -> bool:
+    return child == root or root in child.parents
+
+
+def _workspace_access_root(base_dir: str | None = None) -> tuple[Path, Path]:
+    """Return (trusted_root, base) for read-only workspace file APIs.
+
+    The trusted root comes from server-side state (`TERMINAL_CWD` or process
+    cwd), optionally promoted to its containing Git root. `base_dir` is only a
+    relative-resolution hint from the client and must itself sit under that
+    trusted root; it is never allowed to define the trust boundary.
+    """
+    default_base = _resolve_workspace_cwd(None)
+    git_root = _workspace_git_root(str(default_base))
+    root = Path(git_root).resolve() if git_root else default_base
+    if root == Path(root.anchor):
+        raise HTTPException(status_code=403, detail="Workspace root is not safely scoped")
+
+    if base_dir:
+        base = _resolve_workspace_cwd(base_dir)
+        if not _path_is_within(base, root):
+            raise HTTPException(status_code=403, detail="Base directory outside workspace root")
+    else:
+        base = default_base
+    return root, base
+
+
+def _resolve_workspace_path(raw_path: str, base_dir: str | None = None) -> tuple[Path, Path, Path]:
+    root, base = _workspace_access_root(base_dir)
+    raw = str(raw_path or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Path is required")
+    if "\0" in raw:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if re.match(r"^file://", raw, flags=re.IGNORECASE):
+        parsed = urllib.parse.urlparse(raw)
+        path_text = urllib.parse.unquote(parsed.path)
+        lexical_target = Path(os.path.abspath(os.path.expanduser(path_text)))
+    else:
+        candidate = Path(os.path.expanduser(raw))
+        lexical_target = Path(os.path.abspath(str(candidate if candidate.is_absolute() else base / candidate)))
+    target = lexical_target.resolve()
+    if not _path_is_within(target, root):
+        raise HTTPException(status_code=403, detail="Path outside workspace root")
+    return target, root, lexical_target
+
+
+def _workspace_read_block_error(target: Path, lexical_target: Path | None = None) -> str | None:
+    try:
+        for candidate in (lexical_target, target):
+            if candidate is None:
+                continue
+            block = get_read_block_error(str(candidate))
+            if block:
+                return block
+        return None
+    except Exception:
+        # Preview endpoints should not fail open if the shared guard changes.
+        return "Read blocked: could not verify file safety."
+
+
+def _raise_if_workspace_read_blocked(target: Path, lexical_target: Path | None = None) -> None:
+    block_error = _workspace_read_block_error(target, lexical_target)
+    if block_error:
+        raise HTTPException(status_code=403, detail=block_error)
+
+
+def _workspace_preview_target(raw_target: str, base_dir: str | None = None) -> dict[str, Any] | None:
+    raw = str(raw_target or "").strip().strip("`")
+    if not raw:
+        return None
+    if re.match(r"^https?://", raw, flags=re.IGNORECASE):
+        label = raw.rstrip("/").split("/")[-1] or raw
+        return {"kind": "url", "label": label, "source": raw, "url": raw}
+
+    target, _root, lexical_target = _resolve_workspace_path(raw, base_dir)
+    _raise_if_workspace_read_blocked(target, lexical_target)
+    ext = target.suffix.lower()
+    is_html = ext in _WORKSPACE_HTML_EXTENSIONS
+    is_image = ext in _WORKSPACE_IMAGE_EXTENSIONS
+    return {
+        "kind": "file",
+        "label": target.name or str(target),
+        "language": _WORKSPACE_LANGUAGE_BY_EXT.get(ext, "text"),
+        "path": str(target),
+        "previewKind": "html" if is_html else "image" if is_image else "text",
+        "source": raw,
+        "url": f"hermes-remote-file://{urllib.parse.quote(str(target), safe='')}",
+    }
+
+
+def _looks_binary_bytes(data: bytes) -> bool:
+    if not data:
+        return False
+    sample = data[:4096]
+    if b"\x00" in sample:
+        return True
+    suspicious = sum(1 for byte in sample if byte < 32 and byte not in {9, 10, 13})
+    return suspicious / max(1, len(sample)) > 0.12
+
+
+def _workspace_read_file_text(file_path: str, base_dir: str | None = None) -> dict[str, Any]:
+    target, _root, lexical_target = _resolve_workspace_path(file_path, base_dir)
+    _raise_if_workspace_read_blocked(target, lexical_target)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    size = target.stat().st_size
+    with target.open("rb") as handle:
+        raw = handle.read(_WORKSPACE_TEXT_PREVIEW_MAX_BYTES + 1)
+    binary = _looks_binary_bytes(raw)
+    ext = target.suffix.lower()
+    mime_type = mimetypes.guess_type(str(target))[0] or "text/plain"
+    if binary:
+        return {"binary": True, "byteSize": size, "language": _WORKSPACE_LANGUAGE_BY_EXT.get(ext, "text"), "mimeType": mime_type, "path": str(target), "text": "", "truncated": False}
+    truncated = size > _WORKSPACE_TEXT_PREVIEW_MAX_BYTES
+    text = raw[:_WORKSPACE_TEXT_PREVIEW_MAX_BYTES].decode("utf-8", errors="replace")
+    return {"binary": False, "byteSize": size, "language": _WORKSPACE_LANGUAGE_BY_EXT.get(ext, "text"), "mimeType": mime_type, "path": str(target), "text": text, "truncated": truncated}
+
+
+def _workspace_read_file_data_url(file_path: str, base_dir: str | None = None) -> dict[str, str]:
+    target, _root, lexical_target = _resolve_workspace_path(file_path, base_dir)
+    _raise_if_workspace_read_blocked(target, lexical_target)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    if target.stat().st_size > _WORKSPACE_DATA_URL_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File too large")
+    mime_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+    with target.open("rb") as handle:
+        data = handle.read(_WORKSPACE_DATA_URL_MAX_BYTES + 1)
+    if len(data) > _WORKSPACE_DATA_URL_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File too large")
+    encoded = base64.b64encode(data).decode("ascii")
+    return {"data_url": f"data:{mime_type};base64,{encoded}"}
+
+
+def _workspace_read_dir(dir_path: str, base_dir: str | None = None) -> dict[str, Any]:
+    target, _root, lexical_target = _resolve_workspace_path(dir_path, base_dir)
+    _raise_if_workspace_read_blocked(target, lexical_target)
+    if not target.is_dir():
+        return {"entries": [], "error": "not-directory"}
+    entries = []
+    try:
+        for item in target.iterdir():
+            try:
+                resolved_item = item.resolve()
+                if not _path_is_within(resolved_item, target) or _workspace_read_block_error(resolved_item, item):
+                    continue
+                is_dir = resolved_item.is_dir()
+            except OSError:
+                continue
+            entries.append({"name": item.name, "path": str(resolved_item), "isDirectory": is_dir})
+    except OSError as exc:
+        return {"entries": [], "error": getattr(exc, "strerror", None) or str(exc)}
+    entries.sort(key=lambda entry: (not entry["isDirectory"], entry["name"].lower()))
+    return {"entries": entries[:_WORKSPACE_DIR_MAX_ENTRIES]}
+
+
+def _workspace_git_root(start_path: str) -> str | None:
+    start = Path(str(start_path or ".")).expanduser().resolve()
+    result = _run_git_json(["rev-parse", "--show-toplevel"], start if start.is_dir() else start.parent, timeout=5)
+    return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
+
+
+@app.get("/api/workspace/preview/normalize")
+async def normalize_workspace_preview_target(target: str, base_dir: Optional[str] = None):
+    return _workspace_preview_target(target, base_dir)
+
+
+@app.get("/api/workspace/file/text")
+async def read_workspace_file_text(path: str, base_dir: Optional[str] = None):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: _workspace_read_file_text(path, base_dir))
+
+
+@app.get("/api/workspace/file/data-url")
+async def read_workspace_file_data_url(path: str, base_dir: Optional[str] = None):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: _workspace_read_file_data_url(path, base_dir))
+
+
+@app.get("/api/workspace/fs/read-dir")
+async def read_workspace_dir(path: str, base_dir: Optional[str] = None):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: _workspace_read_dir(path, base_dir))
+
+
+@app.get("/api/workspace/fs/git-root")
+async def get_workspace_git_root(path: str):
+    loop = asyncio.get_running_loop()
+    return {"root": await loop.run_in_executor(None, lambda: _workspace_git_root(path))}
+
+
+def _workspace_git_changes(cwd: str | None, max_files: int = 40) -> dict[str, Any]:
+    start = _resolve_workspace_cwd(cwd)
+    root_out = _run_git_json(["rev-parse", "--show-toplevel"], start)
+    if root_out.returncode != 0:
+        return {"ok": False, "cwd": str(start), "error": "not_git_repository", "message": "This workspace is not inside a Git repository.", "files": [], "totals": {"files": 0, "shown": 0, "added": 0, "removed": 0, "modified": 0, "untracked": 0, "deleted": 0}}
+
+    root = Path(root_out.stdout.strip()).resolve()
+    branch_out = _run_git_json(["branch", "--show-current"], root)
+    status_out = _run_git_json(["status", "--porcelain=v1"], root)
+    numstat_out = _run_git_json(["diff", "--numstat", "HEAD", "--"], root)
+    ahead_behind_out = _run_git_json(["rev-list", "--left-right", "--count", "@{upstream}...HEAD"], root)
+
+    statuses = _parse_porcelain_status(status_out.stdout if status_out.returncode == 0 else "")
+    stats = _parse_numstat(numstat_out.stdout if numstat_out.returncode == 0 else "")
+    paths = sorted(set(statuses) | set(stats), key=lambda pth: (statuses.get(pth, {}).get("status") == "untracked", pth.lower()))
+    capped_paths = paths[: max(1, min(int(max_files or 40), _WORKSPACE_GIT_MAX_FILES))]
+
+    files = []
+    for path_text in capped_paths:
+        status_info = statuses.get(path_text, {"path": path_text, "status": "modified", "statusCode": "M"})
+        stat_info = stats.get(path_text, {"added": 0, "removed": 0, "binary": False})
+        files.append({
+            **status_info,
+            "added": stat_info.get("added", 0),
+            "removed": stat_info.get("removed", 0),
+            "binary": bool(stat_info.get("binary")),
+            "diff": [] if status_info.get("status") == "untracked" else _diff_preview(root, path_text, _WORKSPACE_GIT_MAX_DIFF_LINES),
+        })
+
+    ahead = behind = 0
+    if ahead_behind_out.returncode == 0:
+        parts = ahead_behind_out.stdout.strip().split()
+        if len(parts) == 2:
+            behind, ahead = int(parts[0]), int(parts[1])
+
+    return {
+        "ok": True,
+        "cwd": str(start),
+        "root": str(root),
+        "branch": branch_out.stdout.strip() if branch_out.returncode == 0 else "",
+        "ahead": ahead,
+        "behind": behind,
+        "truncated": len(paths) > len(capped_paths),
+        "files": files,
+        "totals": {
+            "files": len(paths),
+            "shown": len(files),
+            "added": sum(int(item.get("added", 0)) for item in files),
+            "removed": sum(int(item.get("removed", 0)) for item in files),
+            "modified": sum(1 for info in statuses.values() if info.get("status") not in {"untracked", "deleted"}),
+            "untracked": sum(1 for info in statuses.values() if info.get("status") == "untracked"),
+            "deleted": sum(1 for info in statuses.values() if info.get("status") == "deleted"),
+        },
+    }
+
+
+@app.get("/api/workspace/git/changes")
+async def get_workspace_git_changes(cwd: Optional[str] = None, max_files: int = 40):
+    """Return a read-only GitHub/VS-style summary of workspace changes."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: _workspace_git_changes(cwd, max_files))
 
 
 @app.get("/api/status")
@@ -6075,6 +6461,251 @@ async def get_session_latest_descendant(session_id: str):
         "path": path,
         "changed": bool(path and latest != path[0]),
     }
+
+_SESSION_CHANGE_DIFF_LINE_LIMIT = 320
+_SESSION_CHANGE_CONTENT_LINE_LIMIT = 240
+
+
+def _json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+            return decoded if isinstance(decoded, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
+def _tool_call_arguments(messages: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for msg in messages:
+        calls = msg.get("tool_calls") or []
+        if not isinstance(calls, list):
+            continue
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            call_id = call.get("call_id") or call.get("id")
+            fn = call.get("function") if isinstance(call.get("function"), dict) else {}
+            args = fn.get("arguments")
+            parsed = _json_dict(args)
+            if call_id and parsed:
+                out[str(call_id)] = parsed
+    return out
+
+
+def _content_preview(content: Any, limit: int = 140) -> str:
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("content") or ""
+                if text:
+                    parts.append(str(text))
+            elif item:
+                parts.append(str(item))
+        text = " ".join(parts)
+    elif content is None:
+        text = ""
+    else:
+        text = str(content)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _normalize_diff_path(raw: str | None) -> str:
+    value = (raw or "").strip()
+    if value.startswith('"') and value.endswith('"'):
+        value = value[1:-1]
+    if value.startswith("a/") or value.startswith("b/"):
+        value = value[2:]
+    if value.startswith("/"):
+        return value
+    if value.startswith("//"):
+        return value[1:]
+    return value
+
+
+def _diff_line_kind(line: str) -> str:
+    if line.startswith("+++") or line.startswith("---") or line.startswith("diff --git") or line.startswith("index "):
+        return "meta"
+    if line.startswith("@@"):
+        return "hunk"
+    if line.startswith("+"):
+        return "added"
+    if line.startswith("-"):
+        return "removed"
+    return "context"
+
+
+def _status_from_diff_paths(old_path: str, new_path: str) -> str:
+    if old_path == "/dev/null":
+        return "added"
+    if new_path == "/dev/null":
+        return "deleted"
+    return "modified"
+
+
+def _parse_unified_diff(diff_text: str, fallback_paths: list[str] | None = None) -> list[dict[str, Any]]:
+    if not diff_text:
+        return []
+    files: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    pending_old: str | None = None
+    for raw in diff_text.splitlines():
+        if raw.startswith("--- "):
+            pending_old = _normalize_diff_path(raw[4:])
+            current = None
+            continue
+        if raw.startswith("+++ ") and pending_old is not None:
+            new_path = _normalize_diff_path(raw[4:])
+            path = pending_old if new_path == "/dev/null" else new_path
+            current = {
+                "path": path,
+                "status": _status_from_diff_paths(pending_old, new_path),
+                "added": 0,
+                "removed": 0,
+                "binary": False,
+                "diff": [
+                    {"type": "meta", "text": f"--- {pending_old}"},
+                    {"type": "meta", "text": f"+++ {new_path}"},
+                ],
+            }
+            files.append(current)
+            pending_old = None
+            continue
+        if current is None:
+            continue
+        if raw.startswith("+") and not raw.startswith("+++"):
+            current["added"] += 1
+        elif raw.startswith("-") and not raw.startswith("---"):
+            current["removed"] += 1
+        if len(current["diff"]) < _SESSION_CHANGE_DIFF_LINE_LIMIT:
+            current["diff"].append({"type": _diff_line_kind(raw), "text": raw})
+
+    if files:
+        return files
+
+    # Fallback for short custom diffs that do not include file headers.
+    paths = fallback_paths or ["unknown"]
+    lines = diff_text.splitlines()[:_SESSION_CHANGE_DIFF_LINE_LIMIT]
+    return [
+        {
+            "path": path,
+            "status": "modified",
+            "added": sum(1 for line in lines if line.startswith("+") and not line.startswith("+++")),
+            "removed": sum(1 for line in lines if line.startswith("-") and not line.startswith("---")),
+            "binary": False,
+            "diff": [{"type": _diff_line_kind(line), "text": line} for line in lines],
+        }
+        for path in paths
+    ]
+
+
+def _write_file_change(args: dict[str, Any], result: dict[str, Any]) -> list[dict[str, Any]]:
+    paths = result.get("files_created") or result.get("files_modified") or []
+    if not paths:
+        path = result.get("resolved_path") or args.get("path")
+        paths = [path] if path else []
+    out = []
+    for raw_path in paths:
+        path = str(raw_path)
+        out.append({
+            "path": path,
+            "status": "added" if path in (result.get("files_created") or []) else "modified",
+            "added": 0,
+            "removed": 0,
+            "binary": False,
+            "diff": [],
+        })
+    return out
+
+
+def _extract_tool_changes(tool_msg: dict[str, Any], call_args: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    tool_name = tool_msg.get("tool_name") or tool_msg.get("name") or ""
+    result = _json_dict(tool_msg.get("content"))
+    if not result:
+        return []
+    args = call_args.get(str(tool_msg.get("tool_call_id") or ""), {})
+    fallback_paths = [str(p) for p in (result.get("files_modified") or result.get("files_created") or [])]
+    changes: list[dict[str, Any]] = []
+    if tool_name == "write_file" or result.get("bytes_written") is not None:
+        changes.extend(_write_file_change(args, result))
+    elif isinstance(result.get("diff"), str) and result["diff"].strip():
+        changes.extend(_parse_unified_diff(result["diff"], fallback_paths))
+    elif fallback_paths:
+        changes.extend({"path": path, "status": "modified", "added": 0, "removed": 0, "binary": False, "diff": []} for path in fallback_paths)
+
+    for change in changes:
+        change["toolName"] = tool_name
+        change["messageId"] = tool_msg.get("id")
+        change["timestamp"] = tool_msg.get("timestamp")
+    return changes
+
+
+def _merge_turn_change(turn: dict[str, Any], change: dict[str, Any]) -> None:
+    path = change.get("path") or "unknown"
+    existing = next((item for item in turn["files"] if item.get("path") == path), None)
+    if existing is None:
+        turn["files"].append(change)
+    else:
+        existing["added"] = int(existing.get("added") or 0) + int(change.get("added") or 0)
+        existing["removed"] = int(existing.get("removed") or 0) + int(change.get("removed") or 0)
+        existing["diff"].extend(change.get("diff") or [])
+        existing["toolName"] = change.get("toolName") or existing.get("toolName")
+    turn["totals"]["files"] = len(turn["files"])
+    turn["totals"]["added"] = sum(int(item.get("added") or 0) for item in turn["files"])
+    turn["totals"]["removed"] = sum(int(item.get("removed") or 0) for item in turn["files"])
+
+
+def _session_turn_changes(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    call_args = _tool_call_arguments(messages)
+    turns: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for msg in messages:
+        role = msg.get("role")
+        if role == "user":
+            current = {
+                "id": msg.get("id"),
+                "timestamp": msg.get("timestamp"),
+                "title": _content_preview(msg.get("content") or msg.get("text")) or "User turn",
+                "files": [],
+                "totals": {"files": 0, "added": 0, "removed": 0},
+            }
+            turns.append(current)
+            continue
+        if role == "tool" and current is not None:
+            for change in _extract_tool_changes(msg, call_args):
+                _merge_turn_change(current, change)
+
+    changed_turns = [turn for turn in turns if turn["files"]]
+    return {
+        "turns": changed_turns,
+        "totals": {
+            "turns": len(changed_turns),
+            "files": sum(turn["totals"]["files"] for turn in changed_turns),
+            "added": sum(turn["totals"]["added"] for turn in changed_turns),
+            "removed": sum(turn["totals"]["removed"] for turn in changed_turns),
+        },
+    }
+
+
+@app.get("/api/sessions/{session_id}/changes")
+async def get_session_changes(session_id: str, profile: Optional[str] = None):
+    db = _open_session_db_for_profile(profile)
+    try:
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        sid = db.resolve_resume_session_id(sid)
+        messages = db.get_messages(sid)
+        payload = _session_turn_changes(messages)
+        return {"ok": True, "session_id": sid, **payload}
+    finally:
+        db.close()
+
 
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str, profile: Optional[str] = None):
