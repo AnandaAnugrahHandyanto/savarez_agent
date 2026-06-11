@@ -138,6 +138,9 @@ language-specific setup where needed.
 - Fresh bootstrap repository stages now try the native Rust GitHub archive path before falling back to script-backed
   clone behavior on every platform. On Unix bootstrap runs, `install.sh` receives an internal archive signal so the
   prerequisites stage does not install or require Git when Rust will fetch the source archive.
+- Fresh bootstrap runs now defer the separate Git stage on Windows, Linux, and macOS while the Rust repository archive
+  path is available, so new archive-based installs do not install Git unless archive fallback or later update recovery
+  actually needs it.
 - Rust ZIP extraction now rejects symlink entries as well as path traversal entries before materializing repository
   archive contents.
 - Rust stage planning now reports native-first, probe-only, and script-only coverage counts so later bootstrap work can

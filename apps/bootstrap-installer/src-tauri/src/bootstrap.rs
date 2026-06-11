@@ -1037,7 +1037,19 @@ fn should_defer_git_stage_for_archive_install(
     stage_name: &str,
     install_root: &std::path::Path,
 ) -> bool {
-    cfg!(target_os = "windows")
+    should_defer_git_stage_for_archive_install_for_target(
+        stage_name,
+        install_root,
+        std::env::consts::OS,
+    )
+}
+
+fn should_defer_git_stage_for_archive_install_for_target(
+    stage_name: &str,
+    install_root: &std::path::Path,
+    target_os: &str,
+) -> bool {
+    matches!(target_os, "windows" | "linux" | "macos")
         && stage_name.eq_ignore_ascii_case("git")
         && should_use_native_repository_archive(install_root)
 }
@@ -1408,14 +1420,21 @@ mod tests {
     }
 
     #[test]
-    fn git_stage_deferred_only_for_windows_fresh_install() {
+    fn git_stage_deferred_for_fresh_archive_install() {
         let root = unique_tmp_dir("git-defer");
         let install_root = root.join("hermes-agent");
 
-        assert_eq!(
-            should_defer_git_stage_for_archive_install("git", &install_root),
-            cfg!(target_os = "windows")
-        );
+        assert!(should_defer_git_stage_for_archive_install("git", &install_root));
+        for target_os in ["windows", "linux", "macos"] {
+            assert!(
+                should_defer_git_stage_for_archive_install_for_target(
+                    "git",
+                    &install_root,
+                    target_os,
+                ),
+                "{target_os} should defer Git for fresh archive installs"
+            );
+        }
         assert!(should_fallback_repository_archive(
             "repository",
             &install_root
