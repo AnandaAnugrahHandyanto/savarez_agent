@@ -75,6 +75,7 @@ def _find_git_root(start: Path) -> Optional[Path]:
 
 
 _HERMES_MD_NAMES = (".hermes.md", "HERMES.md")
+_MEMORY_MD_NAMES = ("MEMORY.md", "memory.md")
 
 
 def _find_hermes_md(cwd: Path) -> Optional[Path]:
@@ -93,6 +94,28 @@ def _find_hermes_md(cwd: Path) -> Optional[Path]:
             if candidate.is_file():
                 return candidate
         # Stop walking at the git root (or filesystem root).
+        if stop_at and directory == stop_at:
+            break
+    return None
+
+
+def _find_memory_md(cwd: Path) -> Optional[Path]:
+    """Discover the nearest ``MEMORY.md`` or ``memory.md``.
+
+    Walks from *cwd* to git root, same strategy as :func:`_find_hermes_md`.
+    ``MEMORY.md`` holds **accumulated project knowledge** (facts, decisions,
+    gotchas) rather than instructions, so it is loaded **additively** alongside
+    instruction files (AGENTS.md, .hermes.md, etc.) rather than competing in
+    the first-match-wins priority chain.
+    """
+    stop_at = _find_git_root(cwd)
+    current = cwd.resolve()
+
+    for directory in [current, *current.parents]:
+        for name in _MEMORY_MD_NAMES:
+            candidate = directory / name
+            if candidate.is_file():
+                return candidate
         if stop_at and directory == stop_at:
             break
     return None
@@ -1494,6 +1517,36 @@ def _load_hermes_md(cwd_path: Path) -> str:
         return ""
 
 
+def _load_project_memory_md(cwd_path: Path) -> str:
+    """MEMORY.md / memory.md — project-level accumulated knowledge.
+
+    Walks from *cwd_path* to git root (same as :func:`_load_hermes_md`).
+    Unlike instruction files, MEMORY.md is loaded **additively** — it does
+    NOT participate in the first-match-wins priority chain.  This lets a
+    project have both ``AGENTS.md`` (instructions) *and* ``MEMORY.md``
+    (accumulated knowledge) active simultaneously.
+    """
+    memory_md_path = _find_memory_md(cwd_path)
+    if not memory_md_path:
+        return ""
+    try:
+        content = memory_md_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return ""
+        content = _strip_yaml_frontmatter(content)
+        rel = memory_md_path.name
+        try:
+            rel = str(memory_md_path.relative_to(cwd_path))
+        except ValueError:
+            pass
+        content = _scan_context_content(content, rel)
+        result = f"## {rel}\n\n{content}"
+        return _truncate_content(result, "MEMORY.md")
+    except Exception as e:
+        logger.debug("Could not read %s: %s", memory_md_path, e)
+        return ""
+
+
 def _load_agents_md(cwd_path: Path) -> str:
     """AGENTS.md — top-level only (no recursive walk)."""
     for name in ["AGENTS.md", "agents.md"]:
@@ -1565,6 +1618,10 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
       3. CLAUDE.md / claude.md   (cwd only)
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 
+    MEMORY.md / memory.md is loaded **additively** (in addition to the
+    priority chain result) because it holds accumulated project knowledge,
+    not instructions.  It walks to git root like .hermes.md.
+
     SOUL.md from HERMES_HOME is independent and always included when present.
     Each context source is capped at 20,000 chars.
 
@@ -1586,6 +1643,12 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     )
     if project_context:
         sections.append(project_context)
+
+    # Project MEMORY.md — additive (does NOT compete with instructions).
+    # Holds accumulated project knowledge: decisions, gotchas, conventions.
+    project_memory = _load_project_memory_md(cwd_path)
+    if project_memory:
+        sections.append(project_memory)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:
