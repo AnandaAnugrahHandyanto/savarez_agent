@@ -18,6 +18,41 @@ while preserving every existing user-facing feature and keeping a safe fallback 
 - User data under Hermes home must be preserved unless the user explicitly chooses full uninstall.
 - Windows path, lock, symlink, junction, and current-directory deletion hazards must be tested before expanding scope.
 
+## Highest-Level Rust Plan
+
+The target is not "rewrite Hermes in Rust." The target is a smaller and more predictable release package:
+users should download one installer, the installer should bring the platform-specific tools it owns, and shell/Python
+scripts should become recovery paths instead of the normal first-run path.
+
+**Target package shape:**
+- Rust bootstrap installer owns install orchestration, repository archive refresh, PATH/profile changes, shortcuts,
+  install metadata, repair cleanup, and uninstall planning.
+- Release package bundles `hermes-manager`, pinned install scripts, a checksummed bootstrap resource manifest, and
+  platform-specific tool archives that create real install-time savings.
+- Bundled tool archives start with Node.js and `uv`, then expand only when the size/security trade-off is clear.
+- Python application features stay Python. Rust should install, update, verify, and clean them rather than rewriting
+  fast-moving agent logic.
+- Electron renderer features stay TypeScript. Rust should only handle the native install/update shell around them.
+- Git should not be required for normal fresh installs or archive-created updates. It remains available as fallback for
+  source checkouts and advanced contributor workflows.
+- Shell scripts remain supported for direct CLI installs and one-release fallback, but desktop bootstrap should prefer
+  native Rust stages wherever parity exists.
+
+**Dependency reduction order:**
+1. Remove Git from fresh packaged installs and archive-based updates.
+2. Bundle and install Node.js and `uv` from Rust before any shell script can download them.
+3. Create Python 3.11, the virtual environment, and locked Python dependencies through Rust-invoked `uv`.
+4. Install npm, Playwright, TUI, and desktop dependencies through Rust first, while preserving platform recovery
+   fallbacks for Linux system libraries and Electron mirrors.
+5. Move PATH/profile, shortcuts, install stamps, metadata, repair, and uninstall into `hermes-manager`.
+6. Add release manifests and smoke tests so every bundled binary has an owner, checksum, and update path.
+7. Only after installer parity, evaluate larger Rust runtime candidates with measurable dependency or reliability wins.
+
+**Never-rust-first areas for this roadmap:**
+- Model/provider orchestration, conversation state, plugin/skill execution, and fast-changing agent features.
+- Messaging gateway platform behavior unless a low-level helper has a stable API and a clear dependency payoff.
+- Web UI or Electron renderer code.
+
 ## Phase 0: Safety and Inventory
 
 **Purpose:** Know exactly what can be moved before moving it.
@@ -327,11 +362,18 @@ language-specific setup where needed.
 
 ## Execution Order
 
-1. Finish Phase 2 release build closure.
-2. Add Phase 3 metadata integration for desktop bootstrap.
-3. Expand manager metadata and repair commands only after real installs write the manifest.
-4. Start Phase 4 with download/checksum/extract helpers, not with Python feature rewrites.
-5. Revisit Phase 6 bundle strategy after one release using the manager.
+1. Correct Unix stage wiring so the native `uv` tarball installer is reachable from the normal Unix bootstrap manifest.
+2. Finish native-first runtime setup parity: make every platform's `uv`, Node, Python, venv, Python deps, npm deps, and
+   desktop stages either native-first or explicitly script-only with a recorded reason.
+3. Close the release bundle loop for Linux and macOS installers by staging Node/`uv` archives into `bootstrap-tools/`
+   and validating them through `bootstrap-tools-manifest.json`.
+4. Expand `hermes-manager` ownership of repair and uninstall metadata after real bootstrap paths write accurate
+   installed-file manifests.
+5. Add end-to-end smoke commands for fresh install, archive update, repair cleanup, and lite uninstall on Windows,
+   Linux, and macOS.
+6. Reduce shell usage in desktop bootstrap until scripts are only fallback or direct-install entry points.
+7. After one release with native bootstrap enabled, evaluate larger Rust runtime candidates from Phase 7 using measured
+   install-time dependency reduction, not rewrite preference.
 
 ## Review Gates
 
