@@ -241,7 +241,10 @@ describe('StatusRule credits notice render priority', () => {
         if (Array.isArray(node)) {
           for (const c of node) {
             const f = findShrinkBoxContaining(c)
-            if (f) return f
+
+            if (f) {
+              return f
+            }
           }
         }
         return null
