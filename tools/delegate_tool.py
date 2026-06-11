@@ -1447,9 +1447,11 @@ def _run_single_child(
     ``registry_parent_task_id`` (Phase 5 Task 2.3, doc Step 5 ruling) only
     relabels the AgentTaskRegistry record's parent_task_id — a task.submit
     intent="delegate" batch passes its caller-supplied task_id so children
-    link to the parent record. The legacy _register_subagent dict and the
-    engine's behavior are untouched; None keeps today's engine default
-    (the spawning agent's _parent_subagent_id).
+    link to the parent record. Post-cutover the registry is the single
+    ledger, so the legacy-shaped ``list_active_subagents()`` view reflects
+    the same parent; engine behavior is unchanged either way, and None
+    keeps today's engine default (the spawning agent's
+    ``_parent_subagent_id``).
     """
     child_start = time.monotonic()
 
