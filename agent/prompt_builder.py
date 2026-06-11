@@ -271,7 +271,15 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
-TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek")
+# minimax: M2.7 and M3 ship with strong reasoning but weak tool-persistence
+# out of the box — they tend to stop the turn after a one-sentence plan
+# ("I'll check the port") instead of issuing the tool call.  Triggered
+# the same fix as the OpenAI/Google/Qwen families above.  Matched
+# case-insensitively as a substring of agent.model.
+TOOL_USE_ENFORCEMENT_MODELS = (
+    "gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek",
+    "minimax",
+)
 
 # Universal "finish the job" guidance — applied to ALL models, not gated
 # by model family.  Addresses two cross-model failure modes:

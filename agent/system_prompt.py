@@ -164,9 +164,23 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             model_lower = (agent.model or "").lower()
             _inject = any(p.lower() in model_lower for p in _enforce if isinstance(p, str))
         else:
-            # "auto" or any unrecognised value — use hardcoded defaults
+            # "auto" or any unrecognised value — use hardcoded defaults.
+            # If the model is in the curated whitelist, inject the
+            # model-specific enforcement guidance.  For models NOT in
+            # the whitelist (e.g. a newly released model that hasn't
+            # been triaged yet, including minimax M2.7/M3 before this
+            # commit), still inject enforcement by default — the
+            # "describe intent, don't act" failure mode is universal
+            # across model families, and the cost is one short prompt
+            # block (~900 chars) amortised via prefix cache.
+            # Users who want to opt out can set
+            #   agent.tool_use_enforcement: false
+            # explicitly.
             model_lower = (agent.model or "").lower()
-            _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
+            _in_whitelist = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
+            _inject = True  # default-on: safer for the common case
+            # Keep the whitelist check observable for telemetry/tests
+            # even though we now inject unconditionally under "auto".
         if _inject:
             stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
             _model_lower = (agent.model or "").lower()
