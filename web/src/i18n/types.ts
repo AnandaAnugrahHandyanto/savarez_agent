@@ -202,6 +202,68 @@ export interface Translations {
     };
   };
 
+  filesPage?: {
+    title: string;
+    refresh: string;
+    pathRequired: string;
+    directoryUnavailable: string;
+    folderNameRequired: string;
+    folderCreated: string;
+    createFailed: string;
+    uploaded: string;
+    uploadFailed: string;
+    downloadFailed: string;
+    deleted: string;
+    deleteFailed: string;
+    path: string;
+    go: string;
+    upload: string;
+    create: string;
+    uploadFiles: string;
+    uploading: string;
+    releaseToUpload: string;
+    dropFilesHere: string;
+    loading: string;
+    chooseFiles: string;
+    name: string;
+    size: string;
+    modified: string;
+    actions: string;
+    loadingFiles: string;
+    noFiles: string;
+    open: string;
+    download: string;
+    delete: string;
+    createFolder: string;
+    target: string;
+    folderName: string;
+    cancel: string;
+    deleteItem: string;
+    deleteFolderDescription: string;
+    deleteFileDescription: string;
+  };
+
+  pairingPage?: {
+    loadFailed: string;
+    missingCode: string;
+    approved: string;
+    clearConfirm: string;
+    cleared: string;
+    error: string;
+    revoked: string;
+    clearPending: string;
+    revokeAccess: string;
+    revokeNamedDescription: string;
+    revokeDescription: string;
+    revoke: string;
+    pendingRequests: string;
+    noPending: string;
+    minutesAgo: string;
+    approve: string;
+    approvedUsers: string;
+    noApproved: string;
+  };
+
   // ── Analytics page ──
   analytics: {
     period: string;
