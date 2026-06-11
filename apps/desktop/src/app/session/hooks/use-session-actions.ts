@@ -791,7 +791,7 @@ export function useSessionActions({
         await deleteSession(storedSessionId, removed?.profile)
         // Refresh the session list from the server to keep the UI in sync.
         try {
-          const fresh = await listSessions(200, 0, undefined, removed?.profile)
+          const fresh = await listSessions(200, 0)
           setSessions(fresh.sessions)
           setSessionsTotal(fresh.total)
         } catch {
