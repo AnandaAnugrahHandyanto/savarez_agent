@@ -5,7 +5,7 @@ Follows pytest style (functions, monkeypatch, assert), matching
 test_docker_environment.py conventions.
 """
 import subprocess
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -149,10 +149,12 @@ def test_update_cwd_from_marker():
     assert env.cwd == "/home/agents"
 
 
-def test_cleanup_best_effort():
+def test_cleanup_best_effort(monkeypatch):
     env = _make_env()
     env._snapshot_path = "/nonexistent/snap.sh"
     env._cwd_file = "/nonexistent/cwd.txt"
+    mock_run = MagicMock()
+    monkeypatch.setattr(wsl_env.subprocess, "run", mock_run)
     env.cleanup()  # should not raise
 
 
