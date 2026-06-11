@@ -150,3 +150,35 @@ def evaluate_maintenance_action(
         return _requires_approval(action_id, action)
 
     return _approved(action_id, action)
+
+
+def classify_maintenance_action(
+    policy: Any,
+    action_id: str,
+    requested_argv: Any,
+    *,
+    invocation_context: str = "interactive",
+    current_user_approved: bool = False,
+) -> dict[str, Any]:
+    """Return a JSON-serializable dry-run classification for an action.
+
+    This is intentionally a thin wrapper around ``evaluate_maintenance_action``.
+    It does not execute commands, load live config, run preflight/postcheck
+    probes, write audit logs, or integrate with the terminal tool.
+    """
+
+    decision = evaluate_maintenance_action(
+        policy,
+        action_id,
+        requested_argv,
+        invocation_context=invocation_context,
+        current_user_approved=current_user_approved,
+    )
+    return {
+        "allowed": decision.allowed,
+        "eligible": decision.eligible,
+        "reason": decision.reason,
+        "action_id": decision.action_id,
+        "command_id": decision.command_id,
+        "host_label": decision.host_label,
+    }

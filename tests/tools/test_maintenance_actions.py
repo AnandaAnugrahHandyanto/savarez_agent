@@ -3,7 +3,7 @@
 import pytest
 
 from tools.approval import detect_hardline_command
-from tools.maintenance_actions import evaluate_maintenance_action
+from tools.maintenance_actions import classify_maintenance_action, evaluate_maintenance_action
 
 
 SAFE_ARGV = [
@@ -191,6 +191,51 @@ class TestMaintenanceActionContext:
 
         assert result.allowed is False
         assert result.reason == "missing_preflight_profile"
+
+
+class TestMaintenanceActionClassifier:
+    def test_classifier_returns_stable_dict_for_blocked_action(self):
+        result = classify_maintenance_action(
+            _policy(), "caspian_inference_restart", ["ssh", "wrong-host"]
+        )
+
+        assert result == {
+            "allowed": False,
+            "eligible": False,
+            "reason": "argv_mismatch",
+            "action_id": "caspian_inference_restart",
+            "command_id": "caspian_power_control_restart",
+            "host_label": "caspian-inference-01",
+        }
+
+    def test_classifier_returns_stable_dict_for_eligible_action(self):
+        result = classify_maintenance_action(_policy(), "caspian_inference_restart", SAFE_ARGV)
+
+        assert result == {
+            "allowed": False,
+            "eligible": True,
+            "reason": "requires_current_user_approval",
+            "action_id": "caspian_inference_restart",
+            "command_id": "caspian_power_control_restart",
+            "host_label": "caspian-inference-01",
+        }
+
+    def test_classifier_returns_stable_dict_for_approved_action(self):
+        result = classify_maintenance_action(
+            _policy(),
+            "caspian_inference_restart",
+            SAFE_ARGV,
+            current_user_approved=True,
+        )
+
+        assert result == {
+            "allowed": True,
+            "eligible": True,
+            "reason": "approved",
+            "action_id": "caspian_inference_restart",
+            "command_id": "caspian_power_control_restart",
+            "host_label": "caspian-inference-01",
+        }
 
 
 class TestMaintenanceActionDoesNotWeakenHardline:
