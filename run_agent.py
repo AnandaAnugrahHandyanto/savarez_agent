@@ -3463,6 +3463,13 @@ class AIAgent:
             )
 
     def _replace_primary_openai_client(self, *, reason: str) -> bool:
+        # Skip rebuild for providers that don't use an OpenAI client (e.g.
+        # anthropic_messages providers like minimax).  These have client=None
+        # and _client_kwargs={}; attempting to rebuild would fail with
+        # "api_key must be set" every time, masking the real retry logic.
+        # See #44006.
+        if not getattr(self, "client", None) and not self._client_kwargs.get("api_key"):
+            return False
         with self._openai_client_lock():
             old_client = getattr(self, "client", None)
             try:
