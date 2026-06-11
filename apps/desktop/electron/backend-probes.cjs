@@ -35,6 +35,7 @@
 const { execFileSync } = require('node:child_process')
 
 const PROBE_TIMEOUT_MS = 5000
+const IS_WINDOWS = process.platform === 'win32'
 
 /**
  * Return true iff `python -c "import hermes_cli"` exits 0.
@@ -60,6 +61,38 @@ function canImportHermesCli(pythonPath) {
     return true
   } catch {
     return false
+  }
+}
+
+/** Commands permitted for login-shell PATH probes (prevents shell injection). */
+const LOGIN_SHELL_COMMAND_ALLOWLIST = new Set(['hermes'])
+
+/**
+ * Resolve a command via the user's login shell PATH.
+ *
+ * Electron apps on Linux (especially NixOS) often inherit a stripped PATH
+ * that omits profile/nix-shell entries where `hermes` is installed. A login
+ * shell probe matches what `hermes setup` users get in their terminal.
+ *
+ * @param {string} command
+ * @returns {string|null}
+ */
+function findCommandOnLoginShell(command) {
+  if (!command || IS_WINDOWS || !LOGIN_SHELL_COMMAND_ALLOWLIST.has(command)) return null
+  try {
+    const stdout = execFileSync('sh', ['-lc', `command -v ${command}`], {
+      encoding: 'utf8',
+      timeout: PROBE_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+    const resolved = String(stdout || '')
+      .trim()
+      .split('\n')
+      .pop()
+      ?.trim()
+    return resolved || null
+  } catch {
+    return null
   }
 }
 
@@ -101,6 +134,7 @@ function verifyHermesCli(hermesCommand, opts = {}) {
 
 module.exports = {
   canImportHermesCli,
+  findCommandOnLoginShell,
   verifyHermesCli,
   PROBE_TIMEOUT_MS
 }
