@@ -452,11 +452,6 @@ def _run_ios_until_ready(
                             stderr_path,
                             "ios",
                             deadline,
-                            redeliver=(
-                                (lambda: _open_ios_url(target, cwd, dev_client_url.strip(), attempts=1))
-                                if dev_client_url.strip()
-                                else None
-                            ),
                         )
                         time.sleep(min(_ios_settle_seconds(), max(deadline - time.monotonic(), 0)))
                         while_ready()
@@ -909,16 +904,13 @@ def _wait_for_metro_bundle_request(
     stderr_path: Path,
     platform: str,
     deadline: float,
-    redeliver: Callable[[], None] | None = None,
-    redeliver_interval: float = 10.0,
 ) -> None:
-    last_delivery = time.monotonic()
+    # Deliver the dev-client URL exactly once per launch: re-opening the deep
+    # link while the dev client is mid-load aborts the in-flight bundle fetch
+    # (ERR_STREAM_PREMATURE_CLOSE) and strands the app on its error screen.
     while time.monotonic() < deadline:
         if _metro_bundle_was_requested(stdout_path, stderr_path, platform):
             return
-        if redeliver is not None and time.monotonic() - last_delivery >= redeliver_interval:
-            redeliver()
-            last_delivery = time.monotonic()
         time.sleep(1)
     raise RuntimeError(
         "\n".join(

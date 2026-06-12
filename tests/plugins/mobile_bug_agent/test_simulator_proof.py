@@ -814,26 +814,6 @@ def test_metro_bundle_request_wait_fails_closed_with_log_paths(monkeypatch, tmp_
     assert "No apps connected" in message
 
 
-def test_metro_bundle_request_wait_redelivers_url(monkeypatch, tmp_path):
-    stdout = tmp_path / "metro.stdout.log"
-    stderr = tmp_path / "metro.stderr.log"
-    stdout.write_text("Metro waiting on http://localhost:8081", encoding="utf-8")
-    stderr.write_text("", encoding="utf-8")
-    deliveries = []
-
-    def redeliver():
-        deliveries.append(True)
-        stdout.write_text("iOS Bundled 1240ms apps/elixir-card/index.ts", encoding="utf-8")
-
-    timeline = iter([0.0, 1.0, 12.0, 13.0, 14.0])
-    monkeypatch.setattr(simulator_proof.time, "monotonic", lambda: next(timeline))
-    monkeypatch.setattr(simulator_proof.time, "sleep", lambda _seconds: None)
-
-    simulator_proof._wait_for_metro_bundle_request(stdout, stderr, "ios", 100.0, redeliver=redeliver)
-
-    assert deliveries == [True]
-
-
 def test_launch_ios_bundle_delivers_dev_client_url_via_openurl(monkeypatch, tmp_path):
     calls = []
 
