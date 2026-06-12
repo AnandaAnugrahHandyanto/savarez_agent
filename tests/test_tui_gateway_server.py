@@ -3113,6 +3113,74 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
     assert captured["prompt"] == "expanded prompt"
 
 
+def test_prompt_submit_expands_inline_multi_skill_markers(monkeypatch):
+    captured = {}
+
+    class _Agent:
+        model = "test/model"
+        base_url = ""
+        api_key = ""
+
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            captured["prompt"] = prompt
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    fake_skill_commands = types.ModuleType("agent.skill_commands")
+
+    def _fake_expand_multi_skill_invocation(text, *, task_id=None, skill_commands=None):
+        captured["skill_text"] = text
+        captured["skill_task_id"] = task_id
+        return "expanded skill prompt", ["first-skill", "second-skill"], []
+
+    fake_skill_commands.expand_multi_skill_invocation = _fake_expand_multi_skill_invocation
+
+    fake_ctx = types.ModuleType("agent.context_references")
+    fake_ctx.preprocess_context_references = (
+        lambda message, **kwargs: types.SimpleNamespace(
+            blocked=False,
+            message=message,
+            warnings=[],
+            references=[],
+            injected_tokens=0,
+        )
+    )
+    fake_meta = types.ModuleType("agent.model_metadata")
+    fake_meta.get_model_context_length = lambda *args, **kwargs: 100000
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setitem(sys.modules, "agent.skill_commands", fake_skill_commands)
+    monkeypatch.setitem(sys.modules, "agent.context_references", fake_ctx)
+    monkeypatch.setitem(sys.modules, "agent.model_metadata", fake_meta)
+
+    server.handle_request(
+        {
+            "id": "1",
+            "method": "prompt.submit",
+            "params": {"session_id": "sid", "text": "$first-skill $second-skill do X"},
+        }
+    )
+
+    assert captured["skill_text"] == "$first-skill $second-skill do X"
+    assert captured["skill_task_id"] == "session-key"
+    assert captured["prompt"] == "expanded skill prompt"
+
+
 def test_image_attach_appends_local_image(monkeypatch):
     fake_cli = types.ModuleType("cli")
     fake_cli._IMAGE_EXTENSIONS = {".png"}

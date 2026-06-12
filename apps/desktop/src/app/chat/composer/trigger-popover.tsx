@@ -54,7 +54,7 @@ const ROW_BASE_CLASS = [
 interface ComposerTriggerPopoverProps {
   activeIndex: number
   items: readonly Unstable_TriggerItem[]
-  kind: '@' | '/'
+  kind: '@' | '/' | '$'
   loading: boolean
   onHover: (index: number) => void
   onPick: (item: Unstable_TriggerItem) => void
@@ -73,6 +73,8 @@ export function ComposerTriggerPopover({
   const { t } = useI18n()
   const copy = t.composer
   const isSlash = kind === '/'
+  const isSkill = kind === '$'
+  const isCommandLike = isSlash || isSkill
 
   let lastGroup: string | undefined
 
@@ -97,6 +99,10 @@ export function ComposerTriggerPopover({
                 {copy.lookupTry} <span className="font-mono text-foreground/80">@file:</span> {copy.lookupOr}{' '}
                 <span className="font-mono text-foreground/80">@folder:</span>.
               </>
+            ) : isSkill ? (
+              <>
+                {copy.lookupTry} <span className="font-mono text-foreground/80">$skill</span>.
+              </>
             ) : (
               <>
                 {copy.lookupTry} <span className="font-mono text-foreground/80">/help</span>.
@@ -107,10 +113,10 @@ export function ComposerTriggerPopover({
       ) : (
         items.map((item, index) => {
           const meta = item.metadata as RowMeta | undefined
-          const display = meta?.display ?? (isSlash ? `/${item.label}` : item.label)
+          const display = meta?.display ?? (isSlash ? `/${item.label}` : isSkill ? `$${item.label}` : item.label)
           const description = meta?.meta || item.description
           const group = meta?.group?.trim()
-          const showHeader = isSlash && Boolean(group) && group !== lastGroup
+          const showHeader = isCommandLike && Boolean(group) && group !== lastGroup
           const isFirstHeader = lastGroup === undefined
           lastGroup = group || lastGroup
           const active = index === activeIndex
@@ -128,13 +134,13 @@ export function ComposerTriggerPopover({
                 </div>
               )}
               <button
-                className={cn(ROW_BASE_CLASS, isSlash ? 'flex-col gap-0' : 'items-center gap-2')}
+                className={cn(ROW_BASE_CLASS, isCommandLike ? 'flex-col gap-0' : 'items-center gap-2')}
                 data-highlighted={active ? '' : undefined}
                 onClick={() => onPick(item)}
                 onMouseEnter={() => onHover(index)}
                 type="button"
               >
-                {isSlash ? (
+                {isCommandLike ? (
                   <>
                     {/* Active row (keyboard nav or hover) un-truncates inline so
                         long command names / descriptions stay readable without a

@@ -46,6 +46,10 @@ function commandText(value: string): string {
   return value.startsWith('/') ? value : `/${value}`
 }
 
+function skillMarkerText(value: string): string {
+  return `$${commandText(value).slice(1)}`
+}
+
 /** How many recent sessions to surface inline before the "Browse all…" entry. */
 const SESSION_INLINE_LIMIT = 7
 
@@ -59,6 +63,8 @@ export function useSlashCompletions(options: {
 }): {
   adapter: Unstable_TriggerAdapter
   loading: boolean
+  skillAdapter: Unstable_TriggerAdapter
+  skillLoading: boolean
 } {
   const { gateway, skinThemes, activeSkin } = options
   const enabled = Boolean(gateway)
@@ -231,5 +237,88 @@ export function useSlashCompletions(options: {
     }
   }, [])
 
-  return useLiveCompletionAdapter({ enabled, fetcher, toItem })
+  const slashCompletion = useLiveCompletionAdapter({ enabled, fetcher, toItem })
+
+  const skillFetcher = useCallback(
+    async (query: string): Promise<CompletionPayload> => {
+      if (!gateway) {
+        return { items: [], query }
+      }
+
+      try {
+        if (!query) {
+          const catalog = filterDesktopCommandsCatalog(await gateway.request<CommandsCatalogLike>('commands.catalog'))
+          const sections = catalog.categories?.length
+            ? catalog.categories
+            : [{ name: '', pairs: catalog.pairs ?? [] }]
+
+          const items = sections.flatMap(section =>
+            section.pairs
+              .filter(([command]) => isDesktopSlashExtensionCommand(command))
+              .map(([command, meta]) => ({
+                text: command,
+                display: skillMarkerText(command),
+                group: section.name || 'Skills',
+                meta
+              }))
+          )
+
+          return { items, query }
+        }
+
+        const result = await gateway.request<{ items?: CompletionEntry[] }>('complete.slash', { text: `/${query}` })
+        const items = (result.items ?? [])
+          .filter(item => isDesktopSlashExtensionCommand(item.text))
+          .map(item => ({
+            ...item,
+            text: commandText(item.text),
+            display: skillMarkerText(item.text),
+            group: 'Skills',
+            meta: desktopSlashDescription(item.text, textValue(item.meta))
+          }))
+
+        return { items, query }
+      } catch {
+        return { items: [], query }
+      }
+    },
+    [gateway]
+  )
+
+  const toSkillItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {
+    const command = commandText(entry.text)
+    const marker = skillMarkerText(command)
+    const display = textValue(entry.display, marker)
+    const meta = textValue(entry.meta)
+
+    const metadata: SlashItemMetadata = {
+      command,
+      display,
+      meta,
+      group: textValue(entry.group, 'Skills'),
+      action: textValue(entry.action),
+      rawText: marker
+    }
+
+    return {
+      id: `${marker}|${index}`,
+      type: 'slash',
+      label: display.startsWith('$') ? display.slice(1) : display,
+      ...(meta ? { description: meta } : {}),
+      metadata
+    }
+  }, [])
+
+  const skillCompletion = useLiveCompletionAdapter({
+    enabled,
+    fetcher: skillFetcher,
+    toItem: toSkillItem
+  })
+
+  return {
+    adapter: slashCompletion.adapter,
+    loading: slashCompletion.loading,
+    skillAdapter: skillCompletion.adapter,
+    skillLoading: skillCompletion.loading
+  }
 }
