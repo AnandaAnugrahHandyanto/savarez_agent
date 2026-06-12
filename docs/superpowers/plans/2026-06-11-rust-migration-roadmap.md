@@ -435,6 +435,8 @@ language-specific setup where needed.
   checksum, and update source unambiguous.
 - Manifest archive names must be plain file names with no path separators or parent traversal, matching the runtime
   expectation that bootstrap tool resources live directly inside `bootstrap-tools/`.
+- The Rust bootstrap manifest reader applies the same plain-file-name rule at runtime, so a malformed release resource
+  cannot make the installer trust a parent-directory archive record even if CI validation was bypassed.
 
 ## Phase 7: Larger Runtime Rust Candidates
 

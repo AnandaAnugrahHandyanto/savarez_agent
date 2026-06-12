@@ -2549,6 +2549,9 @@ fn bootstrap_tools_manifest_archive(
     bundled_tools_dir: &Path,
     archive_name: &str,
 ) -> Option<BootstrapToolsManifestArchive> {
+    if !bootstrap_archive_name_is_plain_file(archive_name) {
+        return None;
+    }
     let manifest_path = bundled_tools_dir.join(BOOTSTRAP_TOOLS_MANIFEST);
     if !manifest_path.is_file() {
         return None;
@@ -2562,12 +2565,18 @@ fn bootstrap_tools_manifest_archive(
     manifest
         .archives
         .into_iter()
-        .find(|archive| archive.name == archive_name)
+        .find(|archive| {
+            bootstrap_archive_name_is_plain_file(&archive.name) && archive.name == archive_name
+        })
         .and_then(|record| {
             let valid = record.sha256.len() == 64
                 && record.sha256.chars().all(|ch| ch.is_ascii_hexdigit());
             valid.then_some(record)
         })
+}
+
+fn bootstrap_archive_name_is_plain_file(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\\')
 }
 
 fn bundled_archive_is_manifest_listed(bundled_tools_dir: &Path, archive_name: &str) -> bool {
@@ -4113,6 +4122,36 @@ mod tests {
         assert_eq!(
             source.expected_sha256.as_deref(),
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bootstrap_tools_manifest_rejects_unsafe_archive_name() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-bootstrap-archive-unsafe-name-test-{}",
+            std::process::id()
+        ));
+        let bundled = root.join("resources").join("bootstrap-tools");
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::write(
+            bundled.join("bootstrap-tools-manifest.json"),
+            r#"{
+                "schemaVersion": 1,
+                "archives": [
+                    {
+                        "name": "../uv-x86_64-pc-windows-msvc.zip",
+                        "sha256": "e6184ce10e266134fdcfa401e8f1a95005bcd4f18d16b62b757323e2833fe9a9"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            bootstrap_tools_manifest_sha256(&bundled, "../uv-x86_64-pc-windows-msvc.zip"),
+            None
         );
 
         let _ = std::fs::remove_dir_all(&root);
