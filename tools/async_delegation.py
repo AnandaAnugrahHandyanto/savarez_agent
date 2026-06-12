@@ -49,6 +49,7 @@ back into the originating session.
 from __future__ import annotations
 
 import logging
+import json
 import threading
 import time
 import uuid
@@ -331,6 +332,44 @@ def _do_dispatch(item: QueuedDispatch) -> None:
 
         completion_time = time.time()
         status = result.get("status", "completed") if isinstance(result, dict) else "completed"
+
+        # ── Task 2: Write result to Kanban ticket (shadow clone mode) ──────────
+        _kanban_ticket_id = task_info.get("kanban_ticket_id")
+        if _kanban_ticket_id and task_info.get("shadow_clone"):
+            try:
+                from hermes_cli import kanban_db as _kanban_db
+                _result_meta = {
+                    "delegation_id": delegation_id,
+                    "session_key": session_key,
+                    "status": status,
+                    "duration_seconds": round(completion_time - dispatch_time, 2),
+                }
+                if isinstance(result, dict):
+                    _result_meta["insights"] = result.get("insights", [])
+                    _result_meta["decision_trail"] = result.get("decision_trail", [])
+                    _result_meta["tool_calls_count"] = result.get("tool_calls_count")
+                _summary = ""
+                if isinstance(result, dict):
+                    _summary = result.get("summary") or result.get("error") or ""
+                with _kanban_db.connect_closing() as _conn:
+                    _kanban_db.complete_task(
+                        _conn,
+                        _kanban_ticket_id,
+                        result=json.dumps(result, ensure_ascii=False, default=str)[:8000],
+                        summary=_summary[:2000],
+                        metadata=_result_meta,
+                    )
+                logger.info(
+                    "Shadow clone %s result written to Kanban ticket %s",
+                    delegation_id, _kanban_ticket_id,
+                )
+            except Exception as _kbe:
+                logger.warning(
+                    "Shadow clone: failed to write Kanban result for %s: %s",
+                    delegation_id, _kbe,
+                )
+        # ──────────────────────────────────────────────────────────────────────
+
         evt = {
             "type": "async_delegation",
             "delegation_id": delegation_id,
@@ -346,6 +385,9 @@ def _do_dispatch(item: QueuedDispatch) -> None:
             "dispatch_time": dispatch_time,
             "completion_time": completion_time,
             "duration_seconds": round(completion_time - dispatch_time, 2),
+            "kanban_ticket_id": _kanban_ticket_id,               # Task 2
+            "shadow_clone": task_info.get("shadow_clone", False), # Task 2
+            **task_info.get("routing_meta", {}),                  # Task 6
         }
 
         # Store in completed registry.

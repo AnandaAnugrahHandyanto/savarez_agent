@@ -2167,6 +2167,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._active_session_leases: Dict[str, Any] = {}
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        # ── Task 3: Shadow clone per-session inbox ─────────────────────────────
+        # Background thread pushes ticket_id O(1); post-turn drain batches them
+        # into ONE synthetic turn. No asyncio.Event needed — drain runs in the
+        # event loop (naturally serialised), background threads only append.
+        import collections as _collections
+        self._shadow_clone_inbox: Dict[str, Any] = {}   # session_key → deque[ticket_id]
+        self._shadow_clone_routing: Dict[str, Dict] = {}  # session_key → routing metadata
+        # ──────────────────────────────────────────────────────────────────────
         # Last successfully-resolved (non-empty) model, keyed by session. Used
         # as a fallback when a fresh config read transiently returns an empty
         # model (e.g. an mtime-keyed config-cache miss during a post-interrupt
@@ -5411,6 +5419,123 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("Handoff watcher tick error: %s", exc, exc_info=True)
             await asyncio.sleep(interval)
 
+    def _shadow_clone_enqueue(self, session_key: str, ticket_id: str, routing_meta: dict) -> None:
+        """Thread-safe O(1) enqueue — called from background thread when a shadow clone completes.
+
+        Does NOT acquire any agent lock. Appends ticket_id to the per-session deque.
+        The post-turn drain (_drain_shadow_clone_inbox) runs in the event loop thread
+        and reads from the deque — no cross-thread synchronisation needed beyond deque's
+        thread-safe append/popleft.
+        Routing metadata is overwritten each time (uses the most recent clone's routing).
+        """
+        import collections as _c
+        if session_key not in self._shadow_clone_inbox:
+            self._shadow_clone_inbox[session_key] = _c.deque()
+        self._shadow_clone_inbox[session_key].append(ticket_id)
+        # Overwrite with latest arrival (message_id intentionally excluded)
+        self._shadow_clone_routing[session_key] = routing_meta
+        logger.debug(
+            "Shadow clone inbox: ticket %s enqueued for session %s (queue depth: %d)",
+            ticket_id, session_key, len(self._shadow_clone_inbox[session_key]),
+        )
+
+    def _read_kanban_tickets_sync(self, ticket_ids: list) -> list:
+        """Sync helper — runs in thread pool via asyncio.to_thread().
+
+        Reads N tickets in ONE batch query to avoid N×get_task() overhead.
+        Returns list of dicts on success, empty list on failure (caller degrades gracefully).
+        """
+        try:
+            from hermes_cli import kanban_db as _kanban_db
+            with _kanban_db.connect_closing() as _conn:
+                # Batch read: use get_tasks_batch if available, else fallback to N×get_task
+                if hasattr(_kanban_db, "get_tasks_batch"):
+                    tasks = _kanban_db.get_tasks_batch(_conn, ticket_ids)
+                else:
+                    tasks = [_kanban_db.get_task(_conn, tid) for tid in ticket_ids]
+                    tasks = [t for t in tasks if t is not None]
+                return [
+                    {
+                        "ticket_id": getattr(t, "id", str(t)),
+                        "title": getattr(t, "title", "?"),
+                        "result": getattr(t, "result", None),
+                        "status": getattr(t, "status", "done"),
+                    }
+                    for t in tasks
+                ]
+        except Exception as _e:
+            logger.error("Shadow clone drain: Kanban read failed: %s", _e)
+            return []
+
+    async def _drain_shadow_clone_inbox(self, session_key: str) -> None:
+        """Post-turn hook: drain all pending shadow clone tickets into ONE synthetic turn.
+
+        Batches N completed clones into a single synthetic message, preventing
+        O(N) LLM invocations from N simultaneous clone completions.
+        Called after each agent turn completes, before the gateway loop idles.
+
+        v1 note: if the session enters permanent idle (user never sends another message),
+        inbox entries persist in memory and are visible via Kanban dashboard.
+        Proactive idle-timer drain is future work.
+        """
+        inbox = self._shadow_clone_inbox.get(session_key)
+        if not inbox:
+            return
+
+        # Drain atomically
+        pending_ids: list = []
+        while inbox:
+            pending_ids.append(inbox.popleft())
+
+        if not pending_ids:
+            return
+
+        logger.info(
+            "Shadow clone drain: %d ticket(s) ready for session %s",
+            len(pending_ids), session_key,
+        )
+
+        # Read tickets off-thread (kanban I/O is sync + may flock)
+        ticket_summaries = await asyncio.to_thread(self._read_kanban_tickets_sync, pending_ids)
+        if not ticket_summaries:
+            # Fallback: minimal notification without Kanban data
+            ticket_summaries = [
+                {"ticket_id": tid, "title": "(unreadable)", "result": None, "status": "done"}
+                for tid in pending_ids
+            ]
+
+        # Build ONE batched synthetic message
+        n = len(ticket_summaries)
+        lines = [f"[SHADOW CLONE RETURN — {n} 個影分身完成]\n"]
+        for i, t in enumerate(ticket_summaries, 1):
+            result_preview = (t.get("result") or "(no result)")
+            if len(result_preview) > 400:
+                result_preview = result_preview[:400] + "…"
+            lines.append(
+                f"─── {i}. {t.get('title', '?')}\n"
+                f"    Ticket: {t.get('ticket_id', '?')}  Status: {t.get('status', 'done')}\n"
+                f"    Result: {result_preview}\n"
+            )
+        lines.append("\n[完整 decision_trail / insights 請至 Kanban 查閱]")
+        synth_text = "\n".join(lines)
+
+        routing_meta = self._shadow_clone_routing.pop(session_key, {})
+        routing_evt = {
+            "session_key": session_key,
+            "type": "shadow_clone_batch",
+            **routing_meta,
+        }
+
+        try:
+            await self._inject_watch_notification(synth_text, routing_evt)
+        except Exception as exc:
+            logger.error("Shadow clone batch inject error for %s: %s", session_key, exc)
+            # Re-queue ticket IDs if inject fails (best-effort)
+            import collections as _c
+            if session_key not in self._shadow_clone_inbox:
+                self._shadow_clone_inbox[session_key] = _c.deque()
+            self._shadow_clone_inbox[session_key].extendleft(reversed(pending_ids))
+
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
         """Background watcher that drains async_delegation events from the
         completion queue and injects them into their originating sessions.
@@ -5449,6 +5574,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if not _session_key:
                         logger.debug("Dropping async_delegation event with no session_key")
                         continue
+
+                    # ── Task 4: Shadow clone → non-blocking inbox (before busy-check) ──
+                    # Must be checked BEFORE the busy-check so shadow clone events
+                    # are never put_back into the queue — they always go to the inbox.
+                    if evt.get("shadow_clone") and evt.get("kanban_ticket_id"):
+                        _routing_meta = {
+                            k: evt.get(k, "")
+                            for k in ("platform", "chat_id", "thread_id", "user_id", "user_name")
+                            if evt.get(k)
+                        }
+                        self._shadow_clone_enqueue(_session_key, evt["kanban_ticket_id"], _routing_meta)
+                        logger.info(
+                            "Shadow clone %s routed to inbox (non-blocking) for session %s",
+                            evt.get("delegation_id"), _session_key,
+                        )
+                        continue
+                    # ──────────────────────────────────────────────────────────────────
 
                     # Skip if an agent is currently running for this session —
                     # the per-turn drain will handle it when that turn finishes.
@@ -9082,6 +9224,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         except Exception as e2:
                             logger.error("Watch notification injection error: %s", e2)
                 for evt in _async_delegation_events:
+                    # ── Task 4: Shadow clone → inbox (symmetric with watcher) ──────────
+                    if evt.get("shadow_clone") and evt.get("kanban_ticket_id"):
+                        _sk = evt.get("session_key", "")
+                        if _sk:
+                            _rm = {
+                                k: evt.get(k, "")
+                                for k in ("platform", "chat_id", "thread_id", "user_id", "user_name")
+                                if evt.get(k)
+                            }
+                            self._shadow_clone_enqueue(_sk, evt["kanban_ticket_id"], _rm)
+                            logger.info(
+                                "Shadow clone %s routed to inbox (drain) for session %s",
+                                evt.get("delegation_id"), _sk,
+                            )
+                        continue
+                    # ──────────────────────────────────────────────────────────────────
                     synth_text = format_process_notification(evt)
                     if synth_text:
                         try:
@@ -9091,7 +9249,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as e:
                 logger.debug("Watch queue drain error: %s", e)
 
-            # NOTE: Dangerous command approvals are now handled inline by the
+            # ── Task 5: Post-turn shadow clone drain ───────────────────────────
+            # Batch all pending shadow clone completions into ONE synthetic turn.
+            # Must run after the watch queue drain so shadow clone events that
+            # arrived during the turn are already in the inbox.
+            try:
+                await self._drain_shadow_clone_inbox(session_key)
+            except Exception as _sce:
+                logger.debug("Shadow clone drain error: %s", _sce)
+            # ──────────────────────────────────────────────────────────────────
             # blocking gateway approval mechanism in tools/approval.py.  The agent
             # thread blocks until the user responds with /approve or /deny, so by
             # the time we reach here the approval has already been resolved.  The

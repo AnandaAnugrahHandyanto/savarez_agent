@@ -478,6 +478,52 @@ def _get_max_spawn_depth() -> int:
     return floored
 
 
+def _get_shadow_clone_mode() -> bool:
+    """Read delegation.shadow_clone_mode from config.
+
+    When True, background=True delegations create a Kanban ticket on dispatch,
+    write results to the ticket on completion, and return via the non-blocking
+    per-session inbox rather than triggering a full LLM synthetic turn per clone.
+
+    Default: False (original inject behaviour preserved).
+    """
+    cfg = _load_config()
+    return bool(cfg.get("shadow_clone_mode", False))
+
+
+def _get_shadow_clone_board() -> str:
+    """Read delegation.shadow_clone_board from config (default: 'default')."""
+    cfg = _load_config()
+    return str(cfg.get("shadow_clone_board", "default"))
+
+
+def _extract_insights(agent) -> list:
+    """Extract key insights from agent conversation history.
+
+    Stub implementation: returns empty list.
+    Future: call haiku to extract 3 key decision points from agent.conversation_history.
+    """
+    return []
+
+
+def _extract_decision_trail(agent) -> list:
+    """Extract decision trail: [{tool, args_preview}] from agent history.
+
+    Iterates tool_calls from conversation history and summarises.
+    Capped at 50 entries to avoid excessive Kanban metadata size.
+    """
+    trail = []
+    for msg in getattr(agent, "conversation_history", []):
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                fn = tc.get("function", {})
+                trail.append({
+                    "tool": fn.get("name", "?"),
+                    "args_preview": str(fn.get("arguments", ""))[:80],
+                })
+    return trail[:50]
+
+
 def _get_orchestrator_enabled() -> bool:
     """Global kill switch for the orchestrator role.
 
@@ -2021,6 +2067,7 @@ def delegate_task(
     parent_agent=None,
     background: bool = False,
     timeout_seconds: Optional[float] = None,
+    shadow_clone: bool = False,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2083,6 +2130,37 @@ def delegate_task(
         session_key = getattr(parent_agent, "session_id", None) or ""
         _pa_model = getattr(parent_agent, "model", None) or ""
         _pa_provider = getattr(parent_agent, "provider", None) or ""
+
+        # ── Task 6: Collect routing metadata from parent agent ─────────────────
+        _routing_meta: Dict[str, str] = {}
+        for _attr in ("platform", "chat_id", "thread_id", "user_id", "user_name", "message_id"):
+            _val = getattr(parent_agent, _attr, None)
+            if _val:
+                _routing_meta[_attr] = str(_val)
+
+        # ── Task 1: Create Kanban ticket on dispatch (shadow clone mode) ────────
+        _use_shadow_clone = shadow_clone or _get_shadow_clone_mode()
+        _kanban_ticket_id: Optional[str] = None
+        if _use_shadow_clone:
+            try:
+                from hermes_cli import kanban_db as _kanban_db
+                with _kanban_db.connect_closing() as _conn:
+                    _kanban_ticket_id = _kanban_db.create_task(
+                        _conn,
+                        title=f"[ShadowClone] {(goal or '')[:80]}",
+                        body=f"## Goal\n{goal or ''}\n\n## Context\n{context or ''}",
+                        assignee="shadow_clone",
+                        created_by=session_key,
+                        workspace_kind="scratch",
+                        initial_status="running",
+                    )
+                logger.info("Shadow clone: Kanban ticket %s created for delegation", _kanban_ticket_id)
+            except Exception as _ke:
+                logger.warning("Shadow clone: failed to create Kanban ticket: %s", _ke)
+                # Graceful degradation: continue without ticket (fallback to original inject)
+                _kanban_ticket_id = None
+                _use_shadow_clone = False
+
         task_info = {
             "goal": goal,
             "context": context,
@@ -2090,6 +2168,9 @@ def delegate_task(
             "role": top_role,
             "model": _pa_model,
             "provider": _pa_provider,
+            "shadow_clone": _use_shadow_clone,
+            "kanban_ticket_id": _kanban_ticket_id,
+            "routing_meta": _routing_meta,
         }
 
         result = _async_dispatch(
