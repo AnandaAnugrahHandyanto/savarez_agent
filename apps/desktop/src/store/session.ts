@@ -207,6 +207,9 @@ export const $currentFastMode = atom(false)
 // Persistence lives in the backend config (approvals.mode), so this is a plain
 // reflection of the truth the gateway reports rather than its own store.
 export const $yoloActive = atom(false)
+// This device's resolved gateway name. The active prompt card uses it before
+// the persisted gateway echo catches up.
+export const $localDeviceName = atom('')
 export const $currentCwd = atom(getRememberedWorkspaceCwd())
 export const $currentBranch = atom('')
 export const $currentUsage = atom<UsageStats>({
@@ -250,6 +253,7 @@ export const setCurrentReasoningEffort = (next: Updater<string>) => updateAtom($
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)
 export const setCurrentFastMode = (next: Updater<boolean>) => updateAtom($currentFastMode, next)
 export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive, next)
+export const setLocalDeviceName = (next: Updater<string>) => updateAtom($localDeviceName, next)
 
 export const setCurrentCwd = (next: Updater<string>) => {
   updateAtom($currentCwd, next)
