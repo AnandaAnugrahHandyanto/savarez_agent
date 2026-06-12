@@ -172,6 +172,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/creative/creative-p5js',
                     'user-guide/skills/bundled/creative/creative-popular-web-designs',
                     'user-guide/skills/bundled/creative/creative-pretext',
+                    'user-guide/skills/bundled/creative/creative-rocky-voice',
                     'user-guide/skills/bundled/creative/creative-sketch',
                     'user-guide/skills/bundled/creative/creative-songwriting-and-ai-music',
                     'user-guide/skills/bundled/creative/creative-touchdesigner-mcp',
