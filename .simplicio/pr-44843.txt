@@ -1,0 +1,1 @@
+Fix #44843: read_file` returns inconsistent response structure in `execute_code()` sandbox
