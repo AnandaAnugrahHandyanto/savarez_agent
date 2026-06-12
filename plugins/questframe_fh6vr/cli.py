@@ -125,12 +125,13 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     openxr_presentation.add_argument("--approve", action="store_true")
     openxr_presentation.add_argument("--attempt-window-capture", action="store_true")
     openxr_presentation.add_argument("--require-pairing", action="store_true")
+    openxr_presentation.add_argument("--immersive-check", action="store_true")
     openxr_presentation.add_argument("--frames", type=int, default=None)
     openxr_presentation.add_argument("--timeout-seconds", type=int, default=None)
 
     live_color_loop = subs.add_parser(
         "live-color-loop-selftest",
-        help="Run FH6 live color + companion depth loop self-test (0.19.1 gate)",
+        help="Run FH6 live color + companion depth loop self-test (0.19.2 gate, DXGI capture)",
     )
     live_color_loop.add_argument("--launcher-exe", default="")
     live_color_loop.add_argument("--approve", action="store_true")
@@ -355,6 +356,8 @@ def questframe_command(args: argparse.Namespace) -> int:
             extra.append("--attempt-window-capture")
         if bool(getattr(args, "require_pairing", False)):
             extra.append("--require-pairing")
+        if bool(getattr(args, "immersive_check", False)):
+            extra.append("--immersive-check")
         frames = getattr(args, "frames", None)
         if frames:
             extra.extend(["--frames", str(frames)])

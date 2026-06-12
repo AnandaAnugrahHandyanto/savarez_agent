@@ -408,7 +408,7 @@ COLOR_DEPTH_PAIRING_SELFTEST_SCHEMA = {
 
 OPENXR_PRESENTATION_SELFTEST_SCHEMA = {
     "name": "questframe_openxr_presentation_selftest",
-    "description": "Run the FH6VR OpenXR presentation self-test with optional color/depth pairing (0.19 gate).",
+    "description": "Run the FH6VR OpenXR presentation self-test (0.19.2 gate, --immersive-check).",
     "parameters": {
         "type": "object",
         "properties": {
@@ -427,6 +427,10 @@ OPENXR_PRESENTATION_SELFTEST_SCHEMA = {
             "require_pairing": {
                 "type": "boolean",
                 "description": "When true, pass --require-pairing and fail if pairing did not pass.",
+            },
+            "immersive_check": {
+                "type": "boolean",
+                "description": "When true, pass --immersive-check to require stereo projection layer metrics.",
             },
             "timeout_seconds": {
                 "type": "integer",
@@ -1124,6 +1128,8 @@ def handle_openxr_presentation_selftest(args: dict[str, Any] | None = None, **_:
         extra.append("--attempt-window-capture")
     if bool(args.get("require_pairing")):
         extra.append("--require-pairing")
+    if bool(args.get("immersive_check")):
+        extra.append("--immersive-check")
     return _json(
         run_launcher(
             "openxr-presentation-selftest",
