@@ -4821,6 +4821,48 @@ class BasePlatformAdapter(ABC):
                     if safe_split > _cp_limit // 4:
                         split_at = safe_split
 
+            # ── Table boundary detection ──────────────────────────────
+            # Don't split inside a Markdown table.  Tables are recognised
+            # as consecutive lines matching | … |, with a separator row
+            # (|----|----|) somewhere above.  When the split falls inside
+            # a table, walk back to the nearest row boundary (previous \n)
+            # so each chunk gets complete table rows.
+            candidate = remaining[:split_at]
+            _candidate_lines = candidate.split("\n")
+            if _candidate_lines and _candidate_lines[-1].strip().startswith("|"):
+                # We're inside a potential table row.  Walk upward to
+                # confirm we're in a table (find separator row above).
+                _in_table = False
+                for _li in range(len(_candidate_lines) - 2, -1, -1):
+                    _line = _candidate_lines[_li].strip()
+                    # Separator row: |---|---|
+                    if _line.startswith("|") and _line.count("|") >= 2:
+                        _inner = _line.strip("|").replace(" ", "")
+                        if all(c in "-:|" for c in _inner) and "-" in _inner:
+                            _in_table = True
+                            break
+                    # Non-table line: stop looking
+                    if not _line.startswith("|"):
+                        break
+                if _in_table:
+                    # Walk back to the last | row boundary before split_at
+                    _prev_row = candidate.rfind("\n|", 0, split_at)
+                    if _prev_row > 0:
+                        # +1 to include the \n before the row, so the
+                        # previous chunk ends cleanly after its last row
+                        split_at = _prev_row + 1
+                    elif _prev_row == 0:
+                        # Table starts at position 0 — can't split before it.
+                        # Split after the current row instead.
+                        _next_nl = remaining.find("\n", split_at)
+                        if _next_nl > 0:
+                            split_at = _next_nl
+                        else:
+                            # Entire remaining content is one table row;
+                            # fall through to normal split.
+                            pass
+            # ── End table boundary detection ──────────────────────────
+
             chunk_body = remaining[:split_at]
             remaining = remaining[split_at:].lstrip()
 
