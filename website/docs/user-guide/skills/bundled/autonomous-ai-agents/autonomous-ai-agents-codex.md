@@ -146,3 +146,44 @@ terminal(command="gh pr comment 86 --body '<review>'", workdir="~/project")
 5. **Background for long tasks** — use `background=true` and monitor with `process` tool
 6. **Don't interfere** — monitor with `poll`/`log`, be patient with long-running tasks
 7. **Parallel is fine** — run multiple Codex processes at once for batch work
+
+## Dispatch Template / Report Contract
+
+Canonical CX dispatch template: `skills/autonomous-ai-agents/codex/templates/default-dispatch.md`.
+
+### Template Injection Chain
+
+Before every Codex dispatch, the orchestrator MUST:
+
+1. Call `skill_view(name="codex", file_path="templates/default-dispatch.md")` to load the template.
+2. Render the placeholders: `<ABS_REPORT_PATH>`, `<JOB_ID>`, `<TASK_CLASS>`, `<TURN_BUDGET>`.
+3. Prepend the rendered template to the dispatch prompt, **before** the task description.
+4. Then append the specific task instructions.
+
+### Report Path Rules
+
+- `<ABS_REPORT_PATH>` must be an absolute path inside the target repo.
+- Fallback: `<repo>/.hermes-artifacts/reviews/<JOB_ID>.md`.
+- Create parent directories with `mkdir -p` first.
+- Never use `~` in paths.
+- Never report partial output as `completed`.
+
+### Turn Budget Baselines
+
+| Task Class | Range | Default |
+|---|---|---|
+| `review` | 30–120 | 60 |
+| `implementation` | 20–80 | 40 |
+| `extract` | 1–10 | 5 |
+
+- Use the `review` bucket by default for review, debug, and refactor tasks.
+- Use the `implementation` bucket by default for features, fixes, tests, and other code changes.
+- Use the `extract` bucket by default for summarize, schema, and narrow extraction work.
+- Codex does not have a single canonical `--max-turns` CLI pattern here, so the budget contract must be carried by the injected template and dispatch prompt.
+
+### Ending State Contract
+
+- `completed`: Task done within budget, report written.
+- `over_budget`: Budget exhausted; report must list done/undone/next.
+- `interrupted`: Externally interrupted; report must record checkpoint.
+- `partial_output`: Incomplete result; must be labeled partial, not `completed`.

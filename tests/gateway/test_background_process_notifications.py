@@ -14,7 +14,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform
-from gateway.run import GatewayRunner, _parse_session_key
+from gateway.run import GatewayRunner, _completion_event_for_session, _parse_session_key
+
+pytestmark = pytest.mark.anyio
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +65,23 @@ def _watcher_dict(session_id="proc_test", thread_id=""):
     if thread_id:
         d["thread_id"] = thread_id
     return d
+
+
+def test_completion_event_preview_strips_ansi_from_output_path(tmp_path):
+    output_path = tmp_path / "proc.log"
+    output_path.write_text("\x1b[31merror:\x1b[0m failed\n", encoding="utf-8")
+
+    session = SimpleNamespace(
+        command="sleep 1",
+        exit_code=1,
+        output_path=str(output_path),
+        output_buffer="",
+    )
+
+    evt = _completion_event_for_session("proc_test", session)
+
+    assert "\x1b" not in evt["preview"]
+    assert "error: failed" in evt["preview"]
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +137,7 @@ class TestLoadBackgroundNotificationsMode:
 # _run_process_watcher integration tests
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("mode", "sessions", "expected_calls", "expected_fragment"),
     [
@@ -145,37 +164,37 @@ class TestLoadBackgroundNotificationsMode:
         # off mode: exited process → no notification
         (
             "off",
-            [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)],
+            [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0, command="sleep 1", output_path="/tmp/proc.log")],
             0,
             None,
         ),
         # result mode: exited → notifies
         (
             "result",
-            [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)],
+            [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0, command="sleep 1", output_path="/tmp/proc.log")],
             1,
-            "finished with exit code 0",
+            "Full output saved to: /tmp/proc.log",
         ),
         # error mode: exit 0 → no notification
         (
             "error",
-            [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)],
+            [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0, command="sleep 1", output_path="/tmp/proc.log")],
             0,
             None,
         ),
         # error mode: exit 1 → notifies
         (
             "error",
-            [SimpleNamespace(output_buffer="traceback\n", exited=True, exit_code=1)],
+            [SimpleNamespace(output_buffer="traceback\n", exited=True, exit_code=1, command="sleep 1", output_path="/tmp/proc.log")],
             1,
-            "finished with exit code 1",
+            "Full output saved to: /tmp/proc.log",
         ),
         # all mode: exited → notifies
         (
             "all",
-            [SimpleNamespace(output_buffer="ok\n", exited=True, exit_code=0)],
+            [SimpleNamespace(output_buffer="ok\n", exited=True, exit_code=0, command="sleep 1", output_path="/tmp/proc.log")],
             1,
-            "finished with exit code 0",
+            "Full output saved to: /tmp/proc.log",
         ),
     ],
 )
@@ -202,14 +221,17 @@ async def test_run_process_watcher_respects_notification_mode(
     if expected_fragment is not None:
         sent_message = adapter.send.await_args.args[1]
         assert expected_fragment in sent_message
+        if "Full output saved to:" in expected_fragment:
+            assert "Preview:" in sent_message
+            assert "Here's the final output" not in sent_message
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_thread_id_passed_to_send(monkeypatch, tmp_path):
     """thread_id from watcher dict is forwarded as metadata to adapter.send()."""
     import tools.process_registry as pr_module
 
-    sessions = [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)]
+    sessions = [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0, command="sleep 1", output_path="/tmp/proc.log")]
     monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
 
     async def _instant_sleep(*_a, **_kw):
@@ -226,12 +248,12 @@ async def test_thread_id_passed_to_send(monkeypatch, tmp_path):
     assert kwargs["metadata"] == {"thread_id": "42"}
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
     """When thread_id is empty, metadata should be None (general topic)."""
     import tools.process_registry as pr_module
 
-    sessions = [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)]
+    sessions = [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0, command="sleep 1", output_path="/tmp/proc.log")]
     monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
 
     async def _instant_sleep(*_a, **_kw):
@@ -248,7 +270,7 @@ async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
     assert kwargs["metadata"] is None
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_inject_watch_notification_routes_from_session_store_origin(monkeypatch, tmp_path):
     from gateway.session import SessionSource
 
@@ -283,7 +305,7 @@ async def test_inject_watch_notification_routes_from_session_store_origin(monkey
     assert synth_event.source.user_name == "Emiliyan"
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_agent_notification_carries_message_id_reply_anchor(monkeypatch, tmp_path):
     """notify_on_complete injection carries the triggering message_id so the
     synthetic event can be reply-anchored back into a Telegram DM topic.
@@ -293,7 +315,7 @@ async def test_agent_notification_carries_message_id_reply_anchor(monkeypatch, t
     import tools.process_registry as pr_module
 
     sessions = [SimpleNamespace(
-        output_buffer="SMOKE_OK\n", exited=True, exit_code=0, command="sleep 1",
+        output_buffer="SMOKE_OK\n", exited=True, exit_code=0, command="sleep 1", output_path="/tmp/proc.log",
     )]
     monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
 
@@ -321,16 +343,17 @@ async def test_agent_notification_carries_message_id_reply_anchor(monkeypatch, t
     assert synth_event.internal is True
     assert synth_event.message_id == "555"
     assert synth_event.source.thread_id == "24296"
+    assert "Full output saved to: /tmp/proc.log" in synth_event.text
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_agent_notification_no_message_id_is_tolerated(monkeypatch, tmp_path):
     """A watcher dict without message_id (CLI spawn, pre-upgrade checkpoint)
     still injects — message_id is simply None."""
     import tools.process_registry as pr_module
 
     sessions = [SimpleNamespace(
-        output_buffer="done\n", exited=True, exit_code=0, command="sleep 1",
+        output_buffer="done\n", exited=True, exit_code=0, command="sleep 1", output_path="/tmp/proc.log",
     )]
     monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
 
@@ -357,7 +380,7 @@ async def test_agent_notification_no_message_id_is_tolerated(monkeypatch, tmp_pa
     assert synth_event.message_id is None
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_inject_watch_notification_carries_message_id_reply_anchor(monkeypatch, tmp_path):
     from gateway.session import SessionSource
 
@@ -446,7 +469,7 @@ def test_build_process_event_source_uses_cached_live_source_before_session_key_p
     assert source.user_name == "alice"
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_inject_watch_notification_ignores_foreground_event_source(monkeypatch, tmp_path):
     """Negative test: watch notification must NOT route to the foreground thread."""
     from gateway.session import SessionSource

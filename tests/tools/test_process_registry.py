@@ -32,6 +32,7 @@ def _make_session(
     exit_code=None,
     output="",
     started_at=None,
+    preserve_on_restart=False,
 ) -> ProcessSession:
     """Helper to create a ProcessSession for testing."""
     s = ProcessSession(
@@ -42,6 +43,7 @@ def _make_session(
         exited=exited,
         exit_code=exit_code,
         output_buffer=output,
+        preserve_on_restart=preserve_on_restart,
     )
     return s
 
@@ -166,7 +168,7 @@ class TestOrphanedPipeReconciliation:
 
     def test_reconcile_noop_when_child_still_running(self, registry):
         """Reconcile must NOT flip exited when the direct child is alive."""
-        proc = _spawn_python_sleep(5.0)
+        proc = _spawn_python_sleep(0.5)
         s = _make_session(sid="proc_running_test")
         s.process = proc
         s.pid = proc.pid
@@ -176,8 +178,7 @@ class TestOrphanedPipeReconciliation:
         assert result["status"] == "running"
         assert s.exited is False
 
-        proc.kill()
-        proc.wait()
+        proc.wait(timeout=5)
 
     def test_reconcile_noop_on_already_exited(self, registry):
         """Reconcile is a no-op when session.exited is already True."""
@@ -692,13 +693,14 @@ class TestPopenLeakOnSetupFailure:
 class TestCheckpoint:
     def test_write_checkpoint(self, registry, tmp_path):
         with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
-            s = _make_session()
+            s = _make_session(preserve_on_restart=True)
             registry._running[s.id] = s
             registry._write_checkpoint()
 
             data = json.loads((tmp_path / "procs.json").read_text())
             assert len(data) == 1
             assert data[0]["session_id"] == s.id
+            assert data[0]["preserve_on_restart"] is True
 
     def test_recover_no_file(self, registry, tmp_path):
         with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "missing.json"):
@@ -712,7 +714,8 @@ class TestCheckpoint:
             "pid": 999999999,  # almost certainly not running
             "task_id": "t1",
         }]))
-        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint), \
+             patch.object(registry, "_is_host_pid_alive", return_value=False):
             recovered = registry.recover_from_checkpoint()
             assert recovered == 0
 
@@ -831,7 +834,8 @@ class TestCheckpoint:
         }]))
 
         try:
-            with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint), \
+                 patch.object(registry, "_is_host_pid_alive", side_effect=lambda pid: proc.poll() is None):
                 recovered = registry.recover_from_checkpoint()
                 assert recovered == 1
 
@@ -854,12 +858,10 @@ class TestCheckpoint:
                 assert wait_result["status"] == "exited"
         finally:
             if proc.poll() is None:
-                proc.terminate()
                 try:
                     proc.wait(timeout=5)
                 except Exception:
-                    proc.kill()
-                    proc.wait(timeout=5)
+                    pytest.fail("short-lived test process did not exit in time")
 
 
 # =========================================================================
@@ -945,13 +947,16 @@ def test_format_completion_event():
         "session_id": "proc_abc",
         "command": "sleep 5",
         "exit_code": 0,
-        "output": "done",
+        "preview": "done",
+        "output_path": "/tmp/process-output/proc_abc.log",
     }
     result = format_process_notification(evt)
     assert "[IMPORTANT: Background process proc_abc completed" in result
     assert "exit code 0" in result
     assert "Command: sleep 5" in result
-    assert "Output:\ndone]" in result
+    assert "Preview: done" in result
+    assert "Full output saved to: /tmp/process-output/proc_abc.log" in result
+    assert "Output:\ndone" not in result
 
 
 def test_format_watch_match_event():
@@ -1225,3 +1230,419 @@ class TestTerminateHostPidPosix:
         pr.ProcessRegistry._terminate_host_pid(12345)
 
         assert kill_calls == [(12345, signal.SIGTERM)]
+
+
+# =========================================================================
+# Tee to host log — Popen and PTY
+# =========================================================================
+
+
+class TestTeeToHostLog:
+    """Verify that spawn_local writes process output to the host log file
+    (process-output/{session_id}.log) for both Popen and PTY paths."""
+
+    def test_popen_tee_to_host_log(self, registry, tmp_path):
+        """Popen path: output is written to the output_path log file."""
+        output_dir = tmp_path / "process-output"
+        output_dir.mkdir()
+
+        chunks = ["hello ", "world\n"]
+        chunk_iter = iter(chunks)
+
+        proc = MagicMock()
+        proc.pid = 12345
+        proc.returncode = 0
+        proc.stdin = MagicMock()
+        proc.poll.return_value = None
+        proc.wait = MagicMock()
+
+        class _FakeStdout:
+            def read(self, n):
+                return next(chunk_iter, "")
+
+        proc.stdout = _FakeStdout()
+
+        with patch("tools.process_registry.get_hermes_home", return_value=tmp_path), \
+             patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch("subprocess.Popen", return_value=proc), \
+             patch.object(registry, "_write_checkpoint"), \
+             patch.object(registry, "_cleanup_output_dir"):
+            session = registry.spawn_local("echo hello", cwd=str(tmp_path))
+
+        # Wait for reader thread to exhaust the chunk iterator and exit.
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if session.exited:
+                break
+            time.sleep(0.1)
+
+        assert session.exited
+        assert session.output_path is not None
+        assert os.path.isfile(session.output_path)
+        content = open(session.output_path).read()
+        assert "hello world" in content
+        assert session.output_bytes > 0
+
+    def test_pty_tee_to_host_log(self, registry, tmp_path):
+        """PTY path: output is written to the output_path log file."""
+        output_dir = tmp_path / "process-output"
+        output_dir.mkdir()
+
+        chunks = [b"hello ", b"from pty\n"]
+        chunk_idx = [0]
+
+        pty_mock = MagicMock()
+        pty_mock.pid = 12346
+        pty_mock.exitstatus = 0
+
+        def fake_isalive():
+            return chunk_idx[0] < len(chunks)
+
+        pty_mock.isalive = fake_isalive
+
+        def fake_read(n):
+            if chunk_idx[0] < len(chunks):
+                result = chunks[chunk_idx[0]]
+                chunk_idx[0] += 1
+                return result
+            return b""
+
+        pty_mock.read = fake_read
+        pty_mock.wait = MagicMock()
+
+        pty_class = MagicMock()
+        pty_class.spawn = MagicMock(return_value=pty_mock)
+
+        with patch("tools.process_registry.get_hermes_home", return_value=tmp_path), \
+             patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch("ptyprocess.PtyProcess", pty_class), \
+             patch.object(registry, "_write_checkpoint"), \
+             patch.object(registry, "_cleanup_output_dir"):
+            session = registry.spawn_local("echo hello", cwd=str(tmp_path), use_pty=True)
+
+        # Wait for PTY reader thread to finish.
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if session.exited:
+                break
+            time.sleep(0.1)
+
+        assert session.exited
+        assert session.output_path is not None
+        assert os.path.isfile(session.output_path)
+        content = open(session.output_path).read()
+        assert "from pty" in content
+        assert session.output_bytes > 0
+
+
+# =========================================================================
+# Checkpoint round-trip — output_path / output_bytes
+# =========================================================================
+
+
+class TestCheckpointOutputPath:
+    """Verify that output_path and output_bytes survive a checkpoint
+    write + recover cycle."""
+
+    def test_write_checkpoint_includes_output_path_and_bytes(self, registry, tmp_path):
+        """_write_checkpoint persists output_path and output_bytes."""
+        checkpoint_path = tmp_path / "procs.json"
+        s = _make_session()
+        s.output_path = "/tmp/process-output/proc_test123.log"
+        s.output_bytes = 4096
+        registry._running[s.id] = s
+
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint_path), \
+             patch.object(registry, "_cleanup_output_dir"):
+            registry._write_checkpoint()
+
+        data = json.loads(checkpoint_path.read_text())
+        assert len(data) == 1
+        assert data[0]["output_path"] == "/tmp/process-output/proc_test123.log"
+        assert data[0]["output_bytes"] == 4096
+
+    def test_recover_restores_output_path_and_bytes(self, registry, tmp_path):
+        """recover_from_checkpoint restores output_path and output_bytes
+        on the recovered ProcessSession."""
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_live",
+            "command": "sleep 999",
+            "pid": os.getpid(),
+            "pid_scope": "host",
+            "task_id": "t1",
+            "output_path": "/tmp/process-output/proc_live.log",
+            "output_bytes": 8192,
+        }]))
+
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint), \
+             patch.object(registry, "_cleanup_output_dir"):
+            recovered = registry.recover_from_checkpoint()
+
+        assert recovered == 1
+        session = registry.get("proc_live")
+        assert session is not None
+        assert session.output_path == "/tmp/process-output/proc_live.log"
+        assert session.output_bytes == 8192
+
+    def test_recover_restores_preserve_on_restart(self, registry, tmp_path):
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_live",
+            "command": "codex",
+            "pid": os.getpid(),
+            "pid_scope": "host",
+            "task_id": "t1",
+            "preserve_on_restart": True,
+        }]))
+
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint), \
+             patch.object(registry, "_cleanup_output_dir"):
+            recovered = registry.recover_from_checkpoint()
+
+        assert recovered == 1
+        session = registry.get("proc_live")
+        assert session is not None
+        assert session.preserve_on_restart is True
+
+
+def test_kill_all_skips_preserved_sessions_when_requested(registry):
+    keep = _make_session(sid="proc_keep", preserve_on_restart=True)
+    kill = _make_session(sid="proc_kill")
+    registry._running[keep.id] = keep
+    registry._running[kill.id] = kill
+
+    called = []
+
+    def _fake_kill(session_id):
+        called.append(session_id)
+        return {"status": "killed"}
+
+    with patch.object(registry, "kill_process", side_effect=_fake_kill):
+        killed = registry.kill_all(include_preserved=False)
+
+    assert killed == 1
+    assert called == ["proc_kill"]
+
+
+# =========================================================================
+# read_log from output_path
+# =========================================================================
+
+
+class TestReadLogFromOutputPath:
+    """Verify that read_log() prefers the persistent output_path file
+    over the in-memory output_buffer."""
+
+    def test_read_log_reads_from_output_path_file(self, registry, tmp_path):
+        """When output_path points to a real file, read_log() must use it."""
+        log_file = tmp_path / "test.log"
+        log_file.write_text("line 1\nline 2\nline 3\n")
+
+        s = _make_session(output="different content from buffer")
+        s.output_path = str(log_file)
+        registry._running[s.id] = s
+
+        result = registry.read_log(s.id)
+        assert result["total_lines"] == 3
+        assert "line 1" in result["output"]
+        assert "line 2" in result["output"]
+        # Must read from the file, not the in-memory buffer.
+        assert "different content" not in result["output"]
+
+    def test_read_log_falls_back_to_buffer_when_file_missing(self, registry):
+        """When output_path points to a nonexistent file, fall back to buffer."""
+        s = _make_session(output="buffer content here")
+        s.output_path = "/nonexistent/path/process.log"
+        registry._running[s.id] = s
+
+        result = registry.read_log(s.id)
+        assert "buffer content here" in result["output"]
+
+    def test_read_log_returns_file_content_even_when_buffer_empty(self, registry, tmp_path):
+        """When buffer is empty but output_path has content, use the file."""
+        log_file = tmp_path / "test.log"
+        log_file.write_text("file-only content\n")
+
+        s = _make_session(output="")  # empty buffer
+        s.output_path = str(log_file)
+        registry._running[s.id] = s
+
+        result = registry.read_log(s.id)
+        assert "file-only content" in result["output"]
+        assert result["total_lines"] == 1
+
+
+# =========================================================================
+# poll / list_sessions — no "unavailable" note when output_path exists
+# =========================================================================
+
+
+class TestDetachedWithOutputPath:
+    """Detached (recovered) sessions with a valid output_path must NOT
+    show the "output history unavailable" note in poll()."""
+
+    def test_poll_detached_with_output_path_no_unavailable_note(self, registry, tmp_path):
+        """poll() omits the unavailable note when output_path is valid."""
+        log_file = tmp_path / "test.log"
+        log_file.write_text("recovered output")
+
+        s = _make_session()
+        s.detached = True
+        s.output_path = str(log_file)
+        # Use sandbox pid_scope so _refresh_detached_session is a no-op.
+        s.pid_scope = "sandbox"
+        registry._finished[s.id] = s
+
+        result = registry.poll(s.id)
+        assert result["detached"] is True
+        assert "note" not in result, (
+            f"Should not show 'unavailable' note when output_path exists, got {result.get('note')!r}"
+        )
+
+    def test_poll_detached_without_output_path_shows_unavailable_note(self, registry):
+        """poll() DOES show the unavailable note when detached and output_path missing."""
+        s = _make_session()
+        s.detached = True
+        s.pid_scope = "sandbox"
+        registry._finished[s.id] = s
+
+        result = registry.poll(s.id)
+        assert result["detached"] is True
+        assert "note" in result
+        assert "unavailable" in result["note"]
+
+    def test_list_sessions_detached_with_output_path_no_unavailable(self, registry, tmp_path):
+        """list_sessions() entries for detached sessions with output_path are clean."""
+        log_file = tmp_path / "test.log"
+        log_file.write_text("some output")
+
+        s = _make_session()
+        s.detached = True
+        s.output_path = str(log_file)
+        s.pid_scope = "sandbox"
+        registry._finished[s.id] = s
+
+        entries = registry.list_sessions()
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry["detached"] is True
+        assert "output_preview" in entry
+        # output_preview should come from the file
+        assert "some output" in entry["output_preview"]
+
+
+# =========================================================================
+# Orphan output log cleanup
+# =========================================================================
+
+
+class TestOrphanCleanup:
+    """_cleanup_output_dir() must:
+    - Keep files referenced by running/finished sessions (regardless of age).
+    - Keep files referenced by checkpoint output_path entries.
+    - Delete orphan *.log files whose mtime is >= 7 days old.
+    - Keep orphan *.log files whose mtime is < 7 days old.
+    """
+
+    def test_cleanup_keeps_referenced_files(self, registry, tmp_path):
+        """Files whose session ID is in _running or _finished are never deleted."""
+        output_dir = tmp_path / "process-output"
+        output_dir.mkdir()
+
+        log_file = output_dir / "proc_ref.log"
+        log_file.write_text("data")
+
+        s = _make_session(sid="proc_ref")
+        s.output_path = str(log_file)
+        registry._running[s.id] = s
+
+        with patch("tools.process_registry.get_hermes_home", return_value=tmp_path):
+            registry._cleanup_output_dir()
+
+        assert log_file.exists(), "Referenced log file must not be deleted"
+
+    def test_cleanup_keeps_checkpoint_referenced_files(self, registry, tmp_path):
+        """Old logs referenced by checkpoint output_path must not be deleted."""
+        output_dir = tmp_path / "process-output"
+        output_dir.mkdir()
+        checkpoint = tmp_path / "procs.json"
+
+        log_file = output_dir / "proc_ckpt.log"
+        log_file.write_text("data")
+        old_time = time.time() - 8 * 24 * 3600
+        os.utime(log_file, (old_time, old_time))
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_ckpt",
+            "output_path": str(log_file),
+        }]))
+
+        with patch("tools.process_registry.get_hermes_home", return_value=tmp_path), \
+             patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            registry._cleanup_output_dir()
+
+        assert log_file.exists(), "Checkpoint-referenced log file must not be deleted"
+
+    def test_cleanup_deletes_old_orphans(self, registry, tmp_path):
+        """Orphan *.log files >= 7 days old are deleted."""
+        output_dir = tmp_path / "process-output"
+        output_dir.mkdir()
+
+        log_file = output_dir / "proc_old_orphan.log"
+        log_file.write_text("old data")
+
+        old_time = time.time() - 8 * 24 * 3600
+        os.utime(log_file, (old_time, old_time))
+
+        with patch("tools.process_registry.get_hermes_home", return_value=tmp_path):
+            registry._cleanup_output_dir()
+
+        assert not log_file.exists(), "Orphan >= 7 days old must be deleted"
+
+    def test_cleanup_keeps_recent_orphans(self, registry, tmp_path):
+        """Orphan *.log files < 7 days old are kept as a safety buffer."""
+        output_dir = tmp_path / "process-output"
+        output_dir.mkdir()
+
+        log_file = output_dir / "proc_recent_orphan.log"
+        log_file.write_text("recent data")
+        # mtime is now, well within the 7-day window.
+
+        with patch("tools.process_registry.get_hermes_home", return_value=tmp_path):
+            registry._cleanup_output_dir()
+
+        assert log_file.exists(), "Orphan < 7 days old must be kept"
+
+    def test_cleanup_skips_non_log_files(self, registry, tmp_path):
+        """Files not ending in .log are ignored by cleanup."""
+        output_dir = tmp_path / "process-output"
+        output_dir.mkdir()
+
+        not_log = output_dir / "something.txt"
+        not_log.write_text("not a log")
+
+        old_time = time.time() - 10 * 24 * 3600
+        os.utime(not_log, (old_time, old_time))
+
+        with patch("tools.process_registry.get_hermes_home", return_value=tmp_path):
+            registry._cleanup_output_dir()
+
+        assert not_log.exists(), "Non-.log files must be ignored"
+
+    def test_cleanup_handles_empty_output_dir(self, registry, tmp_path):
+        """Empty output directory must not raise."""
+        output_dir = tmp_path / "process-output"
+        output_dir.mkdir()
+
+        with patch("tools.process_registry.get_hermes_home", return_value=tmp_path):
+            registry._cleanup_output_dir()
+
+        # Must not raise.
+
+    def test_cleanup_handles_missing_output_dir(self, registry, tmp_path):
+        """Missing output directory must not raise."""
+        # No process-output directory exists.
+        with patch("tools.process_registry.get_hermes_home", return_value=tmp_path):
+            registry._cleanup_output_dir()
+
+        # Must not raise.

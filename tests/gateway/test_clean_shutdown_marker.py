@@ -10,9 +10,12 @@ After a crash (no marker), suspension still fires as a safety net for stuck sess
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionSource, SessionStore
+
+pytestmark = pytest.mark.anyio
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +133,7 @@ class TestCleanShutdownMarker:
             asyncio.get_event_loop().run_until_complete(runner.stop())
 
         assert marker.exists(), ".clean_shutdown marker should exist after graceful stop"
+        mock_proc_reg.kill_all.assert_called_with(include_preserved=True)
 
     def test_marker_skips_suspension_on_startup(self, tmp_path, monkeypatch):
         """If .clean_shutdown exists, suspend_recently_active should NOT be called."""
@@ -223,3 +227,4 @@ class TestCleanShutdownMarker:
             asyncio.get_event_loop().run_until_complete(runner.stop(restart=True))
 
         assert marker.exists(), ".clean_shutdown marker should exist after restart-stop too"
+        mock_proc_reg.kill_all.assert_called_with(include_preserved=False)

@@ -3031,7 +3031,7 @@ class AIAgent:
         except Exception:
             pass
 
-    def close(self) -> None:
+    def close(self, preserve_runtime_state: bool = False) -> None:
         """Release all resources held by this agent instance.
 
         Cleans up subprocess resources that would otherwise become orphans:
@@ -3044,6 +3044,10 @@ class AIAgent:
         Safe to call multiple times (idempotent).  Each cleanup step is
         independently guarded so a failure in one does not prevent the rest.
         """
+        if preserve_runtime_state:
+            self.release_clients()
+            return
+
         task_id = getattr(self, "session_id", None) or ""
 
         # 1. Kill background processes for this task

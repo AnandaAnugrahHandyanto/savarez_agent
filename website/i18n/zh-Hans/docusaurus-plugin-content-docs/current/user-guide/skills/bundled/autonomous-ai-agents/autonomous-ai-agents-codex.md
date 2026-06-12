@@ -141,3 +141,44 @@ terminal(command="gh pr comment 86 --body '<review>'", workdir="~/project")
 5. **长时任务使用后台模式** — 使用 `background=true` 并通过 `process` 工具监控
 6. **不要干预** — 使用 `poll`/`log` 监控，对长时运行任务保持耐心
 7. **并行执行没问题** — 可同时运行多个 Codex 进程处理批量工作
+
+## 调度模板 / 报告契约
+
+规范 CX 调度模板：`skills/autonomous-ai-agents/codex/templates/default-dispatch.md`。
+
+### 模板注入链路
+
+每次委托 Codex 之前，编排器必须：
+
+1. 调用 `skill_view(name="codex", file_path="templates/default-dispatch.md")` 加载模板。
+2. 渲染占位符：`<ABS_REPORT_PATH>`、`<JOB_ID>`、`<TASK_CLASS>`、`<TURN_BUDGET>`。
+3. 将渲染后的模板放到调度 prompt 的最前面，**位于**任务描述之前。
+4. 然后在模板后面追加具体的任务指令。
+
+### 报告路径规则
+
+- `<ABS_REPORT_PATH>` 必须是目标仓库内的绝对路径。
+- 回退路径：`<repo>/.hermes-artifacts/reviews/<JOB_ID>.md`。
+- 先用 `mkdir -p` 创建父目录。
+- 路径中禁止使用 `~`。
+- 禁止将部分输出报告为 `completed`。
+
+### 轮次预算基线
+
+| 任务类型 | 范围 | 默认值 |
+|---|---|---|
+| `review` | 30–120 | 60 |
+| `implementation` | 20–80 | 40 |
+| `extract` | 1–10 | 5 |
+
+- 默认情况下，`review` bucket 适用于代码审查（code review）、调试（debug）和重构（refactor）任务。
+- 默认情况下，`implementation` bucket 适用于功能开发（features）、问题修复（fixes）、测试（tests）等代码变更任务。
+- 默认情况下，`extract` bucket 适用于摘要（summarize）、模式提取（schema）和窄范围提取（narrow extraction）任务。
+- Codex 没有统一的 `--max-turns` CLI 范式，因此预算契约需要通过注入的模板和调度 prompt 来承载。
+
+### 结束状态契约
+
+- `completed`：任务在预算内完成，报告已写入。
+- `over_budget`：预算耗尽；报告必须列出已完成/未完成/下一步。
+- `interrupted`：外部中断；报告必须记录检查点。
+- `partial_output`：不完整结果；必须标注为 partial，不得报为 `completed`。

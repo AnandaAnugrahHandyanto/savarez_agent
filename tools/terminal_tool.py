@@ -37,6 +37,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import time
 import threading
 import atexit
@@ -1638,6 +1639,61 @@ def _command_requires_pipe_stdin(command: str) -> bool:
     )
 
 
+_ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+_SHELL_CONTROL_TOKENS = {"&&", "||", ";", "|", "&", "(", ")"}
+_SKIPPED_LEADING_BUILTINS = {"cd", "export", "env"}
+_PRESERVE_ON_RESTART_EXECUTABLES = {"codex", "claude"}
+
+
+def _normalize_executable_name(token: str) -> str:
+    name = os.path.basename(str(token or "")).lower()
+    for suffix in (".ps1", ".cmd", ".bat", ".exe"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def _should_preserve_on_restart(
+    command: str,
+    background: bool,
+    pty: bool,
+    env_type: str,
+) -> bool:
+    """Return True for local PTY Codex/Claude sessions that should survive restart."""
+    if not background or not pty or env_type != "local":
+        return False
+
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        lowered = token.lower()
+
+        if token in _SHELL_CONTROL_TOKENS:
+            i += 1
+            continue
+        if _ENV_ASSIGNMENT_RE.match(token):
+            i += 1
+            continue
+        if lowered in _SKIPPED_LEADING_BUILTINS:
+            i += 1
+            if lowered == "env":
+                while i < len(tokens) and _ENV_ASSIGNMENT_RE.match(tokens[i]):
+                    i += 1
+            else:
+                while i < len(tokens) and tokens[i] not in _SHELL_CONTROL_TOKENS:
+                    i += 1
+            continue
+
+        return _normalize_executable_name(token) in _PRESERVE_ON_RESTART_EXECUTABLES
+
+    return False
+
+
 _SHELL_LEVEL_BACKGROUND_RE = re.compile(
     r"(?:^|[;&|]\s*|&&\s*|\|\|\s*|\$\(\s*)(?:nohup|disown|setsid)\b", re.IGNORECASE | re.MULTILINE
 )
@@ -2072,6 +2128,8 @@ def terminal_tool(
                     "output": "Background process started",
                     "session_id": proc_session.id,
                     "pid": proc_session.pid,
+                    "log_path": getattr(proc_session, "output_path", None),
+                    "preserve_on_restart": False,
                     "exit_code": 0,
                     "error": None,
                 }
@@ -2079,6 +2137,21 @@ def terminal_tool(
                     result_data["approval"] = approval_note
                 if pty_disabled_reason:
                     result_data["pty_note"] = pty_disabled_reason
+
+                actual_pty = effective_pty
+                if hasattr(proc_session, "_pty"):
+                    actual_pty = getattr(proc_session, "_pty", None) is not None
+                preserve_on_restart = _should_preserve_on_restart(
+                    command=command,
+                    background=bool(background),
+                    pty=bool(actual_pty),
+                    env_type=env_type,
+                )
+                if preserve_on_restart:
+                    proc_session.preserve_on_restart = True
+                result_data["preserve_on_restart"] = bool(
+                    getattr(proc_session, "preserve_on_restart", False)
+                )
 
                 # Nudge: background=True without notify_on_complete=True OR
                 # watch_patterns is a silent process. The agent has NO way to

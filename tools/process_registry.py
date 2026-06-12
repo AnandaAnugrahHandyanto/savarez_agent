@@ -86,6 +86,16 @@ def format_uptime_short(seconds: int) -> str:
     return f"{hours}h {mins}m"
 
 
+def _normalize_output_preview(text: str, limit: int = 80) -> str:
+    """Collapse output to a short single-line preview for notifications."""
+    collapsed = " ".join(str(text or "").split())
+    if not collapsed:
+        return "(no output)"
+    if len(collapsed) > limit:
+        return collapsed[:limit] + "..."
+    return collapsed
+
+
 @dataclass
 class ProcessSession:
     """A tracked background process with output buffering."""
@@ -102,6 +112,8 @@ class ProcessSession:
     exit_code: Optional[int] = None             # Exit code (None if still running)
     output_buffer: str = ""                     # Rolling output (last MAX_OUTPUT_CHARS)
     max_output_chars: int = MAX_OUTPUT_CHARS
+    output_path: Optional[str] = None           # Host log file path (tee target)
+    output_bytes: int = 0                       # Total bytes written to output_path
     detached: bool = False                      # True if recovered from crash (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     # Watcher/notification metadata (persisted for crash recovery)
@@ -113,6 +125,7 @@ class ProcessSession:
     watcher_message_id: str = ""                # Triggering message id — reply anchor for topic routing
     watcher_interval: int = 0                   # 0 = no watcher configured
     notify_on_complete: bool = False             # Queue agent notification on exit
+    preserve_on_restart: bool = False            # Keep process alive across planned restarts
     # Watch patterns — trigger agent notification when output matches any pattern
     watch_patterns: List[str] = field(default_factory=list)
     _watch_hits: int = field(default=0, repr=False)          # total matches delivered
@@ -512,6 +525,40 @@ class ProcessRegistry:
                 logger.debug("Could not resolve environment temp dir: %s", exc)
         return "/tmp"
 
+    @staticmethod
+    def _append_output_buffer(session: ProcessSession, text: str) -> None:
+        """Append output to the rolling in-memory buffer."""
+        with session._lock:
+            session.output_buffer += text
+            if len(session.output_buffer) > session.max_output_chars:
+                session.output_buffer = session.output_buffer[-session.max_output_chars:]
+
+    @staticmethod
+    def _persist_output_chunk(session: ProcessSession, text: str, log_fh=None) -> bool:
+        """Append output to the persistent log file when available."""
+        if not text or not session.output_path:
+            return False
+        try:
+            if log_fh is not None:
+                log_fh.write(text)
+                log_fh.flush()
+            else:
+                with open(session.output_path, "a", encoding="utf-8", errors="replace") as fh:
+                    fh.write(text)
+                    fh.flush()
+            return True
+        except OSError:
+            return False
+
+    def _record_output_chunk(self, session: ProcessSession, text: str, log_fh=None) -> None:
+        """Append output to the rolling buffer and persistent log."""
+        if not text:
+            return
+        self._append_output_buffer(session, text)
+        if self._persist_output_chunk(session, text, log_fh=log_fh):
+            with session._lock:
+                session.output_bytes += len(text.encode("utf-8", errors="replace"))
+
     def spawn_local(
         self,
         command: str,
@@ -539,6 +586,19 @@ class ProcessRegistry:
             cwd=_resolve_safe_cwd(cwd or os.getcwd()),
             started_at=time.time(),
         )
+
+        # Create host log file for tee output before reader threads start.
+        # Best-effort: if the directory cannot be created (e.g. HOME points
+        # to a non-existent path in a test environment), leave output_path
+        # unset so readers fall back to the in-memory buffer.
+        try:
+            output_dir = get_hermes_home() / "process-output"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = str(output_dir / f"{session.id}.log")
+            open(output_path, "a").close()  # touch
+            session.output_path = output_path
+        except OSError:
+            pass
 
         if use_pty:
             # Try PTY mode for interactive CLI tools
@@ -683,6 +743,7 @@ class ProcessRegistry:
         # Run the command in the sandbox with output capture
         temp_dir = self._env_temp_dir(env)
         log_path = f"{temp_dir}/hermes_bg_{session.id}.log"
+        session.output_path = log_path
         pid_path = f"{temp_dir}/hermes_bg_{session.id}.pid"
         exit_path = f"{temp_dir}/hermes_bg_{session.id}.exit"
         quoted_command = shlex.quote(command)
@@ -750,6 +811,12 @@ class ProcessRegistry:
     def _reader_loop(self, session: ProcessSession):
         """Background thread: read stdout from a local Popen process."""
         first_chunk = True
+        log_fh = None
+        if session.output_path:
+            try:
+                log_fh = open(session.output_path, "a", encoding="utf-8", errors="replace")
+            except OSError:
+                log_fh = None
         try:
             while True:
                 chunk = session.process.stdout.read(4096)
@@ -758,14 +825,16 @@ class ProcessRegistry:
                 if first_chunk:
                     chunk = self._clean_shell_noise(chunk)
                     first_chunk = False
-                with session._lock:
-                    session.output_buffer += chunk
-                    if len(session.output_buffer) > session.max_output_chars:
-                        session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                self._record_output_chunk(session, chunk, log_fh=log_fh)
                 self._check_watch_patterns(session, chunk)
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
         finally:
+            if log_fh:
+                try:
+                    log_fh.close()
+                except OSError:
+                    pass
             # Always reap the child to prevent zombie processes.
             try:
                 session.process.wait(timeout=5)
@@ -797,6 +866,7 @@ class ProcessRegistry:
                         session.output_buffer = new_output
                         if len(session.output_buffer) > session.max_output_chars:
                             session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                        session.output_bytes = len(new_output.encode("utf-8", errors="replace"))
                     if delta:
                         self._check_watch_patterns(session, delta)
 
@@ -831,6 +901,12 @@ class ProcessRegistry:
     def _pty_reader_loop(self, session: ProcessSession):
         """Background thread: read output from a PTY process."""
         pty = session._pty
+        log_fh = None
+        if session.output_path:
+            try:
+                log_fh = open(session.output_path, "a", encoding="utf-8", errors="replace")
+            except OSError:
+                log_fh = None
         try:
             while pty.isalive():
                 try:
@@ -838,10 +914,7 @@ class ProcessRegistry:
                     if chunk:
                         # ptyprocess returns bytes
                         text = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
-                        with session._lock:
-                            session.output_buffer += text
-                            if len(session.output_buffer) > session.max_output_chars:
-                                session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                        self._record_output_chunk(session, text, log_fh=log_fh)
                         self._check_watch_patterns(session, text)
                 except EOFError:
                     break
@@ -849,6 +922,12 @@ class ProcessRegistry:
                     break
         except Exception as e:
             logger.debug("PTY stdout reader ended: %s", e)
+        finally:
+            if log_fh:
+                try:
+                    log_fh.close()
+                except OSError:
+                    pass
 
         # Process exited
         try:
@@ -871,19 +950,23 @@ class ProcessRegistry:
             self._finished[session.id] = session
         self._write_checkpoint()
 
+        # Best-effort cleanup of orphaned output log files
+        self._cleanup_output_dir()
+
         # Only enqueue completion notification on the FIRST move.  Without
         # this guard, kill_process() and the reader thread can both call
         # _move_to_finished(), producing duplicate [IMPORTANT: ...] messages.
         if was_running and session.notify_on_complete:
-            from tools.ansi_strip import strip_ansi
-            output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
+            output_preview = self._notification_preview_for_session(session)
             self.completion_queue.put({
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
                 "command": session.command,
                 "exit_code": session.exit_code,
-                "output": output_tail,
+                "output": output_preview,
+                "preview": output_preview,
+                "output_path": session.output_path,
             })
 
     # ----- Query Methods -----
@@ -976,11 +1059,9 @@ class ProcessRegistry:
             except Exception as e:
                 logger.debug("Non-blocking drain failed for %s: %s", session.id, e)
 
+        if drained:
+            self._record_output_chunk(session, drained)
         with session._lock:
-            if drained:
-                session.output_buffer += drained
-                if len(session.output_buffer) > session.max_output_chars:
-                    session.output_buffer = session.output_buffer[-session.max_output_chars:]
             session.exited = True
             session.exit_code = rc
         logger.info(
@@ -1002,8 +1083,7 @@ class ProcessRegistry:
         # Guards against orphaned-pipe reader hangs (issue #17327).
         self._reconcile_local_exit(session)
 
-        with session._lock:
-            output_preview = strip_ansi(session.output_buffer[-1000:]) if session.output_buffer else ""
+        output_preview = self._read_output_tail(session, 1000)
 
         result = {
             "session_id": session.id,
@@ -1018,19 +1098,62 @@ class ProcessRegistry:
             self._completion_consumed.add(session_id)
         if session.detached:
             result["detached"] = True
-            result["note"] = "Process recovered after restart -- output history unavailable"
+            if not session.output_path or not os.path.isfile(session.output_path):
+                result["note"] = "Process recovered after restart -- output history unavailable"
         return result
 
+    @staticmethod
+    def _read_output_tail(session: ProcessSession, chars: int) -> str:
+        """Read the last *chars* characters of session output.
+
+        Prefers the persistent log file when available; falls back to the
+        in-memory output_buffer.
+        """
+        from tools.ansi_strip import strip_ansi
+
+        if session.output_path and os.path.isfile(session.output_path):
+            try:
+                with open(session.output_path, "r", encoding="utf-8", errors="replace") as fh:
+                    fh.seek(0, os.SEEK_END)
+                    size = fh.tell()
+                    if size <= chars:
+                        fh.seek(0)
+                        return strip_ansi(fh.read())
+                    fh.seek(max(0, size - chars))
+                    # Skip partial first line
+                    fh.readline()
+                    return strip_ansi(fh.read())
+            except OSError:
+                pass
+        with session._lock:
+            return strip_ansi(session.output_buffer[-chars:]) if session.output_buffer else ""
+
     def read_log(self, session_id: str, offset: int = 0, limit: int = 200) -> dict:
-        """Read the full output log with optional pagination by lines."""
+        """Read the full output log with optional pagination by lines.
+
+        Prefers reading from the persistent output_path file when available.
+        Falls back to the in-memory output_buffer only when the file is missing.
+        """
         from tools.ansi_strip import strip_ansi
 
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
-        with session._lock:
-            full_output = strip_ansi(session.output_buffer)
+        # Prefer persistent log file when available
+        file_output = None
+        if session.output_path and os.path.isfile(session.output_path):
+            try:
+                with open(session.output_path, "r", encoding="utf-8", errors="replace") as fh:
+                    file_output = strip_ansi(fh.read())
+            except OSError:
+                file_output = None
+
+        if file_output is not None:
+            full_output = file_output
+        else:
+            with session._lock:
+                full_output = strip_ansi(session.output_buffer)
 
         lines = full_output.splitlines()
         total_lines = len(lines)
@@ -1278,6 +1401,7 @@ class ProcessRegistry:
 
         result = []
         for s in all_sessions:
+            preview = self._read_output_tail(s, 200)
             entry = {
                 "session_id": s.id,
                 "command": s.command[:200],
@@ -1286,7 +1410,7 @@ class ProcessRegistry:
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(s.started_at)),
                 "uptime_seconds": int(time.time() - s.started_at),
                 "status": "exited" if s.exited else "running",
-                "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
+                "output_preview": preview,
             }
             if s.exited:
                 entry["exit_code"] = s.exit_code
@@ -1325,12 +1449,23 @@ class ProcessRegistry:
                 for s in self._running.values()
             )
 
-    def kill_all(self, task_id: str = None) -> int:
-        """Kill all running processes, optionally filtered by task_id. Returns count killed."""
+    def kill_all(self, task_id: str = None, include_preserved: bool = True) -> int:
+        """Kill all running processes, optionally filtered by task_id.
+
+        Args:
+            task_id: Optional task/session filter.
+            include_preserved: When False, keep sessions marked
+                preserve_on_restart=True alive across a planned restart.
+
+        Returns:
+            Count of killed or already-exited sessions.
+        """
         with self._lock:
             targets = [
                 s for s in self._running.values()
-                if (task_id is None or s.task_id == task_id) and not s.exited
+                if (task_id is None or s.task_id == task_id)
+                and not s.exited
+                and (include_preserved or not s.preserve_on_restart)
             ]
 
         killed = 0
@@ -1369,6 +1504,69 @@ class ProcessRegistry:
         if stale:
             self._completion_consumed -= stale
 
+    def _cleanup_output_dir(self):
+        """Remove orphaned output log files from process-output/.
+
+        An orphan is a *.log file whose stem (session ID) is not referenced
+        by any active session (running or finished).  Orphans are only
+        deleted when their mtime is >= 7 days old; younger orphans are kept
+        as a safety buffer.  Files whose session ID still appears in
+        _running or _finished are NEVER deleted regardless of age.
+
+        Best-effort: any missing-file, permission, or single-delete failure
+        is logged and skipped without interrupting the cleanup pass.
+        """
+        output_dir = get_hermes_home() / "process-output"
+        if not output_dir.is_dir():
+            return
+        now = time.time()
+        seven_days = 7 * 24 * 3600
+
+        with self._lock:
+            tracked_sessions = list(self._running.values()) + list(self._finished.values())
+            referenced_ids = {s.id for s in tracked_sessions}
+            referenced_paths = {
+                os.path.abspath(s.output_path)
+                for s in tracked_sessions
+                if s.output_path
+            }
+
+        try:
+            if CHECKPOINT_PATH.exists():
+                entries = json.loads(CHECKPOINT_PATH.read_text(encoding="utf-8"))
+                if isinstance(entries, list):
+                    for entry in entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        output_path = entry.get("output_path")
+                        if isinstance(output_path, str) and output_path:
+                            referenced_paths.add(os.path.abspath(output_path))
+        except Exception:
+            pass
+
+        try:
+            for entry in os.scandir(output_dir):
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                if not entry.name.endswith(".log"):
+                    continue
+                # Derive session ID from filename: proc_xxxxxxxxxxxx.log → proc_xxxxxxxxxxxx
+                stem = entry.name[:-4]
+                if stem in referenced_ids or os.path.abspath(entry.path) in referenced_paths:
+                    continue  # never delete currently-tracked session logs
+                try:
+                    mtime = entry.stat(follow_symlinks=False).st_mtime
+                except OSError:
+                    continue
+                if (now - mtime) < seven_days:
+                    continue  # keep young orphans as safety buffer
+                try:
+                    os.unlink(entry.path)
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
     # ----- Checkpoint (crash recovery) -----
 
     def _write_checkpoint(self):
@@ -1395,7 +1593,10 @@ class ProcessRegistry:
                             "watcher_message_id": s.watcher_message_id,
                             "watcher_interval": s.watcher_interval,
                             "notify_on_complete": s.notify_on_complete,
+                            "preserve_on_restart": s.preserve_on_restart,
                             "watch_patterns": s.watch_patterns,
+                            "output_path": s.output_path,
+                            "output_bytes": s.output_bytes,
                         })
             
             # Atomic write to avoid corruption on crash
@@ -1403,6 +1604,11 @@ class ProcessRegistry:
             atomic_json_write(CHECKPOINT_PATH, entries)
         except Exception as e:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
+        else:
+            # Best-effort cleanup of orphaned output log files after each
+            # successful checkpoint write so the output dir doesn't grow
+            # without bound across long-running gateway processes.
+            self._cleanup_output_dir()
 
     def recover_from_checkpoint(self) -> int:
         """
@@ -1450,7 +1656,9 @@ class ProcessRegistry:
                     pid_scope=pid_scope,
                     cwd=entry.get("cwd"),
                     started_at=entry.get("started_at", time.time()),
-                    detached=True,  # Can't read output, but can report status + kill
+                    detached=True,
+                    output_path=entry.get("output_path"),
+                    output_bytes=entry.get("output_bytes", 0),
                     watcher_platform=entry.get("watcher_platform", ""),
                     watcher_chat_id=entry.get("watcher_chat_id", ""),
                     watcher_user_id=entry.get("watcher_user_id", ""),
@@ -1459,6 +1667,7 @@ class ProcessRegistry:
                     watcher_message_id=entry.get("watcher_message_id", ""),
                     watcher_interval=entry.get("watcher_interval", 0),
                     notify_on_complete=entry.get("notify_on_complete", False),
+                    preserve_on_restart=entry.get("preserve_on_restart", False),
                     watch_patterns=entry.get("watch_patterns", []),
                 )
                 with self._lock:
@@ -1483,7 +1692,32 @@ class ProcessRegistry:
 
         self._write_checkpoint()
 
+        # Best-effort cleanup of orphaned output log files
+        self._cleanup_output_dir()
+
         return recovered
+
+    @staticmethod
+    def _notification_preview_for_session(session: ProcessSession, limit: int = 80) -> str:
+        """Build a short preview for completion notifications.
+
+        Prefer the start of the persisted log file when available so the
+        preview remains stable even when the rolling in-memory buffer only
+        contains the tail of long-running output.
+        """
+        from tools.ansi_strip import strip_ansi
+
+        raw = ""
+        if session.output_path and os.path.isfile(session.output_path):
+            try:
+                with open(session.output_path, "r", encoding="utf-8", errors="replace") as fh:
+                    raw = fh.read(max(512, limit * 4))
+            except OSError:
+                raw = ""
+        if not raw:
+            with session._lock:
+                raw = session.output_buffer or ""
+        return _normalize_output_preview(strip_ansi(raw), limit=limit)
 
 
 # Module-level singleton
@@ -1519,12 +1753,14 @@ def format_process_notification(evt: dict) -> "str | None":
         return text
 
     _exit = evt.get("exit_code", "?")
-    _out = evt.get("output", "")
+    _preview = evt.get("preview") or evt.get("output") or "(no output)"
+    _path = evt.get("output_path") or "unavailable"
     return (
         f"[IMPORTANT: Background process {_sid} completed "
         f"(exit code {_exit}).\n"
         f"Command: {_cmd}\n"
-        f"Output:\n{_out}]"
+        f"Preview: {_preview}\n"
+        f"Full output saved to: {_path}]"
     )
 
 

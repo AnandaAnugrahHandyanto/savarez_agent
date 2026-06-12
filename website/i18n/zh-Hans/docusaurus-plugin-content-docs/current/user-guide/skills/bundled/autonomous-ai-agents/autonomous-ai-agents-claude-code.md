@@ -53,7 +53,7 @@ Hermes 以两种根本不同的方式与 Claude Code 交互。请根据任务选
 Print 模式运行一次性任务，返回结果后退出。无需 PTY（伪终端），无交互式提示。这是最简洁的集成方式。
 
 ```
-terminal(command="claude -p 'Add error handling to all API calls in src/' --allowedTools 'Read,Edit' --max-turns 10", workdir="/path/to/project", timeout=120)
+terminal(command="claude -p 'Add error handling to all API calls in src/' --allowedTools 'Read,Edit' --max-turns 40", workdir="/path/to/project", timeout=120)
 ```
 
 **何时使用 print 模式：**
@@ -162,7 +162,7 @@ terminal(command="sleep 15 && tmux capture-pane -t claude-work -p -S -60")
 
 ### 结构化 JSON 输出
 ```
-terminal(command="claude -p 'Analyze auth.py for security issues' --output-format json --max-turns 5", workdir="/project", timeout=120)
+terminal(command="claude -p 'Analyze auth.py for security issues' --output-format json --max-turns 60", workdir="/project", timeout=120)
 ```
 
 返回包含以下字段的 JSON 对象：
@@ -208,13 +208,13 @@ claude -p "task" --input-format stream-json --output-format stream-json --replay
 ### 管道输入
 ```
 # 通过管道传入文件进行分析
-terminal(command="cat src/auth.py | claude -p 'Review this code for bugs' --max-turns 1", timeout=60)
+terminal(command="cat src/auth.py | claude -p 'Review this code for bugs' --max-turns 60", timeout=60)
 
 # 通过管道传入多个文件
-terminal(command="cat src/*.py | claude -p 'Find all TODO comments' --max-turns 1", timeout=60)
+terminal(command="cat src/*.py | claude -p 'Find all TODO comments' --max-turns 5", timeout=60)
 
 # 通过管道传入命令输出
-terminal(command="git diff HEAD~3 | claude -p 'Summarize these changes' --max-turns 1", timeout=60)
+terminal(command="git diff HEAD~3 | claude -p 'Summarize these changes' --max-turns 5", timeout=60)
 ```
 
 ### 使用 JSON Schema 进行结构化提取
@@ -227,21 +227,21 @@ terminal(command="claude -p 'List all functions in src/' --output-format json --
 ### 会话续接
 ```
 # 开始一个任务
-terminal(command="claude -p 'Start refactoring the database layer' --output-format json --max-turns 10 > /tmp/session.json", workdir="/project", timeout=180)
+terminal(command="claude -p 'Start refactoring the database layer' --output-format json --max-turns 40 > /tmp/session.json", workdir="/project", timeout=180)
 
 # 使用会话 ID 恢复
-terminal(command="claude -p 'Continue and add connection pooling' --resume $(cat /tmp/session.json | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"session_id\"])') --max-turns 5", workdir="/project", timeout=120)
+terminal(command="claude -p 'Continue and add connection pooling' --resume $(cat /tmp/session.json | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"session_id\"])') --max-turns 40", workdir="/project", timeout=120)
 
 # 或恢复同一目录中最近的会话
-terminal(command="claude -p 'What did you do last time?' --continue --max-turns 1", workdir="/project", timeout=30)
+terminal(command="claude -p 'What did you do last time?' --continue --max-turns 5", workdir="/project", timeout=30)
 
 # 派生会话（新 ID，保留历史）
-terminal(command="claude -p 'Try a different approach' --resume <id> --fork-session --max-turns 10", workdir="/project", timeout=120)
+terminal(command="claude -p 'Try a different approach' --resume <id> --fork-session --max-turns 40", workdir="/project", timeout=120)
 ```
 
 ### CI/脚本的精简模式
 ```
-terminal(command="claude --bare -p 'Run all tests and report failures' --allowedTools 'Read,Bash' --max-turns 10", workdir="/project", timeout=180)
+terminal(command="claude --bare -p 'Run all tests and report failures' --allowedTools 'Read,Bash' --max-turns 60", workdir="/project", timeout=180)
 ```
 
 `--bare` 跳过 hook、插件、MCP 发现和 CLAUDE.md 加载。启动最快。需要 `ANTHROPIC_API_KEY`（跳过 OAuth）。
@@ -256,7 +256,7 @@ terminal(command="claude --bare -p 'Run all tests and report failures' --allowed
 
 ### 过载时的备用模型
 ```
-terminal(command="claude -p 'task' --fallback-model haiku --max-turns 5", timeout=90)
+terminal(command="claude -p 'task' --fallback-model haiku --max-turns 40", timeout=90)
 ```
 当默认模型过载时自动切换到指定模型（仅限 print 模式）。
 
@@ -488,7 +488,7 @@ When asked to create or modify database migrations:
 
 ### 快速审查（Print 模式）
 ```
-terminal(command="cd /path/to/repo && git diff main...feature-branch | claude -p 'Review this diff for bugs, security issues, and style problems. Be thorough.' --max-turns 1", timeout=60)
+terminal(command="cd /path/to/repo && git diff main...feature-branch | claude -p 'Review this diff for bugs, security issues, and style problems. Be thorough.' --max-turns 60", timeout=60)
 ```
 
 ### 深度审查（交互式 + Worktree）
@@ -502,7 +502,7 @@ terminal(command="sleep 30 && tmux capture-pane -t review -p -S -60")
 
 ### 通过 PR 编号审查
 ```
-terminal(command="claude -p 'Review this PR thoroughly' --from-pr 42 --max-turns 10", workdir="/path/to/repo", timeout=120)
+terminal(command="claude -p 'Review this PR thoroughly' --from-pr 42 --max-turns 60", workdir="/path/to/repo", timeout=120)
 ```
 
 ### Claude Worktree 配合 tmux
@@ -517,13 +517,13 @@ terminal(command="claude -w feature-x --tmux", workdir="/path/to/repo")
 
 ```
 # 任务一：修复后端
-terminal(command="tmux new-session -d -s task1 -x 140 -y 40 && tmux send-keys -t task1 'cd ~/project && claude -p \"Fix the auth bug in src/auth.py\" --allowedTools \"Read,Edit\" --max-turns 10' Enter")
+terminal(command="tmux new-session -d -s task1 -x 140 -y 40 && tmux send-keys -t task1 'cd ~/project && claude -p \"Fix the auth bug in src/auth.py\" --allowedTools \"Read,Edit\" --max-turns 40' Enter")
 
 # 任务二：编写测试
-terminal(command="tmux new-session -d -s task2 -x 140 -y 40 && tmux send-keys -t task2 'cd ~/project && claude -p \"Write integration tests for the API endpoints\" --allowedTools \"Read,Write,Bash\" --max-turns 15' Enter")
+terminal(command="tmux new-session -d -s task2 -x 140 -y 40 && tmux send-keys -t task2 'cd ~/project && claude -p \"Write integration tests for the API endpoints\" --allowedTools \"Read,Write,Bash\" --max-turns 40' Enter")
 
 # 任务三：更新文档
-terminal(command="tmux new-session -d -s task3 -x 140 -y 40 && tmux send-keys -t task3 'cd ~/project && claude -p \"Update README.md with the new API endpoints\" --allowedTools \"Read,Edit\" --max-turns 5' Enter")
+terminal(command="tmux new-session -d -s task3 -x 140 -y 40 && tmux send-keys -t task3 'cd ~/project && claude -p \"Update README.md with the new API endpoints\" --allowedTools \"Read,Edit\" --max-turns 40' Enter")
 
 # 监控所有任务
 terminal(command="sleep 30 && for s in task1 task2 task3; do echo '=== '$s' ==='; tmux capture-pane -t $s -p -S -5 2>/dev/null; done")
@@ -722,7 +722,7 @@ terminal(command="tmux capture-pane -t dev -p -S -10")
 
 ## 成本与性能建议
 
-1. **在 print 模式中使用 `--max-turns`** 以防止失控循环。大多数任务从 5-10 开始。
+1. **在 print 模式中使用 `--max-turns` 防止失控循环**。按任务类型选基线：`review=60`、`implementation=40`、`extract=5`。
 2. **使用 `--max-budget-usd`** 设置成本上限。注意：系统 prompt 缓存创建的最低成本约为 $0.05。
 3. **简单任务使用 `--effort low`**（更快、更便宜）。复杂推理使用 `high` 或 `max`。
 4. **CI/脚本使用 `--bare`** 以跳过插件/hook 发现开销。
@@ -742,7 +742,7 @@ terminal(command="tmux capture-pane -t dev -p -S -10")
 4. **`--max-turns` 仅限 print 模式** — 在交互会话中被忽略。
 5. **Claude 可能使用 `python` 而非 `python3`** — 在没有 `python` 符号链接的系统上，Claude 的 bash 命令首次会失败，但它会自我纠正。
 6. **会话恢复需要相同目录** — `--continue` 查找当前工作目录中最近的会话。
-7. **`--json-schema` 需要足够的 `--max-turns`** — Claude 必须先读取文件才能生成结构化输出，这需要多轮次。
+7. **`--json-schema` 需要足够的 `--max-turns`** — 小型结构化读取用 `extract` 基线（`5`）；如果 Claude 需要先检查更大的 diff 或文件集，再提高到 `review` 基线（`60`）。
 8. **信任对话框每个目录只出现一次** — 仅首次出现，之后缓存。
 9. **后台 tmux 会话会持续存在** — 完成后始终使用 `tmux kill-session -t <name>` 清理。
 10. **斜杠命令（如 `/commit`）仅在交互模式下有效** — 在 `-p` 模式中，用自然语言描述任务。
@@ -754,10 +754,62 @@ terminal(command="tmux capture-pane -t dev -p -S -10")
 1. **单一任务优先使用 print 模式（`-p`）** — 更简洁，无需处理对话框，输出结构化
 2. **多轮交互工作使用 tmux** — 编排 TUI 的唯一可靠方式
 3. **始终设置 `workdir`** — 让 Claude 专注于正确的项目目录
-4. **在 print 模式中设置 `--max-turns`** — 防止无限循环和失控成本
+4. **在 print 模式中按三档基线设置 `--max-turns`** — `review=60`、`implementation=40`、`extract=5`
 5. **监控 tmux 会话** — 使用 `tmux capture-pane -t <session> -p -S -50` 检查进度
 6. **注意 `❯` 提示符** — 表示 Claude 正在等待输入（已完成或正在提问）
 7. **清理 tmux 会话** — 完成后关闭它们以避免资源泄漏
 8. **向用户报告结果** — 完成后总结 Claude 做了什么以及发生了什么变化
 9. **不要终止慢速会话** — Claude 可能正在进行多步骤工作；检查进度而非直接终止
 10. **使用 `--allowedTools`** — 将能力限制为任务实际需要的工具
+
+## 调度模板 / 报告契约
+
+规范 CC 调度模板：`skills/autonomous-ai-agents/claude-code/templates/default-dispatch.md`。
+
+### 模板注入链路
+
+每次委托 Claude Code 之前，编排器必须：
+
+1. 调用 `skill_view(name="claude-code", file_path="templates/default-dispatch.md")` 加载模板。
+2. 渲染占位符：`<ABS_REPORT_PATH>`、`<JOB_ID>`、`<TASK_CLASS>`、`<TURN_BUDGET>`。
+3. 将渲染后的模板放到调度 prompt 的最前面，**位于**任务描述之前。
+4. 然后在模板后面追加具体的任务指令。
+
+### 报告路径规则
+
+- `<ABS_REPORT_PATH>` 必须是目标仓库内的绝对路径。
+- 回退路径：`<repo>/.hermes-artifacts/reviews/<JOB_ID>.md`。
+- 先用 `mkdir -p` 创建父目录。
+- 路径中禁止使用 `~`。
+- 禁止将部分输出报告为 `completed`。
+
+### 轮次预算基线
+
+| 任务类型 | 范围 | 默认 `--max-turns` |
+|---|---|---|
+| `review` | 30–120 | 60 |
+| `implementation` | 20–80 | 40 |
+| `extract` | 1–10 | 5 |
+
+- 默认情况下，`review` bucket 适用于代码审查（code review）、调试（debug）和重构（refactor）任务。
+- 默认情况下，`implementation` bucket 适用于功能开发（features）、问题修复（fixes）、测试（tests）等代码变更任务。
+- 默认情况下，`extract` bucket 适用于摘要（summarize）、模式提取（schema）和窄范围提取（narrow extraction）任务。
+- 在 print 模式下，将 `--max-turns` 设置为 bucket 默认值，除非调用方显式覆盖。
+
+### Claude Print-Mode 状态映射
+
+| `subtype` | 结束状态 |
+|---|---|
+| `success` | `completed` |
+| `error_max_turns` | `over_budget` |
+| `error_budget` | `over_budget` |
+| (interrupted) | `interrupted` |
+
+如果 Claude 提前中止但留下了有用的未完成工作，请在报告中写入 `partial_output` 而非 `completed`。
+
+### 结束状态契约
+
+- `completed`：`subtype: success`，任务完成，报告已写入。
+- `over_budget`：`error_max_turns` 或 `error_budget`；报告必须列出已完成/未完成/下一步。
+- `interrupted`：被终止或超时；报告必须记录检查点。
+- `partial_output`：不完整结果；必须标注为 partial，不得报为 `completed`。

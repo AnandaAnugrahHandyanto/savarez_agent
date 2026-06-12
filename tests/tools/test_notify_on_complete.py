@@ -99,7 +99,8 @@ class TestCompletionQueue:
         assert completion["session_id"] == s.id
         assert completion["command"] == "echo hello"
         assert completion["exit_code"] == 0
-        assert "build succeeded" in completion["output"]
+        assert completion["preview"] == "build succeeded"
+        assert completion["output"] == "build succeeded"
 
     def test_move_to_finished_nonzero_exit(self, registry):
         """Nonzero exit codes are captured correctly."""
@@ -116,7 +117,7 @@ class TestCompletionQueue:
 
         completion = registry.completion_queue.get_nowait()
         assert completion["exit_code"] == 1
-        assert "FAILED" in completion["output"]
+        assert completion["preview"] == "FAILED"
 
     def test_move_to_finished_idempotent_no_duplicate(self, registry):
         """Calling _move_to_finished twice must NOT enqueue two notifications.
@@ -138,8 +139,8 @@ class TestCompletionQueue:
         completion = registry.completion_queue.get_nowait()
         assert completion["exit_code"] == -15  # from the first (kill) call
 
-    def test_output_truncated_to_2000(self, registry):
-        """Long output is truncated to last 2000 chars."""
+    def test_output_preview_truncated_to_80_chars(self, registry):
+        """Long completion notifications are reduced to a short preview."""
         long_output = "x" * 5000
         s = _make_session(
             notify_on_complete=True,
@@ -152,7 +153,7 @@ class TestCompletionQueue:
             registry._move_to_finished(s)
 
         completion = registry.completion_queue.get_nowait()
-        assert len(completion["output"]) == 2000
+        assert len(completion["preview"]) == 83
 
     def test_multiple_completions_queued(self, registry):
         """Multiple notify processes all push to the same queue."""

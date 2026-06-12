@@ -1698,7 +1698,37 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
         text += "]"
         return text
 
-    return None
+
+def _normalize_gateway_process_preview(text: str, limit: int = 80) -> str:
+    collapsed = " ".join(str(text or "").split())
+    if not collapsed:
+        return "(no output)"
+    if len(collapsed) > limit:
+        return collapsed[:limit] + "..."
+    return collapsed
+
+
+def _completion_event_for_session(session_id: str, session: Any) -> dict:
+    from tools.ansi_strip import strip_ansi
+
+    raw = ""
+    output_path = getattr(session, "output_path", None)
+    if output_path and os.path.isfile(output_path):
+        try:
+            with open(output_path, "r", encoding="utf-8", errors="replace") as fh:
+                raw = strip_ansi(fh.read(512))
+        except OSError:
+            raw = ""
+    if not raw:
+        raw = strip_ansi(getattr(session, "output_buffer", "") or "")
+    return {
+        "type": "completion",
+        "session_id": session_id,
+        "command": getattr(session, "command", "unknown"),
+        "exit_code": getattr(session, "exit_code", None),
+        "preview": _normalize_gateway_process_preview(raw, limit=80),
+        "output_path": output_path,
+    }
 
 
 # Module-level weak reference to the active GatewayRunner instance.
@@ -3865,7 +3895,12 @@ class GatewayRunner:
                     e,
                 )
 
-    def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
+    def _finalize_shutdown_agents(
+        self,
+        active_agents: Dict[str, Any],
+        *,
+        preserve_runtime_state: bool = False,
+    ) -> None:
         for agent in active_agents.values():
             try:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
@@ -3877,9 +3912,17 @@ class GatewayRunner:
                 )
             except Exception:
                 pass
-            self._cleanup_agent_resources(agent)
+            self._cleanup_agent_resources(
+                agent,
+                preserve_runtime_state=preserve_runtime_state,
+            )
 
-    def _cleanup_agent_resources(self, agent: Any) -> None:
+    def _cleanup_agent_resources(
+        self,
+        agent: Any,
+        *,
+        preserve_runtime_state: bool = False,
+    ) -> None:
         """Best-effort cleanup for temporary or cached agent instances."""
         if agent is None:
             return
@@ -3906,7 +3949,13 @@ class GatewayRunner:
         # background processes, httpx clients) to prevent zombie
         # process accumulation.
         try:
-            if hasattr(agent, "close"):
+            if preserve_runtime_state:
+                release_clients = getattr(agent, "release_clients", None)
+                if callable(release_clients):
+                    release_clients()
+                elif hasattr(agent, "close"):
+                    agent.close(preserve_runtime_state=True)
+            elif hasattr(agent, "close"):
                 agent.close()
         except Exception:
             pass
@@ -6492,7 +6541,9 @@ class GatewayRunner:
                 """
                 try:
                     from tools.process_registry import process_registry
-                    _killed = process_registry.kill_all()
+                    _killed = process_registry.kill_all(
+                        include_preserved=not self._restart_requested,
+                    )
                     if _killed:
                         logger.info(
                             "Shutdown (%s): killed %d tool subprocess(es)",
@@ -6644,7 +6695,10 @@ class GatewayRunner:
                 except Exception as e:
                     logger.error("Failed to launch detached gateway restart: %s", e)
 
-            self._finalize_shutdown_agents(active_agents)
+            self._finalize_shutdown_agents(
+                active_agents,
+                preserve_runtime_state=self._restart_requested,
+            )
 
             # Also shut down memory providers on idle cached agents.
             # _finalize_shutdown_agents only handles agents that were
@@ -6661,7 +6715,10 @@ class GatewayRunner:
                     _agent = (
                         _entry[0] if isinstance(_entry, tuple) else _entry
                     )
-                    self._cleanup_agent_resources(_agent)
+                    self._cleanup_agent_resources(
+                        _agent,
+                        preserve_runtime_state=self._restart_requested,
+                    )
 
             for platform, adapter in list(self.adapters.items()):
                 _adapter_started_at = time.monotonic()
@@ -16144,26 +16201,10 @@ class GatewayRunner:
                 # Skip if the agent already consumed the result via wait/poll/log
                 from tools.process_registry import process_registry as _pr_check
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
-                    from tools.ansi_strip import strip_ansi
-                    _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
-                    # Truncate at line boundaries so notifications never start
-                    # mid-line (fixes #23284). Keep the last ~2000 chars but
-                    # snap to the nearest preceding newline, then prepend a
-                    # truncation marker when output was cut.
-                    _LIMIT = 2000
-                    if len(_raw) > _LIMIT:
-                        _tail = _raw[-_LIMIT:]
-                        _nl = _tail.find("\n")
-                        _tail = _tail[_nl + 1:] if _nl != -1 else _tail
-                        _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
-                    else:
-                        _out = _raw
-                    synth_text = (
-                        f"[IMPORTANT: Background process {session_id} completed "
-                        f"(exit code {session.exit_code}).\n"
-                        f"Command: {session.command}\n"
-                        f"Output:\n{_out}]"
-                    )
+                    from tools.process_registry import format_process_notification
+
+                    completion_evt = _completion_event_for_session(session_id, session)
+                    synth_text = format_process_notification(completion_evt)
                     source = self._build_process_event_source({
                         "session_id": session_id,
                         "session_key": session_key,
@@ -16213,11 +16254,10 @@ class GatewayRunner:
                     or (notify_mode == "error" and session.exit_code not in {0, None})
                 )
                 if should_notify:
-                    new_output = session.output_buffer[-1000:] if session.output_buffer else ""
-                    message_text = (
-                        f"[Background process {session_id} finished with exit code {session.exit_code}~ "
-                        f"Here's the final output:\n{new_output}]"
-                    )
+                    from tools.process_registry import format_process_notification
+
+                    completion_evt = _completion_event_for_session(session_id, session)
+                    message_text = format_process_notification(completion_evt)
                     adapter = None
                     for p, a in self.adapters.items():
                         if p.value == platform_name:

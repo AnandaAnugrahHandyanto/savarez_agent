@@ -10,8 +10,10 @@ from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
 from gateway.session import build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
+pytestmark = pytest.mark.anyio
 
-@pytest.mark.asyncio
+
+@pytest.mark.anyio
 async def test_cancel_background_tasks_cancels_inflight_message_processing():
     _runner, adapter = make_restart_runner()
     release = asyncio.Event()
@@ -49,7 +51,20 @@ def test_cleanup_agent_resources_reaps_stale_aux_clients():
     cleanup_mock.assert_called_once()
 
 
-@pytest.mark.asyncio
+def test_cleanup_agent_resources_preserve_runtime_state_releases_clients():
+    runner, _adapter = make_restart_runner()
+    agent = MagicMock()
+
+    with patch("agent.auxiliary_client.cleanup_stale_async_clients") as cleanup_mock:
+        runner._cleanup_agent_resources(agent, preserve_runtime_state=True)
+
+    agent.shutdown_memory_provider.assert_called_once()
+    agent.release_clients.assert_called_once()
+    agent.close.assert_not_called()
+    cleanup_mock.assert_called_once()
+
+
+@pytest.mark.anyio
 async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks():
     runner, adapter = make_restart_runner()
     runner._pending_messages = {"session": "pending text"}
@@ -91,7 +106,7 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
     assert runner._shutdown_event.is_set() is True
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_gateway_stop_drains_running_agents_before_disconnect():
     runner, adapter = make_restart_runner()
     disconnect_mock = AsyncMock()
@@ -114,7 +129,7 @@ async def test_gateway_stop_drains_running_agents_before_disconnect():
     assert runner._shutdown_event.is_set() is True
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_gateway_stop_interrupts_after_drain_timeout():
     runner, adapter = make_restart_runner()
     runner._restart_drain_timeout = 0.05
@@ -133,7 +148,7 @@ async def test_gateway_stop_interrupts_after_drain_timeout():
     assert runner._shutdown_event.is_set() is True
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_gateway_stop_systemd_service_restart_exits_cleanly(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     runner, adapter = make_restart_runner()
@@ -141,7 +156,9 @@ async def test_gateway_stop_systemd_service_restart_exits_cleanly(tmp_path, monk
     monkeypatch.setenv("INVOCATION_ID", "systemd-test")
     runner._launch_systemd_restart_shortcut = MagicMock()
 
-    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+    with patch("gateway.run.sys.platform", "linux"), \
+         patch("gateway.status.remove_pid_file"), \
+         patch("gateway.status.write_runtime_status"):
         await runner.stop(restart=True, service_restart=True)
 
     runner._launch_systemd_restart_shortcut.assert_called_once_with()
@@ -149,7 +166,7 @@ async def test_gateway_stop_systemd_service_restart_exits_cleanly(tmp_path, monk
     assert (tmp_path / ".restart_pending.json").exists()
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_gateway_stop_launchd_service_restart_keeps_nonzero_exit(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     runner, adapter = make_restart_runner()
@@ -163,7 +180,7 @@ async def test_gateway_stop_launchd_service_restart_keeps_nonzero_exit(tmp_path,
     assert runner._exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_restart_shutdown_warning_uses_restart_command_reply_anchor_for_active_session():
     runner, adapter = make_restart_runner()
     source = make_restart_source(thread_id="42")
@@ -193,7 +210,7 @@ async def test_restart_shutdown_warning_uses_restart_command_reply_anchor_for_ac
     assert metadata["telegram_reply_to_message_id"] == "restart-command"
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
     runner, adapter = make_restart_runner()
     source = make_restart_source(thread_id="42")
@@ -219,7 +236,7 @@ async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
     assert metadata["telegram_reply_to_message_id"] == "restart-command"
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_idle_in_chat_restart_does_not_send_interruption_warning():
     runner, adapter = make_restart_runner()
     source = make_restart_source(thread_id="42")
@@ -238,7 +255,7 @@ async def test_idle_in_chat_restart_does_not_send_interruption_warning():
     assert adapter.sent_calls == []
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_in_chat_restart_does_not_write_home_startup_marker(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     runner, adapter = make_restart_runner()
@@ -255,7 +272,7 @@ async def test_in_chat_restart_does_not_write_home_startup_marker(tmp_path, monk
     assert not (tmp_path / ".restart_pending.json").exists()
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_drain_active_agents_throttles_status_updates():
     runner, _adapter = make_restart_runner()
     runner._update_runtime_status = MagicMock()
@@ -277,7 +294,7 @@ async def test_drain_active_agents_throttles_status_updates():
     assert 3 <= runner._update_runtime_status.call_count <= 4
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_gateway_stop_kills_tool_subprocesses_before_adapter_disconnect_on_timeout(monkeypatch):
     """On drain timeout, tool subprocesses must be killed BEFORE adapter
     disconnect so systemd's TimeoutStopSec doesn't SIGKILL the cgroup with
@@ -287,8 +304,11 @@ async def test_gateway_stop_kills_tool_subprocesses_before_adapter_disconnect_on
 
     call_order: list[str] = []
 
-    def _fake_kill_all(task_id=None):
+    kill_calls: list[bool] = []
+
+    def _fake_kill_all(task_id=None, include_preserved=True):
         call_order.append("kill_all")
+        kill_calls.append(include_preserved)
         return 2
 
     def _fake_cleanup_envs():
@@ -313,7 +333,7 @@ async def test_gateway_stop_kills_tool_subprocesses_before_adapter_disconnect_on
     runner._running_agents = {"session": MagicMock()}
 
     with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
-        await runner.stop()
+        await runner.stop(restart=True)
 
     # First kill_all must precede the first disconnect.  (Both the eager
     # post-interrupt cleanup and the final catch-all call _kill_tool_
@@ -326,11 +346,12 @@ async def test_gateway_stop_kills_tool_subprocesses_before_adapter_disconnect_on
         f"Tool subprocesses must be killed before adapter disconnect on "
         f"drain timeout, got order: {call_order}"
     )
+    assert kill_calls and all(flag is False for flag in kill_calls)
     # Defense-in-depth final cleanup still runs.
     assert call_order.count("kill_all") >= 2
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_gateway_stop_kills_tool_subprocesses_on_graceful_path(monkeypatch):
     """Graceful shutdown (no drain timeout) must still kill tool subprocesses
     exactly once via the final catch-all — regression guard against
@@ -340,9 +361,12 @@ async def test_gateway_stop_kills_tool_subprocesses_on_graceful_path(monkeypatch
 
     kill_count = 0
 
-    def _fake_kill_all(task_id=None):
+    kill_calls: list[bool] = []
+
+    def _fake_kill_all(task_id=None, include_preserved=True):
         nonlocal kill_count
         kill_count += 1
+        kill_calls.append(include_preserved)
         return 0
 
     import tools.process_registry as _pr
@@ -358,3 +382,4 @@ async def test_gateway_stop_kills_tool_subprocesses_on_graceful_path(monkeypatch
 
     # Only the final catch-all fires on the graceful path.
     assert kill_count == 1
+    assert kill_calls == [True]

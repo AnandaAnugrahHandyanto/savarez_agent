@@ -53,7 +53,7 @@ Hermes interacts with Claude Code in two fundamentally different ways. Choose ba
 Print mode runs a one-shot task, returns the result, and exits. No PTY needed. No interactive prompts. This is the cleanest integration path.
 
 ```
-terminal(command="claude -p 'Add error handling to all API calls in src/' --allowedTools 'Read,Edit' --max-turns 10", workdir="/path/to/project", timeout=120)
+terminal(command="claude -p 'Add error handling to all API calls in src/' --allowedTools 'Read,Edit' --max-turns 40", workdir="/path/to/project", timeout=120)
 ```
 
 **When to use print mode:**
@@ -162,7 +162,7 @@ terminal(command="sleep 15 && tmux capture-pane -t claude-work -p -S -60")
 
 ### Structured JSON Output
 ```
-terminal(command="claude -p 'Analyze auth.py for security issues' --output-format json --max-turns 5", workdir="/project", timeout=120)
+terminal(command="claude -p 'Analyze auth.py for security issues' --output-format json --max-turns 60", workdir="/project", timeout=120)
 ```
 
 Returns a JSON object with:
@@ -208,13 +208,13 @@ claude -p "task" --input-format stream-json --output-format stream-json --replay
 ### Piped Input
 ```
 # Pipe a file for analysis
-terminal(command="cat src/auth.py | claude -p 'Review this code for bugs' --max-turns 1", timeout=60)
+terminal(command="cat src/auth.py | claude -p 'Review this code for bugs' --max-turns 60", timeout=60)
 
 # Pipe multiple files
-terminal(command="cat src/*.py | claude -p 'Find all TODO comments' --max-turns 1", timeout=60)
+terminal(command="cat src/*.py | claude -p 'Find all TODO comments' --max-turns 5", timeout=60)
 
 # Pipe command output
-terminal(command="git diff HEAD~3 | claude -p 'Summarize these changes' --max-turns 1", timeout=60)
+terminal(command="git diff HEAD~3 | claude -p 'Summarize these changes' --max-turns 5", timeout=60)
 ```
 
 ### JSON Schema for Structured Extraction
@@ -227,21 +227,21 @@ Parse `structured_output` from the JSON result. Claude validates output against 
 ### Session Continuation
 ```
 # Start a task
-terminal(command="claude -p 'Start refactoring the database layer' --output-format json --max-turns 10 > /tmp/session.json", workdir="/project", timeout=180)
+terminal(command="claude -p 'Start refactoring the database layer' --output-format json --max-turns 40 > /tmp/session.json", workdir="/project", timeout=180)
 
 # Resume with session ID
-terminal(command="claude -p 'Continue and add connection pooling' --resume $(cat /tmp/session.json | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"session_id\"])') --max-turns 5", workdir="/project", timeout=120)
+terminal(command="claude -p 'Continue and add connection pooling' --resume $(cat /tmp/session.json | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"session_id\"])') --max-turns 40", workdir="/project", timeout=120)
 
 # Or resume the most recent session in the same directory
-terminal(command="claude -p 'What did you do last time?' --continue --max-turns 1", workdir="/project", timeout=30)
+terminal(command="claude -p 'What did you do last time?' --continue --max-turns 5", workdir="/project", timeout=30)
 
 # Fork a session (new ID, keeps history)
-terminal(command="claude -p 'Try a different approach' --resume <id> --fork-session --max-turns 10", workdir="/project", timeout=120)
+terminal(command="claude -p 'Try a different approach' --resume <id> --fork-session --max-turns 40", workdir="/project", timeout=120)
 ```
 
 ### Bare Mode for CI/Scripting
 ```
-terminal(command="claude --bare -p 'Run all tests and report failures' --allowedTools 'Read,Bash' --max-turns 10", workdir="/project", timeout=180)
+terminal(command="claude --bare -p 'Run all tests and report failures' --allowedTools 'Read,Bash' --max-turns 60", workdir="/project", timeout=180)
 ```
 
 `--bare` skips hooks, plugins, MCP discovery, and CLAUDE.md loading. Fastest startup. Requires `ANTHROPIC_API_KEY` (skips OAuth).
@@ -256,7 +256,7 @@ To selectively load context in bare mode:
 
 ### Fallback Model for Overload
 ```
-terminal(command="claude -p 'task' --fallback-model haiku --max-turns 5", timeout=90)
+terminal(command="claude -p 'task' --fallback-model haiku --max-turns 40", timeout=90)
 ```
 Automatically falls back to the specified model when the default is overloaded (print mode only).
 
@@ -488,7 +488,7 @@ Use the keyword "ultrathink" in your prompt for maximum reasoning effort on a sp
 
 ### Quick Review (Print Mode)
 ```
-terminal(command="cd /path/to/repo && git diff main...feature-branch | claude -p 'Review this diff for bugs, security issues, and style problems. Be thorough.' --max-turns 1", timeout=60)
+terminal(command="cd /path/to/repo && git diff main...feature-branch | claude -p 'Review this diff for bugs, security issues, and style problems. Be thorough.' --max-turns 60", timeout=60)
 ```
 
 ### Deep Review (Interactive + Worktree)
@@ -502,7 +502,7 @@ terminal(command="sleep 30 && tmux capture-pane -t review -p -S -60")
 
 ### PR Review from Number
 ```
-terminal(command="claude -p 'Review this PR thoroughly' --from-pr 42 --max-turns 10", workdir="/path/to/repo", timeout=120)
+terminal(command="claude -p 'Review this PR thoroughly' --from-pr 42 --max-turns 60", workdir="/path/to/repo", timeout=120)
 ```
 
 ### Claude Worktree with tmux
@@ -517,13 +517,13 @@ Run multiple independent Claude tasks simultaneously:
 
 ```
 # Task 1: Fix backend
-terminal(command="tmux new-session -d -s task1 -x 140 -y 40 && tmux send-keys -t task1 'cd ~/project && claude -p \"Fix the auth bug in src/auth.py\" --allowedTools \"Read,Edit\" --max-turns 10' Enter")
+terminal(command="tmux new-session -d -s task1 -x 140 -y 40 && tmux send-keys -t task1 'cd ~/project && claude -p \"Fix the auth bug in src/auth.py\" --allowedTools \"Read,Edit\" --max-turns 40' Enter")
 
 # Task 2: Write tests
-terminal(command="tmux new-session -d -s task2 -x 140 -y 40 && tmux send-keys -t task2 'cd ~/project && claude -p \"Write integration tests for the API endpoints\" --allowedTools \"Read,Write,Bash\" --max-turns 15' Enter")
+terminal(command="tmux new-session -d -s task2 -x 140 -y 40 && tmux send-keys -t task2 'cd ~/project && claude -p \"Write integration tests for the API endpoints\" --allowedTools \"Read,Write,Bash\" --max-turns 40' Enter")
 
 # Task 3: Update docs
-terminal(command="tmux new-session -d -s task3 -x 140 -y 40 && tmux send-keys -t task3 'cd ~/project && claude -p \"Update README.md with the new API endpoints\" --allowedTools \"Read,Edit\" --max-turns 5' Enter")
+terminal(command="tmux new-session -d -s task3 -x 140 -y 40 && tmux send-keys -t task3 'cd ~/project && claude -p \"Update README.md with the new API endpoints\" --allowedTools \"Read,Edit\" --max-turns 40' Enter")
 
 # Monitor all
 terminal(command="sleep 30 && for s in task1 task2 task3; do echo '=== '$s' ==='; tmux capture-pane -t $s -p -S -5 2>/dev/null; done")
@@ -722,7 +722,7 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 
 ## Cost & Performance Tips
 
-1. **Use `--max-turns`** in print mode to prevent runaway loops. Start with 5-10 for most tasks.
+1. **Use `--max-turns`** in print mode to prevent runaway loops. Baseline by task class: `review=60`, `implementation=40`, `extract=5`.
 2. **Use `--max-budget-usd`** for cost caps. Note: minimum ~$0.05 for system prompt cache creation.
 3. **Use `--effort low`** for simple tasks (faster, cheaper). `high` or `max` for complex reasoning.
 4. **Use `--bare`** for CI/scripting to skip plugin/hook discovery overhead.
@@ -742,7 +742,7 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 4. **`--max-turns` is print-mode only** — ignored in interactive sessions.
 5. **Claude may use `python` instead of `python3`** — on systems without a `python` symlink, Claude's bash commands will fail on first try but it self-corrects.
 6. **Session resumption requires same directory** — `--continue` finds the most recent session for the current working directory.
-7. **`--json-schema` needs enough `--max-turns`** — Claude must read files before producing structured output, which takes multiple turns.
+7. **`--json-schema` needs enough `--max-turns`** — use the `extract` baseline (`5`) for small structured reads, and move up to the `review` baseline (`60`) if Claude must inspect a larger diff or file set first.
 8. **Trust dialog only appears once per directory** — first-time only, then cached.
 9. **Background tmux sessions persist** — always clean up with `tmux kill-session -t <name>` when done.
 10. **Slash commands (like `/commit`) only work in interactive mode** — in `-p` mode, describe the task in natural language instead.
@@ -754,10 +754,62 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 1. **Prefer print mode (`-p`) for single tasks** — cleaner, no dialog handling, structured output
 2. **Use tmux for multi-turn interactive work** — the only reliable way to orchestrate the TUI
 3. **Always set `workdir`** — keep Claude focused on the right project directory
-4. **Set `--max-turns` in print mode** — prevents infinite loops and runaway costs
+4. **Set `--max-turns` in print mode using the three baselines** — `review=60`, `implementation=40`, `extract=5`
 5. **Monitor tmux sessions** — use `tmux capture-pane -t <session> -p -S -50` to check progress
 6. **Look for the `❯` prompt** — indicates Claude is waiting for input (done or asking a question)
 7. **Clean up tmux sessions** — kill them when done to avoid resource leaks
 8. **Report results to user** — after completion, summarize what Claude did and what changed
 9. **Don't kill slow sessions** — Claude may be doing multi-step work; check progress instead
 10. **Use `--allowedTools`** — restrict capabilities to what the task actually needs
+
+## Dispatch Template / Report Contract
+
+Canonical CC dispatch template: `skills/autonomous-ai-agents/claude-code/templates/default-dispatch.md`.
+
+### Template Injection Chain
+
+Before every Claude Code dispatch, the orchestrator MUST:
+
+1. Call `skill_view(name="claude-code", file_path="templates/default-dispatch.md")` to load the template.
+2. Render the placeholders: `<ABS_REPORT_PATH>`, `<JOB_ID>`, `<TASK_CLASS>`, `<TURN_BUDGET>`.
+3. Prepend the rendered template to the dispatch prompt, **before** the task description.
+4. Then append the specific task instructions.
+
+### Report Path Rules
+
+- `<ABS_REPORT_PATH>` must be an absolute path inside the target repo.
+- Fallback: `<repo>/.hermes-artifacts/reviews/<JOB_ID>.md`.
+- Create parent directories with `mkdir -p` first.
+- Never use `~` in paths.
+- Never report partial output as `completed`.
+
+### Turn Budget Baselines
+
+| Task Class | Range | Default `--max-turns` |
+|---|---|---|
+| `review` | 30–120 | 60 |
+| `implementation` | 20–80 | 40 |
+| `extract` | 1–10 | 5 |
+
+- Use the `review` bucket by default for review, debug, and refactor tasks.
+- Use the `implementation` bucket by default for features, fixes, tests, and other code changes.
+- Use the `extract` bucket by default for summarize, schema, and narrow extraction work.
+- In print mode, set `--max-turns` to the bucket default unless the caller explicitly overrides it.
+
+### Claude Print-Mode State Mapping
+
+| `subtype` | Ending State |
+|---|---|
+| `success` | `completed` |
+| `error_max_turns` | `over_budget` |
+| `error_budget` | `over_budget` |
+| (interrupted) | `interrupted` |
+
+If Claude stops early but leaves useful incomplete work, write `partial_output` in the report instead of `completed`.
+
+### Ending State Contract
+
+- `completed`: `subtype: success`, task done, report written.
+- `over_budget`: `error_max_turns` or `error_budget`; report must list done/undone/next.
+- `interrupted`: Killed or timed out; report must record checkpoint.
+- `partial_output`: Incomplete result; must be labeled partial, not `completed`.

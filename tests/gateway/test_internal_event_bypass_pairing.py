@@ -18,6 +18,8 @@ from gateway.platforms.base import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
+pytestmark = pytest.mark.anyio
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -72,14 +74,18 @@ def _watcher_dict_with_notify():
 # Tests
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_notify_on_complete_sets_internal_flag(monkeypatch, tmp_path):
     """Synthetic completion event must have internal=True."""
     import tools.process_registry as pr_module
 
     sessions = [
         SimpleNamespace(
-            output_buffer="done\n", exited=True, exit_code=0, command="echo test"
+            output_buffer="done\n",
+            exited=True,
+            exit_code=0,
+            command="echo test",
+            output_path="/tmp/proc.log",
         ),
     ]
     monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
@@ -97,9 +103,10 @@ async def test_notify_on_complete_sets_internal_flag(monkeypatch, tmp_path):
     event = adapter.handle_message.await_args.args[0]
     assert isinstance(event, MessageEvent)
     assert event.internal is True, "Synthetic completion event must be marked internal"
+    assert "Full output saved to: /tmp/proc.log" in event.text
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_internal_event_bypasses_authorization(monkeypatch, tmp_path):
     """An internal event should skip _is_user_authorized entirely."""
     import gateway.run as gateway_run
@@ -148,7 +155,7 @@ async def test_internal_event_bypasses_authorization(monkeypatch, tmp_path):
     )
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_internal_event_does_not_trigger_pairing(monkeypatch, tmp_path):
     """An internal event with no user_id must not generate a pairing code."""
     import gateway.run as gateway_run
@@ -199,14 +206,18 @@ async def test_internal_event_does_not_trigger_pairing(monkeypatch, tmp_path):
     )
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_notify_on_complete_preserves_user_identity(monkeypatch, tmp_path):
     """Synthetic completion event should carry user_id and user_name from the watcher."""
     import tools.process_registry as pr_module
 
     sessions = [
         SimpleNamespace(
-            output_buffer="done\n", exited=True, exit_code=0, command="echo test"
+            output_buffer="done\n",
+            exited=True,
+            exit_code=0,
+            command="echo test",
+            output_path="/tmp/proc.log",
         ),
     ]
     monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
@@ -230,14 +241,18 @@ async def test_notify_on_complete_preserves_user_identity(monkeypatch, tmp_path)
     assert event.source.user_name == "alice"
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_notify_on_complete_uses_session_store_origin_for_group_topic(monkeypatch, tmp_path):
     import tools.process_registry as pr_module
     from gateway.session import SessionSource
 
     sessions = [
         SimpleNamespace(
-            output_buffer="done\n", exited=True, exit_code=0, command="echo test"
+            output_buffer="done\n",
+            exited=True,
+            exit_code=0,
+            command="echo test",
+            output_path="/tmp/proc.log",
         ),
     ]
     monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
@@ -283,7 +298,7 @@ async def test_notify_on_complete_uses_session_store_origin_for_group_topic(monk
     assert event.source.user_name == "alice"
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_none_user_id_skips_pairing(monkeypatch, tmp_path):
     """A non-internal event with user_id=None should be silently dropped."""
     import gateway.run as gateway_run
@@ -314,7 +329,7 @@ async def test_none_user_id_skips_pairing(monkeypatch, tmp_path):
     assert adapter.send.await_count == 0
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_none_user_id_does_not_generate_pairing_code(monkeypatch, tmp_path):
     """A message with user_id=None must never call generate_code."""
     import gateway.run as gateway_run
@@ -351,7 +366,7 @@ async def test_none_user_id_does_not_generate_pairing_code(monkeypatch, tmp_path
     )
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp_path):
     """Verify the normal (non-internal) path still triggers pairing for unknown users."""
     import gateway.run as gateway_run

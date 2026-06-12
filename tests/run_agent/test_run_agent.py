@@ -55,9 +55,10 @@ def test_is_destructive_command_treats_install_as_mutating():
 
 
 @pytest.fixture()
-def agent():
+def agent(tmp_path):
     """Minimal AIAgent with mocked OpenAI client and tool loading."""
     with (
+        patch("run_agent._hermes_home", tmp_path),
         patch(
             "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
         ),
@@ -76,9 +77,10 @@ def agent():
 
 
 @pytest.fixture()
-def agent_with_memory_tool():
+def agent_with_memory_tool(tmp_path):
     """Agent whose valid_tool_names includes 'memory'."""
     with (
+        patch("run_agent._hermes_home", tmp_path),
         patch(
             "run_agent.get_tool_definitions",
             return_value=_make_tool_defs("web_search", "memory"),
@@ -151,6 +153,38 @@ def test_aiagent_reuses_existing_errors_log_handler():
                 handler.close()
         for handler in original_handlers:
             root_logger.addHandler(handler)
+
+
+class TestCloseBehavior:
+    def test_close_kills_background_processes_by_default(self, agent):
+        agent.session_id = "task-close"
+
+        with (
+            patch("tools.process_registry.process_registry.kill_all") as kill_all,
+            patch("run_agent.cleanup_vm") as cleanup_vm_mock,
+            patch("run_agent.cleanup_browser") as cleanup_browser_mock,
+            patch.object(agent, "_close_openai_client") as close_client,
+        ):
+            agent.close()
+
+        kill_all.assert_called_once_with(task_id="task-close")
+        cleanup_vm_mock.assert_called_once_with("task-close")
+        cleanup_browser_mock.assert_called_once_with("task-close")
+        close_client.assert_called_once()
+
+    def test_close_preserve_runtime_state_skips_tool_teardown(self, agent):
+        with (
+            patch("tools.process_registry.process_registry.kill_all") as kill_all,
+            patch("run_agent.cleanup_vm") as cleanup_vm_mock,
+            patch("run_agent.cleanup_browser") as cleanup_browser_mock,
+        ):
+            agent.release_clients = MagicMock()
+            agent.close(preserve_runtime_state=True)
+
+        agent.release_clients.assert_called_once_with()
+        kill_all.assert_not_called()
+        cleanup_vm_mock.assert_not_called()
+        cleanup_browser_mock.assert_not_called()
 
 
 class TestProviderModelNormalization:
