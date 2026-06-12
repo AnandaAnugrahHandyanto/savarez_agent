@@ -1,6 +1,13 @@
 import json
 
-from gateway.rendering.document import CodeBlock, HeadingBlock, MessageDocument, ParagraphBlock, TableBlock
+from gateway.rendering.document import (
+    CodeBlock,
+    HeadingBlock,
+    ImageBlock,
+    MessageDocument,
+    ParagraphBlock,
+    TableBlock,
+)
 from gateway.platforms.feishu_card_renderer import render_document_to_feishu_card_v2
 
 
@@ -71,3 +78,23 @@ def test_card_payload_is_json_serializable():
     card = render_document_to_feishu_card_v2(MessageDocument([ParagraphBlock("Hello")]))
 
     assert json.loads(json.dumps(card, ensure_ascii=False))["schema"] == "2.0"
+
+
+def test_image_block_renders_card_v2_img_element():
+    card = render_document_to_feishu_card_v2(
+        MessageDocument([
+            ParagraphBlock("图片前"),
+            ImageBlock(source="/tmp/a.png", alt="测试图"),
+            ParagraphBlock("图片后"),
+        ]),
+        image_key_by_source={"/tmp/a.png": "img_test"},
+    )
+
+    elements = card["body"]["elements"]
+    assert elements[0] == {"tag": "markdown", "content": "图片前", "text_size": "normal"}
+    assert elements[1] == {
+        "tag": "img",
+        "img_key": "img_test",
+        "alt": {"tag": "plain_text", "content": "测试图"},
+    }
+    assert elements[2] == {"tag": "markdown", "content": "图片后", "text_size": "normal"}

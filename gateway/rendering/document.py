@@ -36,6 +36,12 @@ class DividerBlock:
 
 
 @dataclass(frozen=True)
+class ImageBlock:
+    source: str
+    alt: str = ""
+
+
+@dataclass(frozen=True)
 class ListBlock:
     ordered: bool
     items: list[str]
@@ -47,6 +53,7 @@ Block = Union[
     CodeBlock,
     TableBlock,
     DividerBlock,
+    ImageBlock,
     ListBlock,
 ]
 
