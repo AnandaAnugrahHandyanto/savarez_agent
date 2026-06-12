@@ -48,7 +48,6 @@ back into the originating session.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
@@ -97,8 +96,6 @@ _running_lock = threading.Lock()
 
 # FIFO waiting queue for at-capacity dispatches.
 _waiting: Deque[QueuedDispatch] = deque()
-_waiting_lock = threading.Lock()
-
 # Completed results: key = delegation_id, value = completion event dict.
 _completed: Dict[str, Dict[str, Any]] = {}
 _completed_lock = threading.Lock()
@@ -144,10 +141,12 @@ def _promotion_loop() -> None:
     """Daemon loop: waits for a free slot, promotes the next queued item."""
     while True:
         item: Optional[QueuedDispatch] = None
+        cancelled_items: List[QueuedDispatch] = []
         with _promotion_cv:
             while len(_running) >= _get_max_async_children() or not _waiting:
                 _promotion_cv.wait()
-            # Skip cancelled items
+            # Skip cancelled items — collect them; push events *outside* the lock
+            # to avoid lock-ordering deadlock (_running_lock → _completed_lock).
             while _waiting:
                 candidate = _waiting[0]
                 if candidate.delegation_id in _cancel_requests:
@@ -156,11 +155,14 @@ def _promotion_loop() -> None:
                     logger.info(
                         "Async delegation %s cancelled while queued", candidate.delegation_id
                     )
-                    # Push a cancelled event so caller knows it was handled
-                    _push_cancelled_event(candidate)
+                    cancelled_items.append(candidate)
                     continue
                 item = _waiting.popleft()
                 break
+
+        # Push cancelled events outside the lock (C3 fix).
+        for cancelled in cancelled_items:
+            _push_cancelled_event(cancelled)
 
         if item is not None:
             _do_dispatch(item)
@@ -340,11 +342,12 @@ def _do_dispatch(item: QueuedDispatch) -> None:
             logger.exception(
                 "Failed to push async delegation %s result to queue", delegation_id
             )
-
-        # Signal the promotion thread that a slot has freed up.
-        with _promotion_cv:
-            _running.pop(delegation_id, None)
-            _promotion_cv.notify()
+        finally:
+            # Always free the running slot so the promotion thread can proceed
+            # even if completion_queue.put() raised an exception (m4 fix).
+            with _promotion_cv:
+                _running.pop(delegation_id, None)
+                _promotion_cv.notify()
 
     thread = threading.Thread(
         target=_runner, daemon=True, name=f"async-delegation-{delegation_id}"
