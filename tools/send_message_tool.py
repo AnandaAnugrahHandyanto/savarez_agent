@@ -123,6 +123,53 @@ async def _send_telegram_message_with_retry(bot, *, attempts: int = 3, **kwargs)
             await asyncio.sleep(delay)
 
 
+def _discord_retry_delay(result: dict, attempt: int) -> float | None:
+    """Compute retry delay for Discord send failures.
+
+    Discord 429 responses include ``retry_after`` (often sub-second).
+    Returns the delay in seconds, or None if the error is not retryable.
+    """
+    if not isinstance(result, dict):
+        return None
+    error = str(result.get("error", "")).lower()
+    # Discord 429: "rate limited" or "429" or "retry_after"
+    retry_after = result.get("retry_after")
+    if retry_after is not None:
+        try:
+            return max(float(retry_after), 0.0)
+        except (TypeError, ValueError):
+            pass
+    if "429" in error or "rate limit" in error or "too many requests" in error:
+        return min(2 ** attempt, 5.0)  # cap at 5s
+    if "502" in error or "503" in error or "bad gateway" in error:
+        return float(2 ** attempt)
+    return None
+
+
+async def _send_discord_chunk_with_retry(
+    entry, pconfig, chat_id, chunk, thread_id=None, media_files=None,
+    attempts: int = 3,
+):
+    """Send a single Discord chunk with retry on rate-limit (429) errors."""
+    for attempt in range(attempts):
+        result = await entry.standalone_sender_fn(
+            pconfig, chat_id, chunk,
+            thread_id=thread_id, media_files=media_files,
+        )
+        if isinstance(result, dict) and result.get("error"):
+            delay = _discord_retry_delay(result, attempt)
+            if delay is not None and attempt < attempts - 1:
+                logger.warning(
+                    "Transient Discord send failure (attempt %d/%d), "
+                    "retrying in %.1fs: %s",
+                    attempt + 1, attempts, delay,
+                    _sanitize_error_text(result.get("error", "")),
+                )
+                await asyncio.sleep(delay)
+                continue
+        return result
+
+
 SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
     "description": (
@@ -686,10 +733,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         last_result = None
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
-            result = await entry.standalone_sender_fn(
-                pconfig,
-                chat_id,
-                chunk,
+            result = await _send_discord_chunk_with_retry(
+                entry, pconfig, chat_id, chunk,
                 thread_id=thread_id,
                 media_files=media_files if is_last else [],
             )
