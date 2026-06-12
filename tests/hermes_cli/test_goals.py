@@ -181,6 +181,32 @@ class TestJudgeGoal:
 # ──────────────────────────────────────────────────────────────────────
 
 
+class TestGoalCommandParsing:
+    def test_empty_and_status_are_status_action(self):
+        from hermes_cli.goals import parse_goal_command
+
+        assert parse_goal_command("").action == "status"
+        assert parse_goal_command("   ").action == "status"
+        assert parse_goal_command("status").action == "status"
+        assert parse_goal_command("STATUS").action == "status"
+
+    def test_control_aliases_are_normalized(self):
+        from hermes_cli.goals import parse_goal_command
+
+        assert parse_goal_command("pause").action == "pause"
+        assert parse_goal_command("resume").action == "resume"
+        assert parse_goal_command("clear").action == "clear"
+        assert parse_goal_command("stop").action == "clear"
+        assert parse_goal_command("done").action == "clear"
+
+    def test_everything_else_is_goal_text_preserved(self):
+        from hermes_cli.goals import parse_goal_command
+
+        parsed = parse_goal_command("  Build the thing with STATUS in the title  ")
+        assert parsed.action == "set"
+        assert parsed.text == "Build the thing with STATUS in the title"
+
+
 class TestGoalDecision:
     def test_goal_decision_behaves_like_mapping_for_callers(self):
         from hermes_cli.goals import GoalDecision

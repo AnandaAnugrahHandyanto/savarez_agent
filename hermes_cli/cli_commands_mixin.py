@@ -1792,6 +1792,7 @@ class CLICommandsMixin:
 
     def _handle_goal_command(self, cmd: str) -> None:
         """Dispatch /goal subcommands: set / status / pause / resume / clear."""
+        from hermes_cli.goals import parse_goal_command
         from cli import _DIM, _RST, _cprint
         parts = (cmd or "").strip().split(None, 1)
         arg = parts[1].strip() if len(parts) > 1 else ""
@@ -1801,14 +1802,14 @@ class CLICommandsMixin:
             _cprint(f"  {_DIM}Goals unavailable (no active session).{_RST}")
             return
 
-        lower = arg.lower()
+        goal_cmd = parse_goal_command(arg)
 
         # Bare /goal or /goal status → show current state
-        if not arg or lower == "status":
+        if goal_cmd.action == "status":
             _cprint(f"  {mgr.status_line()}")
             return
 
-        if lower == "pause":
+        if goal_cmd.action == "pause":
             state = mgr.pause(reason="user-paused")
             if state is None:
                 _cprint(f"  {_DIM}No goal set.{_RST}")
@@ -1816,7 +1817,7 @@ class CLICommandsMixin:
                 _cprint(f"  ⏸ Goal paused: {state.goal}")
             return
 
-        if lower == "resume":
+        if goal_cmd.action == "resume":
             state = mgr.resume()
             if state is None:
                 _cprint(f"  {_DIM}No goal to resume.{_RST}")
@@ -1828,7 +1829,7 @@ class CLICommandsMixin:
                 )
             return
 
-        if lower in {"clear", "stop", "done"}:
+        if goal_cmd.action == "clear":
             had = mgr.has_goal()
             mgr.clear()
             if had:
@@ -1839,7 +1840,7 @@ class CLICommandsMixin:
 
         # Otherwise treat the arg as the goal text.
         try:
-            state = mgr.set(arg)
+            state = mgr.set(goal_cmd.text)
         except ValueError as exc:
             _cprint(f"  Invalid goal: {exc}")
             return

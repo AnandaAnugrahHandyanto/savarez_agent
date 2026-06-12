@@ -1562,17 +1562,19 @@ class GatewaySlashCommandsMixin:
         agent starts working on it immediately — the post-turn
         continuation hook then takes over from there.
         """
+        from hermes_cli.goals import parse_goal_command
+
         args = (event.get_command_args() or "").strip()
-        lower = args.lower()
+        goal_cmd = parse_goal_command(args)
 
         mgr, session_entry = self._get_goal_manager_for_event(event)
         if mgr is None:
             return t("gateway.goal.unavailable")
 
-        if not args or lower == "status":
+        if goal_cmd.action == "status":
             return mgr.status_line()
 
-        if lower == "pause":
+        if goal_cmd.action == "pause":
             state = mgr.pause(reason="user-paused")
             if state is None:
                 return t("gateway.goal.no_goal_set")
@@ -1585,13 +1587,13 @@ class GatewaySlashCommandsMixin:
                 logger.debug("goal pause: pending continuation cleanup failed: %s", exc)
             return t("gateway.goal.paused", goal=state.goal)
 
-        if lower == "resume":
+        if goal_cmd.action == "resume":
             state = mgr.resume()
             if state is None:
                 return t("gateway.goal.no_resume")
             return t("gateway.goal.resumed", goal=state.goal)
 
-        if lower in {"clear", "stop", "done"}:
+        if goal_cmd.action == "clear":
             had = mgr.has_goal()
             mgr.clear()
             try:
@@ -1605,7 +1607,7 @@ class GatewaySlashCommandsMixin:
 
         # Otherwise — treat the remaining text as the new goal.
         try:
-            state = mgr.set(args)
+            state = mgr.set(goal_cmd.text)
         except ValueError as exc:
             return t("gateway.goal.invalid", error=str(exc))
 

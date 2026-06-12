@@ -8070,7 +8070,7 @@ def _(rid, params: dict) -> dict:
         if not session:
             return _err(rid, 4001, "no active session")
         try:
-            from hermes_cli.goals import GoalManager
+            from hermes_cli.goals import GoalManager, parse_goal_command
         except Exception as exc:
             return _err(rid, 5030, f"goals unavailable: {exc}")
 
@@ -8085,14 +8085,14 @@ def _(rid, params: dict) -> dict:
             max_turns = 20
         mgr = GoalManager(session_id=sid_key, default_max_turns=max_turns)
 
-        lower = arg.strip().lower()
-        if not arg.strip() or lower == "status":
+        goal_cmd = parse_goal_command(arg)
+        if goal_cmd.action == "status":
             return _ok(rid, {"type": "exec", "output": mgr.status_line()})
-        if lower == "pause":
+        if goal_cmd.action == "pause":
             state = mgr.pause(reason="user-paused")
             out = "No goal set." if state is None else f"⏸ Goal paused: {state.goal}"
             return _ok(rid, {"type": "exec", "output": out})
-        if lower == "resume":
+        if goal_cmd.action == "resume":
             state = mgr.resume()
             if state is None:
                 return _ok(rid, {"type": "exec", "output": "No goal to resume."})
@@ -8106,7 +8106,7 @@ def _(rid, params: dict) -> dict:
                     ),
                 },
             )
-        if lower in {"clear", "stop", "done"}:
+        if goal_cmd.action == "clear":
             had = mgr.has_goal()
             mgr.clear()
             return _ok(
@@ -8119,7 +8119,7 @@ def _(rid, params: dict) -> dict:
 
         # Otherwise — treat the remaining text as the new goal.
         try:
-            state = mgr.set(arg)
+            state = mgr.set(goal_cmd.text)
         except ValueError as exc:
             return _err(rid, 4004, f"invalid goal: {exc}")
 

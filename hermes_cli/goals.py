@@ -135,6 +135,35 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
 
 
 @dataclass(frozen=True)
+class GoalCommand:
+    """Normalized /goal command intent shared by CLI, TUI, and gateway."""
+
+    action: str  # status | pause | resume | clear | set
+    text: str = ""
+
+
+def parse_goal_command(raw_args: str) -> GoalCommand:
+    """Parse args after /goal into a stable action.
+
+    Only exact control words are treated as commands; any longer text is the
+    goal body. This keeps goals like "status page audit" from being mistaken
+    for `/goal status` while removing duplicated lower/alias parsing across
+    frontends.
+    """
+    text = (raw_args or "").strip()
+    lower = text.lower()
+    if not text or lower == "status":
+        return GoalCommand(action="status")
+    if lower == "pause":
+        return GoalCommand(action="pause")
+    if lower == "resume":
+        return GoalCommand(action="resume")
+    if lower in {"clear", "stop", "done"}:
+        return GoalCommand(action="clear")
+    return GoalCommand(action="set", text=text)
+
+
+@dataclass(frozen=True)
 class GoalDecision:
     """Structured result from ``GoalManager.evaluate_after_turn``.
 
@@ -925,6 +954,7 @@ def run_kanban_goal_loop(
 
 
 __all__ = [
+    "GoalCommand",
     "GoalDecision",
     "GoalState",
     "GoalManager",
@@ -939,5 +969,6 @@ __all__ = [
     "save_goal",
     "clear_goal",
     "judge_goal",
+    "parse_goal_command",
     "run_kanban_goal_loop",
 ]
