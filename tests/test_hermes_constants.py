@@ -146,6 +146,37 @@ class TestIsContainer:
         monkeypatch.setattr("builtins.open", lambda p, *a, **kw: _real_open(str(cgroup_file), *a, **kw) if p == "/proc/1/cgroup" else _real_open(p, *a, **kw))
         assert is_container() is False
 
+    def test_detects_kubernetes_service_host(self, monkeypatch):
+        """KUBERNETES_SERVICE_HOST env var triggers detection (k8s pods)."""
+        self._reset_cache(monkeypatch)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
+        monkeypatch.delenv("HERMES_CONTAINER", raising=False)
+        monkeypatch.delenv("HERMES_SKIP_CHMOD", raising=False)
+        assert is_container() is True
+
+    def test_detects_cgroup_kubepods(self, monkeypatch, tmp_path):
+        """/proc/1/cgroup containing 'kubepods' triggers detection."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.delenv("HERMES_CONTAINER", raising=False)
+        monkeypatch.delenv("HERMES_SKIP_CHMOD", raising=False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("12:memory:/kubepods/burstable/pod-abc123\n")
+        _real_open = builtins.open
+        monkeypatch.setattr("builtins.open", lambda p, *a, **kw: _real_open(str(cgroup_file), *a, **kw) if p == "/proc/1/cgroup" else _real_open(p, *a, **kw))
+        assert is_container() is True
+
+    def test_detects_hermes_container_env(self, monkeypatch):
+        """HERMES_CONTAINER env var triggers detection."""
+        self._reset_cache(monkeypatch)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        monkeypatch.setenv("HERMES_CONTAINER", "1")
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        assert is_container() is True
+
     def test_caches_result(self, monkeypatch):
         """Second call uses cached value without re-probing."""
         monkeypatch.setattr(hermes_constants, "_container_detected", True)
