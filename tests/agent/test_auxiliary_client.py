@@ -3870,3 +3870,176 @@ class TestAuxiliaryMaxTokensParam:
         ):
             assert auxiliary_max_tokens_param(4096, model="") == {"max_tokens": 4096}
             assert auxiliary_max_tokens_param(4096, model=None) == {"max_tokens": 4096}
+
+
+class TestAsyncCallLlmRedaction:
+    """Regression coverage for the async auxiliary LLM call path.
+
+    The async_call_llm() function must:
+
+    1. Redact credentials from messages *before* the trust boundary, mirroring
+       the sync call_llm() path.
+    2. Initialize ``effective_extra_body`` from ``_get_task_extra_body(task)``
+       before merging the caller-supplied ``extra_body`` arg — otherwise the
+       merge raises NameError and breaks every async caller (compression,
+       vision, web extraction) that flows through this path.
+    3. Preserve valid JSON in ``tool_calls[].function.arguments`` after
+       redaction so historical assistant tool calls still replay cleanly.
+
+    This is the async mirror of the sync coverage that already lives in
+    tests/agent/test_redact_tool_call_args.py and was added in response to
+    the async-path NameError flagged by @egilewski in PR #42846.
+    """
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_redacts_content_before_provider(self):
+        """The async path must strip API keys from message content before
+        the request leaves the trust boundary."""
+        sentinel_response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))],
+        )
+        fake_client = MagicMock()
+        fake_client.base_url = "https://api.example.com/v1"
+        fake_client.chat.completions.create = AsyncMock(return_value=sentinel_response)
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openai", "gpt-5.4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(fake_client, "gpt-5.4")),
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda resp, _task: resp),
+        ):
+            result = await async_call_llm(
+                task="session_search",
+                messages=[{
+                    "role": "user",
+                    "content": "OPENAI_API_KEY=sk-proj-asyncsecrettest1234567890",
+                }],
+            )
+
+        assert result is sentinel_response
+        fake_client.chat.completions.create.assert_awaited_once()
+        call_kwargs = fake_client.chat.completions.create.await_args.kwargs
+        sent_messages = call_kwargs["messages"]
+        assert len(sent_messages) == 1
+        assert "sk-proj-asyncsecrettest1234567890" not in sent_messages[0]["content"]
+        assert "OPENAI_API_KEY=***" in sent_messages[0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_does_not_raise_nameerror_on_effective_extra_body(self):
+        """Regression guard for the missing ``effective_extra_body``
+        initialization in async_call_llm().
+
+        Before the fix, the async path called ``.update()`` on a name that
+        was never bound, raising NameError before the provider was even
+        dispatched. Every async caller (compression, vision, web extraction)
+        that reached this code was broken, regardless of whether redaction
+        itself was correct.
+        """
+        fake_client = MagicMock()
+        fake_client.base_url = "https://api.example.com/v1"
+        fake_client.chat.completions.create = AsyncMock(
+            return_value={"ok": True},
+        )
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openai", "gpt-5.4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(fake_client, "gpt-5.4")),
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda resp, _task: resp),
+        ):
+            # If the fix regresses, this line raises NameError synchronously
+            # from the coroutine wrapper, surfacing as a NameError on the
+            # coroutine object / on the first await.
+            coro = async_call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+            # Drive the coroutine — NameError surfaces here if initialization
+            # is missing.
+            result = await coro
+
+        assert result == {"ok": True}
+        fake_client.chat.completions.create.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_merges_caller_extra_body(self):
+        """The caller-supplied ``extra_body`` arg must be merged into the
+        task-derived extra_body, mirroring the sync path."""
+        fake_client = MagicMock()
+        fake_client.base_url = "https://api.example.com/v1"
+        fake_client.chat.completions.create = AsyncMock(return_value={"ok": True})
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openai", "gpt-5.4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(fake_client, "gpt-5.4")),
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda resp, _task: resp),
+            patch("agent.auxiliary_client._get_task_extra_body",
+                  return_value={"task_key": "task_value"}),
+        ):
+            await async_call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hi"}],
+                extra_body={"caller_key": "caller_value"},
+            )
+
+        call_kwargs = fake_client.chat.completions.create.await_args.kwargs
+        # The merged extra_body is forwarded as a single ``extra_body`` kwarg
+        # to the OpenAI-compatible client. It must contain both the
+        # task-derived key and the caller-supplied key.
+        merged = call_kwargs.get("extra_body", {})
+        assert merged.get("task_key") == "task_value"
+        assert merged.get("caller_key") == "caller_value"
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_preserves_tool_call_argument_json_validity(self):
+        """After redaction, ``tool_calls[].function.arguments`` must remain
+        valid JSON so historical assistant tool calls replay cleanly."""
+        fake_client = MagicMock()
+        fake_client.base_url = "https://api.example.com/v1"
+        fake_client.chat.completions.create = AsyncMock(return_value={"ok": True})
+
+        malicious_arguments = json.dumps({
+            "command": "curl -H 'Authorization: Bearer sk-proj-asynctoolargtest1234567890'",
+        })
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("openai", "gpt-5.4", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(fake_client, "gpt-5.4")),
+            patch("agent.auxiliary_client._validate_llm_response",
+                  side_effect=lambda resp, _task: resp),
+        ):
+            await async_call_llm(
+                task="session_search",
+                messages=[{
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": "call_async_redact_test",
+                        "type": "function",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": malicious_arguments,
+                        },
+                    }],
+                }],
+            )
+
+        call_kwargs = fake_client.chat.completions.create.await_args.kwargs
+        sent_messages = call_kwargs["messages"]
+        sent_arguments = sent_messages[0]["tool_calls"][0]["function"]["arguments"]
+
+        # The leaked bearer token must be gone.
+        assert "sk-proj-asynctoolargtest1234567890" not in sent_arguments
+        # The arguments must still parse as valid JSON — the JSON-validity
+        # round-3 fix must apply to the async path as well.
+        parsed = json.loads(sent_arguments)
+        assert "Authorization" in parsed["command"] or "***" in parsed["command"]

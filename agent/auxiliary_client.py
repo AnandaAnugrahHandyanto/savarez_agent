@@ -5615,6 +5615,7 @@ async def async_call_llm(
     # ────────────────────────────────────────────────────────────────
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    effective_extra_body = _get_task_extra_body(task)
     effective_extra_body.update(extra_body or {})
 
     if task == "vision":
