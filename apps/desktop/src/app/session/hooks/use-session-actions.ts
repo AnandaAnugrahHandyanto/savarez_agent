@@ -13,6 +13,7 @@ import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $gateway } from '@/store/gateway'
 import {
   $currentCwd,
   $messages,
@@ -530,6 +531,14 @@ export function useSessionActions({
 
       await ensureGatewayProfile(sessionProfile)
 
+      // When ensureGatewayProfile swaps to a pooled profile whose backend is
+      // still starting (or whose WS connect was rejected — e.g. stale OAuth
+      // ticket 403 / host-origin 4403 — and is backing off), the gateway may
+      // not be open yet.  Avoid blocking the resume on a gateway RPC that will
+      // fail; fall through to the local-snapshot path instead.
+      const gatewayAfterSwap = $gateway.get()
+      const gatewayReady = gatewayAfterSwap?.connectionState === 'open'
+
       const cachedRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
       const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
 
@@ -559,30 +568,37 @@ export function useSessionActions({
         setCurrentBranch(cachedViewState.branch)
         setSessionStartedAt(Date.now())
 
-        try {
-          const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
+        if (gatewayReady) {
+          try {
+            const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
 
-          if (!isCurrentResume()) {
+            if (!isCurrentResume()) {
+              return
+            }
+
+            if (usage) {
+              setCurrentUsage(current => ({ ...current, ...usage }))
+            }
+
             return
-          }
+          } catch {
+            // The cached runtime id was minted by a prior backend instance. A
+            // pooled profile backend that gets idle-reaped (pruneSecondaryGateways)
+            // and respawned across a profile swap mints fresh ids, so this mapping
+            // now 404s ("session not found"). Drop it and fall through to a full
+            // resume that rebinds a live runtime id.
+            if (!isCurrentResume()) {
+              return
+            }
 
-          if (usage) {
-            setCurrentUsage(current => ({ ...current, ...usage }))
+            runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+            sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
           }
-
+        } else {
+          // Gateway isn't ready (e.g. pooled backend still connecting or WS
+          // rejected with 4403).  Skip the RPC — the cached state is sufficient
+          // for a fast local resume.
           return
-        } catch {
-          // The cached runtime id was minted by a prior backend instance. A
-          // pooled profile backend that gets idle-reaped (pruneSecondaryGateways)
-          // and respawned across a profile swap mints fresh ids, so this mapping
-          // now 404s ("session not found"). Drop it and fall through to a full
-          // resume that rebinds a live runtime id.
-          if (!isCurrentResume()) {
-            return
-          }
-
-          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
-          sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
         }
       }
 
