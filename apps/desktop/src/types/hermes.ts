@@ -277,8 +277,18 @@ export interface SessionCreateResponse {
   stored_session_id?: string
 }
 
+export interface SessionChannelOrigin {
+  chat_name?: string
+  chat_topic?: string
+  chat_type?: string
+  display_name: string
+  has_thread: boolean
+  platform?: string
+}
+
 export interface SessionInfo {
   archived?: boolean
+  channel_origin?: null | SessionChannelOrigin
   cwd?: null | string
   ended_at: null | number
   id: string
@@ -544,6 +554,7 @@ export interface ToolsetConfig {
 }
 
 export interface SessionSearchResult {
+  channel_origin?: null | SessionChannelOrigin
   /** Lineage root of the matched conversation. Stable across compression and
    *  used as the durable pin id; falls back to session_id when absent. */
   lineage_root?: string | null

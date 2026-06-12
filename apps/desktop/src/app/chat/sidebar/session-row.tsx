@@ -10,6 +10,7 @@ import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
+import { sessionChannelOriginLabel } from '@/lib/session-channel-origin'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $attentionSessionIds } from '@/store/session'
@@ -70,6 +71,7 @@ export function SidebarSessionRow({
   const r = t.sidebar.row
   const title = sessionTitle(session)
   const age = formatAge(session.last_active || session.started_at, r)
+  const channelLabel = sessionChannelOriginLabel(session.channel_origin)
   const handleLabel = `Reorder ${title}`
   // A handed-off session's live source is local, but it originated on a
   // messaging platform — surface that origin as a small badge so e.g. a
@@ -94,6 +96,7 @@ export function SidebarSessionRow({
       <div
         className={cn(
           'group relative grid min-h-[1.625rem] cursor-pointer grid-cols-[minmax(0,1fr)_1.375rem] items-center rounded-md transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
+          channelLabel && 'min-h-[2.25rem]',
           isSelected && 'bg-(--ui-row-active-background)',
           isWorking && 'text-foreground',
           dragging && 'z-10 cursor-grabbing opacity-60 shadow-sm',
@@ -122,7 +125,10 @@ export function SidebarSessionRow({
       >
         {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
         <button
-          className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left group-hover:pr-12"
+          className={cn(
+            'z-0 flex min-w-0 items-center gap-1.5 bg-transparent pl-2 pr-1 text-left group-hover:pr-12',
+            channelLabel ? 'py-1' : 'py-0.5'
+          )}
           onClick={event => {
             if (event.shiftKey) {
               event.preventDefault()
@@ -201,8 +207,18 @@ export function SidebarSessionRow({
               />
             </Tip>
           ) : null}
-          <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
-            {title}
+          <span className="flex min-w-0 flex-1 flex-col justify-center">
+            <span className="truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+              {title}
+            </span>
+            {channelLabel ? (
+              <span
+                className="mt-0.5 truncate text-[0.625rem] leading-none text-(--ui-text-tertiary) group-hover:text-(--ui-text-secondary)"
+                title={channelLabel}
+              >
+                {channelLabel}
+              </span>
+            ) : null}
           </span>
         </button>
         <div className="relative z-2 grid w-[1.375rem] place-items-center">
