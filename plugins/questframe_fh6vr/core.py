@@ -562,6 +562,66 @@ SUPPORT_REPORT_SCHEMA = {
     },
 }
 
+VCC_HEALTH_SCHEMA = {
+    "name": "questframe_vcc_health",
+    "description": "Check VRChat Creator Companion install, VPM cache, and Unity Hub readiness.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "project_path": {
+                "type": "string",
+                "description": "Optional Unity project to validate vpm-manifest.json against.",
+            },
+        },
+    },
+}
+
+KOFI_PARITY_SELFTEST_SCHEMA = {
+    "name": "questframe_kofi_parity_selftest",
+    "description": "Run FH6 Ko-fi parity immersion metrics (FOV fill, Hz, stereo DIBR, parallax).",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "approve": {
+                "type": "boolean",
+                "description": "Required. Passes --approve to companion-depth gated loops.",
+            },
+            "attempt_window_capture": {
+                "type": "boolean",
+                "description": "When true, pass --attempt-window-capture for live FH6 color.",
+            },
+            "loop_frames": {
+                "type": "integer",
+                "minimum": 12,
+                "maximum": 120,
+                "description": "Live color loop frame count (default 36).",
+            },
+            "cockpit_seconds": {
+                "type": "integer",
+                "minimum": 2,
+                "maximum": 15,
+                "description": "Cockpit presence loop duration (default 5).",
+            },
+            "target_hz": {
+                "type": "integer",
+                "minimum": 24,
+                "maximum": 120,
+                "description": "Target presentation rate (default 72).",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 600,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
 UNITY_SCAN_SCHEMA = {
     "name": "questframe_unity_scan",
     "description": "Read-only scan of Unity/VCC project packages for VRChat tool risk.",
@@ -858,6 +918,96 @@ def _read_package_manifest(project: Path) -> dict[str, str]:
     return {str(key): str(value) for key, value in deps.items()}
 
 
+def _read_vpm_manifest(project: Path) -> dict[str, str]:
+    vpm_path = project / "Packages" / "vpm-manifest.json"
+    if not vpm_path.is_file():
+        return {}
+    try:
+        raw = json.loads(vpm_path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    locked = raw.get("locked", {})
+    if not isinstance(locked, dict):
+        return {}
+    versions: dict[str, str] = {}
+    for package_id, meta in locked.items():
+        if isinstance(meta, dict):
+            version = str(meta.get("version") or "").strip()
+            if version:
+                versions[str(package_id)] = version
+    return versions
+
+
+def _vcc_candidate_paths() -> list[Path]:
+    local_app = Path(os.environ.get("LOCALAPPDATA") or "")
+    program_files = Path(os.environ.get("ProgramFiles") or "C:/Program Files")
+    return [
+        local_app / "Programs" / "VRChat Creator Companion" / "VRChatCreatorCompanion.exe",
+        local_app / "Programs" / "VRChat Creator Companion" / "VCC.exe",
+        program_files / "VRChat Creator Companion" / "VRChatCreatorCompanion.exe",
+        program_files / "VRChat Creator Companion" / "VCC.exe",
+    ]
+
+
+def _unity_hub_editor_roots() -> list[Path]:
+    hub_path = Path(os.environ.get("ProgramFiles") or "C:/Program Files") / "Unity" / "Hub" / "Editor"
+    if not hub_path.is_dir():
+        return []
+    return sorted(hub_path.iterdir(), key=lambda p: p.name, reverse=True)
+
+
+def scan_vcc_health(*, project_path: str | None = None) -> dict[str, Any]:
+    risks: list[str] = []
+    vcc_paths = _vcc_candidate_paths()
+    vcc_found = next((path for path in vcc_paths if path.is_file()), None)
+    if vcc_found is None:
+        risks.append("VRChat Creator Companion executable not found in common install paths")
+
+    settings_path = Path(os.environ.get("APPDATA") or "") / "VRChatCreatorCompanion" / "settings.json"
+    settings_exists = settings_path.is_file()
+
+    editor_roots = _unity_hub_editor_roots()
+    if not editor_roots:
+        risks.append("Unity Hub Editor folder not found")
+
+    project_report: dict[str, Any] | None = None
+    if project_path:
+        project = Path(project_path).expanduser()
+        if _is_unity_project(project):
+            vpm_versions = _read_vpm_manifest(project)
+            packages = _read_package_manifest(project)
+            sdk_packages = [
+                package_id
+                for package_id in ("com.vrchat.avatars", "com.vrchat.worlds", "com.vrchat.base")
+                if package_id in packages or package_id in vpm_versions
+            ]
+            if not sdk_packages:
+                risks.append("project has no VRChat SDK packages in manifest or vpm-manifest")
+            project_report = {
+                "project_path": str(project),
+                "unity_version": _read_project_version(project),
+                "vpm_locked_count": len(vpm_versions),
+                "vpm_packages": [
+                    {"id": package_id, "version": version}
+                    for package_id, version in sorted(vpm_versions.items())
+                ],
+                "sdk_packages": sdk_packages,
+            }
+        else:
+            risks.append("project_path is not a Unity project")
+
+    return {
+        "ok": not risks,
+        "scanned_at": _now_utc(),
+        "vcc_executable": str(vcc_found) if vcc_found else "",
+        "vcc_settings_path": str(settings_path),
+        "vcc_settings_exists": settings_exists,
+        "unity_hub_editors": [str(path) for path in editor_roots[:5]],
+        "project": project_report,
+        "risks": risks,
+    }
+
+
 def _limited_unitypackage_markers(project: Path, limit: int = 20) -> list[str]:
     assets = project / "Assets"
     markers: list[str] = []
@@ -876,14 +1026,16 @@ def _limited_unitypackage_markers(project: Path, limit: int = 20) -> list[str]:
 
 def scan_unity_project(project: Path) -> dict[str, Any]:
     packages = _read_package_manifest(project)
+    vpm_locked = _read_vpm_manifest(project)
     detected = [
         {
             "id": package_id,
             "name": KNOWN_VPM_PACKAGES[package_id],
-            "version": packages.get(package_id, ""),
+            "version": vpm_locked.get(package_id) or packages.get(package_id, ""),
+            "source": "vpm-lock" if package_id in vpm_locked else "manifest",
         }
         for package_id in sorted(KNOWN_VPM_PACKAGES)
-        if package_id in packages
+        if package_id in packages or package_id in vpm_locked
     ]
     sdk_avatar = "com.vrchat.avatars" in packages
     sdk_world = "com.vrchat.worlds" in packages
@@ -897,13 +1049,18 @@ def scan_unity_project(project: Path) -> dict[str, Any]:
     markers = _limited_unitypackage_markers(project)
     if markers:
         risks.append("legacy .unitypackage files are present under Assets")
+    if not vpm_locked and (sdk_avatar or sdk_world):
+        risks.append("VRChat SDK present in manifest but vpm-manifest.json lock missing")
 
+    vcc_config = project / "vcc.config.json"
     return {
         "project_path": str(project),
         "exists": project.exists(),
         "unity_project": _is_unity_project(project),
         "unity_version": _read_project_version(project),
         "package_count": len(packages),
+        "vpm_locked_count": len(vpm_locked),
+        "vcc_config_present": vcc_config.is_file(),
         "detected_packages": detected,
         "risks": risks,
         "unitypackage_markers": markers,
@@ -972,6 +1129,8 @@ def status() -> dict[str, Any]:
             "questframe_openxr_presentation_selftest",
             "questframe_immersive_presentation_loop_selftest",
             "questframe_cockpit_presence_selftest",
+            "questframe_kofi_parity_selftest",
+            "questframe_vcc_health",
             "questframe_support_report",
             "questframe_unity_scan",
         ],
@@ -1338,6 +1497,41 @@ def handle_unity_scan(args: dict[str, Any] | None = None, **_: Any) -> str:
     )
 
 
+def handle_vcc_health(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    return _json(
+        scan_vcc_health(
+            project_path=str(args.get("project_path") or "") or None,
+        )
+    )
+
+
+def handle_kofi_parity_selftest(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    extra = ["--json"]
+    if bool(args.get("approve")):
+        extra.append("--approve")
+    if bool(args.get("attempt_window_capture")):
+        extra.append("--attempt-window-capture")
+    loop_frames = int(args.get("loop_frames") or 0)
+    if loop_frames > 0:
+        extra.extend(["--loop-frames", str(loop_frames)])
+    cockpit_seconds = int(args.get("cockpit_seconds") or 0)
+    if cockpit_seconds > 0:
+        extra.extend(["--cockpit-seconds", str(cockpit_seconds)])
+    target_hz = int(args.get("target_hz") or 0)
+    if target_hz > 0:
+        extra.extend(["--target-hz", str(target_hz)])
+    return _json(
+        run_launcher(
+            "kofi-parity-selftest",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=extra,
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
 HELP = """questframe commands:
   /questframe status
   /questframe preflight
@@ -1356,6 +1550,8 @@ HELP = """questframe commands:
   /questframe color-depth-pairing-selftest [--approve] [--attempt-window-capture]
   /questframe openxr-presentation-selftest [--approve] [--require-pairing]
   /questframe cockpit-presence-selftest [--approve] [--attempt-window-capture] [--seconds N]
+  /questframe kofi-parity-selftest [--approve] [--attempt-window-capture]
+  /questframe vcc-health [project_path]
   /questframe support-report
   /questframe unity-scan [project_path]
 """
@@ -1481,6 +1677,31 @@ def handle_slash(raw_args: str) -> str:
         return handle_cockpit_presence_selftest(args)
     if command in {"support-report", "report"}:
         return handle_support_report({})
+    if command in {"vcc-health", "vcc_health", "vcc"}:
+        project = argv[1] if len(argv) > 1 else None
+        return handle_vcc_health({"project_path": project or ""})
+    if command in {
+        "kofi-parity-selftest",
+        "kofi-parity",
+        "kofi_parity",
+    }:
+        args = {
+            "approve": "--approve" in argv,
+            "attempt_window_capture": "--attempt-window-capture" in argv,
+        }
+        if "--loop-frames" in argv:
+            index = argv.index("--loop-frames")
+            if index + 1 < len(argv):
+                args["loop_frames"] = int(argv[index + 1])
+        if "--cockpit-seconds" in argv:
+            index = argv.index("--cockpit-seconds")
+            if index + 1 < len(argv):
+                args["cockpit_seconds"] = int(argv[index + 1])
+        if "--target-hz" in argv:
+            index = argv.index("--target-hz")
+            if index + 1 < len(argv):
+                args["target_hz"] = int(argv[index + 1])
+        return handle_kofi_parity_selftest(args)
     if command == "unity-scan":
         project = argv[1] if len(argv) > 1 else None
         return _json(scan_unity_projects(project_path=project))

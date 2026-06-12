@@ -101,6 +101,18 @@ _TOOLS = (
         "Q",
     ),
     (
+        "questframe_kofi_parity_selftest",
+        core.KOFI_PARITY_SELFTEST_SCHEMA,
+        core.handle_kofi_parity_selftest,
+        "Q",
+    ),
+    (
+        "questframe_vcc_health",
+        core.VCC_HEALTH_SCHEMA,
+        core.handle_vcc_health,
+        "Q",
+    ),
+    (
         "questframe_support_report",
         core.SUPPORT_REPORT_SCHEMA,
         core.handle_support_report,

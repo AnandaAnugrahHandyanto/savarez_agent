@@ -129,6 +129,24 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     openxr_presentation.add_argument("--frames", type=int, default=None)
     openxr_presentation.add_argument("--timeout-seconds", type=int, default=None)
 
+    kofi_parity = subs.add_parser(
+        "kofi-parity-selftest",
+        help="Run FH6 Ko-fi parity immersion metrics (0.22 gate)",
+    )
+    kofi_parity.add_argument("--launcher-exe", default="")
+    kofi_parity.add_argument("--approve", action="store_true")
+    kofi_parity.add_argument("--attempt-window-capture", action="store_true")
+    kofi_parity.add_argument("--loop-frames", type=int, default=None)
+    kofi_parity.add_argument("--cockpit-seconds", type=int, default=None)
+    kofi_parity.add_argument("--target-hz", type=int, default=None)
+    kofi_parity.add_argument("--timeout-seconds", type=int, default=None)
+
+    vcc_health = subs.add_parser(
+        "vcc-health",
+        help="Check VRChat Creator Companion and Unity Hub readiness",
+    )
+    vcc_health.add_argument("--project-path", default="")
+
     cockpit_presence = subs.add_parser(
         "cockpit-presence-selftest",
         help="Run FH6VR cockpit presence self-test with head pose parallax (0.21 gate)",
@@ -192,7 +210,7 @@ def questframe_command(args: argparse.Namespace) -> int:
             "companion-depth-producer-selftest,color-depth-pairing-selftest,"
             "openxr-presentation-selftest,live-color-loop-selftest,"
             "immersive-presentation-loop-selftest,cockpit-presence-selftest,"
-            "support-report,unity-scan}"
+            "kofi-parity-selftest,vcc-health,support-report,unity-scan}"
         )
         return 2
     if command == "setup":
@@ -410,6 +428,35 @@ def questframe_command(args: argparse.Namespace) -> int:
                 launcher_exe=getattr(args, "launcher_exe", "") or None,
                 extra_args=extra,
                 timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "kofi-parity-selftest":
+        extra = ["--json"]
+        if bool(getattr(args, "approve", False)):
+            extra.append("--approve")
+        if bool(getattr(args, "attempt_window_capture", False)):
+            extra.append("--attempt-window-capture")
+        loop_frames = getattr(args, "loop_frames", None)
+        if loop_frames:
+            extra.extend(["--loop-frames", str(loop_frames)])
+        cockpit_seconds = getattr(args, "cockpit_seconds", None)
+        if cockpit_seconds:
+            extra.extend(["--cockpit-seconds", str(cockpit_seconds)])
+        target_hz = getattr(args, "target_hz", None)
+        if target_hz:
+            extra.extend(["--target-hz", str(target_hz)])
+        return _print(
+            core.run_launcher(
+                "kofi-parity-selftest",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=extra,
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "vcc-health":
+        return _print(
+            core.scan_vcc_health(
+                project_path=getattr(args, "project_path", "") or None,
             )
         )
     if command == "cockpit-presence-selftest":
