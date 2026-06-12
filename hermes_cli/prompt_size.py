@@ -31,13 +31,23 @@ def _build_inspection_agent(platform: str) -> Any:
     Dummy ``api_key`` + ``base_url`` force the direct-construction path in
     ``run_agent.py`` (no provider auto-detection, no network). Toolsets and
     platform come from the caller so the breakdown matches a real session.
+
+    When ``enabled_toolsets`` is omitted, ``init_agent`` loads *every*
+    toolset minus ``agent.disabled_toolsets`` — which over-counts tools for
+    platforms like ``api_server`` that have an explicit ``platform_toolsets``
+    entry in config.yaml.  Mirror Gateway: resolve per-platform toolsets here.
     """
     from run_agent import AIAgent
     from hermes_cli.config import load_config
+    from hermes_cli.tools_config import _get_platform_tools
 
     cfg = load_config()
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
     model = model_cfg.get("default") or model_cfg.get("model") or ""
+
+    agent_cfg = cfg.get("agent", {}) if isinstance(cfg.get("agent"), dict) else {}
+    disabled_toolsets = agent_cfg.get("disabled_toolsets") or []
+    enabled_toolsets = sorted(_get_platform_tools(cfg, platform))
 
     return AIAgent(
         model=model,
@@ -46,6 +56,8 @@ def _build_inspection_agent(platform: str) -> Any:
         quiet_mode=True,
         save_trajectories=False,
         platform=platform,
+        enabled_toolsets=enabled_toolsets,
+        disabled_toolsets=disabled_toolsets,
     )
 
 
