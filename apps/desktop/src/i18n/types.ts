@@ -1327,6 +1327,10 @@ export interface Translations {
       editableCheckpoint: string
       restorePrevious: string
       restoreCheckpoint: string
+      restoreFromHere: string
+      restoreTitle: string
+      restoreBody: string
+      restoreConfirm: string
       restoreNext: string
       goForward: string
       sendEdited: string

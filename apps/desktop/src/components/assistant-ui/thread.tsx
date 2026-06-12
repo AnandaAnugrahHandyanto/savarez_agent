@@ -69,6 +69,7 @@ import { ImageGenerationPlaceholder } from '@/components/chat/image-generation-p
 import { Intro, type IntroProps } from '@/components/chat/intro'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { CopyButton } from '@/components/ui/copy-button'
 import {
   DropdownMenu,
@@ -135,6 +136,7 @@ export const Thread: FC<{
   loading?: ThreadLoadingState
   onBranchInNewChat?: (messageId: string) => void
   onCancel?: () => Promise<void> | void
+  onRestoreToMessage?: (messageId: string) => Promise<void> | void
   sessionId?: string | null
   sessionKey?: string | null
 }> = ({
@@ -145,6 +147,7 @@ export const Thread: FC<{
   loading,
   onBranchInNewChat,
   onCancel,
+  onRestoreToMessage,
   sessionId = null,
   sessionKey
 }) => {
@@ -153,9 +156,9 @@ export const Thread: FC<{
       AssistantMessage: () => <AssistantMessage onBranchInNewChat={onBranchInNewChat} />,
       SystemMessage,
       UserEditComposer: () => <UserEditComposer cwd={cwd} gateway={gateway} sessionId={sessionId} />,
-      UserMessage: () => <UserMessage onCancel={onCancel} />
+      UserMessage: () => <UserMessage onCancel={onCancel} onRestoreToMessage={onRestoreToMessage} />
     }),
-    [cwd, gateway, onBranchInNewChat, onCancel, sessionId]
+    [cwd, gateway, onBranchInNewChat, onCancel, onRestoreToMessage, sessionId]
   )
 
   const emptyPlaceholder = intro ? (
@@ -737,9 +740,11 @@ const StopGlyph = <IconPlayerStopFilled aria-hidden className="size-3.5 -transla
 
 const UserMessage: FC<{
   onCancel?: () => Promise<void> | void
-}> = ({ onCancel }) => {
+  onRestoreToMessage?: (messageId: string) => Promise<void> | void
+}> = ({ onCancel, onRestoreToMessage }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
+  const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false)
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
@@ -792,7 +797,7 @@ const UserMessage: FC<{
   const hasBody = messageText.trim().length > 0
   const isLatestUser = messageId === latestUserId
   const showStop = isLatestUser && threadRunning && Boolean(onCancel)
-  const showRestore = !isLatestUser && !threadRunning
+  const showRestore = !isLatestUser && !threadRunning && Boolean(onRestoreToMessage) && hasBody
 
   const bubbleClassName = cn(
     USER_BUBBLE_BASE_CLASS,
@@ -858,13 +863,20 @@ const UserMessage: FC<{
                       {StopGlyph}
                     </button>
                   ) : (
-                    <span
-                      aria-hidden="true"
-                      className="flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary)"
-                      title={copy.editableCheckpoint}
+                    <button
+                      aria-label={copy.restoreCheckpoint}
+                      className={cn('pointer-events-auto size-6', USER_ACTION_ICON_BUTTON_CLASS)}
+                      onClick={event => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        triggerHaptic('selection')
+                        setRestoreConfirmOpen(true)
+                      }}
+                      title={copy.restoreFromHere}
+                      type="button"
                     >
                       <Codicon name="discard" size="0.875rem" />
-                    </span>
+                    </button>
                   )}
                 </div>
               )}
@@ -892,6 +904,19 @@ const UserMessage: FC<{
             </BranchPickerPrimitive.Root>
           </div>
         </ActionBarPrimitive.Root>
+        {showRestore && (
+          <ConfirmDialog
+            confirmLabel={copy.restoreConfirm}
+            description={copy.restoreBody}
+            destructive
+            onClose={() => setRestoreConfirmOpen(false)}
+            onConfirm={async () => {
+              await onRestoreToMessage?.(messageId)
+            }}
+            open={restoreConfirmOpen}
+            title={copy.restoreTitle}
+          />
+        )}
       </StickyHumanMessageContainer>
     </MessagePrimitive.Root>
   )

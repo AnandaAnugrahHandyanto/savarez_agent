@@ -1421,6 +1421,67 @@ export function usePromptActions({
     [activeSessionId, copy.regenerateFailed, requestGateway, updateSessionState]
   )
 
+  // Cursor-style "restore checkpoint": rewind the conversation to a past user
+  // prompt and run it again from there. Reuses the edit composer's rewind
+  // mechanism — `prompt.submit` with `truncate_before_user_ordinal` drops that
+  // user turn and everything after it from the session history, then the same
+  // text is submitted as a fresh turn. Callers confirm before invoking; errors
+  // are rethrown so the confirmation dialog can surface them inline.
+  const restoreToMessage = useCallback(
+    async (messageId: string) => {
+      const sessionId = activeSessionId || activeSessionIdRef.current
+
+      if (!sessionId || $busy.get()) {
+        return
+      }
+
+      const messages = $messages.get()
+      const sourceIndex = messages.findIndex(m => m.id === messageId)
+      const source = messages[sourceIndex]
+
+      if (!source || source.role !== 'user') {
+        return
+      }
+
+      const text = chatMessageText(source).trim()
+
+      if (!text) {
+        return
+      }
+
+      const truncateBeforeUserOrdinal = visibleUserOrdinal(messages, sourceIndex)
+
+      clearNotifications()
+      setMutableRef(busyRef, true)
+      setBusy(true)
+      setAwaitingResponse(true)
+      updateSessionState(sessionId, state => ({
+        ...state,
+        busy: true,
+        awaitingResponse: true,
+        pendingBranchGroup: null,
+        sawAssistantPayload: false,
+        interrupted: false,
+        messages: state.messages.slice(0, sourceIndex + 1)
+      }))
+
+      try {
+        await requestGateway('prompt.submit', {
+          session_id: sessionId,
+          text,
+          truncate_before_user_ordinal: truncateBeforeUserOrdinal
+        })
+      } catch (err) {
+        setMutableRef(busyRef, false)
+        setBusy(false)
+        setAwaitingResponse(false)
+        updateSessionState(sessionId, state => ({ ...state, busy: false, awaitingResponse: false }))
+        throw err
+      }
+    },
+    [activeSessionId, activeSessionIdRef, busyRef, requestGateway, updateSessionState]
+  )
+
   const editMessage = useCallback(
     async (edited: AppendMessage) => {
       const sessionId = activeSessionId || activeSessionIdRef.current
@@ -1534,6 +1595,7 @@ export function usePromptActions({
     handleThreadMessagesChange,
     handoffSession,
     reloadFromMessage,
+    restoreToMessage,
     steerPrompt,
     submitText,
     transcribeVoiceAudio
