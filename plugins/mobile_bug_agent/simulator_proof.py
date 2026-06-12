@@ -240,6 +240,7 @@ class SimulatorProofHarness:
                     proof_dir,
                     open_dev_client,
                     capture_ready_app,
+                    open_dev_client_before_foreground=bool(dev_client_scheme.strip()),
                 )
             else:
                 self._run_text(("npm", "run", "android"), worktree, timeout_seconds)
@@ -674,6 +675,7 @@ def _run_android_until_foreground(
     log_dir: Path | None,
     open_dev_client: Callable[[], None],
     capture_foreground: Callable[[], None],
+    open_dev_client_before_foreground: bool = False,
 ) -> None:
     stdout_path, stderr_path = _start_log_files("android-metro-", log_dir)
     try:
@@ -696,12 +698,16 @@ def _run_android_until_foreground(
                 deadline = time.monotonic() + timeout
                 started = time.monotonic()
                 last_direct_launch = 0.0
+                last_dev_client_launch = 0.0
+                dev_client_delivered = False
                 while time.monotonic() < deadline:
                     if _android_package_is_foreground(adb, cwd, package):
                         time.sleep(min(_android_settle_seconds(), max(deadline - time.monotonic(), 0)))
                         if not _android_package_is_foreground(adb, cwd, package):
                             continue
-                        open_dev_client()
+                        if not dev_client_delivered:
+                            open_dev_client()
+                            dev_client_delivered = True
                         _wait_for_metro_bundle_request(
                             stdout_path,
                             stderr_path,
@@ -737,6 +743,16 @@ def _run_android_until_foreground(
                         return
 
                     now = time.monotonic()
+                    if (
+                        open_dev_client_before_foreground
+                        and now - started >= 5
+                        and now - last_dev_client_launch >= 5
+                        and _android_package_is_installed(adb, cwd, package)
+                    ):
+                        open_dev_client()
+                        dev_client_delivered = True
+                        last_dev_client_launch = now
+                        continue
                     if now - started >= 5 and now - last_direct_launch >= 5:
                         _launch_android_package(adb, cwd, package)
                         last_direct_launch = now
@@ -807,6 +823,21 @@ def _android_package_is_foreground(adb: tuple[str, ...], cwd: Path, package: str
         package in line and any(marker in line for marker in focus_markers)
         for line in str(proc.stdout or "").splitlines()
     )
+
+
+def _android_package_is_installed(adb: tuple[str, ...], cwd: Path, package: str) -> bool:
+    try:
+        proc = subprocess.run(
+            [*adb, "shell", "pm", "path", package],
+            cwd=str(cwd),
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0 and str(proc.stdout or "").strip().startswith("package:")
 
 
 def _launch_android_package(adb: tuple[str, ...], cwd: Path, package: str) -> None:

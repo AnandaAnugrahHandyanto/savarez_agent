@@ -355,8 +355,11 @@ def test_simulator_proof_android_captures_while_long_lived_run_is_foreground(mon
         log_dir,
         open_dev_client,
         capture_foreground,
+        open_dev_client_before_foreground=False,
     ):
-        foreground_calls.append((args, cwd, timeout, adb, package, log_dir))
+        foreground_calls.append(
+            (args, cwd, timeout, adb, package, log_dir, open_dev_client_before_foreground)
+        )
         open_dev_client()
         capture_foreground()
 
@@ -386,6 +389,7 @@ def test_simulator_proof_android_captures_while_long_lived_run_is_foreground(mon
             ("adb", "-s", "emulator-5554"),
             "com.elixir.card.staging",
             proof_dir,
+            True,
         )
     ]
     assert text_calls == [
@@ -515,6 +519,69 @@ def test_android_foreground_runner_waits_for_bundle_before_capture(monkeypatch, 
     )
 
     assert events[:4] == ["metro-start", "open-dev-client", "bundle-requested", "capture"]
+
+
+def test_android_foreground_runner_delivers_dev_client_url_before_foreground_when_installed(
+    monkeypatch, tmp_path
+):
+    events = []
+    monkeypatch.setenv("MONICA_PACKAGER_HOSTNAME", "localhost")
+    ticks = iter([100.0, 100.0, 106.0, 106.0, 112.0, 112.0, 113.0, 114.0, 115.0])
+    foreground = iter([False, True, True, True, True])
+
+    class FakeProcess:
+        def poll(self):
+            return None
+
+        def terminate(self):
+            events.append("terminate")
+
+        def wait(self, timeout):
+            return 0
+
+        def kill(self):
+            events.append("kill")
+
+    def fake_popen(*_args, **_kwargs):
+        events.append("metro-start")
+        return FakeProcess()
+
+    monkeypatch.setattr(simulator_proof.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(simulator_proof.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(simulator_proof.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(simulator_proof, "_android_package_is_foreground", lambda *_args: next(foreground))
+    monkeypatch.setattr(simulator_proof, "_android_package_is_installed", lambda *_args: True)
+    monkeypatch.setattr(
+        simulator_proof,
+        "_wait_for_metro_bundle_request",
+        lambda *_args, **_kwargs: events.append("bundle-requested"),
+    )
+    monkeypatch.setattr(
+        simulator_proof,
+        "_launch_android_package",
+        lambda *_args, **_kwargs: events.append("launch-package"),
+    )
+
+    simulator_proof._run_android_until_foreground(
+        ("npm", "run", "android"),
+        tmp_path,
+        30,
+        ("adb",),
+        "com.elixir.card",
+        tmp_path,
+        lambda: events.append("open-dev-client"),
+        lambda: events.append("capture"),
+        open_dev_client_before_foreground=True,
+    )
+
+    assert events[:5] == [
+        "metro-start",
+        "open-dev-client",
+        "bundle-requested",
+        "capture",
+        "terminate",
+    ]
+    assert "launch-package" not in events
 
 
 def test_android_foreground_runner_aborts_when_process_exits_before_bundle(monkeypatch, tmp_path):
