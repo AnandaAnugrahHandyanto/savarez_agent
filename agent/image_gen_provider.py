@@ -239,6 +239,14 @@ def save_url_image(
     response = requests.get(url, timeout=timeout, stream=True)
     response.raise_for_status()
 
+    # Re-validate after redirects: a safe initial URL may redirect to a
+    # private/internal address via a compromised CDN or provider.
+    final_url = getattr(response, "url", url) or url
+    if final_url != url and not is_safe_url(final_url):
+        raise ValueError(
+            f"Blocked: redirect target is a private or internal address: {final_url}"
+        )
+
     # Infer extension from the response content-type, falling back to the
     # URL suffix when xAI / OpenAI omit a precise type (some CDNs return
     # ``application/octet-stream``).  Defaults to ``png``.
