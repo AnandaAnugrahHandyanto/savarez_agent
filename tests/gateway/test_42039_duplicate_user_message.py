@@ -217,6 +217,12 @@ async def test_normal_path_skip_db_when_agent_has_session_db(
     monkeypatch, tmp_path
 ):
     runner = _bootstrap(monkeypatch, tmp_path)
+    session_db = MagicMock()
+    session_db.get_messages.return_value = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "Hello!"},
+    ]
+    runner._session_db = session_db
 
     # Agent succeeds with new messages
     runner._run_agent = AsyncMock(
@@ -238,4 +244,78 @@ async def test_normal_path_skip_db_when_agent_has_session_db(
 
     _assert_user_call_has_skip_db(
         runner.session_store.append_to_transcript.call_args_list, True
+    )
+
+
+@pytest.mark.asyncio
+async def test_normal_path_mirrors_to_db_when_agent_persistence_missing_current_turn(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    session_db = MagicMock()
+    session_db.get_messages.return_value = [
+        {"role": "user", "content": "older question"},
+        {"role": "assistant", "content": "older answer"},
+    ]
+    runner._session_db = session_db
+
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "Hello!",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "Hello!"},
+            ],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    _assert_user_call_has_skip_db(
+        runner.session_store.append_to_transcript.call_args_list, False
+    )
+    assistant_calls = [
+        call
+        for call in runner.session_store.append_to_transcript.call_args_list
+        if len(call.args) >= 2
+        and isinstance(call.args[1], dict)
+        and call.args[1].get("role") == "assistant"
+    ]
+    assert assistant_calls
+    assert all(call.kwargs.get("skip_db", False) is False for call in assistant_calls)
+
+
+@pytest.mark.asyncio
+async def test_not_new_messages_mirrors_to_db_when_agent_fallback_tail_missing(
+    monkeypatch, tmp_path
+):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    session_db = MagicMock()
+    session_db.get_messages.return_value = [
+        {"role": "user", "content": "older question"},
+        {"role": "assistant", "content": "older answer"},
+    ]
+    runner._session_db = session_db
+
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "Hello!",
+            "messages": [],
+            "tools": [],
+            "history_offset": 1,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    _assert_user_call_has_skip_db(
+        runner.session_store.append_to_transcript.call_args_list, False
     )

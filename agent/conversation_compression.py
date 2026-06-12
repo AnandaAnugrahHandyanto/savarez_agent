@@ -549,6 +549,15 @@ def compress_context(
             agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
             # Reset flush cursor — new session starts with no messages written
             agent._last_flushed_db_idx = 0
+            # The next persistence pass still receives the pre-compression
+            # ``conversation_history`` argument from the caller (gateway/CLI
+            # built it before this session rotated).  That history belongs to
+            # the OLD session and is usually much longer than the compressed
+            # child transcript.  If _flush_messages_to_session_db uses it as
+            # an offset, messages[old_history_len:] is empty and the child
+            # session never gets the summary/tail that compression produced.
+            # Mark the next flush to ignore that stale offset once.
+            agent._ignore_conversation_history_on_next_flush = True
         except Exception as e:
             logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 

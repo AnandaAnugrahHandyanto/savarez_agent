@@ -312,13 +312,12 @@ class TestBusySessionAck:
         agent.steer = MagicMock(return_value=False)  # rejected
         runner._running_agents[sk] = agent
 
-        with patch("gateway.run.merge_pending_message_event") as mock_merge:
-            await runner._handle_active_session_busy_message(event, sk)
+        await runner._handle_active_session_busy_message(event, sk)
 
         agent.steer.assert_called_once()
         agent.interrupt.assert_not_called()
-        # Fell back to queue semantics: event was merged into pending messages
-        mock_merge.assert_called_once()
+        # Fell back to queue semantics: event was queued for the next turn.
+        assert adapter._pending_messages[sk] is event
 
         # Ack uses queue-mode wording (not steer, not interrupt)
         call_kwargs = adapter._send_with_retry.call_args
@@ -340,11 +339,10 @@ class TestBusySessionAck:
         # Agent is still being set up — sentinel in place
         runner._running_agents[sk] = sentinel
 
-        with patch("gateway.run.merge_pending_message_event") as mock_merge:
-            await runner._handle_active_session_busy_message(event, sk)
+        await runner._handle_active_session_busy_message(event, sk)
 
         # Event was queued instead of steered
-        mock_merge.assert_called_once()
+        assert adapter._pending_messages[sk] is event
 
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
@@ -391,6 +389,49 @@ class TestBusySessionAck:
         assert adapter._send_with_retry.call_count == 1  # still 1, no new ack
 
         # But interrupt should still be called for both (since we are in interrupt mode)
+        assert agent.interrupt.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_interrupt_mode_preserves_rapid_text_followups_as_fifo(self):
+        """Busy interrupt text follow-ups must remain distinct turns.
+
+        Telegram users see each follow-up as a separate message. Collapsing
+        them into one newline-joined pending event makes post-compaction
+        history look like the agent received a single block with no individual
+        message boundaries.
+        """
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        first = _make_event(text="first")
+        second = MessageEvent(
+            text="second",
+            message_type=MessageType.TEXT,
+            source=first.source,
+            message_id="msg2",
+        )
+        sk = build_session_key(first.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 5,
+            "max_iterations": 60,
+            "current_tool": None,
+            "last_activity_ts": time.time(),
+            "last_activity_desc": "api_call",
+            "seconds_since_activity": 0.5,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 60
+        runner.adapters[first.source.platform] = adapter
+
+        await runner._handle_active_session_busy_message(first, sk)
+        await runner._handle_active_session_busy_message(second, sk)
+
+        assert adapter._pending_messages[sk].text == "first"
+        assert [event.text for event in runner._queued_events[sk]] == ["second"]
+        assert "\nsecond" not in adapter._pending_messages[sk].text
         assert agent.interrupt.call_count == 2
 
     @pytest.mark.asyncio
