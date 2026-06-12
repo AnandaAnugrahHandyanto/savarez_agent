@@ -1308,6 +1308,25 @@ class TestBangPrefixCommands:
         assert msg_event.message_type == MessageType.COMMAND
 
     @pytest.mark.asyncio
+    async def test_bang_model_minimax_blocks_args_are_exact(self, adapter):
+        """Regression: ``!model minimax`` must not become a spaced model name."""
+        evt = self._make_event("!model minimax")
+        evt["blocks"] = [{
+            "type": "rich_text",
+            "elements": [{
+                "type": "rich_text_section",
+                "elements": [{"type": "text", "text": "!model minimax"}],
+            }],
+        }]
+
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/model minimax"
+        assert msg_event.get_command_args() == "minimax"
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
     async def test_bang_command_blocks_strip_plain_text_and_keep_quote(self, adapter):
         """When blocks echo the command plus quotes, drop only the echoed command."""
         evt = self._make_event("!queue summarize")
