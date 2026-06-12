@@ -2127,7 +2127,15 @@ def delegate_task(
         from tools.async_delegation import dispatch as _async_dispatch
         from tools.process_registry import process_registry as _process_registry
 
-        session_key = getattr(parent_agent, "session_id", None) or ""
+        # Use the gateway session key (e.g. "agent:main:telegram:dm:8494508720")
+        # so the async delegation watcher can route the completion event back to
+        # the correct running session via _running_agents.  Fallback to session_id
+        # (SQLite UUID) for non-gateway contexts (CLI, tests).
+        session_key = (
+            getattr(parent_agent, "_gateway_session_key", None)
+            or getattr(parent_agent, "session_id", None)
+            or ""
+        )
         _pa_model = getattr(parent_agent, "model", None) or ""
         _pa_provider = getattr(parent_agent, "provider", None) or ""
 
