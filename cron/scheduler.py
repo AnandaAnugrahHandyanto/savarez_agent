@@ -58,6 +58,32 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
+def _extract_cron_context_payload(output: str) -> str:
+    """Return the useful payload from a stored cron output artifact."""
+    text = (output or "").strip()
+    if not text:
+        return ""
+
+    if "\n## Response\n" in text:
+        payload = text.rsplit("\n## Response\n", 1)[1].strip()
+        return "" if payload == "(No response generated)" else payload
+
+    if "\n## Error\n" in text:
+        payload = text.rsplit("\n## Error\n", 1)[1].strip()
+        header = []
+        for line in text.splitlines():
+            if line.startswith("# Cron Job:") or line.startswith("**Job ID:**"):
+                header.append(line)
+            elif line.startswith("**Run Time:**") or line.startswith("**Schedule:**"):
+                header.append(line)
+        prefix = "\n".join(header).strip()
+        if prefix:
+            return f"{prefix}\n\n## Error\n\n{payload}".strip()
+        return f"## Error\n\n{payload}".strip()
+
+    return text
+
+
 def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """Toolsets a cron-spawned agent must never receive.
 
@@ -1107,7 +1133,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 )
                 if not output_files:
                     continue  # silent skip — no output yet
-                latest_output = output_files[0].read_text(encoding="utf-8").strip()
+                latest_output = _extract_cron_context_payload(
+                    output_files[0].read_text(encoding="utf-8")
+                )
                 # Truncate to 8K characters to avoid prompt bloat
                 _MAX_CONTEXT_CHARS = 8000
                 if len(latest_output) > _MAX_CONTEXT_CHARS:
