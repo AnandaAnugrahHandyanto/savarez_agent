@@ -608,31 +608,14 @@ export function useSessionActions({
         }))
       }
 
-      // Whether the resumed session arrived mid-turn (live fast-path reuse, or
-      // a watch window attaching to a running delegated child). Hoisted so the
-      // finally block can leave the busy indicator ON instead of clobbering it.
       let resumedRunning = false
 
       try {
         const watchWindow = isWatchWindow()
-
-        // Load the local snapshot first, then ask the gateway to resume.
-        // Previously these raced:
-        //   1. clear messages to []
-        //   2. local getSessionMessages -> 45 msgs
-        //   3. a second resume path cleared [] again
-        //   4. gateway resume -> 43 msgs
-        // That is the ctrl+R flash chain. Avoid showing an empty thread
-        // while we already have a route-scoped session id, and don't race the
-        // local snapshot against gateway resume.
         let localSnapshot = $messages.get()
 
         try {
-          // Watch windows stream a running delegated child turn. Waiting on the
-          // REST snapshot here can stall for 15s+ (repeated hermes:api timeouts)
-          // while the backend is busy, which made subagent windows appear "dead"
-          // before the live mirror finally attached. Skip the prefetch and let
-          // lazy session.resume attach immediately.
+          // Watch windows skip REST prefetch — lazy resume attaches the live mirror.
           if (!watchWindow) {
             const storedMessages = await getSessionMessages(storedSessionId, sessionProfile)
 
@@ -651,15 +634,7 @@ export function useSessionActions({
         const resumed = await requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
           cols: 96,
-          // Watch windows (live subagent spectators) resume lazily: the
-          // gateway registers history + this window's transport for the
-          // child-mirror stream WITHOUT building an agent — the build would
-          // contend with the parent turn already running the delegation and
-          // leave this window stuck on "connecting".
           ...(watchWindow ? { lazy: true } : {}),
-          // Owning profile: in app-global remote mode one backend serves every
-          // profile, so the gateway opens this profile's state.db + home to
-          // resume + persist the right session (no-op for single/launch profile).
           ...(sessionProfile ? { profile: sessionProfile } : {})
         })
 
@@ -673,15 +648,7 @@ export function useSessionActions({
           reconcileResumeMessages(toChatMessages(resumed.messages), currentMessages),
           currentMessages
         )
-        // Avoid a second visible transcript rebuild on resume/switch.
-        // `getSessionMessages()` is the stable stored transcript snapshot and
-        // paints first; `session.resume` can return a slightly different
-        // runtime-shaped projection (e.g. tool/system coalescing), which was
-        // causing a second full message-list replacement a second later.
-        // Keep the already-painted local snapshot for the view/cache when it
-        // exists; use gateway messages only as a fallback when no local
-        // snapshot was available.
-
+        // Keep the local snapshot when resume would only reshuffle runtime projection.
         const preferredMessages =
           localSnapshot.length > 0
             ? localSnapshot
@@ -697,8 +664,6 @@ export function useSessionActions({
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
 
-        // Trust the gateway's running flag so the window shows the busy
-        // indicator immediately instead of looking dead until the next event.
         resumedRunning = Boolean((resumed as { running?: boolean }).running)
 
         updateSessionState(
@@ -708,9 +673,6 @@ export function useSessionActions({
             ...(runtimeInfo ?? {}),
             messages: messagesForView,
             busy: resumedRunning,
-            // Both flags drive the thread's "response" loading shimmer
-            // (threadLoadingState) — a watch window attaching to a mid-run
-            // child must show it until the mirrored stream takes over.
             awaitingResponse: resumedRunning
           }),
           storedSessionId

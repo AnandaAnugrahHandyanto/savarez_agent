@@ -6,15 +6,7 @@ import { $gateway } from './gateway'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
 import { $todosBySession } from './todos'
 
-/**
- * Unified, typed status feed for the composer status stack.
- *
- * Everything the stack shows is one flat `ComposerStatusItem[]` per session,
- * each carrying a `type` so the stack can group it magically. Subagents are
- * mirrored from the overlay's store (still the source of truth for the Agents
- * view); background work is owned here. The merged view is a derived/computed
- * atom, so the stack has a single thing to read and never juggles sources.
- */
+/** Composer status stack feed — merged todos, subagents, background per session. */
 export type StatusItemState = 'done' | 'failed' | 'running'
 export type StatusItemType = 'background' | 'subagent' | 'todo'
 

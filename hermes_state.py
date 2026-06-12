@@ -29,7 +29,18 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
-_DELEGATE_FROM_JSON = "json_extract(COALESCE(model_config, '{}'), '$._delegate_from')"
+def _delegate_from_json(col: str = "model_config") -> str:
+    return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
+
+
+_LISTABLE_CHILD_SQL = (
+    "(s.parent_session_id IS NULL"
+    " OR json_extract(s.model_config, '$._branched_from') IS NOT NULL"
+    " OR EXISTS (SELECT 1 FROM sessions p"
+    "            WHERE p.id = s.parent_session_id"
+    "            AND p.end_reason = 'branched'"
+    "            AND s.started_at >= p.ended_at))"
+)
 
 
 def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
@@ -38,19 +49,29 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
         return []
     placeholders = ",".join("?" * len(parent_ids))
     params = list(parent_ids)
+    df = _delegate_from_json()
     found: set[str] = set()
     cursor = conn.execute(
         f"SELECT id FROM sessions WHERE parent_session_id IN ({placeholders}) "
-        f"AND {_DELEGATE_FROM_JSON} IS NOT NULL",
+        f"AND {df} IS NOT NULL",
         params,
     )
     found.update(row["id"] for row in cursor.fetchall())
     cursor = conn.execute(
-        f"SELECT id FROM sessions WHERE {_DELEGATE_FROM_JSON} IN ({placeholders})",
+        f"SELECT id FROM sessions WHERE {df} IN ({placeholders})",
         params,
     )
     found.update(row["id"] for row in cursor.fetchall())
     return list(found)
+
+
+def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
+    ids = _collect_delegate_child_ids(conn, parent_ids)
+    if ids:
+        ph = ",".join("?" * len(ids))
+        conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", ids)
+        conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", ids)
+    return ids
 
 T = TypeVar("T")
 
@@ -1954,19 +1975,8 @@ class SessionDB:
             #   2. The legacy heuristic (parent ended with 'branched' before the
             #      child started), covering branch sessions created before the
             #      marker existed.
-            where_clauses.append(
-                "(s.parent_session_id IS NULL"
-                " OR json_extract(s.model_config, '$._branched_from') IS NOT NULL"
-                " OR EXISTS (SELECT 1 FROM sessions p"
-                "            WHERE p.id = s.parent_session_id"
-                "            AND p.end_reason = 'branched'"
-                "            AND s.started_at >= p.ended_at))"
-            )
-            # Delegate subagents carry ``_delegate_from`` in model_config so
-            # they stay hidden after a parent delete nulls parent_session_id.
-            where_clauses.append(
-                "json_extract(COALESCE(s.model_config, '{}'), '$._delegate_from') IS NULL"
-            )
+            where_clauses.append(_LISTABLE_CHILD_SQL)
+            where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
 
         if source:
             where_clauses.append("s.source = ?")
@@ -3586,17 +3596,8 @@ class SessionDB:
             # Mirror list_sessions_rich's child-exclusion clause exactly so the
             # count lines up with the rows: roots (no parent) plus branch
             # children (parent ended with end_reason='branched').
-            where_clauses.append(
-                "(s.parent_session_id IS NULL"
-                " OR json_extract(s.model_config, '$._branched_from') IS NOT NULL"
-                " OR EXISTS (SELECT 1 FROM sessions p"
-                "            WHERE p.id = s.parent_session_id"
-                "            AND p.end_reason = 'branched'"
-                "            AND s.started_at >= p.ended_at))"
-            )
-            where_clauses.append(
-                "json_extract(COALESCE(s.model_config, '{}'), '$._delegate_from') IS NULL"
-            )
+            where_clauses.append(_LISTABLE_CHILD_SQL)
+            where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
         if source:
             where_clauses.append("s.source = ?")
             params.append(source)
@@ -3715,14 +3716,7 @@ class SessionDB:
             )
             if cursor.fetchone()[0] == 0:
                 return False
-            delegate_ids = _collect_delegate_child_ids(conn, [session_id])
-            if delegate_ids:
-                removed_delegate_ids.extend(delegate_ids)
-                dph = ",".join("?" * len(delegate_ids))
-                conn.execute(
-                    f"DELETE FROM messages WHERE session_id IN ({dph})", delegate_ids
-                )
-                conn.execute(f"DELETE FROM sessions WHERE id IN ({dph})", delegate_ids)
+            removed_delegate_ids.extend(_delete_delegate_children(conn, [session_id]))
             # Orphan remaining child sessions (branches, etc.) so FK is satisfied.
             conn.execute(
                 "UPDATE sessions SET parent_session_id = NULL "
@@ -3836,14 +3830,7 @@ class SessionDB:
                 return 0
 
             existing_placeholders = ",".join("?" * len(existing))
-            delegate_ids = _collect_delegate_child_ids(conn, existing)
-            if delegate_ids:
-                removed_delegate_ids.extend(delegate_ids)
-                dph = ",".join("?" * len(delegate_ids))
-                conn.execute(
-                    f"DELETE FROM messages WHERE session_id IN ({dph})", delegate_ids
-                )
-                conn.execute(f"DELETE FROM sessions WHERE id IN ({dph})", delegate_ids)
+            removed_delegate_ids.extend(_delete_delegate_children(conn, existing))
             # Orphan remaining children whose parent is in the kill list so the
             # FK constraint stays satisfied. Pin children whose parent
             # is itself in the kill list rather than NULL-ing parents

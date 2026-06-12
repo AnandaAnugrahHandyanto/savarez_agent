@@ -81,10 +81,6 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
 
   const openAgents = () => navigate(AGENTS_ROUTE)
 
-  // A subagent row opens ITS session in a standalone WATCH window — a lazy
-  // resume (no agent build) that the gateway's child-session mirror
-  // livestreams the run into. Agents-view spawn tree is the fallback for
-  // events from older gateways without a session id.
   const openSubagent = (item: ComposerStatusItem) =>
     item.sessionId ? void openSessionInNewWindow(item.sessionId, { watch: true }) : openAgents()
 

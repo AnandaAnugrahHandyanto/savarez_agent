@@ -1253,12 +1253,13 @@ export function usePromptActions({
 
   const cancelRun = useCallback(async () => {
     const sessionId = activeSessionId || activeSessionIdRef.current
+    const releaseBusy = () => {
+      setMutableRef(busyRef, false)
+      setBusy(false)
+    }
 
     setAwaitingResponse(false)
 
-    // Interrupting keeps whatever was already generated and just
-    // stops — no "[interrupted]" marker. A pending/streaming message with no
-    // body text is dropped entirely so we never leave an empty bubble behind.
     const finalizeMessages = (messages: ChatMessage[], streamId?: string | null) =>
       messages
         .filter(
@@ -1270,8 +1271,7 @@ export function usePromptActions({
         )
 
     if (!sessionId) {
-      setMutableRef(busyRef, false)
-      setBusy(false)
+      releaseBusy()
       setMessages(finalizeMessages($messages.get()))
 
       return
@@ -1279,7 +1279,6 @@ export function usePromptActions({
 
     updateSessionState(sessionId, state => {
       const streamId = state.streamId
-
       const messages = finalizeMessages(state.messages, streamId)
 
       return {
@@ -1293,19 +1292,13 @@ export function usePromptActions({
       }
     })
 
-    // Hard stop: the interrupt winds down the main turn AND its delegated
-    // children, but the status stack must not keep stale rows around — sweep
-    // todos and subagent rows, and kill + clear background processes (they
-    // outlive the turn by design, so stopping the turn alone leaves them
-    // running).
     clearSessionTodos(sessionId)
     clearSessionSubagents(sessionId)
     resetSessionBackground(sessionId)
 
     try {
       await requestGateway('session.interrupt', { session_id: sessionId })
-      setMutableRef(busyRef, false)
-      setBusy(false)
+      releaseBusy()
     } catch (err) {
       let stopError = err
 
@@ -1320,8 +1313,7 @@ export function usePromptActions({
           if (recoveredId) {
             activeSessionIdRef.current = recoveredId
             await requestGateway('session.interrupt', { session_id: recoveredId })
-            setMutableRef(busyRef, false)
-            setBusy(false)
+            releaseBusy()
 
             return
           }
@@ -1330,8 +1322,7 @@ export function usePromptActions({
         }
       }
 
-      setMutableRef(busyRef, false)
-      setBusy(false)
+      releaseBusy()
       notifyError(stopError, copy.stopFailed)
     }
   }, [
