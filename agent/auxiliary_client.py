@@ -3409,6 +3409,7 @@ def resolve_provider_client(
     # main_model also empty), the branches still hit their own
     # missing-credentials returns and ``_resolve_auto`` falls through to
     # the Step-2 chain as before.
+    caller_provided_model = bool(model)
     if not model:
         model = _get_aux_model_for_provider(provider) or _read_main_model() or model
 
@@ -3466,16 +3467,23 @@ def resolve_provider_client(
         client, resolved = _resolve_auto(main_runtime=main_runtime)
         if client is None:
             return None, None
-        # When auto-detection lands on a non-OpenRouter provider (e.g. a
-        # local server), an OpenRouter-formatted model override like
-        # "google/gemini-3-flash-preview" won't work.  Drop it and use
-        # the provider's own default model instead.
-        if model and "/" in model and resolved and "/" not in resolved:
-            logger.debug(
-                "Dropping OpenRouter-format model %r for non-OpenRouter "
-                "auxiliary provider (using %r instead)", model, resolved)
-            model = None
-        final_model = model or resolved
+        # When the caller didn't explicitly pass a model, prefer the
+        # auto-resolved model that matches the live runtime client.
+        # _read_main_model() may return a stale config value from a
+        # different provider, causing a cross-provider model mismatch.
+        if not caller_provided_model and resolved:
+            final_model = resolved
+        else:
+            # When auto-detection lands on a non-OpenRouter provider (e.g. a
+            # local server), an OpenRouter-formatted model override like
+            # "google/gemini-3-flash-preview" won't work.  Drop it and use
+            # the provider's own default model instead.
+            if model and "/" in model and resolved and "/" not in resolved:
+                logger.debug(
+                    "Dropping OpenRouter-format model %r for non-OpenRouter "
+                    "auxiliary provider (using %r instead)", model, resolved)
+                model = None
+            final_model = model or resolved
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
