@@ -72,6 +72,56 @@ _NOUS_HERMES_NON_AGENTIC_RE = re.compile(
 )
 
 
+
+# ─── Custom provider model discovery cache ──────────────────────────────
+# Per-endpoint cache for fetch_api_models() calls in sections 3 & 4 of
+# list_authenticated_providers().  Prevents repeated synchronous HTTP
+# probes to the same endpoint when the model picker is opened multiple
+# times within a short window.  Fixes #44560.
+import hashlib
+import time as _time
+
+_custom_models_cache: dict[str, tuple[float, list[str]]] = {}
+_CUSTOM_MODELS_TTL = 300  # 5 minutes
+
+
+def _cache_key(url: str, api_key: str = "") -> str:
+    """Build a cache key from the endpoint URL and a key fingerprint."""
+    norm = str(url or "").strip().rstrip("/").lower()
+    fp = hashlib.md5(str(api_key or "").encode()).hexdigest()[:8]
+    return f"{norm}|{fp}"
+
+
+def _cached_fetch_api_models(
+    api_key: str, api_url: str, timeout: float = 3.0
+) -> list[str] | None:
+    """Cached wrapper around fetch_api_models for custom provider discovery.
+
+    Returns the cached model list if fresh; otherwise fetches live and caches
+    the result.  Uses a shorter default timeout (3s) to avoid blocking the
+    WebSocket handler for too long.
+    """
+    key = _cache_key(api_url, api_key)
+    now = _time.time()
+    entry = _custom_models_cache.get(key)
+    if entry and (now - entry[0]) < _CUSTOM_MODELS_TTL and entry[1]:
+        return list(entry[1])
+
+    try:
+        from hermes_cli.models import fetch_api_models
+        live = fetch_api_models(api_key, api_url, timeout=timeout)
+    except Exception:
+        live = None
+
+    if live:
+        _custom_models_cache[key] = (now, list(live))
+        return list(live)
+
+    # Stale fallback: return cached data if live fetch failed
+    if entry and entry[1]:
+        return list(entry[1])
+    return None
+
 def is_nous_hermes_non_agentic(model_name: str) -> bool:
     """Return True if *model_name* is a real Nous Hermes 3/4 chat model.
 
@@ -1721,13 +1771,9 @@ def list_authenticated_providers(
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
             if api_url and api_key and discover:
-                try:
-                    from hermes_cli.models import fetch_api_models
-                    live_models = fetch_api_models(api_key, api_url)
-                    if live_models:
-                        models_list = live_models
-                except Exception:
-                    pass
+                live_models = _cached_fetch_api_models(api_key, api_url)
+                if live_models:
+                    models_list = live_models
 
             results.append({
                 "slug": ep_name,
@@ -1930,15 +1976,10 @@ def list_authenticated_providers(
                 and grp.get("discover_models", True)
             )
             if should_probe:
-                try:
-                    from hermes_cli.models import fetch_api_models
-
-                    live_models = fetch_api_models(api_key, api_url)
-                    if live_models:
-                        grp["models"] = live_models
-                        grp["total_models"] = len(live_models)
-                except Exception:
-                    pass
+                live_models = _cached_fetch_api_models(api_key, api_url)
+                if live_models:
+                    grp["models"] = live_models
+                    grp["total_models"] = len(live_models)
             results.append({
                 "slug": slug,
                 "name": grp["name"],
