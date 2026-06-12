@@ -8,8 +8,11 @@ import pytest
 
 import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
+    build_multi_skill_invocation_message,
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    expand_multi_skill_invocation,
+    parse_multi_skill_invocation,
     resolve_skill_command_key,
     scan_skill_commands,
 )
@@ -615,6 +618,124 @@ Generate some audio.
 
         assert msg is not None
         assert 'file_path="<path>"' in msg
+
+
+class TestMultiSkillInvocation:
+    def test_parses_leading_slash_multi_skill_prefix(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "brainstorming")
+            _make_skill(tmp_path, "subagent-orchestrator")
+            commands = scan_skill_commands()
+            parsed = parse_multi_skill_invocation(
+                "/brainstorming /subagent-orchestrator do X",
+                skill_commands=commands,
+            )
+
+        assert parsed is not None
+        assert parsed.skill_keys == ("/brainstorming", "/subagent-orchestrator")
+        assert parsed.user_instruction == "do X"
+        assert parsed.source == "slash"
+
+    def test_single_slash_skill_is_not_multi_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "brainstorming")
+            commands = scan_skill_commands()
+            parsed = parse_multi_skill_invocation(
+                "/brainstorming do X",
+                skill_commands=commands,
+            )
+
+        assert parsed is None
+
+    def test_parses_inline_markers_and_preserves_instruction(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "brainstorming")
+            _make_skill(tmp_path, "subagent-orchestrator")
+            commands = scan_skill_commands()
+            parsed = parse_multi_skill_invocation(
+                "$brainstorming $subagent-orchestrator do X",
+                skill_commands=commands,
+            )
+
+        assert parsed is not None
+        assert parsed.skill_keys == ("/brainstorming", "/subagent-orchestrator")
+        assert parsed.user_instruction == "do X"
+        assert parsed.source == "inline"
+
+    def test_markdown_link_target_is_ignored_for_skill_resolution(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "brainstorming")
+            _make_skill(tmp_path, "subagent-orchestrator")
+            commands = scan_skill_commands()
+            parsed = parse_multi_skill_invocation(
+                r"[$brainstorming](C:\not\trusted\SKILL.md) $subagent-orchestrator do X",
+                skill_commands=commands,
+            )
+
+        assert parsed is not None
+        assert parsed.skill_keys == ("/brainstorming", "/subagent-orchestrator")
+        assert parsed.user_instruction == "do X"
+
+    def test_unknown_inline_marker_remains_plain_text(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "brainstorming")
+            commands = scan_skill_commands()
+            parsed = parse_multi_skill_invocation(
+                "$brainstorming $missing do X",
+                skill_commands=commands,
+            )
+
+        assert parsed is not None
+        assert parsed.skill_keys == ("/brainstorming",)
+        assert parsed.user_instruction == "$missing do X"
+
+    def test_dedupes_skills_preserving_first_seen_order(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "brainstorming")
+            _make_skill(tmp_path, "subagent-orchestrator")
+            commands = scan_skill_commands()
+            parsed = parse_multi_skill_invocation(
+                "$brainstorming $subagent-orchestrator $brainstorming do X",
+                skill_commands=commands,
+            )
+
+        assert parsed is not None
+        assert parsed.skill_keys == ("/brainstorming", "/subagent-orchestrator")
+        assert parsed.user_instruction == "do X"
+
+    def test_builds_single_message_for_multiple_skills(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "first-skill", body="First body.")
+            _make_skill(tmp_path, "second-skill", body="Second body.")
+            scan_skill_commands()
+            result = build_multi_skill_invocation_message(
+                ["/first-skill", "/second-skill"],
+                "do X",
+                task_id="session-1",
+            )
+
+        assert result is not None
+        message, loaded, missing = result
+        assert loaded == ["first-skill", "second-skill"]
+        assert missing == []
+        assert "First body." in message
+        assert "Second body." in message
+        assert "multiple skills for this turn" in message
+        assert message.count("multi-skill invocation: do X") == 1
+
+    def test_expand_multi_skill_invocation_returns_combined_prompt(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "first-skill", body="First body.")
+            _make_skill(tmp_path, "second-skill", body="Second body.")
+            scan_skill_commands()
+            result = expand_multi_skill_invocation("$first-skill $second-skill do X")
+
+        assert result is not None
+        message, loaded, missing = result
+        assert loaded == ["first-skill", "second-skill"]
+        assert missing == []
+        assert "First body." in message
+        assert "Second body." in message
 
 
 class TestSkillDirectoryHeader:

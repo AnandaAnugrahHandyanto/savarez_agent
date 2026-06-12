@@ -5720,7 +5720,34 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
+def _expand_multi_skill_prompt(
+    text: Any,
+    session: dict | None,
+) -> tuple[Any, list[str], list[str]]:
+    """Expand inline $skill markers before prompt.submit reaches the agent."""
+    if not isinstance(text, str) or "$" not in text:
+        return text, [], []
+
+    try:
+        from agent.skill_commands import expand_multi_skill_invocation
+
+        expanded = expand_multi_skill_invocation(
+            text,
+            task_id=session.get("session_key", "") if session else "",
+        )
+    except Exception:
+        return text, [], []
+
+    if not expanded:
+        return text, [], []
+    return expanded
+
+
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+    text, _loaded_skill_names, _missing_skill_names = _expand_multi_skill_prompt(
+        text,
+        session,
+    )
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
@@ -8101,12 +8128,34 @@ def _(rid, params: dict) -> dict:
 
     try:
         from agent.skill_commands import (
-            scan_skill_commands,
             build_skill_invocation_message,
+            build_multi_skill_invocation_message,
+            parse_multi_skill_invocation,
+            scan_skill_commands,
         )
 
         cmds = scan_skill_commands()
         key = f"/{name}"
+        multi_skill = parse_multi_skill_invocation(
+            f"{key} {arg}".strip(),
+            skill_commands=cmds,
+        )
+        if multi_skill:
+            multi_result = build_multi_skill_invocation_message(
+                multi_skill.skill_keys,
+                multi_skill.user_instruction,
+                task_id=session.get("session_key", "") if session else "",
+            )
+            if multi_result:
+                msg, loaded_names, _missing = multi_result
+                return _ok(
+                    rid,
+                    {
+                        "type": "skill",
+                        "message": msg,
+                        "name": ", ".join(loaded_names),
+                    },
+                )
         if key in cmds:
             msg = build_skill_invocation_message(
                 key, arg, task_id=session.get("session_key", "") if session else ""

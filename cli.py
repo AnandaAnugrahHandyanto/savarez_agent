@@ -3083,6 +3083,24 @@ def build_skill_invocation_message(*args, **kwargs):
     return _impl(*args, **kwargs)
 
 
+def parse_multi_skill_invocation(*args, **kwargs):
+    from agent.skill_commands import parse_multi_skill_invocation as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def build_multi_skill_invocation_message(*args, **kwargs):
+    from agent.skill_commands import build_multi_skill_invocation_message as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def expand_multi_skill_invocation(*args, **kwargs):
+    from agent.skill_commands import expand_multi_skill_invocation as _impl
+
+    return _impl(*args, **kwargs)
+
+
 def build_preloaded_skills_prompt(*args, **kwargs):
     from agent.skill_commands import build_preloaded_skills_prompt as _impl
 
@@ -7707,6 +7725,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             _cprint(str(result))
                     except Exception as e:
                         _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")
+            elif multi_skill := parse_multi_skill_invocation(
+                cmd_original,
+                skill_commands=skill_commands,
+            ):
+                multi_result = build_multi_skill_invocation_message(
+                    multi_skill.skill_keys,
+                    multi_skill.user_instruction,
+                    task_id=self.session_id,
+                )
+                if multi_result:
+                    msg, loaded_names, missing = multi_result
+                    print(f"\n⚡ Loading skills: {', '.join(loaded_names)}")
+                    if missing:
+                        ChatConsole().print(
+                            f"[yellow]Skipped missing skills: {', '.join(missing)}[/]"
+                        )
+                    if hasattr(self, '_pending_input'):
+                        self._pending_input.put(msg)
+                else:
+                    ChatConsole().print(
+                        f"[bold red]Failed to load skills for {base_cmd}[/]"
+                    )
             # Skill bundles take precedence over individual skills — /<bundle>
             # loads multiple skills at once. Rescans cheaply when files change.
             elif base_cmd in skill_bundles:
@@ -13010,6 +13050,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             user_input = _seed
                         else:
                             continue
+
+                    if not _file_drop and isinstance(user_input, str) and "$" in user_input:
+                        expanded = expand_multi_skill_invocation(
+                            user_input,
+                            task_id=self.session_id,
+                        )
+                        if expanded:
+                            user_input, loaded_names, missing = expanded
+                            print(f"\n⚡ Loading skills: {', '.join(loaded_names)}")
+                            if missing:
+                                ChatConsole().print(
+                                    f"[yellow]Skipped missing skills: {', '.join(missing)}[/]"
+                                )
                     
                     # Expand paste references back to full content
                     _paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
@@ -13748,6 +13801,19 @@ def main(
             sys.exit(1)
         try:
             query, single_query_images = _collect_query_images(query, image)
+            if isinstance(query, str) and "$" in query:
+                expanded = expand_multi_skill_invocation(
+                    query,
+                    task_id=cli.session_id,
+                )
+                if expanded:
+                    query, loaded_names, missing = expanded
+                    if not quiet:
+                        print(f"\n⚡ Loading skills: {', '.join(loaded_names)}")
+                        if missing:
+                            ChatConsole().print(
+                                f"[yellow]Skipped missing skills: {', '.join(missing)}[/]"
+                            )
             # Kanban workers spawn with ``hermes chat -q "work kanban task <id>"``;
             # the actual task description lives in the task body. Mirror the
             # gateway/CLI behaviour for inbound images by scanning the body for
