@@ -112,6 +112,24 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_list_named_sessions_scoped_to_null_user_id(self, tmp_path):
+        """A missing gateway user ID must not expose identified users' titles."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("null_user_session", "telegram", user_id=None)
+        db.create_session("identified_session", "telegram", user_id="12345")
+        db.set_session_title("null_user_session", "Null User Work")
+        db.set_session_title("identified_session", "Identified User Work")
+
+        event = _make_event(text="/resume", user_id=None)
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "Null User Work" in result
+        assert "Identified User Work" not in result
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_list_shows_usage_when_no_titled(self, tmp_path):
         """With no arg and no titled sessions, shows instructions."""
         from hermes_state import SessionDB

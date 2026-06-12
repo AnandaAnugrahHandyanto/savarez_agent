@@ -472,6 +472,7 @@ class ProcessRegistry:
                     text=True,
                     timeout=10,
                     creationflags=windows_hide_flags(),
+                    stdin=subprocess.DEVNULL,
                 )
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
                 try:
@@ -633,7 +634,8 @@ class ProcessRegistry:
             try:
                 if not _IS_WINDOWS:
                     try:
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)  # windows-footgun: ok — guarded by _IS_WINDOWS check above
+                        kill_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+                        os.killpg(os.getpgid(proc.pid), kill_signal)  # windows-footgun: ok - guarded by _IS_WINDOWS above
                     except (ProcessLookupError, PermissionError, OSError):
                         proc.kill()
                 else:
@@ -879,6 +881,7 @@ class ProcessRegistry:
             self.completion_queue.put({
                 "type": "completion",
                 "session_id": session.id,
+                "session_key": session.session_key,
                 "command": session.command,
                 "exit_code": session.exit_code,
                 "output": output_tail,
@@ -1205,10 +1208,14 @@ class ProcessRegistry:
         if session.exited:
             return {"status": "already_exited", "error": "Process has already finished"}
 
-        # PTY mode -- write through pty handle (expects bytes)
+        # PTY mode -- write through pty handle.
         if hasattr(session, '_pty') and session._pty:
             try:
-                pty_data = data.encode("utf-8") if isinstance(data, str) else data
+                # pywinpty expects str on Windows; ptyprocess expects bytes on POSIX.
+                if _IS_WINDOWS:
+                    pty_data = data.decode("utf-8") if isinstance(data, bytes) else str(data)
+                else:
+                    pty_data = data.encode("utf-8") if isinstance(data, str) else data
                 session._pty.write(pty_data)
                 return {"status": "ok", "bytes_written": len(data)}
             except Exception as e:
