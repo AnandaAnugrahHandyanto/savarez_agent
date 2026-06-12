@@ -1885,6 +1885,7 @@ class SessionDB:
         include_archived: bool = False,
         archived_only: bool = False,
         id_query: str = None,
+        session_ids: List[str] = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -1912,6 +1913,9 @@ class SessionDB:
         surfaces in the correct slot. Ordering is computed at SQL level via
         a recursive CTE that walks compression-continuation edges, so LIMIT
         and OFFSET still apply efficiently.
+
+        Pass ``session_ids`` to restrict results to specific session IDs,
+        fetching enriched rows (with preview) for a known set of sessions.
         """
         where_clauses = []
         params = []
@@ -1956,6 +1960,7 @@ class SessionDB:
             where_clauses.append("s.archived = 0")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        session_id_values = [sid for sid in (session_ids or []) if sid]
 
         # Optional session-id filter, pushed into SQL so callers (Desktop
         # session-id search) don't have to fetch every row and filter in
@@ -1966,7 +1971,7 @@ class SessionDB:
         # order_by_last_active path (which builds the chain CTE); other callers
         # pass id_query=None.
         id_needle = (id_query or "").strip().lower()
-        if order_by_last_active:
+        if order_by_last_active or session_id_values:
             # Compute effective_last_active by walking each surfaced session's
             # compression-continuation chain forward in SQL and taking the MAX
             # timestamp across the chain. This lets us ORDER BY + LIMIT at SQL
@@ -1979,7 +1984,13 @@ class SessionDB:
             # get_compression_tip (parent.end_reason='compression' AND
             # child.started_at >= parent.ended_at).
             outer_where = where_sql
-            id_params: List[Any] = []
+            outer_params = list(params)
+
+            def _append_outer_clause(clause: str, clause_params: List[Any]) -> None:
+                nonlocal outer_where
+                outer_where = f"{outer_where} AND {clause}" if outer_where else f"WHERE {clause}"
+                outer_params.extend(clause_params)
+
             if id_needle:
                 # Admit a surfaced row if its own id or any id in its forward
                 # compression chain matches the needle. LIKE with a leading
@@ -1996,10 +2007,20 @@ class SessionDB:
                     + id_needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                     + "%"
                 )
-                id_params = [like_pattern]
-                outer_where = (
-                    f"{where_sql} AND {id_clause}" if where_sql else f"WHERE {id_clause}"
+                _append_outer_clause(id_clause, [like_pattern])
+            if session_id_values:
+                placeholders = ",".join("?" for _ in session_id_values)
+                session_id_clause = (
+                    "EXISTS (SELECT 1 FROM chain cs"
+                    "        WHERE cs.root_id = s.id"
+                    f"          AND cs.cur_id IN ({placeholders}))"
                 )
+                _append_outer_clause(session_id_clause, session_id_values)
+            order_sql = (
+                "ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC"
+                if order_by_last_active
+                else "ORDER BY s.started_at DESC"
+            )
             query = f"""
                 WITH RECURSIVE chain(root_id, cur_id) AS (
                     SELECT s.id, s.id FROM sessions s {where_sql}
@@ -2037,12 +2058,12 @@ class SessionDB:
                 FROM sessions s
                 LEFT JOIN chain_max cm ON cm.root_id = s.id
                 {outer_where}
-                ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
+                {order_sql}
                 LIMIT ? OFFSET ?
             """
-            # WHERE params apply twice (CTE seed + outer select); the id filter
-            # only applies to the outer select.
-            params = params + params + id_params + [limit, offset]
+            # WHERE params apply twice (CTE seed + outer select); chain filters
+            # only apply to the outer select.
+            params = params + outer_params + [limit, offset]
         else:
             query = f"""
                 SELECT s.*,

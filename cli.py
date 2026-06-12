@@ -11240,7 +11240,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 buf.apply_completion(completion)
             elif buf.suggestion and buf.suggestion.text:
                 # No completion menu, but there's a ghost text auto-suggestion — accept it
-                buf.insert_text(buf.suggestion.text)
+                suggestion = buf.suggestion
+                insert = getattr(suggestion, 'insert_text', suggestion.text)
+                buf.insert_text(insert)
             else:
                 # No menu and no suggestion — start completions from scratch
                 buf.start_completion()
@@ -11868,6 +11870,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             auto_suggest=SlashCommandAutoSuggest(
                 history_suggest=AutoSuggestFromHistory(),
                 completer=_completer,
+                session_suggest_fn=lambda: (
+                    __import__("hermes_cli.plugins", fromlist=["get_plugin_manager"])
+                    .get_plugin_manager()
+                    .consume_session_suggestion()
+                ),
             ),
         )
         # Keep prompt_toolkit on its simple tempfile path. Setting
@@ -11875,6 +11882,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # which tries to mkdir() the mkdtemp() directory again and raises
         # EEXIST. The suffix keeps markdown highlighting without that bug.
         input_area.buffer.tempfile_suffix = '.md'
+        self._input_area = input_area  # stored for set_session_suggestion() to clear suggestion cache
 
         # Dynamic height: accounts for both explicit newlines AND visual
         # wrapping of long lines so the input area always fits its content.
@@ -12657,6 +12665,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         )
         _disable_prompt_toolkit_cpr_warning(app)
         self._app = app  # Store reference for clarify_callback
+
+        # If a plugin pre-filled a session suggestion before the app was
+        # created, consume it now and inject it directly into the
+        # prompt_toolkit Buffer — bypasses the AutoSuggest.get_suggestion()
+        # caching so the ghost text appears on the very first render.
+        try:
+            from hermes_cli.plugins import get_plugin_manager as _gpm
+            _suggestion_text = _gpm().consume_session_suggestion()
+            if _suggestion_text:
+                from prompt_toolkit.auto_suggest import Suggestion as _Suggestion
+                if isinstance(_suggestion_text, _Suggestion):
+                    input_area.buffer.suggestion = _suggestion_text
+                else:
+                    input_area.buffer.suggestion = _Suggestion(_suggestion_text)
+        except Exception:
+            pass
 
         # ── Fix ghost status-bar lines on terminal resize ──────────────
         # Resize handling: monkey-patch prompt_toolkit's _output_screen_diff
