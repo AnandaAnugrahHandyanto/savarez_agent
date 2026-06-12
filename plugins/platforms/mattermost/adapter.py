@@ -9,6 +9,9 @@ Environment variables:
     MATTERMOST_TOKEN            Bot token or personal-access token
     MATTERMOST_ALLOWED_USERS    Comma-separated user IDs
     MATTERMOST_HOME_CHANNEL     Channel ID for cron/notification delivery
+    MATTERMOST_CONTEXT_MESSAGES Prior thread messages to include (0 = disabled)
+    MATTERMOST_INCLUDE_PINNED   Include pinned messages in context (default: false)
+    MATTERMOST_INCLUDE_METADATA Include channel topic/purpose in context (default: true)
 """
 
 from __future__ import annotations
@@ -48,6 +51,27 @@ _CHANNEL_TYPE_MAP = {
 _RECONNECT_BASE_DELAY = 2.0
 _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
+
+# Context enhancement settings (custom fork).
+# Number of prior messages to include in context (0 = disabled).
+_CONTEXT_MESSAGE_COUNT = int(os.getenv("MATTERMOST_CONTEXT_MESSAGES", "0"))
+# Include pinned messages in context.
+_INCLUDE_PINNED = os.getenv("MATTERMOST_INCLUDE_PINNED", "false").lower() in ("true", "1", "yes")
+# Include channel metadata (topic/header) in context.
+_INCLUDE_METADATA = os.getenv("MATTERMOST_INCLUDE_METADATA", "true").lower() in ("true", "1", "yes")
+
+# Permalink detection and resolution (custom fork).
+# Extract domain from MATTERMOST_URL for self-permalink detection.
+_MATTERMOST_DOMAIN = ""
+if _mm_url := os.getenv("MATTERMOST_URL", ""):
+    from urllib.parse import urlparse
+    _MATTERMOST_DOMAIN = urlparse(_mm_url).netloc.lower()
+
+# Pattern to match Mattermost permalinks: https://domain/team/pl/post_id
+_PERMALINK_PATTERN = re.compile(
+    r"https?://([^/]+)/([^/]+)/pl/([a-z0-9]{26})",
+    re.IGNORECASE
+)
 
 
 def check_mattermost_requirements() -> bool:
@@ -98,6 +122,9 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
+
+        # Username cache (user_id -> username) to avoid repeated API calls
+        self._username_cache: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -162,6 +189,53 @@ class MattermostAdapter(BasePlatformAdapter):
         except aiohttp.ClientError as exc:
             logger.error("MM API PUT %s network error: %s", path, exc)
             return {}
+
+    async def _resolve_permalink(self, post_id: str) -> Optional[str]:
+        """Fetch post content by ID for permalink resolution.
+
+        Returns the message content or None on failure.
+        """
+        try:
+            post_data = await self._api_get(f"posts/{post_id}")
+            if post_data:
+                message = post_data.get("message", "").strip()
+                if message:
+                    return message
+        except Exception as e:
+            logger.debug("Failed to resolve permalink %s: %s", post_id, e)
+        return None
+
+    async def _resolve_permalinks_in_text(self, text: str) -> str:
+        """Replace self-domain permalinks in text with actual content."""
+        if not _MATTERMOST_DOMAIN or not text:
+            return text
+
+        result = text
+        for match in _PERMALINK_PATTERN.finditer(text):
+            domain = match.group(1).lower()
+            if domain == _MATTERMOST_DOMAIN:
+                post_id = match.group(3)
+                content = await self._resolve_permalink(post_id)
+                if content:
+                    result = result.replace(match.group(0), content)
+        return result
+
+    async def _get_username(self, user_id: str) -> str:
+        """Get username for a user_id, with caching."""
+        if not user_id:
+            return "user"
+        if user_id in self._username_cache:
+            return self._username_cache[user_id]
+        try:
+            user_data = await self._api_get(f"users/{user_id}")
+            if user_data:
+                username = user_data.get("username", user_id)
+                self._username_cache[user_id] = username
+                return username
+        except Exception as e:
+            logger.debug("Failed to fetch username for %s: %s", user_id, e)
+        self._username_cache[user_id] = user_id  # Cache the fallback too
+        return user_id
 
     async def _upload_file(
         self, channel_id: str, file_data: bytes, filename: str, content_type: str = "application/octet-stream"
@@ -688,6 +762,105 @@ class MattermostAdapter(BasePlatformAdapter):
                 logger.info("Mattermost: WebSocket closed (%s)", raw_msg.type)
                 break
 
+    async def _fetch_channel_context(
+        self,
+        channel_id: str,
+        thread_id: Optional[str],
+        current_post_id: str,
+    ) -> Tuple[Optional[str], Optional[str], List[str], str]:
+        """Fetch channel metadata and message history for system prompt injection.
+
+        Returns (channel_topic, channel_details, pinned_messages, thread_history):
+            - channel_topic: Channel name + header (single line, for system prompt)
+            - channel_details: Channel purpose (may be multi-line, for system prompt)
+            - pinned_messages: List of pinned message contents (for system prompt)
+            - thread_history: Formatted thread messages before session (for system prompt)
+        """
+        channel_topic: Optional[str] = None
+        channel_details: Optional[str] = None
+        pinned_messages: List[str] = []
+        thread_history: str = ""
+
+        # Fetch channel metadata
+        if _INCLUDE_METADATA or _INCLUDE_PINNED or _CONTEXT_MESSAGE_COUNT > 0:
+            channel_info = await self._api_get(f"channels/{channel_id}")
+            if channel_info:
+                display_name = channel_info.get("display_name", "").strip()
+                header = channel_info.get("header", "").strip()
+                purpose = channel_info.get("purpose", "").strip()
+
+                # Build channel topic: "ChannelName — header" (single line)
+                topic_parts = []
+                if display_name:
+                    topic_parts.append(display_name)
+                if header:
+                    topic_parts.append(header)
+                channel_topic = " — ".join(topic_parts) if topic_parts else None
+
+                # Channel details is the purpose (may be multi-line)
+                channel_details = purpose or None
+
+        # Fetch pinned messages as a list (for system prompt injection)
+        if _INCLUDE_PINNED:
+            pinned_data = await self._api_get(f"channels/{channel_id}/pinned")
+            if pinned_data and pinned_data.get("order"):
+                posts_dict = pinned_data.get("posts", {})
+                sorted_pids = sorted(
+                    pinned_data["order"],
+                    key=lambda pid: posts_dict.get(pid, {}).get("create_at", 0),
+                )
+                for pid in sorted_pids:
+                    p = posts_dict.get(pid, {})
+                    msg = p.get("message", "").strip()
+                    if msg:
+                        # Resolve any self-permalinks in pinned message
+                        msg = await self._resolve_permalinks_in_text(msg)
+                        pinned_messages.append(msg)
+
+        # Fetch thread history (messages before session started)
+        # Only for thread replies, not root channel messages
+        if thread_id and _CONTEXT_MESSAGE_COUNT > 0:
+            posts_data = await self._api_get(f"posts/{thread_id}/thread")
+
+            if posts_data and posts_data.get("order"):
+                history_lines: List[str] = []
+                # Sort posts by create_at for chronological order
+                posts_dict = posts_data.get("posts", {})
+                sorted_pids = sorted(
+                    posts_data.get("order", []),
+                    key=lambda pid: posts_dict.get(pid, {}).get("create_at", 0),
+                )
+                for pid in sorted_pids:
+                    if pid == current_post_id:
+                        continue  # Skip the current triggering message
+                    p = posts_dict.get(pid, {})
+                    if p.get("type"):
+                        continue  # Skip system messages (joins, leaves, etc.)
+
+                    # Get username - label bot messages as "assistant" for clarity
+                    user_id = p.get("user_id", "")
+                    if user_id == self._bot_user_id:
+                        sender = "assistant"
+                    else:
+                        sender = p.get("username")
+                        if not sender:
+                            sender = await self._get_username(user_id)
+
+                    msg = p.get("message", "").strip()
+                    if msg:
+                        # Resolve any self-permalinks in thread history message
+                        msg = await self._resolve_permalinks_in_text(msg)
+                        history_lines.append(f"[{sender}]: {msg}")
+
+                # Limit to most recent N messages (MATTERMOST_CONTEXT_MESSAGES)
+                if len(history_lines) > _CONTEXT_MESSAGE_COUNT:
+                    history_lines = history_lines[-_CONTEXT_MESSAGE_COUNT:]
+
+                if history_lines:
+                    thread_history = "\n".join(history_lines)
+
+        return channel_topic, channel_details, pinned_messages, thread_history
+
     async def _handle_ws_event(self, event: Dict[str, Any]) -> None:
         """Process a single WebSocket event."""
         event_type = event.get("event")
@@ -782,12 +955,39 @@ class MattermostAdapter(BasePlatformAdapter):
                         re.escape(pattern), "", message_text, flags=re.IGNORECASE
                     ).strip()
 
+        # Ignore messages that are ONLY a self-Mattermost permalink.
+        # User likely forwarded a message and will respond in a thread.
+        if _MATTERMOST_DOMAIN:
+            stripped = message_text.strip()
+            match = _PERMALINK_PATTERN.match(stripped)
+            if match and match.group(1).lower() == _MATTERMOST_DOMAIN and match.end() == len(stripped):
+                logger.debug(
+                    "Mattermost: ignoring permalink-only message (channel=%s, post=%s)",
+                    channel_id, post_id,
+                )
+                return
+
+        # Resolve self-permalinks in message text to actual content.
+        message_text = await self._resolve_permalinks_in_text(message_text)
+
         # Resolve sender info.
         sender_id = post.get("user_id", "")
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
-        # Thread support: if the post is in a thread, use root_id.
-        thread_id = post.get("root_id") or None
+        # Thread support: use root_id for replies, or post's own ID for root posts.
+        # This ensures the root post creating a thread gets an isolated session key,
+        # and all replies in that thread share the same session via root_id linkage.
+        session_thread_id = post.get("root_id") or post.get("id")
+
+        # For context fetching, only use root_id (None for root channel messages).
+        # This ensures root messages get channel history while thread replies get
+        # the thread's prior messages.
+        context_thread_id = post.get("root_id")
+
+        # Fetch channel context for system prompt injection.
+        channel_topic, channel_details, pinned_messages, thread_history = await self._fetch_channel_context(
+            channel_id, context_thread_id, post_id
+        )
 
         # Determine message type.
         file_ids = post.get("file_ids") or []
@@ -848,7 +1048,11 @@ class MattermostAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=sender_id,
             user_name=sender_name,
-            thread_id=thread_id,
+            thread_id=session_thread_id,
+            chat_topic=channel_topic,
+            chat_details=channel_details,
+            pinned_messages=pinned_messages if pinned_messages else None,
+            prior_thread_context=thread_history if thread_history else None,
         )
 
         # Per-channel ephemeral prompt

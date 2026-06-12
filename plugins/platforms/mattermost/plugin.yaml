@@ -47,3 +47,15 @@ optional_env:
     description: "If set, the bot only responds in these channels (whitelist)."
     prompt: "Allowed channel IDs (comma-separated)"
     password: false
+  - name: MATTERMOST_CONTEXT_MESSAGES
+    description: "Number of prior thread messages to capture as context at session start (0 = disabled)."
+    prompt: "Context message count"
+    password: false
+  - name: MATTERMOST_INCLUDE_PINNED
+    description: "Include the channel's pinned messages in session context (true/false). Default: false."
+    prompt: "Include pinned messages? (true/false)"
+    password: false
+  - name: MATTERMOST_INCLUDE_METADATA
+    description: "Include channel topic/header/purpose in session context (true/false). Default: true."
+    prompt: "Include channel metadata? (true/false)"
+    password: false

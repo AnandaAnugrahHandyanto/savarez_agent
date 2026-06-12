@@ -6328,6 +6328,75 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
+    async def _seed_mattermost_session_context(
+        self,
+        session_id: str,
+        session_entry: "SessionEntry",
+    ) -> None:
+        """Inject Mattermost context into transcript at session start.
+
+        This persists channel info, pinned messages, and thread history as the
+        first message in the session transcript, enabling cross-interface
+        continuity. Sessions started from Mattermost can then be continued
+        from other interfaces (webui, API) with full context preserved.
+
+        The context is injected as a user message (within protect_first_n for
+        compression safety). Consecutive user messages are merged by the agent
+        before API calls, so this won't break alternation.
+        """
+        context_parts = []
+
+        # Channel info (frozen at session creation)
+        if session_entry.initial_channel_info:
+            context_parts.append(
+                f"<channel_info>\n{session_entry.initial_channel_info}\n</channel_info>"
+            )
+
+        # Pinned messages (frozen at session creation)
+        if session_entry.initial_pinned_messages:
+            pins = []
+            for i, pin in enumerate(session_entry.initial_pinned_messages, 1):
+                pins.append(f"<pinned_message_{i}>\n{pin}\n</pinned_message_{i}>")
+            context_parts.append(
+                "<pinned_messages>\n" + "\n".join(pins) + "\n</pinned_messages>"
+            )
+
+        # Thread history (frozen at session creation)
+        if session_entry.initial_thread_context:
+            context_parts.append(
+                f"<thread_history>\n{session_entry.initial_thread_context}\n</thread_history>"
+            )
+
+        if not context_parts:
+            return
+
+        # Build the seed message
+        seed_content = (
+            "<mattermost_session_context>\n"
+            "# Session Context (captured at session start)\n"
+            "This context was captured when the session started from Mattermost.\n"
+            "It is preserved here for reference if the session is continued from another interface.\n\n"
+            + "\n\n".join(context_parts)
+            + "\n</mattermost_session_context>"
+        )
+
+        # Inject as first user message in transcript
+        try:
+            self.session_store.append_to_transcript(
+                session_id,
+                {"role": "user", "content": seed_content},
+            )
+            # Mark as seeded to prevent duplicate injection
+            session_entry.context_seeded = True
+            self.session_store._save()
+            logger.info(
+                "Seeded Mattermost context into session %s (%d chars)",
+                session_id,
+                len(seed_content),
+            )
+        except Exception as e:
+            logger.warning("Failed to seed Mattermost context: %s", e)
+
     async def _deliver_platform_notice(self, source, content: str) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
         adapter = self.adapters.get(source.platform)
@@ -7991,7 +8060,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
             })
-        
+
+            # Seed Mattermost context into transcript for cross-interface continuity.
+            # This persists channel info, pinned messages, and thread history so
+            # sessions can be continued from other interfaces (webui, API, etc.)
+            if source.platform == Platform.MATTERMOST and not session_entry.context_seeded:
+                await self._seed_mattermost_session_context(
+                    session_id=session_entry.session_id,
+                    session_entry=session_entry,
+                )
+
         # Build session context
         context = build_session_context(source, self.config, session_entry)
         

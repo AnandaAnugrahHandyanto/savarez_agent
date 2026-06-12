@@ -84,7 +84,10 @@ class SessionSource:
     user_id: Optional[str] = None
     user_name: Optional[str] = None
     thread_id: Optional[str] = None  # For forum topics, Discord threads, etc.
-    chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
+    chat_topic: Optional[str] = None  # Channel header/topic (single line)
+    chat_details: Optional[str] = None  # Channel purpose/description (may be multi-line)
+    pinned_messages: Optional[List[str]] = None  # Pinned message contents for system prompt
+    prior_thread_context: Optional[str] = None  # Thread messages before session started
     user_id_alt: Optional[str] = None  # Platform-specific stable alt ID (Signal UUID, Feishu union_id)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
     is_bot: bool = False  # True when the message author is a bot/webhook (Discord)
@@ -125,6 +128,12 @@ class SessionSource:
             "thread_id": self.thread_id,
             "chat_topic": self.chat_topic,
         }
+        if self.chat_details:
+            d["chat_details"] = self.chat_details
+        if self.pinned_messages:
+            d["pinned_messages"] = self.pinned_messages
+        if self.prior_thread_context:
+            d["prior_thread_context"] = self.prior_thread_context
         if self.user_id_alt:
             d["user_id_alt"] = self.user_id_alt
         if self.chat_id_alt:
@@ -148,6 +157,9 @@ class SessionSource:
             user_name=data.get("user_name"),
             thread_id=data.get("thread_id"),
             chat_topic=data.get("chat_topic"),
+            chat_details=data.get("chat_details"),
+            pinned_messages=data.get("pinned_messages"),
+            prior_thread_context=data.get("prior_thread_context"),
             user_id_alt=data.get("user_id_alt"),
             chat_id_alt=data.get("chat_id_alt"),
             guild_id=data.get("guild_id"),
@@ -177,7 +189,10 @@ class SessionContext:
     session_id: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-    
+
+    # Thread history captured at session creation (frozen to prevent duplication)
+    initial_thread_context: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "source": self.source.to_dict(),
@@ -261,14 +276,13 @@ def build_session_context_prompt(
             pass
     redact_pii = redact_pii and _is_pii_safe
     lines = [
-        "## Current Session Context",
-        "",
+        "<channel_details>",
     ]
 
     # Source info
     platform_name = context.source.platform.value.title()
     if context.source.platform == Platform.LOCAL:
-        lines.append(f"**Source:** {platform_name} (the machine running this agent)")
+        lines.append(f"Source: {platform_name} (the machine running this agent)")
     else:
         # Build a description that respects PII redaction
         src = context.source
@@ -288,11 +302,11 @@ def build_session_context_prompt(
                 desc = _cname
         else:
             desc = src.description
-        lines.append(f"**Source:** {platform_name} ({desc})")
+        lines.append(f"Source: {platform_name} ({desc})")
 
-    # Channel topic (if available - provides context about the channel's purpose)
-    if context.source.chat_topic:
-        lines.append(f"**Channel Topic:** {context.source.chat_topic}")
+    # NOTE: Channel topic and details are now seeded into the session transcript
+    # at session creation time (see _seed_mattermost_session_context in run.py).
+    # They are no longer injected ephemerally here to avoid duplication.
 
     if context.source.platform == Platform.MATRIX:
         src = context.source
@@ -317,25 +331,27 @@ def build_session_context_prompt(
     # changes per-turn and would bust the prompt cache.  Instead, note that
     # this is a multi-user session; individual sender names are prefixed on
     # each user message by the gateway.
+    lines.append("")  # Blank line before User
     if context.shared_multi_user_session:
         session_label = "Multi-user thread" if context.source.thread_id else "Multi-user session"
         lines.append(
-            f"**Session type:** {session_label} — messages are prefixed "
+            f"Session type: {session_label} — messages are prefixed "
             "with [sender name]. Multiple users may participate."
         )
     elif context.source.user_name:
-        lines.append(f"**User:** {context.source.user_name}")
+        lines.append(f"User: {context.source.user_name}")
     elif context.source.user_id:
         uid = context.source.user_id
         if redact_pii:
             uid = _hash_sender_id(uid)
-        lines.append(f"**User ID:** {uid}")
+        lines.append(f"User ID: {uid}")
+    lines.append("</channel_details>")
 
-    # Platform-specific behavioral notes
+    # Platform-specific behavioral notes (outside channel_details tag)
     if context.source.platform == Platform.SLACK:
         lines.append("")
         lines.append(
-            "**Platform notes:** You are running inside Slack. "
+            "Platform notes: You are running inside Slack. "
             "You do NOT have access to Slack-specific APIs — you cannot search "
             "channel history, pin/unpin messages, manage channels, or list users. "
             "Do not promise to perform these actions. The gateway may inline the "
@@ -350,21 +366,21 @@ def build_session_context_prompt(
         # honest so we never promise tools the agent lacks.
         if _discord_tools_loaded():
             src = context.source
-            id_lines = ["", "**Discord IDs (for the `discord` / `discord_admin` tools):**"]
+            id_lines = ["", "Discord IDs (for the discord / discord_admin tools):"]
             if src.guild_id:
-                id_lines.append(f"  - Guild: `{src.guild_id}`")
+                id_lines.append(f"  - Guild: {src.guild_id}")
             if src.thread_id and src.parent_chat_id:
-                id_lines.append(f"  - Parent channel: `{src.parent_chat_id}`")
-                id_lines.append(f"  - Thread: `{src.thread_id}` (use as `channel_id` for fetch_messages etc.)")
+                id_lines.append(f"  - Parent channel: {src.parent_chat_id}")
+                id_lines.append(f"  - Thread: {src.thread_id} (use as channel_id for fetch_messages etc.)")
             else:
-                id_lines.append(f"  - Channel: `{src.chat_id}`")
+                id_lines.append(f"  - Channel: {src.chat_id}")
             if src.message_id:
-                id_lines.append(f"  - Triggering message: `{src.message_id}`")
+                id_lines.append(f"  - Triggering message: {src.message_id}")
             lines.extend(id_lines)
         else:
             lines.append("")
             lines.append(
-                "**Platform notes:** You are running inside Discord. "
+                "Platform notes: You are running inside Discord. "
                 "You do NOT have access to Discord-specific APIs — you cannot search "
                 "channel history, pin messages, manage roles, or list server members. "
                 "Do not promise to perform these actions. If the user asks, explain "
@@ -373,7 +389,7 @@ def build_session_context_prompt(
     elif context.source.platform == Platform.BLUEBUBBLES:
         lines.append("")
         lines.append(
-            "**Platform notes:** You are responding via iMessage. "
+            "Platform notes: You are responding via iMessage. "
             "Keep responses short and conversational — think texts, not essays. "
             "Structure longer replies as separate short thoughts, each separated "
             "by a blank line (double newline). Each block between blank lines "
@@ -385,55 +401,80 @@ def build_session_context_prompt(
     elif context.source.platform == Platform.YUANBAO:
         lines.append("")
         lines.append(
-            "**Platform notes:** You are running inside Yuanbao. "
+            "Platform notes: You are running inside Yuanbao. "
             "You CAN send private (DM) messages via the send_message tool. "
             "Use target='yuanbao:direct:<account_id>' for DM "
             "and target='yuanbao:group:<group_code>' for group chat."
         )
 
+    # Pinned Messages - only inject NEW pins not already seeded into transcript.
+    # Initial pinned messages are seeded at session creation (see _seed_mattermost_session_context).
+    # Here we only inject pins added AFTER session started.
+    if context.source.pinned_messages:
+        seeded_pins = set(getattr(context, 'initial_pinned_messages', None) or [])
+        new_pins = [p for p in context.source.pinned_messages if p not in seeded_pins]
+
+        if new_pins:
+            lines.append("")
+            lines.append("<new_pinned_messages>")
+            lines.append("(These messages were pinned after session started)")
+            for i, pin in enumerate(new_pins, 1):
+                lines.append(f"<new_pin_{i}>")
+                lines.append(pin)
+                lines.append(f"</new_pin_{i}>")
+            lines.append("</new_pinned_messages>")
+
+    # NOTE: Thread history is now ONLY seeded into the session transcript at session
+    # creation time (see _seed_mattermost_session_context in run.py). It is no longer
+    # injected ephemerally here because:
+    # 1. The session transcript already contains all messages after session start
+    # 2. Seeded thread history covers all messages before session start
+    # 3. There is no gap - ephemeral injection would only duplicate content
+
     # Connected platforms
     platforms_list = ["local (files on this machine)"]
     for p in context.connected_platforms:
         if p != Platform.LOCAL:
-            platforms_list.append(f"{p.value}: Connected ✓")
+            platforms_list.append(f"{p.value}: Connected")
 
-    lines.append(f"**Connected Platforms:** {', '.join(platforms_list)}")
+    lines.append("")
+    lines.append(f"Connected Platforms: {', '.join(platforms_list)}")
 
     # Home channels
     if context.home_channels:
         lines.append("")
-        lines.append("**Home Channels (default destinations):**")
+        lines.append("Home Channels (default destinations):")
         for platform, home in context.home_channels.items():
             hc_id = _hash_chat_id(home.chat_id) if redact_pii else home.chat_id
             lines.append(f"  - {platform.value}: {home.name} (ID: {hc_id})")
 
     # Delivery options for scheduled tasks
     lines.append("")
-    lines.append("**Delivery options for scheduled tasks:**")
+    lines.append("Delivery options for scheduled tasks:")
 
     from hermes_constants import display_hermes_home
 
     # Origin delivery
     if context.source.platform == Platform.LOCAL:
-        lines.append("- `\"origin\"` → Local output (saved to files)")
+        lines.append("- \"origin\" → Local output (saved to files)")
     else:
         _origin_label = context.source.chat_name or (
             _hash_chat_id(context.source.chat_id) if redact_pii else context.source.chat_id
         )
-        lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
+        lines.append(f"- \"origin\" → Back to this chat ({_origin_label})")
 
     # Local always available
     lines.append(
-        f"- `\"local\"` → Save to local files only ({display_hermes_home()}/cron/output/)"
+        f"- \"local\" → Save to local files only ({display_hermes_home()}/cron/output/)"
     )
 
     # Platform home channels
     for platform, home in context.home_channels.items():
-        lines.append(f"- `\"{platform.value}\"` → Home channel ({home.name})")
+        lines.append(f"- \"{platform.value}\" → Home channel ({home.name})")
 
     # Note about explicit targeting
     lines.append("")
-    lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
+    lines.append("For explicit targeting, use \"platform:chat_id\" format if the user provides a specific chat ID.")
 
     return "\n".join(lines)
 
@@ -508,6 +549,18 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Thread history captured at session creation (messages before bot was mentioned).
+    # Frozen at session start to prevent duplication with session transcript.
+    initial_thread_context: Optional[str] = None
+
+    # Channel info captured at session creation (for cross-interface continuity).
+    # Frozen at session start so context persists when continuing from other interfaces.
+    initial_channel_info: Optional[str] = None
+    initial_pinned_messages: Optional[List[str]] = None
+
+    # Flag indicating context was seeded into transcript (prevents duplicate injection)
+    context_seeded: bool = False
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -541,6 +594,14 @@ class SessionEntry:
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
+        if self.initial_thread_context:
+            result["initial_thread_context"] = self.initial_thread_context
+        if self.initial_channel_info:
+            result["initial_channel_info"] = self.initial_channel_info
+        if self.initial_pinned_messages:
+            result["initial_pinned_messages"] = self.initial_pinned_messages
+        if self.context_seeded:
+            result["context_seeded"] = self.context_seeded
         return result
     
     @classmethod
@@ -590,6 +651,10 @@ class SessionEntry:
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
+            initial_thread_context=data.get("initial_thread_context"),
+            initial_channel_info=data.get("initial_channel_info"),
+            initial_pinned_messages=data.get("initial_pinned_messages"),
+            context_seeded=data.get("context_seeded", False),
         )
 
 
@@ -950,6 +1015,14 @@ class SessionStore:
             # Create new session
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
+            # Build channel info string from source (frozen at session creation)
+            _channel_info_parts = []
+            if source.chat_topic:
+                _channel_info_parts.append(f"Channel: {source.chat_topic}")
+            if source.chat_details:
+                _channel_info_parts.append(f"Notes: {source.chat_details}")
+            _initial_channel_info = "\n".join(_channel_info_parts) if _channel_info_parts else None
+
             entry = SessionEntry(
                 session_key=session_key,
                 session_id=session_id,
@@ -962,6 +1035,12 @@ class SessionStore:
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
+                # Capture context at session creation (frozen for duration)
+                # This enables cross-interface continuity when sessions are
+                # continued from a different interface (e.g., webui after Mattermost)
+                initial_thread_context=source.prior_thread_context,
+                initial_channel_info=_initial_channel_info,
+                initial_pinned_messages=list(source.pinned_messages) if source.pinned_messages else None,
             )
 
             self._entries[session_key] = entry
@@ -1440,5 +1519,7 @@ def build_session_context(
         context.session_id = session_entry.session_id
         context.created_at = session_entry.created_at
         context.updated_at = session_entry.updated_at
-    
+        # Use frozen thread history from session creation (not re-fetched value)
+        context.initial_thread_context = session_entry.initial_thread_context
+
     return context
