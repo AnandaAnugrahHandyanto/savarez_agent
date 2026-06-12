@@ -494,6 +494,13 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek/deepseek-r1-0528",
         "qwen/qwen3-235b-a22b-fp8",
     ],
+    "chutes": [
+        "deepseek-ai/DeepSeek-V3.2-TEE",
+        "Qwen/Qwen3.5-397B-A17B-TEE",
+        "zai-org/GLM-5.1-TEE",
+        "moonshotai/Kimi-K2.6-TEE",
+        "MiniMaxAI/MiniMax-M2.5-TEE",
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -992,6 +999,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Everything your agent needs, 300+ models with bundled tool use)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (Pay-per-use API aggregator)"),
     ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
+    ProviderEntry("chutes",         "Chutes",                   "Chutes (Decentralized inference, OpenAI-compatible, TEE confidential compute)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (Local desktop app with built-in model server)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex (Codex CLI via ChatGPT subscription or API key)"),
@@ -1204,6 +1212,8 @@ _PROVIDER_ALIASES = {
     "huggingface-hub": "huggingface",
     "novita-ai": "novita",
     "novitaai": "novita",
+    "chutes-ai": "chutes",
+    "chutesai": "chutes",
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
     "tencent": "tencent-tokenhub",

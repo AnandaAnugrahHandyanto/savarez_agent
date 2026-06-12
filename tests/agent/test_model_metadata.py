@@ -819,7 +819,7 @@ class TestGetModelContextLength:
 
         result = get_model_context_length(
             "zai-org/GLM-5-TEE",
-            base_url="https://llm.chutes.ai/v1",
+            base_url="https://custom-llm.example/v1",
             api_key="test-key",
         )
 
@@ -841,7 +841,7 @@ class TestGetModelContextLength:
         # GLM-5-TEE matches the "glm" entry in DEFAULT_CONTEXT_LENGTHS
         result = get_model_context_length(
             "zai-org/GLM-5-TEE",
-            base_url="https://llm.chutes.ai/v1",
+            base_url="https://custom-llm.example/v1",
             api_key="test-key",
         )
         assert result == 202752  # "glm" entry in DEFAULT_CONTEXT_LENGTHS
