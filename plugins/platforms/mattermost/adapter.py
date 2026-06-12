@@ -786,8 +786,10 @@ class MattermostAdapter(BasePlatformAdapter):
         sender_id = post.get("user_id", "")
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
-        # Thread support: if the post is in a thread, use root_id.
-        thread_id = post.get("root_id") or None
+        # Thread support: use root_id for replies, or post's own ID for root posts.
+        # This ensures the root post creating a thread gets an isolated session key,
+        # and all replies in that thread share the same session via root_id linkage.
+        thread_id = post.get("root_id") or post.get("id")
 
         # Determine message type.
         file_ids = post.get("file_ids") or []
