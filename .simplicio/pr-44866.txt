@@ -1,0 +1,1 @@
+Fix #44866: MCP OAuth /oauth/start polls 30s on probe failure instead of returning immediately
