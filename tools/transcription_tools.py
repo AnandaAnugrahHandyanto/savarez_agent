@@ -550,6 +550,7 @@ def _run_command_stt(command: str, timeout: float) -> subprocess.CompletedProces
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,
+        "encoding": "utf-8",
         "errors": "replace",
     }
     if os.name == "nt":

@@ -735,6 +735,7 @@ class PhotonAdapter(BasePlatformAdapter):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
             errors="replace",
             env=env,
             start_new_session=(sys.platform != "win32"),
@@ -781,7 +782,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 line = await loop.run_in_executor(None, stdout.readline)
                 if not line:
                     break
-                logger.info("[photon-sidecar] %s", line.rstrip())
+                logger.info("[photon-sidecar] %s", line.rstrip("\n"))
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[photon-sidecar] supervisor exited: %s", e)
 
