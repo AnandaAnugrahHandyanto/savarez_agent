@@ -62,6 +62,14 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     capture_preflight.add_argument("--launcher-exe", default="")
     capture_preflight.add_argument("--timeout-seconds", type=int, default=None)
 
+    live_capture = subs.add_parser(
+        "live-capture-selftest",
+        help="Run FH6VR live D3D12/window color capture self-test (0.14 gate)",
+    )
+    live_capture.add_argument("--launcher-exe", default="")
+    live_capture.add_argument("--attempt-window-capture", action="store_true")
+    live_capture.add_argument("--timeout-seconds", type=int, default=None)
+
     support_report = subs.add_parser(
         "support-report", help="Create redacted JSON and HTML support reports"
     )
@@ -87,7 +95,7 @@ def questframe_command(args: argparse.Namespace) -> int:
             "usage: hermes questframe "
             "{setup,status,preflight,profiles,rtx3060-selftest,session-readiness,"
             "graphics-session,frame-loop,"
-            "dibr-swapchain,capture-preflight,support-report,unity-scan}"
+            "dibr-swapchain,capture-preflight,live-capture-selftest,support-report,unity-scan}"
         )
         return 2
     if command == "setup":
@@ -171,6 +179,18 @@ def questframe_command(args: argparse.Namespace) -> int:
                 "fh6-capture-preflight",
                 launcher_exe=getattr(args, "launcher_exe", "") or None,
                 extra_args=["--json"],
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "live-capture-selftest":
+        extra = ["--json"]
+        if bool(getattr(args, "attempt_window_capture", False)):
+            extra.append("--attempt-window-capture")
+        return _print(
+            core.run_launcher(
+                "fh6-live-capture-selftest",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=extra,
                 timeout_seconds=getattr(args, "timeout_seconds", None),
             )
         )
