@@ -199,6 +199,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="bedrock_converse",
         auth_type="aws_sdk",
     ),
+    "manifest": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        extra_env_vars=("MANIFEST_API_KEY",),
+        base_url_override="https://app.manifest.build/v1",
+        base_url_env_var="MANIFEST_BASE_URL",
+    ),
 }
 
 
@@ -333,6 +340,10 @@ ALIASES: Dict[str, str] = {
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
 
+    # manifest
+    "manifest-build": "manifest",
+    "mnfst": "manifest",
+
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
@@ -361,6 +372,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
+    "manifest": "Manifest",
 }
 
 

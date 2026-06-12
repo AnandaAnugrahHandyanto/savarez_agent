@@ -48,6 +48,8 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `XIAOMI_BASE_URL` | Override Xiaomi MiMo base URL (default: `https://api.xiaomimimo.com/v1`) |
 | `TOKENHUB_API_KEY` | Tencent TokenHub API key ([tokenhub.tencentmaas.com](https://tokenhub.tencentmaas.com)) |
 | `TOKENHUB_BASE_URL` | Override Tencent TokenHub base URL (default: `https://tokenhub.tencentmaas.com/v1`) |
+| `MANIFEST_API_KEY` | Manifest API key — `mnfst_*` format ([app.manifest.build](https://app.manifest.build)) |
+| `MANIFEST_BASE_URL` | Override Manifest base URL (default: `https://app.manifest.build/v1`) |
 | `AZURE_FOUNDRY_API_KEY` | Azure AI Foundry / Azure OpenAI API key ([ai.azure.com](https://ai.azure.com/)) |
 | `AZURE_FOUNDRY_BASE_URL` | Azure AI Foundry endpoint URL (e.g. `https://<resource>.openai.azure.com/openai/v1` for OpenAI-style, or `https://<resource>.services.ai.azure.com/anthropic` for Anthropic-style) |
 | `AZURE_ANTHROPIC_KEY` | Azure Anthropic API key for `provider: anthropic` + `base_url` pointing at an Azure Foundry Claude deployment (alternative to `ANTHROPIC_API_KEY` when both Anthropic and Azure Anthropic are configured) |
