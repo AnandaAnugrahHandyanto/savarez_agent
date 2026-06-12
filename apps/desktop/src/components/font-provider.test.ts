@@ -1,12 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  FONT_OPTIONS,
-  FONT_SIZE_OPTIONS,
-  fontStore,
-  fontSizeStore,
-  initializeFontSettings,
-} from './font-provider'
+import { FONT_OPTIONS, FONT_SIZE_OPTIONS, fontStore, fontSizeStore, initializeFontSettings } from './font-provider'
 
 describe('font-provider', () => {
   beforeEach(() => {
@@ -21,9 +15,9 @@ describe('font-provider', () => {
 
   describe('initializeFontSettings', () => {
     it('hydrates fontStore from localStorage with a valid id', () => {
-      localStorage.setItem('hermes-desktop-font', 'inter')
+      localStorage.setItem('hermes-desktop-font', 'lora')
       initializeFontSettings()
-      expect(fontStore.get()).toBe('inter')
+      expect(fontStore.get()).toBe('lora')
     })
 
     it('hydrates fontSizeStore from localStorage with a valid id', () => {
@@ -51,10 +45,10 @@ describe('font-provider', () => {
     })
 
     it('hydrates both stores simultaneously', () => {
-      localStorage.setItem('hermes-desktop-font', 'manrope')
+      localStorage.setItem('hermes-desktop-font', 'space-grotesk')
       localStorage.setItem('hermes-desktop-font-size', 'extraLarge')
       initializeFontSettings()
-      expect(fontStore.get()).toBe('manrope')
+      expect(fontStore.get()).toBe('space-grotesk')
       expect(fontSizeStore.get()).toBe('extraLarge')
     })
   })
@@ -62,7 +56,7 @@ describe('font-provider', () => {
   describe('FONT_OPTIONS', () => {
     it('contains exactly the expected font ids', () => {
       const ids = FONT_OPTIONS.map(o => o.id)
-      expect(ids).toEqual(['system', 'manrope', 'inter', 'jetbrains'])
+      expect(ids).toEqual(['system', 'lora', 'space-grotesk', 'jetbrains'])
     })
 
     it('does not include Collapse (brand/display face, not a body font)', () => {
@@ -95,10 +89,10 @@ describe('font-provider', () => {
 
   describe('store persistence', () => {
     it('setFont updates fontStore and localStorage', () => {
-      fontStore.set('inter')
-      localStorage.setItem('hermes-desktop-font', 'inter')
-      expect(fontStore.get()).toBe('inter')
-      expect(localStorage.getItem('hermes-desktop-font')).toBe('inter')
+      fontStore.set('lora')
+      localStorage.setItem('hermes-desktop-font', 'lora')
+      expect(fontStore.get()).toBe('lora')
+      expect(localStorage.getItem('hermes-desktop-font')).toBe('lora')
     })
 
     it('setFontSize updates fontSizeStore and localStorage', () => {

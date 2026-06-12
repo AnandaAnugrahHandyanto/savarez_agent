@@ -212,8 +212,8 @@ export const ja = defineLocale({
       fontDesc: 'インターフェースのフォントを選択します。',
       fontOptions: {
         system: 'システム',
-        manrope: 'Manrope',
-        inter: 'Inter',
+        lora: 'Lora',
+        'space-grotesk': 'Space Grotesk',
         jetbrains: 'JetBrains Mono'
       },
       fontSizeTitle: 'フォントサイズ',

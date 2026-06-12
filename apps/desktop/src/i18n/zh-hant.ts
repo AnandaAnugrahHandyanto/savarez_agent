@@ -206,8 +206,8 @@ export const zhHant = defineLocale({
       fontDesc: '選擇介面字體。',
       fontOptions: {
         system: '系統預設',
-        manrope: 'Manrope',
-        inter: 'Inter',
+        lora: 'Lora',
+        'space-grotesk': 'Space Grotesk',
         jetbrains: 'JetBrains Mono'
       },
       fontSizeTitle: '字體大小',

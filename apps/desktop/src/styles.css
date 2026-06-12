@@ -18,35 +18,51 @@
 }
 
 @font-face {
-  font-family: 'Manrope';
+  font-family: 'Lora';
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url('https://fonts.gstatic.com/s/manrope/v18/xMz78_wLqXcJn65QWfBQD2zDjC6L5w4.woff2') format('woff2');
+  src: url('https://fonts.gstatic.com/s/lora/v37/0QIvMX1D_JOuMwr7Iw.woff2') format('woff2');
 }
 
 @font-face {
-  font-family: 'Manrope';
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url('https://fonts.gstatic.com/s/manrope/v18/xMz78_wLqXcJn65QWfBQD4zDjC6L5w4.woff2') format('woff2');
-}
-
-@font-face {
-  font-family: 'Inter';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('https://fonts.gstatic.com/s/inter/v18/UcCO3FwrQQosBi8M8fVtC6B554bJ7g.woff2') format('woff2');
-}
-
-@font-face {
-  font-family: 'Inter';
+  font-family: 'Lora';
   font-style: normal;
   font-weight: 600;
   font-display: swap;
-  src: url('https://fonts.gstatic.com/s/inter/v18/UcCO3FwrQQosBi8M8fVtC6B154bJ7g.woff2') format('woff2');
+  src: url('https://fonts.gstatic.com/s/lora/v37/0QIvMX1D_JOuMwr7Iw.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Lora';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('https://fonts.gstatic.com/s/lora/v37/0QIvMX1D_JOuMwr7Iw.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('https://fonts.gstatic.com/s/spacegrotesk/v22/V8mDoQDjQSkFtoMM3T6r8E7mPbF4Cw.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('https://fonts.gstatic.com/s/spacegrotesk/v22/V8mDoQDjQSkFtoMM3T6r8E7mPbF4Cw.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('https://fonts.gstatic.com/s/spacegrotesk/v22/V8mDoQDjQSkFtoMM3T6r8E7mPbF4Cw.woff2') format('woff2');
 }
 
 @font-face {

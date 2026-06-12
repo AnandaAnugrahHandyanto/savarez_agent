@@ -7,8 +7,8 @@ export const FONT_OPTIONS = [
     label: 'System',
     value: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
   },
-  { id: 'manrope', label: 'Manrope', value: '"Manrope", system-ui, sans-serif' },
-  { id: 'inter', label: 'Inter', value: '"Inter", system-ui, sans-serif' },
+  { id: 'lora', label: 'Lora', value: '"Lora", system-ui, serif' },
+  { id: 'space-grotesk', label: 'Space Grotesk', value: '"Space Grotesk", system-ui, sans-serif' },
   {
     id: 'jetbrains',
     label: 'JetBrains Mono',

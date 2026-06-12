@@ -213,7 +213,7 @@ export interface Translations {
       colorModeDesc: string
       fontTitle: string
       fontDesc: string
-      fontOptions: { system: string; manrope: string; inter: string; jetbrains: string }
+      fontOptions: { system: string; lora: string; 'space-grotesk': string; jetbrains: string }
       fontSizeTitle: string
       fontSizeDesc: string
       fontSizeOptions: { small: string; medium: string; large: string; extraLarge: string }

@@ -298,8 +298,8 @@ export const en: Translations = {
       fontDesc: 'Choose the interface font.',
       fontOptions: {
         system: 'System',
-        manrope: 'Manrope',
-        inter: 'Inter',
+        lora: 'Lora',
+        'space-grotesk': 'Space Grotesk',
         jetbrains: 'JetBrains Mono'
       },
       fontSizeTitle: 'Font size',

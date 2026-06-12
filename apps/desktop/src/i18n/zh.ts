@@ -293,8 +293,8 @@ export const zh: Translations = {
       fontDesc: '选择界面字体。',
       fontOptions: {
         system: '系统默认',
-        manrope: 'Manrope',
-        inter: 'Inter',
+        lora: 'Lora',
+        'space-grotesk': 'Space Grotesk',
         jetbrains: 'JetBrains Mono'
       },
       fontSizeTitle: '字体大小',
