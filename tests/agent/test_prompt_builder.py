@@ -18,6 +18,7 @@ from agent.prompt_builder import (
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
+    load_soul_md,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
@@ -590,6 +591,26 @@ class TestBuildContextFilesPrompt:
         (hermes_home / "SOUL.md").write_text("\n\n", encoding="utf-8")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert result == ""
+
+    def test_legacy_installer_template_treated_as_absent(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text(
+            "# Hermes Agent Persona\n\n<!--\nEdit this to customize.\n-->\n",
+            encoding="utf-8",
+        )
+        assert load_soul_md() is None
+
+    def test_installer_identity_with_html_comment_is_loaded(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text(
+            f"{DEFAULT_AGENT_IDENTITY}\n\n<!-- Edit the text above. -->\n",
+            encoding="utf-8",
+        )
+        assert load_soul_md() == DEFAULT_AGENT_IDENTITY
 
     def test_blocks_injection_in_agents_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text(

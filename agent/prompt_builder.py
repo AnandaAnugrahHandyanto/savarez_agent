@@ -7,6 +7,7 @@ assemble pieces, then combines them with memory and ephemeral prompts.
 import json
 import logging
 import os
+import re
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -1466,6 +1467,20 @@ def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE
     return head + marker + tail
 
 
+_LEGACY_SOUL_HEADING = "# Hermes Agent Persona"
+
+
+def _soul_md_persona_body(raw: str) -> Optional[str]:
+    """Return persona text from SOUL.md, or None when only installer scaffolding remains."""
+    body = re.sub(r"<!--.*?-->", "", raw, flags=re.DOTALL).strip()
+    if not body:
+        return None
+    # Older install scripts seeded a heading + HTML comment with no identity.
+    if body == _LEGACY_SOUL_HEADING:
+        return None
+    return body
+
+
 def load_soul_md() -> Optional[str]:
     """Load SOUL.md from HERMES_HOME and return its content, or None.
 
@@ -1483,7 +1498,8 @@ def load_soul_md() -> Optional[str]:
     if not soul_path.exists():
         return None
     try:
-        content = soul_path.read_text(encoding="utf-8").strip()
+        raw = soul_path.read_text(encoding="utf-8")
+        content = _soul_md_persona_body(raw)
         if not content:
             return None
         content = _scan_context_content(content, "SOUL.md")
