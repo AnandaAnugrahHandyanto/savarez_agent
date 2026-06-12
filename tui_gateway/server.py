@@ -8750,14 +8750,17 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"output": "No active agent in this session."})
         last_dur = getattr(agent, "last_api_duration", 0.0) or 0.0
         last_out = getattr(agent, "last_output_tokens", 0) or 0
+        reasoning = getattr(agent, "session_reasoning_tokens", 0) or 0
         if last_dur > 0 and last_out > 0:
             tps_val = last_out / last_dur
             output = (
                 f"⚡ Tokens per second\n"
                 f"─────────────────────────────────────────\n"
-                f"Last response:      {last_out:,} tokens in {last_dur:.1f}s\n"
-                f"Output speed:       {tps_val:,.0f} tok/s"
+                f"Output tokens:       {last_out:,} in {last_dur:.1f}s\n"
+                f"Output speed:        {tps_val:,.0f} tok/s"
             )
+            if reasoning > 0:
+                output += f"\nReasoning tokens:    {reasoning:,}"
         else:
             output = (
                 f"⚡ Tokens per second\n"

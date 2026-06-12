@@ -8467,8 +8467,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print(f"  {'─' * 41}")
         if last_dur > 0 and last_out > 0:
             tps = last_out / last_dur
-            print(f"  Last response:      {last_out:,} tokens in {last_dur:.1f}s")
-            print(f"  Output speed:       {tps:,.0f} tok/s")
+            print(f"  Output tokens:       {last_out:,} in {last_dur:.1f}s")
+            print(f"  Output speed:        {tps:,.0f} tok/s")
+            reasoning = getattr(agent, "session_reasoning_tokens", 0) or 0
+            if reasoning:
+                print(f"  Reasoning tokens:    {reasoning:,}")
         else:
             print(f"  No API response recorded yet in this session.")
             print(f"  Send a message first, then run /tps.")
