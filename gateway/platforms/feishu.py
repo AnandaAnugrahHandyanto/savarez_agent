@@ -609,6 +609,190 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     return rows or [[{"tag": "md", "text": content}]]
 
 
+# ---------------------------------------------------------------------------
+# Markdown table → Feishu Interactive Card conversion
+# ---------------------------------------------------------------------------
+
+_MARKDOWN_TABLE_ROW_SEP_RE = re.compile(r"^\|[-|: ]+\|$")
+
+
+def _parse_markdown_table_segments(content: str) -> List[Dict[str, Any]]:
+    """Split content into segments and convert markdown tables to card table format.
+
+    Returns a list of element dicts suitable for a Feishu Interactive Card:
+      - {"tag": "markdown", "content": "..."} for non-table text
+      - {"tag": "table", ...} for parsed tables
+    """
+    if not content.strip():
+        return [{"tag": "markdown", "content": content}]
+
+    segments: List[Dict[str, Any]] = []
+    lines = content.splitlines()
+    i = 0
+    n = len(lines)
+
+    while i < n:
+        # Check if this line starts a markdown table
+        if _is_table_start(lines, i):
+            # Parse the full table starting at line i
+            table_end = _find_table_end(lines, i)
+            table_elements = _build_card_table_elements(lines[i:table_end + 1])
+            if table_elements:
+                segments.append(table_elements)
+            i = table_end + 1
+        else:
+            # Collect non-table text lines
+            text_lines: List[str] = []
+            while i < n and not _is_table_start(lines, i):
+                text_lines.append(lines[i])
+                i += 1
+            text_block = "\n".join(text_lines).strip()
+            if text_block:
+                segments.append({"tag": "markdown", "content": text_block})
+
+    return segments or [{"tag": "markdown", "content": content}]
+
+
+def _is_table_start(lines: List[str], idx: int) -> bool:
+    """Check if line[idx] starts a markdown table (header row followed by separator)."""
+    if idx + 1 >= len(lines):
+        return False
+    header = lines[idx].strip()
+    separator = lines[idx + 1].strip()
+    if not header.startswith("|") or not header.endswith("|"):
+        return False
+    if not separator.startswith("|") or not separator.endswith("|"):
+        return False
+    return bool(_MARKDOWN_TABLE_ROW_SEP_RE.match(separator))
+
+
+def _find_table_end(lines: List[str], start: int) -> int:
+    """Find the last line of a markdown table starting at start."""
+    # At minimum, include the separator row (start + 1)
+    end = start + 1 if start + 1 < len(lines) else start
+    for j in range(start + 2, len(lines)):
+        line = lines[j].strip()
+        if line.startswith("|") and line.endswith("|"):
+            end = j
+        else:
+            break
+    return end
+
+
+def _split_pipe_cells(row: str) -> List[str]:
+    """Split a markdown table row into cells, handling escaped pipes."""
+    row = row.strip()
+    if row.startswith("|"):
+        row = row[1:]
+    if row.endswith("|"):
+        row = row[:-1]
+    cells: List[str] = []
+    current: List[str] = []
+    escaped = False
+    for ch in row:
+        if ch == "\\":
+            escaped = not escaped
+            current.append(ch)
+        elif ch == "|" and not escaped:
+            cells.append("".join(current).strip())
+            current = []
+        else:
+            escaped = False
+            current.append(ch)
+    cells.append("".join(current).strip())
+    return cells
+
+
+def _detect_column_alignments(separator_row: str) -> List[str]:
+    """Detect text alignment from the separator row (|:---|:---:|---:|)."""
+    cells = _split_pipe_cells(separator_row)
+    alignments: List[str] = []
+    for cell in cells:
+        cell = cell.strip()
+        if cell.startswith(":") and cell.endswith(":"):
+            alignments.append("center")
+        elif cell.endswith(":"):
+            alignments.append("right")
+        elif cell.startswith(":"):
+            alignments.append("left")
+        else:
+            alignments.append("left")
+    return alignments
+
+
+def _build_card_table_elements(table_lines: List[str]) -> Dict[str, Any]:
+    """Convert parsed markdown table lines into a Feishu card table element."""
+    if len(table_lines) < 2:
+        return {"tag": "markdown", "content": "\n".join(table_lines)}
+
+    headers = _split_pipe_cells(table_lines[0])
+    alignments = _detect_column_alignments(table_lines[1])
+    data_rows = table_lines[2:] if len(table_lines) > 2 else []
+
+    # Build column definitions
+    columns: List[Dict[str, Any]] = []
+    col_names: List[str] = []
+    for ci, hdr in enumerate(headers):
+        col_name = f"col_{ci}"
+        col_names.append(col_name)
+        col_def: Dict[str, Any] = {
+            "name": col_name,
+            "display_name": hdr,
+            "data_type": "text",
+            "horizontal_align": alignments[ci] if ci < len(alignments) else "left",
+            "vertical_align": "top",
+            "width": "auto",
+        }
+        columns.append(col_def)
+
+    # Build row data
+    rows: List[Dict[str, str]] = []
+    for row_line in data_rows:
+        cells = _split_pipe_cells(row_line)
+        row_data: Dict[str, str] = {}
+        for ci, cell in enumerate(cells):
+            if ci < len(col_names):
+                row_data[col_names[ci]] = cell
+        if row_data:
+            rows.append(row_data)
+
+    if not rows:
+        return {"tag": "markdown", "content": "\n".join(table_lines)}
+
+    table_element: Dict[str, Any] = {
+        "tag": "table",
+        "page_size": min(max(len(rows), 1), 10),
+        "row_height": "low",
+        "header_style": {
+            "text_align": "left",
+            "text_size": "normal",
+            "background_style": "grey",
+            "text_color": "default",
+            "bold": True,
+            "lines": 1,
+        },
+        "columns": columns,
+        "rows": rows,
+    }
+    return table_element
+
+
+def _build_table_card_payload(content: str) -> str:
+    """Build an Interactive Card payload with proper table rendering.
+
+    Splits content into text and table segments, builds a card with
+    markdown elements for text and table elements for markdown tables.
+    """
+    segments = _parse_markdown_table_segments(content)
+
+    card: Dict[str, Any] = {
+        "config": {"wide_screen_mode": True},
+        "elements": segments,
+    }
+
+    return json.dumps(card, ensure_ascii=False)
+
+
 def parse_feishu_post_payload(
     payload: Any,
     *,
@@ -4374,12 +4558,12 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # When content contains markdown tables, render them as a Feishu
+        # Interactive Card with proper table components instead of falling
+        # back to plain text. The card table component is supported on Feishu
+        # v7.4+ and renders native table formatting.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            return "interactive", _build_table_card_payload(content)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
