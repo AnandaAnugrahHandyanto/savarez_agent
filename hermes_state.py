@@ -33,15 +33,8 @@ def _delegate_from_json(col: str = "model_config") -> str:
     return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
 
 
-_LISTABLE_CHILD_SQL = (
-    "(s.parent_session_id IS NULL"
-    " OR json_extract(s.model_config, '$._branched_from') IS NOT NULL"
-    " OR EXISTS (SELECT 1 FROM sessions p"
-    "            WHERE p.id = s.parent_session_id"
-    "            AND p.end_reason = 'branched'"
-    "            AND s.started_at >= p.ended_at))"
-)
-
+# A child session counts as a /branch (kept visible, never cascade-deleted) if
+# it carries the stable marker OR the legacy end_reason heuristic holds.
 _BRANCH_CHILD_SQL = (
     "json_extract(COALESCE({a}.model_config, '{{}}'), '$._branched_from') IS NOT NULL"
     " OR EXISTS (SELECT 1 FROM sessions p"
@@ -56,6 +49,10 @@ _COMPRESSION_CHILD_SQL = (
     "        AND p.end_reason = 'compression'"
     "        AND {a}.started_at >= p.ended_at)"
 )
+
+# Rows that surface in pickers: roots + branch children (subagent runs and
+# compression continuations stay hidden).
+_LISTABLE_CHILD_SQL = f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')})"
 
 
 def _ephemeral_child_sql(alias: str = "s") -> str:

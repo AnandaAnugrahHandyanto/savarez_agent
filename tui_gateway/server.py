@@ -2679,18 +2679,13 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
         _active_child_runs.pop(child_key, None)
     else:
         _active_child_runs[child_key] = time.time()
-    # Live sessions are keyed by a fresh sid; the stored id rides on
-    # session_key. No live session (window not open / closed) → nothing to
-    # mirror; drop state so a reopened window starts a fresh synthetic turn.
+    # Mirror only into a live watch session (keyed by session_key; its live sid
+    # differs from the stored id) that has NOT been upgraded to a full agent.
+    # No window / closed → nothing to mirror; an upgraded session owns a real
+    # native stream and mirroring on top would interleave two turns on one sid.
+    # Either way drop state so a reopened window starts a fresh synthetic turn.
     live = _find_live_session_by_key(child_key)
-    if live is None:
-        with _child_mirrors_lock:
-            _child_mirrors.pop(child_key, None)
-        return
-    if live[1].get("agent") is not None:
-        # The watch window was upgraded to a full session (user submitted a
-        # prompt) — it now owns a real native stream. Mirroring on top of it
-        # would interleave two turns on one sid; stop and drop mirror state.
+    if live is None or live[1].get("agent") is not None:
         with _child_mirrors_lock:
             _child_mirrors.pop(child_key, None)
         return
@@ -3914,27 +3909,28 @@ def _(rid, params: dict) -> dict:
             target = found["id"]
         else:
             return _err(rid, 4007, "session not found")
+    def _reuse_live_payload(sid: str, session: dict) -> dict:
+        payload = _live_session_payload(
+            sid,
+            session,
+            cols=cols,
+            touch=True,
+            transport=current_transport() or _stdio_transport,
+        )
+        payload["resumed"] = target
+        # A lazy watch session never owns a run loop, so its payload's running
+        # flag is always False — overlay the child-run registry so a reconnecting
+        # watch window keeps its busy indicator while the child is still mid-run.
+        if session.get("agent") is None and _child_run_active(target):
+            payload["running"] = True
+            payload["status"] = "streaming"
+        return payload
+
     # Fast path: if the session is already live, reuse it under the lock.
     with _session_resume_lock:
         live = _find_live_session_by_key(target)
         if live is not None:
-            sid, session = live
-            payload = _live_session_payload(
-                sid,
-                session,
-                cols=cols,
-                touch=True,
-                transport=current_transport() or _stdio_transport,
-            )
-            payload["resumed"] = target
-            # Lazy watch sessions never own a run loop, so their payload's
-            # running flag is always False — overlay the child-run registry so
-            # a reconnecting watch window keeps its busy indicator while the
-            # delegated child is still mid-run.
-            if session.get("agent") is None and _child_run_active(target):
-                payload["running"] = True
-                payload["status"] = "streaming"
-            return _ok(rid, payload)
+            return _ok(rid, _reuse_live_payload(*live))
 
     # Lazy/watch resume: register the live session WITHOUT building an agent.
     # Used by the desktop's subagent windows — the child runs inside the
@@ -3959,7 +3955,6 @@ def _(rid, params: dict) -> dict:
             if lease is not None:
                 lease.release()
             return _err(rid, 5000, f"resume failed: {e}")
-        display_history_prefix = []
         messages = _history_to_messages(history)
         cwd = os.getenv("TERMINAL_CWD", os.getcwd())
         now = time.time()
@@ -3972,22 +3967,7 @@ def _(rid, params: dict) -> dict:
             if live is not None:
                 if lease is not None:
                     lease.release()
-                other_sid, other_session = live
-                payload = _live_session_payload(
-                    other_sid,
-                    other_session,
-                    cols=cols,
-                    touch=True,
-                    transport=current_transport() or _stdio_transport,
-                )
-                payload["resumed"] = target
-                # Lazy watch sessions never own a run loop, so the payload's
-                # running flag is always False — overlay the child-run registry
-                # so a window refresh mid-delegation keeps its busy indicator.
-                if other_session.get("agent") is None and child_running:
-                    payload["running"] = True
-                    payload["status"] = "streaming"
-                return _ok(rid, payload)
+                return _ok(rid, _reuse_live_payload(*live))
             with _sessions_lock:
                 _sessions[sid] = {
                     "agent": None,
@@ -4000,7 +3980,7 @@ def _(rid, params: dict) -> dict:
                     "active_session_lease": lease,
                     "cols": cols,
                     "created_at": now,
-                    "display_history_prefix": display_history_prefix,
+                    "display_history_prefix": [],
                     "edit_snapshots": {},
                     "explicit_cwd": False,
                     "history": history,
