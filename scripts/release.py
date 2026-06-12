@@ -45,6 +45,28 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "peterhao@Peters-MacBook-Air.local": "pinguarmy",
+    "barronlroth@gmail.com": "barronlroth",
+    "ondrej.drapalik@gmail.com": "OndrejDrapalik",
+    "tomasz.panek@gmail.com": "tomekpanek",
+    "philipadsouza@gmail.com": "PhilipAD",
+    "zhuhaoyu0909@icloud.com": "underthestars-zhy",
+    "raysun12142006@gmail.com": "yanxue06",
+    "alberto.regalado@ymail.com": "ARegalado1",
+    "alchemistchaos@protonmail.com": "AlchemistChaos",  # co-author only
+    "gilad@smiti.ai": "giladbau",
+    "yusufalweshdemir@gmail.com": "Dusk1e",
+    "804436395@qq.com": "LaPhilosophie",
+    "maxmitcham@mac.home": "maxtrigify",
+    "ccook@nvms.com": "ccook1963",
+    "kristian@agrointel.no": "kristianvast",
+    "thomas.paquette@gmail.com": "RyTsYdUp",
+    "techxacm@gmail.com": "ProgramCaiCai",
+    "266365592+bmoore210@users.noreply.github.com": "bmoore210",
+    "123150002+deaneeth@users.noreply.github.com": "deaneeth",
+    "157839748+psionic73@users.noreply.github.com": "psionic73",
+    "manishbyatroy@gmail.com": "manishbyatroy",
+    "chilltulpa@gmail.com": "TheGardenGallery",
     "al@randomsnowflake.me": "randomsnowflake",
     "zakame@zakame.net": "zakame",
     "152110621+jiangkoumo@users.noreply.github.com": "jiangkoumo",
@@ -54,6 +76,7 @@ AUTHOR_MAP = {
     "129007007+HeLLGURD@users.noreply.github.com": "HeLLGURD",
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "kdunn926@gmail.com": "kdunn926",
     "mvanhorn@MacBook-Pro.local": "mvanhorn",
     "470766206@qq.com": "youjunxiaji",
     "mharris@parallel.ai": "NormallyGaussian",
@@ -1491,6 +1514,12 @@ AUTHOR_MAP = {
     "wasdhkzk@gmail.com": "whyhkzk",  # PR #32407 (sandbox-mirror inner-container guard; commits authored as whyhkzk + zhukun)
     "leonard@sellem.me": "leonardsellem",  # PR #37405 (desktop WS origin guard on remote/Tailscale binds)
     "42903577+ohMyJason@users.noreply.github.com": "ohMyJason",  # PR #29810 (discover_models in custom_providers section 4)
+    "singhsanidhya741@gmail.com": "sanidhyasin",  # PR #40403 salvage (model.default_headers for custom OpenAI-compatible providers, #40033)
+    "josephjohnson.joel@gmail.com": "JoelJJohnson",  # PR #39913 salvage (Windows ConPTY dashboard chat bridge)
+    "andreas@schwarz-ketsch.de": "Nea74",  # PR #40022 co-author credit (same Windows ConPTY bridge design)
+    "chanhokyim@gmail.com": "joel611",  # PR #33958 salvage (DISCORD_ALLOWED_ROLES role_authorized gateway flag)
+    "desg38@gmail.com": "dschnurbusch",  # PR #42373 salvage (archive compressed conversation lineages)
+    "bsmith@bramarstrategicservices.com": "bcsmith528",  # PR #20589 salvage (register_slack_action_handler plugin API)
 }
 
 
