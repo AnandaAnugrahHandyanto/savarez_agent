@@ -2242,6 +2242,62 @@ class TestBuildSchemaFromConfig:
         for cat, count in cats.items():
             assert count >= 2, f"Category '{cat}' has only {count} field(s) — should be merged"
 
+    def test_every_field_has_description(self):
+        """The dashboard renders schema descriptions under each config field
+        (issue #45119); every field must carry a real one.  A new config key
+        needs an inline comment in config.py's DEFAULT_CONFIG (preferred) or
+        an entry in web_server's _FIELD_DESCRIPTIONS / _SCHEMA_OVERRIDES."""
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        missing = [k for k, e in CONFIG_SCHEMA.items() if not e.get("description")]
+        assert not missing, (
+            "Config fields without a description (add an inline comment in "
+            f"DEFAULT_CONFIG or a _FIELD_DESCRIPTIONS entry): {missing}"
+        )
+        # Guard against reintroducing the old title-cased-key placeholder,
+        # which duplicated the field label and explained nothing.
+        placeholders = [
+            k for k, e in CONFIG_SCHEMA.items()
+            if e["description"] == k.replace(".", " → ").replace("_", " ").title()
+        ]
+        assert not placeholders, f"Placeholder descriptions: {placeholders}"
+
+    def test_descriptions_extracted_from_config_comments(self):
+        """Inline DEFAULT_CONFIG comments become field descriptions."""
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        # Block comment above the key.
+        assert CONFIG_SCHEMA["agent.gateway_timeout"]["description"].startswith(
+            "Inactivity timeout for gateway agent execution"
+        )
+        # Trailing comment on the key's own line.
+        assert "context usage exceeds" in CONFIG_SCHEMA["compression.threshold"]["description"]
+        # Wrapped trailing comments are stitched back together and never
+        # attributed to the following key (delegation.api_mode's comment spans
+        # four lines directly above inherit_mcp_toolsets).
+        assert "anthropic_messages" in CONFIG_SCHEMA["delegation.api_mode"]["description"]
+        assert CONFIG_SCHEMA["delegation.inherit_mcp_toolsets"]["description"].startswith(
+            "When delegate_task narrows child toolsets"
+        )
+
+    def test_descriptions_are_bounded(self):
+        """Multi-paragraph source comments are summarized, not dumped."""
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        for key, entry in CONFIG_SCHEMA.items():
+            assert len(entry["description"]) <= 300, (
+                f"{key} description exceeds 300 chars"
+            )
+
+    def test_manual_override_descriptions_win(self):
+        """_SCHEMA_OVERRIDES descriptions take precedence over extraction."""
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        assert CONFIG_SCHEMA["terminal.backend"]["description"] == "Terminal execution backend"
+
+    def test_auxiliary_fields_use_task_templates(self):
+        """auxiliary.<task>.* fields without their own comments get templated
+        descriptions naming the task."""
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        desc = CONFIG_SCHEMA["auxiliary.title_generation.model"]["description"]
+        assert "session title generation" in desc
+
 
 # ---------------------------------------------------------------------------
 # Config round-trip tests

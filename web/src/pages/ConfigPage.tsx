@@ -51,6 +51,9 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+import { HERMES_DOCS_URL } from "@/pages/DocsPage";
+
+const CONFIG_GUIDE_URL = `${HERMES_DOCS_URL}user-guide/configuration`;
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -434,6 +437,16 @@ export default function ConfigPage() {
           </code>
         </div>
         <div className="flex flex-wrap items-center gap-1.5 sm:shrink-0">
+          <a
+            href={CONFIG_GUIDE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={t.app.openDocumentation}
+            aria-label={t.app.openDocumentation}
+            className="inline-flex h-8 w-8 items-center justify-center text-muted-foreground hover:text-foreground"
+          >
+            <BookOpen className="h-4 w-4" />
+          </a>
           <Button
             ghost
             size="icon"
