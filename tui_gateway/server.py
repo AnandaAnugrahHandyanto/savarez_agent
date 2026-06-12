@@ -1509,7 +1509,94 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
         or row.get("billing_provider")
         or ""
     ).strip()
+
+    # Extract base_url early — needed below for custom-provider matching.
     base_url = str(model_config.get("base_url") or "").strip()
+
+    # GitHub issue: bare "custom" in billing_provider loses the named custom
+    # provider identifier (e.g. "brain").  During session creation the runtime
+    # normalises "custom:brain" → "custom" for billing, but on resume we need
+    # the full name so resolve_runtime_provider can find the matching config
+    # entry.  Reconstruct it by scanning all custom provider names from config,
+    # preferring the one whose base_url matches what was stored (if available).
+    if provider == "custom":
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            candidates: list[tuple[str, str]] = []  # (name, base_url)
+
+            # New-style providers dict — keys are the provider names
+            for ep_name in (cfg.get("providers") or {}):
+                if isinstance(ep_name, str) and ep_name.strip():
+                    entry = cfg["providers"][ep_name]
+                    bu = ""
+                    if isinstance(entry, dict):
+                        bu = str(
+                            entry.get("api") or entry.get("url") or entry.get("base_url", "")
+                        ).strip()
+                    candidates.append((ep_name.strip(), bu))
+
+            # Legacy custom_providers list — use each entry's "name" field
+            from hermes_cli.config import get_compatible_custom_providers
+
+            for entry in get_compatible_custom_providers(cfg):
+                if isinstance(entry, dict):
+                    name = str(entry.get("name") or "").strip()
+                    bu = str(entry.get("base_url") or "").strip()
+                    if name:
+                        candidates.append((name, bu))
+
+            # Check each candidate against _get_named_custom_provider which
+            # knows how to match them from config.yaml.  Prefer, in order:
+            #   1) the provider whose name matches config.model.provider
+            #      (e.g. "brain" from "custom:brain") — this is what the user
+            #      currently has configured as their default endpoint.
+            #   2) the one whose base_url matches what was stored in this
+            #      session (if any).
+            #   3) first valid candidate as last resort.
+            from hermes_cli.runtime_provider import (
+                _get_named_custom_provider,
+            )
+
+            # Extract the configured default custom provider name so we can
+            # prefer it when reconstructing bare "custom" → "custom:<name>".
+            try:
+                cfg_model = load_config().get("model") or {}
+                _cfg_provider = str(cfg_model.get("provider") or "").strip()
+                # "custom:brain" → "brain"; bare "custom" stays as-is.
+                if _cfg_provider.startswith("custom:"):
+                    _preferred_name = _cfg_provider[len("custom:"):]
+                else:
+                    _preferred_name = ""
+            except Exception:
+                _preferred_name = ""
+
+            for candidate_name, candidate_bu in candidates:
+                if not _get_named_custom_provider(candidate_name):
+                    continue
+                # If we have a stored base_url, prefer the matching one.
+                if base_url and candidate_bu == base_url:
+                    provider = f"custom:{candidate_name}"
+                    break
+            else:
+                # No base_url match (or no stored base_url) — try preferred
+                # name first, then fall back to first valid.
+                _found = False
+                if _preferred_name:
+                    for candidate_name, _ in candidates:
+                        if candidate_name == _preferred_name and _get_named_custom_provider(candidate_name):
+                            provider = f"custom:{candidate_name}"
+                            _found = True
+                            break
+                if not _found:
+                    for candidate_name, _ in candidates:
+                        if _get_named_custom_provider(candidate_name):
+                            provider = f"custom:{candidate_name}"
+                            break
+        except Exception:
+            pass  # Keep bare "custom" as fallback; caller will handle.
+
     api_mode = str(model_config.get("api_mode") or "").strip()
     reasoning_config = model_config.get("reasoning_config")
     service_tier = str(model_config.get("service_tier") or "").strip()
