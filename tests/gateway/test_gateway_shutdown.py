@@ -445,3 +445,32 @@ async def test_signal_initiated_restart_still_persists_stopped(tmp_path, monkeyp
     assert _stopped_state_persisted(runner), (
         "a restart must persist gateway_state=stopped via the normal path"
     )
+
+
+
+def test_pid_exists_returns_false_for_zombie_process():
+    """Zombie processes (state Z in /proc/<pid>/stat) must not be treated as alive.
+
+    Regression guard for issue #42126: without the zombie check,
+    _pid_exists returns True for zombies because os.kill(pid, 0) only
+    verifies the PID is still in the process table. This causes
+    --replace to wait 15s, fail, and exit 1 in a crash loop on
+    systems where systemd has not yet reaped the old gateway process.
+    """
+    from unittest.mock import patch, MagicMock
+    from gateway.status import _pid_exists
+
+    zombie_pid = 424242
+    fake_stat = f"{zombie_pid} (defunct) Z 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+
+    fake_path_instance = MagicMock()
+    fake_path_instance.read_text.return_value = fake_stat
+
+    with patch("gateway.status.Path", return_value=fake_path_instance) as mock_path_cls:
+        result = _pid_exists(zombie_pid)
+
+    assert result is False, (
+        "zombie process must be reported as not existing; "
+        "otherwise --replace waits 15s and aborts with exit 1"
+    )
+    mock_path_cls.assert_called_once_with(f"/proc/{zombie_pid}/stat")
