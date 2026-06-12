@@ -164,6 +164,29 @@ def test_stale_child_run_not_reported_active(server, emits):
     assert server._child_run_active("child-1") is True
 
 
+def test_prompt_submit_rejected_while_child_run_active(server, emits):
+    """Typing into a watch window mid-run must not build a second agent racing
+    the in-flight child on the same stored session — busy error instead."""
+    import threading
+
+    server._sessions["live-1"] = {
+        "agent": None,
+        "history_lock": threading.Lock(),
+        "lazy": True,
+        "running": False,
+        "session_key": "child-1",
+    }
+    _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")
+
+    result = server._methods["prompt.submit"]("rid-1", {"session_id": "live-1", "text": "hi"})
+    assert result["error"]["code"] == 4009
+
+    # Run completes → the same submit upgrades into a real conversation
+    # (passes the guard; fails later only because this test stubs no agent).
+    _relay(server, "subagent.complete", child_session_id="child-1", status="completed", summary="ok")
+    assert server._child_run_active("child-1") is False
+
+
 def test_active_child_runs_registry_tracks_liveness(server, emits):
     """Every relayed event marks the child as in flight (even with no window
     open), and completion clears it — lazy watch resumes read this registry to
