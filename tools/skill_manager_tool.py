@@ -822,68 +822,73 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 # Main entry point
 # =============================================================================
 
-def _require_approval_for_skill_action(action: str, name: str) -> Optional[Dict[str, Any]]:
-    """Check if skill action requires user approval.
+# ContextVar bypass: set while replaying an already-approved staged skill write
+# so skill_manage() does not re-gate (and re-stage) it.
+import contextvars as _ctxvars
+_skill_gate_bypass: "_ctxvars.ContextVar[bool]" = _ctxvars.ContextVar(
+    "skill_gate_bypass", default=False
+)
 
-    Agent-created skills are persistent prompt-injection vectors loaded every
-    session.  In non-interactive mode (no TTY, cron, delegation) the agent must
-    not autonomously mutate skills without explicit user confirmation.
 
-    Returns error dict (to return to caller) if blocked, None if allowed.
+def _apply_skill_write_gate(action, name, **payload_kwargs):
+    """Evaluate the skill write gate. Returns a JSON tool-result string when the
+    write should NOT proceed (blocked or staged), or None to perform the real
+    write. Bypassed during approved-pending replay.
     """
-    from tools.approval import (
-        _YOLO_MODE_FROZEN,
-        is_current_session_yolo_enabled,
-        prompt_dangerous_approval,
-    )
-    from utils import env_var_enabled
-
-    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
+    if action not in {"create", "edit", "patch", "delete", "write_file", "remove_file"}:
+        return None
+    if _skill_gate_bypass.get():
         return None
 
-    if env_var_enabled("HERMES_INTERACTIVE"):
-        from tools.terminal_tool import _get_approval_callback
+    try:
+        from tools import write_approval as wa
+    except Exception:
+        return None  # fail open
 
-        description = (
-            "skill mutation. Skills are persistent instructions loaded into "
-            "future agent sessions, so malicious or accidental changes can "
-            "become durable prompt injection."
-        )
-        choice = prompt_dangerous_approval(
-            f"skill_manage action={action} name={name}",
-            description,
-            allow_permanent=False,
-            approval_callback=_get_approval_callback(),
-        )
-        if choice != "deny":
-            return None
-        return {
-            "success": False,
-            "error": (
-                f"BLOCKED: User denied skill '{name}' action '{action}'. "
-                "Do NOT retry or attempt the same skill mutation another way."
-            ),
-        }
+    decision = wa.evaluate_gate(wa.SKILLS)
+    if decision.allow:
+        return None
+    if decision.blocked:
+        return tool_error(decision.message, success=False)
 
-    logger.warning(
-        "Skill '%s' action '%s' requires user approval - non-interactive, no YOLO mode",
-        name, action,
+    # stage — record the full skill_manage kwargs so approval can replay it.
+    payload = {"action": action, "name": name}
+    payload.update({k: v for k, v in payload_kwargs.items() if v is not None})
+    gist = wa.skill_gist(
+        action, name,
+        content=payload_kwargs.get("content") or "",
+        file_path=payload_kwargs.get("file_path") or "",
+        old_string=payload_kwargs.get("old_string") or "",
+        new_string=payload_kwargs.get("new_string") or "",
     )
-    return {
-        "success": False,
-        "error": (
-            f"Cannot '{action}' skill '{name}' without user confirmation. "
-            f"The agent must ask the user to approve this skill change. "
-            f"To auto-approve, set HERMES_YOLO_MODE=1 or run interactively."
-        ),
-    }
+    record = wa.stage_write(wa.SKILLS, payload, summary=gist, origin=wa.current_origin())
+    return json.dumps(
+        {"success": True, "staged": True, "pending_id": record["id"],
+         "gist": gist, "message": decision.message},
+        ensure_ascii=False,
+    )
 
 
-# Actions that mutate persistent skill state and require approval in
-# non-interactive mode.  Read-only actions (list, show) are always safe.
-_MUTATING_SKILL_ACTIONS = frozenset({
-    "create", "edit", "delete", "patch", "write_file", "remove_file",
-})
+def apply_skill_pending(payload: Dict[str, Any]) -> str:
+    """Replay a staged skill write, bypassing the gate. Returns the tool result
+    JSON string. Called by the /skills approve handler.
+    """
+    token = _skill_gate_bypass.set(True)
+    try:
+        return skill_manage(
+            action=payload.get("action", ""),
+            name=payload.get("name", ""),
+            content=payload.get("content"),
+            category=payload.get("category"),
+            file_path=payload.get("file_path"),
+            file_content=payload.get("file_content"),
+            old_string=payload.get("old_string"),
+            new_string=payload.get("new_string"),
+            replace_all=payload.get("replace_all", False),
+            absorbed_into=payload.get("absorbed_into"),
+        )
+    finally:
+        _skill_gate_bypass.reset(token)
 
 
 def skill_manage(
@@ -903,10 +908,18 @@ def skill_manage(
 
     Returns JSON string with results.
     """
-    if action in _MUTATING_SKILL_ACTIONS:
-        blocked = _require_approval_for_skill_action(action, name)
-        if blocked:
-            return json.dumps(blocked, ensure_ascii=False)
+    # Approval gate: when on, stages the write for review (skills are too large
+    # to review inline, so they always stage regardless of origin); when off
+    # (default) passes straight through. The gate is bypassed when this call is
+    # itself replaying an already-approved staged write (_skill_apply_pending).
+    gate_result = _apply_skill_write_gate(
+        action, name, content=content, category=category,
+        file_path=file_path, file_content=file_content,
+        old_string=old_string, new_string=new_string,
+        replace_all=replace_all, absorbed_into=absorbed_into,
+    )
+    if gate_result is not None:
+        return gate_result
 
     if action == "create":
         if not content:

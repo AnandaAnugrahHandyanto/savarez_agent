@@ -12,9 +12,6 @@ from tools.skill_manager_tool import (
     _validate_category,
     _validate_frontmatter,
     _validate_file_path,
-    _require_approval_for_skill_action,
-    _MUTATING_SKILL_ACTIONS,
-    SKILL_MANAGE_SCHEMA,
     _create_skill,
     _edit_skill,
     _patch_skill,
@@ -22,6 +19,8 @@ from tools.skill_manager_tool import (
     _write_file,
     _remove_file,
     skill_manage,
+    SKILL_MANAGE_SCHEMA,
+    _skill_gate_bypass,
     MAX_NAME_LENGTH,
 )
 
@@ -964,95 +963,96 @@ class TestPinnedGuard:
 
 
 # ---------------------------------------------------------------------------
-# Approval gate (_require_approval_for_skill_action)
+# Write approval gate (upstream _apply_skill_write_gate)
 # ---------------------------------------------------------------------------
 
 
-class TestApprovalGate:
-    """Skill mutations require user approval in non-interactive mode."""
+class TestWriteApprovalGate:
+    """Tests for the write-approval gate that stages skill writes for review.
 
-    def test_blocked_without_yolo_or_interactive(self):
-        """Mutating actions blocked when no YOLO or INTERACTIVE env."""
-        with patch.dict("os.environ", {}, clear=True), \
-             patch("tools.approval._YOLO_MODE_FROZEN", False):
-            result = _require_approval_for_skill_action("create", "test-skill")
-        assert result is not None
-        assert result["success"] is False
-        assert "approval" in result["error"].lower() or "confirm" in result["error"].lower()
+    The gate is controlled by skills.write_approval in config.yaml (default
+    False). When off, writes flow freely. When on, skill writes are staged
+    to <HERMES_HOME>/pending/skills/ for user review.
+    """
 
-    def test_live_yolo_env_does_not_bypass_gate(self):
-        """Runtime env mutation must not bypass the frozen YOLO approval state."""
-        with patch.dict("os.environ", {"HERMES_YOLO_MODE": "1"}, clear=True), \
-             patch("tools.approval._YOLO_MODE_FROZEN", False):
-            result = _require_approval_for_skill_action("create", "test-skill")
-        assert result is not None
-        assert result["success"] is False
+    def test_gate_off_writes_flow(self, tmp_path):
+        """When write_approval is off (default), skill_manage proceeds directly."""
+        with _skill_dir(tmp_path), \
+             patch("tools.write_approval.evaluate_gate") as mock_eval:
+            from tools.write_approval import GateDecision
+            mock_eval.return_value = GateDecision(allow=True)
+            result = json.loads(skill_manage("create", "test-skill", content=VALID_SKILL_CONTENT))
+        assert result["success"] is True
+        assert "staged" not in result
 
-    def test_allowed_with_frozen_yolo_mode(self):
-        """Mutating actions allowed when process YOLO was enabled at startup."""
-        with patch.dict("os.environ", {}, clear=True), \
-             patch("tools.approval._YOLO_MODE_FROZEN", True):
-            result = _require_approval_for_skill_action("create", "test-skill")
-        assert result is None
+    def test_gate_on_stages_write(self, tmp_path):
+        """When write_approval is on, skill_manage stages instead of writing."""
+        with _skill_dir(tmp_path), \
+             patch("tools.write_approval.evaluate_gate") as mock_eval, \
+             patch("tools.write_approval.stage_write") as mock_stage, \
+             patch("tools.write_approval.current_origin", return_value="foreground"):
+            from tools.write_approval import GateDecision
+            mock_eval.return_value = GateDecision(
+                stage=True, message="Staged for approval."
+            )
+            mock_stage.return_value = {"id": "abc123", "summary": "create test-skill"}
+            result = json.loads(skill_manage("create", "test-skill", content=VALID_SKILL_CONTENT))
+        assert result["success"] is True
+        assert result["staged"] is True
+        assert result["pending_id"] == "abc123"
+        mock_stage.assert_called_once()
 
-    def test_allowed_with_interactive_approval(self):
-        """Mutating actions allowed when the interactive user approves."""
-        from tools.terminal_tool import set_approval_callback
-        set_approval_callback(lambda *args, **kwargs: "once")
+    def test_gate_bypass_allows_direct_write(self, tmp_path):
+        """_skill_gate_bypass ContextVar skips the gate during replay."""
+        token = _skill_gate_bypass.set(True)
         try:
-            with patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}), \
-                 patch("tools.approval._YOLO_MODE_FROZEN", False):
-                result = _require_approval_for_skill_action("delete", "test-skill")
+            with _skill_dir(tmp_path), \
+                 patch("tools.write_approval.evaluate_gate") as mock_eval:
+                from tools.write_approval import GateDecision
+                mock_eval.return_value = GateDecision(allow=True)
+                result = json.loads(skill_manage("create", "test-skill", content=VALID_SKILL_CONTENT))
         finally:
-            set_approval_callback(None)
-        assert result is None
+            _skill_gate_bypass.reset(token)
+        assert result["success"] is True
+        assert "staged" not in result
+        mock_eval.assert_not_called()
 
-    def test_interactive_denial_blocks_mutation(self):
-        """Interactive mode still blocks when the user denies approval."""
-        from tools.terminal_tool import set_approval_callback
-        set_approval_callback(lambda *args, **kwargs: "deny")
-        try:
-            with patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}), \
-                 patch("tools.approval._YOLO_MODE_FROZEN", False):
-                result = _require_approval_for_skill_action("delete", "test-skill")
-        finally:
-            set_approval_callback(None)
-        assert result is not None
-        assert result["success"] is False
-        assert "denied" in result["error"].lower()
+    def test_apply_skill_pending_replays_create(self, tmp_path):
+        """apply_skill_pending replays a staged create through skill_manage."""
+        with _skill_dir(tmp_path), \
+             patch("tools.write_approval.evaluate_gate") as mock_eval:
+            from tools.write_approval import GateDecision
+            mock_eval.return_value = GateDecision(allow=True)
+            from tools.skill_manager_tool import apply_skill_pending
+            payload = {"action": "create", "name": "replayed-skill", "content": VALID_SKILL_CONTENT}
+            raw = apply_skill_pending(payload)
+            result = json.loads(raw)
+        assert result["success"] is True
+        assert "replayed-skill" in result.get("message", "")
 
-    def test_all_mutating_actions_gated(self):
-        """Every action in _MUTATING_SKILL_ACTIONS goes through the gate."""
-        with patch.dict("os.environ", {}, clear=True), \
-             patch("tools.approval._YOLO_MODE_FROZEN", False):
-            for action in _MUTATING_SKILL_ACTIONS:
-                result = _require_approval_for_skill_action(action, "x")
-                assert result is not None, f"action '{action}' should be gated"
+    def test_gate_off_all_actions_bypass(self, tmp_path):
+        """All 6 mutating actions bypass the gate when write_approval is off."""
+        with _skill_dir(tmp_path), \
+             patch("tools.write_approval.evaluate_gate") as mock_eval:
+            from tools.write_approval import GateDecision
+            mock_eval.return_value = GateDecision(allow=True)
+            _create_skill("gate-test", VALID_SKILL_CONTENT)
+            for action in ("edit", "patch", "write_file", "delete"):
+                if action == "edit":
+                    kwargs = {"content": VALID_SKILL_CONTENT}
+                elif action == "patch":
+                    kwargs = {"old_string": "Do the thing.", "new_string": "Do the thing. Now."}
+                elif action == "write_file":
+                    kwargs = {"file_path": "references/note.md", "file_content": "hi"}
+                elif action == "delete":
+                    kwargs = {}
+                result = json.loads(skill_manage(action, "gate-test", **kwargs))
+                assert result["success"] is True, f"action {action} failed: {result}"
+                if action == "delete":
+                    _create_skill("gate-test", VALID_SKILL_CONTENT)
 
-    def test_gate_covers_all_schema_actions(self):
-        """_MUTATING_SKILL_ACTIONS must match the tool schema enum exactly."""
+    def test_schema_matches_mutating_actions(self):
+        """SKILL_MANAGE_SCHEMA enum lists exactly the 6 mutating actions."""
         schema_actions = set(SKILL_MANAGE_SCHEMA["parameters"]["properties"]["action"]["enum"])
-        assert _MUTATING_SKILL_ACTIONS == schema_actions, (
-            f"Frozenset {sorted(_MUTATING_SKILL_ACTIONS)} != schema {sorted(schema_actions)}. "
-            "Add new actions to _MUTATING_SKILL_ACTIONS or the schema."
-        )
-
-    def test_error_message_includes_yolo_hint(self):
-        """Blocked error tells the agent how to bypass (HERMES_YOLO_MODE)."""
-        with patch.dict("os.environ", {}, clear=True), \
-             patch("tools.approval._YOLO_MODE_FROZEN", False):
-            result = _require_approval_for_skill_action("create", "test-skill")
-        assert result is not None
-        assert "HERMES_YOLO_MODE" in result["error"]
-
-    def test_skill_manage_returns_approval_error(self, tmp_path):
-        """skill_manage returns JSON approval error for blocked mutations."""
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
-             patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]), \
-             patch.dict("os.environ", {}, clear=True), \
-             patch("tools.approval._YOLO_MODE_FROZEN", False):
-            raw = skill_manage("create", "test-skill", content=VALID_SKILL_CONTENT)
-        import json
-        result = json.loads(raw)
-        assert result["success"] is False
-        assert "approval" in result["error"].lower() or "confirm" in result["error"].lower()
+        expected = {"create", "edit", "patch", "delete", "write_file", "remove_file"}
+        assert schema_actions == expected
