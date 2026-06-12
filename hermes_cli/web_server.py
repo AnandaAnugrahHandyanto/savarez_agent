@@ -699,12 +699,58 @@ _AUDIO_MIME_EXTENSIONS: Dict[str, str] = {
     "audio/x-wav": ".wav",
     "video/webm": ".webm",
 }
-_MAX_TRANSCRIPTION_UPLOAD_BYTES = 25 * 1024 * 1024
+_MAX_TRANSCRIPTION_UPLOAD_BYTES = 200 * 1024 * 1024
+_SILENT_AUDIO_MAX_VOLUME_DB = -80.0
 
 
 def _audio_extension_for_mime(mime_type: str) -> str:
     normalized = (mime_type or "").split(";", 1)[0].strip().lower()
     return _AUDIO_MIME_EXTENSIONS.get(normalized, ".webm")
+
+
+def _audio_looks_digitally_silent(path: str) -> bool:
+    """Return True when ffmpeg reports an all-zero/near-zero recording.
+
+    Browser MediaRecorder can produce a valid WebM/Opus file with a live track
+    but no microphone signal (for example after macOS input-volume/device issues).
+    Whisper may hallucinate repeated tokens such as "you" for those files. Detect
+    that class before STT so Desktop can preserve the audio and show the user an
+    actionable capture-side warning instead of inserting garbage text.
+    """
+
+    try:
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-hide_banner",
+                "-nostats",
+                "-i",
+                path,
+                "-af",
+                "volumedetect",
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=30,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return False
+
+    output = f"{proc.stdout}\n{proc.stderr}"
+    match = re.search(r"max_volume:\s*(-?inf|-?\d+(?:\.\d+)?)\s*dB", output, re.IGNORECASE)
+    if not match:
+        return False
+    if match.group(1).lower() in {"-inf", "inf"}:
+        return True
+
+    try:
+        return float(match.group(1)) <= _SILENT_AUDIO_MAX_VOLUME_DB
+    except ValueError:
+        return False
 
 
 class ModelAssignment(BaseModel):
@@ -2323,13 +2369,27 @@ async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
     temp_path = ""
     try:
         suffix = _audio_extension_for_mime(mime_type)
+        drafts_dir = Path(get_hermes_home()) / "cache" / "voice-drafts"
+        drafts_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         with tempfile.NamedTemporaryFile(
-            prefix="hermes-desktop-voice-",
+            prefix=f"desktop-voice-{timestamp}-",
             suffix=suffix,
+            dir=str(drafts_dir),
             delete=False,
         ) as tmp:
             tmp.write(audio_bytes)
             temp_path = tmp.name
+
+        if await asyncio.to_thread(_audio_looks_digitally_silent, temp_path):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "No microphone signal was detected in the recording. "
+                    "Check the selected input device/input volume, then record again. "
+                    f"Audio preserved at: {temp_path}"
+                ),
+            )
 
         from tools.transcription_tools import transcribe_audio
 
@@ -2338,25 +2398,23 @@ async def transcribe_audio_upload(payload: AudioTranscriptionRequest):
     except HTTPException:
         raise
     except Exception as exc:
-        _log.exception("Desktop voice transcription failed")
-        raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}")
-    finally:
-        if temp_path:
-            try:
-                os.unlink(temp_path)
-            except OSError:
-                pass
+        _log.exception("Desktop voice transcription failed; preserved audio at %s", temp_path or "<not written>")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}. Audio preserved at: {temp_path}")
 
     if not result.get("success"):
+        detail = result.get("error") or "Transcription failed"
+        if temp_path:
+            detail = f"{detail}. Audio preserved at: {temp_path}"
         raise HTTPException(
             status_code=400,
-            detail=result.get("error") or "Transcription failed",
+            detail=detail,
         )
 
     return {
         "ok": True,
         "transcript": str(result.get("transcript") or "").strip(),
         "provider": result.get("provider"),
+        "audio_path": temp_path,
     }
 
 

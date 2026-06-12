@@ -44,6 +44,31 @@ function defaultDuration(kind: NotificationKind) {
   return 5_000
 }
 
+function shouldSendNativeNotification(kind: NotificationKind) {
+  if (typeof document !== 'undefined' && document.hidden) {
+    return true
+  }
+
+  return kind === 'error' || kind === 'warning'
+}
+
+function sendNativeNotification(notification: AppNotification) {
+  if (!shouldSendNativeNotification(notification.kind)) {
+    return
+  }
+
+  const notifyNative = window.hermesDesktop?.notify
+  if (!notifyNative) {
+    return
+  }
+
+  void notifyNative({
+    title: notification.title || 'Hermes',
+    body: notification.message,
+    silent: notification.kind !== 'error'
+  }).catch(() => undefined)
+}
+
 function cleanErrorText(value: string) {
   return value.replace(/^Error:\s*/, '').trim()
 }
@@ -118,6 +143,7 @@ export function notify(input: NotificationInput): string {
   window.clearTimeout(timers.get(id))
   timers.delete(id)
   $notifications.set([notification, ...$notifications.get().filter(item => item.id !== id)].slice(0, 4))
+  sendNativeNotification(notification)
 
   const duration = input.durationMs ?? defaultDuration(kind)
 

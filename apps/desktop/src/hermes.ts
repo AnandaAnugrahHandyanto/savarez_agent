@@ -705,10 +705,13 @@ export function getActionStatus(name: string, lines = 200): Promise<ActionStatus
   })
 }
 
+const DESKTOP_AUDIO_TRANSCRIPTION_TIMEOUT_MS = 10 * 60 * 1000
+
 export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<AudioTranscriptionResponse> {
   return window.hermesDesktop.api<AudioTranscriptionResponse>({
     path: '/api/audio/transcribe',
     method: 'POST',
+    timeoutMs: DESKTOP_AUDIO_TRANSCRIPTION_TIMEOUT_MS,
     body: {
       data_url: dataUrl,
       mime_type: mimeType

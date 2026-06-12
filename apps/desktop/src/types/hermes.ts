@@ -14,6 +14,7 @@ export interface AudioTranscriptionResponse {
   ok: boolean
   provider?: string
   transcript: string
+  audio_path?: string
 }
 
 export interface AudioSpeakResponse {

@@ -18,7 +18,7 @@ export const FILE_BROWSER_DEFAULT_WIDTH = `${SIDEBAR_DEFAULT_WIDTH}px`
 export const FILE_BROWSER_MIN_WIDTH = '14rem'
 export const FILE_BROWSER_MAX_WIDTH = '20rem'
 
-export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
+export const SIDEBAR_SESSIONS_PAGE_SIZE = 200
 
 const SIDEBAR_PINNED_STORAGE_KEY = 'hermes.desktop.pinnedSessions'
 const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorkspace'

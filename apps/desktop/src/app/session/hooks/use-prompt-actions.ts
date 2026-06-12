@@ -1226,8 +1226,20 @@ export function usePromptActions({
 
       const dataUrl = await blobToDataUrl(audio)
       const result = await transcribeAudio(dataUrl, audio.type)
+      const transcript = (result.transcript || '').trim()
+      const words = transcript.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? []
+      const uniqueWords = new Set(words)
+      const looksDegenerate = words.length >= 2 && words.length <= 8 && uniqueWords.size <= 2
 
-      return result.transcript
+      if ((!transcript || looksDegenerate) && result.audio_path) {
+        return [
+          transcript && looksDegenerate ? `Low-confidence transcription: ${transcript}` : 'Voice transcription returned no speech.',
+          `Audio preserved at: ${result.audio_path}`,
+          'Please retry transcription from the preserved audio instead of discarding this dictation.'
+        ].join('\n')
+      }
+
+      return transcript
     },
     [copy.sttDisabled, sttEnabled]
   )

@@ -59,6 +59,18 @@ export function useVoiceRecorder({
       return
     }
 
+    if (!result.heardSpeech && result.durationMs >= 1_500) {
+      setVoiceStatus('idle')
+      notify({
+        kind: 'warning',
+        title: voiceCopy.noSpeechDetected,
+        message: `${voiceCopy.tryRecordingAgain} Check your microphone input level/device if the meter stayed flat.`
+      })
+      focusInput()
+
+      return
+    }
+
     setVoiceStatus('transcribing')
 
     try {
@@ -90,7 +102,7 @@ export function useVoiceRecorder({
       setElapsedSeconds(0)
       setVoiceStatus('recording')
       intervalRef.current = window.setInterval(() => setElapsedSeconds((Date.now() - startedAtRef.current) / 1000), 250)
-      const cap = Math.max(1, Math.min(Math.trunc(maxRecordingSeconds), 600))
+      const cap = Math.max(1, Math.min(Math.trunc(maxRecordingSeconds), 3_600))
       timeoutRef.current = window.setTimeout(() => void stop(), cap * 1000)
     } catch (error) {
       setVoiceStatus('idle')

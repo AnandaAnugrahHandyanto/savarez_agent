@@ -13,7 +13,10 @@ import {
   setIntroPersonality
 } from '@/store/session'
 
-const DEFAULT_VOICE_SECONDS = 120
+// Desktop dictation is often used while reviewing another app/window. Keep the
+// default long enough that it does not feel like recording stopped just because
+// the user switched away from Hermes.
+const DEFAULT_VOICE_SECONDS = 600
 const FAST_TIERS = new Set(['fast', 'priority', 'on'])
 
 function recordingLimit(value: unknown) {

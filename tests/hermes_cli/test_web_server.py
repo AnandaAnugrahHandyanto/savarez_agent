@@ -710,7 +710,10 @@ class TestWebServerEndpoints:
                 "provider": "test",
             }
 
+        import hermes_cli.web_server as web_server
+
         monkeypatch.setattr(transcription_tools, "transcribe_audio", fake_transcribe_audio)
+        monkeypatch.setattr(web_server, "_audio_looks_digitally_silent", lambda path: False)
 
         resp = self.client.post(
             "/api/audio/transcribe",
@@ -721,13 +724,42 @@ class TestWebServerEndpoints:
         )
 
         assert resp.status_code == 200
-        assert resp.json() == {
-            "ok": True,
-            "transcript": "hello from voice mode",
-            "provider": "test",
-        }
-        assert captured["path"].endswith(".webm")
-        assert not Path(captured["path"]).exists()
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["transcript"] == "hello from voice mode"
+        assert body["provider"] == "test"
+        assert body["audio_path"].endswith(".webm")
+        assert captured["path"] == body["audio_path"]
+        assert Path(captured["path"]).exists()
+
+    def test_audio_transcription_rejects_digital_silence_and_preserves_draft(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+        import tools.transcription_tools as transcription_tools
+
+        called = False
+
+        def fake_transcribe_audio(path):
+            nonlocal called
+            called = True
+            return {"success": True, "transcript": "you you", "provider": "test"}
+
+        monkeypatch.setattr(transcription_tools, "transcribe_audio", fake_transcribe_audio)
+        monkeypatch.setattr(web_server, "_audio_looks_digitally_silent", lambda path: True)
+
+        resp = self.client.post(
+            "/api/audio/transcribe",
+            json={
+                "data_url": "data:audio/webm;base64,aGVsbG8=",
+                "mime_type": "audio/webm",
+            },
+        )
+
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "No microphone signal" in detail
+        preserved_path = detail.rsplit("Audio preserved at: ", 1)[1]
+        assert Path(preserved_path).exists()
+        assert called is False
 
     def test_audio_transcription_rejects_invalid_base64(self):
         resp = self.client.post(

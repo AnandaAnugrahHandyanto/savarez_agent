@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 type BrowserAudioContext = typeof AudioContext
+const SPEECH_LEVEL_THRESHOLD = 0.008
 
 export interface MicRecorderOptions {
   onLevel?: (level: number) => void
@@ -15,6 +16,7 @@ export interface MicRecording {
   audio: Blob
   durationMs: number
   heardSpeech: boolean
+  maxLevel: number
 }
 
 export interface MicRecorderErrorCopy {
@@ -70,6 +72,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): { handle: MicRecorde
   const animationRef = useRef<number | null>(null)
   const startedAtRef = useRef(0)
   const heardSpeechRef = useRef(false)
+  const maxLevelRef = useRef(0)
   const silenceTriggeredRef = useRef(false)
   const silenceStartedAtRef = useRef<number | null>(null)
   const stopResolverRef = useRef<((recording: MicRecording | null) => void) | null>(null)
@@ -125,6 +128,11 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): { handle: MicRecorde
         const normalized = Math.min(1, rms / 42)
         const now = Date.now()
 
+        maxLevelRef.current = Math.max(maxLevelRef.current, normalized)
+        if (normalized >= SPEECH_LEVEL_THRESHOLD) {
+          heardSpeechRef.current = true
+        }
+
         setLevel(normalized)
         options.onLevel?.(normalized)
 
@@ -171,10 +179,15 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): { handle: MicRecorde
       throw new Error(copy.microphoneUnsupported)
     }
 
-    const permitted = await window.hermesDesktop?.requestMicrophoneAccess?.()
-
-    if (permitted === false) {
-      throw new Error(copy.microphoneAccessDenied)
+    // On macOS, Electron's systemPreferences.askForMediaAccess can return
+    // false even when TCC already grants the app and Chromium getUserMedia works
+    // (observed after local app.asar hot-patches / unsigned dev builds). Treat
+    // the IPC helper as an advisory prompt, then let getUserMedia be the source
+    // of truth so we don't fail before the working browser permission path.
+    try {
+      await window.hermesDesktop?.requestMicrophoneAccess?.()
+    } catch {
+      // Continue to getUserMedia; it will surface the actionable DOMException.
     }
 
     let stream: MediaStream
@@ -205,6 +218,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): { handle: MicRecorde
     streamRef.current = stream
     recorderRef.current = recorder
     heardSpeechRef.current = false
+    maxLevelRef.current = 0
     silenceTriggeredRef.current = false
     silenceStartedAtRef.current = null
     startedAtRef.current = Date.now()
@@ -220,6 +234,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): { handle: MicRecorde
       const recordingType = recorder.mimeType || mimeType || 'audio/webm'
       const durationMs = Date.now() - startedAtRef.current
       const heardSpeech = heardSpeechRef.current
+      const maxLevel = maxLevelRef.current
 
       chunksRef.current = []
       cleanup()
@@ -236,7 +251,8 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): { handle: MicRecorde
       resolver?.({
         audio: new Blob(chunks, { type: recordingType }),
         durationMs,
-        heardSpeech
+        heardSpeech,
+        maxLevel
       })
     }
 

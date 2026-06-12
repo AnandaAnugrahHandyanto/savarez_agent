@@ -250,8 +250,9 @@ function workspaceGroupsFor(
 
   for (const session of sessions) {
     const path = session.cwd?.trim() || ''
-    const id = path || '__no_workspace__'
-    const label = baseName(path) || path || noWorkspaceLabel
+    const inferred = path ? null : inferredModeGroupFor(session)
+    const id = path || inferred?.id || '__no_workspace__'
+    const label = baseName(path) || path || inferred?.label || noWorkspaceLabel
 
     const group = groups.get(id) ?? { id, label, path: path || null, sessions: [] }
     group.sessions.push(session)
@@ -269,6 +270,32 @@ function workspaceGroupsFor(
   }
 
   return [...groups.values()]
+}
+
+function inferredModeGroupFor(session: SessionInfo): { id: string; label: string } | null {
+  const haystack = `${session.title ?? ''} ${session.preview ?? ''}`.toLowerCase()
+
+  if (/hermes|desktop|agent mac|gateway|session|token|voice|transcription|vps|dashboard/.test(haystack)) {
+    return { id: '__mode_hermes_ops__', label: 'Hermes / Agent Mac Ops' }
+  }
+
+  if (/manu os|memory|task retrieval|stability|lovepunk os/.test(haystack)) {
+    return { id: '__mode_manu_os__', label: 'Manu OS' }
+  }
+
+  if (/artist os|artist site|mannuu|globe|route|brand kit|spotify embed|archive|site/.test(haystack)) {
+    return { id: '__mode_artist_site__', label: 'Artist OS / Site' }
+  }
+
+  if (/ableton|music studio|music creation|plugin|production|shaperbox|fabfilter|soundtoys|uad|serum|sample|midi|mix|master/.test(haystack)) {
+    return { id: '__mode_music_studio__', label: 'Music Studio' }
+  }
+
+  if (/lovepunks|release|rollout|label|party|residency|venue|promoter|booker/.test(haystack)) {
+    return { id: '__mode_lovepunks__', label: 'Lovepunks' }
+  }
+
+  return null
 }
 
 function useSortableBindings(id: string) {
@@ -415,10 +442,11 @@ export function ChatSidebar({
   const sessionByAnyId = useMemo(() => {
     const map = new Map<string, SessionInfo>()
 
-    // Cron sessions are listed separately but can still be pinned, so index
-    // them too — otherwise a pinned cron job can't resolve into the Pinned
-    // section. Recents take precedence on id collisions (set last).
-    for (const s of [...cronSessions, ...visibleSessions]) {
+    // Cron and messaging sessions are listed separately but can still be pinned,
+    // so index them too — otherwise Manu's pinned workrooms disappear from the
+    // Pinned section when the sidebar splits Telegram/Cron out of recents.
+    // Recents take precedence on id collisions (set last).
+    for (const s of [...cronSessions, ...messagingSessions, ...visibleSessions]) {
       map.set(s.id, s)
 
       if (s._lineage_root_id && !map.has(s._lineage_root_id)) {
@@ -427,7 +455,7 @@ export function ChatSidebar({
     }
 
     return map
-  }, [visibleSessions, cronSessions])
+  }, [visibleSessions, cronSessions, messagingSessions])
 
   const pinnedSessions = useMemo(() => {
     const seen = new Set<string>()
@@ -885,7 +913,7 @@ export function ChatSidebar({
             {!trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
-                contentClassName={cn('flex max-h-44 flex-col gap-px rounded-lg pb-2 pt-1', GROUP_BODY)}
+                contentClassName={cn('flex flex-col gap-px rounded-lg pb-2 pt-1', GROUP_BODY)}
                 dndSensors={dndSensors}
                 emptyState={<SidebarPinnedEmptyState />}
                 label={s.pinned}

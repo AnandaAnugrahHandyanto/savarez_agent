@@ -103,7 +103,8 @@ export async function refreshActiveProfile(): Promise<void> {
   try {
     const res = await window.hermesDesktop.api<ActiveProfileResponse>({ path: '/api/profiles/active' })
 
-    setActiveProfile(res.current || 'default')
+    const current = res.current || res.active || 'default'
+    setActiveProfile(current)
   } catch {
     // Backend may not be ready; keep the last known value.
   }
@@ -249,8 +250,8 @@ $showAllProfiles.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY
 // gateway so opening/selecting a profile (which swaps the gateway) moves the
 // whole sidebar with it — a real context switch, not a separate filter to keep
 // in sync.
-export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile], (showAll, gateway) =>
-  showAll ? ALL_PROFILES : normalizeProfileKey(gateway)
+export const $profileScope = computed([$showAllProfiles, $activeProfile], (showAll, active) =>
+  showAll ? ALL_PROFILES : normalizeProfileKey(active)
 )
 
 // Switch the active context to `name`: leave "All profiles" mode, point new
@@ -262,6 +263,7 @@ export function selectProfile(name: string): void {
   // fresh; re-tapping the profile you're already in leaves your session be.
   const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
   $showAllProfiles.set(false)
+  setActiveProfile(target)
   $newChatProfile.set(target)
 
   if (switching) {
