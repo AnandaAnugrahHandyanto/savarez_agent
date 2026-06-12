@@ -1,0 +1,7 @@
+name: web-perplexity
+version: 1.0.0
+description: "Perplexity AI-native web search (Search API). Returns fresh, ranked web results with citations. Search only. Requires PERPLEXITY_API_KEY — sign up at https://www.perplexity.ai/account/api."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - perplexity
