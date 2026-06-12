@@ -2019,6 +2019,7 @@ def delegate_task(
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     parent_agent=None,
+    background: bool = False,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2027,7 +2028,12 @@ def delegate_task(
       - Single: provide goal (+ optional context, toolsets, role)
       - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
 
-    The 'role' parameter controls whether a child can further delegate:
+    When ``background=True`` (single-task only), the subagent is dispatched
+    in a background thread and a handle is returned immediately. The parent
+    turn is NOT blocked. When the subagent finishes, its result re-enters
+    the conversation as a new turn via the completion queue (idle drain rail).
+
+    The ``role`` parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
@@ -2046,8 +2052,56 @@ def delegate_task(
             "(`p` in /agents) or the `delegation.pause` RPC before retrying."
         )
 
-    # Normalise the top-level role once; per-task overrides re-normalise.
+    # Normalise the top-level role once; used by both sync and async paths.
     top_role = _normalize_role(role)
+
+    # ── Background (async) dispatch ─────────────────────────────────────────
+    if background:
+        # v1: single-task only
+        recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
+        if tasks_error:
+            return tool_error(tasks_error)
+        if recovered_tasks is not None:
+            tasks = recovered_tasks
+        if tasks and isinstance(tasks, list) and len(tasks) > 1:
+            return tool_error(
+                "background=True is only supported for single-task delegation "
+                "(one 'goal'). Use multiple delegate_task(background=True) calls, "
+                "or set background=false for batch."
+            )
+        if not (goal and isinstance(goal, str) and goal.strip()):
+            return tool_error(
+                "background=True requires a 'goal' (single task). "
+                "Provide goal, or set background=false."
+            )
+
+        # Lazy-import to avoid circular dependency at module load time.
+        from tools.async_delegation import dispatch as _async_dispatch
+        from tools.process_registry import process_registry as _process_registry
+
+        session_key = getattr(parent_agent, "session_id", None) or ""
+        task_info = {
+            "goal": goal,
+            "context": context,
+            "toolsets": toolsets,
+            "role": top_role,
+        }
+
+        result = _async_dispatch(
+            runner_fn=lambda: _run_single_child(
+                task_index=0,
+                goal=goal,
+                context=context,
+                toolsets=toolsets,
+                role=top_role,
+                parent_agent=parent_agent,
+            ),
+            task_info=task_info,
+            completion_queue=_process_registry.completion_queue,
+            session_key=session_key,
+            parent_agent=parent_agent,
+        )
+        return json.dumps(result, ensure_ascii=False)
 
     # Depth limit — configurable via delegation.max_spawn_depth,
     # default 2 for parity with the original MAX_DEPTH constant.
@@ -2964,6 +3018,17 @@ DELEGATE_TASK_SCHEMA = {
                     "Leave empty unless acp_command is explicitly provided."
                 ),
             },
+            "background": {
+                "type": "boolean",
+                "description": (
+                    "Dispatch the subagent in the background and return immediately "
+                    "(non-blocking). The parent turn is NOT blocked while the subagent runs. "
+                    "When the subagent finishes, its result re-enters the conversation as a "
+                    "new turn. Requires a single 'goal' (not 'tasks'). "
+                    "v1: single-task only; multi-task batch is rejected. "
+                    "Capacity is limited by delegation.max_async_children (default 3)."
+                ),
+            },
         },
         "required": [],
     },
@@ -2987,6 +3052,7 @@ registry.register(
         acp_args=args.get("acp_args"),
         role=args.get("role"),
         parent_agent=kw.get("parent_agent"),
+        background=args.get("background", False),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

@@ -5353,6 +5353,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # turn so the agent kicks off the new chat.
         asyncio.create_task(self._handoff_watcher())
 
+        # Start async-delegation watcher — drains async_delegation events from
+        # the completion queue and injects them into idle sessions between turns.
+        asyncio.create_task(self._async_delegation_watcher())
+
         logger.info("Press Ctrl+C to stop")
         
         return True
@@ -5406,6 +5410,68 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as exc:
                 logger.debug("Handoff watcher tick error: %s", exc, exc_info=True)
             await asyncio.sleep(interval)
+
+    async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
+        """Background watcher that drains async_delegation events from the
+        completion queue and injects them into their originating sessions.
+
+        This watcher covers the "idle session" case: when the delegation
+        completes and the agent is not in an active turn, the per-turn drain in
+        ``_drain_completion_notifications`` won't fire. The watcher bridges that
+        gap by polling the queue and injecting via ``_inject_watch_notification``,
+        which routes to the right adapter and either injects immediately (idle)
+        or enqueues (busy session).
+
+        Silently skips events whose session_key has no active agent and cannot
+        be routed — the event is consumed so it doesn't accumulate.
+        """
+        from tools.process_registry import process_registry as _pr
+        from tools.process_registry import format_process_notification
+
+        logger.debug("Async delegation watcher started")
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                while not _pr.completion_queue.empty():
+                    evt = _pr.completion_queue.get_nowait()
+                    if evt.get("type") != "async_delegation":
+                        # Not ours — put it back for other consumers.
+                        # (This shouldn't happen since we only drain async_delegation,
+                        # but guard against queue ordering edge cases.)
+                        try:
+                            _pr.completion_queue.put_nowait(evt)
+                        except Exception:
+                            pass
+                        continue
+
+                    _session_key = evt.get("session_key", "")
+                    # Skip if no routing information
+                    if not _session_key:
+                        logger.debug("Dropping async_delegation event with no session_key")
+                        continue
+
+                    # Skip if an agent is currently running for this session —
+                    # the per-turn drain will handle it when that turn finishes.
+                    if _session_key in self._running_agents:
+                        try:
+                            _pr.completion_queue.put_nowait(evt)
+                        except Exception:
+                            pass
+                        continue
+
+                    synth_text = format_process_notification(evt)
+                    if synth_text:
+                        try:
+                            await self._inject_watch_notification(synth_text, evt)
+                        except Exception as exc:
+                            logger.error(
+                                "Async delegation watcher injection error for %s: %s",
+                                _session_key, exc,
+                            )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("Async delegation watcher tick error: %s", exc, exc_info=True)
 
     async def _process_handoff(self, row: Dict[str, Any]) -> None:
         """Execute one handoff row. Raises on failure (caller marks failed)."""
@@ -8997,12 +9063,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # inject watch-type events here.
             try:
                 from tools.process_registry import process_registry as _pr
+                from tools.process_registry import format_process_notification
                 _watch_events = []
+                _async_delegation_events = []
                 while not _pr.completion_queue.empty():
                     evt = _pr.completion_queue.get_nowait()
                     evt_type = evt.get("type", "completion")
                     if evt_type in {"watch_match", "watch_disabled"}:
                         _watch_events.append(evt)
+                    elif evt_type == "async_delegation":
+                        _async_delegation_events.append(evt)
                     # else: completion events are handled by the watcher task
                 for evt in _watch_events:
                     synth_text = _format_gateway_process_notification(evt)
@@ -9011,6 +9081,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             await self._inject_watch_notification(synth_text, evt)
                         except Exception as e2:
                             logger.error("Watch notification injection error: %s", e2)
+                for evt in _async_delegation_events:
+                    synth_text = format_process_notification(evt)
+                    if synth_text:
+                        try:
+                            await self._inject_watch_notification(synth_text, evt)
+                        except Exception as e2:
+                            logger.error("Async delegation injection error: %s", e2)
             except Exception as e:
                 logger.debug("Watch queue drain error: %s", e)
 
