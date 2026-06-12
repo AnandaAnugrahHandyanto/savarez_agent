@@ -1203,5 +1203,84 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         mock_imap.xatom.assert_called_once()
 
 
+class TestAutoSubmittedHeader(unittest.TestCase):
+    """Every outbound email must carry Auto-Submitted: auto-replied (RFC 3834).
+
+    Without it, autoresponders (vacation replies, ticketing systems) cannot
+    tell Hermes replies are automatic and may answer back, creating mail loops.
+    """
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def test_send_email_stamps_auto_submitted(self):
+        """Plain reply path stamps Auto-Submitted: auto-replied."""
+        adapter = self._make_adapter()
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            adapter._send_email("user@test.com", "Hello!", None)
+
+            sent_msg = mock_server.send_message.call_args[0][0]
+            self.assertEqual(sent_msg["Auto-Submitted"], "auto-replied")
+
+    def test_send_email_with_attachment_stamps_auto_submitted(self):
+        """Single-attachment path stamps Auto-Submitted: auto-replied."""
+        import tempfile
+        adapter = self._make_adapter()
+
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"Test document content")
+            tmp_path = f.name
+
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
+
+                adapter._send_email_with_attachment(
+                    "user@test.com", "Here is the file", tmp_path
+                )
+
+                sent_msg = mock_server.send_message.call_args[0][0]
+                self.assertEqual(sent_msg["Auto-Submitted"], "auto-replied")
+        finally:
+            os.unlink(tmp_path)
+
+    def test_send_email_with_attachments_stamps_auto_submitted(self):
+        """Multi-attachment path stamps Auto-Submitted: auto-replied."""
+        import tempfile
+        adapter = self._make_adapter()
+
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"Attachment one")
+            tmp_path = f.name
+
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
+
+                adapter._send_email_with_attachments(
+                    "user@test.com", "Files attached", [tmp_path]
+                )
+
+                sent_msg = mock_server.send_message.call_args[0][0]
+                self.assertEqual(sent_msg["Auto-Submitted"], "auto-replied")
+        finally:
+            os.unlink(tmp_path)
+
+
 if __name__ == "__main__":
     unittest.main()
