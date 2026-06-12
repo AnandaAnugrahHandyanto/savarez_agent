@@ -212,6 +212,51 @@ def test_slack_flow_accepts_and_strips_display_label_mention(tmp_path):
     assert runs[0].request_text == "checkout crashes after promo on Android"
 
 
+def test_slack_flow_removes_gateway_block_kit_payload_from_request_text(tmp_path):
+    launched: list[str] = []
+    config = MonicaConfig(
+        enabled=True,
+        slack=SlackConfig(
+            allowed_channels=("D_MONICA",),
+            bot_user_ids=("UMONICA",),
+        ),
+    )
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    flow = MonicaSlackFlow(
+        config=config,
+        state=state,
+        loop_launcher=launched.append,
+        approval_readiness_checker=lambda: (True, ""),
+    )
+    human_text = (
+        "Monica live ingress smoke test. This is not a mobile app bug and should not "
+        "create a Linear issue or PR."
+    )
+    gateway_text = (
+        f"{human_text} *Sent using* ChatGPT\n\n"
+        "[Slack Block Kit payload for this message]\n"
+        "```json\n"
+        '[{"type":"context","elements":[{"type":"mrkdwn","text":"*Sent using* ChatGPT"}]}]\n'
+        "```"
+    )
+
+    result = flow.handle_gateway_event(
+        _slack_event(
+            gateway_text,
+            raw_text=gateway_text,
+            raw_channel_type="im",
+            channel_id="D_MONICA",
+            chat_type="dm",
+        )
+    )
+
+    runs = state.list_runs()
+    assert result == {"action": "skip", "reason": "monica_loop_queued"}
+    assert len(runs) == 1
+    assert launched == [runs[0].id]
+    assert runs[0].request_text == human_text
+
+
 def test_slack_flow_without_bot_user_ids_does_not_read_generic_channel_messages(tmp_path):
     config = MonicaConfig(
         enabled=True,

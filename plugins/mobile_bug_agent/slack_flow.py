@@ -15,6 +15,8 @@ from .state import MonicaState
 _SLACK_MENTION_RE = re.compile(r"<@([A-Z0-9_]+)(?:\|[^>]+)?>")
 _SLACK_USER_ID_RE = re.compile(r"^[UW][A-Z0-9_]{2,}$")
 _SLACK_CHANNEL_ID_RE = re.compile(r"^[CDG][A-Z0-9_]{2,}$")
+_SLACK_BLOCK_KIT_PAYLOAD_MARKER = "[Slack Block Kit payload for this message]"
+_CHATGPT_FOOTER_RE = re.compile(r"\s*\*Sent using\*\s+ChatGPT\s*$", re.I)
 logger = logging.getLogger(__name__)
 _APPROVAL_RE = re.compile(
     r"\b("
@@ -505,9 +507,9 @@ class MonicaSlackFlow:
     def _request_text(self, event: Any) -> str:
         text = str(getattr(event, "text", "") or "").strip()
         if text:
-            return _SLACK_MENTION_RE.sub("", text).strip()
+            return _clean_request_text(text)
         raw_text = self._raw_text(event)
-        return _SLACK_MENTION_RE.sub("", raw_text).strip()
+        return _clean_request_text(raw_text)
 
     def _raw_text(self, event: Any) -> str:
         raw = getattr(event, "raw_message", None)
@@ -628,6 +630,15 @@ class MonicaSlackFlow:
         ):
             return False
         return bool(_NEW_WORK_HINT_RE.search(text))
+
+
+def _clean_request_text(text: str) -> str:
+    clean = str(text or "").strip()
+    marker_index = clean.find(_SLACK_BLOCK_KIT_PAYLOAD_MARKER)
+    if marker_index >= 0:
+        clean = clean[:marker_index].rstrip()
+    clean = _CHATGPT_FOOTER_RE.sub("", clean).strip()
+    return _SLACK_MENTION_RE.sub("", clean).strip()
 
 
 def _log_slack_flow(
