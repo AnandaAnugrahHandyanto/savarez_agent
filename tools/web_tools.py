@@ -202,6 +202,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "perplexity":
+        return _has_env("PERPLEXITY_API_KEY")
     if backend == "searxng":
         return _has_env("SEARXNG_URL")
     if backend == "brave-free":
@@ -1153,13 +1155,18 @@ async def web_extract_tool(
 
 # Convenience function to check Firecrawl credentials
 def check_web_api_key() -> bool:
-    """Check whether the configured web backend is available."""
+    """Check whether the configured web backend is available.
+
+    NOTE: perplexity is search-only — recognised here for availability but
+    intentionally excluded from the shared :func:`_get_backend` auto-detect
+    so ``web_extract`` never resolves to it. Select it via ``web.search_backend``.
+    """
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai"}:
+    if configured in {"exa", "parallel", "firecrawl", "tavily", "perplexity", "searxng", "brave-free", "ddgs", "xai"}:
         return _is_backend_available(configured)
     return any(
         _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai")
+        for backend in ("exa", "parallel", "firecrawl", "tavily", "perplexity", "searxng", "brave-free", "ddgs", "xai")
     )
 
 
