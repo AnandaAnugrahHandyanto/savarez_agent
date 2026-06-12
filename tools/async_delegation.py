@@ -113,6 +113,9 @@ _promotion_cv = threading.Condition(_running_lock)
 # Daemon threads — started on first dispatch, live for process lifetime.
 _promotion_thread: Optional[threading.Thread] = None
 _timeout_watcher_thread: Optional[threading.Thread] = None
+# Startup lock — prevents two concurrent dispatch() callers from racing to
+# create the same daemon thread (M2 fix).
+_daemon_start_lock = threading.Lock()
 
 
 # ----------------------------------------------------------------------
@@ -121,20 +124,22 @@ _timeout_watcher_thread: Optional[threading.Thread] = None
 
 def _start_promotion_thread() -> None:
     global _promotion_thread
-    if _promotion_thread is None or not _promotion_thread.is_alive():
-        _promotion_thread = threading.Thread(
-            target=_promotion_loop, daemon=True, name="async-delegation-promotion"
-        )
-        _promotion_thread.start()
+    with _daemon_start_lock:
+        if _promotion_thread is None or not _promotion_thread.is_alive():
+            _promotion_thread = threading.Thread(
+                target=_promotion_loop, daemon=True, name="async-delegation-promotion"
+            )
+            _promotion_thread.start()
 
 
 def _start_timeout_watcher() -> None:
     global _timeout_watcher_thread
-    if _timeout_watcher_thread is None or not _timeout_watcher_thread.is_alive():
-        _timeout_watcher_thread = threading.Thread(
-            target=_timeout_watcher_loop, daemon=True, name="async-delegation-timeout"
-        )
-        _timeout_watcher_thread.start()
+    with _daemon_start_lock:
+        if _timeout_watcher_thread is None or not _timeout_watcher_thread.is_alive():
+            _timeout_watcher_thread = threading.Thread(
+                target=_timeout_watcher_loop, daemon=True, name="async-delegation-timeout"
+            )
+            _timeout_watcher_thread.start()
 
 
 def _promotion_loop() -> None:
@@ -417,24 +422,27 @@ def dispatch(
     delegation_id = f"deleg_{uuid.uuid4().hex[:8]}"
     task_info_copy = dict(task_info)  # shallow copy
 
+    # C1 fix: capacity check + enqueue/dispatch decision in a single atomic
+    # section so no other thread can slip in between the read and the write.
+    queue_depth = 0
     with _running_lock:
         active = len(_running)
-
-    if active >= max_children:
-        # At capacity — enqueue for later promotion.
-        item = QueuedDispatch(
-            delegation_id=delegation_id,
-            runner_fn=runner_fn,
-            task_info=task_info_copy,
-            completion_queue=completion_queue,
-            session_key=session_key,
-            parent_agent=parent_agent,
-            enqueue_time=time.time(),
-            timeout_seconds=timeout_seconds,
-        )
-        with _running_lock:
+        at_capacity = active >= max_children
+        if at_capacity:
+            item = QueuedDispatch(
+                delegation_id=delegation_id,
+                runner_fn=runner_fn,
+                task_info=task_info_copy,
+                completion_queue=completion_queue,
+                session_key=session_key,
+                parent_agent=parent_agent,
+                enqueue_time=time.time(),
+                timeout_seconds=timeout_seconds,
+            )
             _waiting.append(item)
             queue_depth = len(_waiting)
+
+    if at_capacity:
         logger.info(
             "Async delegation %s queued (at capacity %d/%d). Queue depth: %d",
             delegation_id, active, max_children, queue_depth,
