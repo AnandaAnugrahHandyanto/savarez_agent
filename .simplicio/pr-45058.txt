@@ -1,0 +1,1 @@
+Fix #45058: web_search/web_extract silently routes to Parallel.ai without user opt-in
