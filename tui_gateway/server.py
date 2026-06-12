@@ -1158,7 +1158,7 @@ def _ensure_session_db_row(session: dict) -> None:
     try:
         db.create_session(
             key,
-            source="tui",
+            source=_session_source(session),
             model=_resolve_model(),
             cwd=_session_cwd(session) if session.get("explicit_cwd") else None,
         )
@@ -1297,7 +1297,25 @@ def _cwd_for_session_key(session_key: str) -> str:
     return ""
 
 
-def _set_session_context(session_key: str, cwd: str | None = None) -> list:
+def _source_for_session_key(session_key: str) -> str:
+    if not session_key:
+        return ""
+    with _sessions_lock:
+        for sess in list(_sessions.values()):
+            if sess.get("session_key") == session_key:
+                return _session_source(sess)
+    return ""
+
+
+def _session_source(session: dict) -> str:
+    return str(session.get("source") or "").strip() or "tui"
+
+
+def _set_session_context(
+    session_key: str,
+    cwd: str | None = None,
+    source: str | None = None,
+) -> list:
     try:
         from gateway.session_context import set_session_vars
 
@@ -1306,7 +1324,12 @@ def _set_session_context(session_key: str, cwd: str | None = None) -> list:
         # know the parent workspace pass it explicitly so spawned agents inherit
         # it instead of falling back to the gateway launch dir.
         resolved = cwd if cwd is not None else _cwd_for_session_key(session_key)
-        return set_session_vars(session_key=session_key, cwd=resolved)
+        resolved_source = source if source is not None else _source_for_session_key(session_key)
+        return set_session_vars(
+            session_key=session_key,
+            session_source=resolved_source,
+            cwd=resolved,
+        )
     except Exception:
         return []
 
@@ -3628,6 +3651,7 @@ def _(rid, params: dict) -> dict:
             "active_session_lease": lease,
             "cols": cols,
             "created_at": now,
+            "source": str(params.get("source") or "").strip() or "tui",
             "edit_snapshots": {},
             "explicit_cwd": explicit_cwd,
             "history": history,
@@ -4711,7 +4735,7 @@ def _(rid, params: dict) -> dict:
             )
         db.create_session(
             new_key,
-            source="tui",
+            source=_session_source(session),
             model=_resolve_model(),
             # Stable _branched_from marker so list_sessions_rich() keeps the
             # branch visible in /resume and /sessions. The TUI branch leaves

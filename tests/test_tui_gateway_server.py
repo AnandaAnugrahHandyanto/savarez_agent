@@ -86,6 +86,29 @@ def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
         server._sessions.pop(sid, None)
 
 
+def test_session_context_uses_session_source(tmp_path):
+    """Gateway context should carry per-session source tags into agent turns."""
+    from gateway.session_context import get_session_env
+
+    sid = "source-sid"
+    session_key = "source-key"
+    project = tmp_path / "project"
+    project.mkdir()
+
+    server._sessions[sid] = {
+        "session_key": session_key,
+        "cwd": str(project),
+        "source": "tool",
+    }
+
+    tokens = server._set_session_context(session_key)
+    try:
+        assert get_session_env("HERMES_SESSION_SOURCE") == "tool"
+    finally:
+        server._clear_session_context(tokens)
+        server._sessions.pop(sid, None)
+
+
 def test_handoff_fail_marks_only_inflight_rows(monkeypatch):
     class DbContext:
         def __init__(self, db):
@@ -1536,6 +1559,30 @@ def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
     server._ensure_session_db_row({"session_key": "k1", "cwd": str(tmp_path)})
 
     assert created == [{"key": "k1", "source": "tui", "model": "test-model", "cwd": None}]
+
+
+def test_ensure_session_db_row_preserves_session_source(monkeypatch, tmp_path):
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, cwd=None):
+            created.append({"key": key, "source": source, "model": model, "cwd": cwd})
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    server._ensure_session_db_row(
+        {
+            "session_key": "k1",
+            "cwd": str(tmp_path),
+            "explicit_cwd": True,
+            "source": "tool",
+        }
+    )
+
+    assert created == [
+        {"key": "k1", "source": "tool", "model": "test-model", "cwd": str(tmp_path)}
+    ]
 
 
 def test_session_title_clears_pending_after_persist(monkeypatch):
@@ -6962,13 +7009,19 @@ def test_session_create_records_close_on_disconnect_flag(monkeypatch):
     server._sessions.clear()
     try:
         on = server.handle_request(
-            {"id": "1", "method": "session.create", "params": {"close_on_disconnect": True}}
+            {
+                "id": "1",
+                "method": "session.create",
+                "params": {"close_on_disconnect": True, "source": "tool"},
+            }
         )["result"]["session_id"]
         off = server.handle_request(
             {"id": "2", "method": "session.create", "params": {}}
         )["result"]["session_id"]
         assert server._sessions[on]["close_on_disconnect"]
+        assert server._sessions[on]["source"] == "tool"
         assert not server._sessions[off]["close_on_disconnect"]
+        assert server._sessions[off]["source"] == "tui"
     finally:
         server._sessions.clear()
 
