@@ -291,51 +291,49 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const [skillsOpen, setSkillsOpen] = useState(false)
   const [systemOpen, setSystemOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
-
   // ── Quota auto-refresh ──
-  // Poll quota.refresh every QUOTA_TICK_MS so the percentage bar ticks down
-  // smoothly (MiniMax's 5-hour window advances every second; without this the
-  // bar would only update on agent-init events). Backend has its own 60s
-  // refresher, but the frontend timer drives the visible re-render cadence.
-  //
-  // The sid is sourced from the nanostore (not the prop) because the prop is
-  // only passed when the intro message is rendered — it doesn't update as
-  // the session id becomes known later. The store subscription ensures the
-  // polling effect re-runs as soon as a sid becomes available.
-  const sessionId = useStore($uiSessionId)
-  const [liveQuota, setLiveQuota] = useState<QuotaInfo | undefined>(info.quota)
-  const { rpc } = useGateway()
-  const { stderr } = useStderr()
-  useEffect(() => {
-    stderr.write(`[quota] SessionPanel sessionId=${sessionId} info.quota.supported=${info.quota?.supported}\n`)
-  })
-  useEffect(() => {
-    // Pick up changes to info.quota (e.g. after model switch)
-    setLiveQuota(info.quota)
-  }, [info.quota])
-
-  useEffect(() => {
-    let cancelled = false
-    const refresh = async () => {
-      try {
-        const resp = await rpc<{ quota: QuotaInfo }>('quota.refresh', { session_id: sessionId ?? 'unknown' })
-        if (cancelled || !resp?.quota) return
-        setLiveQuota({ ...resp.quota })
-      } catch {
-        // Network blip; keep the previous data on screen.
+    // Poll quota.refresh every QUOTA_TICK_MS so the progress bar in the status
+    // rule ticks down smoothly (MiniMax's 5-hour window advances every
+    // second; without this the HUD would only update on agent-init events).
+    //
+    // The sid is sourced from the nanostore (not the prop) because the prop is
+    // only passed when the intro message is rendered — it doesn't update as
+    // the session id becomes known later. The store subscription ensures the
+    // polling effect re-runs as soon as a sid becomes available.
+    //
+    // Why we push results into ui.info.quota: the intro banner is part of the
+    // transcript virtual scroll and only flushes once per layout pass. The
+    // status rule, on the other hand, renders every frame (busy state,
+    // session duration ticks, etc.). By patching the shared ui.info.quota
+    // reference, every subscriber to $uiState — including QuotaHud inside
+    // StatusRulePane — re-renders on each tick.
+    const sessionId = useStore($uiSessionId)
+    const { rpc } = useGateway()
+    useEffect(() => {
+      let cancelled = false
+      const refresh = async () => {
+        try {
+          const resp = await rpc<{ quota: QuotaInfo }>('quota.refresh', { session_id: sessionId ?? 'unknown' })
+          if (cancelled || !resp?.quota) return
+          patchUiState(state => ({
+            ...state,
+            info: state.info ? { ...state.info, quota: { ...resp.quota } } : state.info
+          }))
+        } catch {
+          // Network blip; keep the previous data on screen.
+        }
       }
-    }
-    if (!sessionId) {
-      const t = setTimeout(refresh, QUOTA_TICK_MS)
-      return () => clearTimeout(t)
-    }
-    const id = setInterval(refresh, QUOTA_TICK_MS)
-    return () => {
-      cancelled = true
-      clearInterval(id)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, info.quota?.supported, rpc])
+      if (!sessionId) {
+        const t = setTimeout(refresh, QUOTA_TICK_MS)
+        return () => clearTimeout(t)
+      }
+      const id = setInterval(refresh, QUOTA_TICK_MS)
+      return () => {
+        cancelled = true
+        clearInterval(id)
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sessionId, info.quota?.supported, rpc])
 
   const truncLine = (pfx: string, items: string[]) => {
     let line = ''

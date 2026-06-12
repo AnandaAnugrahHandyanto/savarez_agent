@@ -1151,32 +1151,8 @@ def handle_function_call(
         _approval_tokens = None
         # NOTE: execute_code sandbox branch and middleware wrapper are handled
         # upstream of this point by origin/main (run_tool_execution_middleware
-        # in tools/approval.py).  We only add the M3 proposal-gate registration
-        # block here, which is opt-in via x_hermes.requires_acknowledgment.
-        duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
-
-        # ── Register any proposal emitted by the tool (gate stays opt-in) ──
-        # If the tool's schema opts in to the gate (via
-        # ``x_hermes.requires_acknowledgment``) AND the result carries
-        # ``proposal_id``, register it so follow-up calls can be gated.
-        try:
-            from agent.proposal_gate import (
-                extract_proposal_from_result,
-                tool_requires_acknowledgment,
-            )
-            schema = registry.get_schema(function_name)
-            if schema and tool_requires_acknowledgment(schema):
-                pid, group, ack = extract_proposal_from_result(result or "")
-                if pid:
-                    get_proposal_gate().register(
-                        proposal_id=pid,
-                        proposal_group=group,
-                        tool=function_name,
-                        ack_required=ack,
-                    )
-        except Exception as _reg_err:
-            logger.debug("proposal register error: %s", _reg_err)
-
+        # in tools/approval.py).  The M3 proposal-gate registration block
+        # is inserted after dispatch (below) so it can read the result.
         try:
             from tools.approval import (
                 reset_current_observability_context,
@@ -1219,6 +1195,28 @@ def handle_function_call(
                 turn_id=turn_id or "",
                 api_request_id=api_request_id or "",
             )
+
+            # ── Register any proposal emitted by the tool (gate stays opt-in) ──
+            # If the tool's schema opts in to the gate (via
+            # ``x_hermes.requires_acknowledgment``) AND the result carries
+            # ``proposal_id``, register it so follow-up calls can be gated.
+            try:
+                from agent.proposal_gate import (
+                    extract_proposal_from_result,
+                    tool_requires_acknowledgment,
+                )
+                schema = registry.get_schema(function_name)
+                if schema and tool_requires_acknowledgment(schema):
+                    pid, group, ack = extract_proposal_from_result(result or "")
+                    if pid:
+                        get_proposal_gate().register(
+                            proposal_id=pid,
+                            proposal_group=group,
+                            tool=function_name,
+                            ack_required=ack,
+                        )
+            except Exception as _reg_err:
+                logger.debug("proposal register error: %s", _reg_err)
         finally:
             if _approval_tokens is not None and reset_current_observability_context is not None:
                 try:
