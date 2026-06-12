@@ -83,7 +83,7 @@ _MAX_LOCAL_REFERENCE_BYTES = 25 * 1024 * 1024
 # Codex Responses surface used for the request. The chat model itself is only
 # the host that calls the ``image_generation`` tool; the actual image work is
 # done by ``API_MODEL``.
-_CODEX_CHAT_MODEL = "gpt-5.4"
+_CODEX_CHAT_MODEL = "gpt-5.5"
 _CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 _CODEX_INSTRUCTIONS = (
     "You are an assistant that must fulfill image generation requests by "
