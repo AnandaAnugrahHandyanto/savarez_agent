@@ -2768,9 +2768,23 @@ def _bind_prompt_submit_keys(kb, handler) -> None:
 
 
 def _disable_prompt_toolkit_cpr_warning(app) -> None:
-    """Let prompt_toolkit fall back from CPR without printing into the prompt."""
+    """Disable CPR (Cursor Position Report) requests entirely.
+
+    On WSL2 / Windows Terminal / remote sessions, CPR responses (ESC[<row>;<col>R)
+    can arrive delayed and leak into the input buffer, corrupting prompt_toolkit's
+    parser state — the user can type but Enter stops working.
+
+    Setting cpr_support = NOT_SUPPORTED tells the renderer to never send ESC[6n
+    queries, eliminating the leak at the source.  The callback is also cleared
+    as defense-in-depth.
+    """
     try:
         app.renderer.cpr_not_supported_callback = None
+    except Exception:
+        pass
+    try:
+        from prompt_toolkit.renderer import CPR_Support
+        app.renderer.cpr_support = CPR_Support.NOT_SUPPORTED
     except Exception:
         pass
 
@@ -5524,7 +5538,53 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             f"Agent Running: {'Yes' if is_running else 'No'}",
         ])
         self._console_print("\n".join(lines), highlight=False, markup=False)
-    
+
+    def _handle_cache_command(self, cmd: str = ""):
+        """Handle /cache command — show prompt cache diagnostics."""
+        agent = getattr(self, "agent", None)
+        monitor = getattr(agent, "cache_monitor", None) if agent else None
+
+        parts = cmd.strip().split()
+        sub = parts[1].lower() if len(parts) > 1 else ""
+
+        if sub == "save" and monitor:
+            path = monitor.save_session()
+            self._console_print(f"  💾 Cache stats saved to: {path}")
+            return
+
+        if sub == "reset" and monitor:
+            monitor._records.clear()
+            monitor._breaks.clear()
+            monitor._warnings.clear()
+            monitor._prev_cache_read = 0
+            self._console_print("  🔄 Cache monitor reset")
+            return
+
+        if monitor:
+            report = monitor.format_report()
+            self._console_print(report, highlight=False, markup=False)
+        else:
+            # Fallback: show session-level cache stats from agent
+            if agent:
+                read_tok = getattr(agent, "session_cache_read_tokens", 0) or 0
+                write_tok = getattr(agent, "session_cache_write_tokens", 0) or 0
+                input_tok = getattr(agent, "session_input_tokens", 0) or 0
+                calls = getattr(agent, "session_api_calls", 0) or 0
+                hit_rate = read_tok / input_tok if input_tok > 0 else 0
+                self._console_print(f"""
+  📊 Cache Stats (basic mode)
+  ─────────────────────────────
+  API Calls:      {calls}
+  Input Tokens:   {input_tok:,}
+  Cache Read:     {read_tok:,}
+  Cache Write:    {write_tok:,}
+  Hit Rate:       {hit_rate:.1%}
+  ─────────────────────────────
+  (Full diagnostics available after cache_monitor loads)
+""", highlight=False, markup=False)
+            else:
+                self._console_print("  ⚠️ No active agent session")
+
     def _fast_command_available(self) -> bool:
         try:
             from hermes_cli.models import model_supports_fast_mode
@@ -7430,6 +7490,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._show_gateway_status()
         elif canonical == "status":
             self._show_session_status()
+        elif canonical == "cache":
+            self._handle_cache_command(cmd_original)
         elif canonical == "statusbar":
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"
@@ -12735,6 +12797,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         app._on_resize = _resize_clear_ghosts
 
         def spinner_loop():
+            # Counter for periodic input-buffer sanitization — every ~5s
+            # (25 ticks × 0.2s) while idle, strip leaked escape sequences
+            # that could corrupt prompt_toolkit's input parser.
+            _idle_ticks = 0
             while not self._should_exit:
                 if not self._app:
                     time.sleep(0.1)
@@ -12742,6 +12808,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if self._command_running:
                     self._invalidate(min_interval=0.1)
                     time.sleep(0.1)
+                    _idle_ticks = 0
                 else:
                     # Do not repaint the idle prompt every second. In non-full-screen
                     # prompt_toolkit mode, background redraws can fight tmux/Ghostty/cmux
@@ -12749,6 +12816,31 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     # command input area. Keep idle stable; input/agent events still
                     # invalidate explicitly when the UI actually changes.
                     time.sleep(0.2)
+                    _idle_ticks += 1
+                    # Every ~5s while idle, sanitize the input buffer to strip
+                    # leaked terminal responses (CPR, mouse reports) that arrive
+                    # via stdin between keystrokes.  Without this, a leaked
+                    # ESC[<n>;<m>R or mouse report corrupts prompt_toolkit's
+                    # Vt100Parser state and Enter stops working.
+                    if _idle_ticks >= 25:
+                        _idle_ticks = 0
+                        try:
+                            _buf = self._app.current_buffer
+                            _text = _buf.text
+                            if _text:
+                                _cleaned, _had_leaks = _strip_leaked_terminal_responses_with_meta(_text)
+                                if _had_leaks:
+                                    _pos = _buf.cursor_position
+                                    _buf.text = _cleaned
+                                    _buf.cursor_position = min(_pos, len(_cleaned))
+                                    self._invalidate()
+                                    if not self._input_mode_recovery_notice_shown:
+                                        self._input_mode_recovery_notice_shown = True
+                                        _cprint(
+                                            f"  {_DIM}Stripped leaked terminal sequences from input buffer.{_RST}"
+                                        )
+                        except Exception:
+                            pass
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
         spinner_thread.start()

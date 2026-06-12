@@ -1627,6 +1627,14 @@ def init_agent(
     agent.session_cost_status = "unknown"
     agent.session_cost_source = "none"
     
+    # ── Cache Monitor ──
+    try:
+        from agent.cache_monitor import CacheMonitor
+        agent.cache_monitor = CacheMonitor()
+        agent.cache_monitor.set_session(getattr(agent, "session_id", "") or "")
+    except Exception:
+        agent.cache_monitor = None
+    
     # ── Ollama num_ctx injection ──
     # Ollama defaults to 2048 context regardless of the model's capabilities.
     # When running against an Ollama server, detect the model's max context

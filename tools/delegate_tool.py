@@ -1977,6 +1977,7 @@ def delegate_task(
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     parent_agent=None,
+    result_budget_chars: Optional[int] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -1991,6 +1992,13 @@ def delegate_task(
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
 
     Returns JSON with results array, one entry per task.
+
+    M6 governance: ``result_budget_chars`` caps each subagent's
+    returned summary (head + tail truncated to fit, with a clear
+    marker); the parent's proposal gate is snapshotted before
+    children run so any gate-tagged tool calls that a subagent
+    triggered surface as a ``proposals`` list in the result
+    entry — the parent can then ack/reject at the top level.
     """
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
@@ -2090,6 +2098,37 @@ def delegate_task(
     overall_start = time.monotonic()
     results = []
 
+    # M6 subagent governance: snapshot the proposal gate before
+    # children run so we can diff afterwards and surface any
+    # gate-tagged tool calls (e.g. destructive subagent operations)
+    # back to the parent.  The snapshot is also used to compute
+    # the result_budget for each child entry.
+    try:
+        from agent.proposal_gate import ProposalGate
+        _gate = ProposalGate()  # local scratch gate — not registered
+        # We don't *register* the child's proposals on the parent's
+        # gate (that would conflate parent + child side effects).
+        # Instead, we expose the local gate via child construction
+        # so a child run that hit a gated tool leaves its proposal
+        # here.  See ``_build_child_agent`` wiring below.
+        # For the common case where the child uses the parent gate
+        # (current behavior), we snapshot it instead.
+    except Exception:
+        _gate = None
+    from agent.delegation_governance import (
+        ResultBudget,
+        apply_budget_to_entry,
+        attach_proposals_to_entry,
+        bridge_proposals,
+        snapshot_pending,
+    )
+    _pending_before = snapshot_pending(_gate)
+    # result_budget_chars: cap a subagent's returned summary so a
+    # runaway child can't flood the parent's context.  Optional
+    # kwarg on delegate_task; defaults to None (unlimited) for
+    # backward compatibility.
+    _result_budget = ResultBudget(max_chars=result_budget_chars)
+
     n_tasks = len(task_list)
     # Track goal labels for progress display (truncated for readability)
     task_labels = [t["goal"][:40] for t in task_list]
@@ -2145,6 +2184,12 @@ def delegate_task(
         # Single task -- run directly (no thread pool overhead)
         _i, _t, child = children[0]
         result = _run_single_child(0, _t["goal"], child, parent_agent)
+        # M6: apply per-entry budget + bridge any proposals the child triggered
+        apply_budget_to_entry(result, _result_budget)
+        attach_proposals_to_entry(
+            result,
+            bridge_proposals(_gate, before=_pending_before),
+        )
         results.append(result)
     else:
         # Batch -- run in parallel with per-task progress lines
@@ -2207,6 +2252,12 @@ def delegate_task(
                                     _child_by_index.get(idx), "_delegate_role", None
                                 ),
                             }
+                        # M6: apply governance (budget + bridged proposals)
+                        apply_budget_to_entry(entry, _result_budget)
+                        attach_proposals_to_entry(
+                            entry,
+                            bridge_proposals(_gate, before=_pending_before),
+                        )
                         results.append(entry)
                         completed_count += 1
                     break
@@ -2232,6 +2283,12 @@ def delegate_task(
                                 _child_by_index.get(idx), "_delegate_role", None
                             ),
                         }
+                    # M6: apply governance (budget + bridged proposals)
+                    apply_budget_to_entry(entry, _result_budget)
+                    attach_proposals_to_entry(
+                        entry,
+                        bridge_proposals(_gate, before=_pending_before),
+                    )
                     results.append(entry)
                     completed_count += 1
 

@@ -1,0 +1,55 @@
+name: composio
+version: 1.0.0
+description: "Composio integration plugin — exposes 1000+ OAuth-backed apps (Gmail, GitHub, Slack, Notion, Linear, Jira, ...) to the agent through a local MCP server."
+author: "Hermes Agent + holaOS inspiration"
+license: MIT
+
+# No required pip dependencies — the plugin uses the Composio REST API
+# directly (httpx is already a hermes-agent dependency).  Optional
+# `composio` Python SDK is only needed for users who prefer SDK calls
+# over REST.
+pip_dependencies: []
+
+# No required env vars — the API key is configured at runtime via
+# `hermes composio setup` and stored in ~/.hermes/composio.json.
+
+hooks: []
+
+# The plugin registers an MCP server entry into ~/.hermes/config.yaml
+# under ``mcp_servers`` so the existing mcp_tool.py client connects
+# to our local stdio server.  This means the plugin needs no
+# custom tool registration in the agent registry — every
+# Composio-backed tool becomes a first-class MCP tool that the
+# agent can call like any other.
+
+# Config schema for `hermes composio setup` wizard
+config_schema:
+  - key: api_key
+    description: "Composio API key (from https://app.composio.dev/settings/api-keys)"
+    secret: true
+    required: true
+    env_var: COMPOSIO_API_KEY
+    url: https://app.composio.dev/settings/api-keys
+  - key: base_url
+    description: "Composio backend base URL (override for self-hosted)"
+    required: false
+    default: "https://backend.composio.dev"
+  - key: user_id
+    description: "Composio user/connection owner ID (the entity whose connected accounts are exposed)"
+    required: false
+    default: "default"
+  - key: max_tools_per_toolkit
+    description: "Cap on tools exposed per toolkit (ranked by heuristic; default 6)"
+    required: false
+    default: 6
+  - key: allowed_toolkits
+    description: "Optional whitelist of toolkit slugs to expose (e.g. ['gmail', 'github', 'slack']); empty = all"
+    required: false
+    default: []
+  - key: allowlist_only
+    description: "If true, ONLY expose tools from allowed_toolkits (skip the auto-discover path)"
+    required: false
+    default: false
+
+# Plugin does not register CLI commands itself — `hermes composio`
+# subcommand is added by the plugin's own register() call.

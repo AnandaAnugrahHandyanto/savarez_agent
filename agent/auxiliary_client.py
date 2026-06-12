@@ -5012,6 +5012,123 @@ def _build_call_kwargs(
     return kwargs
 
 
+def _call_minimax_vl_endpoint(client, kwargs, task):
+    """Call MiniMax's dedicated VL endpoint (/v1/coding_plan/vlm) for vision tasks.
+
+    Returns a fake OpenAI chat completions response object (SimpleNamespace with
+    .choices[0].message) on success, or None on failure so the caller falls through
+    to the normal chat.completions path.
+
+    MiniMax's text API (/v1/text/chatcompletion_v2) does not support image input.
+    Their vision model lives only on the separate /v1/coding_plan/vlm endpoint.
+    """
+    try:
+        messages = kwargs.get("messages", [])
+        if not messages:
+            return None
+        last_msg = messages[-1] if messages else {}
+        content = last_msg.get("content", "")
+        if isinstance(content, str):
+            # Plain text message — not a vision call
+            return None
+
+        # Extract prompt and one image (MiniMax VL accepts exactly one image)
+        prompt = None
+        image_b64 = None
+        media_type = "image/png"
+
+        for block in content:
+            if block.get("type") == "text":
+                prompt = block.get("text", "")
+            elif block.get("type") in ("image", "image_url"):
+                if block.get("type") == "image":
+                    src = block.get("source", {})
+                    if src.get("type") == "base64":
+                        image_b64 = src.get("data", "")
+                        media_type = src.get("media_type", "image/png")
+                else:  # image_url
+                    url = (block.get("image_url") or {}).get("url", "")
+                    if url.startswith("data:"):
+                        # data:image/png;base64,<data>
+                        header, _, b64data = url.partition(",")
+                        image_b64 = b64data
+                        if ":" in header and ";" in header:
+                            media_type = header.split(":")[1].split(";")[0]
+
+        if not prompt or not image_b64:
+            return None
+
+        # Get API key from client
+        api_key = getattr(client, "_api_key", None)
+        if not api_key:
+            return None
+
+        # Determine base URL
+        base_url = str(getattr(client, "base_url", "") or "")
+        # Normalise: strip trailing slash, remove /v1 text path if present
+        if base_url.endswith("/v1/text"):
+            base_url = base_url[:-7]
+        vl_url = base_url.rstrip("/") + "/v1/coding_plan/vlm"
+
+        import json as _json, base64 as _base64, urllib.request as _urllib_request
+
+        req_body = _json.dumps({
+            "prompt": prompt,
+            "image_url": f"data:{media_type};base64,{image_b64}",
+        }).encode("utf-8")
+
+        req = _urllib_request.Request(
+            vl_url,
+            data=req_body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with _urllib_request.urlopen(req, timeout=kwargs.get("timeout", 60)) as resp:
+            resp_data = _json.loads(resp.read().decode("utf-8"))
+
+        description = ""
+        if isinstance(resp_data, dict):
+            # MiniMax VL response: {"base_resp": {...}, "content": "..."}
+            description = resp_data.get("content", "")
+            if not description:
+                # Sometimes the description lives elsewhere
+                choices = resp_data.get("choices", [])
+                if choices and isinstance(choices[0], dict):
+                    description = choices[0].get("message", {}).get("content", "")
+
+        if not description:
+            logger.warning("MiniMax VL endpoint returned empty description: %s", resp_data)
+            return None
+
+        # Synthesize an OpenAI chat completions response so downstream code
+        # (.choices[0].message.content) works without modification.
+        class _FakeChoice:
+            class _FakeMessage:
+                def __init__(self):
+                    self.content = description
+                    self.role = "assistant"
+            def __init__(self):
+                self.message = _FakeChoice._FakeMessage()
+                self.finish_reason = "stop"
+                self.index = 0
+
+        class _FakeResponse:
+            def __init__(self):
+                self.choices = [_FakeChoice()]
+                self.model = kwargs.get("model", "minimax-vl")
+                self.id = "minimax-vl-call"
+
+        logger.info("MiniMax VL endpoint: got description (%d chars)", len(description))
+        return _FakeResponse()
+
+    except Exception as exc:
+        logger.warning("MiniMax VL endpoint call failed: %s", exc)
+        return None
+
+
 def _validate_llm_response(response: Any, task: str = None) -> Any:
     """Validate that an LLM response has the expected .choices[0].message shape.
 
@@ -5162,6 +5279,19 @@ def call_llm(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         base_url=_base_info or resolved_base_url)
+
+    # MiniMax vision: bypass chat.completions, call the VL endpoint directly.
+    logger.info("Vision call debug: provider=%r task=%r", resolved_provider, task)
+    _is_minimax_vision = (
+        resolved_provider in ("minimax-cn", "minimax")
+        and task == "vision"
+    )
+    if _is_minimax_vision:
+        logger.info("MiniMax vision bypass triggered!")
+        _vl_result = _call_minimax_vl_endpoint(client, kwargs, task)
+        logger.info("MiniMax vision bypass result: %s", type(_vl_result).__name__ if _vl_result else "None")
+        if _vl_result is not None:
+            return _validate_llm_response(_vl_result, task)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     _client_base = str(getattr(client, "base_url", "") or "")
@@ -5656,6 +5786,12 @@ async def async_call_llm(
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
+
+    # MiniMax vision: bypass chat.completions, call the VL endpoint directly.
+    if resolved_provider in ("minimax-cn", "minimax") and task == "vision":
+        _vl_result = _call_minimax_vl_endpoint(client, kwargs, task)
+        if _vl_result is not None:
+            return _validate_llm_response(_vl_result, task)
 
     try:
         # Retry ONCE on the same provider for a transient transport blip

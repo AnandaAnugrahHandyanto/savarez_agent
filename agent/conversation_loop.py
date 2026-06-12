@@ -1610,6 +1610,21 @@ def run_conversation(
                     agent.session_cache_write_tokens += canonical_usage.cache_write_tokens
                     agent.session_reasoning_tokens += canonical_usage.reasoning_tokens
 
+                    # ── Cache Monitor: record API call ──
+                    if getattr(agent, "cache_monitor", None):
+                        try:
+                            agent.cache_monitor.on_api_call(
+                                model=agent.model or "",
+                                provider=agent.provider or "",
+                                prompt_tokens=prompt_tokens,
+                                cache_read_tokens=canonical_usage.cache_read_tokens,
+                                cache_write_tokens=canonical_usage.cache_write_tokens,
+                                latency=api_duration,
+                                api_call_index=agent.session_api_calls,
+                            )
+                        except Exception:
+                            pass  # defensive: never let monitoring break the loop
+
                     # Log API call details for debugging/observability
                     _cache_pct = ""
                     if canonical_usage.cache_read_tokens and prompt_tokens:

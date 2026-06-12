@@ -30,10 +30,13 @@ import re
 import inspect
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
+
+if TYPE_CHECKING:
+    from agent.retrieval_pack import RetrievalPack
 
 logger = logging.getLogger(__name__)
 
@@ -375,19 +378,54 @@ class MemoryManager:
 
         Returns merged context text labeled by provider. Empty providers
         are skipped. Failures in one provider don't block others.
+
+        Entries are sorted within each provider by per-type recall
+        boost (highest first), so durable preferences bubble to
+        the top of the recall.  This is the *only* sorting pass;
+        the LLM still sees the full set, just with preferences
+        first so the prompt-cache prefix stays stable for the
+        most-stable part of context.
         """
         parts = []
         for provider in self._providers:
             try:
                 result = provider.prefetch(query, session_id=session_id)
                 if result and result.strip():
-                    parts.append(result)
+                    parts.append(
+                        self._apply_recall_boost(provider, result)
+                    )
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' prefetch failed (non-fatal): %s",
                     provider.name, e,
                 )
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _apply_recall_boost(provider, raw: str) -> str:
+        """Re-order lines in a provider's prefetch output by per-line
+        type boost.
+
+        Splits on blank lines (each chunk is one entry), classifies
+        each chunk with the provider's ``get_entry_type``, and
+        re-emits them sorted by descending ``recall_boost`` (ties
+        broken by original order).  Providers that don't override
+        ``get_entry_type`` see ``EntryType.FACT`` for every chunk,
+        so the sort degenerates to identity — fully backward
+        compatible.
+        """
+        chunks = [c.strip() for c in raw.split("\n\n") if c.strip()]
+        if len(chunks) <= 1:
+            return raw  # nothing to reorder
+
+        # Decorate with stable index for tie-breaking
+        decorated = [
+            (provider.recall_boost(provider.get_entry_type(chunk)), i, chunk)
+            for i, chunk in enumerate(chunks)
+        ]
+        # Sort: highest boost first, original order on ties
+        decorated.sort(key=lambda t: (-t[0], t[1]))
+        return "\n\n".join(d[2] for d in decorated)
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
         """Queue background prefetch on all providers for the next turn.
@@ -411,6 +449,40 @@ class MemoryManager:
                     )
 
         self._submit_background(_run)
+
+    def prefetch_pack_all(
+        self,
+        query: str,
+        *,
+        session_id: str = "",
+        intent: str = "",
+    ) -> "RetrievalPack":
+        """Collect structured retrieval packs from all providers.
+
+        Returns a merged :class:`agent.retrieval_pack.RetrievalPack`.
+        Providers that don't override ``retrieve_pack`` fall back to
+        their free-text ``prefetch`` result (wrapped in
+        ``high_signal``) so the pipeline degrades cleanly.  Provider
+        failures are non-fatal — they contribute an empty pack and
+        are logged at debug level.
+        """
+        from agent.retrieval_pack import RetrievalPack
+
+        merged = RetrievalPack()
+        for provider in self._providers:
+            try:
+                pack = provider.retrieve_pack(
+                    query, session_id=session_id, intent=intent
+                )
+                if pack is None:
+                    continue
+                merged = merged.merge(pack)
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' retrieve_pack failed (non-fatal): %s",
+                    provider.name, e,
+                )
+        return merged
 
     # -- Sync ----------------------------------------------------------------
 

@@ -570,6 +570,41 @@ _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
+# ---------------------------------------------------------------------------
+# Proposal gate singleton (holaOS integration-proposal-gate.ts)
+# ---------------------------------------------------------------------------
+# One process-wide gate; tests can swap via ``set_proposal_gate()``.
+# Per-session scoping is handled inside ``ProposalGate`` (the gate is
+# stateless across sessions, so a single instance suffices).
+# Imported lazily inside the accessor to avoid a hard import cycle
+# during early module initialization.
+
+_proposal_gate_singleton = None  # type: ignore[var-annotated]
+
+
+def get_proposal_gate():
+    """Return the process-wide :class:`agent.proposal_gate.ProposalGate`.
+
+    Lazily constructed on first call.  Tests inject a custom gate via
+    :func:`set_proposal_gate` and restore the default via the same
+    setter with ``None``.
+    """
+    global _proposal_gate_singleton
+    if _proposal_gate_singleton is None:
+        from agent.proposal_gate import ProposalGate
+        _proposal_gate_singleton = ProposalGate()
+    return _proposal_gate_singleton
+
+
+def set_proposal_gate(gate) -> None:
+    """Override the process-wide gate (test hook).
+
+    Pass ``None`` to clear and force lazy re-creation on next access.
+    """
+    global _proposal_gate_singleton
+    _proposal_gate_singleton = gate
+
+
 # =========================================================================
 # Tool error sanitization
 # =========================================================================
@@ -1018,6 +1053,25 @@ def handle_function_call(
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
+        # ── Proposal gate (holaOS integration-proposal-gate.ts) ──
+        # If the agent (or a previous tool call) registered a pending
+        # proposal whose follow-up group includes this tool, block
+        # the call until acknowledged.  Tools that don't opt in to
+        # the gate pass through untouched.  Failures are non-fatal.
+        try:
+            from agent.proposal_gate import ProposalPendingError
+            gate = get_proposal_gate()
+            try:
+                gate.check(
+                    tool=function_name,
+                    args=function_args or {},
+                    session_id=session_id or "",
+                )
+            except ProposalPendingError as _gate_err:
+                return _gate_err.to_tool_error()
+        except Exception as _gate_outer_err:
+            logger.debug("proposal_gate hook error: %s", _gate_outer_err)
+
         # Check plugin hooks for a block directive (unless caller already
         # checked — e.g. run_agent._invoke_tool passes skip=True to
         # avoid double-firing the hook).
@@ -1095,6 +1149,34 @@ def handle_function_call(
         # unaffected by wall-clock adjustments during the call.
         _dispatch_start = time.monotonic()
         _approval_tokens = None
+        # NOTE: execute_code sandbox branch and middleware wrapper are handled
+        # upstream of this point by origin/main (run_tool_execution_middleware
+        # in tools/approval.py).  We only add the M3 proposal-gate registration
+        # block here, which is opt-in via x_hermes.requires_acknowledgment.
+        duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
+
+        # ── Register any proposal emitted by the tool (gate stays opt-in) ──
+        # If the tool's schema opts in to the gate (via
+        # ``x_hermes.requires_acknowledgment``) AND the result carries
+        # ``proposal_id``, register it so follow-up calls can be gated.
+        try:
+            from agent.proposal_gate import (
+                extract_proposal_from_result,
+                tool_requires_acknowledgment,
+            )
+            schema = registry.get_schema(function_name)
+            if schema and tool_requires_acknowledgment(schema):
+                pid, group, ack = extract_proposal_from_result(result or "")
+                if pid:
+                    get_proposal_gate().register(
+                        proposal_id=pid,
+                        proposal_group=group,
+                        tool=function_name,
+                        ack_required=ack,
+                    )
+        except Exception as _reg_err:
+            logger.debug("proposal register error: %s", _reg_err)
+
         try:
             from tools.approval import (
                 reset_current_observability_context,

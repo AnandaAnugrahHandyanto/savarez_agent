@@ -34,7 +34,11 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from agent.retrieval_pack import RetrievalPack
+    from agent.memory_types import EntryType
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +107,29 @@ class MemoryProvider(ABC):
         per-session scoping can ignore it.
         """
         return ""
+
+    def retrieve_pack(self, query: str, *, session_id: str = "", intent: str = "") -> "RetrievalPack":
+        """Return a structured 5-section recall (see :mod:`agent.retrieval_pack`).
+
+        Optional.  Providers that implement this in addition to
+        :func:`prefetch` let :class:`MemoryManager` render a stable
+        five-section block in the system prompt (known_facts /
+        high_signal / constraints / blockers / open_questions) instead
+        of free-text.  Default is a freetext→high_signal fallback: the
+        result of :func:`prefetch` is wrapped via
+        ``RetrievalPack.from_freetext``, so the pipeline is opt-in
+        end-to-end — providers can ship string prefetch and still
+        participate in the structured-pack rendering without any code
+        change.
+
+        ``intent`` is one of the values from
+        :data:`agent.retrieval_intent.INTENT_KINDS` (or empty for
+        default).  Providers can use it to weight which sections to
+        populate more densely.
+        """
+        from agent.retrieval_pack import RetrievalPack
+        text = self.prefetch(query, session_id=session_id) or ""
+        return RetrievalPack.from_freetext(text)
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Queue a background recall for the NEXT turn.
@@ -294,3 +321,38 @@ class MemoryProvider(ABC):
 
         Use to mirror built-in memory writes to your backend.
         """
+
+    # -- Optional: per-entry type + governance ----------------------------
+
+    def get_entry_type(self, content: str) -> "EntryType":
+        """Classify a memory entry into one of the six :class:`EntryType` values.
+
+        Default delegates to :func:`agent.memory_types.classify_entry`,
+        the cheap substring-based heuristic.  Providers with a
+        better signal (user-tagged entries, structured storage
+        metadata) should override and return that signal — the
+        type flows through to recallBoost during prefetch.
+
+        Backward-compatible: providers that don't override
+        classify their entries as ``EntryType.FACT`` (boost=1.0),
+        which is the same default behavior the system had
+        before this method was added.
+        """
+        from agent.memory_types import EntryType, classify_entry
+        return classify_entry(content)
+
+    def recall_boost(self, entry_type: "EntryType") -> float:
+        """Return the recall boost for a given entry type.
+
+        Default reads from the global policy table in
+        :mod:`agent.memory_types`.  Providers that want a
+        provider-specific boost profile (e.g. a code-assistant
+        boosting ``PROCEDURE`` higher) should override.
+
+        Used by :class:`MemoryManager` to weight entries from
+        ``prefetch()`` output and from ``retrieve_pack()``
+        sections.  Higher boost = the entry ranks higher in
+        the final recall.
+        """
+        from agent.memory_types import get_policy
+        return get_policy(entry_type).recall_boost
