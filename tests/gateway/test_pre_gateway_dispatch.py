@@ -2,7 +2,7 @@
 
 The hook allows plugins to intercept incoming messages before auth and
 agent dispatch. It runs in _handle_message and acts on returned action
-dicts: {"action": "skip"|"rewrite"|"allow"}.
+dicts: {"action": "handled"|"skip"|"rewrite"|"allow"}.
 """
 
 from types import SimpleNamespace
@@ -49,7 +49,7 @@ def _make_runner(platform: Platform):
     )
     runner = object.__new__(GatewayRunner)
     runner.config = config
-    adapter = SimpleNamespace(send=AsyncMock())
+    adapter = SimpleNamespace(send=AsyncMock(), _send_with_retry=AsyncMock())
     runner.adapters = {platform: adapter}
     runner.pairing_store = MagicMock()
     runner.pairing_store.is_approved.return_value = False
@@ -77,6 +77,40 @@ async def test_hook_skip_short_circuits_dispatch(monkeypatch):
     result = await runner._handle_message(_make_event("hi"))
 
     assert result is None
+    adapter._send_with_retry.assert_not_awaited()
+    adapter.send.assert_not_awaited()
+    runner.pairing_store.generate_code.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_hook_handled_reply_sends_canned_response_before_auth(monkeypatch):
+    """A handled hook result sends its reply and never reaches auth or agent dispatch."""
+    _clear_auth_env(monkeypatch)
+
+    def _fake_hook(name, **kwargs):
+        if name == "pre_gateway_dispatch":
+            return [
+                {
+                    "action": "handled",
+                    "reason": "nora_consent_gate",
+                    "reply": {"text": "OpenClaw is locked until explicit informed consent is recorded."},
+                }
+            ]
+        return []
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+
+    runner, adapter = _make_runner(Platform.TELEGRAM)
+
+    result = await runner._handle_message(_make_event("hey, how's my day looking?", Platform.TELEGRAM))
+
+    assert result is None
+    adapter._send_with_retry.assert_awaited_once()
+    call = adapter._send_with_retry.await_args.kwargs
+    assert call["chat_id"] == "15551234567@s.whatsapp.net"
+    assert call["content"] == "OpenClaw is locked until explicit informed consent is recorded."
+    assert call["reply_to"] == "m1"
+    assert call["metadata"] == {"notify": True}
     adapter.send.assert_not_awaited()
     runner.pairing_store.generate_code.assert_not_called()
 

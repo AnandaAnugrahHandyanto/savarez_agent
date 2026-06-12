@@ -148,9 +148,10 @@ VALID_HOOKS: Set[str] = {
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
     # after the internal-event guard but BEFORE auth/pairing and agent
     # dispatch. Plugins may return a dict to influence flow:
-    #   {"action": "skip",    "reason": "..."}  -> drop message (no reply)
-    #   {"action": "rewrite", "text": "..."}    -> replace event.text, continue
-    #   {"action": "allow"}  /  None             -> normal dispatch
+    #   {"action": "handled", "reply": {"text": "..."}} -> send reply and stop
+    #   {"action": "skip",    "reason": "..."}           -> stop silently unless reply/text provided
+    #   {"action": "rewrite", "text": "..."}             -> replace event.text, continue
+    #   {"action": "allow"}  /  None                      -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous

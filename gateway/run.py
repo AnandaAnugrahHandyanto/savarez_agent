@@ -6359,6 +6359,73 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         await adapter.send(source.chat_id, content, metadata=metadata)
 
+    @staticmethod
+    def _pre_gateway_dispatch_reply_text(result: Dict[str, Any]) -> Optional[str]:
+        """Extract a user-facing reply from a pre_gateway_dispatch result."""
+        for key in ("text", "content"):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+
+        for key in ("reply", "message"):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+            if isinstance(value, dict):
+                for nested_key in ("text", "content", "message"):
+                    nested = value.get(nested_key)
+                    if isinstance(nested, str) and nested.strip():
+                        return nested
+
+        return None
+
+    async def _send_pre_gateway_dispatch_reply(
+        self,
+        event: MessageEvent,
+        content: str,
+    ) -> None:
+        source = event.source
+        adapter = self.adapters.get(source.platform)
+        if adapter is None:
+            logger.warning(
+                "pre_gateway_dispatch handled message but no adapter exists: platform=%s chat=%s",
+                source.platform.value if source.platform else "unknown",
+                source.chat_id or "unknown",
+            )
+            return
+
+        reply_anchor = self._reply_anchor_for_event(event)
+        metadata = self._thread_metadata_for_source(source, reply_anchor)
+        if metadata is not None:
+            metadata = dict(metadata)
+            metadata["notify"] = True
+        else:
+            metadata = {"notify": True}
+
+        send = getattr(adapter, "_send_with_retry", None)
+        if callable(send):
+            result = await send(
+                chat_id=source.chat_id,
+                content=content,
+                reply_to=reply_anchor,
+                metadata=metadata,
+            )
+        else:
+            result = await adapter.send(
+                chat_id=source.chat_id,
+                content=content,
+                reply_to=reply_anchor,
+                metadata=metadata,
+            )
+
+        if not getattr(result, "success", True):
+            logger.warning(
+                "pre_gateway_dispatch handled reply send failed: platform=%s chat=%s error=%s",
+                source.platform.value if source.platform else "unknown",
+                source.chat_id or "unknown",
+                getattr(result, "error", None),
+            )
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -6380,7 +6447,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:
-        #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
+        #   {"action": "handled", "reply": ...}     -> send reply, then stop
+        #   {"action": "skip",    "reason": ...}    -> stop (silent unless reply/text provided)
         #   {"action": "rewrite", "text":  ...}     -> replace event.text, continue
         #   {"action": "allow"}   /   None          -> normal dispatch
         # Hook runs BEFORE auth so plugins can handle unauthorized senders
@@ -6402,12 +6470,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if not isinstance(_result, dict):
                     continue
                 _action = _result.get("action")
-                if _action == "skip":
+                if _action in {"skip", "handled"} or _result.get("handled") is True:
+                    _reply_text = self._pre_gateway_dispatch_reply_text(_result)
+                    if _reply_text:
+                        await self._send_pre_gateway_dispatch_reply(event, _reply_text)
                     logger.info(
-                        "pre_gateway_dispatch skip: reason=%s platform=%s chat=%s",
+                        "pre_gateway_dispatch %s: reason=%s platform=%s chat=%s replied=%s",
+                        _action or "handled",
                         _result.get("reason"),
                         source.platform.value if source.platform else "unknown",
                         source.chat_id or "unknown",
+                        bool(_reply_text),
                     )
                     return None
                 if _action == "rewrite":
