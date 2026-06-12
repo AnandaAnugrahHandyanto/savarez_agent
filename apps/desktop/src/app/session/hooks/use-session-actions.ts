@@ -7,6 +7,12 @@ import { useI18n } from '@/i18n'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
+import {
+  type BackendInFlightTurn,
+  type InFlightRecoveryResult,
+  mergeBackendInFlightTurn,
+  recoverInFlightTurnJournal
+} from '@/lib/inflight-turn-journal'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
@@ -341,6 +347,36 @@ function applyStoredSessionPreviewRuntimeInfo(stored: { model?: null | string } 
   setCurrentPersonality('')
 }
 
+function noInFlightRecovery(messages: ChatMessage[]): InFlightRecoveryResult {
+  return {
+    applied: false,
+    caughtUp: false,
+    messages,
+    streamId: null,
+    turnStartedAt: null
+  }
+}
+
+function recoverResumeInFlight(
+  storedSessionId: null | string,
+  baseMessages: ChatMessage[],
+  backendInFlight: BackendInFlightTurn | null | undefined,
+  keepPending: boolean
+): InFlightRecoveryResult {
+  const backend = mergeBackendInFlightTurn(baseMessages, backendInFlight, { keepPending })
+  const local = recoverInFlightTurnJournal(storedSessionId, backend.messages, { keepPending })
+
+  if (local.applied) {
+    return local
+  }
+
+  if (backend.applied) {
+    return backend
+  }
+
+  return local.caughtUp ? local : noInFlightRecovery(baseMessages)
+}
+
 export function useSessionActions({
   activeSessionId,
   activeSessionIdRef,
@@ -608,7 +644,8 @@ export function useSessionActions({
         }))
       }
 
-      let resumedRunning = false
+      let resumedTurnStillRunning = false
+      let resumedTurnAwaitingResponse = false
 
       try {
         const watchWindow = isWatchWindow()
@@ -620,7 +657,8 @@ export function useSessionActions({
             const storedMessages = await getSessionMessages(storedSessionId, sessionProfile)
 
             if (isCurrentResume()) {
-              localSnapshot = preserveLocalAssistantErrors(toChatMessages(storedMessages.messages), $messages.get())
+              const recovered = recoverInFlightTurnJournal(storedSessionId, toChatMessages(storedMessages.messages))
+              localSnapshot = preserveLocalAssistantErrors(recovered.messages, $messages.get())
 
               if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
                 setMessages(localSnapshot)
@@ -643,28 +681,36 @@ export function useSessionActions({
         }
 
         const currentMessages = $messages.get()
+        const resumedRunning = Boolean(resumed.running || resumed.info?.running)
+        const rawResumedMessages = reconcileResumeMessages(toChatMessages(resumed.messages), currentMessages)
 
-        const resumedMessages = preserveLocalAssistantErrors(
-          reconcileResumeMessages(toChatMessages(resumed.messages), currentMessages),
-          currentMessages
+        const inFlightRecovery = recoverResumeInFlight(
+          storedSessionId,
+          rawResumedMessages,
+          resumed.inflight,
+          resumedRunning
         )
+
+        const resumedMessages = preserveLocalAssistantErrors(inFlightRecovery.messages, currentMessages)
         // Keep the local snapshot when resume would only reshuffle runtime projection.
         const preferredMessages =
-          localSnapshot.length > 0
-            ? localSnapshot
-            : chatMessageArraysEquivalent(currentMessages, resumedMessages)
-              ? currentMessages
-              : resumedMessages
+          inFlightRecovery.applied || inFlightRecovery.caughtUp
+            ? resumedMessages
+            : localSnapshot.length > 0
+              ? localSnapshot
+              : chatMessageArraysEquivalent(currentMessages, resumedMessages)
+                ? currentMessages
+                : resumedMessages
 
         const messagesForView = preserveLocalAssistantErrors(preferredMessages, currentMessages)
+        resumedTurnStillRunning = resumedRunning
+        resumedTurnAwaitingResponse = resumedRunning && !inFlightRecovery.applied
 
         setActiveSessionId(resumed.session_id)
         activeSessionIdRef.current = resumed.session_id
         const runtimeInfo = applyRuntimeInfo(resumed.info)
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
-
-        resumedRunning = Boolean((resumed as { running?: boolean }).running)
 
         updateSessionState(
           resumed.session_id,
@@ -673,7 +719,15 @@ export function useSessionActions({
             ...(runtimeInfo ?? {}),
             messages: messagesForView,
             busy: resumedRunning,
-            awaitingResponse: resumedRunning
+            awaitingResponse: resumedTurnAwaitingResponse,
+            sawAssistantPayload: inFlightRecovery.applied ? true : state.sawAssistantPayload,
+            streamId: resumedRunning && inFlightRecovery.applied ? inFlightRecovery.streamId : null,
+            turnStartedAt:
+              resumedRunning && inFlightRecovery.applied
+                ? (inFlightRecovery.turnStartedAt ?? Date.now())
+                : resumedRunning
+                  ? (state.turnStartedAt ?? Date.now())
+                  : null
           }),
           storedSessionId
         )
@@ -688,13 +742,14 @@ export function useSessionActions({
           return
         }
 
-        setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
+        const recovered = recoverInFlightTurnJournal(storedSessionId, toChatMessages(fallback.messages))
+        setMessages(preserveLocalAssistantErrors(recovered.messages, $messages.get()))
         notifyError(err, copy.resumeFailed)
       } finally {
         if (isCurrentResume()) {
-          busyRef.current = resumedRunning
-          setBusy(resumedRunning)
-          setAwaitingResponse(resumedRunning)
+          busyRef.current = resumedTurnStillRunning
+          setBusy(resumedTurnStillRunning)
+          setAwaitingResponse(resumedTurnAwaitingResponse)
         }
       }
     },
