@@ -75,6 +75,7 @@ pub struct NodeDependenciesStagePlan {
     pub npm: PathBuf,
     pub npx: Option<PathBuf>,
     pub cwd: PathBuf,
+    pub npm_cache_dir: PathBuf,
     pub browser_tools: bool,
     pub tui_dir: Option<PathBuf>,
 }
@@ -84,6 +85,7 @@ pub struct NodeDependenciesStagePlan {
 pub struct DesktopBuildStagePlan {
     pub npm: PathBuf,
     pub cwd: PathBuf,
+    pub npm_cache_dir: PathBuf,
     pub desktop_dir: PathBuf,
 }
 
@@ -1821,6 +1823,7 @@ where
         npm,
         npx,
         cwd: install_root.to_path_buf(),
+        npm_cache_dir: hermes_home.join("npm-cache"),
         browser_tools: install_root.join("package.json").is_file(),
         tui_dir,
     })
@@ -1835,7 +1838,7 @@ pub fn install_node_dependencies_stage(
     let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
     let plan = node_dependencies_stage_plan(install_root, hermes_home, path_env, &pathext)?;
     if plan.browser_tools {
-        run_node_dependency_command(&plan.npm, ["install", "--silent"], &plan.cwd)
+        run_node_dependency_command(&plan.npm, ["install", "--silent"], &plan.cwd, &plan.npm_cache_dir)
             .context("installing root Node dependencies")?;
         let npx = plan
             .npx
@@ -1845,16 +1848,18 @@ pub fn install_node_dependencies_stage(
             npx,
             ["--yes", "playwright", "install", "chromium"],
             &plan.cwd,
+            &plan.npm_cache_dir,
         )
         .context("installing Playwright Chromium")?;
     }
     if let Some(tui_dir) = &plan.tui_dir {
-        run_node_dependency_command(&plan.npm, ["install", "--silent"], tui_dir)
+        run_node_dependency_command(&plan.npm, ["install", "--silent"], tui_dir, &plan.npm_cache_dir)
             .context("installing TUI Node dependencies")?;
     }
     Ok(serde_json::json!({
         "npm": plan.npm,
         "npx": plan.npx,
+        "npmCacheDir": plan.npm_cache_dir,
         "browserTools": plan.browser_tools,
         "tui": plan.tui_dir.is_some(),
     }))
@@ -1882,6 +1887,7 @@ where
     Ok(DesktopBuildStagePlan {
         npm,
         cwd: install_root.to_path_buf(),
+        npm_cache_dir: hermes_home.join("npm-cache"),
         desktop_dir,
     })
 }
@@ -1894,11 +1900,11 @@ pub fn build_desktop_stage(
     let path_env = std::env::var_os("PATH").unwrap_or_default();
     let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
     let plan = desktop_build_stage_plan(install_root, hermes_home, path_env, &pathext)?;
-    if run_node_dependency_command(&plan.npm, ["ci"], &plan.cwd).is_err() {
-        run_node_dependency_command(&plan.npm, ["install"], &plan.cwd)
+    if run_node_dependency_command(&plan.npm, ["ci"], &plan.cwd, &plan.npm_cache_dir).is_err() {
+        run_node_dependency_command(&plan.npm, ["install"], &plan.cwd, &plan.npm_cache_dir)
             .context("installing desktop workspace Node dependencies")?;
     }
-    run_desktop_pack_command(&plan.npm, &plan.desktop_dir)?;
+    run_desktop_pack_command(&plan.npm, &plan.desktop_dir, &plan.npm_cache_dir)?;
     let desktop_app = find_built_desktop_app(install_root, std::env::consts::OS)
         .ok_or_else(|| anyhow!("desktop build completed but no app was found"))?;
     if cfg!(target_os = "linux") {
@@ -1906,6 +1912,7 @@ pub fn build_desktop_stage(
     }
     let mut result = serde_json::json!({
         "npm": plan.npm,
+        "npmCacheDir": plan.npm_cache_dir,
         "desktopDir": plan.desktop_dir,
         "desktopApp": &desktop_app,
     });
@@ -3032,10 +3039,12 @@ fn run_node_dependency_command<const N: usize>(
     command: &Path,
     args: [&str; N],
     cwd: &Path,
+    npm_cache_dir: &Path,
 ) -> Result<()> {
     let status = Command::new(command)
         .args(args)
         .current_dir(cwd)
+        .env("npm_config_cache", npm_cache_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -3050,10 +3059,11 @@ fn run_node_dependency_command<const N: usize>(
     ))
 }
 
-fn run_desktop_pack_command(npm: &Path, desktop_dir: &Path) -> Result<()> {
+fn run_desktop_pack_command(npm: &Path, desktop_dir: &Path, npm_cache_dir: &Path) -> Result<()> {
     let status = Command::new(npm)
         .args(["run", "pack"])
         .current_dir(desktop_dir)
+        .env("npm_config_cache", npm_cache_dir)
         .env("CSC_IDENTITY_AUTO_DISCOVERY", "false")
         .env("WIN_CSC_LINK", "")
         .env("WIN_CSC_KEY_PASSWORD", "")
@@ -4005,6 +4015,7 @@ mod tests {
         assert_eq!(plan.npm, npm);
         assert_eq!(plan.npx.as_deref(), Some(npx.as_path()));
         assert_eq!(plan.cwd, install_root);
+        assert_eq!(plan.npm_cache_dir, hermes_home.join("npm-cache"));
         assert_eq!(plan.browser_tools, true);
         assert_eq!(plan.tui_dir.as_deref(), Some(install_root.join("ui-tui").as_path()));
 
@@ -4032,6 +4043,44 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("install root does not exist"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn run_node_dependency_command_sets_managed_npm_cache() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-node-cache-env-test-{}",
+            std::process::id()
+        ));
+        let cwd = root.join("cwd");
+        let cache = root.join("home").join("npm-cache");
+        let output = root.join("npm-cache-env.txt");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        #[cfg(target_os = "windows")]
+        let command = {
+            let command = root.join("capture-npm-cache.cmd");
+            let script = format!("@echo off\r\n> \"{}\" echo %npm_config_cache%\r\n", output.display());
+            std::fs::write(&command, script).unwrap();
+            command
+        };
+
+        #[cfg(not(target_os = "windows"))]
+        let command = {
+            let command = root.join("capture-npm-cache.sh");
+            let script = format!(
+                "#!/usr/bin/env sh\nprintf '%s' \"$npm_config_cache\" > '{}'\n",
+                output.display()
+            );
+            std::fs::write(&command, script).unwrap();
+            make_executable(&command).unwrap();
+            command
+        };
+
+        run_node_dependency_command(&command, ["ignored"], &cwd, &cache).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&output).unwrap().trim(), cache.display().to_string());
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -4091,6 +4140,7 @@ mod tests {
 
         assert_eq!(plan.npm, npm);
         assert_eq!(plan.cwd, install_root);
+        assert_eq!(plan.npm_cache_dir, hermes_home.join("npm-cache"));
         assert_eq!(plan.desktop_dir, desktop_dir);
 
         let _ = std::fs::remove_dir_all(&root);

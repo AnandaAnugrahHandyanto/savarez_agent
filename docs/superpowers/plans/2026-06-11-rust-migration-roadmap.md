@@ -241,6 +241,8 @@ language-specific setup where needed.
   and uv's install cache under Hermes-managed repair/uninstall roots instead of the user's global uv cache.
 - Native messaging-platform SDK recovery now sets `PIP_CACHE_DIR=$HERMES_HOME/pip-cache` when installing missing SDKs
   into the Hermes venv, keeping pip's recovery cache out of the user's global pip cache.
+- Native npm, Playwright, TUI, and desktop build commands now set `npm_config_cache=$HERMES_HOME/npm-cache`, keeping
+  npm's install cache under Hermes-managed repair/uninstall roots instead of the user's global npm cache.
 - `venv` now runs native-first through Rust by invoking `uv venv venv --python 3.11` in the checkout, with script
   fallback preserved if native venv creation fails.
 - Python dependency installation now has a Rust native-first lockfile path using `uv sync --extra all --locked` with
@@ -337,9 +339,9 @@ language-specific setup where needed.
   Menu/Desktop shortcuts. The manager only removes planned `.lnk` files whose shortcut target still points at the
   packaged Hermes desktop executable.
 - `hermes-manager install-metadata` now records existing Hermes-managed runtime directories such as `bin`, `uv-cache`,
-  `pip-cache`, `node`, `python`, `git`, and `bootstrap-cache` in addition to the source checkout, and records the staged
-  `hermes-setup(.exe)` updater when present. Lite uninstall accepts only those runtime roots/files while continuing
-  to reject user config and data paths.
+  `pip-cache`, `npm-cache`, `node`, `python`, `git`, and `bootstrap-cache` in addition to the source checkout, and
+  records the staged `hermes-setup(.exe)` updater when present. Lite uninstall accepts only those runtime roots/files
+  while continuing to reject user config and data paths.
 - `hermes-manager repair-clean` now removes the same Hermes-managed runtime roots as repairable install state, so
   broken managed Node/Python/uv/pip/Git/bootstrap-cache directories and staged updater binaries are recreated by the
   next bootstrap while user config and data stay intact.
@@ -384,9 +386,9 @@ language-specific setup where needed.
   and future release manifest integration.
 - Desktop release staging writes install-script metadata into `embedded_resources`, so release manifests document
   embedded script names, sizes, and SHA-256 values without treating them as standalone files.
-- Tauri bootstrap installer bundles a `bootstrap-tools/` resource directory and the Windows native Node, uv, and Git
-  runtime stages prefer matching bundled archives before falling back to the download cache.
-- Windows installer release workflow prepares x64 Node v22, uv, and pinned Git for Windows archives before Tauri
+- Tauri bootstrap installer bundles a `bootstrap-tools/` resource directory and the Windows native Node, uv, Git, and
+  ripgrep runtime stages prefer matching bundled archives before falling back to the download cache.
+- Windows installer release workflow prepares x64 Node v22, uv, pinned ripgrep, and pinned Git archives before Tauri
   packaging, then writes `bootstrap-tools-manifest.json` with archive URL, size, and SHA-256 metadata for review.
 - Windows installer release preparation now includes the pinned ripgrep ZIP used by the native `system-packages`
   stage, so packaged installers can provide fast file search without first invoking winget/choco/scoop.
@@ -394,8 +396,8 @@ language-specific setup where needed.
   stage, reducing first-run apt/brew work while keeping ffmpeg outside the bundled payload.
 - The same release preparation helper now supports `--platform linux|macos` for x64/arm64 Node and uv tarballs, matching
   the Unix Rust Node/uv installer asset matrix when future macOS/Linux installer packaging wires in bundled tools.
-- A manual Unix installer workflow now builds Linux and macOS Tauri setup artifacts with matching bundled Node/`uv`
-  archives and uploads the generated `bootstrap-tools-manifest.json` alongside the installer artifacts.
+- A manual Unix installer workflow now builds Linux and macOS Tauri setup artifacts with matching bundled Node, `uv`, and
+  ripgrep archives and uploads the generated `bootstrap-tools-manifest.json` alongside the installer artifacts.
 
 ## Phase 7: Larger Runtime Rust Candidates
 
