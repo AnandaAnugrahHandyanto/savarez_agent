@@ -1561,6 +1561,10 @@ class AIAgent:
                 self._ensure_db_session()
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
+            # repair_message_sequence / compression may shrink `messages`
+            # after early persist advanced the cursor past the new length.
+            if self._last_flushed_db_idx > len(messages):
+                flush_from = start_idx
             for msg in messages[flush_from:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")

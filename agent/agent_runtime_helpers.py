@@ -441,6 +441,16 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
         # Rewrite in place so downstream paths (persistence, return
         # value, session DB flush) see the repaired sequence.
         messages[:] = merged
+        # Crash-resilience early persist (turn_context) may advance
+        # _last_flushed_db_idx before this repair compacts the list.
+        # Without clamping, turn-end flush computes flush_from past the
+        # first assistant row appended after repair and drops it from
+        # state.db — leaving an orphan user that grows via \n\n merge
+        # on the next turn.
+        if hasattr(agent, "_last_flushed_db_idx"):
+            agent._last_flushed_db_idx = min(
+                agent._last_flushed_db_idx, len(messages)
+            )
 
     return repairs
 
