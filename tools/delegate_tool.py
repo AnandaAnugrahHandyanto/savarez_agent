@@ -2333,6 +2333,36 @@ def delegate_task(
     )
 
 
+def _looks_like_unresolved_secret_ref(value: object) -> bool:
+    import re as _re
+
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if text.startswith("env:"):
+        return True
+    return bool(_re.fullmatch(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}", text) or _re.fullmatch(r"\$[A-Za-z_][A-Za-z0-9_]*", text))
+
+
+def _pool_has_usable_runtime_key(pool) -> bool:
+    """Return True only when a child pool can actually supply a runtime key."""
+    try:
+        entry = pool.peek() if hasattr(pool, "peek") else None
+    except Exception:
+        entry = None
+    if entry is None and hasattr(pool, "entries"):
+        try:
+            entries = pool.entries()
+            entry = entries[0] if entries else None
+        except Exception:
+            entry = None
+    if entry is None:
+        return False
+    key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
+    key_text = str(key or "").strip()
+    return bool(key_text) and not _looks_like_unresolved_secret_ref(key_text)
+
+
 def _resolve_child_credential_pool(effective_provider: Optional[str], parent_agent):
     """Resolve a credential pool for the child agent.
 
@@ -2340,22 +2370,23 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     1. Same provider as the parent -> share the parent's pool so cooldown state
        and rotation stay synchronized.
     2. Different provider -> try to load that provider's own pool.
-    3. No pool available -> return None and let the child keep the inherited
-       fixed credential behavior.
+    3. Empty/unresolved pools -> return None so a valid fixed child api_key is
+       not overwritten by a placeholder from auth.json/config.yaml.
     """
     if not effective_provider:
-        return getattr(parent_agent, "_credential_pool", None)
+        parent_pool = getattr(parent_agent, "_credential_pool", None)
+        return parent_pool if parent_pool is not None and _pool_has_usable_runtime_key(parent_pool) else None
 
     parent_provider = getattr(parent_agent, "provider", None) or ""
     parent_pool = getattr(parent_agent, "_credential_pool", None)
     if parent_pool is not None and effective_provider == parent_provider:
-        return parent_pool
+        return parent_pool if _pool_has_usable_runtime_key(parent_pool) else None
 
     try:
         from agent.credential_pool import load_pool
 
         pool = load_pool(effective_provider)
-        if pool is not None and pool.has_credentials():
+        if pool is not None and pool.has_credentials() and _pool_has_usable_runtime_key(pool):
             return pool
     except Exception as exc:
         logger.debug(
@@ -2481,13 +2512,22 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config from persistent config or CLI_CONFIG.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Checks the persistent config (hermes_cli/config.py load_config()) first
+    so that config.yaml changes take effect immediately without requiring a
+    gateway restart.  Falls back to CLI_CONFIG (cached at startup) only if
+    the persistent config is unavailable.
     """
+    try:
+        from hermes_cli.config import load_config
+
+        full = load_config()
+        cfg = full.get("delegation") or {}
+        if cfg:
+            return cfg
+    except Exception:
+        pass
     try:
         from cli import CLI_CONFIG
 
@@ -2496,13 +2536,7 @@ def _load_config() -> dict:
             return cfg
     except Exception:
         pass
-    try:
-        from hermes_cli.config import load_config
-
-        full = load_config()
-        return full.get("delegation") or {}
-    except Exception:
-        return {}
+    return {}
 
 
 # ---------------------------------------------------------------------------
