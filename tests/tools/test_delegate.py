@@ -555,6 +555,46 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertIn("result_bytes", entry["tool_trace"][0])
             self.assertEqual(entry["tool_trace"][0]["status"], "ok")
 
+    def test_completion_event_keeps_full_summary_for_tui_detail_view(self):
+        """The TUI /agents detail pane needs the full child summary.
+
+        The compact preview may be truncated, but the structured completion
+        payload should not be capped; otherwise the Summary section cuts off
+        long subagent findings even though the scrollable detail view can show
+        them.
+        """
+        parent = _make_mock_parent(depth=0)
+        parent.tool_progress_callback = MagicMock()
+        full_summary = "section-start " + ("detail line " * 80) + "section-end"
+
+        def _factory(*_args, **kwargs):
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.tool_progress_callback = kwargs.get("tool_progress_callback")
+            mock_child.run_conversation.return_value = {
+                "final_response": full_summary,
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+            return mock_child
+
+        with patch("run_agent.AIAgent", side_effect=_factory):
+            delegate_task(goal="Long summary", parent_agent=parent)
+
+        complete_calls = [
+            call for call in parent.tool_progress_callback.call_args_list
+            if call.args and call.args[0] == "subagent.complete"
+        ]
+        self.assertEqual(len(complete_calls), 1)
+        self.assertEqual(complete_calls[0].kwargs["summary"], full_summary)
+        self.assertTrue(complete_calls[0].args[2].startswith("section-start"))
+        self.assertLessEqual(len(complete_calls[0].args[2]), 160)
+        self.assertNotEqual(complete_calls[0].args[2], full_summary)
+
     def test_tool_trace_handles_list_content_blocks(self):
         """Tool-result content blocks should not crash observability metadata."""
         parent = _make_mock_parent(depth=0)

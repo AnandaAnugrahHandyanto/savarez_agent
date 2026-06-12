@@ -1833,10 +1833,13 @@ def _run_single_child(
         _output_tail = _extract_output_tail(result, max_entries=8, max_chars=600)
 
         complete_kwargs: Dict[str, Any] = {
+            # Keep preview compact for status lines, but send the full summary
+            # in the structured payload.  The TUI /agents detail pane is
+            # scrollable and uses this field for its Summary section.
             "preview": summary[:160] if summary else entry.get("error", ""),
             "status": status,
             "duration_seconds": duration,
-            "summary": summary[:500] if summary else entry.get("error", ""),
+            "summary": summary if summary else entry.get("error", ""),
             "input_tokens": (
                 int(_input_tokens) if isinstance(_input_tokens, (int, float)) else 0
             ),
