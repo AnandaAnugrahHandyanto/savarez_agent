@@ -1,0 +1,1 @@
+Fix #44942: [Bug]: skill-update backup handling can corrupt or silently lose skills (stale/orphaned .bak interactions)
