@@ -2950,6 +2950,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 await adapter.disconnect()
             finally:
                 self.adapters.pop(adapter.platform, None)
+                # Drop from the running-adapter registry too so a stale
+                # closed instance isn't left pointing at a dead
+                # connection. See tools/_running_adapters.py.
+                try:
+                    from tools._running_adapters import clear_running_adapter
+                    clear_running_adapter(adapter.platform.value)
+                except Exception:  # pragma: no cover
+                    logger.exception("Failed to clear %s from running-adapter registry", adapter.platform.value)
                 self.delivery_router.adapters = self.adapters
 
         # Queue retryable failures for background reconnection
@@ -4874,6 +4882,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 success = await self._connect_adapter_with_timeout(adapter, platform)
                 if success:
                     self.adapters[platform] = adapter
+                    # Publish to the module-level running-adapter registry
+                    # so outbound code paths in webhook-receive platforms
+                    # (Teams Bot Framework, future Webex/Zoom/Google Chat)
+                    # can reach the *live* instance — not a fresh one.
+                    # Stateless REST adapters don't strictly need this but
+                    # registering them anyway keeps the API uniform and
+                    # opens the door to "send via running adapter" patterns
+                    # for any future use case. See
+                    # tools/_running_adapters.py for the rationale.
+                    try:
+                        from tools._running_adapters import set_running_adapter
+                        set_running_adapter(platform.value, adapter)
+                    except Exception:  # pragma: no cover — registry must never block connect
+                        logger.exception("Failed to publish %s to running-adapter registry", platform.value)
                     self._sync_voice_mode_state_to_adapter(adapter)
                     connected_count += 1
                     self._update_platform_runtime_status(
@@ -5601,6 +5623,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                     if success:
                         self.adapters[platform] = adapter
+                        # Mirror the connect-time registry publish so the
+                        # reconnect path keeps the running-adapter registry
+                        # in sync. See tools/_running_adapters.py.
+                        try:
+                            from tools._running_adapters import set_running_adapter
+                            set_running_adapter(platform.value, adapter)
+                        except Exception:  # pragma: no cover
+                            logger.exception("Failed to publish %s to running-adapter registry", platform.value)
                         self._sync_voice_mode_state_to_adapter(adapter)
                         self.delivery_router.adapters = self.adapters
                         del self._failed_platforms[platform]
