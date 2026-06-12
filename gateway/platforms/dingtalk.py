@@ -455,19 +455,28 @@ class DingTalkAdapter(BasePlatformAdapter):
         return compiled
 
     def _load_allowed_users(self) -> Set[str]:
-        """Load allowed-users list from config.extra or env var.
+        """Load allowed-users list from config.extra and env var.
 
-        IDs are matched case-insensitively against the sender's ``staff_id`` and
-        ``sender_id``. A wildcard ``*`` disables the check.
+        ``allowed_users`` in config.extra and ``DINGTALK_ALLOWED_USERS`` are
+        merged when both are set — the documented contract — so neither source
+        silently drops the other's entries. IDs are matched case-insensitively
+        against the sender's ``staff_id`` and ``sender_id``. A wildcard ``*``
+        in either source disables the check.
         """
-        raw = self.config.extra.get("allowed_users") if self.config.extra else None
-        if raw is None:
-            raw = os.getenv("DINGTALK_ALLOWED_USERS", "")
-        if isinstance(raw, list):
-            items = [str(part).strip() for part in raw if str(part).strip()]
-        else:
-            items = [part.strip() for part in str(raw).split(",") if part.strip()]
-        return {item.lower() for item in items}
+        allowed: Set[str] = set()
+        sources = (
+            self.config.extra.get("allowed_users") if self.config.extra else None,
+            os.getenv("DINGTALK_ALLOWED_USERS", ""),
+        )
+        for raw in sources:
+            if raw is None:
+                continue
+            if isinstance(raw, list):
+                items = [str(part).strip() for part in raw if str(part).strip()]
+            else:
+                items = [part.strip() for part in str(raw).split(",") if part.strip()]
+            allowed.update(item.lower() for item in items)
+        return allowed
 
     def _is_user_allowed(self, sender_id: str, sender_staff_id: str) -> bool:
         if not self._allowed_users or "*" in self._allowed_users:
