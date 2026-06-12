@@ -1559,14 +1559,64 @@ class AIAgent:
             # Retry row creation if the earlier attempt failed transiently.
             if not self._session_db_created:
                 self._ensure_db_session()
+            # Identity-based flush (#43936 final fix).
+            #
+            # The previous mechanism was POSITION-based: it sliced
+            # ``messages[max(start_idx, _last_flushed_db_idx):]``.  That broke
+            # in two real-world ways (both observed live, 2026-06-13):
+            #   1. ``_last_flushed_db_idx`` lives on the CACHED agent instance
+            #      but indexes the TURN-LOCAL ``messages`` array — overlapping
+            #      turns on the same cached agent corrupt it, the slice goes
+            #      empty, and a COMPLETED assistant response delivered to the
+            #      chat never lands in state.db.
+            #   2. ``start_idx = len(conversation_history)`` can EXCEED
+            #      ``len(messages)``: when prior drops left the DB transcript
+            #      with consecutive-user / orphan-tool rows, the next turn's
+            #      ``repair_message_sequence`` merges/drops entries and shrinks
+            #      ``messages`` below the history length.  Every later flush
+            #      then slices past the end forever — a self-reinforcing drop
+            #      loop.  No index arithmetic can survive the two arrays
+            #      diverging, so we stop using positions entirely.
+            #
+            # Instead, each persisted dict is stamped in-memory with
+            # ``_db_persisted`` (stripped from API payloads like all
+            # underscore-prefixed keys, harmless in the JSON session log).
+            # History rows reloaded fresh from the DB each gateway turn are
+            # identified by OBJECT IDENTITY against ``conversation_history``
+            # and stamped instead of re-written.  A message is written exactly
+            # once, no matter how the arrays shift — preserving the #860/#31507
+            # dedup guarantees by construction.
+            _hist_ids = {
+                id(_m) for _m in (conversation_history or []) if isinstance(_m, dict)
+            }
             start_idx = len(conversation_history) if conversation_history else 0
-            # Guard against the flush cursor overshooting the message list.
-            # This can happen when repair_message_sequence compacts the list
-            # (merging consecutive users, dropping stray tools) after the
-            # cursor was set.  Fall back to start_idx so we don't skip
-            # persisting the assistant/tool chain (#44837).
-            flush_from = max(start_idx, min(self._last_flushed_db_idx, len(messages)))
-            for msg in messages[flush_from:]:
+            # NOTE: this supersedes the #44837 positional clamp
+            # (`max(start_idx, min(_last_flushed_db_idx, len(messages)))`).
+            # That clamp only bounded `_last_flushed_db_idx`; it left
+            # `start_idx = len(conversation_history)` unbounded, so when
+            # `repair_message_sequence` shrinks `messages` below the history
+            # length (`start_idx > len(messages)`) the slice is STILL empty and
+            # the assistant is STILL dropped. Identity-based dedup ignores
+            # positions entirely, so it covers that residual case.
+            if start_idx > len(messages):
+                # The old positional bug would fire here; log so live sessions
+                # confirm the identity path handles the divergence.
+                logger.info(
+                    "FLUSH-IDENTITY divergence: len_conv=%d > len_messages=%d "
+                    "session=%s — identity flush proceeding",
+                    start_idx, len(messages), getattr(self, "session_id", "?"),
+                )
+            _diag_written_roles = []
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("_db_persisted"):
+                    continue
+                if id(msg) in _hist_ids:
+                    # Already in the DB transcript (this turn's loaded
+                    # history) — stamp, don't re-write.
+                    msg["_db_persisted"] = True
+                    continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
                 # Persist multimodal tool results as their text summary only —
@@ -1605,6 +1655,17 @@ class AIAgent:
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                 )
+                msg["_db_persisted"] = True
+                _diag_written_roles.append(role)
+            if start_idx > len(messages) and _diag_written_roles:
+                logger.info(
+                    "FLUSH-IDENTITY wrote roles=%s (assistant_written=%s) session=%s",
+                    _diag_written_roles,
+                    "assistant" in _diag_written_roles,
+                    getattr(self, "session_id", "?"),
+                )
+            # Kept in sync for legacy readers (cli.py resume/branch reset it);
+            # no longer used to decide what gets written.
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)

@@ -101,7 +101,15 @@ class TestFlushAfterCompression:
             )
 
     def test_flush_with_stale_history_loses_messages(self):
-        """Demonstrates the bug condition: stale conversation_history causes data loss."""
+        """Identity flush survives a stale conversation_history (#43936).
+
+        Historic bug condition: a conversation_history LONGER than messages
+        made the positional flush compute flush_from=100 > len(messages)=2,
+        slicing past the end and silently dropping everything.  The
+        identity-based flush writes any unstamped message regardless of the
+        arrays' relative lengths, so the messages must now persist.
+        (This test originally asserted rows == 0 to document the bug.)
+        """
         from hermes_state import SessionDB
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -120,17 +128,17 @@ class TestFlushAfterCompression:
                 {"role": "assistant", "content": "continuing..."},
             ]
 
-            # Bug: passing a conversation_history longer than compressed messages
+            # Stale history longer than messages — the old positional killer.
             stale_history = [{"role": "user", "content": f"msg{i}"} for i in range(100)]
             agent._flush_messages_to_session_db(compressed, stale_history)
 
             rows = db.get_messages("new-session")
-            # With the stale history, flush_from = max(100, 0) = 100
-            # But compressed only has 2 entries → messages[100:] = empty
-            assert len(rows) == 0, (
-                "Expected 0 messages with stale conversation_history "
-                "(this test verifies the bug condition exists)"
+            assert len(rows) == 2, (
+                f"Identity flush must persist both messages despite stale "
+                f"conversation_history, got {len(rows)}"
             )
+            contents = [r["content"] for r in rows]
+            assert "continuing..." in contents
 
 
 # ---------------------------------------------------------------------------

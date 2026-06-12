@@ -549,6 +549,14 @@ def compress_context(
             agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
             # Reset flush cursor — new session starts with no messages written
             agent._last_flushed_db_idx = 0
+            # Identity-flush: clear per-message persisted stamps so the
+            # surviving (compressed) messages are re-written into the NEW
+            # session's transcript. Without this the identity flush would
+            # treat carried-over dicts as already persisted and the new
+            # session row would have no messages.
+            for _cm in compressed:
+                if isinstance(_cm, dict):
+                    _cm.pop("_db_persisted", None)
         except Exception as e:
             logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 
