@@ -67,4 +67,11 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         default=False,
         help="Windows: proceed with the update even when another hermes.exe is detected. The concurrent process will likely cause WinError 32 warnings and may leave a reboot-deferred .exe replacement.",
     )
+    update_parser.add_argument(
+        "--light",
+        "-L",
+        action="store_true",
+        default=False,
+        help="Lightweight update: skip npm install, web UI build, and desktop rebuild. Core Python update only — much faster on Windows. Run 'cd web && npm install && npm run build' separately if you need the dashboard/TUI.",
+    )
     update_parser.set_defaults(func=cmd_update)
