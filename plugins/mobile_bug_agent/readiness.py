@@ -20,6 +20,14 @@ from .secrets import MONICA_SLACK_APP_TOKEN, MONICA_SLACK_BOT_TOKEN
 
 _SLACK_CHANNEL_ID_RE = re.compile(r"^[CDG][A-Z0-9]{2,}$")
 _SLACK_USER_ID_RE = re.compile(r"^[UW][A-Z0-9_]{2,}$")
+_MODEL_CREDENTIAL_KEYS = (
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GROQ_API_KEY",
+)
 
 
 @dataclass(frozen=True)
@@ -156,6 +164,14 @@ def check_monica_readiness(
 
     side_effect_rollout = config.rollout_mode in {"linear_only", "local_fix_only", "approved_pr"}
     if side_effect_rollout:
+        warn(
+            "intent_classifier_model",
+            _has_any_secret(env, _MODEL_CREDENTIAL_KEYS),
+            (
+                "No common model API credential is configured; Monica's intent classifier "
+                "may fall back to deterministic keyword triage"
+            ),
+        )
         require(
             "slack_bot_user_ids_empty",
             bool(config.slack.bot_user_ids),
@@ -416,6 +432,10 @@ _APPROVAL_FAILURE_PRIORITY = (
 
 def _has_secret(env: dict[str, str], key: str) -> bool:
     return bool(str(env.get(key) or "").strip())
+
+
+def _has_any_secret(env: dict[str, str], keys: tuple[str, ...]) -> bool:
+    return any(_has_secret(env, key) for key in keys)
 
 
 def _module_available(name: str) -> bool:
