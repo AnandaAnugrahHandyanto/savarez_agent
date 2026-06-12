@@ -141,8 +141,11 @@ const GROUP_DND_ID_PREFIX = 'group:'
 // the next — the flexbox `min-height: auto` overlap trap that caused the bug.
 const COMPACT_FLAT = 'compact:max-h-none compact:overflow-visible'
 
+// Vertical scroll only — never a horizontal bar from glow bleed, long titles, etc.
+const SCROLL_Y = 'overflow-y-auto overflow-x-hidden overscroll-contain'
+
 // A non-session group's scroll body: own scroller when tall, flattened when compact.
-const GROUP_BODY = cn('overflow-y-auto overscroll-contain', COMPACT_FLAT)
+const GROUP_BODY = cn(SCROLL_Y, COMPACT_FLAT)
 
 const groupDndId = (id: string) => `${GROUP_DND_ID_PREFIX}${id}`
 
@@ -855,11 +858,11 @@ export function ChatSidebar({
         )}
 
         {contentVisible && showSessionSections && (
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pb-1.75">
+          <div className={cn('flex min-h-0 flex-1 flex-col pb-1.75', SCROLL_Y)}>
             {trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
-                contentClassName="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
+                contentClassName={cn('flex min-h-0 flex-1 flex-col gap-px pb-1.75', SCROLL_Y)}
                 emptyState={
                   <div className="grid min-h-24 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
                     {s.noMatch(trimmedQuery)}
@@ -906,7 +909,8 @@ export function ChatSidebar({
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
                 contentClassName={cn(
-                  'flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pb-1.75',
+                  'flex min-h-0 flex-1 flex-col pb-1.75',
+                  SCROLL_Y,
                   // Separate profile sections clearly in the ALL view; rows inside
                   // each group keep their own tight gap-px rhythm.
                   showAllProfiles ? 'gap-3' : 'gap-px',
