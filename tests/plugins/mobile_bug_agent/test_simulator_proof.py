@@ -887,6 +887,60 @@ def test_launch_ios_bundle_returns_false_when_openurl_fails(monkeypatch, tmp_pat
     assert len(openurl_calls) == 3
 
 
+def test_simulator_proof_ios_tolerates_run_ios_failure_when_app_installed(monkeypatch, tmp_path):
+    proof_dir = tmp_path / "proof"
+    worktree = _worktree(tmp_path / "app")
+    monkeypatch.setattr(simulator_proof, "_ios_app_is_installed", lambda *_args: True)
+
+    def run_text(args, cwd, timeout):
+        if args[:3] == ("npx", "expo", "run:ios"):
+            raise RuntimeError("command failed (1): npx expo run:ios (osascript unavailable)")
+        if args[:4] == ("xcrun", "simctl", "io", "SIM-123"):
+            Path(args[-1]).write_bytes(_png_bytes())
+        return "ok"
+
+    def run_ios_until_ready(args, cwd, timeout, target, bundle_id, dev_client_url, log_dir, while_ready):
+        while_ready()
+
+    harness = SimulatorProofHarness(run_text=run_text, run_ios_until_ready=run_ios_until_ready)
+
+    result = harness.run(
+        worktree=worktree,
+        proof_dir=proof_dir,
+        platforms=("ios",),
+        dev_client_scheme="elixir-card",
+        ios_simulator_udid="SIM-123",
+        ios_bundle_id="com.elixir.card",
+        timeout_seconds=90,
+    )
+
+    assert result == [str(proof_dir / "ios-screenshot.png")]
+
+
+def test_simulator_proof_ios_surfaces_run_ios_failure_when_app_missing(monkeypatch, tmp_path):
+    proof_dir = tmp_path / "proof"
+    worktree = _worktree(tmp_path / "app")
+    monkeypatch.setattr(simulator_proof, "_ios_app_is_installed", lambda *_args: False)
+
+    def run_text(args, cwd, timeout):
+        if args[:3] == ("npx", "expo", "run:ios"):
+            raise RuntimeError("command failed (65): npx expo run:ios (build error)")
+        return "ok"
+
+    harness = SimulatorProofHarness(run_text=run_text, run_ios_until_ready=lambda *_args: None)
+
+    with pytest.raises(RuntimeError, match="build error"):
+        harness.run(
+            worktree=worktree,
+            proof_dir=proof_dir,
+            platforms=("ios",),
+            dev_client_scheme="elixir-card",
+            ios_simulator_udid="SIM-123",
+            ios_bundle_id="com.elixir.card",
+            timeout_seconds=90,
+        )
+
+
 def test_ensure_ios_fingerprint_config_writes_fast_config(tmp_path):
     simulator_proof._ensure_ios_fingerprint_config(tmp_path)
 

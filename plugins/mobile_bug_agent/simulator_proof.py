@@ -132,11 +132,20 @@ class SimulatorProofHarness:
         clean_bundle_id = bundle_id.strip()
         if clean_bundle_id:
             _uninstall_ios_bundle(target, app_dir, clean_bundle_id)
-            self._run_text(
-                ("npx", "expo", "run:ios", "--no-install", "--no-bundler"),
-                app_dir,
-                timeout_seconds,
-            )
+            try:
+                self._run_text(
+                    ("npx", "expo", "run:ios", "--no-install", "--no-bundler"),
+                    app_dir,
+                    timeout_seconds,
+                )
+            except RuntimeError:
+                # expo run:ios can fail after build+install on its cosmetic
+                # Simulator.app activation step (osascript is unavailable in
+                # headless contexts). The uninstall above guarantees an
+                # installed app reflects this build, so only re-raise when
+                # the install never happened.
+                if not _ios_app_is_installed(target, app_dir, clean_bundle_id):
+                    raise
             self._run_ios_until_ready(
                 ("npx", "expo", "start", "--dev-client", "--host", _ios_expo_host(), "--port", "8081"),
                 app_dir,
