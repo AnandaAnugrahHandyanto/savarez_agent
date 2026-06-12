@@ -121,6 +121,50 @@ class TestSubdirectoryHintTracker:
         assert result is not None
         assert "Frontend rules" in result
 
+    def test_symlinked_project_under_working_dir_loads_hints(self, tmp_path):
+        """Logical project paths under working_dir should load hints even when symlinked elsewhere."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        real_project = tmp_path / "real-project"
+        real_project.mkdir()
+        (real_project / "AGENTS.md").write_text("Symlinked project instructions")
+        (real_project / "src").mkdir()
+        (real_project / "src" / "main.py").write_text("print('hi')")
+        link = workspace / "project-link"
+        link.symlink_to(real_project, target_is_directory=True)
+
+        tracker = SubdirectoryHintTracker(working_dir=str(workspace))
+        result = tracker.check_tool_call(
+            "read_file", {"path": str(link / "src" / "main.py")}
+        )
+
+        assert result is not None
+        assert "Symlinked project instructions" in result
+
+        direct_target_tracker = SubdirectoryHintTracker(working_dir=str(workspace))
+        direct_target_result = direct_target_tracker.check_tool_call(
+            "read_file", {"path": str(real_project / "src" / "main.py")}
+        )
+        assert direct_target_result is None
+
+    def test_parent_traversal_outside_working_dir_rejected(self, tmp_path):
+        """Paths that normalize outside working_dir must not load outside hints."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "AGENTS.md").write_text("Outside project instructions")
+        (outside / "file.py").write_text("print('outside')")
+
+        tracker = SubdirectoryHintTracker(working_dir=str(workspace))
+
+        for path in [
+            "../outside/file.py",
+            str(workspace / ".." / "outside" / "file.py"),
+        ]:
+            result = tracker.check_tool_call("read_file", {"path": path})
+            assert result is None
+
     def test_outside_working_dir_rejected(self, tmp_path, project):
         """Paths outside working_dir are rejected — no hints from outside workspace.
 

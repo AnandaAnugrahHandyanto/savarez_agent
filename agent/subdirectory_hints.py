@@ -54,6 +54,12 @@ def _is_ancestor_or_same(a: Path, b: Path) -> bool:
     except ValueError:
         return False
 
+
+def _logical_abspath(path: Path) -> Path:
+    """Absolute path normalization without resolving symlink targets."""
+    return Path(os.path.abspath(os.fspath(path)))
+
+
 class SubdirectoryHintTracker:
     """Track which directories the agent visits and load hints on first access.
 
@@ -68,10 +74,20 @@ class SubdirectoryHintTracker:
     """
 
     def __init__(self, working_dir: Optional[str] = None):
-        self.working_dir = Path(working_dir or os.getcwd()).resolve()
+        raw_working_dir = Path(working_dir or os.getcwd()).expanduser()
+        if not raw_working_dir.is_absolute():
+            raw_working_dir = Path.cwd() / raw_working_dir
+        # Keep both the logical path the user/agent sees and the resolved path.
+        # Some workspaces intentionally live under a symlink inside the active
+        # tree (for example ~/projects/foo -> /var/tmp/foo).  Using only
+        # resolve() makes those project files look "outside" the workspace and
+        # suppresses their AGENTS.md/CLAUDE.md hints.
+        self.working_dir_logical = _logical_abspath(raw_working_dir)
+        self.working_dir = self.working_dir_logical.resolve()
         self._loaded_dirs: Set[Path] = set()
         # Pre-mark the working dir as loaded (startup context handles it)
         self._loaded_dirs.add(self.working_dir)
+        self._loaded_dirs.add(self.working_dir_logical)
 
     def check_tool_call(
         self,
@@ -129,8 +145,12 @@ class SubdirectoryHintTracker:
         try:
             p = Path(raw_path).expanduser()
             if not p.is_absolute():
-                p = self.working_dir / p
-            p = p.resolve()
+                p = self.working_dir_logical / p
+            # Deliberately do not resolve symlinks here: the logical path is
+            # what determines whether the user is working inside the active
+            # workspace.  _is_valid_subdir() still allows already-resolved paths
+            # when they are physically inside the workspace.
+            p = _logical_abspath(p)
             # Use parent if it's a file path (has extension or doesn't exist as dir)
             if p.suffix or (p.exists() and p.is_file()):
                 p = p.parent
@@ -146,6 +166,29 @@ class SubdirectoryHintTracker:
                 p = parent
         except (OSError, ValueError):
             pass
+
+    def _is_within_working_dir(self, path: Path) -> bool:
+        """Return True when *path* is inside the logical or resolved workspace."""
+        logical = _logical_abspath(path)
+        try:
+            if logical.is_relative_to(self.working_dir_logical):
+                return True
+        except (OSError, ValueError):
+            if _is_ancestor_or_same(self.working_dir_logical, logical):
+                return True
+
+        try:
+            resolved = logical.resolve()
+            if resolved.is_relative_to(self.working_dir):
+                return True
+        except (OSError, ValueError):
+            try:
+                if _is_ancestor_or_same(self.working_dir, logical.resolve()):
+                    return True
+            except (OSError, ValueError):
+                pass
+
+        return False
 
     def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):
         """Extract path-like tokens from a shell command string."""
@@ -181,18 +224,10 @@ class SubdirectoryHintTracker:
             return False
         if path in self._loaded_dirs:
             return False
-        # Reject paths outside the working directory tree.
-        # path.resolve() may differ from working_dir.resolve() due to symlinks,
-        # but path.is_relative_to(working_dir) handles both absolute and
-        # symlinked paths correctly on Python 3.9+.
-        try:
-            if not path.is_relative_to(self.working_dir):
-                return False
-        except (OSError, ValueError):
-            # Older Python or path resolution error — fall back to parent
-            # check as a best-effort safeguard.
-            if not _is_ancestor_or_same(self.working_dir, path):
-                return False
+        # Reject paths outside the active workspace, but preserve logical
+        # symlinked paths that sit under the workspace root.
+        if not self._is_within_working_dir(path):
+            return False
         return True
 
     def _load_hints_for_directory(self, directory: Path) -> Optional[str]:
@@ -201,22 +236,18 @@ class SubdirectoryHintTracker:
         Only loads hints from directories within the working directory tree.
         """
         self._loaded_dirs.add(directory)
-
-        # Reject paths outside the working directory tree.
         try:
-            if not directory.is_relative_to(self.working_dir):
-                logger.debug(
-                    "Skipping hint files in %s — outside working_dir %s",
-                    directory, self.working_dir,
-                )
-                return None
+            self._loaded_dirs.add(directory.resolve())
         except (OSError, ValueError):
-            if not _is_ancestor_or_same(self.working_dir, directory):
-                logger.debug(
-                    "Skipping hint files in %s — outside working_dir %s",
-                    directory, self.working_dir,
-                )
-                return None
+            pass
+
+        # Reject paths outside the active workspace.
+        if not self._is_within_working_dir(directory):
+            logger.debug(
+                "Skipping hint files in %s — outside working_dir %s",
+                directory, self.working_dir_logical,
+            )
+            return None
 
         found_hints = []
         for filename in _HINT_FILENAMES:
@@ -240,13 +271,16 @@ class SubdirectoryHintTracker:
                 # Best-effort relative path for display
                 rel_path = str(hint_path)
                 try:
-                    rel_path = str(hint_path.relative_to(self.working_dir))
+                    rel_path = str(hint_path.relative_to(self.working_dir_logical))
                 except ValueError:
                     try:
-                        rel_path = str(hint_path.relative_to(Path.home()))
-                        rel_path = "~/" + rel_path
-                    except ValueError:
-                        pass  # keep absolute
+                        rel_path = str(hint_path.resolve().relative_to(self.working_dir))
+                    except (OSError, ValueError):
+                        try:
+                            rel_path = str(hint_path.relative_to(Path.home()))
+                            rel_path = "~/" + rel_path
+                        except ValueError:
+                            pass  # keep absolute
                 found_hints.append((rel_path, content))
                 # First match wins per directory (like startup loading)
                 break
