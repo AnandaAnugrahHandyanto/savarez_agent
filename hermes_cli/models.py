@@ -1358,17 +1358,35 @@ def fetch_openrouter_models(
         live_by_id[mid] = item
 
     curated: list[tuple[str, str]] = []
-    for preferred_id in preferred_ids:
-        live_item = live_by_id.get(preferred_id)
-        if live_item is None:
-            continue
+    seen: set[str] = set()
+
+    def _eligible_openrouter_free(item: dict[str, Any]) -> bool:
         # Hide models that don't advertise tool-calling support — hermes-agent
         # requires it and surfacing them leads to immediate runtime failures
         # when the user selects them. Ported from Kilo-Org/kilocode#9068.
-        if not _openrouter_model_supports_tools(live_item):
+        if not _openrouter_model_supports_tools(item):
+            return False
+        # Local policy patch: only surface free OpenRouter models in the picker.
+        # Official provider_routing config affects sub-provider request routing,
+        # not which OpenRouter model IDs appear in /model.
+        return _openrouter_model_is_free(item.get("pricing"))
+
+    # Keep Hermes's curated ordering first where those models are still live,
+    # tool-capable, and free.
+    for preferred_id in preferred_ids:
+        live_item = live_by_id.get(preferred_id)
+        if live_item is None or not _eligible_openrouter_free(live_item):
             continue
-        desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
-        curated.append((preferred_id, desc))
+        curated.append((preferred_id, "free"))
+        seen.add(preferred_id)
+
+    # Then append any additional live free models that Hermes has not curated
+    # yet, so newly released free models still appear in /model automatically.
+    extras = sorted(
+        mid for mid, item in live_by_id.items()
+        if mid not in seen and _eligible_openrouter_free(item)
+    )
+    curated.extend((mid, "free") for mid in extras)
 
     if not curated:
         return list(_openrouter_catalog_cache or fallback)
