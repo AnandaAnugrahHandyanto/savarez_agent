@@ -622,6 +622,34 @@ KOFI_PARITY_SELFTEST_SCHEMA = {
     },
 }
 
+PCVR_MANAGEMENT_SELFTEST_SCHEMA = {
+    "name": "questframe_pcvr_management_selftest",
+    "description": "Run read-only QuestFrame PCVR runtime, profile, and support-management gate.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "allow_missing_runtime": {
+                "type": "boolean",
+                "description": "When true, pass --allow-missing-runtime for offline package checks.",
+            },
+            "no_process_list": {
+                "type": "boolean",
+                "description": "When true, pass --no-process-list to avoid enumerating local processes.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 300,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
 UNITY_SCAN_SCHEMA = {
     "name": "questframe_unity_scan",
     "description": "Read-only scan of Unity/VCC project packages for VRChat tool risk.",
@@ -1130,6 +1158,7 @@ def status() -> dict[str, Any]:
             "questframe_immersive_presentation_loop_selftest",
             "questframe_cockpit_presence_selftest",
             "questframe_kofi_parity_selftest",
+            "questframe_pcvr_management_selftest",
             "questframe_vcc_health",
             "questframe_support_report",
             "questframe_unity_scan",
@@ -1532,6 +1561,23 @@ def handle_kofi_parity_selftest(args: dict[str, Any] | None = None, **_: Any) ->
     )
 
 
+def handle_pcvr_management_selftest(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    extra = ["--json"]
+    if bool(args.get("allow_missing_runtime")):
+        extra.append("--allow-missing-runtime")
+    if bool(args.get("no_process_list")):
+        extra.append("--no-process-list")
+    return _json(
+        run_launcher(
+            "pcvr-management-selftest",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=extra,
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
 HELP = """questframe commands:
   /questframe status
   /questframe preflight
@@ -1551,6 +1597,7 @@ HELP = """questframe commands:
   /questframe openxr-presentation-selftest [--approve] [--require-pairing]
   /questframe cockpit-presence-selftest [--approve] [--attempt-window-capture] [--seconds N]
   /questframe kofi-parity-selftest [--approve] [--attempt-window-capture]
+  /questframe pcvr-management-selftest [--allow-missing-runtime]
   /questframe vcc-health [project_path]
   /questframe support-report
   /questframe unity-scan [project_path]
@@ -1702,6 +1749,17 @@ def handle_slash(raw_args: str) -> str:
             if index + 1 < len(argv):
                 args["target_hz"] = int(argv[index + 1])
         return handle_kofi_parity_selftest(args)
+    if command in {
+        "pcvr-management-selftest",
+        "pcvr-management",
+        "pcvr",
+    }:
+        return handle_pcvr_management_selftest(
+            {
+                "allow_missing_runtime": "--allow-missing-runtime" in argv,
+                "no_process_list": "--no-process-list" in argv,
+            }
+        )
     if command == "unity-scan":
         project = argv[1] if len(argv) > 1 else None
         return _json(scan_unity_projects(project_path=project))

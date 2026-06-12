@@ -141,6 +141,15 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     kofi_parity.add_argument("--target-hz", type=int, default=None)
     kofi_parity.add_argument("--timeout-seconds", type=int, default=None)
 
+    pcvr_management = subs.add_parser(
+        "pcvr-management-selftest",
+        help="Run read-only QuestFrame PCVR management self-test (0.22 gate)",
+    )
+    pcvr_management.add_argument("--launcher-exe", default="")
+    pcvr_management.add_argument("--allow-missing-runtime", action="store_true")
+    pcvr_management.add_argument("--no-process-list", action="store_true")
+    pcvr_management.add_argument("--timeout-seconds", type=int, default=None)
+
     vcc_health = subs.add_parser(
         "vcc-health",
         help="Check VRChat Creator Companion and Unity Hub readiness",
@@ -210,7 +219,8 @@ def questframe_command(args: argparse.Namespace) -> int:
             "companion-depth-producer-selftest,color-depth-pairing-selftest,"
             "openxr-presentation-selftest,live-color-loop-selftest,"
             "immersive-presentation-loop-selftest,cockpit-presence-selftest,"
-            "kofi-parity-selftest,vcc-health,support-report,unity-scan}"
+            "kofi-parity-selftest,pcvr-management-selftest,vcc-health,"
+            "support-report,unity-scan}"
         )
         return 2
     if command == "setup":
@@ -448,6 +458,20 @@ def questframe_command(args: argparse.Namespace) -> int:
         return _print(
             core.run_launcher(
                 "kofi-parity-selftest",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=extra,
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "pcvr-management-selftest":
+        extra = ["--json"]
+        if bool(getattr(args, "allow_missing_runtime", False)):
+            extra.append("--allow-missing-runtime")
+        if bool(getattr(args, "no_process_list", False)):
+            extra.append("--no-process-list")
+        return _print(
+            core.run_launcher(
+                "pcvr-management-selftest",
                 launcher_exe=getattr(args, "launcher_exe", "") or None,
                 extra_args=extra,
                 timeout_seconds=getattr(args, "timeout_seconds", None),

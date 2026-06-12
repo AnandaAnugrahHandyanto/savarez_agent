@@ -107,6 +107,12 @@ _TOOLS = (
         "Q",
     ),
     (
+        "questframe_pcvr_management_selftest",
+        core.PCVR_MANAGEMENT_SELFTEST_SCHEMA,
+        core.handle_pcvr_management_selftest,
+        "Q",
+    ),
+    (
         "questframe_vcc_health",
         core.VCC_HEALTH_SCHEMA,
         core.handle_vcc_health,
@@ -145,7 +151,7 @@ def register(ctx) -> None:
             "live-capture-selftest|depth-surface-selftest|depth-reader-selftest|"
             "depth-producer-selftest|companion-depth-producer-selftest|"
             "color-depth-pairing-selftest|openxr-presentation-selftest|"
-            "support-report|unity-scan]"
+            "pcvr-management-selftest|support-report|unity-scan]"
         ),
     )
     ctx.register_cli_command(

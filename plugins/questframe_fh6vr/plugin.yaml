@@ -1,5 +1,5 @@
 name: questframe-fh6vr
-version: 0.7.0
+version: 0.8.0
 description: "Hermes bridge for QuestFrame PCVR Toolkit, FH6VR probes, support reports, and Unity/VCC diagnostics."
 author: "Hermes local plugin"
 kind: standalone
@@ -27,6 +27,7 @@ provides_tools:
   - questframe_immersive_presentation_loop_selftest
   - questframe_cockpit_presence_selftest
   - questframe_kofi_parity_selftest
+  - questframe_pcvr_management_selftest
   - questframe_vcc_health
   - questframe_support_report
   - questframe_unity_scan
