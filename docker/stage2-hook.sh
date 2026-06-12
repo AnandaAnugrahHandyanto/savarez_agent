@@ -222,6 +222,14 @@ fi
 #     producing EACCES for the supervised gateway (#27221).
 #   - node_modules: root-level dependencies (puppeteer, web tooling)
 #     that runtime code may walk/update.
+#   - scripts/whatsapp-bridge: the WhatsApp setup wizard
+#     (hermes_cli/main.py, setup_whatsapp) runs `npm install` in this
+#     directory at first use to build the Node bridge's node_modules.
+#     After a UID remap the directory is still owned by the build UID
+#     (10000), so the install fails with
+#     `EACCES: permission denied, mkdir '.../whatsapp-bridge/node_modules'`.
+#     Re-chowning it lets the wizard create node_modules as the runtime
+#     hermes user.
 # The set mirrors the build-time `chown -R hermes:hermes` line in the
 # Dockerfile — keep them in sync if the Dockerfile chown set changes.
 # These are under $INSTALL_DIR (not $HERMES_HOME), so the bind-mount
@@ -247,6 +255,7 @@ if [ -n "$venv_owner" ] && [ "$venv_owner" != "$actual_hermes_uid" ]; then
         "$INSTALL_DIR/ui-tui" \
         "$INSTALL_DIR/gateway" \
         "$INSTALL_DIR/node_modules" \
+        "$INSTALL_DIR/scripts/whatsapp-bridge" \
         2>/dev/null || \
         echo "[stage2] Warning: chown of build trees failed (rootless container?) — continuing"
 fi
