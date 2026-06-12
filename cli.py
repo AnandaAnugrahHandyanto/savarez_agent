@@ -5741,7 +5741,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return []
         try:
             sessions = self._session_db.list_sessions_rich(
-                source="cli",
                 exclude_sources=["tool"],
                 limit=limit,
             )
