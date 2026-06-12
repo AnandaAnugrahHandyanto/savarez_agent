@@ -189,9 +189,13 @@ export function DashboardSettingsProvider({
             : group === "plugin"
               ? "pluginOrder"
               : "unifiedOrder";
-        const prevOrder = prev.sidebarItemOrder[key].map((item) =>
-          item.id === id ? { ...item, label: label || undefined } : item,
-        );
+        const prevOrder = [...prev.sidebarItemOrder[key]];
+        const idx = prevOrder.findIndex((item) => item.id === id);
+        if (idx >= 0) {
+          prevOrder[idx] = { ...prevOrder[idx], label: label || undefined };
+        } else {
+          prevOrder.push({ id, label: label || undefined });
+        }
         const next = {
           ...prev,
           sidebarItemOrder: {
@@ -215,9 +219,13 @@ export function DashboardSettingsProvider({
             : group === "plugin"
               ? "pluginOrder"
               : "unifiedOrder";
-        const prevOrder = prev.sidebarItemOrder[key].map((item) =>
-          item.id === id ? { ...item, icon: icon || undefined } : item,
-        );
+        const prevOrder = [...prev.sidebarItemOrder[key]];
+        const idx = prevOrder.findIndex((item) => item.id === id);
+        if (idx >= 0) {
+          prevOrder[idx] = { ...prevOrder[idx], icon: icon || undefined };
+        } else {
+          prevOrder.push({ id, icon: icon || undefined });
+        }
         const next = {
           ...prev,
           sidebarItemOrder: {
