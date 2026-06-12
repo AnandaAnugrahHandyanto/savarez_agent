@@ -22,6 +22,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { KbdGroup } from '@/components/ui/kbd'
 import { SearchField } from '@/components/ui/search-field'
@@ -293,6 +301,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onLoadMoreSessions: () => void
   onLoadMoreProfileSessions?: (profile: string) => Promise<void> | void
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
+  onArchiveAllSessions: () => Promise<void> | void
   onResumeSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
@@ -307,6 +316,7 @@ export function ChatSidebar({
   onLoadMoreSessions,
   onLoadMoreProfileSessions,
   onLoadMoreMessaging,
+  onArchiveAllSessions,
   onResumeSession,
   onDeleteSession,
   onArchiveSession,
@@ -357,6 +367,8 @@ export function ChatSidebar({
   // Per-platform count of rows currently revealed (starts at NON_SESSION_INITIAL_ROWS).
   const [messagingVisible, setMessagingVisible] = useState<Record<string, number>>({})
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const [archiveAllOpen, setArchiveAllOpen] = useState(false)
+  const [archiveAllSubmitting, setArchiveAllSubmitting] = useState(false)
   const trimmedQuery = searchQuery.trim()
 
   // Hotkey (session.focusSearch) → focus the field once it's mounted.
@@ -680,6 +692,7 @@ export function ChatSidebar({
   const remainingSessionCount = Math.max(0, knownSessionTotal - loadedSessionCount)
 
   const recentsMeta = countLabel(agentSessions.length, knownSessionTotal)
+  const archiveAllDisabled = sessionsLoading || agentSessions.length === 0 || archiveAllSubmitting
 
   const displayAgentGroups = showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : undefined
 
@@ -762,6 +775,74 @@ export function ChatSidebar({
 
     setSidebarSessionOrderIds(arrayMove(agentSessions, oldIdx, newIdx).map(s => s.id))
   }
+
+  const handleArchiveAll = async () => {
+    if (archiveAllSubmitting) {
+      return
+    }
+
+    setArchiveAllSubmitting(true)
+
+    try {
+      await onArchiveAllSessions()
+      setArchiveAllOpen(false)
+    } catch {
+      // The caller owns the error toast/rollback; keep the dialog open.
+    } finally {
+      setArchiveAllSubmitting(false)
+    }
+  }
+
+  const sessionsHeaderAction = (
+    <div className="flex items-center gap-0.5">
+      {agentSessions.length > 0 ? (
+        <Tip label="Archive all sessions">
+          <Button
+            aria-label="Archive all unpinned sessions"
+            className="text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100"
+            disabled={archiveAllDisabled}
+            onClick={event => {
+              event.stopPropagation()
+              setSidebarRecentsOpen(true)
+              setArchiveAllOpen(true)
+            }}
+            size="icon-xs"
+            variant="ghost"
+          >
+            <Codicon name={archiveAllSubmitting ? 'loading' : 'archive'} size="0.75rem" spinning={archiveAllSubmitting} />
+          </Button>
+        </Tip>
+      ) : null}
+      {/* Always reserve the icon-xs (size-6) slot so the header keeps the
+          same height whether or not the toggle renders — otherwise the
+          "Sessions" label jumps when switching to the ALL-profiles view.
+          Grouping operates on unpinned recents; if everything is pinned
+          the toggle does nothing, and it's irrelevant in the ALL-profiles
+          view (always grouped by profile), so hide the button (not the slot). */}
+      <div className="grid size-6 shrink-0 place-items-center">
+        {!showAllProfiles && agentSessions.length > 0 ? (
+          <Tip label={agentsGrouped ? s.groupTitleGrouped : s.groupTitleUngrouped}>
+            <Button
+              aria-label={agentsGrouped ? s.groupAriaGrouped : s.groupAriaUngrouped}
+              className={cn(
+                'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
+                agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+              )}
+              onClick={event => {
+                event.stopPropagation()
+                setSidebarRecentsOpen(true)
+                setSidebarAgentsGrouped(!agentsGrouped)
+              }}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
+            </Button>
+          </Tip>
+        ) : null}
+      </div>
+    </div>
+  )
 
   return (
     <Sidebar
@@ -934,36 +1015,7 @@ export function ChatSidebar({
                 }
                 forceEmptyState={showSessionSkeletons}
                 groups={displayAgentGroups}
-                headerAction={
-                  // Always reserve the icon-xs (size-6) slot so the header keeps the
-                  // same height whether or not the toggle renders — otherwise the
-                  // "Sessions" label jumps when switching to the ALL-profiles view.
-                  // Grouping operates on unpinned recents; if everything is pinned
-                  // the toggle does nothing, and it's irrelevant in the ALL-profiles
-                  // view (always grouped by profile), so hide the button (not the slot).
-                  <div className="grid size-6 shrink-0 place-items-center">
-                    {!showAllProfiles && agentSessions.length > 0 ? (
-                      <Tip label={agentsGrouped ? s.groupTitleGrouped : s.groupTitleUngrouped}>
-                        <Button
-                          aria-label={agentsGrouped ? s.groupAriaGrouped : s.groupAriaUngrouped}
-                          className={cn(
-                            'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
-                            agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
-                          )}
-                          onClick={event => {
-                            event.stopPropagation()
-                            setSidebarRecentsOpen(true)
-                            setSidebarAgentsGrouped(!agentsGrouped)
-                          }}
-                          size="icon-xs"
-                          variant="ghost"
-                        >
-                          <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
-                        </Button>
-                      </Tip>
-                    ) : null}
-                  </div>
-                }
+                headerAction={sessionsHeaderAction}
                 label={s.sessions}
                 labelMeta={recentsMeta}
                 onArchiveSession={onArchiveSession}
@@ -1053,7 +1105,49 @@ export function ChatSidebar({
           </div>
         )}
       </SidebarContent>
+      <ArchiveAllSessionsDialog
+        count={knownSessionTotal}
+        onConfirm={handleArchiveAll}
+        onOpenChange={setArchiveAllOpen}
+        open={archiveAllOpen}
+        submitting={archiveAllSubmitting}
+      />
     </Sidebar>
+  )
+}
+
+interface ArchiveAllSessionsDialogProps {
+  count: number
+  open: boolean
+  onConfirm: () => void | Promise<void>
+  onOpenChange: (open: boolean) => void
+  submitting: boolean
+}
+
+function ArchiveAllSessionsDialog({ count, open, onConfirm, onOpenChange, submitting }: ArchiveAllSessionsDialogProps) {
+  return (
+    <Dialog onOpenChange={onOpenChange} open={open}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Archive all sessions</DialogTitle>
+          <DialogDescription>
+            Archive unpinned sessions from the sidebar. Pinned chats, the current chat, and running sessions stay
+            visible.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-control-background) px-3 py-2 text-xs text-(--ui-text-secondary)">
+          {count > 0 ? `${count} visible session${count === 1 ? '' : 's'} will be checked.` : 'No sessions to archive.'}
+        </div>
+        <DialogFooter>
+          <Button disabled={submitting} onClick={() => onOpenChange(false)} type="button" variant="ghost">
+            Cancel
+          </Button>
+          <Button disabled={submitting} onClick={() => void onConfirm()} type="button" variant="destructive">
+            {submitting ? 'Archiving...' : 'Archive all'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
