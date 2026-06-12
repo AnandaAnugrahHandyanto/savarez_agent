@@ -1929,6 +1929,44 @@ def test_worktree_workspace_returns_intended_path(kanban_home, tmp_path):
     assert str(ws) == target
 
 
+def test_worktree_default_anchors_under_assignee_profile(kanban_home):
+    """A worktree task with no explicit path roots its worktree under the
+    ASSIGNEE's profile home (``<profiles>/<assignee>/.worktrees/<id>``), NOT the
+    dispatcher's CWD — so executors never share a ``.git/worktrees`` registry
+    with whichever profile happens to own the gateway."""
+    from hermes_cli.profiles import get_profile_dir
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn, title="code slice", workspace_kind="worktree", assignee="alice"
+        )
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+    assert ws == get_profile_dir("alice") / ".worktrees" / t
+
+
+def test_worktree_default_falls_back_to_cwd_without_assignee(kanban_home):
+    """Fallback: with no assignee the legacy CWD-relative root is used."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="orphan slice", workspace_kind="worktree")
+        task = kb.get_task(conn, t)
+        ws = kb.resolve_workspace(task)
+    assert ws.name == t
+    assert ws.parent.name == ".worktrees"
+
+
+def test_kanban_skill_available_resolves_and_rejects(tmp_path):
+    """The per-task skill availability guard resolves a present skill and
+    rejects an absent one, so an unresolved force-loaded skill is dropped at
+    spawn time rather than crashing the worker at CLI startup."""
+    skill_dir = tmp_path / "skills" / "devops" / "my-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# my-skill\n")
+    home = str(tmp_path)
+    assert kb._kanban_skill_available(home, "my-skill") is True
+    assert kb._kanban_skill_available(home, "absent-skill") is False
+    assert kb._kanban_skill_available(home, "") is False
+
+
 # ---------------------------------------------------------------------------
 # Scratch cleanup containment (#28818)
 # ---------------------------------------------------------------------------

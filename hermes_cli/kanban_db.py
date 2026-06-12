@@ -4736,7 +4736,21 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         return p
     if kind == "worktree":
         if not task.workspace_path:
-            # Default: .worktrees/<id>/ under CWD.  Worker skill creates it.
+            # Default worktree root: ``<assignee-profile-home>/.worktrees/<id>``.
+            # Anchor to the ASSIGNEE's profile home, NOT ``Path.cwd()``: the
+            # dispatcher runs inside whichever profile owns the gateway, so a
+            # CWD-relative root silently rooted every executor's worktree under
+            # the gateway profile's dir, mixing unrelated profiles' checkouts
+            # under one shared ``.git/worktrees`` registry. Resolving the
+            # assignee's home keeps each executor's worktrees under its own
+            # profile. Falls back to the legacy CWD-relative path only when no
+            # assignee is set or the profile cannot be resolved.
+            if task.assignee:
+                try:
+                    from hermes_cli.profiles import get_profile_dir
+                    return get_profile_dir(task.assignee) / ".worktrees" / task.id
+                except Exception:
+                    pass
             return Path.cwd() / ".worktrees" / task.id
         p = Path(task.workspace_path).expanduser()
         if not p.is_absolute():
@@ -6610,6 +6624,33 @@ def _resolve_hermes_argv() -> list[str]:
     return _module_hermes_argv()
 
 
+def _kanban_skill_available(hermes_home: Optional[str], skill_name: str) -> bool:
+    """True if a force-loadable skill ``skill_name`` resolves for the home the
+    spawned worker will run under.
+
+    Generalizes :func:`_kanban_worker_skill_available` to ANY per-task skill so
+    an unresolved name is dropped-with-warning at spawn time instead of crashing
+    the worker at CLI startup (``ValueError: Unknown skill(s): <name>``) before
+    the agent loop runs. An unset ``hermes_home`` means the worker falls back to
+    the default root home (``~/.hermes``).
+    """
+    from pathlib import Path as _Path
+
+    if not skill_name:
+        return False
+    base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
+    skills_root = base / "skills"
+    if not skills_root.is_dir():
+        return False
+    try:
+        for skill_md in skills_root.rglob(f"{skill_name}/SKILL.md"):
+            if skill_md.is_file():
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     """True if the bundled ``kanban-worker`` skill resolves for the home the
     spawned worker will run under.
@@ -6626,23 +6667,12 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     """
     from pathlib import Path as _Path
 
-    # An unset HERMES_HOME means the worker falls back to the default root
-    # home (``~/.hermes``), which ships the bundled skill.
-    base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
-    skills_root = base / "skills"
-    if not skills_root.is_dir():
-        return False
-    # Canonical bundled location first (cheap), then a bounded scan for
+    # Canonical bundled location first (cheap), then the general resolver for
     # profiles that have it nested elsewhere.
-    if (skills_root / "devops" / "kanban-worker" / "SKILL.md").is_file():
+    base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
+    if (base / "skills" / "devops" / "kanban-worker" / "SKILL.md").is_file():
         return True
-    try:
-        for skill_md in skills_root.rglob("kanban-worker/SKILL.md"):
-            if skill_md.is_file():
-                return True
-    except OSError:
-        pass
-    return False
+    return _kanban_skill_available(hermes_home, "kanban-worker")
 
 
 def _worker_terminal_timeout_env(
@@ -6803,9 +6833,23 @@ def _default_spawn(
     # Dedupe against the built-in so we don't double-load kanban-worker
     # if a task author asks for it explicitly.
     if task.skills:
+        worker_home = env.get("HERMES_HOME")
         for sk in task.skills:
-            if sk and sk != "kanban-worker":
+            if not sk or sk == "kanban-worker":
+                continue
+            # Availability-guard EVERY per-task force-loaded skill: an
+            # unresolved name is fatal at the worker's CLI startup
+            # (``Unknown skill(s): <name>``), crashing it before the agent loop
+            # runs. Drop-with-warning degrades gracefully — the task still runs,
+            # just without that skill's pattern library.
+            if _kanban_skill_available(worker_home, sk):
                 cmd.extend(["--skills", sk])
+            else:
+                _log.warning(
+                    "kanban task %s: dropping unresolved force-loaded skill %r "
+                    "(not found under %s/skills) to avoid worker startup crash",
+                    task.id, sk, worker_home or "~/.hermes",
+                )
     if task.model_override:
         cmd.extend(["-m", task.model_override])
     cmd.extend([
