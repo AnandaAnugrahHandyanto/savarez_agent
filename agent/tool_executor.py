@@ -456,7 +456,7 @@ def execute_tool_calls_concurrent(
 
     # ── Logging / callbacks ──────────────────────────────────────────
     tool_names_str = ", ".join(name for _, name, _, _, _, _ in parsed_calls)
-    if not agent.quiet_mode:
+    if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
         print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
         for i, (
             tc,
@@ -860,7 +860,7 @@ def execute_tool_calls_concurrent(
                 name, args, tool_duration, result=function_result
             )
             agent._safe_print(f"  {cute_msg}")
-        elif getattr(agent, "tool_progress_mode", "all") != "off":
+        elif not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
             _preview_str = _multimodal_text_summary(function_result)
             if agent.verbose_logging:
                 print(f"  ✅ Tool {i + 1} completed in {tool_duration:.2f}s")
@@ -1052,7 +1052,7 @@ def execute_tool_calls_sequential(
         elif function_name == "skill_manage":
             agent._iters_since_skill = 0
 
-        if not agent.quiet_mode:
+        if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
             args_str = json.dumps(function_args, ensure_ascii=False)
             if agent.verbose_logging:
                 print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())})")
@@ -1738,7 +1738,7 @@ def execute_tool_calls_sequential(
         # entire batch.  The model sees it on the next API iteration.
         agent._apply_pending_steer_to_tool_results(messages, 1)
 
-        if not agent.quiet_mode:
+        if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
             if agent.verbose_logging:
                 print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
                 print(agent._wrap_verbose("Result: ", function_result))

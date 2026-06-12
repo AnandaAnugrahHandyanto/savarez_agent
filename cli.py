@@ -943,7 +943,7 @@ def _prepare_deferred_agent_startup() -> None:
         )
 
 
-def _run_cleanup():
+def _run_cleanup(*, notify_session_finalize: bool = True):
     """Run resource cleanup exactly once."""
     global _cleanup_done
     if _cleanup_done:
@@ -981,17 +981,14 @@ def _run_cleanup():
         pass
     # Shut down memory provider (on_session_end + shutdown_all) at actual
     # session boundary — NOT per-turn inside run_conversation().
-    try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
-
-        _invoke_hook(
-            "on_session_finalize",
-            session_id=_active_agent_ref.session_id if _active_agent_ref else None,
-            platform="cli",
-            reason="shutdown",
-        )
-    except Exception:
-        pass
+    if notify_session_finalize:
+        session_id = _active_agent_ref.session_id if _active_agent_ref else None
+        if _should_emit_cleanup_session_finalize(session_id):
+            _notify_session_finalize(
+                session_id=session_id,
+                platform="cli",
+                reason="shutdown",
+            )
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, "shutdown_memory_provider"):
             # Forward the agent's own transcript so memory providers'
@@ -3594,6 +3591,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # frozen when the agent thread completes, displayed in the status bar.
         self._prompt_start_time: Optional[float] = None  # time.time() when turn started
         self._prompt_duration: float = 0.0  # frozen duration of last completed turn
+        self._last_turn_finished_at: Optional[float] = None  # time.time() when the last agent loop finished
         # Initialize SQLite session store early so /title works before first message
         self._session_db = None
         try:
@@ -3675,6 +3673,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # the next submitted input, whether it's the selection or anything
         # else). See #34584.
         self._pending_resume_sessions = None
+        # One-shot agent seed set by a slash handler (e.g. /blueprint <name>)
+        # that wants its output run as the next agent turn. Consumed and cleared
+        # by the interactive loop immediately after process_command() returns.
+        self._pending_agent_seed = None
         self._secret_state = None
         self._secret_deadline = 0
         self._spinner_text: str = ""  # thinking spinner text for TUI
@@ -4007,6 +4009,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         emoji = "⏱" if live else "⏲"
         return f"{emoji} {time_str}"
 
+    @staticmethod
+    def _format_idle_since(last_finished_at: Optional[float], turn_live: bool) -> str:
+        """Format time since the last final agent response for the status bar.
+
+        Returns an empty string while a turn is live (the per-prompt elapsed
+        timer covers that case) or before the first turn has completed.
+        Compact read-out: ``✓ 42s`` / ``✓ 3m`` / ``✓ 1h 12m``.
+        """
+        if turn_live or last_finished_at is None:
+            return ""
+        idle = max(0.0, time.time() - last_finished_at)
+        return f"✓ {format_duration_compact(idle)}"
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -4031,6 +4046,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 getattr(self, "_prompt_start_time", None),
                 getattr(self, "_prompt_duration", 0.0),
                 live=getattr(self, "_prompt_start_time", None) is not None,
+            ),
+            "idle_since": self._format_idle_since(
+                getattr(self, "_last_turn_finished_at", None),
+                turn_live=getattr(self, "_prompt_start_time", None) is not None,
             ),
             "context_tokens": 0,
             "context_length": None,
@@ -4367,6 +4386,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
                 parts.append(prompt_elapsed)
+            idle_since = snapshot.get("idle_since")
+            if idle_since:
+                parts.append(idle_since)
             if yolo_active:
                 parts.append("⚠ YOLO")
             return self._trim_status_bar_text(" │ ".join(parts), width)
@@ -4476,6 +4498,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if prompt_elapsed:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-dim", prompt_elapsed))
+                    # Position 8: idle time since the last final agent response
+                    idle_since = snapshot.get("idle_since")
+                    if idle_since:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-dim", idle_since))
                     if yolo_active:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
@@ -5882,6 +5909,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     f"{_escape(desc)} [dim]({skill_count} skills)[/]"
                 )
 
+        quick_commands = self.config.get("quick_commands", {})
+        if quick_commands:
+            _cprint(f"\n  ⚡ {_BOLD}Quick Commands{_RST} ({len(quick_commands)} configured):")
+            for name, qcmd in sorted(quick_commands.items()):
+                desc = qcmd.get("description", qcmd.get("type", ""))
+                ChatConsole().print(
+                    f"    [bold {_accent_hex()}]{('/' + name):<22}[/] [dim]-[/] {_escape(desc)}"
+                )
+
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
         _cprint(f"  {_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}")
@@ -6171,6 +6207,35 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             pass
 
+    def _discard_session_if_empty(self, session_id: Optional[str]) -> bool:
+        """Drop a just-ended session row when it never gained content.
+
+        Starting the CLI and immediately quitting (or rotating with /new,
+        /clear) used to leave an empty untitled row behind that clutters
+        ``/resume`` and ``hermes sessions list``. Delegates the
+        check-and-delete to ``SessionDB.delete_session_if_empty``, which
+        only removes rows with no messages, no title, and no child
+        sessions. Ported from google-gemini/gemini-cli#27770.
+        """
+        if not self._session_db or not session_id:
+            return False
+        # In-memory transcript is authoritative: if this CLI object holds
+        # conversation messages (flushed to the DB or not), the session is
+        # not empty. Protects against pruning a real conversation whose DB
+        # flush failed or hasn't happened yet.
+        if getattr(self, "conversation_history", None):
+            return False
+        try:
+            from hermes_constants import get_hermes_home as _ghh
+            return self._session_db.delete_session_if_empty(
+                session_id, sessions_dir=_ghh() / "sessions"
+            )
+        except Exception:
+            logger.debug(
+                "Could not prune empty session %s", session_id, exc_info=True
+            )
+            return False
+
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         if self.agent and self.conversation_history:
@@ -6187,6 +6252,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._session_db.end_session(old_session_id, "new_session")
             except Exception:
                 pass
+            # Don't let immediately-rotated empty sessions pile up in
+            # /resume and `hermes sessions list` (gemini-cli#27770 port).
+            self._discard_session_if_empty(old_session_id)
 
         self.session_start = datetime.now()
         timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
@@ -7844,6 +7912,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.save_conversation()
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
+        elif canonical == "suggestions":
+            self._handle_suggestions_command(cmd_original)
+        elif canonical == "blueprint":
+            self._handle_blueprint_command(cmd_original)
         elif canonical == "curator":
             self._handle_curator_command(cmd_original)
         elif canonical == "kanban":
@@ -7875,6 +7947,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._manual_compress(cmd_original)
         elif canonical == "usage":
             self._show_usage()
+        elif canonical == "credits":
+            self._show_credits()
         elif canonical == "insights":
             self._show_insights(cmd_original)
         elif canonical == "copy":
@@ -8809,6 +8883,86 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         for line in lines:
             print(f"  {line}")
         return True
+
+    def _show_credits(self):
+        """`/credits` — focused Nous credit balance + top-up handoff.
+
+        Interactive CLI: balance block + identity line + a 3-button panel
+        (Open top-up / Copy link / Cancel). Non-interactive contexts — the TUI
+        slash-worker subprocess and any place without a live prompt_toolkit app
+        (``self._app is None``) — render a text variant (balance + tappable
+        top-up URL), because the modal would try to read the RPC stdin and crash
+        the worker. The terminal never confirms or polls payment (billing phase
+        2a). Fail-open: a portal hiccup or logged-out account degrades to a clear
+        message, never a crash.
+        """
+        from agent.account_usage import build_credits_view
+
+        view = build_credits_view()
+
+        if not view.logged_in:
+            print()
+            print(f"  💳 {_DIM}Not logged into Nous Portal.{_RST}")
+            print("  Run `hermes portal` to log in, then /credits.")
+            return
+
+        print()
+        print("  💳 Nous credits")
+        print(f"  {'─' * 41}")
+        for line in view.balance_lines:
+            # Drop the helper's own "📈 Nous credits" header — we print our own.
+            if line.lstrip().startswith("📈"):
+                continue
+            print(f"  {line}")
+        print(f"  {'─' * 41}")
+        if view.identity_line:
+            print(f"  {view.identity_line}")
+
+        if not view.topup_url:
+            return
+
+        # Non-interactive (TUI slash-worker, piped, no live app): the
+        # prompt_toolkit modal can't run here — it would read the worker's
+        # JSON-RPC stdin and crash the command. Render the text variant: the
+        # tappable URL IS the affordance, same as the messaging surfaces.
+        if not getattr(self, "_app", None):
+            print()
+            print(f"  Top up: {view.topup_url}")
+            print("  Complete your top-up in the browser — credits will appear in /credits shortly.")
+            return
+
+        choices = [
+            ("open", "Open top-up in browser", "launch the portal billing page"),
+            ("copy", "Copy link", "copy the top-up URL to your clipboard"),
+            ("cancel", "Cancel", "do nothing"),
+        ]
+        raw = self._prompt_text_input_modal(
+            title="💳 Add credits?",
+            detail=f"Top-up page:\n{view.topup_url}",
+            choices=choices,
+        )
+        choice = self._normalize_slash_confirm_choice(raw, choices)
+
+        if choice == "open":
+            opened = False
+            try:
+                import webbrowser
+
+                opened = webbrowser.open(view.topup_url)
+            except Exception:
+                opened = False
+            if not opened:
+                print(f"  Open this URL to top up: {view.topup_url}")
+            print()
+            print("  Complete your top-up in the browser — credits will appear in /credits shortly.")
+        elif choice == "copy":
+            try:
+                self._write_osc52_clipboard(view.topup_url)
+                print(f"  📋 Copied: {view.topup_url}")
+            except Exception:
+                print(f"  Top-up URL: {view.topup_url}")
+        else:
+            print("  🟡 Cancelled. No credits added.")
 
     def _show_insights(self, command: str = "/insights"):
         """Show usage insights and analytics from session history."""
@@ -9924,6 +10078,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         for line in reqs["details"].split("\n"):
             _cprint(f"    {line}")
 
+    def _persist_prompt_summary(self, icon: str, label: str, detail: str, outcome: str) -> None:
+        """Print a one-line scrollback summary of a resolved modal prompt.
+
+        Modal panels (approval / clarify) live in the prompt_toolkit layout and
+        vanish on the next repaint, so the question and the decision leave no
+        trace in the terminal scrollback. When display.persist_prompts is on
+        (default), emit a dim single line after the prompt resolves so the
+        decision survives in chat history.
+        """
+        if not CLI_CONFIG.get("display", {}).get("persist_prompts", True):
+            return
+        detail = " ".join(detail.split())
+        if len(detail) > 120:
+            detail = detail[:119] + "…"
+        outcome = " ".join(outcome.split())
+        if len(outcome) > 120:
+            outcome = outcome[:119] + "…"
+        _cprint(f"\n{_DIM}{icon} {label}: {detail} → {outcome}{_RST}")
+
     def _clarify_callback(self, question, choices):
         """
         Platform callback for the clarify tool. Called from the agent thread.
@@ -9963,6 +10136,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             try:
                 result = response_queue.get(timeout=1)
                 self._clarify_deadline = 0
+                self._persist_prompt_summary("?", "Clarify", question, str(result))
                 return result
             except queue.Empty:
                 remaining = self._clarify_deadline - _time.monotonic()
@@ -10079,6 +10253,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self._approval_state = None
                     self._approval_deadline = 0
                     self._paint_now()
+                    _outcome_labels = {
+                        "once": "allowed once",
+                        "session": "allowed for session",
+                        "always": "added to allowlist",
+                        "deny": "denied",
+                    }
+                    self._persist_prompt_summary(
+                        "⚠", "Approval", command,
+                        _outcome_labels.get(result, str(result)),
+                    )
                     return result
                 except queue.Empty:
                     remaining = self._approval_deadline - _time.monotonic()
@@ -10246,6 +10430,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Pre-wrap the mandatory content — command + choices must always render.
         cmd_wrapped = _wrap_panel_text(cmd_display, inner_text_width)
+        if not show_full and "view" in choices and len(cmd_wrapped) > 4:
+            cmd_wrapped = cmd_wrapped[:3] + _wrap_panel_text(
+                "… (choose Show full command)",
+                inner_text_width,
+            )
 
         # (choice_index, wrapped_line) so we can re-apply selected styling below
         choice_wrapped: list[tuple[int, str]] = []
@@ -10846,6 +11035,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if self._prompt_start_time is not None:
                 self._prompt_duration = max(0.0, time.time() - self._prompt_start_time)
                 self._prompt_start_time = None
+            # Record when this agent loop finished so the status bar can show
+            # idle time since the last final response.
+            self._last_turn_finished_at = time.time()
 
             # Proactively clean up async clients whose event loop is dead.
             # The agent thread may have created AsyncOpenAI clients bound
@@ -14223,6 +14415,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self._session_db.end_session(self.agent.session_id, "cli_close")
                 except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not close session in DB: %s", e)
+                # Started-and-immediately-quit sessions never gained content;
+                # drop the empty row so /resume and `hermes sessions list`
+                # stay clean (gemini-cli#27770 port). No-op for resumed or
+                # titled sessions and anything with messages or children.
+                if not getattr(self, '_delete_session_on_exit', False):
+                    try:
+                        self._discard_session_if_empty(self.agent.session_id)
+                    except (Exception, KeyboardInterrupt) as e:
+                        logger.debug("Could not prune empty session: %s", e)
                 # /exit --delete: also remove the current session's transcripts
                 # and SQLite history. Ported from google-gemini/gemini-cli#19332.
                 if getattr(self, "_delete_session_on_exit", False):
@@ -14734,86 +14935,32 @@ def main(
                                         )
                             except Exception:
                                 if single_query_images:
-                                    effective_query = (
-                                        cli._preprocess_images_with_vision(
-                                            query,
-                                            single_query_images,
-                                            announce=False,
-                                        )
+                                    effective_query = cli._preprocess_images_with_vision(
+                                        query,
+                                        single_query_images,
+                                        announce=False,
                                     )
-                        except Exception:
-                            if single_query_images:
-                                effective_query = cli._preprocess_images_with_vision(
-                                    query,
-                                    single_query_images,
-                                    announce=False,
-                                )
-                    elif single_query_images:
-                        effective_query = cli._preprocess_images_with_vision(
-                            query,
-                            single_query_images,
-                            announce=False,
-                        )
-                turn_route = cli._resolve_turn_agent_config(effective_query)
-                if turn_route["signature"] != cli._active_agent_route_signature:
-                    cli.agent = None
-                if cli._init_agent(
-                    model_override=turn_route["model"],
-                    runtime_override=turn_route["runtime"],
-                    request_overrides=turn_route.get("request_overrides"),
-                ):
-                    cli.agent.quiet_mode = True
-                    cli.agent.suppress_status_output = True
-                    # Suppress streaming display callbacks so stdout stays
-                    # machine-readable (no styled "Hermes" box, no tool-gen
-                    # status lines).  The response is printed once below.
-                    cli.agent.stream_delta_callback = None
-                    cli.agent.tool_gen_callback = None
-                    try:
-                        result = cli.agent.run_conversation(
-                            user_message=effective_query,
-                            conversation_history=cli.conversation_history,
-                        )
-                    except KeyboardInterrupt:
-                        _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
-                        print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
-                        sys.exit(130)
-                    # Sync session_id if mid-run compression created a
-                    # continuation session. The exit line below reports
-                    # session_id to stderr for automation wrappers; without
-                    # this sync it would point at the ended parent.
-                    if (
-                        getattr(cli.agent, "session_id", None)
-                        and cli.agent.session_id != cli.session_id
+                        elif single_query_images:
+                            effective_query = cli._preprocess_images_with_vision(
+                                query,
+                                single_query_images,
+                                announce=False,
+                            )
+                    turn_route = cli._resolve_turn_agent_config(effective_query)
+                    if turn_route["signature"] != cli._active_agent_route_signature:
+                        cli.agent = None
+                    if cli._init_agent(
+                        model_override=turn_route["model"],
+                        runtime_override=turn_route["runtime"],
+                        request_overrides=turn_route.get("request_overrides"),
                     ):
-                        cli.session_id = cli.agent.session_id
-                    response = (
-                        result.get("final_response", "")
-                        if isinstance(result, dict)
-                        else str(result)
-                    )
-                    # Surface backend errors that produced no visible output
-                    # (e.g. invalid model slug → provider 4xx). Mirrors the
-                    # interactive CLI path. Write to stderr so piped stdout
-                    # stays clean for automation wrappers.
-                    if (
-                        not response
-                        and isinstance(result, dict)
-                        and result.get("error")
-                        and (result.get("failed") or result.get("partial"))
-                    ):
-                        print(f"Error: {result['error']}", file=sys.stderr)
-                    elif response:
-                        print(response)
-
-                    # Kanban goal-loop mode: a worker spawned for a
-                    # goal_mode card keeps working in THIS session until an
-                    # auxiliary judge agrees the card is done, the worker
-                    # terminates the task itself, or the turn budget runs
-                    # out (→ sticky block). Gated on the env vars the
-                    # dispatcher sets in `_default_spawn`; a no-op for every
-                    # normal worker and every non-kanban `-q` run.
-                    if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
+                        cli.agent.quiet_mode = True
+                        cli.agent.suppress_status_output = True
+                        # Suppress streaming display callbacks so stdout stays
+                        # machine-readable (no styled "Hermes" box, no tool-gen
+                        # status lines).  The response is printed once below.
+                        cli.agent.stream_delta_callback = None
+                        cli.agent.tool_gen_callback = None
                         try:
                             result = cli.agent.run_conversation(
                                 user_message=effective_query,
@@ -14832,9 +14979,13 @@ def main(
                             and cli.agent.session_id != cli.session_id
                         ):
                             cli.session_id = cli.agent.session_id
-                        response = result.get("final_response", "") if isinstance(result, dict) else str(result)
+                        response = (
+                            result.get("final_response", "")
+                            if isinstance(result, dict)
+                            else str(result)
+                        )
                         # Surface backend errors that produced no visible output
-                        # (e.g. invalid model slug → provider 4xx). Mirrors the
+                        # (e.g. invalid model slug -> provider 4xx). Mirrors the
                         # interactive CLI path. Write to stderr so piped stdout
                         # stays clean for automation wrappers.
                         if (
@@ -14851,44 +15002,72 @@ def main(
                         # goal_mode card keeps working in THIS session until an
                         # auxiliary judge agrees the card is done, the worker
                         # terminates the task itself, or the turn budget runs
-                        # out (→ sticky block). Gated on the env vars the
+                        # out (-> sticky block). Gated on the env vars the
                         # dispatcher sets in `_default_spawn`; a no-op for every
                         # normal worker and every non-kanban `-q` run.
                         if os.environ.get("HERMES_KANBAN_GOAL_MODE") == "1":
                             try:
-                                from hermes_cli.kanban_db import (
-                                    KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
-                                )
+                                _run_kanban_goal_loop_q(cli, response)
+                            except Exception as _goal_exc:
+                                logger.debug("kanban goal loop failed: %s", _goal_exc)
 
-                                _exit_code = _RL_CODE
-                            except Exception:
-                                _exit_code = 1
-                    sys.exit(_exit_code)
+                        # Session ID goes to stderr so piped stdout is clean.
+                        print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
 
-            # Exit with error code if credentials or agent init fails
-            sys.exit(1)
-        else:
-            # Single-query mode (`hermes chat -q "…"`): skip the welcome
-            # banner. Building the banner takes ~420 ms on cold start —
-            # ~200 ms of that is the version-update check, the rest is
-            # toolset / skill enumeration and Rich panel rendering. None
-            # of that is useful for a one-shot query: the user already
-            # picked the prompt, doesn't need a toolset reference, and
-            # gets the session ID + resume hint from
-            # ``_print_exit_summary()`` after the response prints.
-            #
-            # The fully-quiet ``-Q`` / ``--quiet`` machine-readable path
-            # above was already banner-free; this brings the human-
-            # facing single-query path in line so all non-interactive
-            # invocations are fast.
-            _query_label = query or ("[image attached]" if single_query_images else "")
-            if _query_label:
-                cli.console.print(f"[bold blue]Query:[/] {_query_label}")
-            # Surface security advisories before the agent runs — short
-            # banner, doesn't depend on the welcome banner being shown.
-            cli._show_security_advisories()
-            cli.chat(query, images=single_query_images or None)
-            cli._print_exit_summary()
+                        # Ensure proper exit code for automation wrappers.
+                        #
+                        # Kanban workers get a special case: when the run failed
+                        # purely because the provider rate-limited / exhausted
+                        # quota (not because the task itself is broken), exit with
+                        # the EX_TEMPFAIL sentinel instead of the generic 1. The
+                        # dispatcher's reap classifier maps that code to a
+                        # ``rate_limited`` exit and releases the task back to
+                        # ``ready`` WITHOUT incrementing the failure counter, so a
+                        # 5-hour quota window can't trip the circuit breaker and
+                        # permanently block the card. Non-kanban runs keep the
+                        # plain 0/1 contract automation wrappers expect.
+                        _exit_code = 0
+                        if isinstance(result, dict) and result.get("failed"):
+                            _exit_code = 1
+                            if os.environ.get("HERMES_KANBAN_TASK") and result.get(
+                                "failure_reason"
+                            ) in ("rate_limit", "billing"):
+                                try:
+                                    from hermes_cli.kanban_db import (
+                                        KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
+                                    )
+
+                                    _exit_code = _RL_CODE
+                                except Exception:
+                                    _exit_code = 1
+                        sys.exit(_exit_code)
+
+                # Exit with error code if credentials or agent init fails
+                sys.exit(1)
+            else:
+                # Single-query mode (`hermes chat -q "..."`): skip the welcome
+                # banner. Building the banner takes ~420 ms on cold start —
+                # ~200 ms of that is the version-update check, the rest is
+                # toolset / skill enumeration and Rich panel rendering. None
+                # of that is useful for a one-shot query: the user already
+                # picked the prompt, doesn't need a toolset reference, and
+                # gets the session ID + resume hint from
+                # ``_print_exit_summary()`` after the response prints.
+                #
+                # The fully-quiet ``-Q`` / ``--quiet`` machine-readable path
+                # above was already banner-free; this brings the human-
+                # facing single-query path in line so all non-interactive
+                # invocations are fast.
+                _query_label = query or ("[image attached]" if single_query_images else "")
+                if _query_label:
+                    cli.console.print(f"[bold blue]Query:[/] {_query_label}")
+                # Surface security advisories before the agent runs — short
+                # banner, doesn't depend on the welcome banner being shown.
+                cli._show_security_advisories()
+                cli.chat(query, images=single_query_images or None)
+                cli._print_exit_summary()
+        finally:
+            _finalize_single_query(cli)
         return
 
     # Run interactive mode

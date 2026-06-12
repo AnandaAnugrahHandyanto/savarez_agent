@@ -35,7 +35,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+from html import unescape
+from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional
+from urllib.parse import urljoin
 
 from agent.web_search_provider import WebSearchProvider
 from tools.xai_http import (
@@ -54,6 +57,72 @@ _MAX_DOMAIN_FILTERS = 5  # xAI hard cap on allowed_domains / excluded_domains
 # prose since reasoning models occasionally narrate before the JSON block
 # even when explicitly asked not to.
 _JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}", re.MULTILINE)
+_PLACEHOLDER_TEXT = (
+    "enable javascript",
+    "requires javascript",
+    "please enable javascript",
+)
+
+
+class _HTMLTextExtractor(HTMLParser):
+    """Small stdlib HTML-to-text extractor for xAI extract fallback."""
+
+    _SKIP_TAGS = {"script", "style", "noscript", "svg", "canvas"}
+    _BLOCK_TAGS = {
+        "article", "aside", "br", "div", "footer", "h1", "h2", "h3", "h4",
+        "h5", "h6", "header", "li", "main", "nav", "p", "section", "table",
+        "td", "th", "tr", "ul", "ol",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.title_parts: List[str] = []
+        self.body_parts: List[str] = []
+        self._skip_depth = 0
+        self._in_title = False
+
+    def handle_starttag(self, tag: str, attrs: List[tuple[str, Optional[str]]]) -> None:
+        tag = tag.lower()
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+            return
+        if tag == "title":
+            self._in_title = True
+            return
+        if tag in self._BLOCK_TAGS:
+            self.body_parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in self._SKIP_TAGS and self._skip_depth:
+            self._skip_depth -= 1
+            return
+        if tag == "title":
+            self._in_title = False
+            return
+        if tag in self._BLOCK_TAGS:
+            self.body_parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
+        text = unescape(data).strip()
+        if not text:
+            return
+        if self._in_title:
+            self.title_parts.append(text)
+        else:
+            self.body_parts.append(text)
+
+
+def _compact_text(value: str) -> str:
+    """Normalize noisy page text while preserving paragraph breaks."""
+    lines = []
+    for raw_line in value.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +210,7 @@ class XAIWebSearchProvider(WebSearchProvider):
         return True
 
     def supports_extract(self) -> bool:
-        return False
+        return True
 
     # -- Search -----------------------------------------------------------
 
@@ -334,7 +403,316 @@ class XAIWebSearchProvider(WebSearchProvider):
 
         return {"success": True, "data": {"web": web_results}}
 
+    # -- Extract ----------------------------------------------------------
+
+    def extract(self, urls: List[str], **kwargs: Any) -> List[Dict[str, Any]]:
+        """Read URLs through xAI's web_search tool and return extract-shaped rows.
+
+        This is a best-effort browser/summarizer, not a raw scraping backend.
+        It gives Cron and research jobs a configured extract path on machines
+        that have xAI OAuth but no Firecrawl/Tavily/Exa key.
+        """
+        try:
+            from tools.interrupt import is_interrupted
+
+            if is_interrupted():
+                return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
+        except Exception:  # noqa: BLE001
+            pass
+
+        creds = resolve_xai_http_credentials()
+        api_key = str(creds.get("api_key") or "").strip()
+        base_url = str(creds.get("base_url") or "https://api.x.ai/v1").strip().rstrip("/")
+        if not api_key:
+            return [
+                {
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "raw_content": "",
+                    "error": (
+                        "No xAI credentials found. Run `hermes auth` to sign in "
+                        "with xAI Grok OAuth, or set XAI_API_KEY."
+                    ),
+                    "metadata": {"sourceURL": url},
+                }
+                for url in urls
+            ]
+
+        cfg = _load_xai_web_config()
+        model = cfg.get("model") if isinstance(cfg.get("model"), str) else DEFAULT_MODEL
+        model = model.strip() or DEFAULT_MODEL
+        try:
+            timeout = float(cfg.get("timeout", DEFAULT_TIMEOUT))
+        except (TypeError, ValueError):
+            timeout = DEFAULT_TIMEOUT
+
+        allowed = _coerce_domain_list(cfg.get("allowed_domains"))
+        excluded = _coerce_domain_list(cfg.get("excluded_domains"))
+        if allowed and excluded:
+            return [
+                {
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "raw_content": "",
+                    "error": (
+                        "web.xai.allowed_domains and web.xai.excluded_domains "
+                        "cannot both be set (xAI restriction)."
+                    ),
+                    "metadata": {"sourceURL": url},
+                }
+                for url in urls
+            ]
+
+        web_search_tool: Dict[str, Any] = {"type": "web_search"}
+        if allowed:
+            web_search_tool["filters"] = {"allowed_domains": allowed}
+        elif excluded:
+            web_search_tool["filters"] = {"excluded_domains": excluded}
+
+        try:
+            import httpx
+        except ImportError:
+            return [
+                {
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "raw_content": "",
+                    "error": "httpx is not installed (required for xAI web extract)",
+                    "metadata": {"sourceURL": url},
+                }
+                for url in urls
+            ]
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": hermes_xai_user_agent(),
+        }
+        is_oauth_path = (creds.get("provider") == "xai-oauth")
+        results: List[Dict[str, Any]] = []
+
+        for url in urls:
+            direct_result = self._direct_extract_url(url, timeout=min(timeout, 30.0))
+            direct_error = str(direct_result.get("error") or "")
+            if direct_result.get("content"):
+                results.append(direct_result)
+                continue
+
+            payload: Dict[str, Any] = {
+                "model": model,
+                "input": [{"role": "user", "content": self._build_extract_prompt(url, kwargs.get("format"))}],
+                "tools": [web_search_tool],
+                "include": ["no_inline_citations"],
+            }
+
+            logger.info("xAI web extract via %s: %s (model=%s)", base_url, url, model)
+            resp = None
+            for attempt in range(2):
+                try:
+                    resp = httpx.post(
+                        f"{base_url}/responses",
+                        headers=headers,
+                        json=payload,
+                        timeout=timeout,
+                    )
+                    resp.raise_for_status()
+                    break
+                except httpx.HTTPStatusError as exc:
+                    status = exc.response.status_code if exc.response is not None else 0
+                    if status == 401 and attempt == 0 and is_oauth_path:
+                        try:
+                            refreshed = resolve_xai_http_credentials(force_refresh=True)
+                            refreshed_key = str(refreshed.get("api_key") or "").strip()
+                            if refreshed_key and refreshed_key != api_key:
+                                api_key = refreshed_key
+                                headers["Authorization"] = f"Bearer {api_key}"
+                                continue
+                        except Exception as refresh_exc:  # noqa: BLE001
+                            logger.warning("xAI web extract OAuth refresh failed: %s", refresh_exc)
+                    body = ""
+                    try:
+                        body = exc.response.text[:300] if exc.response is not None else ""
+                    except Exception:
+                        body = ""
+                    results.append(
+                        {
+                            "url": url,
+                            "title": "",
+                            "content": "",
+                            "raw_content": "",
+                            "error": f"xAI web extract returned HTTP {status}: {body}".rstrip(),
+                            "metadata": {"sourceURL": url},
+                        }
+                    )
+                    resp = None
+                    break
+                except httpx.RequestError as exc:
+                    results.append(
+                        {
+                            "url": url,
+                            "title": "",
+                            "content": "",
+                            "raw_content": "",
+                            "error": f"Could not reach xAI: {exc}",
+                            "metadata": {"sourceURL": url},
+                        }
+                    )
+                    resp = None
+                    break
+
+            if resp is None:
+                continue
+
+            try:
+                data = resp.json()
+            except Exception as exc:  # noqa: BLE001
+                results.append(
+                    {
+                        "url": url,
+                        "title": "",
+                        "content": "",
+                        "raw_content": "",
+                        "error": f"Could not parse xAI Responses API reply as JSON: {exc}",
+                        "metadata": {"sourceURL": url},
+                    }
+                )
+                continue
+
+            api_error = data.get("error") if isinstance(data, dict) else None
+            if isinstance(api_error, dict):
+                err_msg = api_error.get("message") or api_error.get("code") or "unknown error"
+                results.append(
+                    {
+                        "url": url,
+                        "title": "",
+                        "content": "",
+                        "raw_content": "",
+                        "error": f"xAI returned an error: {err_msg}",
+                        "metadata": {"sourceURL": url},
+                    }
+                )
+                continue
+
+            doc = self._extract_document_from_response(url, data)
+            if direct_error and not doc.get("content"):
+                metadata = doc.setdefault("metadata", {})
+                if isinstance(metadata, dict):
+                    metadata["direct_extract_error"] = direct_error
+            results.append(doc)
+
+        return results
+
     # -- Prompt + parsing -------------------------------------------------
+
+    @staticmethod
+    def _direct_extract_url(url: str, *, timeout: float) -> Dict[str, Any]:
+        """Fetch and text-extract a public URL with redirect safety checks."""
+        try:
+            import httpx
+            from tools.url_safety import is_safe_url, normalize_url_for_request
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "url": url,
+                "title": "",
+                "content": "",
+                "raw_content": "",
+                "error": f"direct extract unavailable: {exc}",
+                "metadata": {"sourceURL": url, "provider": "xai-direct"},
+            }
+
+        current_url = normalize_url_for_request(url)
+        headers = {"User-Agent": hermes_xai_user_agent()}
+        try:
+            for _redirect in range(6):
+                if not is_safe_url(current_url):
+                    return {
+                        "url": url,
+                        "title": "",
+                        "content": "",
+                        "raw_content": "",
+                        "error": "Blocked: URL targets a private or internal network address",
+                        "metadata": {"sourceURL": url, "provider": "xai-direct"},
+                    }
+                response = httpx.get(
+                    current_url,
+                    headers=headers,
+                    timeout=timeout,
+                    follow_redirects=False,
+                )
+                if response.status_code in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("location", "").strip()
+                    if not location:
+                        break
+                    current_url = normalize_url_for_request(urljoin(current_url, location))
+                    continue
+                response.raise_for_status()
+                return XAIWebSearchProvider._document_from_http_response(url, current_url, response)
+            return {
+                "url": url,
+                "title": "",
+                "content": "",
+                "raw_content": "",
+                "error": "Too many redirects during direct extract",
+                "metadata": {"sourceURL": url, "provider": "xai-direct"},
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "url": url,
+                "title": "",
+                "content": "",
+                "raw_content": "",
+                "error": f"direct extract failed: {exc}",
+                "metadata": {"sourceURL": url, "provider": "xai-direct"},
+            }
+
+    @staticmethod
+    def _document_from_http_response(
+        requested_url: str,
+        final_url: str,
+        response: Any,
+    ) -> Dict[str, Any]:
+        content_type = response.headers.get("content-type", "").lower()
+        body = response.text or ""
+        if "html" in content_type or "<html" in body[:500].lower():
+            parser = _HTMLTextExtractor()
+            parser.feed(body)
+            parser.close()
+            title = _compact_text(" ".join(parser.title_parts))
+            content = _compact_text("\n".join(parser.body_parts))
+        else:
+            title = ""
+            content = _compact_text(body)
+
+        lowered = content.lower()
+        if len(content) < 80 and any(marker in lowered for marker in _PLACEHOLDER_TEXT):
+            return {
+                "url": requested_url,
+                "title": title,
+                "content": "",
+                "raw_content": "",
+                "error": "direct extract returned JavaScript placeholder content",
+                "metadata": {
+                    "sourceURL": requested_url,
+                    "finalURL": final_url,
+                    "provider": "xai-direct",
+                },
+            }
+
+        return {
+            "url": requested_url,
+            "title": title,
+            "content": content,
+            "raw_content": content,
+            "metadata": {
+                "sourceURL": requested_url,
+                "finalURL": final_url,
+                "title": title,
+                "provider": "xai-direct",
+            },
+        }
 
     @staticmethod
     def _build_prompt(query: str, limit: int) -> str:
@@ -356,6 +734,94 @@ class XAIWebSearchProvider(WebSearchProvider):
             '{"results": []}.\n\n'
             f"Query: {query}"
         )
+
+    @staticmethod
+    def _build_extract_prompt(url: str, requested_format: Any = None) -> str:
+        """Compose the prompt that asks Grok to read one exact URL."""
+        fmt = str(requested_format or "markdown").strip().lower()
+        if fmt not in {"markdown", "html", "text"}:
+            fmt = "markdown"
+        return (
+            "Use the web_search tool to open and read this exact URL. "
+            "Return ONLY a single JSON object — no prose and no markdown fences — "
+            "matching this schema:\n\n"
+            '{"title": "string", "content": "string"}\n\n'
+            f"The content field should be a faithful {fmt} extraction or compact "
+            "summary of the page's main text, including publication/update time "
+            "when the page states one. If the page cannot be reached, return "
+            '{"title": "", "content": ""}.\n\n'
+            f"URL: {url}"
+        )
+
+    @classmethod
+    def _extract_document_from_response(
+        cls,
+        url: str,
+        response_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Normalize an xAI Responses reply into one web_extract result row."""
+        text_blocks, _annotations = cls._collect_output_text(response_data)
+        for block in text_blocks:
+            parsed = cls._try_parse_json_document(block)
+            if parsed is not None:
+                title = parsed.get("title", "")
+                content = parsed.get("content", "")
+                if not title and not content:
+                    return {
+                        "url": url,
+                        "title": "",
+                        "content": "",
+                        "raw_content": "",
+                        "error": "xAI web extract produced no page content",
+                        "metadata": {"sourceURL": url, "provider": "xai"},
+                    }
+                return {
+                    "url": url,
+                    "title": title,
+                    "content": content,
+                    "raw_content": content,
+                    "metadata": {"sourceURL": url, "title": title, "provider": "xai"},
+                }
+
+        content = "\n\n".join(b.strip() for b in text_blocks if b.strip()).strip()
+        if content:
+            return {
+                "url": url,
+                "title": "",
+                "content": content,
+                "raw_content": content,
+                "metadata": {"sourceURL": url, "provider": "xai"},
+            }
+
+        return {
+            "url": url,
+            "title": "",
+            "content": "",
+            "raw_content": "",
+            "error": "xAI web extract produced no page content",
+            "metadata": {"sourceURL": url, "provider": "xai"},
+        }
+
+    @staticmethod
+    def _try_parse_json_document(text: str) -> Optional[Dict[str, str]]:
+        """Parse a JSON object with ``title`` and ``content`` fields."""
+        candidates = [text]
+        match = _JSON_BLOCK_RE.search(text)
+        if match and match.group(0) != text:
+            candidates.append(match.group(0))
+
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            title = str(parsed.get("title", "") or "").strip()
+            content = str(parsed.get("content", "") or "").strip()
+            if "title" in parsed or "content" in parsed:
+                return {"title": title, "content": content}
+        return None
 
     @classmethod
     def _extract_results(

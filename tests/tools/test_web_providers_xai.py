@@ -61,11 +61,11 @@ class TestXAIProviderIdentity:
         from plugins.web.xai.provider import XAIWebSearchProvider
         assert issubclass(XAIWebSearchProvider, WebSearchProvider)
 
-    def test_supports_search_only(self):
+    def test_supports_search_and_extract(self):
         from plugins.web.xai.provider import XAIWebSearchProvider
         p = XAIWebSearchProvider()
         assert p.supports_search() is True
-        assert p.supports_extract() is False
+        assert p.supports_extract() is True
 
     def test_display_name(self):
         from plugins.web.xai.provider import XAIWebSearchProvider
@@ -305,6 +305,109 @@ class TestXAIProviderSearchFallbacks:
 
         assert result["success"] is True
         assert result["data"]["web"] == []
+
+
+# ---------------------------------------------------------------------------
+# extract() happy + error paths
+# ---------------------------------------------------------------------------
+
+
+class TestXAIProviderExtract:
+    def test_extract_happy_path_normalizes_document(self):
+        from plugins.web.xai import provider as xai_provider
+
+        payload = _responses_payload(json.dumps({
+            "title": "xAI docs",
+            "content": "Current documentation content.",
+        }))
+        with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
+             patch.object(xai_provider, "_load_xai_web_config", return_value={}), \
+             patch.object(
+                 xai_provider.XAIWebSearchProvider,
+                 "_direct_extract_url",
+                 return_value={
+                     "url": "https://docs.x.ai",
+                     "title": "",
+                     "content": "",
+                     "raw_content": "",
+                     "error": "direct miss",
+                     "metadata": {"sourceURL": "https://docs.x.ai"},
+                 },
+             ), \
+             patch("httpx.post", return_value=_mock_resp(payload)):
+            results = xai_provider.XAIWebSearchProvider().extract(["https://docs.x.ai"], format="markdown")
+
+        assert results == [
+            {
+                "url": "https://docs.x.ai",
+                "title": "xAI docs",
+                "content": "Current documentation content.",
+                "raw_content": "Current documentation content.",
+                "metadata": {
+                    "sourceURL": "https://docs.x.ai",
+                    "title": "xAI docs",
+                    "provider": "xai",
+                },
+            }
+        ]
+
+    def test_extract_missing_creds_returns_per_url_errors(self):
+        from plugins.web.xai import provider as xai_provider
+
+        with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds("")):
+            results = xai_provider.XAIWebSearchProvider().extract(["https://docs.x.ai"])
+
+        assert results[0]["url"] == "https://docs.x.ai"
+        assert results[0]["content"] == ""
+        assert "xAI" in results[0]["error"]
+
+    def test_extract_empty_json_is_error_not_content(self):
+        from plugins.web.xai import provider as xai_provider
+
+        payload = _responses_payload(json.dumps({"title": "", "content": ""}))
+        with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
+             patch.object(xai_provider, "_load_xai_web_config", return_value={}), \
+             patch.object(
+                 xai_provider.XAIWebSearchProvider,
+                 "_direct_extract_url",
+                 return_value={
+                     "url": "https://docs.x.ai",
+                     "title": "",
+                     "content": "",
+                     "raw_content": "",
+                     "error": "direct miss",
+                     "metadata": {"sourceURL": "https://docs.x.ai"},
+                 },
+             ), \
+             patch("httpx.post", return_value=_mock_resp(payload)):
+            results = xai_provider.XAIWebSearchProvider().extract(["https://docs.x.ai"])
+
+        assert results[0]["content"] == ""
+        assert "no page content" in results[0]["error"]
+
+    def test_extract_direct_http_path_normalizes_html(self):
+        from plugins.web.xai import provider as xai_provider
+
+        response = MagicMock()
+        response.status_code = 200
+        response.headers = {"content-type": "text/html; charset=utf-8"}
+        response.text = (
+            "<html><head><title>Example Domain</title><script>skip()</script></head>"
+            "<body><h1>Example Domain</h1><p>This domain is for use in examples.</p></body></html>"
+        )
+        response.raise_for_status = MagicMock()
+
+        with patch.object(xai_provider, "resolve_xai_http_credentials", return_value=_creds()), \
+             patch.object(xai_provider, "_load_xai_web_config", return_value={}), \
+             patch("tools.url_safety.is_safe_url", return_value=True), \
+             patch("httpx.get", return_value=response), \
+             patch("httpx.post") as post:
+            results = xai_provider.XAIWebSearchProvider().extract(["https://example.com"])
+
+        post.assert_not_called()
+        assert results[0]["title"] == "Example Domain"
+        assert "This domain is for use in examples." in results[0]["content"]
+        assert results[0]["metadata"]["provider"] == "xai-direct"
 
 
 # ---------------------------------------------------------------------------
