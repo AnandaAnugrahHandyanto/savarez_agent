@@ -36,6 +36,14 @@ from gateway.config import (
 
 logger = logging.getLogger("gateway.stream_consumer")
 
+
+def _short_digest(text: str) -> str:
+    """8-char sha256 prefix used to compare texts in logs without
+    exposing content.  Single owner of the algorithm: the gateway's
+    suppression log line compares the consumer-side and final-response
+    digests, so both sides must use this exact function."""
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:8]
+
 # Sentinel to signal the stream is complete
 _DONE = object()
 
@@ -229,9 +237,7 @@ class GatewayStreamConsumer:
         return {
             "message_id": self._message_id,
             "accumulated_len": len(self._accumulated),
-            "accumulated_digest": hashlib.sha256(
-                self._accumulated.encode("utf-8", "replace")
-            ).hexdigest()[:8],
+            "accumulated_digest": _short_digest(self._accumulated),
             "last_sent_len": len(self._last_sent_text),
             "last_edit_overflowed": self._last_edit_overflowed,
         }
