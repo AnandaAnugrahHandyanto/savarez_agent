@@ -459,6 +459,24 @@ class WhatsAppAdapter(BasePlatformAdapter):
             normalized = normalized.replace(":", "@", 1)
         return normalized
 
+    @staticmethod
+    def _sanitize_reply_context_text(value: Any, *, limit: int = 1000) -> str:
+        """Bound and scrub quoted WhatsApp text before exposing it to the agent."""
+        if value is None:
+            return ""
+        text = str(value)
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        # Strip non-newline control characters so quoted text cannot corrupt
+        # the synthetic [Replying to: "..."] prefix in gateway.run.
+        text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", text)
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+        if not text:
+            return ""
+        if len(text) <= limit:
+            return text
+        return text[:max(0, limit - 1)].rstrip() + "…"
+
     def _bot_ids_from_message(self, data: Dict[str, Any]) -> set[str]:
         bot_ids = set()
         for candidate in data.get("botIds") or []:
@@ -1408,6 +1426,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
             body = data.get("body", "")
             if data.get("isGroup"):
                 body = self._clean_bot_mention_text(body, data)
+            quoted_text = self._sanitize_reply_context_text(data.get("quotedText"))
+            quoted_message_id = str(data.get("quotedMessageId") or "").strip()
+            if quoted_text and not quoted_message_id:
+                # Baileys normally includes contextInfo.stanzaId, but keep the
+                # context usable if a backend only provides quoted text.
+                quoted_message_id = f"quoted:{data.get('messageId') or 'unknown'}"
             MAX_TEXT_INJECT_BYTES = 100 * 1024
             if msg_type == MessageType.DOCUMENT and cached_urls:
                 for doc_path in cached_urls:
@@ -1443,6 +1467,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,
+                reply_to_message_id=quoted_message_id or None,
+                reply_to_text=quoted_text or None,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")
