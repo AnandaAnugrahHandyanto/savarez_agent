@@ -79,7 +79,7 @@ def _make_agent(monkeypatch):
 def test_conversation_loop_captures_general_route_metadata(monkeypatch):
     agent = _make_agent(monkeypatch)
 
-    agent.run_conversation("Summarize these release notes.")
+    result = agent.run_conversation("Summarize these release notes.")
 
     decision = getattr(agent, "_current_cyber_route_decision")
     assert decision.route == CyberRoute.GENERAL
@@ -91,6 +91,7 @@ def test_conversation_loop_captures_general_route_metadata(monkeypatch):
         "requires_hosted_secret_confirmation": False,
         "explicit_override": None,
     }
+    assert result["cyber_route"] == getattr(agent, "_current_cyber_route_metadata")
 
 
 def test_conversation_loop_captures_sensitive_route_metadata(monkeypatch):

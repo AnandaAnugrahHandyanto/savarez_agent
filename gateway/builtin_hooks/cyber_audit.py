@@ -184,6 +184,19 @@ async def handle(event_type: str, context: dict) -> None:
         if val is not None:
             record[key] = str(val)
 
+    cyber_route = context.get("cyber_route")
+    if isinstance(cyber_route, dict):
+        record["cyber_route"] = {
+            key: cyber_route.get(key)
+            for key in (
+                "route",
+                "provider_preference",
+                "reason",
+                "requires_hosted_secret_confirmation",
+                "explicit_override",
+            )
+        }
+
     if event_type == "agent:step":
         tool_call = context.get("tool_call") or {}
         tool_result = context.get("tool_result") or {}

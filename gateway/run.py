@@ -9596,6 +9596,7 @@ class GatewayRunner:
             await self.hooks.emit("agent:end", {
                 **hook_ctx,
                 "response": (response or "")[:500],
+                "cyber_route": agent_result.get("cyber_route"),
             })
             
             # Check for pending process watchers (check_interval on background processes)
