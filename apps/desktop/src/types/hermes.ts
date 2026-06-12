@@ -491,6 +491,40 @@ export interface ProfilesResponse {
   profiles: ProfileInfo[]
 }
 
+export type FleetProfileLayer = 'orchestrator' | 'executor' | 'specialist' | null
+
+export type FleetProfileProvenance = 'materialized' | 'registry_only' | 'orphan'
+
+export interface FleetProfile {
+  name: string
+  path: string | null
+  is_default: boolean
+  has_env: boolean
+  skill_count: number
+  model: null | string
+  provider: null | string
+  // Registry-specific fields
+  layer: FleetProfileLayer
+  domain: null | string
+  purpose: null | string
+  daemon: boolean | null
+  parent: null | string
+  schedule: null | string
+  spawn: null | string
+  lifetime: null | string
+  boundaries: string[]
+  escalation: string[]
+  toolsets: string[]
+  skills: string[]
+  // Provenance
+  provenance: FleetProfileProvenance
+}
+
+export interface FleetProfilesResponse {
+  profiles: FleetProfile[]
+  registry_error: null | string
+}
+
 export interface SkillInfo {
   category: string
   description: string

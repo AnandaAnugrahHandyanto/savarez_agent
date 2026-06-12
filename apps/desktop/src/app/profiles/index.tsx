@@ -17,10 +17,10 @@ import { Textarea } from '@/components/ui/textarea'
 import {
   createProfile,
   deleteProfile,
-  getProfiles,
+  getFleetProfiles,
   getProfileSetupCommand,
   getProfileSoul,
-  type ProfileInfo,
+  type FleetProfile,
   renameProfile,
   updateProfileSoul
 } from '@/hermes'
@@ -41,6 +41,32 @@ function isValidProfileName(name: string): boolean {
   return PROFILE_NAME_RE.test(name.trim())
 }
 
+/** Color for a fleet layer badge. */
+function layerColor(layer: FleetProfile['layer']): string {
+  switch (layer) {
+    case 'orchestrator':
+      return 'bg-blue-500/15 text-blue-500 border-blue-500/25'
+    case 'executor':
+      return 'bg-emerald-500/15 text-emerald-500 border-emerald-500/25'
+    case 'specialist':
+      return 'bg-amber-500/15 text-amber-500 border-amber-500/25'
+    default:
+      return 'bg-muted text-muted-foreground border-border/40'
+  }
+}
+
+function layerBadge(layer: FleetProfile['layer']): string | null {
+  if (!layer) return null
+  return layer
+}
+
+function purposeSnippet(purpose: null | string, max = 48): string {
+  if (!purpose) return ''
+  const trimmed = purpose.trim()
+  if (trimmed.length <= max) return trimmed
+  return trimmed.slice(0, max) + '…'
+}
+
 interface ProfilesViewProps extends React.ComponentProps<'section'> {
   onClose: () => void
   setStatusbarItemGroup?: SetStatusbarItemGroup
@@ -55,19 +81,21 @@ export function ProfilesView({
 }: ProfilesViewProps) {
   const { t } = useI18n()
   const p = t.profiles
-  const [profiles, setProfiles] = useState<null | ProfileInfo[]>(null)
+  const [profiles, setFleetProfiles] = useState<null | FleetProfile[]>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [selectedName, setSelectedName] = useState<null | string>(null)
   const [createOpen, setCreateOpen] = useState(false)
-  const [pendingDelete, setPendingDelete] = useState<null | ProfileInfo>(null)
+  const [pendingDelete, setPendingDelete] = useState<null | FleetProfile>(null)
   const [deleting, setDeleting] = useState(false)
+  const [registryError, setRegistryError] = useState<null | string>(null)
 
   const refresh = useCallback(async () => {
     setRefreshing(true)
 
     try {
-      const { profiles: list } = await getProfiles()
-      setProfiles(list)
+      const { profiles: list, registry_error } = await getFleetProfiles()
+      setFleetProfiles(list)
+      setRegistryError(registry_error ?? null)
       setSelectedName(current => {
         if (current && list.some(p => p.name === current)) {
           return current
@@ -180,6 +208,15 @@ export function ProfilesView({
           </span>
         </header>
 
+        {registryError && (
+          <div className="mx-2 mt-1 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+            <span>
+              Registry error: {registryError} — showing disk-only profiles.
+            </span>
+          </div>
+        )}
+
         <div className="min-h-0 flex-1 overflow-hidden rounded-b-[1.0625rem] border border-border/50 bg-background/85">
           {!profiles ? (
             <PageLoader label={p.loading} />
@@ -266,7 +303,7 @@ export function ProfilesView({
   )
 }
 
-function ProfileRow({ active, onSelect, profile }: { active: boolean; onSelect: () => void; profile: ProfileInfo }) {
+function ProfileRow({ active, onSelect, profile }: { active: boolean; onSelect: () => void; profile: FleetProfile }) {
   const { t } = useI18n()
   const p = t.profiles
 
@@ -280,9 +317,36 @@ function ProfileRow({ active, onSelect, profile }: { active: boolean; onSelect: 
       type="button"
     >
       <span className="flex w-full items-center justify-between gap-2">
-        <span className="truncate text-sm font-medium">{profile.name}</span>
-        {profile.is_default && <span className="text-[0.6rem] text-primary">{p.default}</span>}
+        <span className="flex items-center gap-1.5 truncate text-sm font-medium">
+          {profile.name}
+          {profile.provenance === 'orphan' && (
+            <span
+              className="text-[0.7rem] text-muted-foreground/60"
+              title="Not in registry — run fleet_reconcile.py --verify to investigate."
+            >
+              ↻
+            </span>
+          )}
+        </span>
+        <div className="flex shrink-0 items-center gap-1">
+          {profile.is_default && <span className="text-[0.6rem] text-primary">{p.default}</span>}
+          {profile.layer && (
+            <span
+              className={cn(
+                'rounded-full border px-1.5 py-0.5 text-[0.58rem] font-medium uppercase leading-none tracking-wider',
+                layerColor(profile.layer)
+              )}
+            >
+              {layerBadge(profile.layer)}
+            </span>
+          )}
+        </div>
       </span>
+      {profile.purpose && (
+        <span className="truncate text-[0.63rem] text-muted-foreground/70">
+          {purposeSnippet(profile.purpose)}
+        </span>
+      )}
       <span className="text-[0.66rem] text-muted-foreground">
         {p.skills(profile.skill_count)}
         {profile.has_env ? ` · ${p.env}` : ''}
@@ -298,7 +362,7 @@ function ProfileDetail({
 }: {
   onDelete: () => void
   onRename: (newName: string) => Promise<void>
-  profile: ProfileInfo
+  profile: FleetProfile
 }) {
   const { t } = useI18n()
   const p = t.profiles
@@ -338,9 +402,27 @@ function ProfileDetail({
                       .env
                     </span>
                   )}
+                  {profile.layer && (
+                    <span
+                      className={cn(
+                        'rounded-full border px-2 py-0.5 text-[0.65rem] font-medium leading-none',
+                        layerColor(profile.layer)
+                      )}
+                    >
+                      {profile.layer}
+                    </span>
+                  )}
+                  {profile.provenance === 'orphan' && (
+                    <span
+                      className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[0.65rem] font-medium text-amber-600 dark:text-amber-400"
+                      title="Not in registry — run fleet_reconcile.py --verify to investigate."
+                    >
+                      ↻ orphan
+                    </span>
+                  )}
                 </div>
-                <p className="mt-1 font-mono text-[0.7rem] text-muted-foreground" title={profile.path}>
-                  {profile.path}
+                <p className="mt-1 font-mono text-[0.7rem] text-muted-foreground" title={profile.path ?? undefined}>
+                  {profile.path ?? '(registry only — not materialized on disk)'}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-1">
@@ -382,6 +464,61 @@ function ProfileDetail({
               <DetailRow label={p.skillsLabel}>{profile.skill_count}</DetailRow>
             </dl>
           </header>
+
+          {/* Fleet section — only when registry data is available */}
+          {profile.provenance !== 'orphan' && (
+            <section className="space-y-3">
+              <h4 className="text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                Fleet
+              </h4>
+              <dl className="grid gap-2 rounded-lg border border-border/40 bg-background/70 px-3 py-3 text-xs sm:grid-cols-2">
+                <DetailRow label="Layer">{profile.layer ?? '—'}</DetailRow>
+                <DetailRow label="Domain">{profile.domain ?? '—'}</DetailRow>
+                <DetailRow label="Parent">{profile.parent ?? '—'}</DetailRow>
+                <DetailRow label="Schedule">
+                  {profile.schedule ? (
+                    <span className="font-mono">{profile.schedule}</span>
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
+                </DetailRow>
+                <DetailRow label="Daemon">
+                  {profile.daemon === true ? 'Yes' : profile.daemon === false ? 'No' : '—'}
+                </DetailRow>
+                <DetailRow label="Spawn">{profile.spawn ?? '—'}</DetailRow>
+              </dl>
+
+              {profile.boundaries && profile.boundaries.length > 0 && (
+                <details className="group rounded-lg border border-border/40 bg-background/70 px-3 py-2">
+                  <summary className="cursor-pointer text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground group-open:mb-2">
+                    Boundaries ({profile.boundaries.length})
+                  </summary>
+                  <ul className="space-y-1">
+                    {profile.boundaries.map((b, i) => (
+                      <li key={i} className="text-xs text-foreground/80">
+                        • {b}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+
+              {profile.escalation && profile.escalation.length > 0 && (
+                <details className="group rounded-lg border border-border/40 bg-background/70 px-3 py-2">
+                  <summary className="cursor-pointer text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground group-open:mb-2">
+                    Escalation ({profile.escalation.length})
+                  </summary>
+                  <ul className="space-y-1">
+                    {profile.escalation.map((e, i) => (
+                      <li key={i} className="text-xs text-foreground/80">
+                        • {e}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </section>
+          )}
 
           <SoulEditor profileName={profile.name} />
         </div>

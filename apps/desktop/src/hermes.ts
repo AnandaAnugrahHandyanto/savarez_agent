@@ -32,6 +32,7 @@ import type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  FleetProfilesResponse,
   SessionMessagesResponse,
   SessionSearchResponse,
   SkillInfo,
@@ -84,6 +85,7 @@ export type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  FleetProfilesResponse,
   RpcEvent,
   SessionCreateResponse,
   SessionInfo,
@@ -526,6 +528,12 @@ export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
 export function getProfiles(): Promise<ProfilesResponse> {
   return window.hermesDesktop.api<ProfilesResponse>({
     path: '/api/profiles'
+  })
+}
+
+export function getFleetProfiles(): Promise<FleetProfilesResponse> {
+  return window.hermesDesktop.api<FleetProfilesResponse>({
+    path: '/api/fleet/profiles'
   })
 }
 

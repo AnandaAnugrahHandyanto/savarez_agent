@@ -7216,6 +7216,126 @@ async def list_profiles_endpoint():
         return {"profiles": _fallback_profile_dicts(profiles_mod)}
 
 
+@app.get("/api/fleet/profiles")
+async def list_fleet_profiles_endpoint():
+    """Return fleet registry profiles merged with on-disk data.
+
+    Shape mirrors ``FleetProfile`` in ``apps/desktop/src/types/hermes.ts``.
+
+    Soft-degrades to 200 with ``registry_error`` populated if the registry
+    file is missing or unparseable.
+    """
+    from hermes_cli import fleet_registry
+    from hermes_cli import profiles as profiles_mod
+
+    # 1. Load registry records.
+    records = fleet_registry.load_registry_records()
+    registry_error = fleet_registry.registry_parse_error()
+    if not records and not registry_error:
+        # Could be empty registry or missing file. If the file is missing,
+        # flag the error so the UI can fall back.
+        if not fleet_registry.REGISTRY_PATH.is_file():
+            registry_error = f"Registry not found at {fleet_registry.REGISTRY_PATH}"
+
+    # 2. Index registry records by name for fast lookup.
+    registry_by_name: Dict[str, Dict[str, Any]] = {}
+    for r in records:
+        registry_by_name[r["name"]] = r
+
+    # 3. Build the merged FleetProfile list.
+    fleet_profiles: List[Dict[str, Any]] = []
+
+    # 3a. Registry-originating profiles (materialized or registry_only).
+    for r in records:
+        name = r["name"]
+        profile_dir = profiles_mod._get_profiles_root() / name
+        has_disk = profile_dir.is_dir()
+
+        # Disk data (materialized fields).
+        path_str = str(profile_dir) if has_disk else None
+        model, provider = (
+            profiles_mod._read_config_model(profile_dir)
+            if has_disk else (None, None)
+        )
+        skill_count = (
+            profiles_mod._count_skills(profile_dir)
+            if has_disk else 0
+        )
+        has_env = bool((profile_dir / ".env").is_file()) if has_disk else False
+        is_default = False  # Registry profiles are never the "default" profile
+
+        fleet_profiles.append({
+            "name": name,
+            "path": path_str,
+            "is_default": is_default,
+            "model": model,
+            "provider": provider,
+            "has_env": has_env,
+            "skill_count": skill_count,
+            # Registry-specific fields
+            "layer": r.get("layer"),
+            "domain": r.get("domain"),
+            "purpose": r.get("purpose"),
+            "daemon": r.get("daemon"),
+            "parent": r.get("parent"),
+            "schedule": r.get("schedule"),
+            "spawn": r.get("spawn"),
+            "lifetime": r.get("lifetime"),
+            "boundaries": r.get("boundaries", []),
+            "escalation": r.get("escalation", []),
+            "toolsets": r.get("toolsets", []),
+            "skills": r.get("skills", []),
+            "models": r.get("models", {}),
+            # Provenance
+            "provenance": "materialized" if has_disk else "registry_only",
+        })
+
+    # 3b. Orphan profiles (on-disk but not in registry).
+    profiles_root = profiles_mod._get_profiles_root()
+    if profiles_root.is_dir():
+        for entry in sorted(profiles_root.iterdir()):
+            if not entry.is_dir():
+                continue
+            name = entry.name
+            if name in registry_by_name:
+                continue  # Already handled above.
+
+            model, provider = profiles_mod._read_config_model(entry)
+            skill_count = profiles_mod._count_skills(entry)
+            has_env = bool((entry / ".env").is_file())
+            is_default = (entry.resolve() == profiles_mod._get_default_hermes_home().resolve())
+
+            fleet_profiles.append({
+                "name": name,
+                "path": str(entry),
+                "is_default": is_default,
+                "model": model,
+                "provider": provider,
+                "has_env": has_env,
+                "skill_count": skill_count,
+                # Registry fields — all null for orphans
+                "layer": None,
+                "domain": None,
+                "purpose": None,
+                "daemon": None,
+                "parent": None,
+                "schedule": None,
+                "spawn": None,
+                "lifetime": None,
+                "boundaries": [],
+                "escalation": [],
+                "toolsets": [],
+                "skills": [],
+                "models": {},
+                "provenance": "orphan",
+            })
+
+    return {
+        "profiles": fleet_profiles,
+        "registry_error": registry_error,
+    }
+
+
 @app.post("/api/profiles")
 async def create_profile_endpoint(body: ProfileCreate):
     from hermes_cli import profiles as profiles_mod

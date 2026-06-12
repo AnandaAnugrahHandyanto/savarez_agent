@@ -4264,3 +4264,147 @@ class TestValidateProviderCredential:
     def test_empty_value_rejected(self):
         data = self._post("OPENAI_API_KEY", "   ").json()
         assert data["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# Fleet profiles endpoint tests (/api/fleet/profiles)
+# ---------------------------------------------------------------------------
+
+
+class TestFleetProfilesEndpoint:
+    """Tests for GET /api/fleet/profiles — registry + disk merge."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home, tmp_path):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+        # Use the isolated HERMES_HOME's parent as the fleet dir.
+        from hermes_constants import get_hermes_home
+        hermes_home = get_hermes_home()
+        self.fleet_dir = hermes_home / "fleet"
+        self.fleet_dir.mkdir(parents=True, exist_ok=True)
+        self.registry_path = self.fleet_dir / "fleet_registry.yaml"
+        monkeypatch.setattr(
+            "hermes_cli.fleet_registry.REGISTRY_PATH",
+            self.registry_path,
+        )
+
+    def _write_profiles_root_dirs(self, names):
+        """Create bare profile directories under the isolated profiles root."""
+        from hermes_cli import profiles as profiles_mod
+
+        root = profiles_mod._get_profiles_root()
+        root.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (root / name).mkdir(parents=True, exist_ok=True)
+
+    def _write_registry(self, profiles_cfg):
+        """Write a minimal valid registry YAML with the given profiles list."""
+        import yaml
+
+        data = {
+            "apiVersion": "fleet/v2",
+            "kind": "Registry",
+            "metadata": {"updated": "2026-06-01T00:00:00Z"},
+            "profiles": profiles_cfg,
+        }
+        self.registry_path.write_text(yaml.dump(data), encoding="utf-8")
+
+    # ------------------------------------------------------------------
+    # 5 test cases per spec §4
+    # ------------------------------------------------------------------
+
+    def test_fleet_profiles_happy_path(self):
+        """3 registry profiles with on-disk dirs → 3 materialized records."""
+        self._write_registry([
+            {"id": "platform-orchestrator", "layer": "orchestrator",
+             "domain": "cross-domain", "purpose": "Root orchestrator"},
+            {"id": "general-executor", "layer": "executor",
+             "domain": "cross-domain", "purpose": "Primary workload executor"},
+            {"id": "secure-executor", "layer": "executor",
+             "domain": "ops", "purpose": "Sandboxed operations"},
+        ])
+        self._write_profiles_root_dirs([
+            "platform-orchestrator",
+            "general-executor",
+            "secure-executor",
+        ])
+
+        resp = self.client.get("/api/fleet/profiles")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["registry_error"] is None
+        assert len(data["profiles"]) == 3
+
+        for p in data["profiles"]:
+            assert p["provenance"] == "materialized"
+            assert p["path"] is not None
+            assert p["layer"] in ("orchestrator", "executor")
+
+    def test_fleet_profiles_orphan_dir(self):
+        """On-disk dir without registry entry → orphan record."""
+        self._write_profiles_root_dirs(["experiment"])
+        # No registry file at all.
+        resp = self.client.get("/api/fleet/profiles")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert len(data["profiles"]) == 1
+        assert data["profiles"][0]["name"] == "experiment"
+        assert data["profiles"][0]["provenance"] == "orphan"
+        assert data["profiles"][0]["layer"] is None
+        assert data["profiles"][0]["domain"] is None
+
+    def test_fleet_profiles_missing_registry(self):
+        """No registry file → 200 with registry_error populated."""
+        # Also has on-disk profiles that should still show up as orphans.
+        self._write_profiles_root_dirs(["alpha", "beta"])
+
+        resp = self.client.get("/api/fleet/profiles")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["registry_error"] is not None
+        assert "not found" in data["registry_error"].lower()
+        # Profiles still show (as orphans)
+        assert len(data["profiles"]) == 2
+        for p in data["profiles"]:
+            assert p["provenance"] == "orphan"
+
+    def test_fleet_profiles_unparseable_registry(self):
+        """Malformed YAML → 200 with registry_error populated."""
+        self.registry_path.write_text(
+            "{{{broken: yaml: [unparseable\n", encoding="utf-8"
+        )
+        self._write_profiles_root_dirs(["alpha"])
+
+        resp = self.client.get("/api/fleet/profiles")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["registry_error"] is not None or len(data["profiles"]) == 0
+        # Orphans still visible if non-empty registry parse returns []
+        orphans = [p for p in data["profiles"] if p["provenance"] == "orphan"]
+        assert len(orphans) == 1
+
+    def test_fleet_profiles_registry_only_profile(self):
+        """Registry entry without on-disk dir → registry_only provenance."""
+        self._write_registry([
+            {"id": "future-specialist", "layer": "specialist",
+             "domain": "research", "purpose": "Not yet materialized"},
+        ])
+        # No on-disk dir for this profile.
+        resp = self.client.get("/api/fleet/profiles")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["registry_error"] is None
+        assert len(data["profiles"]) == 1
+        assert data["profiles"][0]["name"] == "future-specialist"
+        assert data["profiles"][0]["provenance"] == "registry_only"
+        assert data["profiles"][0]["path"] is None
