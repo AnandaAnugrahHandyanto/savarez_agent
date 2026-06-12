@@ -11,7 +11,6 @@ import { Pane, PaneMain } from '@/components/pane-shell'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
-import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
@@ -80,6 +79,7 @@ import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store
 import { isSecondaryWindow } from '../store/windows'
 
 import { ChatView } from './chat'
+import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
 import {
   ChatPreviewRail,
@@ -126,6 +126,7 @@ const ArtifactsView = lazy(async () => ({ default: (await import('./artifacts'))
 const CommandCenterView = lazy(async () => ({ default: (await import('./command-center')).CommandCenterView }))
 const CronView = lazy(async () => ({ default: (await import('./cron')).CronView }))
 const MessagingView = lazy(async () => ({ default: (await import('./messaging')).MessagingView }))
+const MissionControlView = lazy(async () => ({ default: (await import('./mission-control')).MissionControlView }))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
 const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
@@ -277,18 +278,23 @@ export function DesktopController() {
       if (!payload || payload.kind !== 'blueprint' || !payload.name) {
         return
       }
+
       const slots = Object.entries(payload.params || {})
         .map(([k, v]) => {
           const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
+
           return `${k}=${sval}`
         })
         .join(' ')
+
       const command = `/blueprint ${payload.name}${slots ? ' ' + slots : ''}`
       requestComposerInsert(command, { mode: 'block', target: 'main' })
       requestComposerFocus('main')
     })
+
     // Tell the main process the renderer is ready to receive deep links.
     void window.hermesDesktop?.signalDeepLinkReady?.()
+
     return () => unsubscribe?.()
   }, [])
 
@@ -1068,6 +1074,14 @@ export function DesktopController() {
               </Suspense>
             }
             path="artifacts"
+          />
+          <Route
+            element={
+              <Suspense fallback={null}>
+                <MissionControlView />
+              </Suspense>
+            }
+            path="mission-control"
           />
           <Route element={null} path="cron" />
           <Route element={null} path="profiles" />
