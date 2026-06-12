@@ -208,6 +208,20 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             f"not on any model name returned by the API."
         )
 
+    # BlackboxAI proxy: models tend to narrate plans ("I'll do X...") instead
+    # of emitting tool calls. Inject explicit tool-use enforcement.
+    if agent.provider == "blackboxai":
+        stable_parts.append(
+            "CRITICAL TOOL-USE RULE: When you have tools available and the "
+            "user's request requires action (file operations, code changes, "
+            "terminal commands, searches, etc.), you MUST call the appropriate "
+            "tools immediately. Do NOT narrate your plan first (e.g. 'I will "
+            "do X', 'Let me check Y'). Just call the tool. Narrating a plan "
+            "without executing it is a failure — the user cannot see your "
+            "intentions, only your tool outputs. If you need to explain, do "
+            "it AFTER calling the tool, not before."
+        )
+
     # Environment hints (WSL, Termux, etc.) — tell the agent about the
     # execution environment so it can translate paths and adapt behavior.
     # Stable for the lifetime of the process.
