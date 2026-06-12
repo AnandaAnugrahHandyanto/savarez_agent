@@ -1665,7 +1665,6 @@ export const en: Translations = {
       readAloud: 'Read aloud',
       editMessage: 'Edit message',
       stop: 'Stop',
-      editableCheckpoint: 'Editable checkpoint',
       restorePrevious: 'Restore previous checkpoint',
       restoreCheckpoint: 'Restore checkpoint',
       restoreFromHere: 'Restore checkpoint — rerun from this prompt',

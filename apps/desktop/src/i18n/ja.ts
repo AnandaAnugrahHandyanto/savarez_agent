@@ -1806,7 +1806,6 @@ export const ja = defineLocale({
       readAloud: '読み上げ',
       editMessage: 'メッセージを編集',
       stop: '停止',
-      editableCheckpoint: '編集可能なチェックポイント',
       restorePrevious: '前のチェックポイントに戻す',
       restoreCheckpoint: 'チェックポイントを復元',
       restoreFromHere: 'チェックポイントを復元 — このプロンプトから再実行',

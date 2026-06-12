@@ -1845,7 +1845,6 @@ export const zh: Translations = {
       readAloud: '朗读',
       editMessage: '编辑消息',
       stop: '停止',
-      editableCheckpoint: '可编辑检查点',
       restorePrevious: '恢复上一个检查点',
       restoreCheckpoint: '恢复检查点',
       restoreFromHere: '恢复检查点 — 从此提示重新运行',

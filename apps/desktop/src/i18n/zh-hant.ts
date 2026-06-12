@@ -1750,7 +1750,6 @@ export const zhHant = defineLocale({
       readAloud: '朗讀',
       editMessage: '編輯訊息',
       stop: '停止',
-      editableCheckpoint: '可編輯的檢查點',
       restorePrevious: '還原至上一個檢查點',
       restoreCheckpoint: '還原檢查點',
       restoreFromHere: '還原檢查點 — 從此提示重新執行',

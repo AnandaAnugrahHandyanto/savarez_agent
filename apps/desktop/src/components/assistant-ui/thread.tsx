@@ -910,9 +910,7 @@ const UserMessage: FC<{
             description={copy.restoreBody}
             destructive
             onClose={() => setRestoreConfirmOpen(false)}
-            onConfirm={async () => {
-              await onRestoreToMessage?.(messageId)
-            }}
+            onConfirm={() => onRestoreToMessage?.(messageId)}
             open={restoreConfirmOpen}
             title={copy.restoreTitle}
           />
