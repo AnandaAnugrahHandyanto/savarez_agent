@@ -28,6 +28,7 @@ actionable guidance the model can relay to the user.
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -38,6 +39,31 @@ from tools.registry import registry
 logger = logging.getLogger(__name__)
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
+_SESSION_KICKOFF_RECEIPT_ACTION = "post_session_kickoff_receipt_v1"
+_SESSION_KICKOFF_RECEIPT_INTENT = "session_kickoff_receipt_v1"
+_DISCORD_MESSAGE_LIMIT = 2000
+_SESSION_KICKOFF_CONTENT_LIMIT = 20_000
+_SESSION_KICKOFF_CHUNK_LIMIT = 10
+_SUPPRESS_EMBEDS_FLAG = 4
+_BOUNDARY_PHRASES = (
+    "Boundary: reply before mutation.",
+    "Boundary: reply in this thread before mutation.",
+    "awaiting explicit mutation approval",
+)
+_ACTIVATION_MARKERS = (
+    "Activation prompt template",
+    "Adoptable only by the user; user must adopt this prompt in their own message.",
+    "Instruction after adoption: Use the kickoff seed it references. Proceed only within those boundaries.",
+    "Class B actions without exact approval",
+)
+_INVISIBLE_LINE_CHARS = {
+    ord("\ufeff"): None,
+    ord("\u200b"): None,
+    ord("\u200c"): None,
+    ord("\u200d"): None,
+    ord("\u2060"): None,
+}
+_ROLE_PING_RE = re.compile(r"<@&\d{1,20}>")
 
 # Application flag bits (from GET /applications/@me → "flags").
 # Source: https://discord.com/developers/docs/resources/application#application-object-application-flags
@@ -53,6 +79,185 @@ _FLAG_GATEWAY_MESSAGE_CONTENT_LIMITED = 1 << 19
 def _get_bot_token() -> Optional[str]:
     """Resolve the Discord bot token from environment."""
     return os.getenv("DISCORD_BOT_TOKEN", "").strip() or None
+
+
+def _load_discord_config() -> Dict[str, Any]:
+    """Load the ``discord`` config block, returning an empty dict on failure."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception as exc:
+        logger.debug("discord: could not load config (%s); using defaults.", exc)
+        return {}
+    raw = cfg.get("discord") if isinstance(cfg, dict) else None
+    return raw if isinstance(raw, dict) else {}
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _session_kickoff_receipt_enabled() -> bool:
+    """Return whether the opt-in receipt action should be exposed/run."""
+    return _as_bool(_load_discord_config().get("session_kickoff_receipt_enabled", False))
+
+
+def _is_discord_snowflake(value: Any) -> bool:
+    """Discord IDs used in REST paths must be simple decimal snowflake strings."""
+    return isinstance(value, str) and value.isdecimal() and 1 <= len(value) <= 20
+
+
+def _first_visible_line(text: str) -> str:
+    """Return the first non-blank visible line after minimal Discord normalization."""
+    for line in str(text).splitlines():
+        normalized = line.translate(_INVISIBLE_LINE_CHARS)
+        if normalized.strip():
+            return normalized.lstrip()
+    return ""
+
+
+def _has_forbidden_ping(text: str) -> bool:
+    value = str(text)
+    return "@everyone" in value or "@here" in value or bool(_ROLE_PING_RE.search(value))
+
+
+def _split_discord_text(text: str) -> Tuple[Optional[List[str]], Optional[str]]:
+    """Split text into deterministic Discord message chunks or return an error code."""
+    value = str(text)
+    if len(value) > _SESSION_KICKOFF_CONTENT_LIMIT:
+        return None, "content_too_large"
+    chunks = [
+        value[index:index + _DISCORD_MESSAGE_LIMIT]
+        for index in range(0, len(value), _DISCORD_MESSAGE_LIMIT)
+    ] or [""]
+    if len(chunks) > _SESSION_KICKOFF_CHUNK_LIMIT:
+        return None, "too_many_discord_chunks"
+    return chunks, None
+
+
+def _receipt_result(
+    status: str,
+    *,
+    channel_id: str = "",
+    trusted_requester_user_id: str = "",
+    message_ids: Optional[List[str]] = None,
+    seed_message_ids: Optional[List[str]] = None,
+    activation_message_ids: Optional[List[str]] = None,
+    errors: Optional[List[Dict[str, Any]]] = None,
+    warnings: Optional[List[str]] = None,
+    evidence: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return {
+        "status": status,
+        "receipt_pass": status == "receipt_pass",
+        "channel_id": channel_id,
+        "trusted_requester_user_id": trusted_requester_user_id,
+        "message_ids": message_ids or [],
+        "seed_message_ids": seed_message_ids or [],
+        "activation_message_ids": activation_message_ids or [],
+        "errors": errors or [],
+        "warnings": warnings or [],
+        "evidence": evidence or {},
+    }
+
+
+def _receipt_error(code: str, message: str = "") -> Dict[str, str]:
+    return {"code": code, "message": message or code}
+
+
+def _receipt_json(status: str, code: str, **kwargs: Any) -> str:
+    return json.dumps(_receipt_result(status, errors=[_receipt_error(code)], **kwargs))
+
+
+def _parse_receipt_fetch_options(
+    max_fetch_attempts: Any,
+    fetch_delay_seconds: Any,
+) -> Tuple[Optional[int], Optional[float], Optional[str]]:
+    if not isinstance(max_fetch_attempts, int) or isinstance(max_fetch_attempts, bool):
+        return None, None, "invalid_max_fetch_attempts"
+    if max_fetch_attempts < 1 or max_fetch_attempts > 5:
+        return None, None, "invalid_max_fetch_attempts"
+    if not isinstance(fetch_delay_seconds, (int, float)) or isinstance(fetch_delay_seconds, bool):
+        return None, None, "invalid_fetch_delay_seconds"
+    delay = float(fetch_delay_seconds)
+    if delay < 0 or delay > 2.0 or (max_fetch_attempts - 1) * delay >= 8.0:
+        return None, None, "invalid_fetch_delay_seconds"
+    return max_fetch_attempts, delay, None
+
+
+def _trusted_discord_requester_id() -> Optional[str]:
+    try:
+        from gateway.session_context import get_session_env_strict
+    except Exception:
+        return None
+    if get_session_env_strict("HERMES_SESSION_PLATFORM") != "discord":
+        return None
+    user_id = get_session_env_strict("HERMES_SESSION_USER_ID")
+    if not _is_discord_snowflake(user_id):
+        return None
+    return user_id
+
+
+def _receipt_allowed_mentions(trusted_requester_user_id: str) -> Dict[str, Any]:
+    return {
+        "parse": [],
+        "users": [trusted_requester_user_id],
+        "roles": [],
+        "replied_user": False,
+    }
+
+
+def _post_receipt_message(
+    token: str,
+    channel_id: str,
+    content: str,
+    trusted_requester_user_id: str,
+) -> Dict[str, Any]:
+    body = {
+        "content": content,
+        "flags": _SUPPRESS_EMBEDS_FLAG,
+        "allowed_mentions": _receipt_allowed_mentions(trusted_requester_user_id),
+    }
+    return _discord_request("POST", f"/channels/{channel_id}/messages", token, body=body)
+
+
+def _fetch_receipt_message(token: str, channel_id: str, message_id: str) -> Dict[str, Any]:
+    return _discord_request("GET", f"/channels/{channel_id}/messages/{message_id}", token)
+
+
+def _message_author_id(message: Dict[str, Any]) -> str:
+    author = message.get("author") if isinstance(message, dict) else None
+    if isinstance(author, dict):
+        value = author.get("id")
+        return value if isinstance(value, str) else ""
+    return ""
+
+
+def _receipt_failure(
+    status: str,
+    code: str,
+    *,
+    channel_id: str,
+    trusted_requester_user_id: str,
+    message_ids: Optional[List[str]] = None,
+    seed_message_ids: Optional[List[str]] = None,
+    activation_message_ids: Optional[List[str]] = None,
+    evidence: Optional[Dict[str, Any]] = None,
+) -> str:
+    return json.dumps(_receipt_result(
+        status,
+        channel_id=channel_id,
+        trusted_requester_user_id=trusted_requester_user_id,
+        message_ids=message_ids,
+        seed_message_ids=seed_message_ids,
+        activation_message_ids=activation_message_ids,
+        errors=[_receipt_error(code)],
+        evidence=evidence,
+    ))
 
 
 def _discord_request(
@@ -454,6 +659,278 @@ def _create_thread(
     })
 
 
+def _post_session_kickoff_receipt(
+    token: str,
+    channel_id: str = "",
+    seed_content: str = "",
+    post_intent: str = "",
+    expected_requester_user_id: str = "",
+    activation_content: str = "",
+    max_fetch_attempts: int = 3,
+    fetch_delay_seconds: float = 0.5,
+    **_kwargs: Any,
+) -> str:
+    """Opt-in Discord session-kickoff receipt action."""
+    if not _session_kickoff_receipt_enabled():
+        return _receipt_json("precheck_failed", "opt_in_disabled", channel_id=channel_id)
+
+    requester_id = _trusted_discord_requester_id()
+    if requester_id is None:
+        return _receipt_json("precheck_failed", "unsupported_session_context", channel_id=channel_id)
+
+    if post_intent != _SESSION_KICKOFF_RECEIPT_INTENT:
+        return _receipt_json(
+            "precheck_failed", "invalid_post_intent",
+            channel_id=channel_id, trusted_requester_user_id=requester_id,
+        )
+
+    if not _is_discord_snowflake(channel_id):
+        return _receipt_json(
+            "precheck_failed", "invalid_channel_id",
+            channel_id=channel_id, trusted_requester_user_id=requester_id,
+        )
+
+    if expected_requester_user_id:
+        if not _is_discord_snowflake(expected_requester_user_id):
+            return _receipt_json(
+                "precheck_failed", "invalid_expected_requester_user_id",
+                channel_id=channel_id, trusted_requester_user_id=requester_id,
+            )
+        if expected_requester_user_id != requester_id:
+            return _receipt_json(
+                "precheck_failed", "requester_user_id_mismatch",
+                channel_id=channel_id, trusted_requester_user_id=requester_id,
+            )
+
+    first_line = _first_visible_line(seed_content)
+    if not first_line.startswith(f"<@{requester_id}>"):
+        return _receipt_json(
+            "precheck_failed", "missing_requester_mention_first_line",
+            channel_id=channel_id, trusted_requester_user_id=requester_id,
+            evidence={"first_seed_line": first_line},
+        )
+
+    if _has_forbidden_ping(seed_content) or _has_forbidden_ping(activation_content):
+        return _receipt_json(
+            "precheck_failed", "forbidden_mass_or_role_ping",
+            channel_id=channel_id, trusted_requester_user_id=requester_id,
+            evidence={"first_seed_line": first_line},
+        )
+
+    if "PRE-START VERIFICATION GATE" not in seed_content:
+        return _receipt_json(
+            "precheck_failed", "missing_pre_start_gate",
+            channel_id=channel_id, trusted_requester_user_id=requester_id,
+            evidence={"first_seed_line": first_line},
+        )
+
+    if not any(phrase in seed_content for phrase in _BOUNDARY_PHRASES):
+        return _receipt_json(
+            "precheck_failed", "missing_boundary_phrase",
+            channel_id=channel_id, trusted_requester_user_id=requester_id,
+            evidence={"first_seed_line": first_line},
+        )
+
+    if activation_content and any(marker not in activation_content for marker in _ACTIVATION_MARKERS):
+        return _receipt_json(
+            "precheck_failed", "missing_activation_marker",
+            channel_id=channel_id, trusted_requester_user_id=requester_id,
+            evidence={"first_seed_line": first_line},
+        )
+
+    attempts, delay, option_error = _parse_receipt_fetch_options(max_fetch_attempts, fetch_delay_seconds)
+    if option_error:
+        return _receipt_json(
+            "precheck_failed", option_error,
+            channel_id=channel_id, trusted_requester_user_id=requester_id,
+            evidence={"first_seed_line": first_line},
+        )
+    del attempts, delay
+
+    expected_seed_chunks, seed_error = _split_discord_text(seed_content)
+    if seed_error:
+        return _receipt_json(
+            "precheck_failed", seed_error,
+            channel_id=channel_id, trusted_requester_user_id=requester_id,
+            evidence={"first_seed_line": first_line},
+        )
+    expected_activation_chunks: List[str] = []
+    if activation_content:
+        activation_chunks, activation_error = _split_discord_text(activation_content)
+        if activation_error:
+            return _receipt_json(
+                "precheck_failed", activation_error,
+                channel_id=channel_id, trusted_requester_user_id=requester_id,
+                evidence={"first_seed_line": first_line},
+            )
+        expected_activation_chunks = activation_chunks or []
+
+    expected_seed_chunks = expected_seed_chunks or []
+    seed_message_ids: List[str] = []
+    activation_message_ids: List[str] = []
+    message_ids: List[str] = []
+    bot_author_id = ""
+
+    try:
+        for content in expected_seed_chunks:
+            posted = _post_receipt_message(token, channel_id, content, requester_id)
+            posted_message_id = posted.get("id")
+            message_id = posted_message_id if isinstance(posted_message_id, str) else ""
+            author_id = _message_author_id(posted) if isinstance(posted, dict) else ""
+            if not _is_discord_snowflake(message_id) or not _is_discord_snowflake(author_id):
+                return _receipt_failure(
+                    "post_failed", "post_failed",
+                    channel_id=channel_id, trusted_requester_user_id=requester_id,
+                    message_ids=message_ids, seed_message_ids=seed_message_ids,
+                    activation_message_ids=activation_message_ids,
+                    evidence={"first_seed_line": first_line},
+                )
+            if not bot_author_id:
+                bot_author_id = author_id
+            seed_message_ids.append(message_id)
+            message_ids.append(message_id)
+
+        for content in expected_activation_chunks:
+            posted = _post_receipt_message(token, channel_id, content, requester_id)
+            posted_message_id = posted.get("id")
+            message_id = posted_message_id if isinstance(posted_message_id, str) else ""
+            author_id = _message_author_id(posted) if isinstance(posted, dict) else ""
+            if not _is_discord_snowflake(message_id) or not _is_discord_snowflake(author_id):
+                return _receipt_failure(
+                    "partial_post", "partial_post",
+                    channel_id=channel_id, trusted_requester_user_id=requester_id,
+                    message_ids=message_ids, seed_message_ids=seed_message_ids,
+                    activation_message_ids=activation_message_ids,
+                    evidence={"first_seed_line": first_line},
+                )
+            activation_message_ids.append(message_id)
+            message_ids.append(message_id)
+    except DiscordAPIError:
+        status = "partial_post" if message_ids else "post_failed"
+        code = "partial_post" if message_ids else "post_failed"
+        return _receipt_failure(
+            status, code,
+            channel_id=channel_id, trusted_requester_user_id=requester_id,
+            message_ids=message_ids, seed_message_ids=seed_message_ids,
+            activation_message_ids=activation_message_ids,
+            evidence={"first_seed_line": first_line},
+        )
+
+    fetched_messages: List[Dict[str, Any]] = []
+    try:
+        for message_id in message_ids:
+            fetched = _fetch_receipt_message(token, channel_id, message_id)
+            if not isinstance(fetched, dict):
+                raise DiscordAPIError(0, "non-object Discord message response")
+            fetched_messages.append(fetched)
+    except DiscordAPIError:
+        return _receipt_failure(
+            "fetch_failed", "message_fetch_failed",
+            channel_id=channel_id, trusted_requester_user_id=requester_id,
+            message_ids=message_ids, seed_message_ids=seed_message_ids,
+            activation_message_ids=activation_message_ids,
+            evidence={"first_seed_line": first_line},
+        )
+
+    expected_chunks = expected_seed_chunks + expected_activation_chunks
+    fetched_contents = [str(msg.get("content", "")) for msg in fetched_messages]
+    fetched_seed_content = "".join(fetched_contents[:len(expected_seed_chunks)])
+    fetched_activation_content = "".join(fetched_contents[len(expected_seed_chunks):])
+    fetched_first_line = _first_visible_line(fetched_seed_content)
+    evidence = {
+        "first_seed_line": fetched_first_line,
+        "fetched_message_count": len(fetched_messages),
+        "expected_seed_chunk_count": len(expected_seed_chunks),
+        "expected_activation_chunk_count": len(expected_activation_chunks),
+        "bot_author_id": bot_author_id,
+        "embed_count": sum(len(msg.get("embeds") or []) for msg in fetched_messages),
+    }
+
+    if fetched_contents != expected_chunks:
+        return _receipt_failure(
+            "validation_failed", "content_mismatch",
+            channel_id=channel_id, trusted_requester_user_id=requester_id,
+            message_ids=message_ids, seed_message_ids=seed_message_ids,
+            activation_message_ids=activation_message_ids,
+            evidence=evidence,
+        )
+    if not fetched_first_line.startswith(f"<@{requester_id}>"):
+        return _receipt_failure(
+            "validation_failed", "missing_requester_mention_first_line",
+            channel_id=channel_id, trusted_requester_user_id=requester_id,
+            message_ids=message_ids, seed_message_ids=seed_message_ids,
+            activation_message_ids=activation_message_ids,
+            evidence=evidence,
+        )
+    if "PRE-START VERIFICATION GATE" not in fetched_seed_content:
+        return _receipt_failure(
+            "validation_failed", "missing_pre_start_gate",
+            channel_id=channel_id, trusted_requester_user_id=requester_id,
+            message_ids=message_ids, seed_message_ids=seed_message_ids,
+            activation_message_ids=activation_message_ids,
+            evidence=evidence,
+        )
+    if not any(phrase in fetched_seed_content for phrase in _BOUNDARY_PHRASES):
+        return _receipt_failure(
+            "validation_failed", "missing_boundary_phrase",
+            channel_id=channel_id, trusted_requester_user_id=requester_id,
+            message_ids=message_ids, seed_message_ids=seed_message_ids,
+            activation_message_ids=activation_message_ids,
+            evidence=evidence,
+        )
+    if _has_forbidden_ping(fetched_seed_content) or _has_forbidden_ping(fetched_activation_content):
+        return _receipt_failure(
+            "validation_failed", "forbidden_mass_or_role_ping",
+            channel_id=channel_id, trusted_requester_user_id=requester_id,
+            message_ids=message_ids, seed_message_ids=seed_message_ids,
+            activation_message_ids=activation_message_ids,
+            evidence=evidence,
+        )
+    if expected_activation_chunks and any(marker not in fetched_activation_content for marker in _ACTIVATION_MARKERS):
+        return _receipt_failure(
+            "validation_failed", "missing_activation_marker",
+            channel_id=channel_id, trusted_requester_user_id=requester_id,
+            message_ids=message_ids, seed_message_ids=seed_message_ids,
+            activation_message_ids=activation_message_ids,
+            evidence=evidence,
+        )
+    for msg in fetched_messages:
+        if _message_author_id(msg) != bot_author_id:
+            return _receipt_failure(
+                "validation_failed", "author_mismatch",
+                channel_id=channel_id, trusted_requester_user_id=requester_id,
+                message_ids=message_ids, seed_message_ids=seed_message_ids,
+                activation_message_ids=activation_message_ids,
+                evidence=evidence,
+            )
+        if msg.get("attachments"):
+            return _receipt_failure(
+                "validation_failed", "unexpected_attachment_in_text_only_mvp",
+                channel_id=channel_id, trusted_requester_user_id=requester_id,
+                message_ids=message_ids, seed_message_ids=seed_message_ids,
+                activation_message_ids=activation_message_ids,
+                evidence=evidence,
+            )
+        if msg.get("embeds"):
+            return _receipt_failure(
+                "validation_failed", "unexpected_embed_in_text_only_mvp",
+                channel_id=channel_id, trusted_requester_user_id=requester_id,
+                message_ids=message_ids, seed_message_ids=seed_message_ids,
+                activation_message_ids=activation_message_ids,
+                evidence=evidence,
+            )
+
+    return json.dumps(_receipt_result(
+        "receipt_pass",
+        channel_id=channel_id,
+        trusted_requester_user_id=requester_id,
+        message_ids=message_ids,
+        seed_message_ids=seed_message_ids,
+        activation_message_ids=activation_message_ids,
+        evidence=evidence,
+    ))
+
+
 def _add_role(token: str, guild_id: str, user_id: str, role_id: str, **_kwargs: Any) -> str:
     """Add a role to a guild member."""
     _discord_request("PUT", f"/guilds/{guild_id}/members/{user_id}/roles/{role_id}", token)
@@ -479,6 +956,7 @@ _ACTIONS = {
     "member_info": _member_info,
     "search_members": _search_members,
     "fetch_messages": _fetch_messages,
+    _SESSION_KICKOFF_RECEIPT_ACTION: _post_session_kickoff_receipt,
     "list_pins": _list_pins,
     "pin_message": _pin_message,
     "unpin_message": _unpin_message,
@@ -488,7 +966,9 @@ _ACTIONS = {
     "remove_role": _remove_role,
 }
 
-_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread"})
+_CORE_ACTION_NAMES = frozenset({
+    "fetch_messages", "search_members", "create_thread", _SESSION_KICKOFF_RECEIPT_ACTION,
+})
 _ADMIN_ACTION_NAMES = frozenset(_ACTIONS.keys()) - _CORE_ACTION_NAMES
 
 _CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
@@ -506,6 +986,11 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("member_info", "(guild_id, user_id)", "lookup a specific member"),
     ("search_members", "(guild_id, query)", "find members by name prefix"),
     ("fetch_messages", "(channel_id)", "recent messages; optional before/after snowflakes"),
+    (
+        _SESSION_KICKOFF_RECEIPT_ACTION,
+        "(channel_id, seed_content, post_intent)",
+        "post text-only session kickoff seed, fetch exact posted IDs, and validate receipt",
+    ),
     ("list_pins", "(channel_id)", "pinned messages in a channel"),
     ("pin_message", "(channel_id, message_id)", "pin a message"),
     ("unpin_message", "(channel_id, message_id)", "unpin a message"),
@@ -585,6 +1070,8 @@ def _load_allowed_actions_config() -> Optional[List[str]]:
 def _available_actions(
     caps: Dict[str, Any],
     allowlist: Optional[List[str]],
+    *,
+    receipt_enabled: bool = False,
 ) -> List[str]:
     """Compute the visible action list from intents + config allowlist.
 
@@ -592,6 +1079,8 @@ def _available_actions(
     """
     actions: List[str] = []
     for name in _ACTIONS:
+        if name == _SESSION_KICKOFF_RECEIPT_ACTION and not receipt_enabled:
+            continue
         # Intent filter
         if not caps.get("has_members_intent", True) and name in _INTENT_GATED_MEMBERS:
             continue
@@ -714,6 +1203,39 @@ def _build_schema(
         },
     }
 
+    if _SESSION_KICKOFF_RECEIPT_ACTION in actions:
+        properties.update({
+            "seed_content": {
+                "type": "string",
+                "description": "Text-only session kickoff seed content to post and validate.",
+            },
+            "post_intent": {
+                "type": "string",
+                "enum": [_SESSION_KICKOFF_RECEIPT_INTENT],
+                "description": "Required literal intent for the kickoff receipt action.",
+            },
+            "expected_requester_user_id": {
+                "type": "string",
+                "description": "Optional cross-check against trusted Discord gateway requester ID.",
+            },
+            "activation_content": {
+                "type": "string",
+                "description": "Optional text-only activation prompt posted after the seed.",
+            },
+            "max_fetch_attempts": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5,
+                "description": "Fetch-by-ID retry attempts for posted messages (default 3).",
+            },
+            "fetch_delay_seconds": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 2.0,
+                "description": "Delay between fetch attempts; total retry sleep must stay under 8s.",
+            },
+        })
+
     return {
         "name": tool_name,
         "description": description,
@@ -735,7 +1257,12 @@ def _get_dynamic_schema(
         return None
     caps = _detect_capabilities(token)
     allowlist = _load_allowed_actions_config()
-    actions = [a for a in _available_actions(caps, allowlist) if a in action_subset]
+    actions = [
+        a for a in _available_actions(
+            caps, allowlist, receipt_enabled=_session_kickoff_receipt_enabled(),
+        )
+        if a in action_subset
+    ]
     if not actions:
         return None
     return _build_schema(actions, caps, tool_name=tool_name)
@@ -839,6 +1366,12 @@ def _run_discord_action(
     before: str = "",
     after: str = "",
     auto_archive_duration: int = 1440,
+    seed_content: str = "",
+    post_intent: str = "",
+    expected_requester_user_id: str = "",
+    activation_content: str = "",
+    max_fetch_attempts: int = 3,
+    fetch_delay_seconds: float = 0.5,
 ) -> str:
     """Shared handler logic for both discord tools."""
     token = _get_bot_token()
@@ -894,6 +1427,12 @@ def _run_discord_action(
             before=before,
             after=after,
             auto_archive_duration=auto_archive_duration,
+            seed_content=seed_content,
+            post_intent=post_intent,
+            expected_requester_user_id=expected_requester_user_id,
+            activation_content=activation_content,
+            max_fetch_attempts=max_fetch_attempts,
+            fetch_delay_seconds=fetch_delay_seconds,
         )
     except DiscordAPIError as e:
         logger.warning("Discord API error in %s action '%s': %s", tool_label, action, e)
@@ -923,6 +1462,8 @@ _HANDLER_DEFAULTS = {
     "action": "", "guild_id": "", "channel_id": "", "user_id": "",
     "role_id": "", "message_id": "", "query": "", "name": "",
     "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
+    "seed_content": "", "post_intent": "", "expected_requester_user_id": "",
+    "activation_content": "", "max_fetch_attempts": 3, "fetch_delay_seconds": 0.5,
 }
 
 
@@ -934,7 +1475,8 @@ def _make_handler(handler_fn):
 
 
 _STATIC_CORE_SCHEMA = _build_schema(
-    list(_CORE_ACTIONS.keys()), caps={"detected": False}, tool_name="discord",
+    [name for name in _CORE_ACTIONS if name != _SESSION_KICKOFF_RECEIPT_ACTION],
+    caps={"detected": False}, tool_name="discord",
 )
 _STATIC_ADMIN_SCHEMA = _build_schema(
     list(_ADMIN_ACTIONS.keys()), caps={"detected": False}, tool_name="discord_admin",

@@ -195,3 +195,21 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def get_session_env_strict(name: str, default: str = "") -> str:
+    """Read a session context variable without falling back to ``os.environ``.
+
+    This is for trust-sensitive gateway-only checks where a process-global
+    environment value must not be accepted as proof of the current requester.
+    If the ContextVar was never set in this context, *default* is returned.
+    If it was explicitly set or cleared, that exact ContextVar value is
+    returned.
+    """
+    var = _VAR_MAP.get(name)
+    if var is None:
+        return default
+    value = var.get()
+    if value is _UNSET:
+        return default
+    return value

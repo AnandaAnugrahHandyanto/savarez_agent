@@ -12,6 +12,8 @@ from tools.discord_tool import (
     _ACTIONS,
     _ADMIN_ACTIONS,
     _CORE_ACTIONS,
+    _SESSION_KICKOFF_RECEIPT_ACTION,
+    _SESSION_KICKOFF_RECEIPT_INTENT,
     _available_actions,
     _channel_type_name,
     _detect_capabilities,
@@ -41,6 +43,59 @@ def _mock_urlopen(response_data, status=200):
     mock_resp.__enter__ = MagicMock(return_value=mock_resp)
     mock_resp.__exit__ = MagicMock(return_value=False)
     return mock_resp
+
+
+def _valid_seed(user_id="123456789012345678"):
+    return (
+        f"<@{user_id}> Seed 1/1\n"
+        "PRE-START VERIFICATION GATE\n"
+        "Boundary: reply before mutation.\n"
+        "body"
+    )
+
+
+def _valid_activation():
+    return (
+        "Activation prompt template\n"
+        "Adoptable only by the user; user must adopt this prompt in their own message.\n"
+        "Instruction after adoption: Use the kickoff seed it references. Proceed only within those boundaries.\n"
+        "Forbidden actions: Class B actions without exact approval."
+    )
+
+
+
+def _set_receipt_config(monkeypatch, *, enabled=True, server_actions=""):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"discord": {"session_kickoff_receipt_enabled": enabled, "server_actions": server_actions}},
+    )
+
+
+def _discord_context(user_id="123456789012345678"):
+    from gateway.session_context import set_session_vars
+    return set_session_vars(platform="discord", user_id=user_id)
+
+
+def _clear_context(tokens):
+    from gateway.session_context import clear_session_vars
+    clear_session_vars(tokens)
+
+
+def _receipt_call(**overrides):
+    kwargs = {
+        "action": _SESSION_KICKOFF_RECEIPT_ACTION,
+        "channel_id": "1514919981337284668",
+        "seed_content": _valid_seed(),
+        "post_intent": _SESSION_KICKOFF_RECEIPT_INTENT,
+    }
+    kwargs.update(overrides)
+    return json.loads(discord_core(**kwargs))
+
+
+def _assert_receipt_error(result, code, status="precheck_failed"):
+    assert result["status"] == status
+    assert result["receipt_pass"] is False
+    assert result["errors"][0]["code"] == code
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +241,235 @@ class TestDiscordServerValidation:
         assert "guild_id" in result["error"]
         assert "user_id" in result["error"]
         assert "role_id" in result["error"]
+
+
+class TestSessionKickoffReceiptPrechecks:
+    @patch("tools.discord_tool._discord_request")
+    def test_opt_in_disabled_fails_before_post(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        _set_receipt_config(monkeypatch, enabled=False)
+
+        result = _receipt_call()
+
+        _assert_receipt_error(result, "opt_in_disabled")
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_spoofed_os_environ_does_not_satisfy_requester_trust(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+        monkeypatch.setenv("HERMES_SESSION_USER_ID", "123456789012345678")
+        _set_receipt_config(monkeypatch)
+
+        result = _receipt_call()
+
+        _assert_receipt_error(result, "unsupported_session_context")
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    @pytest.mark.parametrize(
+        "platform,user_id",
+        [("telegram", "123456789012345678"), ("discord", "not-a-snowflake"), ("", "")],
+    )
+    def test_unsupported_contextvar_sessions_fail_before_post(
+        self, mock_req, monkeypatch, platform, user_id,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        _set_receipt_config(monkeypatch)
+        from gateway.session_context import set_session_vars, clear_session_vars
+        tokens = set_session_vars(platform=platform, user_id=user_id)
+        try:
+            result = _receipt_call()
+        finally:
+            clear_session_vars(tokens)
+
+        _assert_receipt_error(result, "unsupported_session_context")
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_invalid_intent_channel_and_expected_user_fail_before_post(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        _set_receipt_config(monkeypatch)
+        tokens = _discord_context()
+        try:
+            _assert_receipt_error(_receipt_call(post_intent="wrong"), "invalid_post_intent")
+            _assert_receipt_error(_receipt_call(channel_id=" 151 "), "invalid_channel_id")
+            _assert_receipt_error(
+                _receipt_call(expected_requester_user_id="abc"),
+                "invalid_expected_requester_user_id",
+            )
+            _assert_receipt_error(
+                _receipt_call(expected_requester_user_id="999999999999999999"),
+                "requester_user_id_mismatch",
+            )
+        finally:
+            _clear_context(tokens)
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    @pytest.mark.parametrize(
+        "seed",
+        ["", "\ufeff\u200b\n<@999999999999999999> wrong\nPRE-START VERIFICATION GATE\nBoundary: reply before mutation."],
+    )
+    def test_missing_or_wrong_first_line_mention_fails_before_post(self, mock_req, monkeypatch, seed):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        _set_receipt_config(monkeypatch)
+        tokens = _discord_context()
+        try:
+            result = _receipt_call(seed_content=seed)
+        finally:
+            _clear_context(tokens)
+
+        _assert_receipt_error(result, "missing_requester_mention_first_line")
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    @pytest.mark.parametrize(
+        "seed",
+        [
+            _valid_seed() + " @everyone",
+            _valid_seed() + " @here",
+            _valid_seed() + " <@&123456789012345678>",
+        ],
+    )
+    def test_forbidden_pings_fail_before_post(self, mock_req, monkeypatch, seed):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        _set_receipt_config(monkeypatch)
+        tokens = _discord_context()
+        try:
+            result = _receipt_call(seed_content=seed)
+        finally:
+            _clear_context(tokens)
+
+        _assert_receipt_error(result, "forbidden_mass_or_role_ping")
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_missing_seed_or_activation_markers_fail_before_post(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        _set_receipt_config(monkeypatch)
+        tokens = _discord_context()
+        try:
+            missing_gate = "<@123456789012345678> hi\nBoundary: reply before mutation."
+            missing_boundary = "<@123456789012345678> hi\nPRE-START VERIFICATION GATE"
+            _assert_receipt_error(_receipt_call(seed_content=missing_gate), "missing_pre_start_gate")
+            _assert_receipt_error(_receipt_call(seed_content=missing_boundary), "missing_boundary_phrase")
+            _assert_receipt_error(
+                _receipt_call(activation_content="Activation prompt template"),
+                "missing_activation_marker",
+            )
+        finally:
+            _clear_context(tokens)
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_retry_and_content_bounds_fail_before_post(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        _set_receipt_config(monkeypatch)
+        tokens = _discord_context()
+        try:
+            _assert_receipt_error(_receipt_call(max_fetch_attempts="3"), "invalid_max_fetch_attempts")
+            _assert_receipt_error(_receipt_call(max_fetch_attempts=0), "invalid_max_fetch_attempts")
+            _assert_receipt_error(_receipt_call(max_fetch_attempts=6), "invalid_max_fetch_attempts")
+            _assert_receipt_error(_receipt_call(fetch_delay_seconds="0.5"), "invalid_fetch_delay_seconds")
+            _assert_receipt_error(_receipt_call(fetch_delay_seconds=-0.1), "invalid_fetch_delay_seconds")
+            _assert_receipt_error(_receipt_call(max_fetch_attempts=5, fetch_delay_seconds=2.0), "invalid_fetch_delay_seconds")
+            too_large = _valid_seed() + ("x" * 20_001)
+            _assert_receipt_error(_receipt_call(seed_content=too_large), "content_too_large")
+            monkeypatch.setattr("tools.discord_tool._DISCORD_MESSAGE_LIMIT", 1)
+            _assert_receipt_error(_receipt_call(seed_content=_valid_seed()), "too_many_discord_chunks")
+        finally:
+            _clear_context(tokens)
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_server_actions_allowlist_still_denies_runtime(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        _set_receipt_config(monkeypatch, enabled=True, server_actions="fetch_messages")
+        tokens = _discord_context()
+        try:
+            result = _receipt_call()
+        finally:
+            _clear_context(tokens)
+
+        assert "error" in result
+        assert "disabled by config" in result["error"]
+        mock_req.assert_not_called()
+
+
+class TestSessionKickoffReceiptPositivePath:
+    @patch("tools.discord_tool._discord_request")
+    def test_posts_text_chunks_and_fetches_exact_ids_for_receipt_pass(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        _set_receipt_config(monkeypatch)
+        channel_id = "1514919981337284668"
+        bot_author_id = "424242424242424242"
+        stored = {}
+
+        def fake_request(method, path, token, **kwargs):
+            assert token == "test-token"
+            if method == "POST":
+                assert path == f"/channels/{channel_id}/messages"
+                body = kwargs["body"]
+                message_id = str(900000000000000000 + len(stored) + 1)
+                message = {
+                    "id": message_id,
+                    "content": body["content"],
+                    "author": {"id": bot_author_id, "bot": True},
+                    "attachments": [],
+                    "embeds": [],
+                    "timestamp": "2026-06-12T00:00:00Z",
+                }
+                stored[message_id] = message
+                return message
+            if method == "GET":
+                prefix = f"/channels/{channel_id}/messages/"
+                assert path.startswith(prefix)
+                message_id = path.removeprefix(prefix)
+                return stored[message_id]
+            raise AssertionError(f"unexpected request {method} {path}")
+
+        mock_req.side_effect = fake_request
+        tokens = _discord_context()
+        try:
+            result = _receipt_call(
+                channel_id=channel_id,
+                activation_content=_valid_activation(),
+            )
+        finally:
+            _clear_context(tokens)
+
+        assert result["status"] == "receipt_pass"
+        assert result["receipt_pass"] is True
+        assert result["channel_id"] == channel_id
+        assert result["trusted_requester_user_id"] == "123456789012345678"
+        assert len(result["seed_message_ids"]) == 1
+        assert len(result["activation_message_ids"]) == 1
+        assert result["message_ids"] == result["seed_message_ids"] + result["activation_message_ids"]
+        assert result["evidence"]["first_seed_line"].startswith("<@123456789012345678>")
+        assert result["evidence"]["fetched_message_count"] == 2
+        assert result["evidence"]["expected_seed_chunk_count"] == 1
+        assert result["evidence"]["expected_activation_chunk_count"] == 1
+        assert result["evidence"]["bot_author_id"] == bot_author_id
+        assert result["evidence"]["embed_count"] == 0
+
+        post_calls = [call for call in mock_req.call_args_list if call.args[0] == "POST"]
+        get_calls = [call for call in mock_req.call_args_list if call.args[0] == "GET"]
+        assert len(post_calls) == 2
+        assert len(get_calls) == 2
+        for call in post_calls:
+            body = call.kwargs["body"]
+            assert body["flags"] == 4
+            assert body["allowed_mentions"] == {
+                "parse": [],
+                "users": ["123456789012345678"],
+                "roles": [],
+                "replied_user": False,
+            }
+        assert [call.args[1] for call in get_calls] == [
+            f"/channels/{channel_id}/messages/{message_id}"
+            for message_id in result["message_ids"]
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -565,7 +849,7 @@ class TestRegistration:
         from tools.registry import registry
         entry = registry._tools["discord_admin"]
         actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
-        expected_admin = set(_ACTIONS.keys()) - {"fetch_messages", "search_members", "create_thread"}
+        expected_admin = set(_ACTIONS.keys()) - set(_CORE_ACTIONS.keys())
         assert actions == expected_admin
 
     def test_all_actions_covered(self):
@@ -837,7 +1121,16 @@ class TestConfigAllowlist:
 class TestAvailableActions:
     def test_all_available_when_unrestricted(self):
         caps = {"detected": True, "has_members_intent": True, "has_message_content": True}
-        assert _available_actions(caps, None) == list(_ACTIONS.keys())
+        assert _available_actions(caps, None) == [
+            name for name in _ACTIONS if name != _SESSION_KICKOFF_RECEIPT_ACTION
+        ]
+
+    def test_receipt_action_requires_explicit_opt_in(self):
+        caps = {"detected": True, "has_members_intent": True, "has_message_content": True}
+        assert _SESSION_KICKOFF_RECEIPT_ACTION not in _available_actions(caps, None)
+        assert _SESSION_KICKOFF_RECEIPT_ACTION in _available_actions(
+            caps, None, receipt_enabled=True,
+        )
 
     def test_no_members_intent_hides_member_actions(self):
         caps = {"detected": True, "has_members_intent": False, "has_message_content": True}
@@ -902,8 +1195,24 @@ class TestDynamicSchema:
         mock_req.return_value = {"flags": (1 << 14) | (1 << 18)}
         schema = get_dynamic_schema_core()
         actions = set(schema["parameters"]["properties"]["action"]["enum"])
-        assert actions == set(_CORE_ACTIONS.keys())
+        assert actions == (set(_CORE_ACTIONS.keys()) - {_SESSION_KICKOFF_RECEIPT_ACTION})
         assert schema["name"] == "discord"
+
+    @patch("tools.discord_tool._discord_request")
+    def test_receipt_opt_in_adds_core_schema_action(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"discord": {"session_kickoff_receipt_enabled": True, "server_actions": ""}},
+        )
+        mock_req.return_value = {"flags": (1 << 14) | (1 << 18)}
+        schema = get_dynamic_schema_core()
+        assert schema is not None
+        actions = set(schema["parameters"]["properties"]["action"]["enum"])
+        assert _SESSION_KICKOFF_RECEIPT_ACTION in actions
+        props = schema["parameters"]["properties"]
+        assert props["post_intent"]["enum"] == [_SESSION_KICKOFF_RECEIPT_INTENT]
+        assert "seed_content" in props
 
     @patch("tools.discord_tool._discord_request")
     def test_full_intents_admin_schema(self, mock_req, monkeypatch):
@@ -1006,7 +1315,7 @@ class TestDynamicSchema:
         assert schema is not None
         assert schema["name"] == "discord"
         actions = set(schema["parameters"]["properties"]["action"]["enum"])
-        assert actions == set(_CORE_ACTIONS.keys())
+        assert actions == (set(_CORE_ACTIONS.keys()) - {_SESSION_KICKOFF_RECEIPT_ACTION})
 
 
 # ---------------------------------------------------------------------------

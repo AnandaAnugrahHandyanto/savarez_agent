@@ -8,6 +8,7 @@ from gateway.run import GatewayRunner
 from gateway.session import SessionContext, SessionSource
 from gateway.session_context import (
     get_session_env,
+    get_session_env_strict,
     set_session_vars,
     clear_session_vars,
     _VAR_MAP,
@@ -130,6 +131,28 @@ def test_get_session_env_default_when_nothing_set(monkeypatch):
 
     assert get_session_env("HERMES_SESSION_PLATFORM") == ""
     assert get_session_env("HERMES_SESSION_PLATFORM", "fallback") == "fallback"
+
+
+def test_get_session_env_strict_ignores_os_environ(monkeypatch):
+    """Strict reads must not trust process-global spoofed gateway context."""
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "123456789012345678")
+
+    assert get_session_env("HERMES_SESSION_PLATFORM") == "discord"
+    assert get_session_env_strict("HERMES_SESSION_PLATFORM") == ""
+    assert get_session_env_strict("HERMES_SESSION_PLATFORM", "fallback") == "fallback"
+
+
+def test_get_session_env_strict_reads_contextvar_then_clear(monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+
+    tokens = set_session_vars(platform="discord", user_id="123456789012345678")
+    assert get_session_env_strict("HERMES_SESSION_PLATFORM") == "discord"
+    assert get_session_env_strict("HERMES_SESSION_USER_ID") == "123456789012345678"
+
+    clear_session_vars(tokens)
+    assert get_session_env_strict("HERMES_SESSION_PLATFORM") == ""
+    assert get_session_env_strict("HERMES_SESSION_USER_ID") == ""
 
 
 def test_set_session_env_handles_missing_optional_fields():
