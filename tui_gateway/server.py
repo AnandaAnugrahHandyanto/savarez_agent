@@ -7788,9 +7788,17 @@ def _(rid, params: dict) -> dict:
         except ValueError as exc:
             return _err(rid, 4004, f"invalid goal: {exc}")
 
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.goal_policy import render_notice_for_goal
+
+            standard_notice = render_notice_for_goal(state.goal, load_config() or {})
+        except Exception:
+            standard_notice = ""
         notice = (
             f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
-            "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
+            + (f"{standard_notice}\n" if standard_notice else "")
+            + "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
             "Controls: /goal status · /goal pause · /goal resume · /goal clear"
         )
         # Send the goal text as the kickoff prompt. The TUI client sees

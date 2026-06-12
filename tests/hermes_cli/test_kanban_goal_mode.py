@@ -298,3 +298,27 @@ def test_loop_stops_if_task_reclaimed(monkeypatch):
         first_response="x",
     )
     assert res["outcome"] == "stopped"
+
+
+def test_loop_augments_operational_goal_before_judging(monkeypatch):
+    seen = {}
+
+    def _fake_judge(goal, response, subgoals=None):
+        seen["goal"] = goal
+        return "done", "ok", False
+
+    monkeypatch.setattr(goals, "judge_goal", _fake_judge)
+    statuses = iter(["running", "done"])
+
+    res = goals.run_kanban_goal_loop(
+        task_id="t7",
+        goal_text="cleanup stale kanban blockers",
+        run_turn=lambda p: "completed",
+        task_status_fn=lambda: next(statuses),
+        block_fn=lambda r: pytest.fail("should not block"),
+        first_response="looks clean",
+    )
+
+    assert res["outcome"] == "completed_by_worker"
+    assert "Standard completion contract" in seen["goal"]
+    assert "adjacent/global visible state" in seen["goal"]

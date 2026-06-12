@@ -304,6 +304,15 @@ TASK_COMPLETION_GUIDANCE = (
     "is always better than inventing a result."
 )
 
+SUPERGOAL_STANDARD_GUIDANCE = (
+    "# Supergoal standard\n"
+    "For non-trivial operational work, do not stop at the direct fix. Before "
+    "reporting DONE, verify the direct target scope, adjacent/global visible "
+    "state, stale/conflicting/superseded artifacts, and evidence/readback. If "
+    "any visible leftover contradicts the result, clean it up first or report "
+    "conditional/BLOCKED instead of DONE."
+)
+
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.

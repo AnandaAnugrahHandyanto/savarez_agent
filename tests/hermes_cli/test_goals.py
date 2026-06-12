@@ -176,6 +176,38 @@ class TestJudgeGoal:
         assert reason == "not yet"
 
 
+class TestJudgePromptStandardMode:
+    def test_judge_prompt_for_operational_goal_requires_trust_sweep(self):
+        from hermes_cli.goals import build_judge_user_prompt
+
+        prompt = build_judge_user_prompt(
+            "cleanup stale kanban blockers",
+            "I cleaned the direct task only.",
+        )
+        assert "Standard Supergoal completion gate" in prompt
+        assert "adjacent/global visible state" in prompt
+        assert "return CONTINUE" in prompt
+
+    def test_judge_prompt_for_simple_goal_stays_lightweight(self):
+        from hermes_cli.goals import build_judge_user_prompt
+
+        prompt = build_judge_user_prompt(
+            "was ist kanban?",
+            "Kanban is a visual workflow method.",
+        )
+        assert "Standard Supergoal completion gate" not in prompt
+
+    def test_judge_prompt_standard_mode_can_be_disabled(self):
+        from hermes_cli.goals import build_judge_user_prompt
+
+        prompt = build_judge_user_prompt(
+            "cleanup stale kanban blockers",
+            "done",
+            standard_mode=False,
+        )
+        assert "Standard Supergoal completion gate" not in prompt
+
+
 # ──────────────────────────────────────────────────────────────────────
 # GoalManager lifecycle + persistence
 # ──────────────────────────────────────────────────────────────────────
@@ -203,6 +235,30 @@ class TestGoalManager:
         assert mgr.is_active()
         assert "active" in mgr.status_line().lower()
         assert "port the thing" in mgr.status_line()
+
+    def test_operational_goal_gets_standard_subgoals(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="standard-sid")
+        state = mgr.set("cleanup stale kanban blockers")
+        assert any("Direct evidence" in item for item in state.subgoals)
+        assert any("adjacent/global visible state" in item for item in state.subgoals)
+
+    def test_simple_goal_does_not_get_standard_subgoals(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="standard-sid-2")
+        state = mgr.set("was ist kanban?")
+        assert state.subgoals == []
+
+    def test_standard_subgoals_can_be_disabled(self, hermes_home, monkeypatch):
+        from hermes_cli import goals
+        from hermes_cli.goals import GoalManager
+
+        monkeypatch.setattr(goals, "_standard_mode_enabled", lambda: False)
+        mgr = GoalManager(session_id="standard-sid-3")
+        state = mgr.set("cleanup stale kanban blockers")
+        assert state.subgoals == []
 
     def test_set_rejects_empty(self, hermes_home):
         from hermes_cli.goals import GoalManager

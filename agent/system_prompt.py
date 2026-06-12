@@ -37,6 +37,7 @@ from agent.prompt_builder import (
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
     STEER_CHANNEL_NOTE,
+    SUPERGOAL_STANDARD_GUIDANCE,
     TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
@@ -110,6 +111,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # users who want a leaner prompt can turn it off.
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
+
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.goal_policy import should_enable_standard_mode
+
+        if agent.valid_tool_names and should_enable_standard_mode(load_config() or {}):
+            stable_parts.append(SUPERGOAL_STANDARD_GUIDANCE)
+    except Exception:
+        pass
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []

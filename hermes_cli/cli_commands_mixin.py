@@ -1845,6 +1845,15 @@ class CLICommandsMixin:
             return
 
         _cprint(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.goal_policy import render_notice_for_goal
+
+            notice = render_notice_for_goal(state.goal, load_config() or {})
+            if notice:
+                _cprint(f"  {_DIM}{notice}{_RST}")
+        except Exception:
+            pass
         _cprint(
             f"  {_DIM}After each turn, a judge model will check if the goal is done. "
             f"Hermes keeps working until it is, you pause/clear it, or the budget is "

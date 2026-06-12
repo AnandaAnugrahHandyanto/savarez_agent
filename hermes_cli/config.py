@@ -1802,6 +1802,16 @@ DEFAULT_CONFIG = {
         # negatives (goal actually done but judge says continue) and
         # unbounded model spend on fuzzy / unachievable goals.
         "max_turns": 20,
+        # Standard Supergoal mode: deterministic local policy that asks
+        # operational/system-state goals to prove direct evidence plus an
+        # adjacent/global trust sweep before DONE.
+        "standard_mode": {
+            "enabled": True,
+            "auto_detect": True,
+            "prompt_contract": True,
+            "trust_sweep_required": True,
+            "workpack_threshold": "broad",
+        },
     },
 
     # Skills — external skill directories for sharing skills across tools/agents.

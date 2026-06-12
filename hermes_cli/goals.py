@@ -133,6 +133,14 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "Is the goal AND every additional criterion satisfied?"
 )
 
+STANDARD_MODE_JUDGE_APPENDIX = (
+    "\n\nStandard Supergoal completion gate:\n"
+    "For operational cleanup or system-state goals, DONE requires evidence "
+    "for the direct target scope AND the adjacent/global visible state. "
+    "If the response only verifies the narrow scope, or visible stale/"
+    "conflicting/superseded leftovers remain unclassified, return CONTINUE."
+)
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Dataclass
@@ -368,6 +376,55 @@ def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
     return done, reason, False
 
 
+def _standard_mode_enabled() -> bool:
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.goal_policy import should_enable_standard_mode
+
+        return should_enable_standard_mode(load_config() or {})
+    except Exception:
+        return True
+
+
+def build_judge_user_prompt(
+    goal: str,
+    last_response: str,
+    *,
+    subgoals: Optional[List[str]] = None,
+    standard_mode: bool = True,
+) -> str:
+    """Build the user prompt sent to the /goal judge."""
+
+    clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
+    current_time = datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    if clean_subgoals:
+        subgoals_block = "\n".join(
+            f"- {i}. {text}" for i, text in enumerate(clean_subgoals, start=1)
+        )
+        prompt = JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
+            goal=_truncate(goal, 2000),
+            subgoals_block=_truncate(subgoals_block, 2000),
+            response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+            current_time=current_time,
+        )
+    else:
+        prompt = JUDGE_USER_PROMPT_TEMPLATE.format(
+            goal=_truncate(goal, 2000),
+            response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+            current_time=current_time,
+        )
+
+    if standard_mode and _standard_mode_enabled():
+        try:
+            from hermes_cli.goal_policy import classify_request
+
+            if classify_request(goal).requires_trust_sweep:
+                prompt += STANDARD_MODE_JUDGE_APPENDIX
+        except Exception:
+            pass
+    return prompt
+
+
 def judge_goal(
     goal: str,
     last_response: str,
@@ -417,24 +474,7 @@ def judge_goal(
         return "continue", "no auxiliary client configured", False
 
     # Build the prompt — pick the with-subgoals variant when applicable.
-    clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
-    current_time = datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-    if clean_subgoals:
-        subgoals_block = "\n".join(
-            f"- {i}. {text}" for i, text in enumerate(clean_subgoals, start=1)
-        )
-        prompt = JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
-            goal=_truncate(goal, 2000),
-            subgoals_block=_truncate(subgoals_block, 2000),
-            response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
-            current_time=current_time,
-        )
-    else:
-        prompt = JUDGE_USER_PROMPT_TEMPLATE.format(
-            goal=_truncate(goal, 2000),
-            response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
-            current_time=current_time,
-        )
+    prompt = build_judge_user_prompt(goal, last_response, subgoals=subgoals)
 
     try:
         resp = client.chat.completions.create(
@@ -523,6 +563,14 @@ class GoalManager:
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("goal text is empty")
+        subgoals: List[str] = []
+        if _standard_mode_enabled():
+            try:
+                from hermes_cli.goal_policy import standard_subgoals_for
+
+                subgoals = standard_subgoals_for(goal)
+            except Exception:
+                subgoals = []
         state = GoalState(
             goal=goal,
             status="active",
@@ -530,6 +578,7 @@ class GoalManager:
             max_turns=int(max_turns) if max_turns else self.default_max_turns,
             created_at=time.time(),
             last_turn_at=0.0,
+            subgoals=subgoals,
         )
         self._state = state
         save_goal(self.session_id, state)
@@ -826,6 +875,14 @@ def run_kanban_goal_loop(
     if max_turns < 1:
         max_turns = DEFAULT_MAX_TURNS
 
+    if _standard_mode_enabled():
+        try:
+            from hermes_cli.goal_policy import augment_goal_with_standard_contract
+
+            goal_text = augment_goal_with_standard_contract(goal_text)
+        except Exception:
+            pass
+
     last_response = first_response or ""
     # The first turn already consumed one unit of budget.
     turns_used = 1
@@ -908,5 +965,6 @@ __all__ = [
     "save_goal",
     "clear_goal",
     "judge_goal",
+    "build_judge_user_prompt",
     "run_kanban_goal_loop",
 ]

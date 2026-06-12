@@ -30,10 +30,11 @@ Tasks where the agent does one turn and stops don't need `/goal`. Tasks where *y
 What you'll see:
 
 1. **Goal accepted** — `⊙ Goal set (20-turn budget): <your goal>`
-2. **Turn 1 runs** — Hermes starts working as if you'd sent the goal as a normal message.
-3. **Judge runs** — after the turn, the judge model decides `done` or `continue`.
-4. **Loop fires if needed** — if `continue`, you'll see `↻ Continuing toward goal (1/20): <judge's reason>` and Hermes takes the next step automatically.
-5. **Terminates** — eventually you see either `✓ Goal achieved: <reason>` or `⏸ Goal paused — N/20 turns used`.
+2. **Standard gates when needed** — operational cleanup/system-state goals add `Supergoal gates: direct evidence + adjacent/global trust sweep before DONE`.
+3. **Turn 1 runs** — Hermes starts working as if you'd sent the goal as a normal message.
+4. **Judge runs** — after each response, a judge model checks whether the goal is done.
+5. **Continuation if needed** — if the judge says "not yet," Hermes automatically feeds itself a short continuation prompt and keeps going until done or the turn budget is exhausted.
+6. **Terminates** — eventually you see either `✓ Goal achieved: <reason>` or `⏸ Goal paused — N/20 turns used`.
 
 ## Commands
 
@@ -63,6 +64,19 @@ Subgoals are persisted alongside the goal in `SessionDB.state_meta`, so they sur
 Use this when you start a loop ("fix the failing tests") and notice partway through that you also want it to "and add a regression test for the bug you just patched" — `/subgoal add a regression test` tightens the success criteria without breaking the running loop.
 
 ## Behavior details
+
+### Standard-mode Supergoal gates
+
+Hermes classifies goal-like requests into four local, deterministic bands:
+
+| Band | Behavior |
+|---|---|
+| Chat/simple | Answer normally; no heavy goal gates. |
+| Verified action | Require direct evidence/readback before `DONE`. |
+| Operational/system-state | Require direct evidence plus adjacent/global trust sweep before `DONE`. |
+| Workpack/broad goal | Same trust sweep, plus a workpack/STATE handoff recommendation. |
+
+This is intentionally conservative for cleanup, cron, Kanban, gateway, restart, and audit-style requests. If only the narrow target is verified while visible stale/conflicting leftovers remain, the judge should continue or the assistant should report `conditional`/`BLOCKED` rather than `DONE`.
 
 ### The judge
 
@@ -114,6 +128,15 @@ goals:
   # /goal resume. Default 20. Lower this if you want tighter loops;
   # raise it for long-running refactors.
   max_turns: 20
+
+  # Standard-mode gates are enabled by default. They make cleanup/system-state
+  # goals prove direct evidence + adjacent/global trust sweep before DONE.
+  standard_mode:
+    enabled: true
+    auto_detect: true
+    prompt_contract: true
+    trust_sweep_required: true
+    workpack_threshold: broad
 ```
 
 ### Choosing the judge model

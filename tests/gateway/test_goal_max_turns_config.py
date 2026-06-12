@@ -55,8 +55,47 @@ async def test_gateway_goal_uses_goals_max_turns_from_full_config(tmp_path, monk
 
     try:
         assert "⊙ Goal set (7-turn budget): ship the benchmark" in response
+        assert "Supergoal gates" not in response
         state = goals.GoalManager("sid-gateway-goal-config").state
         assert state is not None
         assert state.max_turns == 7
+    finally:
+        goals._DB_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_gateway_operational_goal_notice_mentions_trust_sweep(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text("goals:\n  max_turns: 7\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    goals._DB_CACHE.clear()
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="token")}
+    )
+    runner.session_store = _FakeSessionStore()
+    runner.adapters = {}
+    runner._queued_events = {}
+
+    event = MessageEvent(
+        text="/goal cleanup stale kanban blockers",
+        message_type=MessageType.TEXT,
+        source=SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="chat-goal-config",
+            chat_type="channel",
+            user_id="user-goal-config",
+        ),
+        message_id="msg-goal-config",
+    )
+
+    response = await GatewayRunner._handle_goal_command(runner, event)
+
+    try:
+        assert "⊙ Goal set (7-turn budget): cleanup stale kanban blockers" in response
+        assert "Supergoal gates" in response
+        assert "adjacent/global trust sweep" in response
     finally:
         goals._DB_CACHE.clear()

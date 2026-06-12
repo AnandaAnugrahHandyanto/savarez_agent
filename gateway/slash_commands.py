@@ -1626,7 +1626,17 @@ class GatewaySlashCommandsMixin:
             except Exception as exc:
                 logger.debug("goal kickoff enqueue failed: %s", exc)
 
-        return t("gateway.goal.set", budget=state.max_turns, goal=state.goal)
+        response = t("gateway.goal.set", budget=state.max_turns, goal=state.goal)
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.goal_policy import render_notice_for_goal
+
+            notice = render_notice_for_goal(state.goal, load_config() or {})
+            if notice:
+                response = f"{response}\n{notice}"
+        except Exception:
+            pass
+        return response
 
     async def _handle_subgoal_command(self, event: "MessageEvent") -> str:
         """Handle /subgoal for gateway platforms (mirror of CLI handler).

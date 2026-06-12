@@ -112,6 +112,7 @@ def test_goal_set_returns_send_with_notice(server, session):
     assert "notice" in result
     assert "Goal set" in result["notice"]
     assert "20-turn budget" in result["notice"]
+    assert "Supergoal gates" not in result["notice"]
 
     # Persisted in SessionDB
     from hermes_cli.goals import GoalManager
@@ -120,6 +121,17 @@ def test_goal_set_returns_send_with_notice(server, session):
     assert mgr.state is not None
     assert mgr.state.goal == "build a rocket"
     assert mgr.state.status == "active"
+
+
+def test_goal_set_operational_notice_mentions_trust_sweep(server, session):
+    sid, _session_key, _ = session
+    r = _call(server, "command.dispatch", name="goal", arg="cleanup stale kanban blockers", session_id=sid)
+    result = r["result"]
+
+    assert result["type"] == "send"
+    assert result["message"] == "cleanup stale kanban blockers"
+    assert "Supergoal gates" in result["notice"]
+    assert "adjacent/global trust sweep" in result["notice"]
 
 
 def test_goal_pause_after_set(server, session):
