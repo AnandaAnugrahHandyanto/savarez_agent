@@ -137,6 +137,15 @@ def should_route_capture_to_aux_vision(
     if _explicit_aux_vision_override(cfg):
         return True
 
+    # User escape hatch for custom/local providers not in the static
+    # allowlist (e.g. a proxy whose backend is a vision-capable frontier
+    # model like Claude Opus). When the user explicitly declares
+    # model.supports_vision: true, keep the screenshot as a multimodal
+    # tool result for the main model instead of routing to aux vision.
+    # Mirrors the vision_analyze fast-path override semantics.
+    if _user_declared_supports_vision(cfg):
+        return False
+
     accepts_tool_image = _provider_accepts_multimodal_tool_result(provider, model)
     if accepts_tool_image is None or accepts_tool_image is False:
         return True
@@ -145,6 +154,21 @@ def should_route_capture_to_aux_vision(
     if supports_vision is True:
         return False
     return True
+
+
+def _user_declared_supports_vision(cfg: Optional[Dict[str, Any]]) -> bool:
+    """True when the user set ``model.supports_vision: true`` in config.
+
+    Escape hatch for custom/local providers (e.g. a proxy) whose backend
+    is a vision-capable model that Hermes can't detect from the provider
+    name or models.dev. Best-effort: any unexpected shape returns False.
+    """
+    if not isinstance(cfg, dict):
+        return False
+    mcfg = cfg.get("model") or {}
+    if not isinstance(mcfg, dict):
+        return False
+    return bool(mcfg.get("supports_vision") is True)
 
 
 __all__ = [

@@ -277,9 +277,32 @@ class _CuaDriverSession:
         result = await self._session.call_tool(name, args)
         return _extract_tool_result(result)
 
+    def _restart(self) -> None:
+        """Tear down a dead session and spawn a fresh one.
+
+        Used to auto-recover when the cached MCP session has died (e.g. the
+        cua-driver binary was upgraded or its TCC permissions changed after
+        the session was first spawned). Without this, a stale session raises
+        an empty 'capture failed:' forever until the whole process restarts.
+        """
+        try:
+            self.stop()
+        except Exception as e:
+            logger.warning("cua-driver restart: stop failed: %s", e)
+        self.start()
+
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
-        self._require_started()
-        return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+        # Lazily (re)start if the session was never started or has been torn down.
+        if not self._started:
+            self.start()
+        try:
+            return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+        except Exception as e:
+            # Auto-recover once from a dead/broken session (binary upgrade,
+            # TCC permission change, bridge thread died, stdio pipe closed).
+            logger.warning("cua-driver call_tool(%s) failed, restarting session once: %s", name, e)
+            self._restart()
+            return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
 
 
 def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
@@ -423,34 +446,52 @@ class CuaDriverBackend(ComputerUseBackend):
         elements: List[UIElement] = []
         width = height = 0
         window_title = ""
+        tree = ""
 
-        if mode == "vision":
-            # screenshot tool: just the PNG, no AX walk.
-            sc_out = self._session.call_tool(
-                "screenshot",
-                {"window_id": self._active_window_id, "format": "jpeg", "quality": 85},
-            )
-            if sc_out["images"]:
-                png_b64 = sc_out["images"][0]
+        # cua-driver 0.5.x unified capture: get_window_state takes a
+        # `capture_mode` enum (som=AX+screenshot, vision=screenshot only,
+        # ax=AX only). The standalone `screenshot` tool was removed. The
+        # screenshot rides in content[] as a base64 image part; the AX tree
+        # and dimensions arrive in structuredContent (tree_markdown,
+        # screenshot_width/height). Older builds embedded the tree in the
+        # text `data` field — we fall back to that when structured is absent.
+        cua_capture_mode = mode if mode in ("som", "vision", "ax") else "som"
+        gws_out = self._session.call_tool(
+            "get_window_state",
+            {
+                "pid": self._active_pid,
+                "window_id": self._active_window_id,
+                "capture_mode": cua_capture_mode,
+            },
+        )
+
+        sc = gws_out.get("structuredContent") or {}
+        # Screenshot: embedded image part (preferred) → base64.
+        if gws_out.get("images"):
+            png_b64 = gws_out["images"][0]
+
+        # Tree: structuredContent.tree_markdown (0.5.x) → text data (legacy).
+        if isinstance(sc, dict) and sc.get("tree_markdown"):
+            tree = sc["tree_markdown"]
+            summary = ""
         else:
-            # get_window_state: AX tree + optional screenshot.
-            gws_out = self._session.call_tool(
-                "get_window_state",
-                {"pid": self._active_pid, "window_id": self._active_window_id},
-            )
             text = gws_out["data"] if isinstance(gws_out["data"], str) else ""
             summary, tree = _split_tree_text(text)
 
-            # Parse element count from summary e.g. "✅ AppName — 42 elements, turn 3..."
-            m = re.search(r'(\d+)\s+elements?', summary)
-            if tree and not gws_out["images"]:
-                # ax mode — no screenshot
-                elements = _parse_elements_from_tree(tree)
-            elif gws_out["images"]:
-                png_b64 = gws_out["images"][0]
-                elements = _parse_elements_from_tree(tree)
+        # Dimensions from structuredContent when present.
+        if isinstance(sc, dict):
+            try:
+                width = int(sc.get("screenshot_width") or 0)
+                height = int(sc.get("screenshot_height") or 0)
+            except (TypeError, ValueError):
+                width = height = 0
 
-            # Extract window title from the AX tree first AXWindow line.
+        # Elements only for som/ax (vision is screenshot-only by contract).
+        if mode != "vision" and tree:
+            elements = _parse_elements_from_tree(tree)
+
+        # Window title from the AX tree first AXWindow line.
+        if tree:
             wt = re.search(r'AXWindow\s+"([^"]+)"', tree)
             if wt:
                 window_title = wt.group(1)
