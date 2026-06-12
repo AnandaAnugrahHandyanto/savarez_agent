@@ -4345,6 +4345,25 @@ def _(rid, params: dict) -> dict:
     )
 
 
+def _participants_map(session: dict) -> dict[int, str]:
+    participants = session.get("participants")
+    if not isinstance(participants, dict):
+        participants = {}
+        session["participants"] = participants
+    return participants
+
+
+def _session_participants_payload(session: dict) -> list[dict]:
+    """Deduped viewer list: one entry per device name with a live-client count."""
+    counts: dict[str, int] = {}
+    for device in _participants_map(session).values():
+        name = (device or "").strip()
+        if not name:
+            continue
+        counts[name] = counts.get(name, 0) + 1
+    return [{"device": name, "count": counts[name]} for name in sorted(counts)]
+
+
 @method("session.participants")
 def _(rid, params: dict) -> dict:
     """Return the live viewers (device names) currently attached to a session.
