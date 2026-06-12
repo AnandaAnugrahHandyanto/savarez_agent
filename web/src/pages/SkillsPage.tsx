@@ -25,6 +25,8 @@ import {
   AlertTriangle,
   Sparkles,
   Loader2,
+  Pencil,
+  Plus,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -128,6 +130,9 @@ export default function SkillsPage() {
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
   const [configToolset, setConfigToolset] = useState<ToolsetInfo | null>(null);
+  // Skill editor dialog: open + which skill is being edited (null = create).
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorSkill, setEditorSkill] = useState<string | null>(null);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
@@ -198,6 +203,28 @@ export default function SkillsPage() {
       /* non-fatal: the drawer already toasted on the failing write */
     }
   };
+
+  /* ---- Skill editor (create / edit SKILL.md) ---- */
+  const openCreateEditor = useCallback(() => {
+    setEditorSkill(null);
+    setEditorOpen(true);
+  }, []);
+  const openEditEditor = useCallback((skillName: string) => {
+    setEditorSkill(skillName);
+    setEditorOpen(true);
+  }, []);
+  const handleEditorSaved = useCallback(
+    (skillName: string) => {
+      showToast(`${skillName} saved ✓`, "success");
+      // Reload the list so a newly created skill (or an edited description)
+      // shows up immediately.
+      api
+        .getSkills(selectedProfile || undefined)
+        .then(setSkills)
+        .catch(() => {});
+    },
+    [selectedProfile, showToast],
+  );
 
   /* ---- Derived data ---- */
   const lowerSearch = search.toLowerCase();
@@ -434,6 +461,7 @@ export default function SkillsPage() {
                         skill={skill}
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
+                        onEdit={() => openEditEditor(skill.name)}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -455,11 +483,22 @@ export default function SkillsPage() {
                         )
                       : t.skills.all}
                   </CardTitle>
-                  <Badge tone="secondary" className="text-xs">
-                    {t.skills.skillCount
-                      .replace("{count}", String(activeSkills.length))
-                      .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
-                  </Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge tone="secondary" className="text-xs">
+                      {t.skills.skillCount
+                        .replace("{count}", String(activeSkills.length))
+                        .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
+                    </Badge>
+                    <Button
+                      size="xs"
+                      outlined
+                      className="uppercase"
+                      onClick={openCreateEditor}
+                      prefix={<Plus />}
+                    >
+                      New skill
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="px-4 pb-4">
@@ -477,6 +516,7 @@ export default function SkillsPage() {
                         skill={skill}
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
+                        onEdit={() => openEditEditor(skill.name)}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -581,6 +621,13 @@ export default function SkillsPage() {
           onChanged={() => void refreshToolsets()}
         />
       )}
+      <SkillEditorDialog
+        open={editorOpen}
+        editName={editorSkill}
+        profile={selectedProfile || undefined}
+        onClose={() => setEditorOpen(false)}
+        onSaved={handleEditorSaved}
+      />
       <PluginSlot name="skills:bottom" />
     </div>
   );
@@ -590,6 +637,7 @@ function SkillRow({
   skill,
   toggling,
   onToggle,
+  onEdit,
   noDescriptionLabel,
 }: SkillRowProps) {
   return (
@@ -615,6 +663,16 @@ function SkillRow({
           {skill.description || noDescriptionLabel}
         </p>
       </div>
+      <Button
+        ghost
+        size="icon"
+        className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
+        title="Edit SKILL.md"
+        aria-label={`Edit ${skill.name}`}
+        onClick={onEdit}
+      >
+        <Pencil />
+      </Button>
     </div>
   );
 }
@@ -646,6 +704,7 @@ interface PanelItemProps {
 interface SkillRowProps {
   noDescriptionLabel: string;
   onToggle: () => void;
+  onEdit: () => void;
   skill: SkillInfo;
   toggling: boolean;
 }
