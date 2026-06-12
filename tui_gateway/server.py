@@ -3186,7 +3186,19 @@ def _make_agent(
 
         wait_for_mcp_discovery()
     except Exception:
-        pass
+        logger.warning('MCP discovery wait failed', exc_info=True)
+
+    # Inline synchronous discovery as a safety net: the background thread
+    # may have raced (0.75 s window) or never started (Dashboard path).
+    # discover_mcp_tools() is idempotent — 41 ms cold, 2 ms subsequent.
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+
+        names = discover_mcp_tools()
+        if names:
+            logger.info('Inline MCP discovery -> %s', names)
+    except Exception:
+        logger.warning('Inline MCP discovery failed', exc_info=True)
 
     cfg = _load_cfg()
     agent_cfg = cfg.get("agent") or {}

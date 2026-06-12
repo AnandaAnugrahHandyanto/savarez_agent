@@ -11691,6 +11691,22 @@ def start_server(
                 "(headless Linux). Pass --no-open to suppress this detection."
             )
 
+    # Start background MCP tool discovery so Desktop/Dashboard sessions
+    # see configured MCP servers (the TUI entrypoint does this in main(),
+    # but the dashboard path skips main() entirely).
+    try:
+        from hermes_cli.mcp_startup import start_background_mcp_discovery
+        import logging
+        _dash_logger = logging.getLogger("hermes.dashboard")
+        start_background_mcp_discovery(
+            logger=_dash_logger,
+            thread_name="dashboard-mcp-discovery",
+        )
+    except Exception:
+        logging.getLogger("hermes.dashboard").warning(
+            "Background MCP discovery failed to start", exc_info=True
+        )
+
     print(f"  Hermes Web UI → http://{host}:{port}")
     # proxy_headers defaults to False so _ws_client_is_allowed sees the real
     # connection peer rather than X-Forwarded-For's rewritten value (which
