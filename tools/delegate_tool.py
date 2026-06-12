@@ -2181,13 +2181,42 @@ def delegate_task(
             "routing_meta": _routing_meta,
         }
 
+        # Pre-build the child agent on the calling thread (thread-safe) so
+        # _run_single_child always receives a valid AIAgent, not None.
+        # The background path previously skipped _build_child_agent entirely,
+        # which caused AttributeError: 'NoneType' has no attribute
+        # 'run_conversation' inside the background thread — especially visible
+        # on session-resume after a gateway restart (bug #async-delegation-resume).
+        _bg_cfg = _load_config()
+        _bg_max_iter = _bg_cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+        try:
+            _bg_creds = _resolve_delegation_credentials(_bg_cfg, parent_agent)
+        except ValueError as exc:
+            return tool_error(str(exc))
+
+        _bg_child = _build_child_agent(
+            task_index=0,
+            goal=goal,
+            context=context,
+            toolsets=toolsets,
+            model=_bg_creds["model"],
+            max_iterations=_bg_max_iter,
+            task_count=1,
+            parent_agent=parent_agent,
+            override_provider=_bg_creds["provider"],
+            override_base_url=_bg_creds["base_url"],
+            override_api_key=_bg_creds["api_key"],
+            override_api_mode=_bg_creds["api_mode"],
+            override_acp_command=acp_command or _bg_creds.get("command"),
+            override_acp_args=acp_args if acp_args is not None else _bg_creds.get("args"),
+            role=top_role,
+        )
+
         result = _async_dispatch(
             runner_fn=lambda: _run_single_child(
                 task_index=0,
                 goal=goal,
-                context=context,
-                toolsets=toolsets,
-                role=top_role,
+                child=_bg_child,
                 parent_agent=parent_agent,
             ),
             task_info=task_info,
