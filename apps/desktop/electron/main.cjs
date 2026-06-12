@@ -5117,6 +5117,19 @@ function createWindow() {
     }
   })
 
+  // Wait for the renderer to paint its first frame before showing the window.
+  // Without this, BrowserWindow is created with default show=true but the
+  // OS can briefly display a blank surface while React mounts and the chat
+  // composer initializes. The ready-to-show event fires after the renderer
+  // has had a chance to lay out, so showing on it produces a clean first
+  // paint instead of a flash-of-blank-content. Tracked by the renderer
+  // crash recovery path in wireCommonWindowHandlers — if the renderer
+  // crashes, the BrowserWindow stays hidden until a successful reload
+  // re-fires the event.
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show()
+  })
+
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
     if (icon) {
