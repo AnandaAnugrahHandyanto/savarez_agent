@@ -106,7 +106,7 @@ class TestGetHermesHome:
 
 
 class TestIsContainer:
-    """Tests for is_container() — Docker/Podman detection."""
+    """Tests for is_container() — container runtime detection."""
 
     def _reset_cache(self, monkeypatch):
         """Reset the cached detection result before each test."""
@@ -135,6 +135,26 @@ class TestIsContainer:
         monkeypatch.setattr("builtins.open", lambda p, *a, **kw: _real_open(str(cgroup_file), *a, **kw) if p == "/proc/1/cgroup" else _real_open(p, *a, **kw))
         assert is_container() is True
 
+    @pytest.mark.parametrize(
+        "cgroup_line",
+        [
+            "0::/kubepods.slice/kubepods-burstable.slice/pod123/cri-containerd-abc.scope\n",
+            "0::/kubepods/besteffort/pod123/abc\n",
+            "0::/system.slice/containerd.service/kubepods/pod123/abc\n",
+            "0::/crio-abc.scope\n",
+        ],
+    )
+    def test_detects_kubernetes_container_cgroups(self, monkeypatch, tmp_path, cgroup_line):
+        """Kubernetes/containerd cgroup markers trigger container detection."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text(cgroup_line)
+        _real_open = builtins.open
+        monkeypatch.setattr("builtins.open", lambda p, *a, **kw: _real_open(str(cgroup_file), *a, **kw) if p == "/proc/1/cgroup" else _real_open(p, *a, **kw))
+        assert is_container() is True
+
     def test_negative_case(self, monkeypatch, tmp_path):
         """Returns False on a regular Linux host."""
         import builtins
@@ -153,6 +173,24 @@ class TestIsContainer:
         # Even if we make os.path.exists return False, cached value wins
         monkeypatch.setattr(os.path, "exists", lambda p: False)
         assert is_container() is True
+
+    @pytest.mark.parametrize("env_name", ["HERMES_CONTAINER", "HERMES_SKIP_CHMOD"])
+    def test_config_helper_honors_env_override(self, monkeypatch, env_name):
+        """Config permissions helper keeps its explicit container overrides."""
+        from hermes_cli import config as hermes_config
+
+        monkeypatch.setenv(env_name, "1")
+        assert hermes_config._is_container() is True
+
+    def test_config_helper_delegates_to_shared_detector(self, monkeypatch):
+        """Config permissions helper uses the shared container detector."""
+        from hermes_cli import config as hermes_config
+
+        monkeypatch.delenv("HERMES_CONTAINER", raising=False)
+        monkeypatch.delenv("HERMES_SKIP_CHMOD", raising=False)
+        monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
+
+        assert hermes_config._is_container() is True
 
 
 class TestParseReasoningEffort:
@@ -297,4 +335,3 @@ class TestSecureParentDir:
         secure_parent_dir(link_target)
         assert len(called_with) == 1
         assert called_with[0] == (str(real_dir), 0o700)
-
