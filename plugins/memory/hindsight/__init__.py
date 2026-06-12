@@ -294,13 +294,13 @@ REFLECT_SCHEMA = {
 # Config
 # ---------------------------------------------------------------------------
 
-def _load_config() -> dict:
-    """Load config from profile-scoped path, legacy path, or env vars.
+def _load_file_config() -> dict | None:
+    """Load config from disk only (no env fallback); None when no file parses.
 
-    Resolution order:
-      1. $HERMES_HOME/hindsight/config.json  (profile-scoped)
-      2. ~/.hindsight/config.json             (legacy, shared)
-      3. Environment variables
+    Used at the daemon (re)spawn boundary, where the question is "what does
+    the on-disk config say *now*" — distinct from :func:`_load_config`, whose
+    env fallback always returns a dict and would clobber explicitly-set
+    config in env-only setups.
     """
     from pathlib import Path
 
@@ -319,6 +319,20 @@ def _load_config() -> dict:
             return json.loads(legacy_path.read_text(encoding="utf-8"))
         except Exception:
             pass
+    return None
+
+
+def _load_config() -> dict:
+    """Load config from profile-scoped path, legacy path, or env vars.
+
+    Resolution order:
+      1. $HERMES_HOME/hindsight/config.json  (profile-scoped)
+      2. ~/.hindsight/config.json             (legacy, shared)
+      3. Environment variables
+    """
+    file_config = _load_file_config()
+    if file_config is not None:
+        return file_config
 
     return {
         "mode": os.environ.get("HINDSIGHT_MODE", "cloud"),
@@ -902,6 +916,21 @@ class HindsightMemoryProvider(MemoryProvider):
                     raise ImportError(str(_e))
                 from hindsight import HindsightEmbedded
                 HindsightEmbedded.__del__ = lambda self: None
+                # Client creation is the daemon (re)spawn boundary: the
+                # embedded manager materializes ~/.hindsight/profiles/<p>.env
+                # from these kwargs. Re-read config.json here so a
+                # long-running gateway that recreates the client (idle
+                # shutdown / stale-connection retry) uses current on-disk
+                # settings instead of its initialize()-time snapshot —
+                # otherwise an edit like an llm_model bump is silently
+                # reverted at the next respawn. File-gated on purpose:
+                # env-only setups keep their existing config, and
+                # session-shaping fields (banks, recall tuning) keep their
+                # initialize()-time values for in-session stability.
+                fresh_config = _load_file_config()
+                if fresh_config is not None:
+                    self._config = fresh_config
+                    self._llm_base_url = fresh_config.get("llm_base_url", "")
                 llm_provider = self._config.get("llm_provider", "")
                 if llm_provider in {"openai_compatible", "openrouter"}:
                     llm_provider = "openai"
