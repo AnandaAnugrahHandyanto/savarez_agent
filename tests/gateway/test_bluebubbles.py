@@ -378,6 +378,41 @@ class TestBlueBubblesWebhookParsing:
                 chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
         assert chat_guid == "any;+;chat-uuid-abc123"
 
+    def test_dm_session_chat_id_prefers_stable_chat_identifier(self, monkeypatch):
+        """DM GUID variants must collapse to one Hermes session key."""
+        adapter = _make_adapter(monkeypatch)
+        assert (
+            adapter._canonical_inbound_chat_id(
+                chat_guid="any;-;+15551234567",
+                chat_identifier="+15551234567",
+                sender="+15551234567",
+                is_group=False,
+            )
+            == "+15551234567"
+        )
+        assert (
+            adapter._canonical_inbound_chat_id(
+                chat_guid="iMessage;-;+15551234567",
+                chat_identifier="+15551234567",
+                sender="+15551234567",
+                is_group=False,
+            )
+            == "+15551234567"
+        )
+
+    def test_group_session_chat_id_keeps_bluebubbles_guid(self, monkeypatch):
+        """Group GUIDs are the stable BlueBubbles routing key and must not collapse."""
+        adapter = _make_adapter(monkeypatch)
+        assert (
+            adapter._canonical_inbound_chat_id(
+                chat_guid="any;+;chat-uuid-abc123",
+                chat_identifier="+15551234567",
+                sender="+15551234567",
+                is_group=True,
+            )
+            == "any;+;chat-uuid-abc123"
+        )
+
     def test_extract_payload_record_accepts_list_data(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         payload = {
@@ -738,6 +773,45 @@ class TestBlueBubblesWebhookRegistration:
         )
         assert ok is True
         assert not post_called, "Should reuse existing, not POST again"
+
+    def test_register_replaces_existing_when_events_drift(self, monkeypatch):
+        """Existing registrations with updated-message must be replaced."""
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        url = adapter._webhook_register_url
+        deleted_urls = []
+        posted_payloads = []
+
+        async def mock_delete(*args, **kwargs):
+            deleted_urls.append(args[0] if args else "")
+
+            class R:
+                status_code = 200
+
+                def raise_for_status(self):
+                    pass
+
+            return R()
+
+        async def tracking_post(path, payload):
+            posted_payloads.append(payload)
+            return {"status": 200, "data": {"id": 8}}
+
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 7, "url": url, "events": ["new-message", "updated-message"]},
+            ]},
+        )
+        adapter.client.delete = mock_delete
+        adapter._api_post = tracking_post
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._register_webhook()
+        )
+
+        assert ok is True
+        assert posted_payloads == [{"url": url, "events": ["new-message"]}]
+        assert any("/api/v1/webhook/7" in deleted_url for deleted_url in deleted_urls)
 
     def test_register_returns_false_without_client(self, monkeypatch):
         import asyncio
