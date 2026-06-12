@@ -203,6 +203,66 @@ def test_messaging_extra_includes_qrcode_for_weixin_setup():
     assert any(dep.startswith("qrcode") for dep in messaging_extra)
 
 
+def test_dashboard_lazy_deps_match_web_extra():
+    """Dashboard lazy-install pins must stay in sync with the [web] extra."""
+    from tools.lazy_deps import LAZY_DEPS
+
+    optional_dependencies = _load_optional_dependencies()
+
+    assert set(LAZY_DEPS["tool.dashboard"]) == set(optional_dependencies["web"])
+
+
+def test_discord_voice_dependencies_avoid_vulnerable_pynacl_cap():
+    """discord.py[voice] currently caps PyNaCl below the patched 1.6.x line.
+
+    Keep voice dependencies explicit so PyNaCl can be pinned to the fixed
+    release while still installing the voice codec helper.
+    """
+    optional_dependencies = _load_optional_dependencies()
+
+    messaging_extra = optional_dependencies["messaging"]
+    assert "discord.py[voice]==2.7.1" not in messaging_extra
+    assert "discord.py==2.7.1" in messaging_extra
+    assert "davey==0.1.4" in messaging_extra
+    assert "PyNaCl==1.6.2" in messaging_extra
+    assert "aiohttp==3.14.0" in messaging_extra
+
+
+def test_discord_voice_doctor_recommends_safe_dependency_set():
+    doctor_path = Path(__file__).resolve().parents[1] / "scripts" / "discord-voice-doctor.py"
+    text = doctor_path.read_text()
+
+    assert "discord.py[voice]" not in text
+    assert "PyNaCl>=1.5.0" not in text
+    assert "discord.py==2.7.1" in text
+    assert "davey==0.1.4" in text
+    assert "PyNaCl==1.6.2" in text
+    assert "aiohttp==3.14.0" in text
+
+
+def test_discord_voice_docs_recommend_safe_dependency_set():
+    root = Path(__file__).resolve().parents[1]
+    doc_paths = [
+        root / "website" / "docs" / "user-guide" / "features" / "voice-mode.md",
+        root
+        / "website"
+        / "i18n"
+        / "zh-Hans"
+        / "docusaurus-plugin-content-docs"
+        / "current"
+        / "user-guide"
+        / "features"
+        / "voice-mode.md",
+    ]
+
+    for doc_path in doc_paths:
+        text = doc_path.read_text()
+        assert "discord.py[voice]" not in text
+        assert "PyNaCl>=1.5.0" not in text
+        assert "PyNaCl" in text
+        assert "davey" in text
+
+
 def test_dingtalk_extra_includes_qrcode_for_qr_auth():
     """DingTalk's QR-code device-flow auth (hermes_cli/dingtalk_auth.py)
     needs the qrcode package."""

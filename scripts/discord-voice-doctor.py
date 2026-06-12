@@ -10,6 +10,7 @@ Usage:
 """
 
 import os
+import re
 import sys
 import shutil
 from pathlib import Path
@@ -28,6 +29,17 @@ WARN = "\033[93m!\033[0m"
 
 # Track whether discord.py is available for later sections
 _discord_available = False
+_SAFE_DISCORD_INSTALL = (
+    f"{sys.executable} -m pip install "
+    "discord.py==2.7.1 davey==0.1.4 PyNaCl==1.6.2 "
+    "aiohttp==3.14.0 brotlicffi==1.2.0.1"
+)
+
+
+def _version_at_least(version: str, minimum: tuple[int, ...]) -> bool:
+    parts = [int(part) for part in re.findall(r"\d+", version)[: len(minimum)]]
+    parts.extend([0] * (len(minimum) - len(parts)))
+    return tuple(parts) >= minimum
 
 
 def mask(value):
@@ -69,7 +81,7 @@ def check_packages():
         _discord_available = True
         check("discord.py", True, f"v{discord.__version__}")
     except ImportError:
-        check("discord.py", False, "pip install discord.py[voice]")
+        check("discord.py", False, _SAFE_DISCORD_INSTALL)
         ok = False
 
     # PyNaCl
@@ -79,12 +91,16 @@ def check_packages():
         try:
             import nacl.secret
             nacl.secret.Aead(bytes(32))
-            check("PyNaCl", True, f"v{ver}")
+            if _version_at_least(ver, (1, 6, 2)):
+                check("PyNaCl", True, f"v{ver}")
+            else:
+                check("PyNaCl", False, f"v{ver} — need >=1.6.2")
+                ok = False
         except (AttributeError, Exception):
-            check("PyNaCl (Aead)", False, f"v{ver} — need >=1.5.0")
+            check("PyNaCl (Aead)", False, f"v{ver} — need >=1.6.2")
             ok = False
     except ImportError:
-        check("PyNaCl", False, "pip install PyNaCl>=1.5.0")
+        check("PyNaCl", False, _SAFE_DISCORD_INSTALL)
         ok = False
 
     # davey (DAVE E2EE)
@@ -92,7 +108,7 @@ def check_packages():
         import davey
         check("davey (DAVE E2EE)", True, f"v{getattr(davey, '__version__', '?')}")
     except ImportError:
-        check("davey (DAVE E2EE)", False, "pip install davey")
+        check("davey (DAVE E2EE)", False, _SAFE_DISCORD_INSTALL)
         ok = False
 
     # Optional: local STT
