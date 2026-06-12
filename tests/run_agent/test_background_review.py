@@ -5,7 +5,10 @@ from __future__ import annotations
 import threading
 
 import run_agent as run_agent_module
-from agent.conversation_loop import _has_pending_user_input
+from agent.conversation_loop import (
+    _defer_skill_review_when_input_pending,
+    _has_pending_user_input,
+)
 from run_agent import AIAgent
 
 
@@ -323,8 +326,8 @@ def test_background_review_skill_deferred_when_steer_pending():
 
     When the user has typed the next message before the current turn
     finishes, skill_manage would invalidate the skills prompt cache,
-    stalling the immediately-following turn. The fix resets the counter
-    back to the nudge interval so the review fires on the next eligible
+    stalling the immediately-following turn. The fix drops the counter
+    just below the threshold so the review fires on the next eligible
     turn instead (#34102).
     """
     agent = _bare_agent()
@@ -332,17 +335,13 @@ def test_background_review_skill_deferred_when_steer_pending():
     agent._pending_steer_lock = threading.Lock()
     agent._iters_since_skill = 10
     agent._skill_nudge_interval = 10
+    agent.valid_tool_names = ["skill_manage"]
 
     assert _has_pending_user_input(agent) is True
 
-    # Simulate the deferral check from conversation_loop.
-    _should_review_skills = True
-    if _should_review_skills and _has_pending_user_input(agent):
-        _should_review_skills = False
-        agent._iters_since_skill = agent._skill_nudge_interval
+    _defer_skill_review_when_input_pending(agent)
 
-    assert _should_review_skills is False
-    assert agent._iters_since_skill == 10
+    assert agent._iters_since_skill == 9
 
 
 def test_background_review_skill_fires_when_no_pending_input():
@@ -364,14 +363,13 @@ def test_background_review_memory_not_deferred_by_pending_input():
     agent._pending_steer = "follow-up question"
     agent._pending_steer_lock = threading.Lock()
 
-    _should_review_memory = True
-    _should_review_skills = False
+    agent._iters_since_skill = 3
+    agent._skill_nudge_interval = 10
+    agent.valid_tool_names = ["skill_manage"]
 
-    # Apply only the skill deferral guard (memory is not touched).
-    if _should_review_skills and _has_pending_user_input(agent):
-        _should_review_skills = False
+    _defer_skill_review_when_input_pending(agent)
 
-    assert _should_review_memory is True
+    assert agent._iters_since_skill == 3
 
 
 def test_has_pending_user_input_checks_all_sources():
@@ -398,3 +396,17 @@ def test_has_pending_user_input_checks_all_sources():
     agent4 = _bare_agent()
     agent4._pending_steer = None
     assert _has_pending_user_input(agent4) is False
+
+
+def test_background_review_skill_not_deferred_below_threshold():
+    """The helper leaves the counter alone until the nudge threshold is reached."""
+    agent = _bare_agent()
+    agent._pending_steer = "queued"
+    agent._pending_steer_lock = threading.Lock()
+    agent._iters_since_skill = 9
+    agent._skill_nudge_interval = 10
+    agent.valid_tool_names = ["skill_manage"]
+
+    _defer_skill_review_when_input_pending(agent)
+
+    assert agent._iters_since_skill == 9
