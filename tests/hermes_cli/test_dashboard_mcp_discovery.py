@@ -131,11 +131,25 @@ class TestMakeAgentInlineDiscovery:
         monkeypatch.setattr("tui_gateway.entry.wait_for_mcp_discovery", mock_wait)
         monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", mock_discover)
 
-        # Stub out AIAgent and config loading to avoid real initialization
+        # Stub out AIAgent, config loading, and runtime provider to avoid
+        # real initialization (including network calls to resolve provider).
         monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {}})
         monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("gpt-4", None))
+        fake_runtime = {
+            "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-test",
+            "api_mode": "chat_completions",
+            "command": None,
+            "args": None,
+            "credential_pool": None,
+        }
         from unittest.mock import patch as _patch
-        with _patch("run_agent.AIAgent") as mock_agent:
+        with (
+            _patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=fake_runtime),
+            _patch("run_agent.AIAgent") as mock_agent,
+        ):
             mock_agent.return_value = MagicMock()
             server._make_agent("sid", "key", session_id="sess-1")
             mock_discover.assert_called_once()
