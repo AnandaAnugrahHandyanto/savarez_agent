@@ -1,157 +1,156 @@
-"""Tests for `hermes portal` dispatch.
+"""Tests for `hermes portal topup` — the /usage → portal top-up handoff.
 
-`hermes portal` (no subcommand) is the human-readable alias for the Nous Portal
-one-shot onboarding (`hermes auth add nous --type oauth` / `hermes setup
---portal`). The prior status default moved to `hermes portal info`, with
-`status` retained as a back-compat alias.
+The terminal opens the portal billing page with the top-up modal open and gets
+out of the way: no polling, no payment confirmation, no waiting state (roadmap
+phase 2a). These tests assert the handoff beats: identity line, org-pinned URL
+with ?topup=open, and the no-wait closing copy.
 """
-from __future__ import annotations
 
-import argparse
-from types import SimpleNamespace
+from __future__ import annotations
 
 import pytest
 
-from hermes_cli import portal_cli
+import hermes_cli.portal_cli as portal_cli
+from hermes_cli.nous_account import NousPortalAccountInfo
 
 
-def _args(portal_command):
-    return SimpleNamespace(portal_command=portal_command)
+def _account(**kwargs) -> NousPortalAccountInfo:
+    kwargs.setdefault("logged_in", True)
+    kwargs.setdefault("source", "account_api")
+    kwargs.setdefault("fresh", True)
+    kwargs.setdefault("portal_base_url", "https://portal.example.test")
+    return NousPortalAccountInfo(**kwargs)
 
 
-@pytest.mark.parametrize("sub", [None, "", "login"])
-def test_bare_portal_and_login_run_one_shot(monkeypatch, sub):
-    """`hermes portal`, `hermes portal login` -> one-shot onboarding."""
-    calls = {"login": 0, "status": 0}
+@pytest.fixture
+def _strip_ansi():
+    import re
 
-    def fake_one_shot(config):
-        calls["login"] += 1
+    ansi = re.compile(r"\x1b\[[0-9;]*m")
+    return lambda s: ansi.sub("", s)
 
-    def fake_status(args):
-        calls["status"] += 1
-        return 0
 
+def test_topup_opens_org_pinned_url_and_prints_identity(monkeypatch, capsys, _strip_ansi):
+    info = _account(org_slug="acme", org_name="Acme Inc", email="alice@example.test")
     monkeypatch.setattr(
-        "hermes_cli.setup._run_portal_one_shot", fake_one_shot
+        "hermes_cli.nous_account.get_nous_portal_account_info",
+        lambda *a, **kw: info,
     )
-    monkeypatch.setattr(portal_cli, "_cmd_status", fake_status)
-    monkeypatch.setattr(portal_cli, "load_config", lambda: {})
+    opened = {}
+    monkeypatch.setattr(
+        portal_cli.webbrowser, "open", lambda url: opened.setdefault("url", url) or True
+    )
 
-    rc = portal_cli.portal_command(_args(sub))
+    rc = portal_cli._cmd_topup(object())
 
     assert rc == 0
-    assert calls["login"] == 1
-    assert calls["status"] == 0
+    assert opened["url"] == "https://portal.example.test/orgs/acme/billing?topup=open"
+    out = _strip_ansi(capsys.readouterr().out)
+    # Identity line before opening (roadmap §4.4).
+    assert "Topping up as alice@example.test" in out
+    assert "org Acme Inc" in out
+    # No-wait closing copy.
+    assert "Complete your top-up in the browser" in out
+    assert "/usage" in out
 
 
-@pytest.mark.parametrize("sub", ["info", "status"])
-def test_info_and_status_alias_run_status(monkeypatch, sub):
-    """`hermes portal info` and the `status` back-compat alias -> status."""
-    calls = {"login": 0, "status": 0}
-
+def test_topup_falls_back_to_legacy_url_when_slug_null(monkeypatch, capsys):
+    info = _account(org_slug=None, email="alice@example.test")
     monkeypatch.setattr(
-        "hermes_cli.setup._run_portal_one_shot",
-        lambda config: calls.__setitem__("login", calls["login"] + 1),
+        "hermes_cli.nous_account.get_nous_portal_account_info",
+        lambda *a, **kw: info,
+    )
+    opened = {}
+    monkeypatch.setattr(
+        portal_cli.webbrowser, "open", lambda url: opened.setdefault("url", url) or True
     )
 
-    def fake_status(args):
-        calls["status"] += 1
-        return 0
-
-    monkeypatch.setattr(portal_cli, "_cmd_status", fake_status)
-
-    rc = portal_cli.portal_command(_args(sub))
+    rc = portal_cli._cmd_topup(object())
 
     assert rc == 0
-    assert calls["status"] == 1
-    assert calls["login"] == 0
+    assert opened["url"] == "https://portal.example.test/billing?topup=open"
+    assert "/orgs/" not in opened["url"]
 
 
-def test_open_and_tools_dispatch(monkeypatch):
-    seen = []
-    monkeypatch.setattr(portal_cli, "_cmd_open", lambda a: seen.append("open") or 0)
-    monkeypatch.setattr(portal_cli, "_cmd_tools", lambda a: seen.append("tools") or 0)
+def test_topup_prints_url_when_browser_cannot_open(monkeypatch, capsys):
+    info = _account(org_slug="acme", email="alice@example.test")
+    monkeypatch.setattr(
+        "hermes_cli.nous_account.get_nous_portal_account_info",
+        lambda *a, **kw: info,
+    )
+    # Headless: webbrowser.open returns False — still not a hard failure.
+    monkeypatch.setattr(portal_cli.webbrowser, "open", lambda url: False)
 
-    assert portal_cli.portal_command(_args("open")) == 0
-    assert portal_cli.portal_command(_args("tools")) == 0
-    assert seen == ["open", "tools"]
+    rc = portal_cli._cmd_topup(object())
 
-
-def test_unknown_subcommand_returns_error(capsys):
-    rc = portal_cli.portal_command(_args("bogus"))
-    assert rc == 1
-    err = capsys.readouterr().err
-    assert "Unknown portal subcommand" in err
-
-
-def test_login_cancelled_returns_one(monkeypatch):
-    def boom(config):
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr("hermes_cli.setup._run_portal_one_shot", boom)
-    monkeypatch.setattr(portal_cli, "load_config", lambda: {})
-
-    rc = portal_cli.portal_command(_args(None))
-    assert rc == 1
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "https://portal.example.test/orgs/acme/billing?topup=open" in out
+    assert "Could not launch a browser" in out
+    # Still shows the no-wait copy so the flow is complete.
+    assert "Complete your top-up in the browser" in out
 
 
-def test_parser_registers_subcommands():
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command")
-    portal_cli.add_parser(subparsers)
-
-    # Bare `portal` resolves to portal_command with no portal_command set.
-    ns = parser.parse_args(["portal"])
-    assert ns.func is portal_cli.portal_command
-    assert getattr(ns, "portal_command", None) in (None, "")
-
-    # All documented subcommands parse.
-    for sub in ("login", "info", "status", "open", "tools"):
-        ns = parser.parse_args(["portal", sub])
-        assert ns.portal_command == sub
-
-
-def test_one_shot_delegates_to_model_flow_nous(monkeypatch):
-    """`hermes portal` must run the quick-setup Nous flow (login + MODEL PICK +
-    provider + Tool Gateway), i.e. delegate to `_model_flow_nous` — not the
-    lighter auth-only path that skipped model selection.
-    """
-    import hermes_cli.setup as setup_mod
-
-    calls = {"model_flow": 0}
-
-    def fake_model_flow(config):
-        calls["model_flow"] += 1
-
-    # _model_flow_nous lives in hermes_cli.main and is imported lazily inside
-    # _run_portal_one_shot, so patch it at the source module.
-    monkeypatch.setattr("hermes_cli.main._model_flow_nous", fake_model_flow)
-    # Keep the disk re-sync a no-op so the test never touches real config.
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
-
-    setup_mod._run_portal_one_shot({})
-
-    assert calls["model_flow"] == 1, (
-        "`hermes portal` must route through _model_flow_nous so the model "
-        "picker runs every time (matching quick setup)."
+def test_topup_browser_raising_is_not_fatal(monkeypatch, capsys):
+    info = _account(org_slug="acme", email="alice@example.test")
+    monkeypatch.setattr(
+        "hermes_cli.nous_account.get_nous_portal_account_info",
+        lambda *a, **kw: info,
     )
 
+    def _boom(url):
+        raise RuntimeError("no display")
 
-@pytest.mark.parametrize("exc", [KeyboardInterrupt, EOFError, SystemExit])
-def test_one_shot_swallows_cancel_and_systemexit(monkeypatch, exc):
-    """A cancel/abort from the delegated Nous flow must NOT escape and kill the
-    CLI. `_login_nous` raises SystemExit(130)/(1) on cancel/failure, and the
-    expired-session re-login path inside `_model_flow_nous` only catches
-    Exception — so SystemExit could otherwise propagate out. The portal handler
-    must treat KeyboardInterrupt/EOFError/SystemExit as a graceful cancel.
-    """
-    import hermes_cli.setup as setup_mod
+    monkeypatch.setattr(portal_cli.webbrowser, "open", _boom)
 
-    def boom(config):
-        raise exc
+    rc = portal_cli._cmd_topup(object())
 
-    monkeypatch.setattr("hermes_cli.main._model_flow_nous", boom)
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    assert rc == 0
+    assert "Could not launch a browser" in capsys.readouterr().out
 
-    # Must return normally (None), not propagate the exception.
-    assert setup_mod._run_portal_one_shot({}) is None
+
+def test_topup_not_logged_in_prompts_login(monkeypatch, capsys, _strip_ansi):
+    info = _account(logged_in=False)
+    monkeypatch.setattr(
+        "hermes_cli.nous_account.get_nous_portal_account_info",
+        lambda *a, **kw: info,
+    )
+    called = {}
+    monkeypatch.setattr(
+        portal_cli.webbrowser, "open", lambda url: called.setdefault("opened", True)
+    )
+
+    rc = portal_cli._cmd_topup(object())
+
+    assert rc == 1
+    assert "opened" not in called  # never opens a browser when logged out
+    out = _strip_ansi(capsys.readouterr().out)
+    assert "Not logged into Nous Portal" in out
+    assert "hermes portal" in out
+
+
+def test_topup_account_fetch_failure_prompts_login(monkeypatch, capsys, _strip_ansi):
+    def _boom(*a, **kw):
+        raise RuntimeError("portal down")
+
+    monkeypatch.setattr(
+        "hermes_cli.nous_account.get_nous_portal_account_info", _boom
+    )
+    monkeypatch.setattr(portal_cli.webbrowser, "open", lambda url: True)
+
+    rc = portal_cli._cmd_topup(object())
+
+    assert rc == 1
+    out = _strip_ansi(capsys.readouterr().out)
+    assert "Not logged into Nous Portal" in out
+
+
+def test_portal_topup_dispatch_routes_to_cmd(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(portal_cli, "_cmd_topup", lambda args: seen.setdefault("hit", 0) or 0)
+
+    class _Args:
+        portal_command = "topup"
+
+    assert portal_cli.portal_command(_Args()) == 0
+    assert "hit" in seen
