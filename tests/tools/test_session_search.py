@@ -204,6 +204,43 @@ class TestDiscoveryShape:
         sids = [r["session_id"] for r in result["results"]]
         assert "s_newest" not in sids
 
+    def test_current_session_dominating_first_page_still_finds_older_hits(self, db):
+        now = int(time.time())
+        db.create_session("old_match", source="telegram")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (now - 10000, "Older SearXNG notes", "old_match"),
+        )
+        db.append_message(
+            "old_match",
+            role="assistant",
+            content="Older useful SearXNG update notes about ذاكرة search.",
+        )
+
+        db.create_session("current_match", source="telegram")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (now, "Current noisy session", "current_match"),
+        )
+        for i in range(80):
+            db.append_message(
+                "current_match",
+                role="assistant",
+                content=f"Current session noisy SearXNG OR تحديث OR ذاكرة hit {i}",
+            )
+        db._conn.commit()
+
+        result = json.loads(session_search(
+            query="SearXNG OR تحديث OR ذاكرة",
+            limit=3,
+            sort="newest",
+            db=db,
+            current_session_id="current_match",
+        ))
+        sids = [r["session_id"] for r in result["results"]]
+        assert "current_match" not in sids
+        assert "old_match" in sids
+
 
 class TestDiscoverySort:
     def test_sort_newest_orders_by_recency(self, db):
