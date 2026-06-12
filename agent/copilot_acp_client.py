@@ -443,6 +443,7 @@ class CopilotACPClient:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                errors="replace",
                 bufsize=1,
                 cwd=self._acp_cwd,
                 env=_build_subprocess_env(),

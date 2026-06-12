@@ -1285,6 +1285,8 @@ def execute_code(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
+            text=True,
+            errors="replace",
             preexec_fn=None if _IS_WINDOWS else os.setsid,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
         )

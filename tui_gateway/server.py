@@ -252,6 +252,7 @@ class _SlashWorker:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            errors="replace",
             bufsize=1,
             cwd=os.getcwd(),
             env=os.environ.copy(),
