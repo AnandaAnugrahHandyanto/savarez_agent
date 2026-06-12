@@ -1375,25 +1375,6 @@ class TestAdjustSplitForMarkdownTable:
 class TestTruncateMessageTableAware:
     """Integration: ``truncate_message`` must not split inside a Markdown table."""
 
-    def _adapter(self):
-        class StubAdapter(BasePlatformAdapter):
-            async def connect(self):
-                return True
-
-            async def disconnect(self):
-                pass
-
-            async def send(self, *a, **kw):
-                pass
-
-            async def get_chat_info(self, *a):
-                return {}
-
-        from gateway.config import Platform, PlatformConfig
-
-        config = PlatformConfig(enabled=True, token="test")
-        return StubAdapter(config=config, platform=Platform.TELEGRAM)
-
     def test_table_spanning_split_not_broken(self):
         """A table that crosses a chunk boundary must keep rows intact."""
         rows = (

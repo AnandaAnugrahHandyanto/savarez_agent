@@ -4744,9 +4744,10 @@ class BasePlatformAdapter(ABC):
         table row boundary before *end*, or None.
 
         Handles both flush-left and indented table rows (``\\n|…``
-        and ``\\n  |…``).  The return value is always the *newline* index
-        (consistent with ``rfind(\"\\n|\")``), so callers can uniformly use
-        ``_pos + 1`` to land at the ``|``."""
+        and ``\\n  |…``).  Returns the *newline* index (not the ``|``
+        position), so callers add ``+ 1`` to skip the newline (producing
+        a chunk that ends at the newline and a subsequent chunk that
+        starts with the ``|``, preserving any indentation)."""
         # Try flush-left first (common case).
         _pos = text.rfind("\n|", 0, end)
         if _pos >= 0:
@@ -4926,7 +4927,7 @@ class BasePlatformAdapter(ABC):
             split_at = BasePlatformAdapter._adjust_split_for_markdown_table(remaining, split_at)
 
             chunk_body = remaining[:split_at]
-            remaining = remaining[split_at:].lstrip()
+            remaining = remaining[split_at:].lstrip("\n")
 
             full_chunk = prefix + chunk_body
 
