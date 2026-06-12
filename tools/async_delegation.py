@@ -13,8 +13,8 @@ mid-loop splice.
 Capacity
 --------
 Async delegation is capped at ``delegation.max_async_children`` (default 3).
-Dispatches that would exceed the cap are rejected with a fall-back-to-sync hint.
-v1 is single-task only; ``background=True`` + multi-item ``tasks`` is rejected.
+When at capacity, dispatches are queued (FIFO) and promoted automatically as
+running slots free up — no manual retry needed.
 
 Event shape
 -----------
@@ -33,8 +33,7 @@ import logging
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +52,19 @@ def _get_max_async_children() -> int:
 
 
 # ----------------------------------------------------------------------
+# Queued item shape — stored in the FIFO waiting queue
+# ----------------------------------------------------------------------
+class QueuedDispatch(NamedTuple):
+    delegation_id: str
+    runner_fn: Callable[[], Any]
+    task_info: Dict[str, Any]
+    completion_queue: Any
+    session_key: str
+    parent_agent: Any
+    enqueue_time: float
+
+
+# ----------------------------------------------------------------------
 # Daemon executor registry
 # ----------------------------------------------------------------------
 
@@ -61,61 +73,50 @@ def _get_max_async_children() -> int:
 _running: Dict[str, Dict[str, Any]] = {}
 _running_lock = threading.Lock()
 
+# FIFO waiting queue for at-capacity dispatches.
+_waiting: List[QueuedDispatch] = []
+_waiting_lock = threading.Lock()
 
-def dispatch(
-    runner_fn: Callable[..., Any],
-    task_info: Dict[str, Any],
-    completion_queue,  # queue.Queue — shared with process_registry
-    session_key: str,
-    parent_agent=None,
-) -> Dict[str, Any]:
-    """
-    Dispatch a subagent to run in the background.
+# Condition variable used to signal the promotion thread when a slot opens.
+_promotion_cv = threading.Condition(_running_lock)
 
-    Returns immediately with ``{"status": "dispatched", "delegation_id": str}``.
-    When the subagent finishes, an ``async_delegation`` event is pushed onto
-    ``completion_queue``.
+# Daemon promotion thread: waits for a free slot and promotes the next
+# queued item. Started on first dispatch, lives for process lifetime.
+_promotion_thread: Optional[threading.Thread] = None
 
-    Parameters
-    ----------
-    runner_fn
-        Callable that takes no arguments and returns the subagent result dict.
-        Typically a lambda that captures the pre-built child agent.
-    task_info
-        Dict with ``goal``, ``context``, ``toolsets``, ``role``, ``model``,
-        ``provider`` — stored in the completion event so the re-injected
-        message carries full provenance.
-    completion_queue
-        The shared ``process_registry.completion_queue`` instance.
-    session_key
-        Opaque routing key for the gateway watcher to know which session
-        to inject the result into. Typically ``f"{platform}:{chat_id}"``.
-    parent_agent
-        The parent AIAgent instance (for heartbeat / stale detection).
 
-    Returns
-    -------
-    ``{"status": "dispatched", "delegation_id": str, "mode": "background"}``
-    on success; ``{"error": str, "status": "rejected"}`` when at capacity.
-    """
-    max_children = _get_max_async_children()
+def _start_promotion_thread() -> None:
+    global _promotion_thread
+    if _promotion_thread is None or not _promotion_thread.is_alive():
+        _promotion_thread = threading.Thread(target=_promotion_loop, daemon=True, name="async-delegation-promotion")
+        _promotion_thread.start()
 
-    with _running_lock:
-        active = len(_running)
-        if active >= max_children:
-            return {
-                "error": (
-                    f"Async delegation at capacity ({active}/{max_children}). "
-                    f"Wait for a running delegation to complete, or set "
-                    f"background=false to run synchronously."
-                ),
-                "status": "rejected",
-            }
 
-        delegation_id = f"deleg_{uuid.uuid4().hex[:8]}"
-        stop_event = threading.Event()
-        task_info_copy = dict(task_info)  # shallow copy
-        dispatch_time = time.time()
+def _promotion_loop() -> None:
+    """Daemon loop: waits for a free slot, promotes the next queued item."""
+    while True:
+        item: Optional[QueuedDispatch] = None
+        with _promotion_cv:
+            # Wait until there is a free slot AND something in the queue.
+            while len(_running) >= _get_max_async_children() or not _waiting:
+                _promotion_cv.wait()
+            # Dequeue the oldest item.
+            item = _waiting.pop(0)
+
+        if item is not None:
+            _do_dispatch(item)
+
+
+def _do_dispatch(item: QueuedDispatch) -> None:
+    """Execute a single dispatch. Called from the main thread (immediate path)
+    or from the promotion thread (queued path)."""
+    delegation_id = item.delegation_id
+    runner_fn = item.runner_fn
+    task_info = item.task_info
+    completion_queue = item.completion_queue
+    session_key = item.session_key
+    parent_agent = item.parent_agent
+    dispatch_time = time.time()
 
     def _runner() -> None:
         """Worker thread: runs the subagent and pushes result to completion_queue."""
@@ -146,12 +147,12 @@ def dispatch(
             "delegation_id": delegation_id,
             "session_key": session_key,
             "status": result.get("status", "completed") if isinstance(result, dict) else "completed",
-            "goal": task_info_copy.get("goal", ""),
-            "context": task_info_copy.get("context", ""),
-            "toolsets": task_info_copy.get("toolsets"),
-            "role": task_info_copy.get("role"),
-            "model": task_info_copy.get("model"),
-            "provider": task_info_copy.get("provider"),
+            "goal": task_info.get("goal", ""),
+            "context": task_info.get("context", ""),
+            "toolsets": task_info.get("toolsets"),
+            "role": task_info.get("role"),
+            "model": task_info.get("model"),
+            "provider": task_info.get("provider"),
             "result": result,
             "dispatch_time": dispatch_time,
             "completion_time": completion_time,
@@ -168,19 +169,103 @@ def dispatch(
         except Exception:
             logger.exception("Failed to push async delegation %s result to queue", delegation_id)
 
-        with _running_lock:
+        # Signal the promotion thread that a slot has freed up.
+        with _promotion_cv:
             _running.pop(delegation_id, None)
+            _promotion_cv.notify()
 
-    thread = threading.Thread(target=_runner, daemon=True)
+    thread = threading.Thread(target=_runner, daemon=True, name=f"async-delegation-{delegation_id}")
     with _running_lock:
         _running[delegation_id] = {
             "thread": thread,
-            "stop_event": stop_event,
             "dispatch_time": dispatch_time,
             "goal": task_info.get("goal", "")[:40],
         }
     thread.start()
 
+
+def dispatch(
+    runner_fn: Callable[..., Any],
+    task_info: Dict[str, Any],
+    completion_queue,  # queue.Queue — shared with process_registry
+    session_key: str,
+    parent_agent=None,
+) -> Dict[str, Any]:
+    """
+    Dispatch a subagent to run in the background.
+
+    Returns immediately with ``{"status": "dispatched", "delegation_id": str}``.
+    When the subagent finishes, an ``async_delegation`` event is pushed onto
+    ``completion_queue``.
+
+    When at capacity, the dispatch is queued (FIFO) and the return value has
+    ``status="queued"`` — the caller does NOT need to retry; the promotion
+    thread handles it automatically when a slot frees up.
+
+    Parameters
+    ----------
+    runner_fn
+        Callable that takes no arguments and returns the subagent result dict.
+        Typically a lambda that captures the pre-built child agent.
+    task_info
+        Dict with ``goal``, ``context``, ``toolsets``, ``role``, ``model``,
+        ``provider`` — stored in the completion event so the re-injected
+        message carries full provenance.
+    completion_queue
+        The shared ``process_registry.completion_queue`` instance.
+    session_key
+        Opaque routing key for the gateway watcher to know which session
+        to inject the result into. Typically ``f"{platform}:{chat_id}"``.
+    parent_agent
+        The parent AIAgent instance (for heartbeat / stale detection).
+
+    Returns
+    -------
+    ``{"status": "dispatched" | "queued", "delegation_id": str, "mode": "background"}``
+    """
+    max_children = _get_max_async_children()
+    delegation_id = f"deleg_{uuid.uuid4().hex[:8]}"
+    task_info_copy = dict(task_info)  # shallow copy
+
+    with _running_lock:
+        active = len(_running)
+
+    if active >= max_children:
+        # At capacity — enqueue for later promotion.
+        with _running_lock:
+            _waiting.append(QueuedDispatch(
+                delegation_id=delegation_id,
+                runner_fn=runner_fn,
+                task_info=task_info_copy,
+                completion_queue=completion_queue,
+                session_key=session_key,
+                parent_agent=parent_agent,
+                enqueue_time=time.time(),
+            ))
+            queue_depth = len(_waiting)
+        logger.info(
+            "Async delegation %s queued (at capacity %d/%d). Queue depth: %d",
+            delegation_id, active, max_children, queue_depth,
+        )
+        _start_promotion_thread()
+        return {
+            "status": "queued",
+            "delegation_id": delegation_id,
+            "mode": "background",
+            "queue_depth": queue_depth,
+        }
+
+    _start_promotion_thread()
+    item = QueuedDispatch(
+        delegation_id=delegation_id,
+        runner_fn=runner_fn,
+        task_info=task_info_copy,
+        completion_queue=completion_queue,
+        session_key=session_key,
+        parent_agent=parent_agent,
+        enqueue_time=time.time(),
+    )
+    _do_dispatch(item)
     return {"status": "dispatched", "delegation_id": delegation_id, "mode": "background"}
 
 
@@ -201,6 +286,10 @@ def _async_heartbeat_loop(
             pass
 
 
+# ----------------------------------------------------------------------
+# Admin / CLI helpers
+# ----------------------------------------------------------------------
+
 def interrupt_all() -> int:
     """
     Signal all running async delegations to stop.
@@ -220,7 +309,63 @@ def count_running() -> int:
         return len(_running)
 
 
+def count_queued() -> int:
+    """Return the number of queued (waiting) async delegations."""
+    with _running_lock:
+        return len(_waiting)
+
+
 def get_running_ids() -> list[str]:
     """Return list of active delegation_ids (for debugging/admin)."""
     with _running_lock:
         return list(_running.keys())
+
+
+def get_running_details() -> List[Dict[str, Any]]:
+    """Return detailed info about running delegations (for CLI/status)."""
+    with _running_lock:
+        return [
+            {
+                "delegation_id": did,
+                "goal": info.get("goal", ""),
+                "dispatch_time": info.get("dispatch_time", 0),
+                "is_alive": info.get("thread").is_alive() if info.get("thread") else False,
+            }
+            for did, info in _running.items()
+        ]
+
+
+def get_queued_details() -> List[Dict[str, Any]]:
+    """Return detailed info about queued (waiting) delegations (for CLI/status)."""
+    with _running_lock:
+        return [
+            {
+                "delegation_id": item.delegation_id,
+                "goal": item.task_info.get("goal", "")[:60],
+                "enqueue_time": item.enqueue_time,
+            }
+            for item in _waiting
+        ]
+
+
+def get_detail(delegation_id: str) -> Dict[str, Any] | None:
+    """Return details for a specific delegation_id (running or queued)."""
+    with _running_lock:
+        if delegation_id in _running:
+            info = _running[delegation_id]
+            return {
+                "delegation_id": delegation_id,
+                "state": "running",
+                "goal": info.get("goal", ""),
+                "dispatch_time": info.get("dispatch_time", 0),
+                "is_alive": info.get("thread").is_alive() if info.get("thread") else False,
+            }
+        for item in _waiting:
+            if item.delegation_id == delegation_id:
+                return {
+                    "delegation_id": delegation_id,
+                    "state": "queued",
+                    "goal": item.task_info.get("goal", "")[:60],
+                    "enqueue_time": item.enqueue_time,
+                }
+    return None
