@@ -372,3 +372,5 @@ PING 10.0.0.1 (10.0.0.1) 56(84) bytes of data.
 *评估时间：2026-06-09*  
 *评估环境：Windows Server 2019, Python 3.8.0, Qwen3-235B-A22B-w8a8*  
 *评估方式：真实巡检场景模拟（不打开上帝视角）*
+
+export https_proxy=http://127.0.0.1:7897 http_proxy=http://127.0.0.1:7897 all_proxy=socks5://127.0.0.1:7897
