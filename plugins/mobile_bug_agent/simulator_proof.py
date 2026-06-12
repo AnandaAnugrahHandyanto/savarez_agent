@@ -447,12 +447,17 @@ def _run_ios_until_ready(
                         and _terminate_ios_bundle(target, cwd, bundle_id)
                         and _launch_ios_bundle(target, cwd, bundle_id, dev_client_url, log_dir)
                     ):
-                        _wait_for_metro_bundle_request(
-                            stdout_path,
-                            stderr_path,
-                            "ios",
-                            deadline,
+                        # The dev client gets the URL exactly once per launch
+                        # (re-delivery aborts an in-flight load). If a launch
+                        # attempt produces no Metro bundle request in time, do
+                        # a clean terminate -> relaunch cycle instead.
+                        attempt_deadline = min(
+                            deadline, time.monotonic() + _ios_bundle_wait_seconds()
                         )
+                        if not _metro_bundle_requested_before(
+                            stdout_path, stderr_path, "ios", attempt_deadline
+                        ):
+                            continue
                         time.sleep(min(_ios_settle_seconds(), max(deadline - time.monotonic(), 0)))
                         while_ready()
                         return
@@ -484,7 +489,7 @@ def _run_ios_until_ready(
                 raise RuntimeError(
                     "\n".join(
                         [
-                            f"timed out waiting for iOS bundle to become launchable: {bundle_id}",
+                            f"timed out waiting for the iOS app to load a Metro bundle: {bundle_id}",
                             f"command: {' '.join(args)}",
                             f"stdout: {_tail_text(stdout_path)}",
                             f"stderr: {_tail_text(stderr_path)}",
@@ -899,19 +904,36 @@ def _start_log_files(prefix: str = "monica-android-run-", log_dir: Path | None =
     return stdout_path, stderr_path
 
 
+def _ios_bundle_wait_seconds() -> float:
+    raw_value = os.environ.get("MONICA_IOS_BUNDLE_WAIT_SECONDS", "").strip()
+    try:
+        parsed = float(raw_value)
+    except ValueError:
+        return 90.0
+    return parsed if parsed > 0 else 90.0
+
+
+def _metro_bundle_requested_before(
+    stdout_path: Path,
+    stderr_path: Path,
+    platform: str,
+    deadline: float,
+) -> bool:
+    while time.monotonic() < deadline:
+        if _metro_bundle_was_requested(stdout_path, stderr_path, platform):
+            return True
+        time.sleep(1)
+    return _metro_bundle_was_requested(stdout_path, stderr_path, platform)
+
+
 def _wait_for_metro_bundle_request(
     stdout_path: Path,
     stderr_path: Path,
     platform: str,
     deadline: float,
 ) -> None:
-    # Deliver the dev-client URL exactly once per launch: re-opening the deep
-    # link while the dev client is mid-load aborts the in-flight bundle fetch
-    # (ERR_STREAM_PREMATURE_CLOSE) and strands the app on its error screen.
-    while time.monotonic() < deadline:
-        if _metro_bundle_was_requested(stdout_path, stderr_path, platform):
-            return
-        time.sleep(1)
+    if _metro_bundle_requested_before(stdout_path, stderr_path, platform, deadline):
+        return
     raise RuntimeError(
         "\n".join(
             [

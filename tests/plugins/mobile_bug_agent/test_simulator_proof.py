@@ -814,6 +814,48 @@ def test_metro_bundle_request_wait_fails_closed_with_log_paths(monkeypatch, tmp_
     assert "No apps connected" in message
 
 
+def test_ios_bundle_wait_seconds_defaults_and_overrides(monkeypatch):
+    monkeypatch.delenv("MONICA_IOS_BUNDLE_WAIT_SECONDS", raising=False)
+    assert simulator_proof._ios_bundle_wait_seconds() == 90.0
+
+    monkeypatch.setenv("MONICA_IOS_BUNDLE_WAIT_SECONDS", "45")
+    assert simulator_proof._ios_bundle_wait_seconds() == 45.0
+
+    monkeypatch.setenv("MONICA_IOS_BUNDLE_WAIT_SECONDS", "not-a-number")
+    assert simulator_proof._ios_bundle_wait_seconds() == 90.0
+
+    monkeypatch.setenv("MONICA_IOS_BUNDLE_WAIT_SECONDS", "-5")
+    assert simulator_proof._ios_bundle_wait_seconds() == 90.0
+
+
+def test_metro_bundle_requested_before_returns_false_without_marker(monkeypatch, tmp_path):
+    stdout = tmp_path / "metro.stdout.log"
+    stderr = tmp_path / "metro.stderr.log"
+    stdout.write_text("Metro waiting on http://localhost:8081", encoding="utf-8")
+    stderr.write_text("", encoding="utf-8")
+    timeline = iter([10.0, 11.0, 12.5])
+    monkeypatch.setattr(simulator_proof.time, "monotonic", lambda: next(timeline))
+    monkeypatch.setattr(simulator_proof.time, "sleep", lambda _seconds: None)
+
+    assert not simulator_proof._metro_bundle_requested_before(stdout, stderr, "ios", 12.0)
+
+
+def test_metro_bundle_requested_before_detects_marker_mid_wait(monkeypatch, tmp_path):
+    stdout = tmp_path / "metro.stdout.log"
+    stderr = tmp_path / "metro.stderr.log"
+    stdout.write_text("Metro waiting on http://localhost:8081", encoding="utf-8")
+    stderr.write_text("", encoding="utf-8")
+
+    def sleep(_seconds):
+        stdout.write_text("iOS Bundled 1240ms apps/elixir-card/index.ts", encoding="utf-8")
+
+    timeline = iter([10.0, 11.0])
+    monkeypatch.setattr(simulator_proof.time, "monotonic", lambda: next(timeline))
+    monkeypatch.setattr(simulator_proof.time, "sleep", sleep)
+
+    assert simulator_proof._metro_bundle_requested_before(stdout, stderr, "ios", 12.0)
+
+
 def test_launch_ios_bundle_delivers_dev_client_url_via_openurl(monkeypatch, tmp_path):
     calls = []
 
