@@ -5020,9 +5020,32 @@ const sessionWindows = createSessionWindowRegistry()
 
 function focusWindow(win) {
   if (!win || win.isDestroyed()) return
+  rememberWindowState('focus.before', win)
   if (win.isMinimized()) win.restore()
   if (!win.isVisible()) win.show()
   win.focus()
+  rememberWindowState('focus.after', win)
+}
+
+function describeWindowState(win) {
+  if (!win) return 'missing'
+  if (win.isDestroyed?.()) return 'destroyed'
+
+  try {
+    return [
+      `id=${win.id ?? 'unknown'}`,
+      `visible=${win.isVisible?.()}`,
+      `minimized=${win.isMinimized?.()}`,
+      `focused=${win.isFocused?.()}`,
+      `bounds=${JSON.stringify(win.getBounds?.() ?? null)}`
+    ].join(' ')
+  } catch (error) {
+    return `unavailable error=${error?.message || error}`
+  }
+}
+
+function rememberWindowState(label, win) {
+  rememberLog(`[window] ${label} ${describeWindowState(win)}`)
 }
 
 // Open (or focus) a standalone window for a single chat session.
@@ -5129,6 +5152,7 @@ function createWindow() {
       backgroundThrottling: false
     }
   })
+  rememberWindowState('main.created', mainWindow)
 
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
@@ -5154,6 +5178,9 @@ function createWindow() {
   mainWindow.on('enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('will-leave-full-screen', () => sendWindowStateChanged(false))
   mainWindow.on('leave-full-screen', () => sendWindowStateChanged(false))
+  for (const eventName of ['ready-to-show', 'show', 'hide', 'minimize', 'restore', 'closed']) {
+    mainWindow.on(eventName, () => rememberWindowState(`main.${eventName}`, mainWindow))
+  }
 
   wireCommonWindowHandlers(mainWindow)
 
@@ -5185,6 +5212,9 @@ function createWindow() {
   })
 
   mainWindow.webContents.on('unresponsive', () => rememberLog('[renderer] webContents became unresponsive'))
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    rememberLog(`[renderer] did-fail-load code=${errorCode} description=${errorDescription} url=${validatedURL}`)
+  })
 
   // Electron always passes the event first. The canonical (Electron 36+) shape
   // is (event, messageDetails); the deprecated positional shape is
@@ -6332,8 +6362,7 @@ function handleDeepLink(url) {
     return
   }
   try {
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
+    focusWindow(mainWindow)
     mainWindow.webContents.send('hermes:deep-link', payload)
     rememberLog(`[deeplink] delivered ${kind}/${name}`)
   } catch (err) {
@@ -6381,8 +6410,7 @@ if (!_gotSingleInstanceLock) {
     const url = _extractDeepLink(argv)
     if (url) handleDeepLink(url)
     else if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
+      focusWindow(mainWindow)
     }
   })
 }
