@@ -2340,7 +2340,6 @@ class FeishuAdapter(BasePlatformAdapter):
         status: str = "completed",
         error_summary: str = "",
         last_content: str = "",
-        elapsed_seconds: float = 0,
     ) -> str:
         """Build a card JSON with status-appropriate header for post-stream update."""
         _display_name = bot_name or "Hermes"
@@ -2386,12 +2385,6 @@ class FeishuAdapter(BasePlatformAdapter):
                 "element_id": "markdown_1",
             }
         ]
-        if elapsed_seconds > 0 and status == "completed":
-            elements.append({
-                "tag": "markdown",
-                "content": f"<font color='grey'>Completed in {elapsed_seconds:.1f}s</font>",
-                "element_id": "footer_stats",
-            })
 
         card: Dict[str, Any] = {
             "schema": "2.0",
@@ -2409,7 +2402,6 @@ class FeishuAdapter(BasePlatformAdapter):
         bot_name: str = "Hermes",
         status: str = "completed",
         error_summary: str = "",
-        elapsed_seconds: float = 0,
     ) -> None:
         """Update the streaming card header to reflect completion/error status."""
         if not HAS_CARDKIT:
@@ -2419,7 +2411,6 @@ class FeishuAdapter(BasePlatformAdapter):
             card_json = self._build_finalized_header_json(
                 bot_name=bot_name, status=status, error_summary=error_summary,
                 last_content=card_state.get("last_content", ""),
-                elapsed_seconds=elapsed_seconds,
             )
             card_obj = CardKitCard.builder() \
                 .type("card_json") \
@@ -2490,14 +2481,12 @@ class FeishuAdapter(BasePlatformAdapter):
 
                 # Step 2: Update header (card.update PUT).
                 last_content = card_state.get("last_content", "")
-                elapsed = time.monotonic() - card_state.get("created_at", time.monotonic())
                 if last_content:
                     try:
                         await self._update_card_header(
                             card_id, card_state,
                             bot_name=self._bot_name, status=status,
                             error_summary=error_summary,
-                            elapsed_seconds=elapsed,
                         )
                     except Exception as hdr_exc:
                         logger.warning(
