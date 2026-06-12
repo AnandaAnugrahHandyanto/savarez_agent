@@ -457,6 +457,25 @@ class TestIsInteractive:
         assert _is_interactive() is False
 
 
+class TestWaitForCallbackAddressReuse:
+    """_wait_for_callback() must tolerate TIME_WAIT on the callback port."""
+
+    def test_successive_calls_on_same_port_do_not_raise_address_in_use(self):
+        """Back-to-back OAuth flows reusing a port must not hit EADDRINUSE."""
+        import tools.mcp_oauth as mod
+
+        port = _find_free_port()
+        mod._oauth_port = port
+
+        async def instant_sleep(_):
+            pass
+
+        for _ in range(2):
+            with patch.object(mod.asyncio, "sleep", instant_sleep):
+                with pytest.raises(OAuthNonInteractiveError, match="callback timed out"):
+                    asyncio.run(_wait_for_callback())
+
+
 class TestWaitForCallbackNoBlocking:
     """_wait_for_callback() must never call input() — it raises instead."""
 

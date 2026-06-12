@@ -478,12 +478,17 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     # We just need to poll for the result.
     handler_cls, result = _make_callback_handler()
 
-    # Start a temporary server on the known port
+    # Start a temporary server on the known port.  SO_REUSEADDR avoids
+    # EADDRINUSE / OSError 10048 when the previous server's socket is
+    # still in TIME_WAIT after a recent OAuth flow on the same port.
     try:
-        server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
+        server = HTTPServer(
+            ("127.0.0.1", _oauth_port), handler_cls, bind_and_activate=False,
+        )
+        server.allow_reuse_address = True
+        server.server_bind()
+        server.server_activate()
     except OSError:
-        # Port already in use — the server from build_oauth_auth is running.
-        # Fall back to polling the server started by build_oauth_auth.
         raise OAuthNonInteractiveError(
             "OAuth callback timed out — could not bind callback port. "
             "Complete the authorization in a browser first, then retry."
