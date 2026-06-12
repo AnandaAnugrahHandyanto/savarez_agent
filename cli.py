@@ -3700,7 +3700,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """
         self._status_bar_suppressed_after_resize = True
         try:
-            app.renderer.reset(leave_alternate_screen=False)
+            app.renderer.erase(leave_alternate_screen=False)
         except Exception:
             pass
         try:
