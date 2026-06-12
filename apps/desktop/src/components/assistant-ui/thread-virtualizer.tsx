@@ -19,6 +19,8 @@ import { cn } from '@/lib/utils'
 import { setThreadScrolledUp } from '@/store/thread-scroll'
 import { $autoTts, $voicePlayback } from '@/store/voice-playback'
 
+import { MessageRenderBoundary } from './message-render-boundary'
+
 const ESTIMATED_ITEM_HEIGHT = 220
 const OVERSCAN = 4
 const AT_BOTTOM_THRESHOLD = 4
@@ -220,18 +222,20 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
                     key={virtualItem.key}
                     ref={virtualizer.measureElement}
                   >
-                    {group.kind === 'turn' ? (
-                      <div
-                        className="composer-human-ai-pair-container relative flex min-w-0 flex-col gap-(--conversation-turn-gap)"
-                        data-slot="aui_turn-pair"
-                      >
-                        {group.indices.map(index => (
-                          <ThreadPrimitive.MessageByIndex components={components} index={index} key={index} />
-                        ))}
-                      </div>
-                    ) : (
-                      <ThreadPrimitive.MessageByIndex components={components} index={group.index} />
-                    )}
+                    <MessageRenderBoundary resetKey={messageSignature}>
+                      {group.kind === 'turn' ? (
+                        <div
+                          className="composer-human-ai-pair-container relative flex min-w-0 flex-col gap-(--conversation-turn-gap)"
+                          data-slot="aui_turn-pair"
+                        >
+                          {group.indices.map(index => (
+                            <ThreadPrimitive.MessageByIndex components={components} index={index} key={index} />
+                          ))}
+                        </div>
+                      ) : (
+                        <ThreadPrimitive.MessageByIndex components={components} index={group.index} />
+                      )}
+                    </MessageRenderBoundary>
                   </div>
                 )
               })}
