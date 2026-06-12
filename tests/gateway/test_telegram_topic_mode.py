@@ -531,6 +531,147 @@ async def test_topic_binding_follows_compression_tip_on_read(tmp_path, monkeypat
     assert refreshed["session_id"] == "child-session"
 
 
+
+@pytest.mark.asyncio
+async def test_topic_binding_refreshes_before_auto_title_after_compression_split(tmp_path, monkeypatch):
+    """Regression for #44769: auto-title rename sees the compression child.
+
+    A mid-turn compression split changes ``agent.session_id`` from the parent
+    to the child. The gateway must refresh the Telegram topic binding before
+    invoking ``maybe_auto_title``; otherwise the later topic-rename callback
+    sees a stale parent binding and safely skips ``editForumTopic``.
+    """
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="parent-session", source="telegram", user_id="208214988",
+    )
+    session_db.end_session("parent-session", end_reason="compression")
+    session_db.create_session(
+        session_id="child-session",
+        source="telegram",
+        user_id="208214988",
+        parent_session_id="parent-session",
+    )
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=topic_key,
+        session_id="parent-session",
+    )
+
+    runner = _make_runner(session_db=session_db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.session_store._entries = {
+        topic_key: SessionEntry(
+            session_key=topic_key,
+            session_id="parent-session",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            origin=topic_source,
+        )
+    }
+    runner.session_store._save = MagicMock()
+    runner._agent_cache = None
+    runner._agent_cache_lock = None
+    runner._ephemeral_system_prompt = ""
+    runner._prefill_messages = None
+    runner._pending_skills_reload_notes = {}
+    runner._service_tier = None
+    runner._get_proxy_url = lambda: None
+    runner._resolve_session_agent_runtime = lambda **_kw: (
+        "test/model", {"provider": "test", "api_key": "test"}
+    )
+    runner._resolve_turn_agent_config = lambda message, model, runtime: {
+        "model": model,
+        "runtime": runtime,
+        "request_overrides": {},
+    }
+    runner._resolve_session_reasoning_config = lambda **_kw: None
+    runner._load_service_tier = lambda: None
+    runner._agent_config_signature = lambda *args, **kwargs: "sig"
+    runner._extract_cache_busting_config = lambda _cfg: {}
+    runner._consume_pending_native_image_paths = lambda _session_key: []
+    runner._is_intentional_model_switch = lambda *_args, **_kwargs: False
+    runner._update_runtime_status = MagicMock()
+    runner._cleanup_agent_resources = MagicMock()
+    runner._promote_queued_event = lambda _session_key, _adapter, pending_event: pending_event
+
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.has_pending_interrupt = MagicMock(return_value=False)
+    adapter.get_pending_message = MagicMock(return_value=None)
+    adapter._pending_messages = {}
+
+    class _Agent:
+        model = "test/model"
+        provider = "test"
+        base_url = ""
+        api_key = "test"
+        api_mode = None
+        tools = []
+
+        def __init__(self, *args, session_id=None, **kwargs):
+            # Simulate AIAgent._compress_context rotating the active session.
+            self.session_id = "child-session"
+
+        def run_conversation(self, prompt, **kwargs):
+            return {
+                "final_response": "ok",
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "ok"},
+                ],
+                "api_calls": 1,
+                "completed": True,
+            }
+
+    captured = {}
+
+    def fake_maybe_auto_title(db, session_id, *_args, **kwargs):
+        captured["session_id"] = session_id
+        captured["binding_at_title"] = db.get_telegram_topic_binding(
+            chat_id="208214988", thread_id="17585",
+        )
+        kwargs["title_callback"]("Compressed Title")
+
+    runner._schedule_telegram_topic_title_rename = (
+        lambda _source, session_id, title: captured.update(
+            {"scheduled_session_id": session_id, "scheduled_title": title}
+        )
+    )
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {
+        "display": {"tool_progress": "off", "interim_assistant_messages": False},
+        "agent": {"disabled_toolsets": []},
+    })
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda: "test/model")
+    monkeypatch.setattr("run_agent.AIAgent", _Agent)
+    monkeypatch.setattr("agent.title_generator.maybe_auto_title", fake_maybe_auto_title)
+
+    result = await runner._run_agent(
+        "hello",
+        context_prompt="",
+        history=[],
+        source=topic_source,
+        session_id="parent-session",
+        session_key=topic_key,
+    )
+
+    assert result["session_id"] == "child-session"
+    assert captured["session_id"] == "child-session"
+    assert captured["scheduled_session_id"] == "child-session"
+    assert captured["scheduled_title"] == "Compressed Title"
+    assert captured["binding_at_title"] is not None
+    assert captured["binding_at_title"]["session_id"] == "child-session"
+
+
 @pytest.mark.asyncio
 async def test_topic_root_command_explicitly_migrates_and_enables_topic_mode(tmp_path, monkeypatch):
     import gateway.run as gateway_run

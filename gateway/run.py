@@ -14646,6 +14646,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             exc_info=True,
                         )
 
+                if entry:
+                    self._sync_telegram_topic_binding(
+                        source, entry, reason="run-agent-session-split",
+                    )
+
             effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
 
             # When compression created a new session, the messages list was
