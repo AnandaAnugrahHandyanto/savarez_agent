@@ -32,4 +32,13 @@ describe('extractEmbeddedImages', () => {
     expect(result.cleanedText).toBe('first  mid  tail')
     expect(result.images).toEqual([SAMPLE_PNG_DATA_URL, second])
   })
+
+  it('handles multi-megabyte image data URLs without recursive regex overflow', () => {
+    const large = 'data:image/jpeg;base64,' + 'A'.repeat(2_500_000)
+    const result = extractEmbeddedImages(`before ${large} after`)
+
+    expect(result.cleanedText).toBe('before  after')
+    expect(result.images).toHaveLength(1)
+    expect(result.images[0]).toHaveLength(large.length)
+  })
 })
