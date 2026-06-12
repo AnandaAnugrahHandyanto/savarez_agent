@@ -174,3 +174,117 @@ def test_callback_state_mismatch_aborts(monkeypatch, tmp_path, caplog):
     assert "url" not in captured_token, (
         "token exchange must NOT happen when state mismatches"
     )
+
+
+def test_token_exchange_falls_back_to_second_endpoint(monkeypatch, tmp_path):
+    """When the first token endpoint (platform.claude.com) returns 404,
+    the login flow must fall back to the second endpoint (console.anthropic.com).
+
+    Regression guard for issue #45250: the login flow previously used only
+    _OAUTH_TOKEN_URL (console.anthropic.com) which started returning 404,
+    while the refresh flow already had a fallback list.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    token_response = {
+        "access_token": "sk-ant-fallback",
+        "refresh_token": "sk-ant-refresh-fallback",
+        "expires_in": 3600,
+    }
+    attempted_urls: list[str] = []
+
+    import urllib.request
+
+    class _FakeResponse:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self):
+            return self._body
+
+    def fake_urlopen(req, *_a, **_kw):
+        attempted_urls.append(req.full_url)
+        if "platform.claude.com" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 404, "Not Found", {}, None)
+        return _FakeResponse(json.dumps(token_response).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("webbrowser.open", lambda url: True)
+    monkeypatch.setattr(
+        "hermes_cli.auth._can_open_graphical_browser", lambda: True
+    )
+
+    # Capture the state from the auth URL to echo it back correctly
+    captured_auth_url: dict[str, str] = {}
+
+    def capturing_webbrowser(url):
+        captured_auth_url["url"] = url
+        return True
+
+    monkeypatch.setattr("webbrowser.open", capturing_webbrowser)
+
+    import builtins
+
+    def fake_input(*_a, **_kw):
+        url = captured_auth_url.get("url", "")
+        qs = parse_qs(urlparse(url).query)
+        state = qs.get("state", [""])[0]
+        return f"auth-code#{state}"
+
+    monkeypatch.setattr(builtins, "input", fake_input)
+
+    from agent.anthropic_adapter import run_hermes_oauth_login_pure
+
+    result = run_hermes_oauth_login_pure()
+
+    assert result is not None, "Login should succeed via fallback endpoint"
+    assert result["access_token"] == "sk-ant-fallback"
+    # Must have tried platform.claude.com first, then console.anthropic.com
+    assert len(attempted_urls) == 2, f"Expected 2 attempts, got {len(attempted_urls)}"
+    assert "platform.claude.com" in attempted_urls[0]
+    assert "console.anthropic.com" in attempted_urls[1]
+
+
+def test_token_exchange_all_endpoints_fail(monkeypatch, tmp_path):
+    """When both token endpoints fail, login must return None gracefully."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    import urllib.request
+
+    def fake_urlopen(req, *_a, **_kw):
+        raise urllib.error.HTTPError(req.full_url, 500, "Server Error", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("webbrowser.open", lambda url: True)
+    monkeypatch.setattr(
+        "hermes_cli.auth._can_open_graphical_browser", lambda: True
+    )
+
+    captured_auth_url: dict[str, str] = {}
+
+    def capturing_webbrowser(url):
+        captured_auth_url["url"] = url
+        return True
+
+    monkeypatch.setattr("webbrowser.open", capturing_webbrowser)
+
+    import builtins
+
+    def fake_input(*_a, **_kw):
+        url = captured_auth_url.get("url", "")
+        qs = parse_qs(urlparse(url).query)
+        state = qs.get("state", [""])[0]
+        return f"auth-code#{state}"
+
+    monkeypatch.setattr(builtins, "input", fake_input)
+
+    from agent.anthropic_adapter import run_hermes_oauth_login_pure
+
+    result = run_hermes_oauth_login_pure()
+    assert result is None, "Login should return None when all endpoints fail"

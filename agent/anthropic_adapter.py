@@ -1346,18 +1346,32 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
             "code_verifier": verifier,
         }).encode()
 
-        req = urllib.request.Request(
-            _OAUTH_TOKEN_URL,
-            data=exchange_data,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
-            },
-            method="POST",
-        )
-
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            result = json.loads(resp.read().decode())
+        token_endpoints = [
+            "https://platform.claude.com/v1/oauth/token",
+            _OAUTH_TOKEN_URL,  # console.anthropic.com fallback
+        ]
+        result = None
+        last_error = None
+        for endpoint in token_endpoints:
+            req = urllib.request.Request(
+                endpoint,
+                data=exchange_data,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    result = json.loads(resp.read().decode())
+                break
+            except Exception as e:
+                last_error = e
+                continue
+        if result is None:
+            print(f"Token exchange failed: {last_error}")
+            return None
     except Exception as e:
         print(f"Token exchange failed: {e}")
         return None
