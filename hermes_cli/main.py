@@ -5414,14 +5414,50 @@ def _find_stale_dashboard_pids(
             # here is errors="ignore": it prevents a reader-thread
             # UnicodeDecodeError from leaving result.stdout=None and turning
             # the later .split() into an AttributeError (#17049).
-            result = subprocess.run(
-                ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                encoding="utf-8",
-                errors="ignore",
-            )
+            #
+            # On modern Windows 11 / Win 10 late builds, wmic has been
+            # removed as part of the WMIC deprecation — fall back to
+            # PowerShell's Get-CimInstance.  (#44567)
+            import shutil
+            wmic_path = shutil.which("wmic")
+            result = None
+            if wmic_path is not None:
+                try:
+                    result = subprocess.run(
+                        [wmic_path, "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        encoding="utf-8",
+                        errors="ignore",
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    result = None
+            if result is None or result.returncode != 0 or not (result.stdout or ""):
+                # Fallback: PowerShell Get-CimInstance, emit LIST-style output
+                # so the downstream parser below doesn't need to branch.
+                powershell = shutil.which("powershell") or shutil.which("pwsh")
+                if powershell is None:
+                    return []
+                ps_cmd = (
+                    "Get-CimInstance Win32_Process | "
+                    "ForEach-Object { "
+                    "  'CommandLine=' + ($_.CommandLine -replace \"`r`n\",' ' -replace \"`n\",' '); "
+                    "  'ProcessId=' + $_.ProcessId; "
+                    "  '' "
+                    "}"
+                )
+                try:
+                    result = subprocess.run(
+                        [powershell, "-NoProfile", "-Command", ps_cmd],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="ignore",
+                        timeout=15,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    return []
             if result.returncode != 0 or result.stdout is None:
                 return []
             current_cmd = ""
