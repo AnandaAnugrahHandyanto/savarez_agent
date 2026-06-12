@@ -1247,6 +1247,11 @@ def init_agent(
     # targets.
     agent._task_completion_guidance = bool(_agent_section.get("task_completion_guidance", True))
 
+    # Declarative per-fragment system-prompt overrides (agent.prompt_overrides).
+    # Normalized once here; applied at prompt-build time in system_prompt.py.
+    from agent.prompt_overrides import normalize_overrides
+    agent._prompt_overrides = normalize_overrides(_agent_section.get("prompt_overrides", {}))
+
     # Local Python toolchain probe toggle.  Default True.  When False,
     # the probe is skipped entirely (no subprocess calls, no system-prompt
     # line).  Useful for users on exotic setups where the probe heuristics
