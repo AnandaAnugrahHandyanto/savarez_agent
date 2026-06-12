@@ -117,3 +117,43 @@ class TestWaitForMcpDiscoveryFallback:
                 entry.wait_for_mcp_discovery(timeout=0.1)
         finally:
             entry._mcp_discovery_thread = saved
+
+class TestMakeAgentInlineDiscovery:
+    """_make_agent must call discover_mcp_tools() synchronously as a safety net."""
+
+    def test_make_agent_calls_inline_discover(self, monkeypatch):
+        """_make_agent calls discover_mcp_tools() after wait_for_mcp_discovery."""
+        from unittest.mock import MagicMock, call
+        import tui_gateway.server as server
+
+        mock_wait = MagicMock()
+        mock_discover = MagicMock(return_value=["mcp-server-1"])
+        monkeypatch.setattr("tui_gateway.entry.wait_for_mcp_discovery", mock_wait)
+        monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", mock_discover)
+
+        # Stub out AIAgent and config loading to avoid real initialization
+        monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {}})
+        monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("gpt-4", None))
+        from unittest.mock import patch as _patch
+        with _patch("run_agent.AIAgent") as mock_agent:
+            mock_agent.return_value = MagicMock()
+            server._make_agent("sid", "key", session_id="sess-1")
+            mock_discover.assert_called_once()
+
+    def test_make_agent_inline_discover_failure_does_not_block(self, monkeypatch):
+        """If discover_mcp_tools() raises, _make_agent still creates the agent."""
+        from unittest.mock import MagicMock
+        import tui_gateway.server as server
+
+        monkeypatch.setattr("tui_gateway.entry.wait_for_mcp_discovery", MagicMock())
+        monkeypatch.setattr(
+            "tools.mcp_tool.discover_mcp_tools",
+            side_effect=RuntimeError("mcp crash"),
+        )
+        monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {}})
+        monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("gpt-4", None))
+        from unittest.mock import patch as _patch
+        with _patch("run_agent.AIAgent") as mock_agent:
+            mock_agent.return_value = MagicMock()
+            # Should not raise
+            server._make_agent("sid", "key", session_id="sess-1")

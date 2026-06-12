@@ -217,7 +217,7 @@ def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
             )
             _mcp_wait(timeout=timeout)
         except Exception:
-            pass
+            logger.warning('mcp_startup fallback failed', exc_info=True)
         return
     thread.join(timeout=timeout)
 
