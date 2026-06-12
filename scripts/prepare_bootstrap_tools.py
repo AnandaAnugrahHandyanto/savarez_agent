@@ -275,10 +275,14 @@ def validate_manifest(output_dir: Path) -> int:
     if not isinstance(archives, list) or not archives:
         raise RuntimeError("bootstrap tools manifest has no archives")
 
+    seen_names: set[str] = set()
     for archive in archives:
         name = archive.get("name")
         if not isinstance(name, str) or not name:
             raise RuntimeError("bootstrap tools manifest archive is missing name")
+        if name in seen_names:
+            raise RuntimeError(f"duplicate archive in bootstrap tools manifest: {name}")
+        seen_names.add(name)
         arch = archive.get("arch")
         if not isinstance(arch, str) or not arch:
             raise RuntimeError(f"manifest archive is missing arch: {name}")

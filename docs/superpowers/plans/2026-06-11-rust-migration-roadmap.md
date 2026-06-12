@@ -431,6 +431,8 @@ language-specific setup where needed.
   insecure update source for a packaged runtime archive.
 - The same gate requires every archive record to retain its target architecture label, preserving review visibility for
   mixed Windows/Linux/macOS bootstrap-tool bundles.
+- Duplicate archive names are rejected by the validate-only gate, keeping each bundled runtime archive's ownership,
+  checksum, and update source unambiguous.
 
 ## Phase 7: Larger Runtime Rust Candidates
 

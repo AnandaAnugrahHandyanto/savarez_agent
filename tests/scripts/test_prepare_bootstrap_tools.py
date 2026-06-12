@@ -311,6 +311,44 @@ class PrepareBootstrapToolsTests(unittest.TestCase):
             output_dir.rmdir()
             root.rmdir()
 
+    def test_validate_manifest_rejects_duplicate_archive_names(self):
+        module = _load_script_module()
+        root = Path("tmp-bootstrap-tools-duplicate-test")
+        output_dir = root / "bootstrap-tools"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        archive = output_dir / "uv-x86_64-pc-windows-msvc.zip"
+        archive.write_bytes(b"uv archive")
+        archive_record = {
+            "arch": "x64",
+            "name": "uv-x86_64-pc-windows-msvc.zip",
+            "url": "https://example.invalid/uv.zip",
+            "sizeBytes": len(b"uv archive"),
+            "sha256": module.sha256_file(archive),
+        }
+        manifest = output_dir / "bootstrap-tools-manifest.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "archives": [archive_record, dict(archive_record)],
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        try:
+            with self.assertRaisesRegex(RuntimeError, "duplicate archive"):
+                module.validate_manifest(output_dir)
+        finally:
+            if archive.exists():
+                archive.unlink()
+            if manifest.exists():
+                manifest.unlink()
+            output_dir.rmdir()
+            root.rmdir()
+
     def test_installer_workflows_upload_bootstrap_tools_manifest(self):
         repo_root = Path(__file__).resolve().parents[2]
         windows_workflow_path = repo_root / ".github" / "workflows" / "build-windows-installer.yml"
