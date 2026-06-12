@@ -1422,3 +1422,41 @@ class TestGrok43StaleCacheGuard:
                 slug, base_url=base, api_key="", provider="xai"
             )
             assert ctx == 256_000, f"{slug} should stay 256000, got {ctx}"
+
+
+class TestExtractPricing:
+    """Robustness of _extract_pricing against /models pricing shapes."""
+
+    def test_nested_price_objects_do_not_crash(self):
+        """Some OpenAI-compatible /models endpoints return a nested ``price``
+        field that maps ``input``/``output`` to ``{...}`` sub-objects, often
+        alongside a flat ``pricing`` field of scalar rates.
+
+        Regression: the alias loop used set membership
+        (``value not in {None, ""}``), which hashes the value and raised
+        ``TypeError: unhashable type: 'dict'`` on the nested sub-objects. The
+        exception propagated out of ``fetch_endpoint_model_metadata`` and
+        silently emptied the entire endpoint-metadata cache for that endpoint.
+        """
+        from agent.model_metadata import _extract_pricing
+        payload = {
+            "id": "vendor/model",
+            "price": {
+                "input": {"unit_a": 0.0004, "usd": 0.104},
+                "output": {"unit_a": 0.0019, "usd": 0.416},
+            },
+            "pricing": {"prompt": 0.104, "completion": 0.416, "input_cache_read": 0.052},
+        }
+        result = _extract_pricing(payload)  # must not raise
+        assert result.get("prompt") == 0.104
+        assert result.get("completion") == 0.416
+
+    def test_flat_scalar_pricing_still_extracted(self):
+        from agent.model_metadata import _extract_pricing
+        result = _extract_pricing({"pricing": {"prompt": 1.0, "completion": 2.0}})
+        assert result.get("prompt") == 1.0
+        assert result.get("completion") == 2.0
+
+    def test_no_pricing_returns_empty(self):
+        from agent.model_metadata import _extract_pricing
+        assert _extract_pricing({"id": "vendor/model"}) == {}

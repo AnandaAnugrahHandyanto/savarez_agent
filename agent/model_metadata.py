@@ -605,8 +605,19 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
         pricing: Dict[str, Any] = {}
         for target, aliases in alias_map.items():
             for alias in aliases:
-                if alias in normalized and normalized[alias] not in {None, ""}:
-                    pricing[target] = normalized[alias]
+                if alias not in normalized:
+                    continue
+                value = normalized[alias]
+                # Skip nested shapes — some OpenAI-compatible /models endpoints
+                # nest rates under an alias key (e.g. a ``price`` field mapping
+                # ``input``/``output`` to ``{...}`` sub-objects); only scalar
+                # per-token/per-request rates belong here. The tuple (not set)
+                # membership check below also avoids hashing unhashable values
+                # (a dict value would raise ``TypeError: unhashable type``).
+                if isinstance(value, (dict, list)):
+                    continue
+                if value not in (None, ""):
+                    pricing[target] = value
                     break
         if pricing:
             return pricing
