@@ -591,6 +591,7 @@ def _launch_ios_bundle(
             stdout_path.unlink(missing_ok=True)
             stderr_path.unlink(missing_ok=True)
 
+    _mark_dev_menu_onboarded(target, cwd, bundle_id)
     try:
         proc = subprocess.run(
             args,
@@ -612,6 +613,33 @@ def _launch_ios_bundle(
         return False
     _cleanup_logs()
     return True
+
+
+def _mark_dev_menu_onboarded(target: str, cwd: Path, bundle_id: str) -> None:
+    # Skip the expo-dev-menu first-launch intro sheet so proof screenshots
+    # show the app instead of the developer-menu overlay. Best effort.
+    try:
+        subprocess.run(
+            [
+                "xcrun",
+                "simctl",
+                "spawn",
+                target,
+                "defaults",
+                "write",
+                bundle_id,
+                "EXDevMenuIsOnboardingFinished",
+                "-bool",
+                "true",
+            ],
+            cwd=str(cwd),
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return
 
 
 def _open_ios_url(target: str, cwd: Path, url: str, attempts: int = 3) -> bool:
