@@ -563,6 +563,11 @@ def test_s6_register_creates_service_dir_and_triggers_scan(
         "destination so supervised stdout reaches docker logs. Saw: "
         f"{log_text!r}"
     )
+    # Parent gateways/ dir must also be chown'd so that profiles added
+    # later (as the hermes user) can mkdir their leaf dirs. (#45258)
+    assert 'chown hermes:hermes "$HERMES_HOME/logs/gateways"' in log_text, (
+        f"log/run must chown the parent gateways/ dir; saw: {log_text!r}"
+    )
 
     # s6-svscanctl -a was invoked against the scandir
     assert any(
@@ -907,3 +912,37 @@ def test_s6_stop_tolerates_marker_write_failure(monkeypatch, s6_scandir):
     mgr.stop("gateway-coder")  # must not raise
 
     assert any(cmd[0] == "s6-svc" and "-d" in cmd for cmd in svc_calls)
+
+
+def test_render_log_run_chowns_parent_gateways_dir() -> None:
+    """Regression test: _render_log_run must chown the parent gateways/ dir.
+
+    When the first profile's log service runs as root, mkdir -p creates
+    ``$HERMES_HOME/logs/gateways/`` as root:root.  Without an explicit
+    chown on the *parent* directory, profiles added later (running as the
+    hermes user) cannot mkdir their leaf dirs and s6-log enters a fatal
+    crash-loop.  See issue #45258.
+    """
+    from hermes_cli.service_manager import S6ServiceManager
+
+    script = S6ServiceManager._render_log_run("default")
+
+    # Parent gateways/ dir is chown'd BEFORE the recursive leaf chown.
+    lines = script.splitlines()
+    parent_chown_idx = None
+    leaf_chown_idx = None
+    for i, line in enumerate(lines):
+        if "chown hermes:hermes" in line and "logs/gateways\"" in line and "-R" not in line:
+            parent_chown_idx = i
+        if "chown -R hermes:hermes" in line:
+            leaf_chown_idx = i
+
+    assert parent_chown_idx is not None, (
+        f"Missing parent gateways/ chown in:\n{script}"
+    )
+    assert leaf_chown_idx is not None, (
+        f"Missing leaf dir chown in:\n{script}"
+    )
+    assert parent_chown_idx < leaf_chown_idx, (
+        f"Parent chown must come before leaf chown; got parent@{parent_chown_idx} > leaf@{leaf_chown_idx}"
+    )
