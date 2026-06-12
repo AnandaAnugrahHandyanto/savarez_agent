@@ -207,6 +207,41 @@ class TestGoalCommandParsing:
         assert parsed.text == "Build the thing with STATUS in the title"
 
 
+class TestGoalCommandHandling:
+    def test_handle_set_and_resume_share_mutation_contract(self, hermes_home):
+        from hermes_cli.goals import GoalManager, handle_goal_command
+
+        mgr = GoalManager(session_id="cmd-shared", default_max_turns=4)
+        set_result = handle_goal_command(mgr, "write a brief")
+        assert set_result.action == "set"
+        assert set_result.state is not None
+        assert set_result.kickoff_prompt == "write a brief"
+
+        pause_result = handle_goal_command(mgr, "pause")
+        assert pause_result.action == "pause"
+        assert pause_result.state is not None
+        assert pause_result.state.status == "paused"
+
+        resume_result = handle_goal_command(mgr, "resume")
+        assert resume_result.action == "resume"
+        assert resume_result.state is not None
+        assert resume_result.kickoff_prompt is not None
+        assert "[Continuing toward your standing goal]" in resume_result.kickoff_prompt
+
+    def test_handle_status_and_clear_are_surface_neutral(self, hermes_home):
+        from hermes_cli.goals import GoalManager, handle_goal_command
+
+        mgr = GoalManager(session_id="cmd-neutral")
+        status = handle_goal_command(mgr, "status")
+        assert status.action == "status"
+        assert status.status_line == "No active goal. Set one with /goal <text>."
+
+        assert handle_goal_command(mgr, "clear").had_goal is False
+        handle_goal_command(mgr, "ship it")
+        assert handle_goal_command(mgr, "done").had_goal is True
+        assert mgr.state is None
+
+
 class TestGoalDecision:
     def test_goal_decision_behaves_like_mapping_for_callers(self):
         from hermes_cli.goals import GoalDecision

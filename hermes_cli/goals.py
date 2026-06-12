@@ -806,6 +806,42 @@ class GoalManager:
         return CONTINUATION_PROMPT_TEMPLATE.format(goal=self._state.goal)
 
 
+@dataclass(frozen=True)
+class GoalCommandResult:
+    """Surface-agnostic outcome of applying a parsed /goal command."""
+
+    action: str
+    state: Optional[GoalState] = None
+    status_line: str = ""
+    had_goal: bool = False
+    kickoff_prompt: Optional[str] = None
+    error: Optional[Exception] = None
+
+
+def handle_goal_command(manager: GoalManager, raw_args: str) -> GoalCommandResult:
+    """Apply a /goal command to a manager without formatting UI text."""
+    command = parse_goal_command(raw_args)
+
+    if command.action == "status":
+        return GoalCommandResult(action="status", status_line=manager.status_line())
+    if command.action == "pause":
+        return GoalCommandResult(action="pause", state=manager.pause(reason="user-paused"))
+    if command.action == "resume":
+        state = manager.resume()
+        prompt = manager.next_continuation_prompt() if state is not None else None
+        return GoalCommandResult(action="resume", state=state, kickoff_prompt=prompt)
+    if command.action == "clear":
+        had_goal = manager.has_goal()
+        manager.clear()
+        return GoalCommandResult(action="clear", had_goal=had_goal)
+
+    try:
+        state = manager.set(command.text)
+    except ValueError as exc:
+        return GoalCommandResult(action="set", error=exc)
+    return GoalCommandResult(action="set", state=state, kickoff_prompt=state.goal)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Kanban worker goal loop
 # ──────────────────────────────────────────────────────────────────────
@@ -955,6 +991,7 @@ def run_kanban_goal_loop(
 
 __all__ = [
     "GoalCommand",
+    "GoalCommandResult",
     "GoalDecision",
     "GoalState",
     "GoalManager",
@@ -969,6 +1006,7 @@ __all__ = [
     "save_goal",
     "clear_goal",
     "judge_goal",
+    "handle_goal_command",
     "parse_goal_command",
     "run_kanban_goal_loop",
 ]
