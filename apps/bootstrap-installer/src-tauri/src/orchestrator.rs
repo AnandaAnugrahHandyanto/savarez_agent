@@ -76,6 +76,7 @@ pub struct NodeDependenciesStagePlan {
     pub npx: Option<PathBuf>,
     pub cwd: PathBuf,
     pub npm_cache_dir: PathBuf,
+    pub playwright_browsers_dir: PathBuf,
     pub browser_tools: bool,
     pub tui_dir: Option<PathBuf>,
 }
@@ -1824,6 +1825,7 @@ where
         npx,
         cwd: install_root.to_path_buf(),
         npm_cache_dir: hermes_home.join("npm-cache"),
+        playwright_browsers_dir: hermes_home.join("playwright-browsers"),
         browser_tools: install_root.join("package.json").is_file(),
         tui_dir,
     })
@@ -1838,7 +1840,13 @@ pub fn install_node_dependencies_stage(
     let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
     let plan = node_dependencies_stage_plan(install_root, hermes_home, path_env, &pathext)?;
     if plan.browser_tools {
-        run_node_dependency_command(&plan.npm, ["install", "--silent"], &plan.cwd, &plan.npm_cache_dir)
+        run_node_dependency_command(
+            &plan.npm,
+            ["install", "--silent"],
+            &plan.cwd,
+            &plan.npm_cache_dir,
+            Some(&plan.playwright_browsers_dir),
+        )
             .context("installing root Node dependencies")?;
         let npx = plan
             .npx
@@ -1849,17 +1857,25 @@ pub fn install_node_dependencies_stage(
             ["--yes", "playwright", "install", "chromium"],
             &plan.cwd,
             &plan.npm_cache_dir,
+            Some(&plan.playwright_browsers_dir),
         )
         .context("installing Playwright Chromium")?;
     }
     if let Some(tui_dir) = &plan.tui_dir {
-        run_node_dependency_command(&plan.npm, ["install", "--silent"], tui_dir, &plan.npm_cache_dir)
+        run_node_dependency_command(
+            &plan.npm,
+            ["install", "--silent"],
+            tui_dir,
+            &plan.npm_cache_dir,
+            Some(&plan.playwright_browsers_dir),
+        )
             .context("installing TUI Node dependencies")?;
     }
     Ok(serde_json::json!({
         "npm": plan.npm,
         "npx": plan.npx,
         "npmCacheDir": plan.npm_cache_dir,
+        "playwrightBrowsersDir": plan.playwright_browsers_dir,
         "browserTools": plan.browser_tools,
         "tui": plan.tui_dir.is_some(),
     }))
@@ -1900,8 +1916,8 @@ pub fn build_desktop_stage(
     let path_env = std::env::var_os("PATH").unwrap_or_default();
     let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
     let plan = desktop_build_stage_plan(install_root, hermes_home, path_env, &pathext)?;
-    if run_node_dependency_command(&plan.npm, ["ci"], &plan.cwd, &plan.npm_cache_dir).is_err() {
-        run_node_dependency_command(&plan.npm, ["install"], &plan.cwd, &plan.npm_cache_dir)
+    if run_node_dependency_command(&plan.npm, ["ci"], &plan.cwd, &plan.npm_cache_dir, None).is_err() {
+        run_node_dependency_command(&plan.npm, ["install"], &plan.cwd, &plan.npm_cache_dir, None)
             .context("installing desktop workspace Node dependencies")?;
     }
     run_desktop_pack_command(&plan.npm, &plan.desktop_dir, &plan.npm_cache_dir)?;
@@ -3040,11 +3056,17 @@ fn run_node_dependency_command<const N: usize>(
     args: [&str; N],
     cwd: &Path,
     npm_cache_dir: &Path,
+    playwright_browsers_dir: Option<&Path>,
 ) -> Result<()> {
-    let status = Command::new(command)
+    let mut child = Command::new(command);
+    child
         .args(args)
         .current_dir(cwd)
-        .env("npm_config_cache", npm_cache_dir)
+        .env("npm_config_cache", npm_cache_dir);
+    if let Some(path) = playwright_browsers_dir {
+        child.env("PLAYWRIGHT_BROWSERS_PATH", path);
+    }
+    let status = child
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -4016,6 +4038,10 @@ mod tests {
         assert_eq!(plan.npx.as_deref(), Some(npx.as_path()));
         assert_eq!(plan.cwd, install_root);
         assert_eq!(plan.npm_cache_dir, hermes_home.join("npm-cache"));
+        assert_eq!(
+            plan.playwright_browsers_dir,
+            hermes_home.join("playwright-browsers")
+        );
         assert_eq!(plan.browser_tools, true);
         assert_eq!(plan.tui_dir.as_deref(), Some(install_root.join("ui-tui").as_path()));
 
@@ -4055,13 +4081,19 @@ mod tests {
         ));
         let cwd = root.join("cwd");
         let cache = root.join("home").join("npm-cache");
+        let browsers = root.join("home").join("playwright-browsers");
         let output = root.join("npm-cache-env.txt");
+        let browser_output = root.join("playwright-browsers-env.txt");
         std::fs::create_dir_all(&cwd).unwrap();
 
         #[cfg(target_os = "windows")]
         let command = {
             let command = root.join("capture-npm-cache.cmd");
-            let script = format!("@echo off\r\n> \"{}\" echo %npm_config_cache%\r\n", output.display());
+            let script = format!(
+                "@echo off\r\n> \"{}\" echo %npm_config_cache%\r\n> \"{}\" echo %PLAYWRIGHT_BROWSERS_PATH%\r\n",
+                output.display(),
+                browser_output.display()
+            );
             std::fs::write(&command, script).unwrap();
             command
         };
@@ -4070,17 +4102,23 @@ mod tests {
         let command = {
             let command = root.join("capture-npm-cache.sh");
             let script = format!(
-                "#!/usr/bin/env sh\nprintf '%s' \"$npm_config_cache\" > '{}'\n",
-                output.display()
+                "#!/usr/bin/env sh\nprintf '%s' \"$npm_config_cache\" > '{}'\n\
+                 printf '%s' \"$PLAYWRIGHT_BROWSERS_PATH\" > '{}'\n",
+                output.display(),
+                browser_output.display()
             );
             std::fs::write(&command, script).unwrap();
             make_executable(&command).unwrap();
             command
         };
 
-        run_node_dependency_command(&command, ["ignored"], &cwd, &cache).unwrap();
+        run_node_dependency_command(&command, ["ignored"], &cwd, &cache, Some(&browsers)).unwrap();
 
         assert_eq!(std::fs::read_to_string(&output).unwrap().trim(), cache.display().to_string());
+        assert_eq!(
+            std::fs::read_to_string(&browser_output).unwrap().trim(),
+            browsers.display().to_string()
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

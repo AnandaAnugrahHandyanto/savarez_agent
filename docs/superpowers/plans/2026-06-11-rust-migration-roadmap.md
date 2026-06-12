@@ -243,6 +243,8 @@ language-specific setup where needed.
   into the Hermes venv, keeping pip's recovery cache out of the user's global pip cache.
 - Native npm, Playwright, TUI, and desktop build commands now set `npm_config_cache=$HERMES_HOME/npm-cache`, keeping
   npm's install cache under Hermes-managed repair/uninstall roots instead of the user's global npm cache.
+- Native Playwright Chromium install now sets `PLAYWRIGHT_BROWSERS_PATH=$HERMES_HOME/playwright-browsers`, and the
+  browser tool uses the same managed path by default when no explicit Playwright browser path is configured.
 - `venv` now runs native-first through Rust by invoking `uv venv venv --python 3.11` in the checkout, with script
   fallback preserved if native venv creation fails.
 - Python dependency installation now has a Rust native-first lockfile path using `uv sync --extra all --locked` with
@@ -339,9 +341,9 @@ language-specific setup where needed.
   Menu/Desktop shortcuts. The manager only removes planned `.lnk` files whose shortcut target still points at the
   packaged Hermes desktop executable.
 - `hermes-manager install-metadata` now records existing Hermes-managed runtime directories such as `bin`, `uv-cache`,
-  `pip-cache`, `npm-cache`, `node`, `python`, `git`, and `bootstrap-cache` in addition to the source checkout, and
-  records the staged `hermes-setup(.exe)` updater when present. Lite uninstall accepts only those runtime roots/files
-  while continuing to reject user config and data paths.
+  `pip-cache`, `npm-cache`, `playwright-browsers`, `node`, `python`, `git`, and `bootstrap-cache` in addition to the
+  source checkout, and records the staged `hermes-setup(.exe)` updater when present. Lite uninstall accepts only those
+  runtime roots/files while continuing to reject user config and data paths.
 - `hermes-manager repair-clean` now removes the same Hermes-managed runtime roots as repairable install state, so
   broken managed Node/Python/uv/pip/Git/bootstrap-cache directories and staged updater binaries are recreated by the
   next bootstrap while user config and data stay intact.
