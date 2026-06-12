@@ -28,6 +28,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.cyber_routing import classify_cyber_route
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
@@ -62,6 +63,32 @@ from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
+
+
+def _capture_cyber_route_metadata(agent: Any, user_message: Any) -> None:
+    """Classify this turn for AgentCyber routing without enforcing policy.
+
+    This is deliberately metadata-only: it does not mutate the cached system
+    prompt, switch models, filter tools, or block execution. Later lanes can
+    consume these attributes for audit, prompt nudges, or model policy.
+    """
+    message_text = user_message if isinstance(user_message, str) else ""
+    try:
+        decision = classify_cyber_route(message_text)
+        metadata = {
+            "route": decision.route.value,
+            "provider_preference": decision.provider_preference.value,
+            "reason": decision.reason,
+            "requires_hosted_secret_confirmation": decision.requires_hosted_secret_confirmation,
+            "explicit_override": decision.explicit_override,
+        }
+    except Exception as exc:
+        logger.debug("AgentCyber route classification failed: %s", exc, exc_info=True)
+        decision = None
+        metadata = None
+
+    agent._current_cyber_route_decision = decision
+    agent._current_cyber_route_metadata = metadata
 
 
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
@@ -423,6 +450,11 @@ def run_conversation(
         user_message = _sanitize_surrogates(user_message)
     if isinstance(persist_user_message, str):
         persist_user_message = _sanitize_surrogates(persist_user_message)
+
+    # AgentCyber routing metadata is captured per turn, after input
+    # sanitization and before prompt/message assembly. This is observation
+    # only: no model switching, prompt mutation, tool filtering, or blocking.
+    _capture_cyber_route_metadata(agent, user_message)
 
     # Store stream callback for _interruptible_api_call to pick up
     agent._stream_callback = stream_callback
