@@ -1945,3 +1945,73 @@ class TestUtf16OverflowDetection:
         # this file passing — they all use MagicMock adapters.
         assert consumer is not None
 
+
+class TestStreamingEditSafeLimit:
+    """Regression coverage for mobile-hostile oversized progressive edits."""
+
+    def test_adapter_safe_limit_caps_progressive_edit_budget(self):
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.STREAMING_EDIT_SAFE_LIMIT = 1024
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(cursor=" ▉"),
+        )
+
+        assert consumer._streaming_edit_safe_limit(4096, len) == 1002
+
+    def test_mock_auto_attrs_do_not_look_like_safe_limit(self):
+        """MagicMock adapters fabricate attributes; ignore non-scalar caps."""
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(cursor=" ▉"),
+        )
+
+        assert consumer._streaming_edit_safe_limit(4096, len) == 3994
+
+    @pytest.mark.asyncio
+    async def test_stream_seals_segment_at_adapter_safe_limit_before_platform_cap(self):
+        """A long edit stream should split before Telegram's hard cap.
+
+        Without the adapter-level safe limit, the consumer keeps editing the
+        same message until just under 4096 chars.  That is legal for the Bot
+        API but expensive for Telegram Android to re-render repeatedly and can
+        overflow after MarkdownV2 escaping on the final edit.  The safe limit
+        seals the current segment earlier and continues in a new message.
+        """
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.STREAMING_EDIT_SAFE_LIMIT = 640
+        adapter.send = AsyncMock(
+            side_effect=[
+                SimpleNamespace(success=True, message_id="msg_1"),
+                SimpleNamespace(success=True, message_id="msg_2"),
+            ],
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1"),
+        )
+        adapter.truncate_message = MagicMock(
+            side_effect=lambda text, limit, **kw: [text[i:i + limit] for i in range(0, len(text), limit)]
+        )
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉"),
+        )
+        consumer.on_delta("a" * 1200)
+        consumer.finish()
+
+        await consumer.run()
+
+        adapter.truncate_message.assert_called()
+        split_limit = adapter.truncate_message.call_args.args[1]
+        assert split_limit == 618
+        for call in adapter.send.call_args_list:
+            assert len(call.kwargs["content"]) <= split_limit
+
