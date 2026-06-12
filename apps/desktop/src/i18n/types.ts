@@ -211,6 +211,12 @@ export interface Translations {
       intro: string
       colorMode: string
       colorModeDesc: string
+      fontTitle: string
+      fontDesc: string
+      fontOptions: { system: string; manrope: string; inter: string; jetbrains: string }
+      fontSizeTitle: string
+      fontSizeDesc: string
+      fontSizeOptions: { small: string; medium: string; large: string; extraLarge: string }
       toolViewTitle: string
       toolViewDesc: string
       product: string

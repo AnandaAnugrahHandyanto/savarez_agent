@@ -294,6 +294,22 @@ export const en: Translations = {
         'These are desktop-only display preferences. Mode controls brightness; theme controls the accent palette and chat surface styling.',
       colorMode: 'Color Mode',
       colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
+      fontTitle: 'Font',
+      fontDesc: 'Choose the interface font.',
+      fontOptions: {
+        system: 'System',
+        manrope: 'Manrope',
+        inter: 'Inter',
+        jetbrains: 'JetBrains Mono'
+      },
+      fontSizeTitle: 'Font size',
+      fontSizeDesc: 'Adjust the interface text size.',
+      fontSizeOptions: {
+        small: 'Small',
+        medium: 'Medium',
+        large: 'Large',
+        extraLarge: 'Extra Large'
+      },
       toolViewTitle: 'Tool Call Display',
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
       product: 'Product',
@@ -1287,7 +1303,8 @@ export const en: Translations = {
     copied: 'Copied',
     done: 'Done',
     applyingBody: 'The Hermes updater will take over in its own window and reopen Hermes when it’s done.',
-    applyingBodyBackend: 'The remote backend is applying the update and will restart. Hermes reconnects automatically when it’s back.',
+    applyingBodyBackend:
+      'The remote backend is applying the update and will restart. Hermes reconnects automatically when it’s back.',
     applyingClose: 'Hermes will close to apply the update.',
     errorTitle: 'Update didn’t finish',
     errorBody: 'No worries — nothing was lost. You can try again now.',
