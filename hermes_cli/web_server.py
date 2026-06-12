@@ -256,21 +256,19 @@ def _require_token(request: Request) -> None:
       ephemeral ``_SESSION_TOKEN`` is injected into the SPA HTML and echoed
       back via ``X-Hermes-Session-Token`` (or the legacy ``Bearer`` header).
       Validate it here.
-    * **Gated / OAuth mode** (``auth_required`` True): ``_SESSION_TOKEN`` is
-      NOT injected (the SPA authenticates with a session cookie), so there is
-      no token to check. The ``gated_auth_middleware`` has already verified the
-      cookie before the request reached this handler — any non-public ``/api/``
-      route it lets through carries a verified ``request.state.session``. The
-      legacy ``auth_middleware`` likewise short-circuits in this mode. Requiring
-      the (absent) token here would 401 every cookie-authenticated request,
-      making plugin install/enable/disable and the other ``_require_token``
-      endpoints permanently unreachable behind the gate. Defer to the gate.
+    * **Gated / OAuth mode** (``auth_required`` True): browser calls use the
+      session cookie verified by ``gated_auth_middleware``. Native Desktop
+      clients may still present the operator session token via
+      ``X-Hermes-Session-Token``. Accept either credential so the browser auth
+      gate can coexist with Desktop's token-based API contract.
     """
     if getattr(request.app.state, "auth_required", False):
-        # Gate is authoritative. It attaches ``request.state.session`` on
-        # success and 401s otherwise, so a request that reached us is already
-        # authenticated. Belt-and-braces: confirm the session is present.
-        if getattr(request.state, "session", None) is not None:
+        # Cookie sessions are authoritative for the browser. Desktop remote
+        # still uses the process session token header for API calls.
+        if (
+            getattr(request.state, "session", None) is not None
+            or _has_valid_session_token(request)
+        ):
             return
         raise HTTPException(status_code=401, detail="Unauthorized")
     if not _has_valid_session_token(request):
@@ -389,6 +387,17 @@ async def host_header_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def _dashboard_auth_gate(request: Request, call_next):
+    if (
+        getattr(request.app.state, "auth_required", False)
+        and request.url.path.startswith("/api/")
+        and request.url.path not in _PUBLIC_API_PATHS
+        and _has_valid_session_token(request)
+    ):
+        # Hermes Desktop remote does not participate in the browser cookie
+        # flow. It authenticates API calls with the process session token, so
+        # let it pass through to the legacy endpoint-level checks while the
+        # browser remains protected by the dashboard auth gate.
+        return await call_next(request)
     from hermes_cli.dashboard_auth.middleware import gated_auth_middleware
     return await gated_auth_middleware(request, call_next)
 
@@ -9962,7 +9971,7 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     Loopback / ``--insecure``: legacy ``?token=<_SESSION_TOKEN>`` query
     parameter, constant-time compared.
 
-    Gated (public bind, no ``--insecure``): one of two credentials —
+    Gated (public bind, no ``--insecure``): one of three credentials —
 
     * ``?ticket=<single-use>`` — a browser-minted, single-use, 30s-TTL ticket
       consumed against the dashboard-auth ticket store. This is what the SPA
@@ -9973,10 +9982,9 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
       is multi-use and never expires so the child can reconnect, and is never
       injected into the SPA — see ``dashboard_auth.ws_tickets`` for the
       threat model.
-
-    The legacy ``?token=`` path is unconditionally rejected in gated mode
-    (the SPA bundle isn't carrying the token any longer, and a leaked
-    ``_SESSION_TOKEN`` must not grant WS access once the gate is engaged).
+    * ``?token=<session-token>`` — the operator Desktop session token. Hermes
+      Desktop remote still builds its WebSocket URL this way, so gated
+      browser auth must continue to accept it for native clients.
 
     Audit-logs the rejection so operators can debug "WS keeps closing"
     issues from the log.
@@ -10008,6 +10016,12 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
                     path=ws.url.path,
                 )
                 return "internal_invalid", "internal"
+
+        token = ws.query_params.get("token", "")
+        if token:
+            if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+                return None, "token"
+            return "token_mismatch", "token"
 
         ticket = ws.query_params.get("ticket", "")
         if not ticket:
