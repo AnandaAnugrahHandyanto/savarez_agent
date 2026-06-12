@@ -244,6 +244,10 @@ LIVE_CAPTURE_SELFTEST_SCHEMA = {
                 "type": "boolean",
                 "description": "When true, pass --attempt-window-capture to probe external color read.",
             },
+            "require_foreground": {
+                "type": "boolean",
+                "description": "When true, pass --require-foreground and fail if the FH6 window is not the active capture source.",
+            },
             "timeout_seconds": {
                 "type": "integer",
                 "minimum": 5,
@@ -388,6 +392,10 @@ COLOR_DEPTH_PAIRING_SELFTEST_SCHEMA = {
                 "type": "boolean",
                 "description": "When true, pass --attempt-window-capture for live FH6 color.",
             },
+            "require_foreground": {
+                "type": "boolean",
+                "description": "When true, pass --require-foreground and require the live color frame to come from the foreground FH6 window.",
+            },
             "metadata_path": {
                 "type": "string",
                 "description": "Optional companion producer metadata JSON path.",
@@ -423,6 +431,10 @@ OPENXR_PRESENTATION_SELFTEST_SCHEMA = {
             "attempt_window_capture": {
                 "type": "boolean",
                 "description": "When true, pass --attempt-window-capture during pairing.",
+            },
+            "require_foreground": {
+                "type": "boolean",
+                "description": "When true, pass --require-foreground and require foreground FH6 live color before OpenXR presentation.",
             },
             "require_pairing": {
                 "type": "boolean",
@@ -1300,6 +1312,8 @@ def handle_live_capture_selftest(args: dict[str, Any] | None = None, **_: Any) -
     extra = ["--json"]
     if bool(args.get("attempt_window_capture")):
         extra.append("--attempt-window-capture")
+    if bool(args.get("require_foreground")):
+        extra.append("--require-foreground")
     return _json(
         run_launcher(
             "fh6-live-capture-selftest",
@@ -1389,6 +1403,8 @@ def handle_color_depth_pairing_selftest(args: dict[str, Any] | None = None, **_:
         extra.append("--approve")
     if bool(args.get("attempt_window_capture")):
         extra.append("--attempt-window-capture")
+    if bool(args.get("require_foreground")):
+        extra.append("--require-foreground")
     metadata_path = str(args.get("metadata_path") or "").strip()
     if metadata_path:
         extra.extend(["--metadata", metadata_path])
@@ -1412,6 +1428,8 @@ def handle_openxr_presentation_selftest(args: dict[str, Any] | None = None, **_:
         extra.append("--approve")
     if bool(args.get("attempt_window_capture")):
         extra.append("--attempt-window-capture")
+    if bool(args.get("require_foreground")):
+        extra.append("--require-foreground")
     if bool(args.get("require_pairing")):
         extra.append("--require-pairing")
     if bool(args.get("require_hmd")):
@@ -1610,13 +1628,13 @@ HELP = """questframe commands:
   /questframe frame-loop
   /questframe dibr-swapchain
   /questframe capture-preflight
-  /questframe live-capture-selftest
+  /questframe live-capture-selftest [--attempt-window-capture] [--require-foreground]
   /questframe depth-surface-selftest
   /questframe depth-reader-selftest [--fixture]
   /questframe depth-producer-selftest [--fixture] [--metadata PATH]
   /questframe companion-depth-producer-selftest [--approve] [--metadata PATH] [--output-dir PATH]
-  /questframe color-depth-pairing-selftest [--approve] [--attempt-window-capture]
-  /questframe openxr-presentation-selftest [--approve] [--require-pairing] [--require-hmd] [--min-hmd-width N] [--min-hmd-height N]
+  /questframe color-depth-pairing-selftest [--approve] [--attempt-window-capture] [--require-foreground]
+  /questframe openxr-presentation-selftest [--approve] [--attempt-window-capture] [--require-foreground] [--require-pairing] [--require-hmd] [--min-hmd-width N] [--min-hmd-height N]
   /questframe cockpit-presence-selftest [--approve] [--attempt-window-capture] [--seconds N]
   /questframe kofi-parity-selftest [--approve] [--attempt-window-capture]
   /questframe pcvr-management-selftest [--allow-missing-runtime]
@@ -1650,7 +1668,12 @@ def handle_slash(raw_args: str) -> str:
     if command in {"capture-preflight", "fh6-capture-preflight", "capture"}:
         return handle_fh6_capture_preflight({})
     if command in {"live-capture-selftest", "live-capture", "live-capture-self-test"}:
-        return handle_live_capture_selftest({})
+        return handle_live_capture_selftest(
+            {
+                "attempt_window_capture": "--attempt-window-capture" in argv,
+                "require_foreground": "--require-foreground" in argv,
+            }
+        )
     if command in {"depth-surface-selftest", "depth-surface", "depth"}:
         return handle_depth_surface_selftest({})
     if command in {"depth-reader-selftest", "depth-reader", "reader"}:
@@ -1685,6 +1708,7 @@ def handle_slash(raw_args: str) -> str:
         args = {
             "approve": "--approve" in argv,
             "attempt_window_capture": "--attempt-window-capture" in argv,
+            "require_foreground": "--require-foreground" in argv,
         }
         if "--metadata" in argv:
             index = argv.index("--metadata")
@@ -1703,6 +1727,7 @@ def handle_slash(raw_args: str) -> str:
         args = {
             "approve": "--approve" in argv,
             "attempt_window_capture": "--attempt-window-capture" in argv,
+            "require_foreground": "--require-foreground" in argv,
             "require_pairing": "--require-pairing" in argv,
             "require_hmd": "--require-hmd" in argv,
             "immersive_check": "--immersive-check" in argv,

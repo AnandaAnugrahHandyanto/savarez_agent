@@ -306,6 +306,7 @@ def test_cli_openxr_presentation_require_hmd_dispatch(monkeypatch):
             "openxr-presentation-selftest",
             "--approve",
             "--attempt-window-capture",
+            "--require-foreground",
             "--require-pairing",
             "--require-hmd",
             "--min-hmd-width",
@@ -325,6 +326,7 @@ def test_cli_openxr_presentation_require_hmd_dispatch(monkeypatch):
     assert "--json" in extra
     assert "--approve" in extra
     assert "--attempt-window-capture" in extra
+    assert "--require-foreground" in extra
     assert "--require-pairing" in extra
     assert "--require-hmd" in extra
     assert "--min-hmd-width" in extra

@@ -22,12 +22,23 @@ def test_status_lists_019_tools():
 def test_color_depth_pairing_dispatches_launcher():
     fake = {"ok": True, "command": "fh6-color-depth-pairing-selftest", "exit_code": 0}
     with patch.object(core, "run_launcher", return_value=fake) as run:
-        payload = json.loads(core.handle_color_depth_pairing_selftest({"approve": True}))
+        payload = json.loads(
+            core.handle_color_depth_pairing_selftest(
+                {
+                    "approve": True,
+                    "attempt_window_capture": True,
+                    "require_foreground": True,
+                }
+            )
+        )
     assert payload["ok"] is True
     run.assert_called_once()
     assert run.call_args.args[0] == "fh6-color-depth-pairing-selftest"
-    assert "--approve" in run.call_args.kwargs["extra_args"]
-    assert "--json" in run.call_args.kwargs["extra_args"]
+    extra = run.call_args.kwargs["extra_args"]
+    assert "--approve" in extra
+    assert "--attempt-window-capture" in extra
+    assert "--require-foreground" in extra
+    assert "--json" in extra
 
 
 def test_openxr_presentation_dispatches_launcher():
@@ -37,6 +48,8 @@ def test_openxr_presentation_dispatches_launcher():
             core.handle_openxr_presentation_selftest(
                 {
                     "approve": True,
+                    "attempt_window_capture": True,
+                    "require_foreground": True,
                     "require_pairing": True,
                     "require_hmd": True,
                     "min_hmd_width": 1980,
@@ -49,6 +62,8 @@ def test_openxr_presentation_dispatches_launcher():
     assert run.call_args.args[0] == "openxr-presentation-selftest"
     extra = run.call_args.kwargs["extra_args"]
     assert "--approve" in extra
+    assert "--attempt-window-capture" in extra
+    assert "--require-foreground" in extra
     assert "--require-pairing" in extra
     assert "--require-hmd" in extra
     assert "--min-hmd-width" in extra
@@ -59,10 +74,25 @@ def test_openxr_presentation_dispatches_launcher():
 
 def test_slash_color_depth_pairing_alias():
     with patch.object(core, "handle_color_depth_pairing_selftest", return_value='{"ok":true}') as handler:
-        out = core.handle_slash("color-depth-pairing-selftest --approve")
+        out = core.handle_slash(
+            "color-depth-pairing-selftest --approve --attempt-window-capture --require-foreground"
+        )
     assert '"ok":true' in out.replace(" ", "")
     handler.assert_called_once()
-    assert handler.call_args.args[0]["approve"] is True
+    args = handler.call_args.args[0]
+    assert args["approve"] is True
+    assert args["attempt_window_capture"] is True
+    assert args["require_foreground"] is True
+
+
+def test_slash_live_capture_foreground_alias():
+    with patch.object(core, "handle_live_capture_selftest", return_value='{"ok":true}') as handler:
+        out = core.handle_slash("live-capture-selftest --attempt-window-capture --require-foreground")
+    assert '"ok":true' in out.replace(" ", "")
+    handler.assert_called_once()
+    args = handler.call_args.args[0]
+    assert args["attempt_window_capture"] is True
+    assert args["require_foreground"] is True
 
 
 def test_cockpit_presence_dispatches_launcher():

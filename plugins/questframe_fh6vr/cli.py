@@ -68,6 +68,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     )
     live_capture.add_argument("--launcher-exe", default="")
     live_capture.add_argument("--attempt-window-capture", action="store_true")
+    live_capture.add_argument("--require-foreground", action="store_true")
     live_capture.add_argument("--timeout-seconds", type=int, default=None)
 
     depth_surface = subs.add_parser(
@@ -113,6 +114,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     color_depth_pairing.add_argument("--launcher-exe", default="")
     color_depth_pairing.add_argument("--approve", action="store_true")
     color_depth_pairing.add_argument("--attempt-window-capture", action="store_true")
+    color_depth_pairing.add_argument("--require-foreground", action="store_true")
     color_depth_pairing.add_argument("--metadata", default="")
     color_depth_pairing.add_argument("--output-dir", default="")
     color_depth_pairing.add_argument("--timeout-seconds", type=int, default=None)
@@ -124,6 +126,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     openxr_presentation.add_argument("--launcher-exe", default="")
     openxr_presentation.add_argument("--approve", action="store_true")
     openxr_presentation.add_argument("--attempt-window-capture", action="store_true")
+    openxr_presentation.add_argument("--require-foreground", action="store_true")
     openxr_presentation.add_argument("--require-pairing", action="store_true")
     openxr_presentation.add_argument("--require-hmd", action="store_true")
     openxr_presentation.add_argument("--min-hmd-width", type=int, default=None)
@@ -314,6 +317,8 @@ def questframe_command(args: argparse.Namespace) -> int:
         extra = ["--json"]
         if bool(getattr(args, "attempt_window_capture", False)):
             extra.append("--attempt-window-capture")
+        if bool(getattr(args, "require_foreground", False)):
+            extra.append("--require-foreground")
         return _print(
             core.run_launcher(
                 "fh6-live-capture-selftest",
@@ -388,6 +393,8 @@ def questframe_command(args: argparse.Namespace) -> int:
             extra.append("--approve")
         if bool(getattr(args, "attempt_window_capture", False)):
             extra.append("--attempt-window-capture")
+        if bool(getattr(args, "require_foreground", False)):
+            extra.append("--require-foreground")
         metadata_path = str(getattr(args, "metadata", "") or "").strip()
         if metadata_path:
             extra.extend(["--metadata", metadata_path])
@@ -408,6 +415,8 @@ def questframe_command(args: argparse.Namespace) -> int:
             extra.append("--approve")
         if bool(getattr(args, "attempt_window_capture", False)):
             extra.append("--attempt-window-capture")
+        if bool(getattr(args, "require_foreground", False)):
+            extra.append("--require-foreground")
         if bool(getattr(args, "require_pairing", False)):
             extra.append("--require-pairing")
         if bool(getattr(args, "require_hmd", False)):
