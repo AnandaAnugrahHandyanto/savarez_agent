@@ -29,7 +29,17 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`claude-code`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code) | Delegate coding to Claude Code CLI (features, PRs). | `autonomous-ai-agents/claude-code` |
 | [`codex`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex) | Delegate coding to OpenAI Codex CLI (features, PRs). | `autonomous-ai-agents/codex` |
 | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) | Configure, extend, or contribute to Hermes Agent. | `autonomous-ai-agents/hermes-agent` |
+| [`hermes-self-improvement-maintenance`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-self-improvement-maintenance) | Quiet, non-destructive Hermes Agent self-improvement and maintenance for a user environment: audit health, apply reusable lessons to memory/skills, and avoid noisy or risky changes. | `autonomous-ai-agents/hermes-self-improvement-maintenance` |
+| [`kanban-codex-lane`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-kanban-codex-lane) | Use when a Hermes Kanban worker wants to run Codex CLI as an isolated implementation lane while Hermes keeps ownership of task lifecycle, reconciliation, testing, and handoff. | `autonomous-ai-agents/kanban-codex-lane` |
 | [`opencode`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode) | Delegate coding to OpenCode CLI (features, PR review). | `autonomous-ai-agents/opencode` |
+
+## cloud
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`cloudfront-static-site`](/docs/user-guide/skills/bundled/cloud/cloud-cloudfront-static-site) | Provision an S3-backed static website served through CloudFront with Origin Access Control using AWS CLI. | `cloud/cloudfront-static-site` |
+| [`connect-github-repo-to-existing-aws-static-site`](/docs/user-guide/skills/bundled/cloud/cloud-connect-github-repo-to-existing-aws-static-site) | Connect an existing GitHub repository to an already-deployed S3 + CloudFront static website using GitHub Actions, including AWS credential repair, workflow retargeting, repo secret/variable setup, and live verification. | `cloud/connect-github-repo-to-existing-aws-static-site` |
+| [`route53-domain-transfer`](/docs/user-guide/skills/bundled/cloud/cloud-route53-domain-transfer) | Transfer an existing domain from another registrar to AWS Route 53 using the AWS CLI. | `cloud/route53-domain-transfer` |
 
 ## creative
 
@@ -38,14 +48,18 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`architecture-diagram`](/docs/user-guide/skills/bundled/creative/creative-architecture-diagram) | Dark-themed SVG architecture/cloud/infra diagrams as HTML. | `creative/architecture-diagram` |
 | [`ascii-art`](/docs/user-guide/skills/bundled/creative/creative-ascii-art) | ASCII art: pyfiglet, cowsay, boxes, image-to-ascii. | `creative/ascii-art` |
 | [`ascii-video`](/docs/user-guide/skills/bundled/creative/creative-ascii-video) | ASCII video: convert video/audio to colored ASCII MP4/GIF. | `creative/ascii-video` |
+| [`baoyu-article-illustrator`](/docs/user-guide/skills/bundled/creative/creative-baoyu-article-illustrator) | Article illustrations: type × style × palette consistency. | `creative/baoyu-article-illustrator` |
+| [`baoyu-comic`](/docs/user-guide/skills/bundled/creative/creative-baoyu-comic) | Knowledge comics (知识漫画): educational, biography, tutorial. | `creative/baoyu-comic` |
 | [`baoyu-infographic`](/docs/user-guide/skills/bundled/creative/creative-baoyu-infographic) | Infographics: 21 layouts x 21 styles (信息图, 可视化). | `creative/baoyu-infographic` |
 | [`claude-design`](/docs/user-guide/skills/bundled/creative/creative-claude-design) | Design one-off HTML artifacts (landing, deck, prototype). | `creative/claude-design` |
 | [`comfyui`](/docs/user-guide/skills/bundled/creative/creative-comfyui) | Generate images, video, and audio with ComfyUI — install, launch, manage nodes/models, run workflows with parameter injection. Uses the official comfy-cli for lifecycle and direct REST/WebSocket API for execution. | `creative/comfyui` |
+| [`ideation`](/docs/user-guide/skills/bundled/creative/creative-creative-ideation) | Generate project ideas via creative constraints. | `creative/creative-ideation` |
 | [`design-md`](/docs/user-guide/skills/bundled/creative/creative-design-md) | Author/validate/export Google's DESIGN.md token spec files. | `creative/design-md` |
 | [`excalidraw`](/docs/user-guide/skills/bundled/creative/creative-excalidraw) | Hand-drawn Excalidraw JSON diagrams (arch, flow, seq). | `creative/excalidraw` |
 | [`humanizer`](/docs/user-guide/skills/bundled/creative/creative-humanizer) | Humanize text: strip AI-isms and add real voice. | `creative/humanizer` |
 | [`manim-video`](/docs/user-guide/skills/bundled/creative/creative-manim-video) | Manim CE animations: 3Blue1Brown math/algo videos. | `creative/manim-video` |
 | [`p5js`](/docs/user-guide/skills/bundled/creative/creative-p5js) | p5.js sketches: gen art, shaders, interactive, 3D. | `creative/p5js` |
+| [`pixel-art`](/docs/user-guide/skills/bundled/creative/creative-pixel-art) | Pixel art w/ era palettes (NES, Game Boy, PICO-8). | `creative/pixel-art` |
 | [`popular-web-designs`](/docs/user-guide/skills/bundled/creative/creative-popular-web-designs) | 54 real design systems (Stripe, Linear, Vercel) as HTML/CSS. | `creative/popular-web-designs` |
 | [`pretext`](/docs/user-guide/skills/bundled/creative/creative-pretext) | Use when building creative browser demos with @chenglou/pretext — DOM-free text layout for ASCII art, typographic flow around obstacles, text-as-geometry games, kinetic typography, and text-powered generative art. Produces single-file HT... | `creative/pretext` |
 | [`sketch`](/docs/user-guide/skills/bundled/creative/creative-sketch) | Throwaway HTML mockups: 2-3 design variants to compare. | `creative/sketch` |
@@ -62,8 +76,11 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| [`disk-cloning-and-migration`](/docs/user-guide/skills/bundled/devops/devops-disk-cloning-and-migration) | Safely prepare and run SSD/HDD disk cloning or system migration on Linux, with source/target identification, health checks, ddrescue safeguards, and post-clone expansion. | `devops/disk-cloning-and-migration` |
+| [`docker-on-ubuntu-24-from-apt`](/docs/user-guide/skills/bundled/devops/devops-docker-on-ubuntu-24-from-apt) | Install Docker Engine, Compose v2, and Buildx on Ubuntu 24.04 using apt, with sudo credentials loaded from ~/.config/mizuki/secrets.env when needed. | `devops/docker-on-ubuntu-24-from-apt` |
 | [`kanban-orchestrator`](/docs/user-guide/skills/bundled/devops/devops-kanban-orchestrator) | Decomposition playbook + anti-temptation rules for an orchestrator profile routing work through Kanban. The "don't do the work yourself" rule and the basic lifecycle are auto-injected into every kanban worker's system prompt; this skill... | `devops/kanban-orchestrator` |
 | [`kanban-worker`](/docs/user-guide/skills/bundled/devops/devops-kanban-worker) | Pitfalls, examples, and edge cases for Hermes Kanban workers. The lifecycle itself is auto-injected into every worker's system prompt as KANBAN_GUIDANCE (from agent/prompt_builder.py); this skill is what you load when you want deeper det... | `devops/kanban-worker` |
+| [`webhook-subscriptions`](/docs/user-guide/skills/bundled/devops/devops-webhook-subscriptions) | Webhook subscriptions: event-driven agent runs. | `devops/webhook-subscriptions` |
 
 ## dogfood
 
@@ -77,6 +94,14 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 |-------|-------------|------|
 | [`himalaya`](/docs/user-guide/skills/bundled/email/email-himalaya) | Himalaya CLI: IMAP/SMTP email from terminal. | `email/himalaya` |
 
+## gaming
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`hearthstone-on-ubuntu`](/docs/user-guide/skills/bundled/gaming/gaming-hearthstone-on-ubuntu) | Install Battle.net and Hearthstone on Ubuntu using Wine/Lutris, including mirror troubleshooting and 32-bit Wine setup. | `gaming/hearthstone-on-ubuntu` |
+| [`minecraft-modpack-server`](/docs/user-guide/skills/bundled/gaming/gaming-minecraft-modpack-server) | Host modded Minecraft servers (CurseForge, Modrinth). | `gaming/minecraft-modpack-server` |
+| [`pokemon-player`](/docs/user-guide/skills/bundled/gaming/gaming-pokemon-player) | Play Pokemon via headless emulator + RAM reads. | `gaming/pokemon-player` |
+
 ## github
 
 | Skill | Description | Path |
@@ -88,6 +113,19 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`github-pr-workflow`](/docs/user-guide/skills/bundled/github/github-github-pr-workflow) | GitHub PR lifecycle: branch, commit, open, CI, merge. | `github/github-pr-workflow` |
 | [`github-repo-management`](/docs/user-guide/skills/bundled/github/github-github-repo-management) | Clone/create/fork repos; manage remotes, releases. | `github/github-repo-management` |
 
+## leisure
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`find-nearby`](/docs/user-guide/skills/bundled/leisure/leisure-find-nearby) | Find nearby places (restaurants, cafes, bars, pharmacies, etc.) using OpenStreetMap. Works with coordinates, addresses, cities, zip codes, or Telegram location pins. No API keys needed. | `leisure/find-nearby` |
+
+## mcp
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`mcporter`](/docs/user-guide/skills/bundled/mcp/mcp-mcporter) | Use the mcporter CLI to list, configure, auth, and call MCP servers/tools directly (HTTP or stdio), including ad-hoc servers, config edits, and CLI/type generation. | `mcp/mcporter` |
+| [`native-mcp`](/docs/user-guide/skills/bundled/mcp/mcp-native-mcp) | MCP client: connect servers, register tools (stdio/HTTP). | `mcp/native-mcp` |
+
 ## media
 
 | Skill | Description | Path |
@@ -95,6 +133,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`gif-search`](/docs/user-guide/skills/bundled/media/media-gif-search) | Search/download GIFs from Tenor via curl + jq. | `media/gif-search` |
 | [`heartmula`](/docs/user-guide/skills/bundled/media/media-heartmula) | HeartMuLa: Suno-like song generation from lyrics + tags. | `media/heartmula` |
 | [`songsee`](/docs/user-guide/skills/bundled/media/media-songsee) | Audio spectrograms/features (mel, chroma, MFCC) via CLI. | `media/songsee` |
+| [`spotify`](/docs/user-guide/skills/bundled/media/media-spotify) | Spotify: play, search, queue, manage playlists and devices. | `media/spotify` |
 | [`youtube-content`](/docs/user-guide/skills/bundled/media/media-youtube-content) | YouTube transcripts to summaries, threads, blogs. | `media/youtube-content` |
 
 ## mlops
@@ -102,25 +141,50 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | Skill | Description | Path |
 |-------|-------------|------|
 | [`audiocraft-audio-generation`](/docs/user-guide/skills/bundled/mlops/mlops-models-audiocraft) | AudioCraft: MusicGen text-to-music, AudioGen text-to-sound. | `mlops/models/audiocraft` |
+| [`axolotl`](/docs/user-guide/skills/bundled/mlops/mlops-training-axolotl) | Axolotl: YAML LLM fine-tuning (LoRA, DPO, GRPO). | `mlops/training/axolotl` |
+| [`clip`](/docs/user-guide/skills/bundled/mlops/mlops-models-clip) | OpenAI's model connecting vision and language. Enables zero-shot image classification, image-text matching, and cross-modal retrieval. Trained on 400M image-text pairs. Use for image search, content moderation, or vision-language tasks w... | `mlops/models/clip` |
+| [`dspy`](/docs/user-guide/skills/bundled/mlops/mlops-research-dspy) | DSPy: declarative LM programs, auto-optimize prompts, RAG. | `mlops/research/dspy` |
+| [`gguf-quantization`](/docs/user-guide/skills/bundled/mlops/mlops-inference-gguf) | GGUF format and llama.cpp quantization for efficient CPU/GPU inference. Use when deploying models on consumer hardware, Apple Silicon, or when needing flexible quantization from 2-8 bit without GPU requirements. | `mlops/inference/gguf` |
+| [`grpo-rl-training`](/docs/user-guide/skills/bundled/mlops/mlops-training-grpo-rl-training) | Expert guidance for GRPO/RL fine-tuning with TRL for reasoning and task-specific model training | `mlops/training/grpo-rl-training` |
+| [`guidance`](/docs/user-guide/skills/bundled/mlops/mlops-inference-guidance) | Control LLM output with regex and grammars, guarantee valid JSON/XML/code generation, enforce structured formats, and build multi-step workflows with Guidance - Microsoft Research's constrained generation framework | `mlops/inference/guidance` |
 | [`huggingface-hub`](/docs/user-guide/skills/bundled/mlops/mlops-huggingface-hub) | HuggingFace hf CLI: search/download/upload models, datasets. | `mlops/huggingface-hub` |
 | [`llama-cpp`](/docs/user-guide/skills/bundled/mlops/mlops-inference-llama-cpp) | llama.cpp local GGUF inference + HF Hub model discovery. | `mlops/inference/llama-cpp` |
 | [`evaluating-llms-harness`](/docs/user-guide/skills/bundled/mlops/mlops-evaluation-lm-evaluation-harness) | lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc.). | `mlops/evaluation/lm-evaluation-harness` |
+| [`modal-serverless-gpu`](/docs/user-guide/skills/bundled/mlops/mlops-cloud-modal) | Serverless GPU cloud platform for running ML workloads. Use when you need on-demand GPU access without infrastructure management, deploying ML models as APIs, or running batch jobs with automatic scaling. | `mlops/cloud/modal` |
+| [`obliteratus`](/docs/user-guide/skills/bundled/mlops/mlops-inference-obliteratus) | OBLITERATUS: abliterate LLM refusals (diff-in-means). | `mlops/inference/obliteratus` |
+| [`outlines`](/docs/user-guide/skills/bundled/mlops/mlops-inference-outlines) | Outlines: structured JSON/regex/Pydantic LLM generation. | `mlops/inference/outlines` |
+| [`peft-fine-tuning`](/docs/user-guide/skills/bundled/mlops/mlops-training-peft) | Parameter-efficient fine-tuning for LLMs using LoRA, QLoRA, and 25+ methods. Use when fine-tuning large models (7B-70B) with limited GPU memory, when you need to train &lt;1% of parameters with minimal accuracy loss, or for multi-adapter se... | `mlops/training/peft` |
+| [`pytorch-fsdp`](/docs/user-guide/skills/bundled/mlops/mlops-training-pytorch-fsdp) | Expert guidance for Fully Sharded Data Parallel training with PyTorch FSDP - parameter sharding, mixed precision, CPU offloading, FSDP2 | `mlops/training/pytorch-fsdp` |
 | [`segment-anything-model`](/docs/user-guide/skills/bundled/mlops/mlops-models-segment-anything) | SAM: zero-shot image segmentation via points, boxes, masks. | `mlops/models/segment-anything` |
+| [`stable-diffusion-image-generation`](/docs/user-guide/skills/bundled/mlops/mlops-models-stable-diffusion) | State-of-the-art text-to-image generation with Stable Diffusion models via HuggingFace Diffusers. Use when generating images from text prompts, performing image-to-image translation, inpainting, or building custom diffusion pipelines. | `mlops/models/stable-diffusion` |
+| [`fine-tuning-with-trl`](/docs/user-guide/skills/bundled/mlops/mlops-training-trl-fine-tuning) | TRL: SFT, DPO, PPO, GRPO, reward modeling for LLM RLHF. | `mlops/training/trl-fine-tuning` |
+| [`unsloth`](/docs/user-guide/skills/bundled/mlops/mlops-training-unsloth) | Unsloth: 2-5x faster LoRA/QLoRA fine-tuning, less VRAM. | `mlops/training/unsloth` |
 | [`serving-llms-vllm`](/docs/user-guide/skills/bundled/mlops/mlops-inference-vllm) | vLLM: high-throughput LLM serving, OpenAI API, quantization. | `mlops/inference/vllm` |
 | [`weights-and-biases`](/docs/user-guide/skills/bundled/mlops/mlops-evaluation-weights-and-biases) | W&B: log ML experiments, sweeps, model registry, dashboards. | `mlops/evaluation/weights-and-biases` |
+| [`whisper`](/docs/user-guide/skills/bundled/mlops/mlops-models-whisper) | OpenAI's general-purpose speech recognition model. Supports 99 languages, transcription, translation to English, and language identification. Six model sizes from tiny (39M params) to large (1550M params). Use for speech-to-text, podcast... | `mlops/models/whisper` |
+
+## mlops-cloud
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`self-hosted-llm-gpu-cloud-deployments`](/docs/user-guide/skills/bundled/mlops-cloud/mlops-cloud-self-hosted-llm-gpu-cloud-deployments) | Deploy self-hosted LLMs on cloud GPUs with pragmatic provider selection, quota checks, cost framing, and fallback strategy for short-lived sessions. | `mlops-cloud/self-hosted-llm-gpu-cloud-deployments` |
 
 ## note-taking
 
 | Skill | Description | Path |
 |-------|-------------|------|
 | [`obsidian`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian) | Read, search, create, and edit notes in the Obsidian vault. | `note-taking/obsidian` |
+| [`study-roadmap-progress-tracking`](/docs/user-guide/skills/bundled/note-taking/note-taking-study-roadmap-progress-tracking) | Track and continue a multi-session study roadmap using a canonical progress file, lesson todos, and session recall only as a fallback. | `note-taking/study-roadmap-progress-tracking` |
 
 ## productivity
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| [`ai-provider-budget-advice`](/docs/user-guide/skills/bundled/productivity/productivity-ai-provider-budget-advice) | Advise budget-conscious users choosing AI subscriptions, API credits, student/free plans, and Hermes-compatible provider spend. | `productivity/ai-provider-budget-advice` |
 | [`airtable`](/docs/user-guide/skills/bundled/productivity/productivity-airtable) | Airtable REST API via curl. Records CRUD, filters, upserts. | `productivity/airtable` |
+| [`cv-pdf-and-image-generator`](/docs/user-guide/skills/bundled/productivity/productivity-cv-pdf-and-image-generator) | Generate a clean one-page CV/resume as both PDF and PNG when office/browser tools are unavailable. Uses Python with reportlab for PDF and Pillow for image rendering, then verifies the PNG with vision. | `productivity/cv-pdf-and-image-generator` |
 | [`google-workspace`](/docs/user-guide/skills/bundled/productivity/productivity-google-workspace) | Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python. | `productivity/google-workspace` |
+| [`linear`](/docs/user-guide/skills/bundled/productivity/productivity-linear) | Linear: manage issues, projects, teams via GraphQL + curl. | `productivity/linear` |
 | [`maps`](/docs/user-guide/skills/bundled/productivity/productivity-maps) | Geocode, POIs, routes, timezones via OpenStreetMap/OSRM. | `productivity/maps` |
 | [`nano-pdf`](/docs/user-guide/skills/bundled/productivity/productivity-nano-pdf) | Edit PDF text/typos/titles via nano-pdf CLI (NL prompts). | `productivity/nano-pdf` |
 | [`notion`](/docs/user-guide/skills/bundled/productivity/productivity-notion) | Notion API + ntn CLI: pages, databases, markdown, Workers. | `productivity/notion` |
@@ -128,12 +192,19 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`powerpoint`](/docs/user-guide/skills/bundled/productivity/productivity-powerpoint) | Create, read, edit .pptx decks, slides, notes, templates. | `productivity/powerpoint` |
 | [`teams-meeting-pipeline`](/docs/user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline) | Operate the Teams meeting summary pipeline via Hermes CLI — summarize meetings, inspect pipeline status, replay jobs, manage Microsoft Graph subscriptions. | `productivity/teams-meeting-pipeline` |
 
+## red-teaming
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`godmode`](/docs/user-guide/skills/bundled/red-teaming/red-teaming-godmode) | Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN. | `red-teaming/godmode` |
+
 ## research
 
 | Skill | Description | Path |
 |-------|-------------|------|
 | [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv) | Search arXiv papers by keyword, author, category, or ID. | `research/arxiv` |
 | [`blogwatcher`](/docs/user-guide/skills/bundled/research/research-blogwatcher) | Monitor blogs and RSS/Atom feeds via blogwatcher-cli tool. | `research/blogwatcher` |
+| [`ddg-html-price-research-fallback`](/docs/user-guide/skills/bundled/research/research-ddg-html-price-research-fallback) | Use DuckDuckGo HTML search and lightweight scraping to gather current consumer hardware pricing when direct retailer sites or browser automation are blocked by Cloudflare or browser startup failures. | `research/ddg-html-price-research-fallback` |
 | [`llm-wiki`](/docs/user-guide/skills/bundled/research/research-llm-wiki) | Karpathy's LLM Wiki: build/query interlinked markdown KB. | `research/llm-wiki` |
 | [`polymarket`](/docs/user-guide/skills/bundled/research/research-polymarket) | Query Polymarket: markets, prices, orderbooks, history. | `research/polymarket` |
 | [`research-paper-writing`](/docs/user-guide/skills/bundled/research/research-research-paper-writing) | Write ML papers for NeurIPS/ICML/ICLR: design→submit. | `research/research-paper-writing` |
@@ -148,21 +219,36 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| [`xitter`](/docs/user-guide/skills/bundled/social-media/social-media-xitter) | Interact with X/Twitter via the x-cli terminal client using official X API credentials. Use for posting, reading timelines, searching tweets, liking, retweeting, bookmarks, mentions, and user lookups. | `social-media/xitter` |
 | [`xurl`](/docs/user-guide/skills/bundled/social-media/social-media-xurl) | X/Twitter via xurl CLI: post, search, DM, media, v2 API. | `social-media/xurl` |
 
 ## software-development
 
 | Skill | Description | Path |
 |-------|-------------|------|
+| [`android-development-on-ubuntu`](/docs/user-guide/skills/bundled/software-development/software-development-android-development-on-ubuntu) | Use when setting up or repairing an Android or Android TV Kotlin development environment on Ubuntu Linux, including Java, Android Studio, SDK tools, emulator, Gradle, ADB, environment variables, and verification. | `software-development/android-development-on-ubuntu` |
+| [`aws-cli-setup-from-file`](/docs/user-guide/skills/bundled/software-development/software-development-aws-cli-setup-from-file) | Install AWS CLI v2 and configure default credentials from a text file that stores the access key and secret on separate lines. | `software-development/aws-cli-setup-from-file` |
+| [`debugging-hermes-tui-commands`](/docs/user-guide/skills/bundled/software-development/software-development-debugging-hermes-tui-commands) | Debug Hermes TUI slash commands: Python, gateway, Ink UI. | `software-development/debugging-hermes-tui-commands` |
+| [`ecommerce-webapp-upgrades`](/docs/user-guide/skills/bundled/software-development/software-development-ecommerce-webapp-upgrades) | Upgrade small ecommerce web apps into professional, customer-facing storefronts while preserving hostability and separating admin/security concerns. | `software-development/ecommerce-webapp-upgrades` |
 | [`hermes-agent-skill-authoring`](/docs/user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring) | Author in-repo SKILL.md: frontmatter, validator, structure. | `software-development/hermes-agent-skill-authoring` |
+| [`hermes-s6-container-supervision`](/docs/user-guide/skills/bundled/software-development/software-development-hermes-s6-container-supervision) | Modify, debug, or extend the s6-overlay supervision tree inside the Hermes Agent Docker image — adding new services, debugging profile gateways, understanding the Architecture B main-program pattern. | `software-development/hermes-s6-container-supervision` |
+| [`komorebi-on-ubuntu-24`](/docs/user-guide/skills/bundled/software-development/software-development-komorebi-on-ubuntu-24) | Install and launch Komorebi live wallpaper engine on Ubuntu 24.04 by building from source, because old .deb releases depend on obsolete WebKitGTK 4.0 packages. | `software-development/komorebi-on-ubuntu-24` |
 | [`node-inspect-debugger`](/docs/user-guide/skills/bundled/software-development/software-development-node-inspect-debugger) | Debug Node.js via --inspect + Chrome DevTools Protocol CLI. | `software-development/node-inspect-debugger` |
 | [`plan`](/docs/user-guide/skills/bundled/software-development/software-development-plan) | Plan mode: write an actionable markdown plan to .hermes/plans/, no execution. Bite-sized tasks, exact paths, complete code. | `software-development/plan` |
+| [`project-based-technical-mentoring`](/docs/user-guide/skills/bundled/software-development/software-development-project-based-technical-mentoring) | Coach users through hands-on technical projects without stealing the reps; preserve ownership, diagnose issues, and verify after the user implements changes. | `software-development/project-based-technical-mentoring` |
 | [`python-debugpy`](/docs/user-guide/skills/bundled/software-development/software-development-python-debugpy) | Debug Python: pdb REPL + debugpy remote (DAP). | `software-development/python-debugpy` |
 | [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review) | Pre-commit review: security scan, quality gates, auto-fix. | `software-development/requesting-code-review` |
 | [`simplify-code`](/docs/user-guide/skills/bundled/software-development/software-development-simplify-code) | Parallel 3-agent cleanup of recent code changes. | `software-development/simplify-code` |
 | [`spike`](/docs/user-guide/skills/bundled/software-development/software-development-spike) | Throwaway experiments to validate an idea before build. | `software-development/spike` |
+| [`subagent-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-subagent-driven-development) | Execute plans via delegate_task subagents (2-stage review). | `software-development/subagent-driven-development` |
+| [`sudo-from-secrets-file`](/docs/user-guide/skills/bundled/software-development/software-development-sudo-from-secrets-file) | Use a local secrets file to supply sudo or other credentials during Hermes terminal tasks, with a Python subprocess fallback when shell piping to sudo behaves unexpectedly. | `software-development/sudo-from-secrets-file` |
 | [`systematic-debugging`](/docs/user-guide/skills/bundled/software-development/software-development-systematic-debugging) | 4-phase root cause debugging: understand bugs before fixing. | `software-development/systematic-debugging` |
 | [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development) | TDD: enforce RED-GREEN-REFACTOR, tests before code. | `software-development/test-driven-development` |
+| [`ubuntu-premium-zsh-setup`](/docs/user-guide/skills/bundled/software-development/software-development-ubuntu-premium-zsh-setup) | Install and configure a premium Zsh terminal experience on Ubuntu with Oh My Zsh, powerlevel10k, autosuggestions, syntax highlighting, fzf, fzf-tab, zoxide, direnv, eza, bat, fd, tmux, and GNOME Terminal Nerd Font settings. | `software-development/ubuntu-premium-zsh-setup` |
+| [`writing-plans`](/docs/user-guide/skills/bundled/software-development/software-development-writing-plans) | Write implementation plans: bite-sized tasks, paths, code. | `software-development/writing-plans` |
+| [`x11-desktop-automation`](/docs/user-guide/skills/bundled/software-development/software-development-x11-desktop-automation) | Discover and use a live Ubuntu Xorg desktop session for GUI automation with xdotool, screenshots, and Xauthority wiring. | `software-development/x11-desktop-automation` |
+| [`x11-desktop-helpers-mizuki`](/docs/user-guide/skills/bundled/software-development/software-development-x11-desktop-helpers-mizuki) | Use preinstalled X11 helper scripts on this Ubuntu desktop for reliable GUI automation in the user's live session. | `software-development/x11-desktop-helpers-mizuki` |
+| [`zsh-oh-my-zsh-ubuntu`](/docs/user-guide/skills/bundled/software-development/software-development-zsh-oh-my-zsh-ubuntu) | Install and configure Zsh with Oh My Zsh, fzf, zsh-autosuggestions, and zsh-syntax-highlighting on Ubuntu; set Zsh as default shell and verify interactive key bindings. | `software-development/zsh-oh-my-zsh-ubuntu` |
 
 ## yuanbao
 
