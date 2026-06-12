@@ -242,10 +242,17 @@ export function DashboardSettingsProvider({
 
   const getSidebarItemCustomization = useCallback(
     (id: string): { label?: string; icon?: string } | undefined => {
-      const { coreOrder, pluginOrder, unifiedOrder } =
+      const { coreOrder, pluginOrder, unifiedOrder, pluginsFoldedIntoSidebar } =
         settings.sidebarItemOrder;
-      const allItems = [...coreOrder, ...pluginOrder, ...unifiedOrder];
-      const item = allItems.find((i) => i.id === id);
+      // When folded, unifiedOrder is the authoritative source.
+      // When not folded, search core + plugin, then unified as fallback.
+      const searchOrder = pluginsFoldedIntoSidebar
+        ? unifiedOrder
+        : [...coreOrder, ...pluginOrder, ...unifiedOrder];
+      // Prefer the entry WITH a customization over the bare one
+      const item = searchOrder.find(
+        (i) => i.id === id && (i.label || i.icon),
+      ) ?? searchOrder.find((i) => i.id === id);
       if (item && (item.label || item.icon)) {
         return { label: item.label, icon: item.icon };
       }
