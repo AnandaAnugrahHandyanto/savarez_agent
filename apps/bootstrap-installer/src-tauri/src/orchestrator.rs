@@ -44,6 +44,7 @@ pub struct PythonVenvStagePlan {
     pub uv: PathBuf,
     pub cwd: PathBuf,
     pub venv: PathBuf,
+    pub uv_cache_dir: PathBuf,
     pub python_install_dir: PathBuf,
     pub python_bin_dir: PathBuf,
 }
@@ -52,6 +53,7 @@ pub struct PythonVenvStagePlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PythonRuntimeStagePlan {
     pub uv: PathBuf,
+    pub uv_cache_dir: PathBuf,
     pub python_install_dir: PathBuf,
     pub python_bin_dir: PathBuf,
 }
@@ -64,6 +66,7 @@ pub struct PythonDependenciesStagePlan {
     pub venv: PathBuf,
     pub python: PathBuf,
     pub lockfile: PathBuf,
+    pub uv_cache_dir: PathBuf,
 }
 
 /// Native Node dependency stage execution plan.
@@ -935,6 +938,7 @@ where
 {
     Ok(PythonRuntimeStagePlan {
         uv: uv_tool_path(hermes_home, path_env, pathext)?,
+        uv_cache_dir: hermes_home.join("uv-cache"),
         python_install_dir: hermes_home.join("python"),
         python_bin_dir: hermes_home.join("bin"),
     })
@@ -947,6 +951,7 @@ pub fn install_python_runtime_stage(hermes_home: &Path) -> Result<serde_json::Va
     let plan = python_runtime_stage_plan(hermes_home, path_env, &pathext)?;
     let status = Command::new(&plan.uv)
         .args(["python", "install", "3.11"])
+        .env("UV_CACHE_DIR", &plan.uv_cache_dir)
         .env("UV_PYTHON_INSTALL_DIR", &plan.python_install_dir)
         .env("UV_PYTHON_BIN_DIR", &plan.python_bin_dir)
         .stdout(Stdio::null())
@@ -961,6 +966,7 @@ pub fn install_python_runtime_stage(hermes_home: &Path) -> Result<serde_json::Va
     }
     let output = Command::new(&plan.uv)
         .args(["python", "find", "3.11"])
+        .env("UV_CACHE_DIR", &plan.uv_cache_dir)
         .env("UV_PYTHON_INSTALL_DIR", &plan.python_install_dir)
         .env("UV_PYTHON_BIN_DIR", &plan.python_bin_dir)
         .stdout(Stdio::piped())
@@ -980,6 +986,7 @@ pub fn install_python_runtime_stage(hermes_home: &Path) -> Result<serde_json::Va
     Ok(serde_json::json!({
         "uv": plan.uv,
         "python": python,
+        "uvCacheDir": plan.uv_cache_dir,
         "pythonInstallDir": plan.python_install_dir,
         "pythonBinDir": plan.python_bin_dir,
     }))
@@ -1656,6 +1663,7 @@ where
         uv,
         cwd: install_root.to_path_buf(),
         venv,
+        uv_cache_dir: hermes_home.join("uv-cache"),
         python_install_dir: hermes_home.join("python"),
         python_bin_dir: hermes_home.join("bin"),
     })
@@ -1676,6 +1684,7 @@ pub fn create_python_venv_stage(
     let status = Command::new(&plan.uv)
         .args(["venv", "venv", "--python", "3.11"])
         .current_dir(&plan.cwd)
+        .env("UV_CACHE_DIR", &plan.uv_cache_dir)
         .env("UV_PYTHON_INSTALL_DIR", &plan.python_install_dir)
         .env("UV_PYTHON_BIN_DIR", &plan.python_bin_dir)
         .stdout(Stdio::null())
@@ -1731,6 +1740,7 @@ where
         venv,
         python,
         lockfile,
+        uv_cache_dir: hermes_home.join("uv-cache"),
     })
 }
 
@@ -1748,6 +1758,7 @@ pub fn sync_python_dependencies_stage(
         .env("VIRTUAL_ENV", &plan.venv)
         .env("UV_PYTHON", &plan.python)
         .env("UV_PROJECT_ENVIRONMENT", &plan.venv)
+        .env("UV_CACHE_DIR", &plan.uv_cache_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -1771,6 +1782,7 @@ pub fn sync_python_dependencies_stage(
         "uv": plan.uv,
         "venv": plan.venv,
         "python": plan.python,
+        "uvCacheDir": plan.uv_cache_dir,
         "tier": "hash-verified (uv.lock)",
     }))
 }
@@ -4244,6 +4256,7 @@ mod tests {
         let plan = python_runtime_stage_plan(&hermes_home, &path_tools, ".EXE").unwrap();
 
         assert_eq!(plan.uv, hermes_home.join("bin").join("uv.exe"));
+        assert_eq!(plan.uv_cache_dir, hermes_home.join("uv-cache"));
         assert_eq!(plan.python_install_dir, hermes_home.join("python"));
         assert_eq!(plan.python_bin_dir, hermes_home.join("bin"));
 
@@ -4261,6 +4274,7 @@ mod tests {
 
         let plan = python_venv_stage_plan(&install_root, &hermes_home, "", ".EXE").unwrap();
 
+        assert_eq!(plan.uv_cache_dir, hermes_home.join("uv-cache"));
         assert_eq!(plan.python_install_dir, hermes_home.join("python"));
         assert_eq!(plan.python_bin_dir, hermes_home.join("bin"));
 
@@ -4568,6 +4582,7 @@ mod tests {
         assert_eq!(plan.cwd, install_root);
         assert_eq!(plan.venv, plan.cwd.join("venv"));
         assert_eq!(plan.python, venv_python_path(&plan.venv));
+        assert_eq!(plan.uv_cache_dir, hermes_home.join("uv-cache"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

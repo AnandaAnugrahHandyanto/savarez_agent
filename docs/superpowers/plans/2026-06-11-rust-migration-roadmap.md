@@ -234,9 +234,9 @@ language-specific setup where needed.
   available for compatibility.
 - `python` now also runs native-first installation through Rust by invoking `uv python install 3.11`, with script
   fallback preserved if uv fails to install or locate the runtime.
-- Rust native Python runtime and venv stages now set `UV_PYTHON_INSTALL_DIR=$HERMES_HOME/python` and
-  `UV_PYTHON_BIN_DIR=$HERMES_HOME/bin`, keeping uv-managed Python under Hermes-managed repair/uninstall roots instead
-  of the user's global uv cache.
+- Rust native Python runtime, venv, and dependency stages now set `UV_CACHE_DIR=$HERMES_HOME/uv-cache`,
+  `UV_PYTHON_INSTALL_DIR=$HERMES_HOME/python`, and `UV_PYTHON_BIN_DIR=$HERMES_HOME/bin`, keeping uv-managed Python
+  and uv's install cache under Hermes-managed repair/uninstall roots instead of the user's global uv cache.
 - `venv` now runs native-first through Rust by invoking `uv venv venv --python 3.11` in the checkout, with script
   fallback preserved if native venv creation fails.
 - Python dependency installation now has a Rust native-first lockfile path using `uv sync --extra all --locked` with
@@ -327,13 +327,13 @@ language-specific setup where needed.
 - Windows desktop lite uninstall now asks `hermes-manager uninstall-lite --shortcuts` to remove Rust-managed Start
   Menu/Desktop shortcuts. The manager only removes planned `.lnk` files whose shortcut target still points at the
   packaged Hermes desktop executable.
-- `hermes-manager install-metadata` now records existing Hermes-managed runtime directories such as `bin`, `node`,
-  `python`, `git`, and `bootstrap-cache` in addition to the source checkout, and records the staged
+- `hermes-manager install-metadata` now records existing Hermes-managed runtime directories such as `bin`, `uv-cache`,
+  `node`, `python`, `git`, and `bootstrap-cache` in addition to the source checkout, and records the staged
   `hermes-setup(.exe)` updater when present. Lite uninstall accepts only those runtime roots/files while continuing
   to reject user config and data paths.
 - `hermes-manager repair-clean` now removes the same Hermes-managed runtime roots as repairable install state, so
-  broken managed Node/Python/uv/Git/cache directories and staged updater binaries are recreated by the next bootstrap
-  while user config and data stay intact.
+  broken managed Node/Python/uv/Git/bootstrap-cache directories and staged updater binaries are recreated by the next
+  bootstrap while user config and data stay intact.
 - `hermes-manager` now has a CLI smoke test that runs `install-metadata`, `uninstall-lite`, and `repair-clean` against
   an isolated Hermes home, proving the command surface preserves user config while cleaning managed runtime state.
 
