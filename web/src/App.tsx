@@ -17,19 +17,13 @@ import {
   useNavigate,
 } from "react-router-dom";
 import {
-  Activity,
   BarChart3,
   BookOpen,
   Clock,
-  Code,
   Cpu,
-  Database,
   Download,
-  Eye,
   FolderOpen,
   FileText,
-  Globe,
-  Heart,
   KeyRound,
   Menu,
   MessageSquare,
@@ -41,16 +35,12 @@ import {
   Radio,
   RotateCw,
   Settings,
-  Shield,
   ShieldCheck,
-  Sparkles,
-  Star,
   Terminal,
   Users,
   Webhook,
   Wrench,
   X,
-  Zap,
 } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
@@ -103,6 +93,7 @@ import { useDashboardSettings } from "@/contexts/dashboard-settings-context";
 import {
   applySidebarOrder,
 } from "@/contexts/dashboard-settings-context";
+import { ICON_REGISTRY } from "@/lib/icon-registry";
 import DashboardSettingsPage from "@/pages/DashboardSettingsPage";
 
 function RootRedirect() {
@@ -210,34 +201,8 @@ const BUILTIN_NAV_REST: NavItem[] = [
   },
 ];
 
-const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
-  Activity,
-  BarChart3,
-  Clock,
-  Cpu,
-  FileText,
-  FolderOpen,
-  KeyRound,
-  MessageSquare,
-  Package,
-  Settings,
-  Puzzle,
-  Sparkles,
-  Terminal,
-  Globe,
-  Database,
-  Shield,
-  Users,
-  Wrench,
-  Zap,
-  Heart,
-  Star,
-  Code,
-  Eye,
-};
-
 function resolveIcon(name: string): ComponentType<{ className?: string }> {
-  return ICON_MAP[name] ?? Puzzle;
+  return ICON_REGISTRY[name] ?? Puzzle;
 }
 
 function buildNavItems(
@@ -912,7 +877,7 @@ function SidebarNavLink({
   // Resolve icon component from custom icon name
   const Icon = useMemo(() => {
     if (customIcon) {
-      const resolved = (ICON_MAP as Record<string, ComponentType<{ className?: string }>>)[customIcon];
+      const resolved = ICON_REGISTRY[customIcon];
       if (resolved) return resolved;
     }
     return DefaultIcon;
