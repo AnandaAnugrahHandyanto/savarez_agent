@@ -286,12 +286,15 @@ class MattermostAdapter(BasePlatformAdapter):
                 "channel_id": chat_id,
                 "message": chunk,
             }
-            # Thread support: reply_to is the root post ID.
-            if reply_to and self._reply_mode == "thread":
-                # Ensure root_id points to the thread root, not a reply.
-                # Mattermost rejects non-root post IDs as root_id.
-                resolved_root = await self._resolve_root_id(reply_to)
-                payload["root_id"] = resolved_root
+            # Thread support: prefer thread_id from metadata (reply where the
+            # message originated), falling back to reply_to when reply_mode is
+            # "thread" (always-thread mode). Mattermost rejects non-root post
+            # IDs as root_id, so resolve to the thread root in both cases.
+            thread_id = (metadata or {}).get("thread_id")
+            if thread_id:
+                payload["root_id"] = await self._resolve_root_id(thread_id)
+            elif reply_to and self._reply_mode == "thread":
+                payload["root_id"] = await self._resolve_root_id(reply_to)
 
             data = await self._api_post("posts", payload)
             if not data or "id" not in data:
@@ -346,7 +349,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Download an image and upload it as a file attachment."""
         return await self._send_url_as_file(
-            chat_id, image_url, caption, reply_to, "image"
+            chat_id, image_url, caption, reply_to, "image", metadata
         )
 
     async def send_image_file(
@@ -359,7 +362,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload a local image file."""
         return await self._send_local_file(
-            chat_id, image_path, caption, reply_to
+            chat_id, image_path, caption, reply_to, metadata=metadata
         )
 
     async def send_document(
@@ -373,7 +376,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload a local file as a document."""
         return await self._send_local_file(
-            chat_id, file_path, caption, reply_to, file_name
+            chat_id, file_path, caption, reply_to, file_name, metadata
         )
 
     async def send_voice(
@@ -386,7 +389,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload an audio file."""
         return await self._send_local_file(
-            chat_id, audio_path, caption, reply_to
+            chat_id, audio_path, caption, reply_to, metadata=metadata
         )
 
     async def send_video(
@@ -399,7 +402,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload a video file."""
         return await self._send_local_file(
-            chat_id, video_path, caption, reply_to
+            chat_id, video_path, caption, reply_to, metadata=metadata
         )
 
     def format_message(self, content: str) -> str:
@@ -423,6 +426,7 @@ class MattermostAdapter(BasePlatformAdapter):
         caption: Optional[str],
         reply_to: Optional[str],
         kind: str = "file",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Download a URL and upload it as a file attachment."""
         from tools.url_safety import is_safe_url
@@ -470,7 +474,12 @@ class MattermostAdapter(BasePlatformAdapter):
             "message": caption or "",
             "file_ids": [file_id],
         }
-        if reply_to and self._reply_mode == "thread":
+        # Thread support: prefer thread_id from metadata (reply where posted),
+        # fall back to reply_to when reply_mode is "thread".
+        thread_id = (metadata or {}).get("thread_id")
+        if thread_id:
+            payload["root_id"] = await self._resolve_root_id(thread_id)
+        elif reply_to and self._reply_mode == "thread":
             payload["root_id"] = await self._resolve_root_id(reply_to)
 
         data = await self._api_post("posts", payload)
@@ -485,6 +494,7 @@ class MattermostAdapter(BasePlatformAdapter):
         caption: Optional[str],
         reply_to: Optional[str],
         file_name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Upload a local file and attach it to a post."""
         import mimetypes
@@ -509,7 +519,12 @@ class MattermostAdapter(BasePlatformAdapter):
             "message": caption or "",
             "file_ids": [file_id],
         }
-        if reply_to and self._reply_mode == "thread":
+        # Thread support: prefer thread_id from metadata (reply where posted),
+        # fall back to reply_to when reply_mode is "thread".
+        thread_id = (metadata or {}).get("thread_id")
+        if thread_id:
+            payload["root_id"] = await self._resolve_root_id(thread_id)
+        elif reply_to and self._reply_mode == "thread":
             payload["root_id"] = await self._resolve_root_id(reply_to)
 
         data = await self._api_post("posts", payload)
