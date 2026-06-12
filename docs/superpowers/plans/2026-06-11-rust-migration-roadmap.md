@@ -245,6 +245,9 @@ language-specific setup where needed.
   npm's install cache under Hermes-managed repair/uninstall roots instead of the user's global npm cache.
 - Native Playwright Chromium install now sets `PLAYWRIGHT_BROWSERS_PATH=$HERMES_HOME/playwright-browsers`, and the
   browser tool uses the same managed path by default when no explicit Playwright browser path is configured.
+- Script fallback for `node-deps` and desktop npm stages now receives the same managed npm cache and Playwright browser
+  path environment where applicable, so native fallback does not spill browser/runtime caches back into global user
+  locations.
 - `venv` now runs native-first through Rust by invoking `uv venv venv --python 3.11` in the checkout, with script
   fallback preserved if native venv creation fails.
 - Python dependency installation now has a Rust native-first lockfile path using `uv sync --extra all --locked` with

@@ -855,7 +855,7 @@ async fn run_bootstrap(
         }
 
         let stage_args = stage_script_args(&stage.name, &manifest_args, args.include_desktop);
-        let stage_extra_env = stage_script_extra_env(&stage.name, &install_root);
+        let stage_extra_env = stage_script_extra_env(&stage.name, &install_root, Some(&hermes_home));
 
         // Each stage gets its own cancel receiver because tokio::select!
         // in run_script consumes it. Take/return through the Arc<Mutex>.
@@ -1105,16 +1105,33 @@ fn is_python_dependencies_stage(stage_name: &str) -> bool {
 fn stage_script_extra_env(
     stage_name: &str,
     install_root: &std::path::Path,
-) -> Vec<(&'static str, &'static str)> {
+    hermes_home: Option<&std::path::Path>,
+) -> Vec<(String, String)> {
     let mut env = Vec::new();
     if stage_name.eq_ignore_ascii_case("prerequisites") {
         if should_use_native_repository_archive(install_root) {
-            env.push(("HERMES_NATIVE_REPOSITORY_ARCHIVE", "1"));
+            env.push(("HERMES_NATIVE_REPOSITORY_ARCHIVE".to_string(), "1".to_string()));
         }
-        env.push(("HERMES_NATIVE_NODE_STAGE", "1"));
-        env.push(("HERMES_NATIVE_PYTHON_STAGE", "1"));
-        env.push(("HERMES_NATIVE_SYSTEM_PACKAGES_STAGE", "1"));
-        env.push(("HERMES_NATIVE_UV_STAGE", "1"));
+        env.push(("HERMES_NATIVE_NODE_STAGE".to_string(), "1".to_string()));
+        env.push(("HERMES_NATIVE_PYTHON_STAGE".to_string(), "1".to_string()));
+        env.push(("HERMES_NATIVE_SYSTEM_PACKAGES_STAGE".to_string(), "1".to_string()));
+        env.push(("HERMES_NATIVE_UV_STAGE".to_string(), "1".to_string()));
+    }
+    if stage_name.eq_ignore_ascii_case("node-deps") || stage_name.eq_ignore_ascii_case("desktop") {
+        if let Some(home) = hermes_home {
+            env.push((
+                "npm_config_cache".to_string(),
+                home.join("npm-cache").display().to_string(),
+            ));
+        }
+    }
+    if stage_name.eq_ignore_ascii_case("node-deps") {
+        if let Some(home) = hermes_home {
+            env.push((
+                "PLAYWRIGHT_BROWSERS_PATH".to_string(),
+                home.join("playwright-browsers").display().to_string(),
+            ));
+        }
     }
     env
 }
@@ -1200,7 +1217,7 @@ async fn run_install_script(
     script_path: &std::path::Path,
     args: &[String],
     hermes_home_override: Option<&str>,
-    extra_env: &[(&str, &str)],
+    extra_env: &[(String, String)],
     cancel_rx: Option<mpsc::Receiver<()>>,
     stage_name: Option<String>,
 ) -> Result<powershell::ScriptResult> {
@@ -1515,16 +1532,16 @@ mod tests {
         let install_root = root.join("hermes-agent");
 
         assert_eq!(
-            stage_script_extra_env("prerequisites", &install_root),
+            stage_script_extra_env("prerequisites", &install_root, None),
             vec![
-                ("HERMES_NATIVE_REPOSITORY_ARCHIVE", "1"),
-                ("HERMES_NATIVE_NODE_STAGE", "1"),
-                ("HERMES_NATIVE_PYTHON_STAGE", "1"),
-                ("HERMES_NATIVE_SYSTEM_PACKAGES_STAGE", "1"),
-                ("HERMES_NATIVE_UV_STAGE", "1")
+                ("HERMES_NATIVE_REPOSITORY_ARCHIVE".to_string(), "1".to_string()),
+                ("HERMES_NATIVE_NODE_STAGE".to_string(), "1".to_string()),
+                ("HERMES_NATIVE_PYTHON_STAGE".to_string(), "1".to_string()),
+                ("HERMES_NATIVE_SYSTEM_PACKAGES_STAGE".to_string(), "1".to_string()),
+                ("HERMES_NATIVE_UV_STAGE".to_string(), "1".to_string())
             ]
         );
-        assert!(stage_script_extra_env("repository", &install_root).is_empty());
+        assert!(stage_script_extra_env("repository", &install_root, None).is_empty());
         assert!(should_try_native_repository_archive(
             "repository",
             &install_root
@@ -1533,12 +1550,12 @@ mod tests {
 
         std::fs::create_dir_all(&install_root).unwrap();
         assert_eq!(
-            stage_script_extra_env("prerequisites", &install_root),
+            stage_script_extra_env("prerequisites", &install_root, None),
             vec![
-                ("HERMES_NATIVE_NODE_STAGE", "1"),
-                ("HERMES_NATIVE_PYTHON_STAGE", "1"),
-                ("HERMES_NATIVE_SYSTEM_PACKAGES_STAGE", "1"),
-                ("HERMES_NATIVE_UV_STAGE", "1")
+                ("HERMES_NATIVE_NODE_STAGE".to_string(), "1".to_string()),
+                ("HERMES_NATIVE_PYTHON_STAGE".to_string(), "1".to_string()),
+                ("HERMES_NATIVE_SYSTEM_PACKAGES_STAGE".to_string(), "1".to_string()),
+                ("HERMES_NATIVE_UV_STAGE".to_string(), "1".to_string())
             ]
         );
         assert!(!should_try_native_repository_archive(
@@ -1546,6 +1563,26 @@ mod tests {
             &install_root
         ));
         assert!(!should_fallback_repository_archive("repository", &install_root));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn node_dependency_fallback_scripts_use_managed_caches() {
+        let root = unique_tmp_dir("node-deps-fallback-env");
+        let install_root = root.join("hermes-agent");
+        let hermes_home = root.join("home");
+
+        assert_eq!(
+            stage_script_extra_env("node-deps", &install_root, Some(&hermes_home)),
+            vec![
+                ("npm_config_cache".to_string(), hermes_home.join("npm-cache").display().to_string()),
+                (
+                    "PLAYWRIGHT_BROWSERS_PATH".to_string(),
+                    hermes_home.join("playwright-browsers").display().to_string()
+                )
+            ]
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

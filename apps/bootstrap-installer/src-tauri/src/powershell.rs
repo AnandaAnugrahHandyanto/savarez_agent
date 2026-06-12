@@ -40,7 +40,7 @@ pub async fn run_script(
     args: &[String],
     sink: StreamSink,
     hermes_home_override: Option<&str>,
-    extra_env: &[(&str, &str)],
+    extra_env: &[(String, String)],
     mut cancel_rx: Option<CancelRx>,
 ) -> Result<ScriptResult> {
     let mut cmd = build_command(script_path, args);
@@ -382,7 +382,7 @@ info line
                 on_stderr_line: Box::new(|_| {}),
             },
             None,
-            &[("HERMES_NATIVE_REPOSITORY_ARCHIVE", "1")],
+            &[("HERMES_NATIVE_REPOSITORY_ARCHIVE".to_string(), "1".to_string())],
             None,
         )
         .await
