@@ -26,6 +26,8 @@ import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
+  $selectedStoredSessionId,
+  reconcileLiveSessionKey,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -35,6 +37,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setSelectedStoredSessionId,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -712,6 +715,16 @@ export function useMessageStream({
         const modelChanged = typeof payload?.model === 'string'
         const providerChanged = typeof payload?.provider === 'string'
         const runningChanged = typeof payload?.running === 'boolean'
+        const liveStoredSessionId = typeof payload?.session_key === 'string' ? payload.session_key.trim() : ''
+
+        if (apply && sessionId && liveStoredSessionId) {
+          const previousStoredSessionId = $selectedStoredSessionId.get()
+
+          if (previousStoredSessionId !== liveStoredSessionId) {
+            reconcileLiveSessionKey(previousStoredSessionId || sessionId, liveStoredSessionId)
+            setSelectedStoredSessionId(liveStoredSessionId)
+          }
+        }
 
         if (apply) {
           if (modelChanged) {
@@ -751,13 +764,13 @@ export function useMessageStream({
           }
         }
 
-        if (sessionId && hasStatePatch) {
+        if (sessionId && (hasStatePatch || liveStoredSessionId)) {
           updateSessionState(sessionId, state => ({
             ...state,
             ...statePatch,
             branch: statePatch.branch ?? state.branch,
             cwd: statePatch.cwd ?? state.cwd
-          }))
+          }), liveStoredSessionId || undefined)
         }
 
         if (apply) {
@@ -789,7 +802,7 @@ export function useMessageStream({
                 streamId: null,
                 turnStartedAt: null
               }
-            })
+            }, liveStoredSessionId || undefined)
           }
         }
 

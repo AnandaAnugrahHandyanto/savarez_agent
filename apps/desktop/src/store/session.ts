@@ -19,6 +19,7 @@ function workspaceCwdKey(connection: HermesConnection | null = $connection.get()
 
   const base = encodeURIComponent(connection.baseUrl || 'remote')
   const profile = encodeURIComponent(connection.profile || 'default')
+
   return `${WORKSPACE_CWD_KEY}.remote.${base}.${profile}`
 }
 
@@ -64,6 +65,7 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
 
   if ($connection.get()?.mode === 'remote') {
     seedLiveCwd(remembered)
+
     return
   }
 
@@ -105,6 +107,14 @@ function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
 export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id'>): string =>
   session._lineage_root_id ?? session.id
 
+export const sessionAliasIds = (session: Pick<SessionInfo, '_lineage_ids' | '_lineage_root_id' | 'id'>): string[] => {
+  const aliases = [session.id, session._lineage_root_id, ...(session._lineage_ids ?? [])].filter(
+    (id): id is string => typeof id === 'string' && id.length > 0
+  )
+
+  return [...new Set(aliases)]
+}
+
 /** Merge a fresh server session page into the in-memory list, keeping any
  *  row the server omitted that we still want visible — both still-"working"
  *  sessions and pinned sessions.
@@ -140,6 +150,7 @@ export function mergeSessionPage(
   }
 
   const incomingIds = new Set(incoming.map(session => session.id))
+
   // Deduplicate by compression lineage: when auto-compression rotates the tip
   // id (old #4 → new #5), the incoming page carries the new tip but the
   // previous list still holds the old one.  Without lineage-level dedup both
@@ -156,6 +167,50 @@ export function mergeSessionPage(
   )
 
   return survivors.length ? [...survivors, ...incoming] : incoming
+}
+
+export function reconcileLiveSessionKey(previousSessionId: string | null | undefined, liveSessionId: string) {
+  const previousId = previousSessionId?.trim() || ''
+  const nextId = liveSessionId.trim()
+
+  if (!previousId || !nextId || previousId === nextId) {
+    return
+  }
+
+  setSessions(current => {
+    const existingLiveIndex = current.findIndex(session => sessionAliasIds(session).includes(nextId))
+    const previousIndex = current.findIndex(session => sessionAliasIds(session).includes(previousId))
+
+    if (existingLiveIndex !== -1) {
+      if (previousIndex === -1 || previousIndex === existingLiveIndex) {
+        return current
+      }
+
+      return current.filter((_, index) => index !== previousIndex)
+    }
+
+    if (previousIndex === -1) {
+      return current
+    }
+
+    const previous = current[previousIndex]
+    const lineageIds = [...new Set([...(previous._lineage_ids ?? []), previous.id, nextId].filter(Boolean))]
+
+    const next: SessionInfo = {
+      ...previous,
+      id: nextId,
+      _lineage_root_id: previous._lineage_root_id ?? previous.id,
+      _lineage_ids: lineageIds,
+      ended_at: null,
+      is_active: true,
+      last_active: Math.max(previous.last_active ?? 0, Date.now() / 1000)
+    }
+
+    const nextSessions = current.slice()
+    nextSessions[previousIndex] = next
+
+    return nextSessions
+  })
 }
 
 export const $connection = atom<HermesConnection | null>(null)
