@@ -53,6 +53,7 @@ class ProofConfig:
     platform_order: tuple[str, ...] = ("ios", "android")
     artifact_dir: str = "proof"
     commands: tuple[str, ...] = ()
+    deep_link: str = ""
     dev_client_scheme: str = ""
     ios_simulator_udid: str = ""
     ios_bundle_id: str = ""
@@ -183,6 +184,7 @@ def config_from_mapping(data: Mapping[str, Any] | None) -> MonicaConfig:
             platform_order=_as_tuple(proof.get("platform_order")) or ("ios", "android"),
             artifact_dir=str(proof.get("artifact_dir") or "proof").strip() or "proof",
             commands=_as_tuple(proof.get("commands")),
+            deep_link=str(proof.get("deep_link") or "").strip(),
             dev_client_scheme=str(proof.get("dev_client_scheme") or "").strip(),
             ios_simulator_udid=str(proof.get("ios_simulator_udid") or "").strip(),
             ios_bundle_id=str(proof.get("ios_bundle_id") or "").strip(),

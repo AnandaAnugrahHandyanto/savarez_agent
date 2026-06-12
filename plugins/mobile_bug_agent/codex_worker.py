@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,13 +47,17 @@ class CodexCliWorker:
             self.config.worker.timeout_minutes * 60,
         )
         summary = _read_text(output_file) or output.strip()
-        return {
+        result = {
             "changed": bool(summary),
             "summary": summary or "Codex CLI completed without a final message.",
             "worktree": str(worktree_path),
             "worker": "codex_cli",
             "output_file": str(output_file),
         }
+        proof_deep_link = _extract_proof_deep_link(summary)
+        if proof_deep_link:
+            result["proof_deep_link"] = proof_deep_link
+        return result
 
     def _command(self, *, worktree_path: Path, output_file: Path) -> list[str]:
         command = [
@@ -126,12 +131,16 @@ class InternalCodexWorker:
                 os.environ["TERMINAL_CWD"] = previous_cwd
 
         summary = str((result or {}).get("final_response") or "").strip()
-        return {
+        payload = {
             "changed": bool(summary),
             "summary": summary or "Monica worker completed without a summary.",
             "worktree": str(worktree_path),
             "worker": "internal_agent",
         }
+        proof_deep_link = _extract_proof_deep_link(summary)
+        if proof_deep_link:
+            payload["proof_deep_link"] = proof_deep_link
+        return payload
 
     def _agent(self, *, run_id: str) -> Any:
         session_id = f"{self.config.runtime.worker_session_prefix}-{run_id}"
@@ -166,6 +175,8 @@ def _system_prompt() -> str:
         "Fix the bug described in the brief with the smallest maintainable change.\n"
         "Add or update focused tests when the repo has a nearby pattern.\n"
         "Do not commit. Do not push. Do not create a pull request. Do not modify Hermes.\n"
+        "If you find a dev-client deep link or route that opens the affected screen, "
+        "include a final line exactly `Monica proof deep link: <url>`.\n"
         "Stop and report blockers if the brief lacks enough information."
     )
 
@@ -186,6 +197,21 @@ def _read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+_PROOF_DEEP_LINK_RE = re.compile(
+    r"(?im)^\s*Monica proof deep link\s*:\s*(?P<value>\S+)\s*$"
+)
+
+
+def _extract_proof_deep_link(summary: str) -> str:
+    for match in _PROOF_DEEP_LINK_RE.finditer(str(summary or "")):
+        value = match.group("value").strip()
+        if value.lower() in {"none", "n/a", "na", "unknown", "unavailable"}:
+            continue
+        if "://" in value or value.startswith(("exp+", "http://", "https://")):
+            return value
+    return ""
 
 
 def _require_worktree(path: Path) -> None:

@@ -111,6 +111,54 @@ def test_proof_runner_passes_when_command_creates_artifact(tmp_path):
     ]
 
 
+def test_proof_runner_passes_target_deep_link_to_env_and_manifest(tmp_path):
+    captured_env = {}
+
+    def run(_command, _cwd, _timeout, env):
+        captured_env["MONICA_DEEP_LINK"] = env["MONICA_DEEP_LINK"]
+        proof_path = tmp_path / "monica-runtime" / "proof" / "run-123" / "ios-screenshot.png"
+        proof_path.write_text("image bytes", encoding="utf-8")
+        return 0, "captured", ""
+
+    runner = ProofRunner(config=_config(tmp_path), run_command=run)
+
+    result = runner.run(
+        run=FakeRun(),
+        worktree=_mark_git_worktree(tmp_path / "worktree"),
+        proof_target={"deep_link": "elixir-card://marketplace/offer/fitness-first"},
+    )
+
+    assert result.passed is True
+    assert captured_env == {
+        "MONICA_DEEP_LINK": "elixir-card://marketplace/offer/fitness-first"
+    }
+    manifest_path = tmp_path / "monica-runtime" / "proof" / "run-123" / "monica-proof-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["proof_target"] == {
+        "deep_link": "elixir-card://marketplace/offer/fitness-first"
+    }
+
+
+def test_proof_runner_uses_configured_deep_link_when_worker_has_none(tmp_path):
+    captured_env = {}
+
+    def run(_command, _cwd, _timeout, env):
+        captured_env["MONICA_DEEP_LINK"] = env["MONICA_DEEP_LINK"]
+        proof_path = tmp_path / "monica-runtime" / "proof" / "run-123" / "ios-screenshot.png"
+        proof_path.write_text("image bytes", encoding="utf-8")
+        return 0, "captured", ""
+
+    runner = ProofRunner(
+        config=_config(tmp_path, deep_link="elixir-card://fallback/offer"),
+        run_command=run,
+    )
+
+    result = runner.run(run=FakeRun(), worktree=_mark_git_worktree(tmp_path / "worktree"))
+
+    assert result.passed is True
+    assert captured_env == {"MONICA_DEEP_LINK": "elixir-card://fallback/offer"}
+
+
 def test_proof_runner_clears_stale_artifacts_before_each_attempt(tmp_path):
     proof_dir = tmp_path / "monica-runtime" / "proof" / "run-123"
     proof_dir.mkdir(parents=True)

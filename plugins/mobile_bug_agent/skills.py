@@ -326,6 +326,7 @@ class DefaultMonicaSkills:
             run=run,
             worktree=Path(str(worktree_path)),
             verification=verification,
+            proof_target=_proof_target_from_worker_result(worker_result),
         )
         return result.to_dict()
 
@@ -422,7 +423,10 @@ class DefaultMonicaSkills:
                 "## Instructions",
                 (
                     "Investigate the React Native mobile app bug, make the smallest safe fix, "
-                    "and leave the worktree ready for verification."
+                    "and leave the worktree ready for verification. If the app exposes a safe "
+                    "dev-client deep link or route for the affected screen, include it in the "
+                    "worker summary as `Monica proof deep link: <url>` so simulator proof can "
+                    "exercise the right page."
                 ),
             ]
         )
@@ -654,10 +658,27 @@ def _pr_proof_lines(proof: Any) -> str:
     ]
     if platforms:
         lines.append(f"Platforms: {', '.join(platforms)}")
+    target = proof.get("proof_target")
+    if isinstance(target, dict):
+        deep_link = str(target.get("deep_link") or "").strip()
+        if deep_link:
+            lines.append(f"Target: {deep_link}")
     artifacts = [str(path).strip() for path in proof.get("artifacts") or [] if str(path).strip()]
     if artifacts:
         lines.extend(f"- {path}" for path in artifacts)
     return "\n".join(lines)
+
+
+def _proof_target_from_worker_result(worker_result: dict[str, Any]) -> dict[str, str]:
+    deep_link = str(
+        worker_result.get("proof_deep_link")
+        or worker_result.get("deep_link")
+        or ""
+    ).strip()
+    target: dict[str, str] = {}
+    if deep_link:
+        target["deep_link"] = deep_link
+    return target
 
 
 def _worktree_has_git_changes(worktree_path: Path, *, base_branch: str = "main") -> bool | None:

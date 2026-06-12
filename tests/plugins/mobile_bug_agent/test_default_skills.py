@@ -5,7 +5,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
-from plugins.mobile_bug_agent.config import LinearConfig, MonicaConfig, SlackConfig, VerificationConfig
+from plugins.mobile_bug_agent.config import LinearConfig, MonicaConfig, ProofConfig, SlackConfig, VerificationConfig
 from plugins.mobile_bug_agent.repo_manager import Worktree
 from plugins.mobile_bug_agent.skills import DefaultMonicaSkills
 from plugins.mobile_bug_agent.state import MonicaState
@@ -53,6 +53,26 @@ class CapturingSlackClient:
 
     def post_thread_reply(self, *, channel_id: str, thread_ts: str, text: str) -> None:
         self.posts.append({"channel_id": channel_id, "thread_ts": thread_ts, "text": text})
+
+
+@dataclass
+class CapturingProofRunner:
+    calls: list[dict[str, Any]]
+
+    def run(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+
+        @dataclass(frozen=True)
+        class Result:
+            def to_dict(self) -> dict[str, Any]:
+                return {
+                    "passed": True,
+                    "summary": "Proof captured.",
+                    "artifacts": ["/tmp/ios.png"],
+                    "platforms": ["ios"],
+                }
+
+        return Result()
 
 
 def test_default_skills_create_real_linear_issue_when_not_dry_run(tmp_path):
@@ -1049,6 +1069,38 @@ def test_default_skills_worker_result_carries_slack_permalink_and_evidence(tmp_p
     ]
 
 
+def test_default_skills_run_proof_passes_worker_proof_deep_link(tmp_path):
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C_MOBILE",
+        thread_ts="1710000000.000100",
+        message_ts="1710000000.000200",
+        user_id="U_TAGGER",
+        request_text="Hard-coded PDP tags",
+    )
+    proof_runner = CapturingProofRunner([])
+    skills = DefaultMonicaSkills(
+        config=MonicaConfig(proof=ProofConfig(commands=("capture-proof",))),
+        state=state,
+        proof_runner=proof_runner,
+    )
+
+    result = skills.run_proof(
+        run,
+        {
+            "worktree_path": str(tmp_path),
+            "proof_deep_link": "elixir-card://marketplace/offer/fitness-first",
+        },
+        {"passed": True},
+    )
+
+    assert result["passed"] is True
+    assert proof_runner.calls[0]["proof_target"] == {
+        "deep_link": "elixir-card://marketplace/offer/fitness-first"
+    }
+
+
 def test_default_skills_pr_body_includes_slack_permalink_and_evidence(tmp_path):
     state = MonicaState.open(tmp_path / "monica.sqlite")
     run = state.create_run(
@@ -1080,6 +1132,9 @@ def test_default_skills_pr_body_includes_slack_permalink_and_evidence(tmp_path):
             "proof": {
                 "summary": "Proof captured.",
                 "platforms": ["ios", "android"],
+                "proof_target": {
+                    "deep_link": "elixir-card://marketplace/offer/fitness-first",
+                },
                 "artifacts": [
                     "/tmp/monica-proof/monica-proof-manifest.json",
                     "/tmp/monica-proof/ios-pdp-fixed.png",
@@ -1096,6 +1151,7 @@ def test_default_skills_pr_body_includes_slack_permalink_and_evidence(tmp_path):
     assert "## Proof" in body
     assert "Proof captured." in body
     assert "Platforms: ios, android" in body
+    assert "Target: elixir-card://marketplace/offer/fitness-first" in body
     assert "- /tmp/monica-proof/monica-proof-manifest.json" in body
     assert "- /tmp/monica-proof/ios-pdp-fixed.png" in body
     assert "- /tmp/monica-proof/android-pdp-fixed.mp4" in body

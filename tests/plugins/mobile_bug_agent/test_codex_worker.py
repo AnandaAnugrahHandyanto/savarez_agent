@@ -181,6 +181,35 @@ def test_codex_cli_worker_invokes_codex_exec_in_worktree(tmp_path):
     assert result["output_file"].endswith("abc123.md")
 
 
+def test_codex_cli_worker_extracts_proof_deep_link_from_summary(tmp_path):
+    def fake_run(command, _cwd, _prompt, _timeout):
+        output_file = Path(command[command.index("--output-last-message") + 1])
+        output_file.write_text(
+            "\n".join(
+                [
+                    "Changed the offer PDP tags.",
+                    "Monica proof deep link: elixir-card://marketplace/offer/fitness-first",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return ""
+
+    worker = CodexCliWorker(
+        config=MonicaConfig(runtime=RuntimeConfig(home_subdir=str(tmp_path / "runtime"))),
+        run_command=fake_run,
+    )
+    worktree = _mark_git_worktree(tmp_path)
+
+    result = worker.run(
+        run=FakeRun(id="abc123"),
+        worktree=worktree,
+        brief="Slack thread: https://slack/thread\nBug: hard-coded PDP tags",
+    )
+
+    assert result["proof_deep_link"] == "elixir-card://marketplace/offer/fitness-first"
+
+
 def test_codex_cli_worker_requires_existing_worktree_before_invoking_codex(tmp_path):
     calls = []
     worker = CodexCliWorker(config=MonicaConfig(), run_command=lambda *args: calls.append(args) or "")

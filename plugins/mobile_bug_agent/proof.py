@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from .config import MonicaConfig, runtime_root
 
@@ -61,11 +61,16 @@ class ProofRunner:
         run: Any,
         worktree: str | Path,
         verification: dict[str, Any] | None = None,
+        proof_target: Mapping[str, Any] | None = None,
     ) -> ProofResult:
         worktree_path = Path(worktree)
         command_list = tuple(command for command in self.config.proof.commands if command.strip())
         platforms = tuple(platform for platform in self.config.proof.platform_order if platform.strip())
         proof_dir = self._proof_dir(run)
+        target = _proof_target(
+            config_deep_link=self.config.proof.deep_link,
+            proof_target=proof_target,
+        )
         proof_dir.mkdir(parents=True, exist_ok=True)
 
         if not worktree_path.is_dir():
@@ -96,7 +101,7 @@ class ProofRunner:
         _clear_proof_dir(proof_dir)
         output_parts: list[str] = []
         base_timeout = self.config.proof.timeout_minutes * 60
-        env = self._proof_env(run=run, worktree=worktree_path, proof_dir=proof_dir)
+        env = self._proof_env(run=run, worktree=worktree_path, proof_dir=proof_dir, proof_target=target)
         for command in command_list:
             timeout = _proof_command_timeout(command, base_timeout, platforms)
             code, stdout, stderr = self._run_command(command, worktree_path, timeout, env)
@@ -153,6 +158,7 @@ class ProofRunner:
             proof_dir=proof_dir,
             artifacts=artifacts,
             platforms=platforms,
+            proof_target=target,
         )
         artifacts = (str(manifest_path), *artifacts)
         return ProofResult(
@@ -172,7 +178,14 @@ class ProofRunner:
             root = runtime_root(self.config) / artifact_dir
         return root / str(getattr(run, "id", "") or "unknown-run")
 
-    def _proof_env(self, *, run: Any, worktree: Path, proof_dir: Path) -> dict[str, str]:
+    def _proof_env(
+        self,
+        *,
+        run: Any,
+        worktree: Path,
+        proof_dir: Path,
+        proof_target: Mapping[str, str],
+    ) -> dict[str, str]:
         env = dict(os.environ)
         hermes_agent_root = Path(__file__).resolve().parents[2]
         pythonpath_parts = [str(hermes_agent_root)]
@@ -192,6 +205,7 @@ class ProofRunner:
                 "MONICA_ANDROID_SERIAL": self.config.proof.android_serial,
                 "MONICA_ANDROID_AVD": self.config.proof.android_avd,
                 "MONICA_ANDROID_PACKAGE": self.config.proof.android_package,
+                "MONICA_DEEP_LINK": proof_target.get("deep_link", ""),
                 "PYTHONPATH": os.pathsep.join(pythonpath_parts),
             }
         )
@@ -215,6 +229,7 @@ class ProofRunner:
         proof_dir: Path,
         artifacts: tuple[str, ...],
         platforms: tuple[str, ...],
+        proof_target: Mapping[str, str],
     ) -> Path:
         manifest_path = proof_dir / _MANIFEST_NAME
         payload = {
@@ -225,6 +240,8 @@ class ProofRunner:
             "platforms": list(platforms),
             "proof_artifacts": list(artifacts),
         }
+        if proof_target:
+            payload["proof_target"] = dict(proof_target)
         manifest_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
         return manifest_path
 
@@ -319,6 +336,32 @@ def _visual_proof_artifacts(artifacts: tuple[str, ...]) -> tuple[str, ...]:
 
 def _is_visual_proof_artifact(artifact: str) -> bool:
     return Path(artifact).suffix.lower() in _VISUAL_PROOF_SUFFIXES
+
+
+def _proof_target(
+    *,
+    config_deep_link: str,
+    proof_target: Mapping[str, Any] | None,
+) -> dict[str, str]:
+    target: dict[str, str] = {}
+    if isinstance(proof_target, Mapping):
+        for key in ("deep_link", "screen", "notes"):
+            value = str(proof_target.get(key) or "").strip()
+            if value:
+                target[key] = value
+    fallback = str(config_deep_link or "").strip()
+    if fallback and not target.get("deep_link"):
+        target["deep_link"] = fallback
+    if not _looks_like_deep_link(target.get("deep_link", "")):
+        target.pop("deep_link", None)
+    return target
+
+
+def _looks_like_deep_link(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text or any(char.isspace() for char in text):
+        return False
+    return "://" in text or text.startswith(("exp+", "http://", "https://"))
 
 
 def _normalize_platform_name(platform: str) -> str:
