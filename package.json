@@ -37,7 +37,10 @@
   },
   "overrides": {
     "lodash": "4.18.1",
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "@assistant-ui/tap": "0.5.14",
+    "@assistant-ui/store": "0.2.9",
+    "rolldown": "1.0.0-rc.17"
   },
   "engines": {
     "node": ">=20.0.0"
