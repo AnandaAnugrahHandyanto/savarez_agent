@@ -145,14 +145,14 @@ def _load_web_config() -> dict:
 # ``web.search_backend`` / ``web.extract_backend``). Kept as a single source of
 # truth for config validation across the selection helpers.
 _KNOWN_WEB_BACKENDS = frozenset(
-    {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}
+    {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai", "anysearch"}
 )
 
 # Backends that only service web_search (their provider's ``supports_extract()``
 # is False). They are skipped during *extract* auto-detect so a search-only
 # credential (e.g. SEARXNG_URL) does not shadow the keyless Parallel free-MCP
 # fallback, which would otherwise leave web_extract broken on a no-key install.
-_SEARCH_ONLY_BACKENDS = frozenset({"searxng", "brave-free", "ddgs", "xai"})
+_SEARCH_ONLY_BACKENDS = frozenset({"searxng", "brave-free", "ddgs", "xai", "anysearch"})
 
 
 def _get_backend(capability: str = "search") -> str:
@@ -188,6 +188,7 @@ def _get_backend(capability: str = "search") -> str:
         ("firecrawl", _is_tool_gateway_ready()),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
+        ("anysearch", _has_env("ANYSEARCH_API_KEY")),
         # Keyless Parallel free MCP — always available, the intended no-key
         # default for both search and extract. Ahead of ddgs (search-only, so it
         # can't service web_extract); ddgs stays reachable via web.backend=ddgs.
@@ -267,6 +268,8 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("SEARXNG_URL")
     if backend == "brave-free":
         return _has_env("BRAVE_SEARCH_API_KEY")
+    if backend == "anysearch":
+        return _has_env("ANYSEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
     if backend == "xai":
@@ -328,6 +331,7 @@ def _web_requires_env() -> list[str]:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
+        "ANYSEARCH_API_KEY",
     ]
 
 
@@ -1421,6 +1425,8 @@ if __name__ == "__main__":
             print(f"   Using SearXNG (search only): {_env_value('SEARXNG_URL')}")
         elif backend == "brave-free":
             print("   Using Brave Search free tier (search only)")
+        elif backend == "anysearch":
+            print("   Using AnySearch API (search only)")
         elif backend == "ddgs":
             print("   Using DuckDuckGo via ddgs package (search only)")
         elif firecrawl_url_available:
@@ -1434,7 +1440,7 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL, ANYSEARCH_API_KEY"
             f"{_firecrawl_backend_help_suffix()}"
         )
 

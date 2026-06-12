@@ -325,6 +325,18 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
 
 
 @pytest.fixture(autouse=True)
+def _windows_monkeypatch_helper(monkeypatch):
+    if sys.platform == "win32":
+        original_setenv = monkeypatch.setenv
+        def custom_setenv(name, value, *args, **kwargs):
+            original_setenv(name, value, *args, **kwargs)
+            if name == "HOME":
+                original_setenv("USERPROFILE", value, *args, **kwargs)
+                original_setenv("HOMEPATH", value, *args, **kwargs)
+        monkeypatch.setenv = custom_setenv
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_environment(tmp_path, monkeypatch):
     """Blank out all credential/behavioral env vars so local and CI match.
 
@@ -533,6 +545,25 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "(only for tests that genuinely need real os.kill / subprocess "
         "behaviour — e.g. PTY tests that signal their own child).",
     )
+    config.addinivalue_line(
+        "markers",
+        "require_symlinks: skip test if the environment does not support symlinks "
+        "(e.g. Windows without admin/dev-mode)",
+    )
+
+
+def pytest_runtest_setup(item):
+    if item.get_closest_marker("require_symlinks") is not None:
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            link = Path(tmpdir) / "link"
+            target = Path(tmpdir) / "target"
+            target.write_text("ok", encoding="utf-8")
+            try:
+                link.symlink_to(target)
+            except OSError:
+                pytest.skip("Environment does not support symlinks (requires admin or Developer Mode on Windows)")
 
 
 @pytest.fixture(autouse=True)
