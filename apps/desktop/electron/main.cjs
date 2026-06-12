@@ -5245,6 +5245,18 @@ function createWindow() {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show()
   })
 
+  // Fallback: if the renderer crashes or hangs before paint (e.g. an
+  // unhandled error during React mount), `ready-to-show` never fires and
+  // the user sees an invisible window with no feedback. Show the window
+  // unconditionally after 3s so the user at least gets a blank surface
+  // (better than nothing) and the OS surfaces any "not responding" state.
+  // The `ready-to-show` handler above still wins in the happy path.
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      mainWindow.show()
+    }
+  }, 3000)
+
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('will-leave-full-screen', () => sendWindowStateChanged(false))
