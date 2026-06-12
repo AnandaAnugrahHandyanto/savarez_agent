@@ -2780,6 +2780,32 @@ class TestListSessionsRich:
         assert db.get_session("delegate") is None
         assert db.get_session("branch") is not None
 
+    def test_delete_parent_cascades_unmarked_delegate_children(self, db):
+        """Legacy subagent rows without ``_delegate_from`` still cascade-delete."""
+        db.create_session("parent", "cli")
+        db.create_session("delegate", "cli", parent_session_id="parent")
+
+        assert db.delete_session("parent") is True
+        assert db.get_session("delegate") is None
+
+    def test_v16_migration_tags_orphaned_delegate_rows(self, tmp_path):
+        import json
+
+        db_path = tmp_path / "state.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session("orphan", "cli")
+        db.append_message("orphan", "user", "Echo progress")
+        db.append_message("orphan", "tool", "step 1", tool_name="terminal")
+        db._conn.execute("UPDATE schema_version SET version = 15")
+        db._conn.commit()
+        db.close()
+
+        db = SessionDB(db_path=db_path)
+        assert "orphan" not in [s["id"] for s in db.list_sessions_rich()]
+        row = db.get_session("orphan")
+        assert json.loads(row["model_config"])["_delegate_from"] == "__orphaned__"
+        db.close()
+
     def test_branch_session_visible_after_parent_reopen_and_reend(self, db):
         """Branch sessions stay visible after the parent is reopened and re-ended.
 
