@@ -12,6 +12,7 @@ import asyncio
 import contextvars
 import json
 import logging
+import inspect
 import os
 import re
 import time
@@ -360,6 +361,9 @@ class SlackAdapter(BasePlatformAdapter):
         self._THREAD_CACHE_TTL = 60.0
         # Track message IDs that should get reaction lifecycle (DMs / @mentions).
         self._reacting_message_ids: set = set()
+        # Track Slack reaction_added event IDs we've already routed.
+        self._processed_reaction_events: set = set()
+        self._PROCESSED_REACTIONS_MAX = 5000
         # Track active assistant thread status indicators so stop_typing can
         # clear them (chat_id → thread_ts).
         self._active_status_threads: Dict[str, str] = {}
@@ -896,7 +900,7 @@ class SlackAdapter(BasePlatformAdapter):
             # gateway.error.log with Slack Bolt "Unhandled request" warnings.
             @self._app.event("reaction_added")
             async def handle_reaction_added(event, say):
-                pass
+                await self._handle_slack_reaction_added(event)
 
             @self._app.event("reaction_removed")
             async def handle_reaction_removed(event, say):
@@ -1715,6 +1719,252 @@ class SlackAdapter(BasePlatformAdapter):
         """Check if message reactions are enabled via config/env."""
         return os.getenv("SLACK_REACTIONS", "true").lower() not in {"false", "0", "no"}
 
+    def _slack_trigger_reactions(self) -> set[str]:
+        """Return reaction names that should route the reacted-to message."""
+        raw = self.config.extra.get("trigger_reactions") or os.getenv(
+            "SLACK_TRIGGER_REACTIONS",
+            "plankton",
+        )
+        if isinstance(raw, str):
+            parts = re.split(r"[,\s]+", raw)
+        elif isinstance(raw, (list, tuple, set)):
+            parts = [str(p) for p in raw]
+        else:
+            parts = []
+        return {p.strip().strip(":") for p in parts if p and p.strip().strip(":")}
+
+    def _slack_trigger_reaction_users(self) -> set[str]:
+        """Return user IDs allowed to activate trigger reactions.
+
+        Empty means unrestricted, preserving backward compatibility for
+        deployments that only need an emoji trigger. Operators can restrict
+        this with ``slack.trigger_reaction_users`` or
+        ``SLACK_TRIGGER_REACTION_USERS``.
+        """
+        raw = self.config.extra.get("trigger_reaction_users")
+        if raw is None:
+            raw = os.getenv("SLACK_TRIGGER_REACTION_USERS", "")
+        if isinstance(raw, str):
+            parts = re.split(r"[,\s]+", raw)
+        elif isinstance(raw, (list, tuple, set)):
+            parts = [str(p) for p in raw]
+        else:
+            parts = []
+        return {p.strip() for p in parts if p and p.strip()}
+
+    def _slack_trigger_reaction_target(self) -> tuple[str, str]:
+        """Return optional destination channel/thread for trigger reactions.
+
+        Operators can set ``slack.trigger_reaction_target`` to either
+        ``C123`` or ``C123:1710000000.000100``. The split form
+        ``trigger_reaction_target_channel`` + ``trigger_reaction_target_thread``
+        is also accepted for readability.
+        """
+        raw_target = self.config.extra.get("trigger_reaction_target")
+        if raw_target is None:
+            raw_target = os.getenv("SLACK_TRIGGER_REACTION_TARGET", "")
+        target = str(raw_target or "").strip()
+
+        channel = str(
+            self.config.extra.get("trigger_reaction_target_channel")
+            or os.getenv("SLACK_TRIGGER_REACTION_TARGET_CHANNEL", "")
+            or ""
+        ).strip()
+        thread = str(
+            self.config.extra.get("trigger_reaction_target_thread")
+            or os.getenv("SLACK_TRIGGER_REACTION_TARGET_THREAD", "")
+            or ""
+        ).strip()
+
+        if target:
+            if ":" in target:
+                target_channel, target_thread = target.split(":", 1)
+                channel = channel or target_channel.strip()
+                thread = thread or target_thread.strip()
+            else:
+                channel = channel or target
+
+        return channel, thread
+
+    async def _fetch_slack_message_by_ts(
+        self,
+        *,
+        channel_id: str,
+        message_ts: str,
+        team_id: str = "",
+    ) -> Optional[dict]:
+        """Fetch a single Slack message by channel/timestamp."""
+        if team_id and channel_id:
+            self._channel_team[channel_id] = team_id
+        client = self._get_client(channel_id)
+        result = await client.conversations_history(
+            channel=channel_id,
+            latest=message_ts,
+            inclusive=True,
+            limit=1,
+        )
+        messages = result.get("messages", []) if hasattr(result, "get") else []
+        if not messages:
+            return None
+        message = dict(messages[0])
+        if str(message.get("ts", "")) != str(message_ts):
+            return None
+        return message
+
+    async def _get_slack_message_permalink(
+        self,
+        *,
+        channel_id: str,
+        message_ts: str,
+        team_id: str = "",
+    ) -> str:
+        """Return Slack's clickable permalink for a message, if available."""
+        if team_id and channel_id:
+            self._channel_team[channel_id] = team_id
+        try:
+            result = await self._get_client(channel_id).chat_getPermalink(
+                channel=channel_id,
+                message_ts=message_ts,
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.debug(
+                "[Slack] Failed to fetch permalink for %s at %s: %s",
+                channel_id,
+                message_ts,
+                exc,
+            )
+            return ""
+        if not hasattr(result, "get"):
+            return ""
+        ok = result.get("ok")
+        permalink = result.get("permalink")
+        if inspect.isawaitable(ok) or inspect.isawaitable(permalink):
+            for value in (ok, permalink):
+                if inspect.iscoroutine(value):
+                    value.close()
+            return ""
+        if ok:
+            return str(permalink or "")
+        return ""
+
+    async def _handle_slack_reaction_added(self, event: dict) -> None:
+        """Handle trigger emoji reactions by routing the reacted-to message."""
+        reaction = str(event.get("reaction", "")).strip().strip(":")
+        if reaction not in self._slack_trigger_reactions():
+            return
+
+        reactor_user = str(event.get("user") or "").strip()
+        allowed_reactors = self._slack_trigger_reaction_users()
+        if allowed_reactors and reactor_user not in allowed_reactors:
+            logger.debug(
+                "[Slack] Ignoring :%s: reaction trigger from unauthorized reactor %s",
+                reaction,
+                reactor_user or "<missing>",
+            )
+            return
+
+        item = event.get("item") or {}
+        if item.get("type") != "message":
+            return
+
+        channel_id = item.get("channel") or event.get("item_channel") or ""
+        message_ts = item.get("ts") or event.get("item_ts") or ""
+        if not channel_id or not message_ts:
+            return
+
+        event_key = (
+            event.get("event_ts")
+            or f"{reactor_user}:{channel_id}:{message_ts}:{reaction}"
+        )
+        if event_key in self._processed_reaction_events:
+            return
+        self._processed_reaction_events.add(event_key)
+        if len(self._processed_reaction_events) > self._PROCESSED_REACTIONS_MAX:
+            excess = len(self._processed_reaction_events) - self._PROCESSED_REACTIONS_MAX // 2
+            for old_key in list(self._processed_reaction_events)[:excess]:
+                self._processed_reaction_events.discard(old_key)
+
+        team_id = event.get("team") or event.get("team_id") or ""
+        try:
+            message = await self._fetch_slack_message_by_ts(
+                channel_id=channel_id,
+                message_ts=message_ts,
+                team_id=team_id,
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning(
+                "[Slack] Failed to fetch message for :%s: reaction in %s at %s: %s",
+                reaction,
+                channel_id,
+                message_ts,
+                exc,
+                exc_info=True,
+            )
+            return
+        if not message:
+            logger.warning(
+                "[Slack] No message found for :%s: reaction in %s at %s",
+                reaction,
+                channel_id,
+                message_ts,
+            )
+            return
+
+        reactor_user = reactor_user or message.get("user", "")
+        original_user = message.get("user", "")
+        original_text = (message.get("text") or "").strip()
+        permalink = await self._get_slack_message_permalink(
+            channel_id=channel_id,
+            message_ts=message_ts,
+            team_id=team_id,
+        )
+        prefix = f"[Slack :{reaction}: reaction trigger"
+        if original_user:
+            prefix += f" on a message from <@{original_user}>"
+        prefix += "]"
+        source_lines = [prefix]
+        if permalink:
+            source_lines.append(f"Original Slack message: {permalink}")
+        if original_text:
+            source_lines.append(original_text)
+        routed_text = "\n".join(source_lines)
+
+        target_channel, target_thread = self._slack_trigger_reaction_target()
+        synthetic_channel = target_channel or channel_id
+        synthetic_thread = target_thread
+        force_top_level_response = bool(target_channel and not target_thread)
+        if not target_channel:
+            synthetic_thread = message.get("thread_ts") or message_ts
+
+        synthetic = dict(message)
+        synthetic.update(
+            {
+                "channel": synthetic_channel,
+                "team": team_id or message.get("team", ""),
+                "user": reactor_user,
+                "text": routed_text,
+                "ts": event.get("event_ts") or f"{message_ts}-reaction-{reactor_user}-{reaction}",
+                "_hermes_force_process": True,
+                "_hermes_reaction_trigger": reaction,
+                "_hermes_reaction_source_channel": channel_id,
+                "_hermes_reacted_message_ts": message_ts,
+                "_hermes_reacted_message_user": original_user,
+            }
+        )
+        if synthetic_thread:
+            synthetic["thread_ts"] = synthetic_thread
+        else:
+            synthetic.pop("thread_ts", None)
+        if force_top_level_response:
+            # Target-channel reaction routing is a handoff, not a reply in the
+            # source channel. The response should be a new message in the target
+            # channel unless a target thread is explicitly configured.
+            synthetic["_hermes_no_thread_response"] = True
+        if "channel_type" not in synthetic or target_channel:
+            synthetic["channel_type"] = "im" if synthetic_channel.startswith("D") else "channel"
+
+        await self._handle_slack_message(synthetic)
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
         if not self._reactions_enabled():
@@ -2360,9 +2610,11 @@ class SlackAdapter(BasePlatformAdapter):
             thread_ts = event.get("thread_ts") or assistant_meta.get("thread_ts")
             if not thread_ts and self._dm_top_level_threads_as_sessions():
                 thread_ts = ts
+        elif event.get("_hermes_no_thread_response"):
+            thread_ts = event.get("thread_ts") or ""
         else:
-            # Channel message session scoping.
-            #
+            thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
+
             # Three cases:
             #   (a) genuine thread reply   → scope session per thread
             #   (b) top-level, reply_in_thread=true (the default)  →
@@ -2406,6 +2658,7 @@ class SlackAdapter(BasePlatformAdapter):
         is_mentioned = bot_uid and f"<@{bot_uid}>" in routing_text
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
+        force_process = bool(event.get("_hermes_force_process"))
 
         if not is_dm and bot_uid:
             # Check allowed channels — if set, only respond in these channels (whitelist)
@@ -2416,7 +2669,9 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 return
 
-            if channel_id in self._slack_free_response_channels():
+            if force_process:
+                pass  # Explicit internal routing path, e.g. authorized reaction trigger.
+            elif channel_id in self._slack_free_response_channels():
                 pass  # Free-response channel — always process
             elif not self._slack_require_mention():
                 pass  # Mention requirement disabled globally for Slack
@@ -2728,7 +2983,7 @@ class SlackAdapter(BasePlatformAdapter):
             message_id=ts,
             media_urls=media_urls,
             media_types=media_types,
-            reply_to_message_id=thread_ts if thread_ts != ts else None,
+            reply_to_message_id=thread_ts if thread_ts and thread_ts != ts else None,
             channel_prompt=_channel_prompt,
             reply_to_text=reply_to_text,
             auto_skill=_auto_skill,
