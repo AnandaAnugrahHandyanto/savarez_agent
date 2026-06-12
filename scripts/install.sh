@@ -9,7 +9,7 @@
 #   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 #
 # Or with options:
-#   curl -fsSL ... | bash -s -- --no-venv --skip-setup
+#   curl -fsSL ... | bash -s -- --skip-setup
 #
 # ============================================================================
 
@@ -93,10 +93,6 @@ fi
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --no-venv)
-            USE_VENV=false
-            shift
-            ;;
         --skip-setup)
             RUN_SETUP=false
             shift
@@ -160,7 +156,6 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: install.sh [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
             echo "  --skip-browser Skip Playwright/Chromium install (browser tools won't work)"
             echo "  --no-skills    Start with a blank slate — seed no bundled skills, and"
@@ -1197,11 +1192,6 @@ clone_repo() {
 }
 
 setup_venv() {
-    if [ "$USE_VENV" = false ]; then
-        log_info "Skipping virtual environment (--no-venv)"
-        return 0
-    fi
-
     if [ "$DISTRO" = "termux" ]; then
         log_info "Creating virtual environment with Termux Python..."
 

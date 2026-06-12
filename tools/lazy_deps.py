@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -60,6 +61,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from hermes_constants import get_hermes_home
+from hermes_cli.managed_uv import get_pip_cmd
 
 logger = logging.getLogger(__name__)
 
@@ -347,64 +351,16 @@ def _is_present(spec: str) -> bool:
 
 
 def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _InstallResult:
-    """Install ``specs`` into the active venv using uv → pip → ensurepip ladder.
-
-    Mirrors the strategy in ``hermes_cli.tools_config._pip_install`` but
-    kept independent here so this module has no CLI dependency.
-    """
+    """Install ``specs`` into the active venv using the authoritative pip_install helper."""
     if not specs:
         return _InstallResult(True, "", "")
 
-    venv_root = Path(sys.executable).parent.parent
-    uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_root)}
-
-    # Tier 1: uv (preferred — fast, doesn't need pip in the venv)
-    uv_bin = shutil.which("uv")
-    if uv_bin:
-        try:
-            r = subprocess.run(
-                [uv_bin, "pip", "install", *specs],
-                capture_output=True, text=True, timeout=timeout, env=uv_env,
-                stdin=subprocess.DEVNULL,
-            )
-            if r.returncode == 0:
-                return _InstallResult(True, r.stdout or "", r.stderr or "")
-            logger.debug("uv pip install failed: %s", r.stderr)
-        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-            logger.debug("uv invocation failed: %s", e)
-
-    # Tier 2: python -m pip (with ensurepip bootstrap if needed)
-    pip_cmd = [sys.executable, "-m", "pip"]
-    try:
-        probe = subprocess.run(
-            pip_cmd + ["--version"],
-            capture_output=True, text=True, timeout=15,
-            stdin=subprocess.DEVNULL,
-        )
-        if probe.returncode != 0:
-            raise FileNotFoundError("pip not in venv")
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        try:
-            subprocess.run(
-                [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                capture_output=True, text=True, timeout=120, check=True,
-                stdin=subprocess.DEVNULL,
-            )
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            return _InstallResult(False, "",
-                                  f"pip not available and ensurepip failed: {e}")
-
-    try:
-        r = subprocess.run(
-            pip_cmd + ["install", *specs],
-            capture_output=True, text=True, timeout=timeout,
-            stdin=subprocess.DEVNULL,
-        )
-        return _InstallResult(r.returncode == 0, r.stdout or "", r.stderr or "")
-    except subprocess.TimeoutExpired as e:
-        return _InstallResult(False, "", f"pip install timed out: {e}")
-    except Exception as e:
-        return _InstallResult(False, "", f"pip install failed: {e}")
+    from hermes_cli.managed_uv import pip_install
+    result = pip_install(list(specs), timeout=timeout, capture_output=True)
+    
+    if result.returncode == 0:
+        return _InstallResult(True, result.stdout or "", result.stderr or "")
+    return _InstallResult(False, result.stdout or "", result.stderr or f"pip install failed")
 
 
 # =============================================================================

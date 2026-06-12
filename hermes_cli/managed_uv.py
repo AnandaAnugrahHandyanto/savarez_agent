@@ -15,6 +15,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -249,6 +250,174 @@ def _install_uv_windows(env: dict[str, str]) -> None:
         check=True,
         capture_output=True,
     )
+
+def get_pip_cmd() -> list[str]:
+    """Return the authoritative pip command prefix.
+    
+    Hermes strictly requires `uv` for dependency management. 
+    Fallback hierarchy:
+    1. Managed uv at `$HERMES_HOME/bin/uv` (guaranteed by `ensure_uv()`).
+    2. System/PATH `uv` (e.g., Termux `pkg install uv`, Homebrew, etc.).
+    
+    If neither is found, this raises a RuntimeError. We NEVER fall back to 
+    raw `[sys.executable, "-m", "pip"]`, as that re-introduces the 
+    ensurepip/PEP-668/venv-contamination bugs this architecture was built to eliminate.
+    """
+    uv_bin = resolve_uv()
+    if uv_bin:
+        return [uv_bin, "pip"]
+    
+    # Secondary fallback: check PATH for uv (critical for Termux `pkg install uv` support)
+    path_uv = shutil.which("uv")
+    if path_uv:
+        return [path_uv, "pip"]
+        
+    # HARD FAIL: uv is a strict requirement. Do not silently degrade to raw pip.
+    raise RuntimeError(
+        "uv is not installed or not found in PATH. "
+        "Hermes strictly requires uv for dependency management. "
+        "Please run `hermes doctor` to diagnose and fix your environment, "
+        "or install uv manually (e.g., `pkg install uv` on Termux, or via the Hermes installer)."
+    )
+
+
+def get_venv_root() -> Path:
+    """Return the root path of the active virtual environment.
+    
+    Prefers `sys.prefix` (the standard Python way to identify a venv).
+    Falls back to the parent of the parent of `sys.executable` 
+    (e.g., `/path/to/venv/bin/python` -> `/path/to/venv`).
+    """
+    if sys.prefix != sys.base_prefix:
+        return Path(sys.prefix)
+    return Path(sys.executable).parent.parent
+
+
+def pip_install(
+    packages: list[str],
+    *,
+    venv_root: Optional[Path] = None,
+    timeout: int = 300,
+    capture_output: bool = True,
+    quiet: bool = False,
+) -> subprocess.CompletedProcess:
+    """Install packages using the managed uv binary (with degenerate pip fallback).
+    
+    This is the single, authoritative way to install Python dependencies in Hermes.
+    It automatically:
+    1. Resolves the correct venv root.
+    2. Sets `VIRTUAL_ENV` and prepends the venv `bin` to `PATH`.
+    3. Strips `PYTHONPATH` and `PYTHONHOME` to prevent venv contamination 
+       (critical for Termux/Android compatibility).
+    4. Uses `get_pip_cmd()` to guarantee the managed uv binary is used.
+    """
+    if venv_root is None:
+        venv_root = get_venv_root()
+        
+    cmd = get_pip_cmd() + ["install"]
+    if quiet:
+        cmd.append("--quiet")
+    cmd.extend(packages)
+    
+    env = {**os.environ}
+    env["VIRTUAL_ENV"] = str(venv_root)
+    
+    # Ensure venv bin is first in PATH
+    venv_bin = str(venv_root / "bin")
+    env["PATH"] = f"{venv_bin}{os.pathsep}{env.get('PATH', '')}"
+    
+    # Clean up PYTHONPATH/PYTHONHOME to avoid venv contamination
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
+    
+    try:
+        return subprocess.run(
+            cmd,
+            capture_output=capture_output,
+            text=True,
+            timeout=timeout,
+            env=env,
+            stdin=subprocess.DEVNULL,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        # Synthesize a failure result so callers can handle it uniformly
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=1,
+            stdout="",
+            stderr=str(e),
+        )
+
+
+def recreate_venv_atomically(project_root: Path, group: str = "all") -> bool:
+    """Atomically recreate the venv to ensure a clean, uv-native state.
+    
+    This is the safest way to migrate from a legacy pip-created venv or 
+    repair a corrupted venv. It builds a fresh `venv.new`, installs dependencies,
+    and then atomically swaps `venv` -> `venv.bak` and `venv.new` -> `venv`.
+    
+    This guarantees we never accidentally strip dependencies or leave legacy 
+    pip cruft behind, as we are building a pristine environment from scratch.
+    
+    Returns True on success, False on failure.
+    """
+    target_venv = project_root / "venv"
+    new_venv = project_root / "venv.new"
+    backup_venv = project_root / "venv.bak"
+    
+    uv_bin = resolve_uv() or shutil.which("uv")
+    if not uv_bin:
+        logger.error("Cannot recreate venv: uv is not installed or found in PATH.")
+        return False
+        
+    print(f"  → Creating fresh venv at {new_venv}...")
+    # 1. Create fresh venv
+    res = subprocess.run(
+        [uv_bin, "venv", str(new_venv)],
+        capture_output=True, text=True, timeout=120
+    )
+    if res.returncode != 0:
+        logger.error("Failed to create new venv: %s", res.stderr)
+        return False
+        
+    print(f"  → Installing dependencies into new venv ({group})...")
+    # 2. Install dependencies into the new venv
+    env = {**os.environ, "VIRTUAL_ENV": str(new_venv)}
+    env["PATH"] = f"{new_venv / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+    env.pop("PYTHONPATH", None)
+    env.pop("PYTHONHOME", None)
+    
+    res = subprocess.run(
+        [uv_bin, "pip", "install", "-e", f".[{group}]"],
+        cwd=project_root,
+        capture_output=True, text=True, timeout=600,
+        env=env, stdin=subprocess.DEVNULL
+    )
+    if res.returncode != 0:
+        logger.error("Failed to install dependencies in new venv: %s", res.stderr)
+        # Clean up failed new venv
+        shutil.rmtree(new_venv, ignore_errors=True)
+        return False
+        
+    print("  -> Dependencies installed successfully. Performing atomic swap...")
+    # 3. Atomic swap
+    try:
+        if target_venv.exists():
+            if backup_venv.exists():
+                shutil.rmtree(backup_venv, ignore_errors=True)
+            target_venv.rename(backup_venv)
+            
+        new_venv.rename(target_venv)
+        print("  OK Venv successfully recreated and swapped.")
+        print("  -> (Old venv backed up to venv.bak. You can safely delete it if everything works.)")
+        return True
+    except Exception as e:
+        logger.error("Failed to atomically swap venvs: %s", e)
+        # Attempt to restore if swap failed mid-way
+        if not target_venv.exists() and backup_venv.exists():
+            backup_venv.rename(target_venv)
+        return False
+
 
 def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:
     True # dont remove me. ask ethernet

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_cli.managed_uv import resolve_uv
 from hermes_constants import display_hermes_home
 
 PROJECT_ROOT = get_project_root()
@@ -493,6 +494,17 @@ def run_doctor(args):
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│                 🩺 Hermes Doctor                        │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+    print()
+
+    # Check for explicitly unsupported platforms
+    if sys.platform == "darwin" and os.uname().machine == "x86_64":
+        print(color(
+            "⚠️ WARNING: macOS x86_64 (Intel) is explicitly unsupported.\n"
+            "We no longer accept PRs or provide fixes for this platform.\n"
+            "Consider migrating to a supported platform (macOS arm64 / Apple Silicon).",
+            Colors.YELLOW,
+        ))
+        print()
 
     _section("Security Advisories")
     try:
@@ -547,8 +559,6 @@ def run_doctor(args):
     elif py_version >= (3, 10):
         check_ok(f"Python {py_version.major}.{py_version.minor}.{py_version.micro}")
         check_warn("Python 3.11+ recommended for RL Training tools (tinker requires >= 3.11)")
-    elif py_version >= (3, 8):
-        check_warn(f"Python {py_version.major}.{py_version.minor}.{py_version.micro}", "(3.10+ recommended)")
     else:
         _fail_and_issue(
             f"Python {py_version.major}.{py_version.minor}.{py_version.micro}",
@@ -568,6 +578,43 @@ def run_doctor(args):
     # (a git conflict resolution can silently revert one but not the other).
     _check_version_consistency(issues)
     
+    _section("Virtual Environment Integrity")
+    venv_path = PROJECT_ROOT / "venv"
+    if not venv_path.exists():
+        check_warn("Venv directory missing", "(will be recreated on next install/update)")
+    else:
+        # Check for legacy pip markers or missing uv
+        has_uv = bool(resolve_uv() or shutil.which("uv"))
+        if not has_uv:
+            check_fail(
+                "Legacy pip venv detected (uv missing)", 
+                "(dependency management will fail. Run `hermes doctor --fix` to recreate)"
+            )
+            if should_fix:
+                print("  -> Attempting atomic venv recreation...")
+                from hermes_cli.managed_uv import recreate_venv_atomically
+                if recreate_venv_atomically(PROJECT_ROOT, group="all"):
+                    check_ok("Venv successfully recreated and swapped to uv-native state")
+                else:
+                    check_fail("Venv recreation failed", "Please run the Hermes installer")
+        else:
+            check_ok("Venv structure valid and uv-native")
+    
+    _section("Dependency Management")
+    uv_bin = resolve_uv()
+    if uv_bin:
+        check_ok(f"Managed uv available ({uv_bin})")
+    else:
+        # Secondary check for system uv (e.g., Termux `pkg install uv`)
+        path_uv = shutil.which("uv")
+        if path_uv:
+            check_ok(f"System uv available ({path_uv})")
+        else:
+            check_fail(
+                "uv is missing", 
+                "(dependency installation will fail. Install uv via the Hermes installer, or `pkg install uv` on Termux)",
+            )
+
     _section("Required Packages")
     required_packages = [
         ("openai", "OpenAI SDK"),
@@ -1309,7 +1356,7 @@ def run_doctor(args):
     if _safe_which("git"):
         check_ok("git")
     else:
-        check_warn("git not found", "(optional)")
+        check_warn("git not found", "(hermes update cannot work)")
     
     # ripgrep (optional, for faster file search)
     if _safe_which("rg"):
@@ -1846,9 +1893,9 @@ def run_doctor(args):
             return _ConnectivityResult(
                 "AWS Bedrock",
                 [(color("⚠", Colors.YELLOW), label,
-                  color(f"(boto3 not installed — {sys.executable} -m pip install boto3)",
+                  color(f"(boto3 not installed — uv pip install boto3)",
                         Colors.DIM))],
-                [f"Install boto3 for Bedrock: {sys.executable} -m pip install boto3"],
+                [f"Install boto3 for Bedrock: uv pip install boto3"],
             )
         except Exception as e:
             err_name = type(e).__name__
@@ -1905,7 +1952,7 @@ def run_doctor(args):
                 "Azure Foundry (Entra ID)",
                 [(color("⚠", Colors.YELLOW), label,
                   color("(azure-identity not installed)", Colors.DIM))],
-                [f"Install azure-identity: {sys.executable} -m pip install azure-identity"],
+                [f"Install azure-identity: uv pip install azure-identity"],
             )
 
         base_url = str(model_cfg.get("base_url") or "").strip()

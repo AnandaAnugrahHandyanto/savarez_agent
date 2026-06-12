@@ -26,6 +26,15 @@ reviewing any change:
   high. Most new capability should arrive as a CLI command + skill, a
   service-gated tool, or a plugin — not as core surface.
 
+## Platform Support
+
+Hermes Agent's platform support is formalized into three tiers. For the full tier breakdown, contribution guidelines, and user-facing migration policies, see the [Platform Support section in CONTRIBUTING.md](./CONTRIBUTING.md#platform-support) and the [Platform Support Reference](https://hermes-agent.nousresearch.com/docs/reference/platform-support).
+
+**Summary for agents:**
+- **Explicitly Supported**: Linux (x86_64/arm64), macOS arm64, Windows (x86_64/arm64), Docker. Use `curl | bash`, PowerShell, or Docker installers.
+- **Best-Effort**: Termux, AUR, Homebrew, Nix. PRs accepted but won't block releases.
+- **Explicitly Unsupported**: macOS x86_64, pip/PyPI packaging, FreeBSD. Do not accept PRs for these.
+
 ## Contribution Rubric — What We Want / What We Don't
 
 This is the project's intent layer. Use it two ways:
@@ -123,6 +132,13 @@ conservative at the waist.
   without E2E proof, and plugins that touch core files.** Plugins live in their
   own directory and work within the ABCs/hooks we provide; if a plugin needs
   more, widen the generic plugin surface, don't special-case it in core.
+- **Dependency installation via uv helpers, not raw pip.** Hermes manages its
+  own uv binary. Always use `ensure_uv()` or
+  `resolve_uv()` from `hermes_cli.managed_uv`, or a dedicated helper like
+  `_get_pip_cmd()` that returns `[uv_path, "pip"]`. **Do not** write
+  `[sys.executable, "-m", "pip"]` or `[sys.executable, "-m", "ensurepip"]`
+  directly in subprocess calls. The helpers guarantee the managed uv path and
+  only fall back to raw pip in explicitly documented degenerate edge cases.
 
 ### Before you call it a bug — verify the premise (and when NOT to close)
 
