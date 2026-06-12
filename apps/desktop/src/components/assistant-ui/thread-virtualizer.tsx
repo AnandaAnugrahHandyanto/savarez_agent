@@ -453,17 +453,22 @@ function useThreadScrollAnchor({
     prevGroupCountForLayoutRef.current = groupCount
   }, [enabled, groupCount, pinToBottom, stickyBottomRef])
 
-  // Intentionally NO post-run bottom lock. Earlier builds kept pinning to
-  // the bottom for POST_RUN_BOTTOM_LOCK_MS after `isRunning` flipped false to
-  // chase final Shiki re-highlight measurement. With streaming follow gone,
-  // re-pinning at completion would yank the viewport back to the bottom even
-  // though the user is reading earlier content — the opposite of what's
-  // wanted. The one-time submit / new-turn jump already covers landing a
-  // fresh message in view.
+  // Post-run pin: when the run completes (isRunning → false) while the user
+  // is still at the bottom, pin the viewport one final time so the complete
+  // response is in view. This catches content that arrived within the same
+  // turn group (which doesn't increment groupCount) and ensures the tail of
+  // a non-streaming response isn't left below the fold.
+  //
+  // We guard with stickyBottomRef so a user who scrolled up during the run
+  // is not yanked back to the bottom on completion.
   const prevIsRunningForLayoutRef = useRef(isRunning)
   useLayoutEffect(() => {
+    if (prevIsRunningForLayoutRef.current && !isRunning && enabled && stickyBottomRef.current) {
+      pinToBottom()
+    }
+
     prevIsRunningForLayoutRef.current = isRunning
-  }, [isRunning])
+  }, [enabled, isRunning, pinToBottom, stickyBottomRef])
 
   useAuiEvent('thread.runStart', jumpToBottom)
 }
