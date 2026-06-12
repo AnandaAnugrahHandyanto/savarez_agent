@@ -332,12 +332,28 @@ function rewriteLatexBracketDelimiters(text: string): string {
 // error-falls-back to raw muted text. Single-line `$$...$$` is left alone:
 // it already renders via the inline math-text construct.
 const DISPLAY_MATH_BLOCK_RE = /\$\$([\s\S]+?)\$\$/g
+// Inline code spans to shield from `$$` rewriting. Unlike the module's other
+// INLINE_CODE_SPLIT_RE (`[^`\n]+`, single-line, used for visible prose), this
+// one permits newlines inside the span so a multi-line ``$$…$$`` that lives
+// entirely within one inline code span is recognized as code and left intact
+// — micromark joins the newlines and renders it as code, so rewriting its
+// delimiters would corrupt it.
+const DISPLAY_MATH_CODE_SPAN_SPLIT_RE = /(`[^`]+`)/
 
 function normalizeDisplayMathBlocks(text: string): string {
+  // Split out inline code spans and normalize only the prose between them.
+  // Splitting (rather than a backtick-in-body guard) is what protects a
+  // `$$…$$` wholly contained in one code span, whose body has no backtick.
+  return text
+    .split(DISPLAY_MATH_CODE_SPAN_SPLIT_RE)
+    .map(part => (part.startsWith('`') ? part : normalizeDisplayMathInProse(part)))
+    .join('')
+}
+
+function normalizeDisplayMathInProse(text: string): string {
   return text.replace(DISPLAY_MATH_BLOCK_RE, (match: string, body: string, offset: number) => {
-    // Backticks in the body mean the `$$`s are almost certainly prose
-    // discussing math syntax (e.g. "use `$$` to open ... `$$` to close"),
-    // not an actual equation — leave those untouched.
+    // A backtick still in the body here means an unbalanced/odd backtick run
+    // around math — leave it untouched rather than guess.
     if (!body.includes('\n') || body.includes('`')) {
       return match
     }

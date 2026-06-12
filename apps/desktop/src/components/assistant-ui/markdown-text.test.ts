@@ -256,4 +256,10 @@ describe('preprocessMarkdown', () => {
 
     expect(preprocessMarkdown(input)).toBe(input)
   })
+
+  it('leaves a multi-line $$...$$ contained within a single inline code span untouched', () => {
+    const input = '`$$a\nb$$`'
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
 })
