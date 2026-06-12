@@ -180,6 +180,7 @@ pub struct PlatformSdkRequirement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlatformSdkStagePlan {
     pub python: PathBuf,
+    pub pip_cache_dir: PathBuf,
     pub requirements: Vec<PlatformSdkRequirement>,
 }
 
@@ -502,6 +503,7 @@ pub fn platform_sdk_stage_plan(
     }
     Ok(PlatformSdkStagePlan {
         python,
+        pip_cache_dir: hermes_home.join("pip-cache"),
         requirements,
     })
 }
@@ -521,16 +523,18 @@ pub fn install_platform_sdks_stage(
     if missing.is_empty() {
         return Ok(serde_json::json!({
             "python": plan.python,
+            "pipCacheDir": plan.pip_cache_dir,
             "checked": plan.requirements.len(),
             "installed": [],
         }));
     }
     ensure_pip_available(&plan.python)?;
     for sdk in &missing {
-        install_pip_spec(&plan.python, sdk.pip_spec)?;
+        install_pip_spec(&plan.python, &plan.pip_cache_dir, sdk.pip_spec)?;
     }
     Ok(serde_json::json!({
         "python": plan.python,
+        "pipCacheDir": plan.pip_cache_dir,
         "checked": plan.requirements.len(),
         "installed": missing.iter().map(|sdk| sdk.pip_spec).collect::<Vec<_>>(),
     }))
@@ -634,9 +638,10 @@ fn ensure_pip_available(python: &Path) -> Result<()> {
     }
 }
 
-fn install_pip_spec(python: &Path, spec: &str) -> Result<()> {
+fn install_pip_spec(python: &Path, pip_cache_dir: &Path, spec: &str) -> Result<()> {
     let status = Command::new(python)
         .args(["-m", "pip", "install", spec])
+        .env("PIP_CACHE_DIR", pip_cache_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -4371,6 +4376,7 @@ mod tests {
         let plan = platform_sdk_stage_plan(&hermes_home, &install_root).unwrap();
 
         assert_eq!(plan.python, venv_python);
+        assert_eq!(plan.pip_cache_dir, hermes_home.join("pip-cache"));
         assert_eq!(plan.requirements.len(), 1);
         assert_eq!(plan.requirements[0].import_name, "qrcode");
         assert_eq!(plan.requirements[0].pip_spec, "qrcode>=7.0,<8");
