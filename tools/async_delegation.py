@@ -103,6 +103,10 @@ _waiting_lock = threading.Lock()
 _completed: Dict[str, Dict[str, Any]] = {}
 _completed_lock = threading.Lock()
 
+# Condition variable notified whenever ANY delegation reaches a terminal state
+# (completed, cancelled, timed_out, error).  Used by wait() to block efficiently.
+_completion_cv = threading.Condition()
+
 # Cancellation requests (delegation_ids that should be aborted ASAP).
 _cancel_requests: Set[str] = set()
 
@@ -209,6 +213,8 @@ def _timeout_watcher_loop() -> None:
                     pass
             with _completed_lock:
                 _completed[did] = evt
+            with _completion_cv:
+                _completion_cv.notify_all()
             with _running_lock:
                 _running.pop(did, None)
             with _promotion_cv:
@@ -244,6 +250,8 @@ def _push_cancelled_event(item: QueuedDispatch) -> None:
         pass
     with _completed_lock:
         _completed[item.delegation_id] = evt
+    with _completion_cv:
+        _completion_cv.notify_all()
 
 
 def _do_dispatch(item: QueuedDispatch) -> None:
@@ -317,6 +325,8 @@ def _do_dispatch(item: QueuedDispatch) -> None:
         # Store in completed registry.
         with _completed_lock:
             _completed[delegation_id] = evt
+        with _completion_cv:
+            _completion_cv.notify_all()
 
         try:
             completion_queue.put(evt)
@@ -539,6 +549,66 @@ def interrupt_all() -> int:
 # ----------------------------------------------------------------------
 # Result store API
 # ----------------------------------------------------------------------
+
+def wait(
+    delegation_id: str,
+    timeout: Optional[float] = None,
+    poll_interval: float = 0.25,
+) -> Optional[Dict[str, Any]]:
+    """
+    Block until the delegation reaches a terminal state, then return its result.
+
+    Uses ``_completion_cv`` so no busy-polling — CPU cost is essentially zero
+    while waiting.
+
+    Parameters
+    ----------
+    delegation_id
+        The delegation to wait for.
+    timeout
+        Wall-clock deadline in seconds.  Returns ``None`` on timeout (the
+        delegation is still running/queued — the caller decides what to do).
+    poll_interval
+        Fallback re-check interval (seconds) in case a notify was missed.
+        Defaults to 0.25 s — harmless overhead, prevents missed-notify stalls.
+
+    Returns
+    -------
+    The completion event dict, or ``None`` if the delegation was not found
+    or the timeout expired before it finished.
+    """
+    deadline = (time.monotonic() + timeout) if timeout is not None else None
+
+    while True:
+        # Fast-path: already completed
+        with _completed_lock:
+            if delegation_id in _completed:
+                return _completed[delegation_id]
+
+        # Check still active; if not found anywhere, it never existed
+        with _running_lock:
+            active = delegation_id in _running or any(
+                item.delegation_id == delegation_id for item in _waiting
+            )
+        if not active:
+            # One last check: might have just completed between the two locks
+            with _completed_lock:
+                return _completed.get(delegation_id)
+
+        # Block on Condition with remaining timeout
+        remaining = (deadline - time.monotonic()) if deadline is not None else poll_interval
+        if remaining <= 0:
+            return None  # timed out
+
+        wait_secs = min(remaining, poll_interval)
+        with _completion_cv:
+            _completion_cv.wait(timeout=wait_secs)
+
+        # Re-check deadline after wakeup
+        if deadline is not None and time.monotonic() >= deadline:
+            with _completed_lock:
+                return _completed.get(delegation_id)  # may have just landed
+
 
 def get_result(delegation_id: str) -> Optional[Dict[str, Any]]:
     """Return the stored completion event for a finished delegation, or None."""
