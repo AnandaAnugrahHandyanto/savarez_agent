@@ -1,0 +1,1 @@
+Fix #44936: [Bug]: CLI/TUI status bar prompt indicator (❯) stacks/ghosts on repeated re-renders
