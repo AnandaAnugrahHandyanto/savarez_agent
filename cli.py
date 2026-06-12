@@ -8477,8 +8477,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         print(f"  Last response:      {tps_data.get('tokens', 0):,} tokens in {tps_data.get('duration_s', 0):.1f}s")
                         print(f"  Output speed:       {tps_val:,.0f} tok/s")
                         return
-                except Exception:
-                    pass
+                    else:
+                        # RPC succeeded but no tps (no API call yet in session)
+                        print()
+                        print("  ⚡ Tokens per second")
+                        print(f"  {'─' * 41}")
+                        print(f"  No API response recorded yet in this session.")
+                        print(f"  Send a message first, then run /tps.")
+                        return
+                except Exception as e:
+                    print()
+                    print("  ⚡ Tokens per second")
+                    print(f"  {'─' * 41}")
+                    print(f"  Gateway RPC failed: {e}")
+                    return
+            else:
+                # Missing env vars — show what we're missing
+                print()
+                print("  ⚡ Tokens per second")
+                print(f"  {'─' * 41}")
+                print(f"  Slash worker missing gateway connection:")
+                print(f"    HERMES_SLASH_SESSION_ID = {repr(sid) if sid else 'NOT SET'}")
+                print(f"    HERMES_SLASH_GATEWAY_PORT = {repr(port) if port else 'NOT SET'}")
+                return
 
         print()
         print("  ⚡ Tokens per second")
