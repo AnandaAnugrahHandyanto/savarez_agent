@@ -2034,6 +2034,46 @@ class TestProfileArg:
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
 
+    def test_launchd_plist_includes_configured_service_wrapper(self, tmp_path, monkeypatch):
+        """Configured wrappers should prefix launchd ProgramArguments."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        wrapper = tmp_path / "bin" / "gateway-wrapper"
+
+        monkeypatch.delenv("HERMES_GATEWAY_SERVICE_WRAPPER", raising=False)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"gateway": {"service_wrapper": str(wrapper)}},
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+        wrapper_pos = plist.index(f"<string>{wrapper}</string>")
+        python_pos = plist.index(f"<string>{gateway_cli.get_python_path()}</string>")
+
+        assert wrapper_pos < python_pos
+        assert "<string>gateway</string>" in plist
+        assert "<string>run</string>" in plist
+
+    def test_launchd_service_wrapper_env_overrides_config(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        env_wrapper = tmp_path / "bin" / "env-wrapper"
+        config_wrapper = tmp_path / "bin" / "config-wrapper"
+
+        monkeypatch.setenv("HERMES_GATEWAY_SERVICE_WRAPPER", str(env_wrapper))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"gateway": {"service_wrapper": str(config_wrapper)}},
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert f"<string>{env_wrapper}</string>" in plist
+        assert f"<string>{config_wrapper}</string>" not in plist
     def test_launchd_plist_supports_aqua_and_background_sessions(self):
         # macOS 26+ only loads the agent in non-Aqua sessions when the plist
         # opts into Background as well (issue #23387).
