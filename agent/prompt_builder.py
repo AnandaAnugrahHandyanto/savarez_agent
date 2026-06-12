@@ -1486,6 +1486,17 @@ def load_soul_md() -> Optional[str]:
         content = soul_path.read_text(encoding="utf-8").strip()
         if not content:
             return None
+
+        # If the file is byte-identical to the pristine seed template, treat it
+        # as absent so DEFAULT_AGENT_IDENTITY takes effect.  A user who wants a
+        # custom identity must actually edit the file to something different.
+        try:
+            from hermes_cli.default_soul import DEFAULT_SOUL_MD
+            if content.strip() == DEFAULT_SOUL_MD.strip():
+                return None
+        except Exception:
+            pass  # import or comparison failure — fall through safely
+
         content = _scan_context_content(content, "SOUL.md")
         content = _truncate_content(content, "SOUL.md")
         return content
