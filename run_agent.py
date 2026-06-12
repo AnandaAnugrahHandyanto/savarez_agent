@@ -1545,6 +1545,11 @@ class AIAgent:
         from agent.agent_runtime_helpers import repair_message_sequence
         return repair_message_sequence(self, messages)
 
+    def _sanitize_tool_pairs(self, messages: List[Dict]) -> int:
+        """Forwarder — see ``agent.agent_runtime_helpers.sanitize_tool_pairs``."""
+        from agent.agent_runtime_helpers import sanitize_tool_pairs
+        return sanitize_tool_pairs(messages)
+
     def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Persist any un-flushed messages to the SQLite session store.
 

@@ -445,6 +445,95 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     return repairs
 
 
+def _get_tool_call_id(tc) -> str:
+    """Extract the call ID from a tool_call entry (dict or SimpleNamespace)."""
+    if isinstance(tc, dict):
+        return tc.get("call_id", "") or tc.get("id", "") or ""
+    return getattr(tc, "call_id", "") or getattr(tc, "id", "") or ""
+
+
+def sanitize_tool_pairs(messages: List[Dict]) -> int:
+    """Fix orphaned tool_call / tool_result pairs in the live message history.
+
+    This is a defensive pre-API-request sanitizer.  It catches cases where
+    session save/load corruption (e.g. after long conversations with 130+
+    tool turns) dropped some tool results or assistant tool_calls, leaving
+    the message list in a state the API will reject with a 400 error.
+
+    Two failure modes fixed:
+      1. A tool *result* references a call_id whose assistant tool_call
+         was removed — the API rejects with
+         "No tool call found for function call output with call_id ...".
+      2. An assistant message has tool_calls whose results were dropped —
+         the API rejects because every tool_call must be followed by a
+         tool result with the matching call_id.
+
+    Removes orphaned results and inserts stub results for orphaned calls
+    so the message list is always well-formed.
+
+    Returns the number of repairs made (for logging/telemetry).
+    """
+    if not messages:
+        return 0
+
+    # Collect all call_ids from assistant tool_calls
+    surviving_call_ids: set = set()
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                cid = _get_tool_call_id(tc)
+                if cid:
+                    surviving_call_ids.add(cid)
+
+    # Collect all call_ids from tool results
+    result_call_ids: set = set()
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "tool":
+            cid = msg.get("tool_call_id")
+            if cid:
+                result_call_ids.add(cid)
+
+    repairs = 0
+
+    # 1. Remove tool results whose call_id has no matching assistant tool_call
+    orphaned_results = result_call_ids - surviving_call_ids
+    if orphaned_results:
+        filtered = [
+            m for m in messages
+            if not (isinstance(m, dict) and m.get("role") == "tool" and m.get("tool_call_id") in orphaned_results)
+        ]
+        repairs += len(messages) - len(filtered)
+        if repairs > 0:
+            logger.info("Pre-request sanitizer: removed %d orphaned tool result(s)", len(orphaned_results))
+            messages[:] = filtered
+
+    # 2. Add stub results for assistant tool_calls whose results were dropped
+    missing_results = surviving_call_ids - result_call_ids
+    if missing_results:
+        patched: List[Dict] = []
+        for msg in messages:
+            patched.append(msg)
+            if isinstance(msg, dict) and msg.get("role") == "assistant":
+                for tc in msg.get("tool_calls") or []:
+                    cid = _get_tool_call_id(tc)
+                    if cid in missing_results:
+                        patched.append({
+                            "role": "tool",
+                            "content": "[Result from earlier conversation — see context summary above]",
+                            "tool_call_id": cid,
+                        })
+        stub_count = len(missing_results)
+        repairs += stub_count
+        if stub_count > 0:
+            logger.info("Pre-request sanitizer: added %d stub tool result(s)", stub_count)
+            messages[:] = patched
+
+    return repairs
+
 
 def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.

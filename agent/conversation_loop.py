@@ -603,6 +603,19 @@ def run_conversation(
                 agent.session_id or "-",
             )
 
+        # Defensive: fix orphaned tool_call / tool_result pairs before API call.
+        # Catches cases where session save/load corruption (e.g. after long
+        # conversations with 130+ tool turns) dropped tool results or assistant
+        # tool_calls, leaving the message list in a state the API rejects with
+        # a 400 error ("No tool call found for function call output").
+        sanitized_pairs = agent._sanitize_tool_pairs(messages)
+        if sanitized_pairs > 0:
+            request_logger.info(
+                "Sanitized %s orphaned tool pairs before request (session=%s)",
+                sanitized_pairs,
+                agent.session_id or "-",
+            )
+
         api_messages = []
         for idx, msg in enumerate(messages):
             api_msg = msg.copy()
