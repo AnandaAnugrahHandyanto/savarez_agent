@@ -298,6 +298,34 @@ DEPTH_READER_SELFTEST_SCHEMA = {
     },
 }
 
+DEPTH_PRODUCER_SELFTEST_SCHEMA = {
+    "name": "questframe_depth_producer_selftest",
+    "description": "Run the FH6VR approved D3D12 depth producer metadata self-test (0.17 gate).",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "fixture": {
+                "type": "boolean",
+                "description": "When true, pass --fixture to export fixture metadata and prove reader/DIBR handoff.",
+            },
+            "metadata_path": {
+                "type": "string",
+                "description": "Optional path to a producer metadata JSON file.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 300,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
 SUPPORT_REPORT_SCHEMA = {
     "name": "questframe_support_report",
     "description": "Create redacted QuestFrame/FH6VR JSON and HTML support reports.",
@@ -742,6 +770,7 @@ def status() -> dict[str, Any]:
             "questframe_live_capture_selftest",
             "questframe_depth_surface_selftest",
             "questframe_depth_reader_selftest",
+            "questframe_depth_producer_selftest",
             "questframe_support_report",
             "questframe_unity_scan",
         ],
@@ -903,6 +932,24 @@ def handle_depth_reader_selftest(args: dict[str, Any] | None = None, **_: Any) -
     )
 
 
+def handle_depth_producer_selftest(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    extra = ["--json"]
+    if bool(args.get("fixture")):
+        extra.append("--fixture")
+    metadata_path = str(args.get("metadata_path") or "").strip()
+    if metadata_path:
+        extra.extend(["--metadata", metadata_path])
+    return _json(
+        run_launcher(
+            "fh6-depth-producer-selftest",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=extra,
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
 def support_report(
     *,
     launcher_exe: str | None = None,
@@ -986,6 +1033,7 @@ HELP = """questframe commands:
   /questframe live-capture-selftest
   /questframe depth-surface-selftest
   /questframe depth-reader-selftest [--fixture]
+  /questframe depth-producer-selftest [--fixture] [--metadata PATH]
   /questframe support-report
   /questframe unity-scan [project_path]
 """
@@ -1020,6 +1068,13 @@ def handle_slash(raw_args: str) -> str:
         return handle_depth_surface_selftest({})
     if command in {"depth-reader-selftest", "depth-reader", "reader"}:
         return handle_depth_reader_selftest({"fixture": "--fixture" in argv})
+    if command in {"depth-producer-selftest", "depth-producer", "producer"}:
+        args: dict[str, Any] = {"fixture": "--fixture" in argv}
+        if "--metadata" in argv:
+            index = argv.index("--metadata")
+            if index + 1 < len(argv):
+                args["metadata_path"] = argv[index + 1]
+        return handle_depth_producer_selftest(args)
     if command in {"support-report", "report"}:
         return handle_support_report({})
     if command == "unity-scan":

@@ -28,6 +28,7 @@ def test_status_without_launcher_configured(plugin_env):
     assert "questframe_support_report" in payload["available_tools"]
     assert "questframe_depth_surface_selftest" in payload["available_tools"]
     assert "questframe_depth_reader_selftest" in payload["available_tools"]
+    assert "questframe_depth_producer_selftest" in payload["available_tools"]
 
 
 def test_save_setup_values_writes_config(plugin_env, monkeypatch):
@@ -194,6 +195,35 @@ def test_handle_depth_reader_selftest_runs_fixture_gate(tmp_path):
     assert "--fixture" in calls[0]
 
 
+def test_handle_depth_producer_selftest_runs_fixture_gate(tmp_path):
+    launcher = tmp_path / "FH6VR.Launcher.exe"
+    launcher.write_text("stub", encoding="utf-8")
+    metadata = tmp_path / "producer-metadata.json"
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout='{"Status":"Pass"}', stderr="")
+
+    with patch("plugins.questframe_fh6vr.core.subprocess.run", side_effect=fake_run):
+        payload = json.loads(
+            core.handle_depth_producer_selftest(
+                {
+                    "launcher_exe": str(launcher),
+                    "fixture": True,
+                    "metadata_path": str(metadata),
+                }
+            )
+        )
+
+    assert payload["ok"] is True
+    assert "fh6-depth-producer-selftest" in calls[0][1]
+    assert "--json" in calls[0]
+    assert "--fixture" in calls[0]
+    assert "--metadata" in calls[0]
+    assert str(metadata) in calls[0]
+
+
 def test_handle_slash_depth_reader_selftest_passes_fixture_flag():
     with patch(
         "plugins.questframe_fh6vr.core.handle_depth_reader_selftest",
@@ -202,6 +232,17 @@ def test_handle_slash_depth_reader_selftest_passes_fixture_flag():
         payload = core.handle_slash("depth-reader-selftest --fixture")
 
     handler.assert_called_once_with({"fixture": True})
+    assert '"ok": true' in payload
+
+
+def test_handle_slash_depth_producer_selftest_passes_fixture_and_metadata():
+    with patch(
+        "plugins.questframe_fh6vr.core.handle_depth_producer_selftest",
+        return_value='{"ok": true}',
+    ) as handler:
+        payload = core.handle_slash("depth-producer-selftest --fixture --metadata depth.json")
+
+    handler.assert_called_once_with({"fixture": True, "metadata_path": "depth.json"})
     assert '"ok": true' in payload
 
 
@@ -223,6 +264,7 @@ def test_register_exposes_all_documented_tools():
         "questframe_live_capture_selftest",
         "questframe_depth_surface_selftest",
         "questframe_depth_reader_selftest",
+        "questframe_depth_producer_selftest",
         "questframe_support_report",
         "questframe_unity_scan",
     }

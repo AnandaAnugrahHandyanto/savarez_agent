@@ -85,6 +85,15 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     depth_reader.add_argument("--fixture", action="store_true")
     depth_reader.add_argument("--timeout-seconds", type=int, default=None)
 
+    depth_producer = subs.add_parser(
+        "depth-producer-selftest",
+        help="Run FH6VR approved D3D12 depth producer metadata self-test (0.17 gate)",
+    )
+    depth_producer.add_argument("--launcher-exe", default="")
+    depth_producer.add_argument("--fixture", action="store_true")
+    depth_producer.add_argument("--metadata", default="")
+    depth_producer.add_argument("--timeout-seconds", type=int, default=None)
+
     support_report = subs.add_parser(
         "support-report", help="Create redacted JSON and HTML support reports"
     )
@@ -111,7 +120,8 @@ def questframe_command(args: argparse.Namespace) -> int:
             "{setup,status,preflight,profiles,rtx3060-selftest,session-readiness,"
             "graphics-session,frame-loop,"
             "dibr-swapchain,capture-preflight,live-capture-selftest,"
-            "depth-surface-selftest,depth-reader-selftest,support-report,unity-scan}"
+            "depth-surface-selftest,depth-reader-selftest,depth-producer-selftest,"
+            "support-report,unity-scan}"
         )
         return 2
     if command == "setup":
@@ -226,6 +236,21 @@ def questframe_command(args: argparse.Namespace) -> int:
         return _print(
             core.run_launcher(
                 "fh6-depth-reader-selftest",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=extra,
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "depth-producer-selftest":
+        extra = ["--json"]
+        if bool(getattr(args, "fixture", False)):
+            extra.append("--fixture")
+        metadata_path = str(getattr(args, "metadata", "") or "").strip()
+        if metadata_path:
+            extra.extend(["--metadata", metadata_path])
+        return _print(
+            core.run_launcher(
+                "fh6-depth-producer-selftest",
                 launcher_exe=getattr(args, "launcher_exe", "") or None,
                 extra_args=extra,
                 timeout_seconds=getattr(args, "timeout_seconds", None),
