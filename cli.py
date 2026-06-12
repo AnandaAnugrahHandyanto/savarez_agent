@@ -8354,11 +8354,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def _show_credits(self):
         """`/credits` — focused Nous credit balance + top-up handoff.
 
-        Shows the balance block + identity line, then a 3-button panel:
-        Open top-up in browser / Copy link / Cancel. The terminal never
-        confirms or polls payment — checkout happens in the browser and the next
-        /credits shows the new balance (billing phase 2a). Fail-open: a portal
-        hiccup or logged-out account degrades to a clear message, never a crash.
+        Interactive CLI: balance block + identity line + a 3-button panel
+        (Open top-up / Copy link / Cancel). Non-interactive contexts — the TUI
+        slash-worker subprocess and any place without a live prompt_toolkit app
+        (``self._app is None``) — render a text variant (balance + tappable
+        top-up URL), because the modal would try to read the RPC stdin and crash
+        the worker. The terminal never confirms or polls payment (billing phase
+        2a). Fail-open: a portal hiccup or logged-out account degrades to a clear
+        message, never a crash.
         """
         from agent.account_usage import build_credits_view
 
@@ -8383,6 +8386,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             print(f"  {view.identity_line}")
 
         if not view.topup_url:
+            return
+
+        # Non-interactive (TUI slash-worker, piped, no live app): the
+        # prompt_toolkit modal can't run here — it would read the worker's
+        # JSON-RPC stdin and crash the command. Render the text variant: the
+        # tappable URL IS the affordance, same as the messaging surfaces.
+        if not getattr(self, "_app", None):
+            print()
+            print(f"  Top up: {view.topup_url}")
+            print("  Complete your top-up in the browser — credits will appear in /credits shortly.")
             return
 
         choices = [

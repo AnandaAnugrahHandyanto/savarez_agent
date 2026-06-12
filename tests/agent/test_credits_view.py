@@ -202,3 +202,59 @@ def test_credits_command_registered():
     entry = next(c for c in COMMAND_REGISTRY if c.name == "credits")
     assert entry.cli_only is False
     assert entry.gateway_only is False
+
+
+# ── CLI _show_credits non-interactive (TUI slash-worker) path ───────────────
+
+
+def test_cli_show_credits_non_interactive_renders_text_not_modal(monkeypatch, capsys):
+    """In the TUI slash-worker (no self._app), /credits must render the text
+    variant — never invoke the prompt_toolkit modal, which would read the
+    worker's JSON-RPC stdin and crash the command (only the depleted banner
+    would survive). Regression for that exact failure.
+    """
+    import agent.account_usage as account_usage
+    from cli import HermesCLI
+
+    monkeypatch.setattr(
+        account_usage,
+        "build_credits_view",
+        lambda *a, **k: CreditsView(
+            logged_in=True,
+            balance_lines=("📈 Nous credits", "Total usable: $0.00"),
+            identity_line="Topping up as a@b.c / org Acme",
+            topup_url="https://prev.test/orgs/acme/billing?topup=open",
+            depleted=True,
+        ),
+    )
+
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._app = None  # non-interactive, like the slash worker
+
+    # Must NOT call the modal in this context.
+    def _boom_modal(*a, **k):
+        raise AssertionError("modal must not run without a live app")
+
+    monkeypatch.setattr(HermesCLI, "_prompt_text_input_modal", _boom_modal, raising=False)
+
+    cli._show_credits()
+
+    out = capsys.readouterr().out
+    assert "💳 Nous credits" in out
+    assert "Total usable: $0.00" in out
+    assert "Topping up as a@b.c / org Acme" in out
+    assert "https://prev.test/orgs/acme/billing?topup=open" in out
+    assert "credits will appear in /credits shortly" in out
+
+
+def test_cli_show_credits_logged_out(monkeypatch, capsys):
+    import agent.account_usage as account_usage
+    from cli import HermesCLI
+
+    monkeypatch.setattr(
+        account_usage, "build_credits_view", lambda *a, **k: CreditsView(logged_in=False)
+    )
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._app = None
+    cli._show_credits()
+    assert "Not logged into Nous Portal" in capsys.readouterr().out
