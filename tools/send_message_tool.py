@@ -509,6 +509,23 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _EMAIL_TARGET_RE.fullmatch(target_ref)
         if match:
             return target_ref.strip(), None, True
+    if platform_name == "signal":
+        stripped = target_ref.strip()
+        # Signal group IDs use "group:<base64Id>" format — the same prefix
+        # the Signal adapter uses internally for group chat_ids. Recognise
+        # them as explicit so they bypass channel-directory resolution.
+        if stripped.startswith("group:"):
+            return stripped, None, True
+        # Also accept bare base64 group IDs (no prefix). Signal-cli group
+        # IDs are base64-encoded and contain only [A-Za-z0-9+/=].
+        if re.fullmatch(r"[A-Za-z0-9+/=]{20,}", stripped):
+            return f"group:{stripped}", None, True
+        match = _E164_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return target_ref.strip(), None, True
+        if stripped.isdigit():
+            return stripped, None, True
+        return None, None, False
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:

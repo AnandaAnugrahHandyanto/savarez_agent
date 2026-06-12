@@ -1217,6 +1217,35 @@ class TestParseTargetRefE164:
         assert _parse_target_ref("signal", "+12abc4567890")[2] is False
         assert _parse_target_ref("signal", "+")[2] is False
 
+    def test_signal_group_prefix_is_explicit(self):
+        """signal:group:<base64Id> is explicit and preserves the group: prefix."""
+        gid = "aGVsbG8gd29ybGQgdGhpcyBpcyBhIHRlc3QgZ3JvdXAgaWQ"
+        chat_id, thread_id, is_explicit = _parse_target_ref("signal", f"group:{gid}")
+        assert chat_id == f"group:{gid}"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_signal_bare_base64_group_id_is_explicit(self):
+        """A bare base64 group ID (>=20 chars) gets the group: prefix prepended."""
+        gid = "aGVsbG8gd29ybGQgdGhpcyBpcyBhIHRlc3QgZ3JvdXAgaWQ"
+        chat_id, thread_id, is_explicit = _parse_target_ref("signal", gid)
+        assert chat_id == f"group:{gid}"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_signal_short_base64_not_treated_as_group(self):
+        """Short strings that look like base64 should NOT match as group IDs."""
+        # 19 chars — below the 20-char minimum
+        assert _parse_target_ref("signal", "aGVsbG8gd29ybGQgd")[2] is False
+
+    def test_signal_group_with_plus_slash_equals(self):
+        """Base64 IDs with +, /, = are valid group IDs."""
+        gid = "abc+def/ghi=="
+        padded = "aGVsbG8gd29ybGQgdGhpcw=="  # 24 chars
+        chat_id, _, is_explicit = _parse_target_ref("signal", padded)
+        assert chat_id == f"group:{padded}"
+        assert is_explicit is True
+
     def test_e164_prefix_only_matches_phone_platforms(self):
         """'+' prefix must NOT be treated as explicit for non-phone platforms."""
         assert _parse_target_ref("telegram", "+15551234567")[2] is False
