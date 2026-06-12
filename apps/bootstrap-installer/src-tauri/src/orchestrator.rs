@@ -2949,6 +2949,10 @@ fn install_windows_ripgrep_archive(archive_path: &Path, install_dir: &Path) -> R
 }
 
 fn install_unix_ripgrep_archive(archive_path: &Path, install_dir: &Path) -> Result<()> {
+    extract_unix_ripgrep_tar_gz(archive_path, install_dir)
+}
+
+fn extract_unix_ripgrep_tar_gz(archive_path: &Path, install_dir: &Path) -> Result<()> {
     fs::create_dir_all(install_dir)
         .with_context(|| format!("creating ripgrep install dir {}", install_dir.display()))?;
     let tmp_dir = install_dir.join("ripgrep-extracting");
@@ -2957,20 +2961,41 @@ fn install_unix_ripgrep_archive(archive_path: &Path, install_dir: &Path) -> Resu
         .with_context(|| format!("creating ripgrep extraction directory {}", tmp_dir.display()))?;
 
     let result: Result<()> = (|| {
-        let status = Command::new("tar")
-            .args(["-xf"])
-            .arg(archive_path)
-            .arg("-C")
-            .arg(&tmp_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .with_context(|| format!("extracting {}", archive_path.display()))?;
-        if !status.success() {
-            return Err(anyhow!(
-                "ripgrep archive extraction failed with exit {:?}",
-                status.code()
-            ));
+        let file = fs::File::open(archive_path)
+            .with_context(|| format!("opening {}", archive_path.display()))?;
+        let decoder = flate2::read::GzDecoder::new(file);
+        let mut archive = tar::Archive::new(decoder);
+        for entry in archive
+            .entries()
+            .with_context(|| format!("reading {}", archive_path.display()))?
+        {
+            let mut entry =
+                entry.with_context(|| format!("reading entry from {}", archive_path.display()))?;
+            let entry_type = entry.header().entry_type();
+            if entry_type.is_symlink() || entry_type.is_hard_link() {
+                return Err(anyhow!(
+                    "ripgrep archive contains unsupported link entry: {}",
+                    entry.path()?.display()
+                ));
+            }
+            let path = entry
+                .path()
+                .with_context(|| format!("reading entry path from {}", archive_path.display()))?
+                .into_owned();
+            if !archive_member_path_is_safe(&path) {
+                return Err(anyhow!(
+                    "ripgrep archive contains unsafe entry path: {}",
+                    path.display()
+                ));
+            }
+            let destination = tmp_dir.join(&path);
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("creating archive directory {}", parent.display()))?;
+            }
+            entry
+                .unpack(&destination)
+                .with_context(|| format!("extracting ripgrep archive entry {}", path.display()))?;
         }
         let rg = find_file_named(&tmp_dir, "rg")?;
         let rg_dest = install_dir.join("rg");
@@ -2987,6 +3012,13 @@ fn install_unix_ripgrep_archive(archive_path: &Path, install_dir: &Path) -> Resu
     let cleanup = remove_path_if_exists(&tmp_dir);
     result?;
     cleanup
+}
+
+fn archive_member_path_is_safe(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
 fn find_windows_git_bash(install_dir: &Path) -> Option<PathBuf> {
@@ -3495,6 +3527,21 @@ mod tests {
         zip.finish().unwrap();
     }
 
+    fn write_test_tar_gz(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = std::fs::File::create(path).unwrap();
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        for (name, bytes) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_path(name).unwrap();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            archive.append(&header, *bytes).unwrap();
+        }
+        archive.finish().unwrap();
+    }
+
     #[test]
     fn find_executable_on_path_uses_windows_pathext_candidates() {
         let root = std::env::temp_dir().join(format!(
@@ -3943,6 +3990,27 @@ mod tests {
         install_windows_ripgrep_archive(&archive, &install_dir).unwrap();
 
         assert_eq!(std::fs::read(install_dir.join("rg.exe")).unwrap(), b"fake rg");
+        assert!(!install_dir.join("ripgrep-extracting").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extract_unix_ripgrep_archive_copies_rg_from_nested_tar_gz() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-unix-ripgrep-archive-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let archive = root.join("ripgrep.tar.gz");
+        write_test_tar_gz(
+            &archive,
+            &[("ripgrep-15.1.0-x86_64-unknown-linux-musl/rg", b"fake rg")],
+        );
+        let install_dir = root.join("bin");
+
+        extract_unix_ripgrep_tar_gz(&archive, &install_dir).unwrap();
+
+        assert_eq!(std::fs::read(install_dir.join("rg")).unwrap(), b"fake rg");
         assert!(!install_dir.join("ripgrep-extracting").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
