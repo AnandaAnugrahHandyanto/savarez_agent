@@ -692,6 +692,53 @@ class TestSendMessageToolDingTalkMedia:
             force_document=False,
         )
 
+    def test_send_message_tool_uses_current_dingtalk_session_without_home_channel(self, tmp_path):
+        image_path = tmp_path / "photo.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+        pconfig = SimpleNamespace(enabled=True, extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DINGTALK: pconfig},
+            get_home_channel=lambda _platform: None,
+        )
+        send = AsyncMock(return_value={
+            "success": True,
+            "platform": "dingtalk",
+            "chat_id": "cidCurrentSession==",
+            "message_id": "image-1",
+        })
+
+        def fake_session_env(name, default=""):
+            values = {
+                "HERMES_SESSION_PLATFORM": "dingtalk",
+                "HERMES_SESSION_CHAT_ID": "cidCurrentSession==",
+                "HERMES_SESSION_THREAD_ID": "",
+                "HERMES_SESSION_USER_ID": "user-1",
+            }
+            return values.get(name, default)
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.session_context.get_session_env", side_effect=fake_session_env), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", send), \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(send_message_tool({
+                "action": "send",
+                "target": "dingtalk",
+                "message": f"MEDIA:{image_path}",
+            }))
+
+        assert result["success"] is True
+        send.assert_awaited_once_with(
+            Platform.DINGTALK,
+            pconfig,
+            "cidCurrentSession==",
+            "",
+            thread_id=None,
+            media_files=[(str(image_path), False)],
+            force_document=False,
+        )
+
     def test_send_to_platform_routes_dingtalk_text_to_adapter_when_direct_configured(self):
         helper = AsyncMock(return_value={
             "success": True,

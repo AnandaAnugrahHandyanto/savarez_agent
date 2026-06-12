@@ -371,7 +371,10 @@ def _handle_send(args):
 
     used_home_channel = False
     if not chat_id:
-        home = config.get_home_channel(platform)
+        current_target = _current_session_target(platform_name)
+        if current_target:
+            chat_id, thread_id = current_target
+        home = None if chat_id else config.get_home_channel(platform)
         if not home and platform_name == "weixin":
             wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
             if wx_home:
@@ -555,6 +558,25 @@ def _dingtalk_direct_send_configured(pconfig) -> bool:
     client_id = extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID")
     client_secret = extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET")
     return bool(client_id and client_secret)
+
+
+def _current_session_target(platform_name: str):
+    """Return the current gateway session target for same-platform sends."""
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return None
+
+    current_platform = get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower()
+    if current_platform != platform_name:
+        return None
+
+    chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "").strip()
+    if not chat_id:
+        return None
+
+    thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "").strip() or None
+    return chat_id, thread_id
 
 
 def _get_cron_auto_delivery_target():
