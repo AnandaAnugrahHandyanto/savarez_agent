@@ -70,24 +70,25 @@ def _ephemeral_child_sql(alias: str = "s") -> str:
 
 
 def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
-    """Delegate-subagent ids to cascade-delete with *parent_ids* (linked or tagged orphans)."""
-    if not parent_ids:
-        return []
-    placeholders = ",".join("?" * len(parent_ids))
-    params = list(parent_ids)
-    found: set[str] = set()
-    cursor = conn.execute(
-        f"SELECT id FROM sessions s WHERE s.parent_session_id IN ({placeholders}) "
-        f"AND {_ephemeral_child_sql('s')}",
-        params,
-    )
-    found.update(row["id"] for row in cursor.fetchall())
+    """Delegate-subagent ids to cascade-delete with *parent_ids*.
+
+    Only rows carrying the ``_delegate_from`` marker (set at creation, and
+    backfilled by the v16 migration) — generic untagged children keep the
+    orphan-don't-delete contract. Walks marker chains recursively so an
+    orchestrator subagent's own delegate children go too (FK safety).
+    """
     df = _delegate_from_json()
-    cursor = conn.execute(
-        f"SELECT id FROM sessions WHERE {df} IN ({placeholders})",
-        params,
-    )
-    found.update(row["id"] for row in cursor.fetchall())
+    found: set[str] = set()
+    frontier = [sid for sid in parent_ids if sid]
+    while frontier:
+        ph = ",".join("?" * len(frontier))
+        cursor = conn.execute(
+            f"SELECT id FROM sessions WHERE {df} IN ({ph}) "
+            f"OR (parent_session_id IN ({ph}) AND {df} IS NOT NULL)",
+            frontier + frontier,
+        )
+        frontier = [row["id"] for row in cursor.fetchall() if row["id"] not in found]
+        found.update(frontier)
     return list(found)
 
 
@@ -96,6 +97,12 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
     if ids:
         ph = ",".join("?" * len(ids))
         conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", ids)
+        # FK safety: orphan any untagged stragglers pointing at a doomed row.
+        conn.execute(
+            f"UPDATE sessions SET parent_session_id = NULL "
+            f"WHERE parent_session_id IN ({ph})",
+            ids,
+        )
         conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", ids)
     return ids
 

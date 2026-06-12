@@ -2780,13 +2780,24 @@ class TestListSessionsRich:
         assert db.get_session("delegate") is None
         assert db.get_session("branch") is not None
 
-    def test_delete_parent_cascades_unmarked_delegate_children(self, db):
-        """Legacy subagent rows without ``_delegate_from`` still cascade-delete."""
+    def test_v16_migration_tags_linked_delegate_rows(self, tmp_path):
+        """Pre-marker linked subagent rows get tagged, then cascade with parent."""
+        import json
+
+        db_path = tmp_path / "state.db"
+        db = SessionDB(db_path=db_path)
         db.create_session("parent", "cli")
         db.create_session("delegate", "cli", parent_session_id="parent")
+        db._conn.execute("UPDATE schema_version SET version = 15")
+        db._conn.commit()
+        db.close()
 
+        db = SessionDB(db_path=db_path)
+        row = db.get_session("delegate")
+        assert json.loads(row["model_config"])["_delegate_from"] == "parent"
         assert db.delete_session("parent") is True
         assert db.get_session("delegate") is None
+        db.close()
 
     def test_v16_migration_tags_orphaned_delegate_rows(self, tmp_path):
         import json

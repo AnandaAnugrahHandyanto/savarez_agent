@@ -605,10 +605,9 @@ def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
     if session.get("running") or _session_pending_kind(sid):
         return False
     ready = session.get("agent_ready")
-    # "Still starting" only exempts a build that actually began. Lazy watch
-    # sessions (subagent spectator windows) never start a build, so an unset
-    # event alone must not make them immortal.
-    if ready is not None and not ready.is_set() and session.get("agent_build_started"):
+    # Lazy watch sessions (subagent spectator windows) never start a build,
+    # so their forever-unset agent_ready must not make them immortal.
+    if ready is not None and not ready.is_set() and not session.get("lazy"):
         return False
     if not _transport_is_dead(session.get("transport")):
         return False
@@ -905,6 +904,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
         if ready.is_set() or session.get("agent_build_started"):
             return
         session["agent_build_started"] = True
+        # An upgrading lazy session is now genuinely mid-construction — restore
+        # its "still starting" eviction exemption.
+        session.pop("lazy", None)
     key = session["session_key"]
 
     def _build() -> None:
@@ -936,12 +938,10 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 # Lazy-resumed (watch) sessions carry the stored conversation
                 # id — pass it through so the upgrade continues that session
                 # instead of starting a fresh one under the same key.
-                agent = _make_agent(
-                    sid,
-                    key,
-                    session_id=current.get("resume_session_id"),
-                    session_db=session_db,
-                )
+                kw = {"session_db": session_db}
+                if resume_sid := current.get("resume_session_id"):
+                    kw["session_id"] = resume_sid
+                agent = _make_agent(sid, key, **kw)
             finally:
                 _clear_session_context(tokens)
 
@@ -3994,6 +3994,7 @@ def _(rid, params: dict) -> dict:
                     "cwd": cwd,
                     "inflight_turn": None,
                     "last_active": now,
+                    "lazy": True,
                     "pending_title": None,
                     "profile_home": str(profile_home) if profile_home is not None else None,
                     "resume_session_id": target,
