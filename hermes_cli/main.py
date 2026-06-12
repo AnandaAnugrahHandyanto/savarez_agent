@@ -9424,7 +9424,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
-        "model", "pairing", "plugins", "profile", "proxy", "sessions", "setup",
+        "model", "pairing", "personal-os", "plugins", "profile", "proxy", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat",
         # Help-ish invocations — plugin commands not being listed in
@@ -10935,6 +10935,21 @@ Examples:
         _register_curator_cli(curator_parser)
     except Exception as _exc:
         logging.getLogger(__name__).debug("curator CLI wiring failed: %s", _exc)
+
+    # =========================================================================
+    # personal-os command — read-only Obsidian Personal OS retrieval
+    # =========================================================================
+    personal_os_parser = subparsers.add_parser(
+        "personal-os",
+        help="Index and search a read-only Personal OS Obsidian vault",
+        description="Build and query a disposable local SQLite index for an Obsidian Personal OS vault.",
+    )
+    try:
+        from hermes_cli.personal_os import register_cli as _register_personal_os_cli
+
+        _register_personal_os_cli(personal_os_parser)
+    except Exception as _exc:
+        logging.getLogger(__name__).debug("personal-os CLI wiring failed: %s", _exc)
 
     # =========================================================================
     # memory command
