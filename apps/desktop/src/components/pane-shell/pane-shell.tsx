@@ -14,6 +14,7 @@ import {
   useState
 } from 'react'
 
+import { localeDirection, useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $paneStates, ensurePaneRegistered, setPaneWidthOverride } from '@/store/panes'
 
@@ -248,6 +249,7 @@ export function Pane({
   resizable = false,
   width
 }: PaneProps) {
+  const { locale } = useI18n()
   const ctx = useContext(PaneShellContext)
   const paneStates = useStore($paneStates)
   const registered = useRef(false)
@@ -258,6 +260,7 @@ export function Pane({
   const slot = ctx?.paneById.get(id)
   const open = Boolean(slot?.open && !disabled)
   const side = slot?.side ?? 'left'
+  const physicalSide = localeDirection(locale) === 'rtl' ? (side === 'left' ? 'right' : 'left') : side
   // Collapsed + hoverReveal: float the pane contents over the main column on
   // hover/focus instead of hiding them. Honors any persisted resize width.
   const overlayActive = !open && hoverReveal && !disabled
@@ -314,7 +317,7 @@ export function Pane({
 
       const handle = event.currentTarget
       const { pointerId, clientX: startX } = event
-      const dir = side === 'left' ? 1 : -1
+      const dir = physicalSide === 'left' ? 1 : -1
       const restoreCursor = document.body.style.cursor
       const restoreSelect = document.body.style.userSelect
 
@@ -342,7 +345,7 @@ export function Pane({
       window.addEventListener('pointercancel', cleanup, true)
       window.addEventListener('blur', cleanup)
     },
-    [canResize, hi, id, lo, side]
+    [canResize, hi, id, lo, physicalSide]
   )
 
   if (!ctx) {
@@ -362,8 +365,8 @@ export function Pane({
   // box). group-hover (or data-forced from the keyboard) drives the slide; the
   // enter-delay is the hover-intent gate. No JS pointer math.
   if (overlayActive) {
-    const edge = side === 'left' ? 'left' : 'right'
-    const offscreen = side === 'left' ? '-translate-x-[calc(100%+1rem)]' : 'translate-x-[calc(100%+1rem)]'
+    const edge = physicalSide
+    const offscreen = physicalSide === 'left' ? '-translate-x-[calc(100%+1rem)]' : 'translate-x-[calc(100%+1rem)]'
 
     return (
       <div
@@ -372,6 +375,7 @@ export function Pane({
         data-pane-hover-reveal={forced ? 'open' : 'closed'}
         data-pane-id={id}
         data-pane-open="false"
+        data-pane-physical-side={physicalSide}
         data-pane-side={side}
         ref={paneRef}
         style={{ gridColumn: `${slot.column} / ${slot.column + 1}` }}
@@ -415,6 +419,7 @@ export function Pane({
       className={cn('relative row-start-1 min-w-0 overflow-hidden', !open && 'pointer-events-none', className)}
       data-pane-id={id}
       data-pane-open={open ? 'true' : 'false'}
+      data-pane-physical-side={physicalSide}
       data-pane-side={slot.side}
       ref={paneRef}
       style={{ gridColumn: `${slot.column} / ${slot.column + 1}` }}
@@ -425,7 +430,7 @@ export function Pane({
           aria-orientation="vertical"
           className={cn(
             'group absolute bottom-0 top-0 z-20 w-1 cursor-col-resize [-webkit-app-region:no-drag]',
-            slot.side === 'left' ? 'right-0 translate-x-1/2' : 'left-0 -translate-x-1/2'
+            physicalSide === 'left' ? 'right-0 translate-x-1/2' : 'left-0 -translate-x-1/2'
           )}
           onPointerDown={startResize}
           role="separator"

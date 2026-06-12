@@ -4,7 +4,7 @@ import { type NodeApi, type NodeRendererProps, Tree, type TreeApi } from 'react-
 import { PageLoader } from '@/components/page-loader'
 import { Codicon } from '@/components/ui/codicon'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
-import { useI18n } from '@/i18n'
+import { localeDirection, useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 import { getFileTreeDndManager } from './dnd-manager'
@@ -144,8 +144,22 @@ function ProjectTreeRow({
   onAttachFolder: (path: string) => void
   onPreviewFile?: (path: string) => void
 }) {
+  // react-arborist computes the depth indent as a physical paddingLeft;
+  // mirror it (and the collapsed chevron) when the document is RTL.
+  const { locale } = useI18n()
+  const rtl = localeDirection(locale) === 'rtl'
+  // react-arborist computes the depth indent as a physical paddingLeft; add
+  // the row inset on top and mirror the whole padding under RTL.
+  const basePad =
+    typeof style.paddingLeft === 'number'
+      ? style.paddingLeft
+      : Number.parseFloat(String(style.paddingLeft ?? 0)) || 0
+  const rowStyle = rtl
+    ? { ...style, paddingLeft: undefined, paddingRight: basePad + TREE_ROW_INSET }
+    : { ...style, paddingLeft: basePad + TREE_ROW_INSET }
+
   if (!node.data) {
-    return <div style={style} />
+    return <div style={rowStyle} />
   }
 
   const isFolder = node.data.isDirectory
@@ -202,13 +216,7 @@ function ProjectTreeRow({
         event.dataTransfer.setData('text/plain', node.data.id)
       }}
       ref={dragHandle}
-      style={{
-        ...style,
-        paddingLeft:
-          (typeof style.paddingLeft === 'number'
-            ? style.paddingLeft
-            : Number.parseFloat(String(style.paddingLeft ?? 0)) || 0) + TREE_ROW_INSET
-      }}
+      style={rowStyle}
     >
       {/* No chevron column — the folder icon (open/closed) already carries the
           expand state, so the extra glyph was pure noise. */}

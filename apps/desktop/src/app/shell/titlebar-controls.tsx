@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { useI18n } from '@/i18n'
+import { localeDirection, useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
@@ -43,10 +43,11 @@ interface TitlebarControlsProps extends ComponentProps<'div'> {
   leftTools?: readonly TitlebarTool[]
   tools?: readonly TitlebarTool[]
   onOpenSettings: () => void
+  paneToolsSide: TitlebarToolSide
 }
 
-export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
-  const { t } = useI18n()
+export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings, paneToolsSide }: TitlebarControlsProps) {
+  const { locale, t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
   const hapticsMuted = useStore($hapticsMuted)
@@ -68,12 +69,18 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   // Each titlebar button controls the pane physically on its side, so a flip
   // swaps which pane each one toggles. Default: sessions left, file browser
-  // right. Flipped: file browser left, sessions right. Sidebar toggles never
-  // carry an active highlight — they're plain show/hide affordances.
+  // right. Flipped: file browser left, sessions right. RTL locales mirror the
+  // whole pane layout, so the mapping flips once more — each button keeps
+  // controlling the pane that actually sits on its side of the window.
+  // Sidebar toggles never carry an active highlight — they're plain
+  // show/hide affordances.
   const fileBrowserEdge = { open: fileBrowserOpen, toggle: toggleFileBrowserOpen }
   const sessionsEdge = { open: sidebarOpen, toggle: toggleSidebarOpen }
-  const leftEdge = panesFlipped ? fileBrowserEdge : sessionsEdge
-  const rightEdge = panesFlipped ? sessionsEdge : fileBrowserEdge
+  const rtl = localeDirection(locale) === 'rtl'
+  const startEdge = panesFlipped ? fileBrowserEdge : sessionsEdge
+  const endEdge = panesFlipped ? sessionsEdge : fileBrowserEdge
+  const leftEdge = rtl ? endEdge : startEdge
+  const rightEdge = rtl ? startEdge : endEdge
 
   const leftToolbarTools: TitlebarTool[] = [
     {
@@ -174,7 +181,10 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       {visiblePaneTools.length > 0 && (
         <div
           aria-label={t.shell.paneControls}
-          className="fixed top-(--titlebar-controls-top) right-[calc(var(--titlebar-tools-right)+var(--shell-preview-toolbar-gap,0))] z-70 flex flex-row items-center gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
+          className={cn(
+            'fixed top-(--titlebar-controls-top) z-70 flex flex-row items-center gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]',
+            paneToolsSide === 'left' ? 'left-(--shell-pane-toolbar-inset)' : 'right-(--shell-pane-toolbar-inset)'
+          )}
         >
           {visiblePaneTools.map(tool => (
             <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
