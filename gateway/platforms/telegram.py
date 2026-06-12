@@ -330,7 +330,98 @@ def _wrap_markdown_tables(text: str) -> str:
         out.append(line)
         i += 1
 
-    return '\n'.join(out)
+    return '\\n'.join(out)
+
+
+# ---------------------------------------------------------------------------
+# Shared HTTP transport helpers -- used by both the gateway adapter and the
+# standalone ``_send_telegram`` path so standalone sends (cron, scripts, TUI)
+# reuse the same timeout / pool / proxy / fallback-IP configuration that the
+# gateway applies at connect time.
+# ---------------------------------------------------------------------------
+
+
+def _build_telegram_request_kwargs() -> dict:
+    """Build HTTPXRequest keyword arguments from environment variables.
+
+    Reads the same ``HERMES_TELEGRAM_HTTP_*`` env vars that the gateway
+    adapter reads in ``TelegramAdapter.connect()`` so that standalone sends
+    from cron / scripts / TUI apply identical timeout and connection-pool
+    settings.
+    """
+    def _env_int(name: str, default: int) -> int:
+        try:
+            return int(os.getenv(name, str(default)))
+        except (TypeError, ValueError):
+            return default
+
+    def _env_float(name: str, default: float) -> float:
+        try:
+            return float(os.getenv(name, str(default)))
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "connection_pool_size": _env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 512),
+        "pool_timeout": _env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
+        "connect_timeout": _env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
+        "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
+        "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+    }
+
+
+async def _build_telegram_httpx_request(
+    *,
+    request_kwargs: Optional[dict] = None,
+    fallback_ips: Optional[list[str]] = None,
+    disable_fallback: bool = False,
+) -> tuple[Any, Any]:
+    """Build a pair of ``HTTPXRequest`` instances (request, get_updates_request)
+    with the full HTTP transport configuration applied.
+
+    Applies proxy (from ``TELEGRAM_PROXY`` env var / system proxy detection),
+    fallback-IP transport (``TelegramFallbackTransport``), and timeout/connection-
+    pool settings (from ``HERMES_TELEGRAM_HTTP_*`` env vars) -- the same
+    configuration that ``TelegramAdapter.connect()`` applies.
+
+    Both the gateway adapter and the standalone ``_send_telegram`` path call this
+    so that standalone sends reuse identical transport config.
+    """
+    # Import at runtime so tests that mock telegram.request work
+    # (at module level HTTPXRequest may be Any when telegram is absent).
+    try:
+        from telegram.request import HTTPXRequest as _HTTPXRequest
+    except ImportError:
+        raise ImportError("python-telegram-bot not installed")
+
+    if request_kwargs is None:
+        request_kwargs = _build_telegram_request_kwargs()
+
+    proxy_targets = ["api.telegram.org"]
+    if fallback_ips:
+        proxy_targets.extend(fallback_ips)
+    proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_targets)
+
+    if fallback_ips and not proxy_url and not disable_fallback:
+        request = _HTTPXRequest(
+            **request_kwargs,
+            httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+        )
+        get_updates_request = _HTTPXRequest(
+            **request_kwargs,
+            httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+        )
+    elif proxy_url:
+        request = _HTTPXRequest(**request_kwargs, proxy=proxy_url)
+        get_updates_request = _HTTPXRequest(**request_kwargs, proxy=proxy_url)
+    else:
+        request = _HTTPXRequest(**request_kwargs)
+        get_updates_request = _HTTPXRequest(**request_kwargs)
+
+    return request, get_updates_request
+
+
+# ---------------------------------------------------------------------------
 
 
 class TelegramAdapter(BasePlatformAdapter):
@@ -453,43 +544,6 @@ class TelegramAdapter(BasePlatformAdapter):
         self._send_path_degraded: bool = False
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
-        # Track forum chats where we've already registered bot commands
-        self._forum_command_registered: set[int] = set()
-        # Lock per la registrazione sicura dei comandi nei forum supergroup
-        self._forum_lock = asyncio.Lock()
-        # DM Topics config from extra.dm_topics
-        self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
-        # Precomputed chat_ids that have DM topics configured (for O(1) root-DM ignore check)
-        self._dm_topic_chat_ids: Set[str] = {
-            str(e["chat_id"]) for e in self._dm_topics_config if "chat_id" in e
-        }
-        # Document size cap. Telegram's public Bot API caps getFile at 20MB; a
-        # locally-hosted telegram-bot-api server (configured via extra.base_url)
-        # raises that to 2GB, so the presence of base_url is the opt-in.
-        self._max_doc_bytes: int = (
-            2 * 1024 * 1024 * 1024
-            if self.config.extra.get("base_url")
-            else 20 * 1024 * 1024
-        )
-        # Interactive model picker state per chat
-        self._model_picker_state: Dict[str, dict] = {}
-        # Approval button state: message_id → session_key
-        self._approval_state: Dict[int, str] = {}
-        # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
-        # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
-        self._slash_confirm_state: Dict[str, str] = {}
-        # Clarify button state: clarify_id → session_key (for the clarify tool's
-        # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
-        self._clarify_state: Dict[str, str] = {}
-        # Notification mode for message sends.
-        # "important" — only final responses, approvals, and slash confirmations
-        #               trigger notifications; tool progress, streaming, status
-        #               messages are delivered silently via disable_notification.
-        #               This is the default — Telegram users found per-tool-call
-        #               push notifications too noisy.
-        # "all"       — every message triggers a push notification (legacy
-        #               behavior; opt-in via display.platforms.telegram.notifications).
-        self._notifications_mode: str = "important"
         # send_or_update_status() bookkeeping: {(chat_id, status_key) -> bot message_id}
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
@@ -1548,25 +1602,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # PTB defaults (pool_timeout=1s) are too aggressive on flaky networks and
             # can trigger "Pool timeout: All connections in the connection pool are occupied"
             # during reconnect/bootstrap. Use safer defaults and allow env overrides.
-            def _env_int(name: str, default: int) -> int:
-                try:
-                    return int(os.getenv(name, str(default)))
-                except (TypeError, ValueError):
-                    return default
-
-            def _env_float(name: str, default: float) -> float:
-                try:
-                    return float(os.getenv(name, str(default)))
-                except (TypeError, ValueError):
-                    return default
-
-            request_kwargs = {
-                "connection_pool_size": _env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 512),
-                "pool_timeout": _env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
-                "connect_timeout": _env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
-                "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
-                "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
-            }
+            request_kwargs = _build_telegram_request_kwargs()
 
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"})
             fallback_ips = self._fallback_ips()
@@ -1578,33 +1614,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     ", ".join(fallback_ips),
                 )
 
-            proxy_targets = ["api.telegram.org", *fallback_ips]
-            proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_targets)
-            if fallback_ips and not proxy_url and not disable_fallback:
-                logger.info(
-                    "[%s] Telegram fallback IPs active: %s",
-                    self.name,
-                    ", ".join(fallback_ips),
-                )
-                # Keep request/update pools separate to reduce contention during
-                # polling reconnect + bot API bootstrap/delete_webhook calls.
-                request = HTTPXRequest(
-                    **request_kwargs,
-                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
-                )
-                get_updates_request = HTTPXRequest(
-                    **request_kwargs,
-                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
-                )
-            elif proxy_url:
-                logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
-                request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
-                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
-            else:
-                if disable_fallback:
-                    logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
-                request = HTTPXRequest(**request_kwargs)
-                get_updates_request = HTTPXRequest(**request_kwargs)
+            # Use the shared helper so standalone sends reuse the same transport config.
+            request, get_updates_request = await _build_telegram_httpx_request(
+                request_kwargs=request_kwargs,
+                fallback_ips=fallback_ips,
+                disable_fallback=disable_fallback,
+            )
 
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()

@@ -973,29 +973,31 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 formatted = message
             send_parse_mode = ParseMode.MARKDOWN_V2
 
-        # Honour a configured proxy (telegram.proxy_url in config.yaml, exported
-        # as TELEGRAM_PROXY env var by load_gateway_config). Without this, the
-        # standalone send path bypasses the proxy and times out in regions
-        # where api.telegram.org is blocked. The in-gateway adapter does the
-        # same thing in gateway/platforms/telegram.py.
+        # Use the shared HTTP transport helper so standalone sends (cron, TUI,
+        # scripts) reuse the same timeout / pool / proxy / fallback-IP config
+        # as the gateway adapter.  Without this the standalone path would
+        # construct ``Bot(token=...)`` with no HTTPXRequest kwargs, bypassing
+        # proxy settings, timeouts, and fallback IP transport (#44995).
         try:
-            from gateway.platforms.base import resolve_proxy_url
-            _tg_proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
-        except Exception:
-            _tg_proxy = None
-        if _tg_proxy:
-            try:
-                from telegram.request import HTTPXRequest
-                logger.info("send_message: standalone Telegram send routed through proxy %s", _tg_proxy)
-                bot = Bot(
-                    token=token,
-                    request=HTTPXRequest(proxy=_tg_proxy),
-                    get_updates_request=HTTPXRequest(proxy=_tg_proxy),
-                )
-            except Exception as _proxy_err:
-                logger.warning("send_message: failed to attach Telegram proxy (%s), falling back to direct connection", _proxy_err)
-                bot = Bot(token=token)
-        else:
+            from gateway.platforms.telegram import (
+                _build_telegram_request_kwargs,
+                _build_telegram_httpx_request,
+            )
+            request_kwargs = _build_telegram_request_kwargs()
+            _tg_request, _tg_get_updates_request = await _build_telegram_httpx_request(
+                request_kwargs=request_kwargs,
+            )
+            bot = Bot(
+                token=token,
+                request=_tg_request,
+                get_updates_request=_tg_get_updates_request,
+            )
+        except Exception as transport_err:
+            logger.warning(
+                "send_message: failed to build Telegram HTTP transport config (%s), "
+                "falling back to plain Bot()",
+                transport_err,
+            )
             bot = Bot(token=token)
         int_chat_id = int(chat_id)
         media_files = media_files or []
