@@ -1,0 +1,1 @@
+Fix #44795: [Bug]: _try_wal_checkpoint TRUNCATE silently swallows exceptions, corrupts state.db WAL to zero bytes
