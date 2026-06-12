@@ -801,6 +801,13 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Name of the spawn backend that launches this task's worker, keyed
+    # into the spawn-backend registry (``register_spawn_backend``). NULL
+    # (the common case) selects the default ``hermes-native`` backend; an
+    # unknown/stale value falls back to native with a warning rather than
+    # wedging dispatch (see ``resolve_spawn_backend``). Honoured per-task
+    # by ``_select_spawn_backend``.
+    harness: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -875,6 +882,9 @@ class Task:
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
+            ),
+            harness=(
+                row["harness"] if "harness" in keys and row["harness"] else None
             ),
         )
 
@@ -1037,7 +1047,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- for tasks created from the CLI, dashboard, or any path that doesn't
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
-    session_id           TEXT
+    session_id           TEXT,
+    -- Name of the spawn backend that launches this task's worker, keyed
+    -- into the spawn-backend registry. NULL (the common case) selects the
+    -- default ``hermes-native`` backend; unknown values fall back to native
+    -- with a warning. Honoured per-task by ``_select_spawn_backend``.
+    harness              TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1693,6 +1708,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "session_id", "session_id TEXT"
         )
 
+    if "harness" not in cols:
+        # Per-task spawn-backend selector for bring-your-own-harness
+        # dispatch. NULL on legacy rows and in the common case selects the
+        # default ``hermes-native`` backend, preserving the behaviour rows
+        # had before the column existed. Unknown values fall back to native
+        # with a warning (see ``resolve_spawn_backend``), so a stale value
+        # never wedges dispatch.
+        _add_column_if_missing(conn, "tasks", "harness", "harness TEXT")
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2071,6 +2095,7 @@ def create_task(
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
+    harness: Optional[str] = None,
     board: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
@@ -2113,6 +2138,11 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+    if harness is not None:
+        # Free-form backend name; empty/whitespace collapses to NULL so the
+        # dispatcher uses the default backend. Unknown-but-nonempty names are
+        # tolerated here and resolved (with a warning) at dispatch time.
+        harness = str(harness).strip() or None
     parents = tuple(p for p in parents if p)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
@@ -2236,8 +2266,9 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        harness
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2259,6 +2290,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        harness,
                     ),
                 )
                 for pid in parents:
@@ -6804,12 +6836,14 @@ def resolve_spawn_backend(name: Optional[str]) -> SpawnBackend:
 def _select_spawn_backend(task: Task, board: Optional[str]) -> SpawnBackend:
     """Resolve which backend runs ``task``.
 
-    Per-task / per-profile / per-board harness selection (backed by a
-    ``harness`` column + profile config) is a follow-up; today every task
-    resolves to the native backend. ``getattr`` keeps this forward-compatible
-    with that column without depending on it yet.
+    Per-task selection is honoured via the ``harness`` column on the task
+    (NULL -> the default ``hermes-native`` backend). Per-profile / per-board
+    config-driven defaults are a follow-up (C3); ``board`` is accepted now so
+    that wiring needs no signature change. An unknown/stale ``harness`` value
+    falls back to native with a warning rather than wedging dispatch -- see
+    ``resolve_spawn_backend``.
     """
-    return resolve_spawn_backend(getattr(task, "harness", None))
+    return resolve_spawn_backend(task.harness)
 
 
 def _assemble_spawn_context(

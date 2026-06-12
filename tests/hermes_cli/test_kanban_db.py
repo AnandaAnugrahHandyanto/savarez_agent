@@ -4410,3 +4410,112 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# harness column (BYO-harness, Phase 2 C2)
+# ---------------------------------------------------------------------------
+
+def test_create_task_persists_harness(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="byo", harness="tmux-cli")
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.harness == "tmux-cli"
+
+
+def test_create_task_harness_defaults_none(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="native")
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.harness is None
+
+
+def test_create_task_blank_harness_collapses_to_none(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="blank", harness="   ")
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.harness is None
+
+
+def test_connect_migrates_legacy_db_adds_harness_column(tmp_path):
+    """A board predating the harness column migrates cleanly; the legacy row
+    reads back with harness=None (i.e. the default native backend)."""
+    db_path = tmp_path / "legacy-harness.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_by TEXT,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+            workspace_path TEXT,
+            claim_lock TEXT,
+            claim_expires INTEGER
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, created_at) "
+        "VALUES ('legacy', 'old board task', 'ready', 1)"
+    )
+    conn.commit()
+    conn.close()
+
+    with kb.connect(db_path) as migrated:
+        task_columns = {
+            row["name"] for row in migrated.execute("PRAGMA table_info(tasks)")
+        }
+        legacy = kb.get_task(migrated, "legacy")
+
+    assert "harness" in task_columns
+    assert legacy is not None
+    assert legacy.harness is None
+
+
+def test_select_spawn_backend_honours_harness(kanban_home):
+    """_select_spawn_backend routes by the task's harness column, falling
+    back to the native default for NULL or unknown backend names."""
+
+    class _FakeBackend:
+        name = "fake-c2-backend"
+
+        def launch(self, ctx):  # pragma: no cover - never launched in this test
+            return None
+
+    fake = _FakeBackend()
+    kb.register_spawn_backend(fake)
+    try:
+        with kb.connect() as conn:
+            routed = kb.create_task(conn, title="routed", harness="fake-c2-backend")
+            native = kb.create_task(conn, title="native")
+            unknown = kb.create_task(
+                conn, title="unknown", harness="nope-not-registered"
+            )
+            t_routed = kb.get_task(conn, routed)
+            t_native = kb.get_task(conn, native)
+            t_unknown = kb.get_task(conn, unknown)
+
+        native_backend = kb.resolve_spawn_backend(None)
+        assert kb._select_spawn_backend(t_routed, None) is fake
+        assert kb._select_spawn_backend(t_native, None) is native_backend
+        assert kb._select_spawn_backend(t_unknown, None) is native_backend
+    finally:
+        kb._SPAWN_BACKENDS.pop("fake-c2-backend", None)
