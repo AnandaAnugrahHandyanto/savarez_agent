@@ -399,15 +399,43 @@ def _run_review_in_thread(
             # Match parent's toolset config so ``tools[]`` is byte-identical
             # in the request body — Anthropic's cache key includes it.
             # (The runtime whitelist below still restricts dispatch.)
+            # Use review-specific model/provider if configured, otherwise
+            # fall back to the parent's main model (current default behavior).
+            _review_model = (
+                getattr(agent, "_memory_review_model", None)
+                or getattr(agent, "_skill_review_model", None)
+                or agent.model
+            )
+            _review_provider = (
+                getattr(agent, "_memory_review_provider", None)
+                or getattr(agent, "_skill_review_provider", None)
+                or agent.provider
+            )
+            _review_base_url = (
+                getattr(agent, "_memory_review_base_url", None)
+                or getattr(agent, "_skill_review_base_url", None)
+                or _parent_runtime.get("base_url")
+            )
+            # Resolve review API key: use env var if specified, else parent's.
+            _review_api_key_env = (
+                getattr(agent, "_memory_review_api_key_env", None)
+                or getattr(agent, "_skill_review_api_key_env", None)
+                or None
+            )
+            _review_api_key = (
+                os.environ.get(_review_api_key_env)
+                if _review_api_key_env
+                else _parent_runtime.get("api_key")
+            )
             review_agent = AIAgent(
-                model=agent.model,
+                model=_review_model,
                 max_iterations=16,
                 quiet_mode=True,
                 platform=agent.platform,
-                provider=agent.provider,
+                provider=_review_provider,
                 api_mode=_parent_api_mode,
-                base_url=_parent_runtime.get("base_url") or None,
-                api_key=_parent_runtime.get("api_key") or None,
+                base_url=_review_base_url or None,
+                api_key=_review_api_key,
                 credential_pool=getattr(agent, "_credential_pool", None),
                 parent_session_id=agent.session_id,
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),

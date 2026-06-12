@@ -1737,6 +1737,17 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # Model used for the background self-improvement review fork.
+        # When unset (null), the fork inherits the parent's main model
+        # (current default behavior). Set to override the review to a
+        # different provider/model — e.g. a cheap model for memory review
+        # while keeping your main model for the conversation itself.
+        "review": {
+            "provider": "",    # empty = inherit parent's provider
+            "model": "",       # empty = inherit parent's model
+            "base_url": "",    # optional: custom endpoint for review
+            "api_key_env": "", # optional: env var name for review API key
+        },
     },
 
     # Subagent delegation — override the provider:model used by delegate_task
@@ -1846,6 +1857,16 @@ DEFAULT_CONFIG = {
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
         "write_approval": False,
+        # Model used for the background skill-review fork.
+        # Same semantics as memory.review — when unset, the fork inherits
+        # the parent's main model. Useful for routing skill reviews to a
+        # cheaper model while keeping the main model for conversation.
+        "review": {
+            "provider": "",    # empty = inherit parent's provider
+            "model": "",       # empty = inherit parent's model
+            "base_url": "",    # optional: custom endpoint for review
+            "api_key_env": "", # optional: env var name for review API key
+        },
     },
 
     # Curator — background skill maintenance.

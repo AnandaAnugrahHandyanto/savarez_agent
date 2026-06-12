@@ -1116,6 +1116,13 @@ def init_agent(
             agent._memory_enabled = mem_config.get("memory_enabled", False)
             agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
+            # Review model config: allow the background review fork to use a
+            # different model/provider than the main conversation.
+            review_cfg = mem_config.get("review", {})
+            agent._memory_review_provider = review_cfg.get("provider", "") or None
+            agent._memory_review_model = review_cfg.get("model", "") or None
+            agent._memory_review_base_url = review_cfg.get("base_url", "") or None
+            agent._memory_review_api_key_env = review_cfg.get("api_key_env", "") or None
             if agent._memory_enabled or agent._user_profile_enabled:
                 from tools.memory_tool import MemoryStore
                 agent._memory_store = MemoryStore(
@@ -1231,6 +1238,13 @@ def init_agent(
     try:
         skills_config = _agent_cfg.get("skills", {})
         agent._skill_nudge_interval = int(skills_config.get("creation_nudge_interval", 10))
+        # Review model config: allow the background skill-review fork to use a
+        # different model/provider than the main conversation.
+        review_cfg = skills_config.get("review", {})
+        agent._skill_review_provider = review_cfg.get("provider", "") or None
+        agent._skill_review_model = review_cfg.get("model", "") or None
+        agent._skill_review_base_url = review_cfg.get("base_url", "") or None
+        agent._skill_review_api_key_env = review_cfg.get("api_key_env", "") or None
     except Exception:
         pass
 
