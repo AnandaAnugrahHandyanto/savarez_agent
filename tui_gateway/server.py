@@ -144,7 +144,7 @@ _MODEL_OPTIONS_CACHE_LOCK = threading.Lock()
 
 def _model_options_file_stamp() -> tuple[tuple[str, int], ...]:
     stamps: list[tuple[str, int]] = []
-    for name in ("config.yaml", ".env"):
+    for name in ("config.yaml", ".env", "auth.json"):
         path = Path(_hermes_home) / name
         try:
             stamps.append((str(path), path.stat().st_mtime_ns))
@@ -219,6 +219,16 @@ _LONG_HANDLERS = frozenset(
     {
         "browser.manage",
         "cli.exec",
+        # model.options can trigger a cold build_models_payload that probes
+        # every provider sequentially (synchronous urllib, ~10s per dead
+        # provider — see #44560). With the desktop client timeout now at 90s
+        # it no longer gives up at 30s, so leaving this on the main dispatch
+        # thread would stall approval.respond / session.interrupt on the same
+        # WS connection for the full build. model.save_key shares the path
+        # (it rebuilds the picker payload on success), so route both onto the
+        # pool.
+        "model.options",
+        "model.save_key",
         "plugins.manage",
         "session.branch",
         "session.compress",

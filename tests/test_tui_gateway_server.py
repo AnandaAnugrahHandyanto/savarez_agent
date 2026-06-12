@@ -31,6 +31,43 @@ def _clear_model_options_cache():
     server._MODEL_OPTIONS_CACHE.clear()
 
 
+def test_model_options_stamp_tracks_auth_json(tmp_path, monkeypatch):
+    """auth.json mtime is part of the cache stamp.
+
+    OAuth credential changes (``hermes auth login``/``logout`` while the
+    gateway runs) must invalidate the model.options cache — otherwise the
+    picker serves a stale authenticated/unconfigured split for up to the
+    5-minute TTL.
+    """
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("model: {}\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text('{"nous": {"token": "a"}}', encoding="utf-8")
+    before = server._model_options_file_stamp()
+
+    # auth.json is represented in the stamp...
+    assert any(name.endswith("auth.json") for name, _ in before)
+
+    # ...and a credential change moves it.
+    os.utime(auth_path, (1_000_000_000, 1_000_000_000))
+    after = server._model_options_file_stamp()
+    assert before != after
+
+
+def test_model_options_is_a_long_handler():
+    """model.options + model.save_key run on the RPC pool, not the main loop.
+
+    A cold build_models_payload probes providers sequentially and can run for
+    tens of seconds; with the desktop client timeout raised to 90s it must not
+    block approval.respond / session.interrupt on the same WS connection.
+    """
+    assert "model.options" in server._LONG_HANDLERS
+    assert "model.save_key" in server._LONG_HANDLERS
+
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()
