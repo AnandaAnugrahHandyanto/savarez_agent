@@ -1,0 +1,1 @@
+Fix #44744: Desktop: Sidebar font size shrinks when window tiled without selected session

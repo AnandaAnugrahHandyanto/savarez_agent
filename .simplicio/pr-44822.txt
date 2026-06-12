@@ -1,0 +1,1 @@
+Fix #44822: Desktop: reasoning toggle resets to 'medium' after first message when config is 'none'
