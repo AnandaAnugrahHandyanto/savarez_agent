@@ -28,7 +28,7 @@ const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = requ
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { buildSessionWindowUrl, createSessionWindowRegistry } = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
-const { isRunnableUpdaterBinary, waitForUpdaterSpawn } = require('./updater-handoff.cjs')
+const { isRunnableWindowsUpdaterBinary, waitForUpdaterSpawn } = require('./updater-handoff.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { PortPool } = require('./port-pool.cjs')
@@ -1483,7 +1483,7 @@ function resolveUpdaterBinary() {
   const name = IS_WINDOWS ? 'hermes-setup.exe' : 'hermes-setup'
   const candidate = path.join(HERMES_HOME, name)
   if (IS_WINDOWS) {
-    return isRunnableUpdaterBinary(candidate, { isWindows: true }) ? candidate : null
+    return isRunnableWindowsUpdaterBinary(candidate) ? candidate : null
   }
   return fileExists(candidate) ? candidate : null
 }

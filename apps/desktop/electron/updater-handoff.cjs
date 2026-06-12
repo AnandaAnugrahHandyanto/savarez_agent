@@ -1,16 +1,11 @@
 const fs = require('node:fs')
 
-function isRunnableUpdaterBinary(candidate, { isWindows = process.platform === 'win32', fsModule = fs } = {}) {
+function isRunnableWindowsUpdaterBinary(candidate, { fsModule = fs } = {}) {
   if (!candidate) return false
 
   try {
     const stat = fsModule.statSync(candidate)
-    if (!stat.isFile()) return false
-
-    if (isWindows) return true
-
-    fsModule.accessSync(candidate, fsModule.constants.X_OK)
-    return true
+    return stat.isFile()
   } catch {
     return false
   }
@@ -44,4 +39,4 @@ function waitForUpdaterSpawn(child, { timeoutMs = 1500 } = {}) {
   })
 }
 
-module.exports = { isRunnableUpdaterBinary, waitForUpdaterSpawn }
+module.exports = { isRunnableWindowsUpdaterBinary, waitForUpdaterSpawn }

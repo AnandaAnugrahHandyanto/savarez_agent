@@ -5,7 +5,7 @@ const path = require('node:path')
 const { EventEmitter } = require('node:events')
 const test = require('node:test')
 
-const { isRunnableUpdaterBinary, waitForUpdaterSpawn } = require('./updater-handoff.cjs')
+const { isRunnableWindowsUpdaterBinary, waitForUpdaterSpawn } = require('./updater-handoff.cjs')
 
 function withTempDir(fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-updater-handoff-'))
@@ -16,31 +16,19 @@ function withTempDir(fn) {
   }
 }
 
-test('isRunnableUpdaterBinary rejects missing paths and directories', () => {
+test('isRunnableWindowsUpdaterBinary rejects missing paths and directories', () => {
   withTempDir(dir => {
-    assert.equal(isRunnableUpdaterBinary(path.join(dir, 'missing'), { isWindows: false }), false)
-    assert.equal(isRunnableUpdaterBinary(dir, { isWindows: false }), false)
+    assert.equal(isRunnableWindowsUpdaterBinary(path.join(dir, 'missing')), false)
+    assert.equal(isRunnableWindowsUpdaterBinary(dir), false)
   })
 })
 
-test('isRunnableUpdaterBinary requires executable bit on POSIX', () => {
-  withTempDir(dir => {
-    const file = path.join(dir, 'hermes-setup')
-    fs.writeFileSync(file, '#!/bin/sh\nexit 0\n', { mode: 0o644 })
-
-    assert.equal(isRunnableUpdaterBinary(file, { isWindows: false }), false)
-
-    fs.chmodSync(file, 0o755)
-    assert.equal(isRunnableUpdaterBinary(file, { isWindows: false }), true)
-  })
-})
-
-test('isRunnableUpdaterBinary accepts existing files on Windows', () => {
+test('isRunnableWindowsUpdaterBinary accepts existing hermes-setup.exe files', () => {
   withTempDir(dir => {
     const file = path.join(dir, 'hermes-setup.exe')
     fs.writeFileSync(file, 'not actually used by this test', { mode: 0o644 })
 
-    assert.equal(isRunnableUpdaterBinary(file, { isWindows: true }), true)
+    assert.equal(isRunnableWindowsUpdaterBinary(file), true)
   })
 })
 
