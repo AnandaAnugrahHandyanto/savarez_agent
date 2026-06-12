@@ -31,6 +31,8 @@ import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ToolCall, type ToolEntry } from "@/components/ToolCall";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
+import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
@@ -49,14 +51,6 @@ interface RpcEnvelope {
 }
 
 const TOOL_LIMIT = 20;
-
-const STATE_LABEL: Record<ConnectionState, string> = {
-  idle: "idle",
-  connecting: "connecting",
-  open: "live",
-  closed: "closed",
-  error: "error",
-};
 
 const STATE_TONE: Record<
   ConnectionState,
@@ -77,6 +71,15 @@ interface ChatSidebarProps {
 }
 
 export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
+  const { t } = useI18n();
+  const copy = { ...en.chatPage!, ...(t.chatPage ?? {}) };
+  const stateLabel: Record<ConnectionState, string> = {
+    idle: copy.stateIdle,
+    connecting: copy.stateConnecting,
+    open: copy.stateLive,
+    closed: copy.stateClosed,
+    error: copy.stateError,
+  };
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
   // counter is the dependency on purpose — it's not read in the memo body,
@@ -319,7 +322,12 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
 
   const canPickModel = state === "open" && !!sessionId;
   const modelLabel = (info.model ?? "—").split("/").slice(-1)[0] ?? "—";
-  const banner = error ?? info.credential_warning ?? null;
+  // The gateway client throws English messages; map the known token error to
+  // the catalog so the panel matches the page banner's language.
+  const rawBanner = error ?? info.credential_warning ?? null;
+  const banner = rawBanner?.startsWith("Session token not available")
+    ? copy.tokenMissingPanel
+    : rawBanner;
 
   return (
     <aside
@@ -331,7 +339,7 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
       <Card className="flex items-center justify-between gap-2 px-3 py-2">
         <div className="min-w-0 flex-1">
           <div className="text-display text-xs tracking-wider text-text-tertiary">
-            model
+            {copy.sidebarModel}
           </div>
 
           <Button
@@ -344,7 +352,7 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
               "self-start normal-case tracking-normal text-sm font-medium",
               "hover:underline disabled:no-underline",
             )}
-            title={info.model ?? "switch model"}
+            title={info.model ?? copy.switchModel}
           >
             <span className="flex min-w-0 max-w-full items-center gap-1">
               <span className="truncate">{modelLabel}</span>
@@ -357,7 +365,7 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
         </div>
 
         <Badge tone={STATE_TONE[state]} className="shrink-0">
-          {STATE_LABEL[state]}
+          {stateLabel[state]}
         </Badge>
       </Card>
 
@@ -376,7 +384,7 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
                 onClick={reconnect}
                 prefix={<RefreshCw />}
               >
-                reconnect
+                {copy.reconnect}
               </Button>
             )}
           </div>
@@ -385,13 +393,13 @@ export function ChatSidebar({ channel, profile, className }: ChatSidebarProps) {
 
       <Card className="flex min-h-0 flex-none flex-col px-2 py-2">
         <div className="text-display px-1 pb-2 text-xs tracking-wider text-text-tertiary">
-          tools
+          {copy.sidebarTools}
         </div>
 
         <div className="flex min-h-0 flex-col gap-1.5">
           {tools.length === 0 ? (
             <div className="px-2 py-4 text-center text-xs text-text-secondary">
-              no tool calls yet
+              {copy.noToolCalls}
             </div>
           ) : (
             tools.map((t) => <ToolCall key={t.id} tool={t} />)
