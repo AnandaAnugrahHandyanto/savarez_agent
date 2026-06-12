@@ -30,6 +30,7 @@ import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { extractQuotedMessageText, getContextInfo, getMessageContent } from './message-utils.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -77,6 +78,7 @@ const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
 const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
+const MAX_QUOTED_CONTEXT_LENGTH = 1000;
 // Per-call timeout for sock.sendMessage(). Baileys occasionally hangs forever
 // when uploading media to WhatsApp servers (and, less often, on text sends),
 // which pins the bridge's HTTP handler until the upstream aiohttp timeout
@@ -142,28 +144,6 @@ function trackSentMessageId(sent) {
 function normalizeWhatsAppId(value) {
   if (!value) return '';
   return String(value).replace(':', '@');
-}
-
-function getMessageContent(msg) {
-  const content = msg?.message || {};
-  if (content.ephemeralMessage?.message) return content.ephemeralMessage.message;
-  if (content.viewOnceMessage?.message) return content.viewOnceMessage.message;
-  if (content.viewOnceMessageV2?.message) return content.viewOnceMessageV2.message;
-  if (content.documentWithCaptionMessage?.message) return content.documentWithCaptionMessage.message;
-  if (content.templateMessage?.hydratedTemplate) return content.templateMessage.hydratedTemplate;
-  if (content.buttonsMessage) return content.buttonsMessage;
-  if (content.listMessage) return content.listMessage;
-  return content;
-}
-
-function getContextInfo(messageContent) {
-  if (!messageContent || typeof messageContent !== 'object') return {};
-  for (const value of Object.values(messageContent)) {
-    if (value && typeof value === 'object' && value.contextInfo) {
-      return value.contextInfo;
-    }
-  }
-  return {};
 }
 
 mkdirSync(SESSION_DIR, { recursive: true });
@@ -340,7 +320,8 @@ async function startSocket() {
       const quotedMessageId = contextInfo?.stanzaId || null;
       const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || '') || null;
       const quotedRemoteJid = normalizeWhatsAppId(contextInfo?.remoteJid || '') || null;
-      const hasQuotedMessage = !!contextInfo?.quotedMessage;
+      const quotedText = extractQuotedMessageText(contextInfo, MAX_QUOTED_CONTEXT_LENGTH);
+      const hasQuotedMessage = !!contextInfo?.quotedMessage || !!quotedText;
 
       // Extract message body
       let body = '';
@@ -455,6 +436,7 @@ async function startSocket() {
         quotedMessageId,
         quotedParticipant,
         quotedRemoteJid,
+        quotedText,
         hasQuotedMessage,
         botIds,
         timestamp: msg.messageTimestamp,
