@@ -294,6 +294,39 @@ export async function applyUpdates(opts: DesktopUpdateApplyOptions = {}): Promis
         message: result.command ?? 'hermes update',
         command: result.command ?? 'hermes update'
       })
+
+      return result
+    }
+
+    // A detached relauncher took over (macOS bundle swap / Linux re-exec): the
+    // app is about to quit and reopen, so hold the "Restarting…" view until it
+    // does. Every other resolved outcome MUST land on a terminal, closeable
+    // state: the apply IPC resolves here, but the progress stream may have left
+    // us on a non-terminal stage (e.g. 'done'/'rebuild'), which renders as a
+    // spinner with no close button — the exact hang this guards against.
+    if (!result?.handedOff) {
+      if (result?.ok) {
+        // Updated, but couldn't relaunch in place (AppImage / dev run). Dismiss
+        // the overlay and let the user know the new version loads next launch
+        // rather than stranding them on an un-closeable spinner.
+        setUpdateOverlayOpen(false)
+        resetUpdateApplyState()
+        notify({
+          durationMs: 8000,
+          id: UPDATE_TOAST_ID,
+          kind: 'success',
+          message: translateNow('updates.manualPickedUp'),
+          title: translateNow('updates.allSetTitle')
+        })
+      } else {
+        $updateApply.set({
+          ...$updateApply.get(),
+          applying: false,
+          stage: 'error',
+          error: result?.error ?? 'apply-failed',
+          message: result?.message ?? translateNow('updates.errorBody')
+        })
+      }
     }
 
     return result

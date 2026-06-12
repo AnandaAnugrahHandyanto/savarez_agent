@@ -220,9 +220,26 @@ export interface DesktopUpdateApplyResult {
   manual?: boolean
   command?: string
   hermesRoot?: string
+  /** True when the backend was updated but the GUI couldn't be relaunched in
+   *  place (AppImage / dev run): the new version loads on next launch. */
+  backendUpdated?: boolean
+  /** True when a detached relauncher took over (macOS bundle swap / Linux
+   *  re-exec): the app is about to quit and reopen itself. */
+  handedOff?: boolean
 }
 
-export type DesktopUpdateStage = 'idle' | 'prepare' | 'fetch' | 'pull' | 'pydeps' | 'restart' | 'manual' | 'error'
+export type DesktopUpdateStage =
+  | 'idle'
+  | 'prepare'
+  | 'fetch'
+  | 'pull'
+  | 'pydeps'
+  | 'update'
+  | 'rebuild'
+  | 'restart'
+  | 'done'
+  | 'manual'
+  | 'error'
 
 export interface DesktopUpdateProgress {
   stage: DesktopUpdateStage

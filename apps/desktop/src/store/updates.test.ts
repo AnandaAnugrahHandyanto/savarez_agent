@@ -33,7 +33,17 @@ vi.mock('@/hermes', () => ({
   getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args)
 }))
 
-const { maybeNotifyUpdateAvailable, checkBackendUpdates, $backendUpdateStatus, applyBackendUpdate, $backendUpdateApply } = await import('./updates')
+const {
+  maybeNotifyUpdateAvailable,
+  checkBackendUpdates,
+  $backendUpdateStatus,
+  applyBackendUpdate,
+  $backendUpdateApply,
+  applyUpdates,
+  $updateApply,
+  $updateOverlayOpen,
+  resetUpdateApplyState
+} = await import('./updates')
 const { setConnection } = await import('./session')
 
 const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus => ({
@@ -152,6 +162,74 @@ describe('checkBackendUpdates', () => {
     setRemote(false)
     await checkBackendUpdates()
     expect(checkHermesUpdateSpy).not.toHaveBeenCalled()
+  })
+})
+
+describe('applyUpdates terminal state', () => {
+  const applyMock = vi.fn()
+
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    dismissSpy.mockClear()
+    applyMock.mockReset()
+    resetUpdateApplyState()
+    $updateOverlayOpen.set(true)
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { updates: { apply: applyMock } }
+    }
+    vi.useRealTimers()
+  })
+
+  afterEach(() => {
+    delete (globalThis as unknown as { window?: unknown }).window
+  })
+
+  it('holds the restart view when a relauncher hands off (no close, no toast)', async () => {
+    applyMock.mockResolvedValue({ ok: true, handedOff: true })
+
+    const result = await applyUpdates()
+
+    expect(result.handedOff).toBe(true)
+    // The detached relauncher will quit + reopen us; keep "applying" until then.
+    expect($updateApply.get().applying).toBe(true)
+    expect($updateOverlayOpen.get()).toBe(true)
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('closes the overlay + toasts when updated but not relaunched in place', async () => {
+    // The Linux AppImage / dev-run path: backend + GUI updated, no in-place
+    // relaunch. Must not strand the overlay on a closeless spinner.
+    applyMock.mockResolvedValue({ ok: true, backendUpdated: true })
+
+    await applyUpdates()
+
+    expect($updateOverlayOpen.get()).toBe(false)
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateApply.get().stage).toBe('idle')
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ kind: 'success' })
+  })
+
+  it('lands on a closeable error state when the apply resolves not-ok', async () => {
+    applyMock.mockResolvedValue({ ok: false, error: 'rebuild-failed', message: 'rebuild failed' })
+
+    await applyUpdates()
+
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateApply.get().stage).toBe('error')
+    expect($updateApply.get().error).toBe('rebuild-failed')
+  })
+
+  it('keeps the manual command state for CLI installs with no staged updater', async () => {
+    applyMock.mockResolvedValue({ ok: true, manual: true, command: 'hermes update' })
+
+    await applyUpdates()
+
+    expect($updateApply.get().stage).toBe('manual')
+    expect($updateApply.get().command).toBe('hermes update')
+    expect($updateOverlayOpen.get()).toBe(true)
+    expect(notifySpy).not.toHaveBeenCalled()
   })
 })
 
