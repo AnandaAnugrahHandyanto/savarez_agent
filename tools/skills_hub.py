@@ -3509,8 +3509,13 @@ def check_for_skill_updates(
         current_hash = lock_hash
         install_path = entry.get("install_path")
         if install_path:
-            installed_path = SKILLS_DIR / install_path
-            if installed_path.exists():
+            try:
+                installed_path = _resolve_lock_install_path(
+                    install_path, entry.get("name", "")
+                )
+            except ValueError:
+                installed_path = None
+            if installed_path and installed_path.exists():
                 current_hash = content_hash(installed_path)
         latest_hash = bundle_content_hash(bundle)
         status = "up_to_date" if current_hash == latest_hash else "update_available"
