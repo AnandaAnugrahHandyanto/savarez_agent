@@ -2135,6 +2135,11 @@ def _get_usage(agent) -> dict:
         "total": g("session_total_tokens"),
         "calls": g("session_api_calls"),
     }
+    # Per-last-call tokens-per-second for the desktop status bar
+    last_dur = getattr(agent, "last_api_duration", 0.0) or 0.0
+    last_out = getattr(agent, "last_output_tokens", 0) or 0
+    if last_dur > 0 and last_out > 0:
+        usage["output_speed"] = round(last_out / last_dur, 1)
     comp = getattr(agent, "context_compressor", None)
     if comp:
         ctx_used = getattr(comp, "last_prompt_tokens", 0) or usage["total"] or 0

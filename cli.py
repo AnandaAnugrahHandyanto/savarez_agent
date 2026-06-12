@@ -3907,6 +3907,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         snapshot["session_total_tokens"] = getattr(agent, "session_total_tokens", 0) or 0
         snapshot["session_api_calls"] = getattr(agent, "session_api_calls", 0) or 0
 
+        # Per-last-call TPS for status bar / output-speed display
+        last_dur = getattr(agent, "last_api_duration", 0.0) or 0.0
+        last_out = getattr(agent, "last_output_tokens", 0) or 0
+        if last_dur > 0 and last_out > 0:
+            snapshot["output_speed"] = last_out / last_dur
+        else:
+            snapshot["output_speed"] = None
+
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
             # last_prompt_tokens is parked at the -1 sentinel right after a
@@ -4159,6 +4167,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             compressions = snapshot.get("compressions", 0)
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+
+            # TPS from last API call (when configured)
+            if self.config.get("display", {}).get("show_output_speed") and snapshot.get("output_speed") is not None:
+                tps = snapshot["output_speed"]
+                parts.append(f"{tps:.0f}t/s")
+
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
