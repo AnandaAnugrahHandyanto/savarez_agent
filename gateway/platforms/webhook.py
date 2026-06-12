@@ -48,12 +48,8 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
-    BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
-    SendResult,
-)
+from gateway.ingress import IngressEnvelope, schedule_ingress_envelope
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 logger = logging.getLogger(__name__)
 
@@ -633,20 +629,15 @@ class WebhookAdapter(BasePlatformAdapter):
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)
 
-        # Build source and event
-        source = self.build_source(
+        envelope = IngressEnvelope(
+            text=prompt,
+            message_id=delivery_id,
             chat_id=session_chat_id,
             chat_name=f"webhook/{route_name}",
             chat_type="webhook",
             user_id=f"webhook:{route_name}",
             user_name=route_name,
-        )
-        event = MessageEvent(
-            text=prompt,
-            message_type=MessageType.TEXT,
-            source=source,
-            raw_message=payload,
-            message_id=delivery_id,
+            raw_payload=payload,
         )
 
         logger.info(
@@ -659,9 +650,7 @@ class WebhookAdapter(BasePlatformAdapter):
         )
 
         # Non-blocking — return 202 Accepted immediately
-        task = asyncio.create_task(self.handle_message(event))
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        schedule_ingress_envelope(self, envelope)
 
         return web.json_response(
             {

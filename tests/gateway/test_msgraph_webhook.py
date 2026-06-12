@@ -1,10 +1,12 @@
 """Tests for the Microsoft Graph webhook adapter."""
 
 import asyncio
+from typing import cast
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_overrides
+from gateway.platforms.base import MessageEvent
 from gateway.platforms.msgraph_webhook import AIOHTTP_AVAILABLE, MSGraphWebhookAdapter
 
 
@@ -177,11 +179,14 @@ class TestMSGraphNotifications:
         await asyncio.sleep(0.05)
 
         assert len(scheduled) == 1
-        notification, event = scheduled[0]
+        notification, event_obj = scheduled[0]
+        event = cast(MessageEvent, event_obj)
         assert notification["id"] == "notif-1"
         assert event.source.platform == Platform.MSGRAPH_WEBHOOK
         assert event.source.chat_type == "webhook"
         assert event.message_id == "id:notif-1"
+        assert event.internal is True
+        assert event.raw_message == payload["value"][0]
 
     @pytest.mark.anyio
     async def test_bad_client_state_rejected_as_auth_failure(self):

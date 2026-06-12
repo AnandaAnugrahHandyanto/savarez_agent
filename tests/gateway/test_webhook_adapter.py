@@ -499,6 +499,41 @@ class TestHTTPHandling:
             assert data["status"] == "accepted"
             assert data["route"] == "test"
 
+        adapter.handle_message.assert_awaited_once()
+        await_args = adapter.handle_message.await_args
+        assert await_args is not None
+        event = await_args.args[0]
+        assert event.text == "hi"
+        assert event.message_id
+        assert event.source.platform == Platform.WEBHOOK
+        assert event.source.chat_id == f"webhook:test:{event.message_id}"
+        assert event.source.chat_name == "webhook/test"
+        assert event.source.user_id == "webhook:test"
+        assert event.source.user_name == "test"
+        assert event.raw_message == {"data": "value"}
+
+    @pytest.mark.asyncio
+    async def test_webhook_preserves_delivery_id_as_message_id(self):
+        """Accepted webhook events keep delivery_id as MessageEvent.message_id."""
+        routes = {"test": {"secret": _INSECURE_NO_AUTH, "prompt": "hi"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/test",
+                json={"data": "value"},
+                headers={"X-GitHub-Delivery": "delivery-xyz"},
+            )
+            assert resp.status == 202
+
+        await_args = adapter.handle_message.await_args
+        assert await_args is not None
+        event = await_args.args[0]
+        assert event.message_id == "delivery-xyz"
+        assert event.source.chat_id == "webhook:test:delivery-xyz"
+
     @pytest.mark.asyncio
     async def test_route_without_secret_rejects_unsigned_request(self):
         """Missing HMAC secret must fail closed even if connect() was bypassed."""
