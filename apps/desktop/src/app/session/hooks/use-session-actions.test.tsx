@@ -1,11 +1,12 @@
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $selectedStoredSessionId, setSessions } from '@/store/session'
+import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
+import { $currentCwd, $selectedStoredSessionId, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { useSessionActions } from './use-session-actions'
@@ -25,16 +26,20 @@ vi.mock('@/store/profile', async importOriginal => {
 })
 
 vi.mock('@/hermes', async importOriginal => {
-  const actual = await importOriginal()
+  const actual = await importOriginal<Record<string, unknown>>()
 
   return {
-    ...(actual as object),
+    ...actual,
     deleteSession: (id: string) => deleteSession(id),
     getSessionMessages: (id: string, profile?: string | null) => getSessionMessages(id, profile),
+    listAllProfileSessions: vi.fn(),
+    setApiRequestProfile: vi.fn(),
     setSessionArchived: (id: string, archived: boolean, profile?: string | null) =>
       setSessionArchived(id, archived, profile)
   }
 })
+
+const RUNTIME_SESSION_ID = 'rt-new-001'
 
 function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -57,6 +62,7 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 interface HarnessHandle {
+  createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   resumeSession: (storedSessionId: string, replaceRoute?: boolean) => Promise<void>
 }
 
@@ -67,12 +73,13 @@ function Harness({
   onReady: (handle: HarnessHandle) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }) {
-  const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
-  const busyRef: MutableRefObject<boolean> = { current: false }
-  const creatingSessionRef: MutableRefObject<boolean> = { current: false }
-  const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
-  const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = { current: new Map() }
-  const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = { current: new Map() }
+  const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+  const activeSessionIdRef = ref<string | null>(null)
+  const busyRef = ref(false)
+  const creatingSessionRef = ref(false)
+  const selectedStoredSessionIdRef = ref<string | null>(null)
+  const sessionStateByRuntimeIdRef = ref(new Map<string, ClientSessionState>())
+  const runtimeIdByStoredSessionIdRef = ref(new Map<string, string>())
 
   const actions = useSessionActions({
     activeSessionId: null,
@@ -81,7 +88,7 @@ function Harness({
     creatingSessionRef,
     ensureSessionState: (_sessionId, storedSessionId) => createClientSessionState(storedSessionId ?? null),
     getRouteToken: () => 'route',
-    navigate: vi.fn(),
+    navigate: vi.fn() as never,
     requestGateway,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId: null,
@@ -92,11 +99,11 @@ function Harness({
       updater(createClientSessionState(storedSessionId ?? null))
   })
 
-  const { resumeSession } = actions
+  const { createBackendSessionForSend, resumeSession } = actions
 
   useEffect(() => {
-    onReady({ resumeSession: async (id, replace) => void (await resumeSession(id, replace)) })
-  }, [onReady, resumeSession])
+    onReady({ createBackendSessionForSend, resumeSession })
+  }, [createBackendSessionForSend, onReady, resumeSession])
 
   return null
 }
@@ -157,5 +164,69 @@ describe('useSessionActions resumeSession', () => {
     expect($selectedStoredSessionId.get()).toBe('session-b')
     expect(requestGateway).toHaveBeenCalledWith('session.resume', expect.objectContaining({ session_id: 'session-b' }))
     expect(requestGateway).not.toHaveBeenCalledWith('session.resume', expect.objectContaining({ session_id: 'session-a' }))
+  })
+})
+
+async function createWith(profileSetup: () => void): Promise<Record<string, unknown> | undefined> {
+  let createParams: Record<string, unknown> | undefined
+
+  const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    if (method === 'session.create') {
+      createParams = params
+
+      return { session_id: RUNTIME_SESSION_ID, stored_session_id: null } as never
+    }
+
+    return {} as never
+  })
+
+  $currentCwd.set('')
+  profileSetup()
+
+  let handle: HarnessHandle | null = null
+  render(<Harness onReady={h => (handle = h)} requestGateway={requestGateway} />)
+  await waitFor(() => expect(handle).not.toBeNull())
+  await handle!.createBackendSessionForSend()
+
+  return createParams
+}
+
+describe('createBackendSessionForSend profile routing', () => {
+  afterEach(() => {
+    cleanup()
+    $newChatProfile.set(null)
+    $activeGatewayProfile.set('default')
+    vi.restoreAllMocks()
+  })
+
+  it('routes a plain new chat (no explicit profile) to the live gateway profile', async () => {
+    // The "rubberband to default" bug: the top New Session button clears
+    // $newChatProfile to null. In global-remote mode one backend serves every
+    // profile, so an omitted `profile` lands the chat on the launch (default)
+    // profile. The session must instead carry the active gateway profile.
+    const params = await createWith(() => {
+      $activeGatewayProfile.set('coder')
+      $newChatProfile.set(null)
+    })
+
+    expect(params).toMatchObject({ profile: 'coder' })
+  })
+
+  it('honours an explicit per-profile "+" selection', async () => {
+    const params = await createWith(() => {
+      $activeGatewayProfile.set('coder')
+      $newChatProfile.set('analyst')
+    })
+
+    expect(params).toMatchObject({ profile: 'analyst' })
+  })
+
+  it('passes the default profile for single-profile users (backend resolves it to launch)', async () => {
+    const params = await createWith(() => {
+      $activeGatewayProfile.set('default')
+      $newChatProfile.set(null)
+    })
+
+    expect(params).toMatchObject({ profile: 'default' })
   })
 })
