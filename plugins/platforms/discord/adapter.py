@@ -3908,12 +3908,18 @@ class DiscordAdapter(BasePlatformAdapter):
         is_dm = isinstance(interaction.channel, discord.DMChannel)
         is_thread = isinstance(interaction.channel, discord.Thread)
         thread_id = None
+        thread_initial_name = None
 
         if is_dm:
             chat_type = "dm"
         elif is_thread:
             chat_type = "thread"
             thread_id = str(interaction.channel_id)
+            thread_initial_name = None
+            try:
+                thread_initial_name = getattr(interaction.channel, "name", None)
+            except Exception:
+                pass
         else:
             chat_type = "group"
 
@@ -3935,6 +3941,7 @@ class DiscordAdapter(BasePlatformAdapter):
             user_name=interaction.user.display_name,
             thread_id=thread_id,
             chat_topic=chat_topic,
+            thread_initial_name=thread_initial_name,
         )
 
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
@@ -3949,8 +3956,50 @@ class DiscordAdapter(BasePlatformAdapter):
         )
 
     # ------------------------------------------------------------------
-    # Thread creation helpers
+    # Thread helpers — rename, create
     # ------------------------------------------------------------------
+
+    async def rename_thread(
+        self,
+        thread_id: str,
+        name: str,
+        expected_current_name: Optional[str] = None,
+    ) -> bool:
+        """Rename a Discord thread.
+
+        When ``expected_current_name`` is provided, skip the rename if
+        the thread's current name differs (user likely renamed it manually).
+        Returns True if the rename was attempted, False if skipped.
+        """
+        try:
+            channel = self._client.get_channel(int(thread_id))
+            if channel is None:
+                channel = await self._client.fetch_channel(int(thread_id))
+        except Exception:
+            logger.debug("[%s] Failed to resolve thread %s for rename", self.name, thread_id, exc_info=True)
+            return False
+        if channel is None:
+            return False
+        import discord
+        if not isinstance(channel, discord.Thread):
+            logger.debug("[%s] Channel %s is not a thread, skipping rename", self.name, thread_id)
+            return False
+        if expected_current_name is not None and channel.name != expected_current_name:
+            logger.debug(
+                "[%s] Thread %s name %r differs from expected %r — skipping rename",
+                self.name,
+                thread_id,
+                channel.name,
+                expected_current_name,
+            )
+            return False
+        try:
+            await channel.edit(name=name)
+            logger.debug("[%s] Renamed thread %s to %r", self.name, thread_id, name)
+            return True
+        except Exception:
+            logger.debug("[%s] Failed to rename thread %s to %r", self.name, thread_id, name, exc_info=True)
+            return False
 
     async def _handle_thread_create_slash(
         self,
@@ -5029,6 +5078,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Messages already inside threads or DMs are unaffected.
         # no_thread_channels: channels where bot responds directly without thread.
         auto_threaded_channel = None
+        auto_thread_initial_name = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
@@ -5042,7 +5092,17 @@ class DiscordAdapter(BasePlatformAdapter):
                     is_thread = True
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
+                    auto_thread_initial_name = getattr(thread, "name", None)
                     self._threads.mark(thread_id)
+
+        # For existing threads (not auto-created), capture the current thread
+        # name as initial_name so auto-rename (/title, summary) works on
+        # threads created with `new` or manually via Discord UI.
+        if is_thread and auto_thread_initial_name is None:
+            try:
+                auto_thread_initial_name = getattr(message.channel, "name", None)
+            except Exception:
+                pass
 
         all_attachments = list(message.attachments) + snapshot_attachments
 
@@ -5115,6 +5175,7 @@ class DiscordAdapter(BasePlatformAdapter):
             parent_chat_id=parent_channel_id,
             message_id=str(message.id),
             role_authorized=role_authorized,
+            thread_initial_name=auto_thread_initial_name,
         )
 
         # Build media URLs -- download image attachments to local cache so the
