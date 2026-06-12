@@ -332,8 +332,34 @@ export function useGatewayBoot({
         // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it and, on
         // failure, throws a reauth error rather than connecting with a dead
         // ticket (which would surface as an opaque "connection closed").
-        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
-        await gateway.connect(wsUrl)
+        // A freshly spawned backend can block its event loop for 15-30s while
+        // it connects MCP servers and discovers plugins, so a single connect
+        // attempt (15s client timeout) races backend cold-start and loses
+        // intermittently. Retry the initial connect a few times — re-minting
+        // the WS URL each attempt (OAuth tickets are single-use) — instead of
+        // failing the whole boot on the first 1006.
+        {
+          let lastConnectError: unknown = null
+
+          for (let attempt = 0; attempt < 8 && !cancelled; attempt += 1) {
+            try {
+              const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+              await gateway.connect(wsUrl)
+              lastConnectError = null
+              break
+            } catch (err) {
+              if (isGatewayReauthRequired(err)) {
+                throw err
+              }
+              lastConnectError = err
+              await new Promise(resolve => setTimeout(resolve, 3_000))
+            }
+          }
+
+          if (lastConnectError) {
+            throw lastConnectError
+          }
+        }
 
         if (cancelled) {
           return
