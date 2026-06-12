@@ -1044,3 +1044,87 @@ def test_user_provider_override_rejects_mangled_private_models(
 
     assert result.success is False
     assert result.error_message == "not found"
+
+
+
+# =============================================================================
+# Regression tests for #44666: api_key_env alias in providers: dict
+# =============================================================================
+
+def test_get_named_custom_provider_honors_api_key_env_in_providers_dict(monkeypatch, tmp_path):
+    """providers: dict entry with api_key_env should resolve the env var.
+
+    Regression for #44666: _get_named_custom_provider only checked key_env,
+    silently ignoring api_key_env and falling through to no-key-required.
+    """
+    import yaml
+
+    config = {
+        "providers": {
+            "myprovider": {
+                "base_url": "http://127.0.0.1:56673/v1",
+                "api_key_env": "MY_API_KEY",
+            }
+        }
+    }
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump(config))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("MY_API_KEY", "sk-secret-from-env")
+
+    result = rp._get_named_custom_provider("myprovider")
+
+    assert result is not None
+    assert result["base_url"] == "http://127.0.0.1:56673/v1"
+    assert result["api_key"] == "sk-secret-from-env"
+
+
+def test_get_named_custom_provider_prefers_key_env_over_api_key_env(monkeypatch, tmp_path):
+    """When both key_env and api_key_env are set, key_env takes priority."""
+    import yaml
+
+    config = {
+        "providers": {
+            "myprovider": {
+                "base_url": "http://127.0.0.1:56673/v1",
+                "key_env": "PRIMARY_KEY",
+                "api_key_env": "FALLBACK_KEY",
+            }
+        }
+    }
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump(config))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("PRIMARY_KEY", "sk-primary")
+    monkeypatch.setenv("FALLBACK_KEY", "sk-fallback")
+
+    result = rp._get_named_custom_provider("myprovider")
+
+    assert result is not None
+    assert result["api_key"] == "sk-primary"
+
+
+def test_get_named_custom_provider_honors_api_key_env_in_legacy_custom_providers(monkeypatch, tmp_path):
+    """Legacy custom_providers: list entry with api_key_env should also resolve."""
+    import yaml
+
+    config = {
+        "custom_providers": [
+            {
+                "name": "legacy-provider",
+                "base_url": "http://legacy.example.com/v1",
+                "api_key_env": "LEGACY_API_KEY",
+            }
+        ]
+    }
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump(config))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("LEGACY_API_KEY", "sk-legacy-secret")
+
+    result = rp._get_named_custom_provider("legacy-provider")
+
+    assert result is not None
+    assert result["base_url"] == "http://legacy.example.com/v1"
+    # Legacy path stores key_env but resolves the env var downstream
+    assert result.get("key_env") == "LEGACY_API_KEY"
