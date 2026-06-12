@@ -569,6 +569,20 @@ def sync_skills(quiet: bool = False) -> dict:
                 try:
                     # Move old copy to a backup so we can restore on failure
                     backup = dest.with_suffix(".bak")
+
+                    # (A) Clear any stale .bak left from a prior failure so
+                    # shutil.move replaces rather than nests live content
+                    # inside the stale directory.
+                    if backup.exists():
+                        try:
+                            _rmtree_writable(backup)
+                        except (OSError, IOError):
+                            logger.warning(
+                                "Could not remove stale backup %s; update may fail",
+                                backup,
+                                exc_info=True,
+                            )
+
                     shutil.move(str(dest), str(backup))
                     try:
                         shutil.copytree(skill_src, dest)
@@ -582,6 +596,17 @@ def sync_skills(quiet: bool = False) -> dict:
                         except (OSError, IOError):
                             logger.debug("Could not remove backup %s", backup, exc_info=True)
                     except (OSError, IOError):
+                        # (C) On copy failure, remove partial dest before
+                        # restoring from backup so the restore guard passes.
+                        if dest.exists():
+                            try:
+                                _rmtree_writable(dest)
+                            except (OSError, IOError):
+                                logger.debug(
+                                    "Could not remove partial dest %s before restore",
+                                    dest,
+                                    exc_info=True,
+                                )
                         # Restore from backup
                         if backup.exists() and not dest.exists():
                             shutil.move(str(backup), str(dest))
@@ -593,8 +618,25 @@ def sync_skills(quiet: bool = False) -> dict:
                 skipped += 1  # bundled unchanged, user unchanged
 
         else:
-            # ── In manifest but not on disk — user deleted it ──
-            skipped += 1
+            # ── In manifest but not on disk ──
+            # (B) Check for orphaned backup from an interrupted update before
+            # treating this as a deliberate user deletion.
+            backup = dest.with_suffix(".bak")
+            if backup.exists():
+                try:
+                    shutil.move(str(backup), str(dest))
+                    logger.info("Recovered orphaned backup for %s", skill_name)
+                    # dest now exists — fall through to the elif dest.exists()
+                    # logic on the next sync. This recovery restores the skill
+                    # so it can be updated on the next cycle; on this cycle we
+                    # simply skip to avoid duplicate work.
+                    skipped += 1
+                except (OSError, IOError) as e:
+                    logger.warning("Could not recover backup for %s: %s", skill_name, e)
+                    skipped += 1
+            else:
+                # ── In manifest but not on disk — user deleted it ──
+                skipped += 1
 
     # Clean stale manifest entries (skills removed from bundled dir)
     cleaned = sorted(set(manifest.keys()) - bundled_names)
