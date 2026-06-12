@@ -5557,16 +5557,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         while True:
             try:
                 await asyncio.sleep(interval)
+                # ── Drain-first pattern ────────────────────────────────────────────
+                # IMPORTANT: do NOT put_nowait() back inside the drain loop.
+                # Putting an event back while the inner while-loop checks
+                # queue.empty() causes a tight spin: get → busy → put_back →
+                # queue not empty → get again → busy → put_back → ∞  This
+                # consumes 40-50% CPU and makes the watcher completely silent.
+                # Instead: snapshot all events, process them, then re-queue
+                # the ones that could not be handled in a single pass at the end.
+                _snapshot: list = []
                 while not _pr.completion_queue.empty():
-                    evt = _pr.completion_queue.get_nowait()
+                    try:
+                        _snapshot.append(_pr.completion_queue.get_nowait())
+                    except Exception:
+                        break
+
+                _to_requeue: list = []
+                for evt in _snapshot:
                     if evt.get("type") != "async_delegation":
-                        # Not ours — put it back for other consumers.
-                        # (This shouldn't happen since we only drain async_delegation,
-                        # but guard against queue ordering edge cases.)
-                        try:
-                            _pr.completion_queue.put_nowait(evt)
-                        except Exception:
-                            pass
+                        # Not ours — defer back for other consumers.
+                        _to_requeue.append(evt)
                         continue
 
                     _session_key = evt.get("session_key", "")
@@ -5592,13 +5602,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         continue
                     # ──────────────────────────────────────────────────────────────────
 
-                    # Skip if an agent is currently running for this session —
+                    # Defer if an agent is currently running for this session —
                     # the per-turn drain will handle it when that turn finishes.
+                    # Do NOT put back inside the drain loop — that causes tight-spin.
                     if _session_key in self._running_agents:
-                        try:
-                            _pr.completion_queue.put_nowait(evt)
-                        except Exception:
-                            pass
+                        _to_requeue.append(evt)
                         continue
 
                     synth_text = format_process_notification(evt)
@@ -5610,6 +5618,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "Async delegation watcher injection error for %s: %s",
                                 _session_key, exc,
                             )
+
+                # Re-enqueue deferred events after processing the full snapshot.
+                for _evt in _to_requeue:
+                    try:
+                        _pr.completion_queue.put_nowait(_evt)
+                    except Exception:
+                        pass
+                # ──────────────────────────────────────────────────────────────────
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
