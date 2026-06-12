@@ -2359,6 +2359,12 @@ function Install-Desktop {
         throw "Desktop build completed but no Hermes.exe was found under $desktopDir\release\*-unpacked\"
     }
 
+    $signatureStatus = Get-DesktopAuthenticodeStatus -Path $desktopExe
+    if ($signatureStatus -eq "NotSigned") {
+        Write-Warn "Desktop binary is unsigned: $desktopExe"
+        Write-Warn "Windows Application Control / WDAC policies that require enterprise signing can block this shortcut target before Hermes starts."
+    }
+
     # 3b. The Hermes icon + identity are stamped onto Hermes.exe by the
     #     electron-builder `afterPack` hook (apps/desktop/scripts/after-pack.cjs)
     #     during `npm run pack` above — for every build, so the installer's
@@ -2434,6 +2440,17 @@ function New-DesktopShortcuts {
         }
     } catch {
         Write-Warn "Skipping shortcut creation: $($_.Exception.Message)"
+    }
+}
+
+function Get-DesktopAuthenticodeStatus {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    try {
+        $sig = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop
+        return [string]$sig.Status
+    } catch {
+        return $null
     }
 }
 

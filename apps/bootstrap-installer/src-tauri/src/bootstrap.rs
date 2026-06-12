@@ -12,7 +12,7 @@
 //!   4. Worker iterates stages, calling `install.ps1 -Stage NAME -NonInteractive -Json`.
 //!   5. On success → `complete`. On any stage failure → `failed`. On cancel → `failed`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -191,12 +191,8 @@ pub async fn launch_hermes_desktop(
         cmd.creation_flags(0x0000_0008);
     }
 
-    cmd.spawn().map_err(|e| {
-        format!(
-            "failed to launch {}: {e}",
-            exe_path.display()
-        )
-    })?;
+    cmd.spawn()
+        .map_err(|e| desktop_launch_error_message(&exe_path, &e))?;
 
     // Give Windows ~150ms to actually start the new process before we exit.
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
@@ -334,6 +330,83 @@ fn desktop_launch_command_std(
     let mut cmd = std::process::Command::new(exe_path);
     cmd.current_dir(exe_path.parent().unwrap_or(install_root));
     cmd
+}
+
+fn desktop_launch_error_message(exe_path: &Path, err: &std::io::Error) -> String {
+    let mut msg = format!("failed to launch {}: {err}", exe_path.display());
+    if let Some(hint) = desktop_launch_failure_hint(exe_path, err) {
+        msg.push_str("\n\n");
+        msg.push_str(&hint);
+    }
+    msg
+}
+
+#[cfg(not(target_os = "windows"))]
+fn desktop_launch_failure_hint(_exe_path: &Path, _err: &std::io::Error) -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn desktop_launch_failure_hint(exe_path: &Path, err: &std::io::Error) -> Option<String> {
+    let status = windows_authenticode_status(exe_path);
+    windows_app_control_launch_hint(status.as_deref(), &err.to_string(), err.raw_os_error())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_authenticode_status(exe_path: &Path) -> Option<String> {
+    let output = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "(Get-AuthenticodeSignature -LiteralPath $args[0]).Status",
+        ])
+        .arg(exe_path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if status.is_empty() {
+        None
+    } else {
+        Some(status)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_app_control_launch_hint(
+    signature_status: Option<&str>,
+    err_text: &str,
+    raw_os_error: Option<i32>,
+) -> Option<String> {
+    let lower = err_text.to_ascii_lowercase();
+    let looks_policy_blocked = lower.contains("application control")
+        || lower.contains("blocked")
+        || lower.contains("access is denied")
+        || raw_os_error == Some(1260);
+    if !looks_policy_blocked {
+        return None;
+    }
+
+    if !signature_status
+        .unwrap_or_default()
+        .trim()
+        .eq_ignore_ascii_case("NotSigned")
+    {
+        return None;
+    }
+
+    Some(
+        "Windows blocked the Hermes desktop binary before it could start. The \
+         installed shortcut targets a locally rebuilt, unsigned Electron \
+         executable, and this Windows Application Control / WDAC policy \
+         requires a signed executable. Re-running setup cannot sign locally \
+         rebuilt binaries; use an official signed desktop artifact or ask an \
+         administrator to allow this exact binary."
+            .to_string(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -902,5 +975,36 @@ mod tests {
             "no resolved app when nothing has been built"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_app_control_hint_explains_unsigned_policy_block() {
+        let hint = windows_app_control_launch_hint(
+            Some("NotSigned"),
+            "This command cannot be run due to the error: An Application Control policy has blocked this file.",
+            None,
+        )
+        .expect("unsigned policy blocks should get an actionable hint");
+
+        assert!(hint.contains("unsigned Electron executable"));
+        assert!(hint.contains("requires a signed executable"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_app_control_hint_ignores_signed_or_unrelated_failures() {
+        assert!(windows_app_control_launch_hint(
+            Some("Valid"),
+            "An Application Control policy has blocked this file.",
+            None,
+        )
+        .is_none());
+        assert!(windows_app_control_launch_hint(
+            Some("NotSigned"),
+            "The system cannot find the file specified.",
+            None,
+        )
+        .is_none());
     }
 }
