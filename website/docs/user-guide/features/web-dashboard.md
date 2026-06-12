@@ -282,7 +282,7 @@ Create and manage scheduled cron jobs that run agent prompts on a recurring sche
 
 ### Profiles
 
-Create and manage [profiles](../profiles.md) — isolated Hermes instances with their own config, skills, and sessions.
+Create and manage [profiles](../profiles.md) — isolated Savarez instances with their own config, skills, and sessions.
 
 - **Profile cards** — each shows its model/provider, skill count, gateway state, description, and badges (active, default, alias)
 - **Create** — name + optional clone-from-default / clone-everything / no-bundled-skills, description, and model; the dedicated Profile Builder page (`/profiles/new`) offers the full flow (model, MCPs, skills)

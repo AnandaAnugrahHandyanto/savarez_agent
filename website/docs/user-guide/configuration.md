@@ -1140,7 +1140,7 @@ When unset (default), reasoning effort defaults to "medium" — a balanced level
 
 :::note Adaptive-thinking models (Claude 4.6+, Fable/Mythos-class) over OpenRouter
 These models use *adaptive* thinking and don't accept the usual `reasoning.effort`
-field — OpenRouter ignores it for them. Hermes transparently routes your
+field — OpenRouter ignores it for them. Savarez transparently routes your
 `reasoning_effort` to OpenRouter's `verbosity` parameter instead (which maps to
 Anthropic's `output_config.effort`), so the same `low`/`medium`/`high`/`xhigh`
 knob keeps working — no extra configuration needed. `none` (or unset) leaves the
@@ -1264,6 +1264,7 @@ display:
     enabled: false
     fields: ["model", "context_pct", "cwd"]
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
+  credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
 

@@ -1,7 +1,7 @@
-"""Coding-context awareness — base Hermes, every interactive surface.
+"""Coding-context awareness — base Savarez, every interactive surface.
 
-When the user runs Hermes inside a code workspace (CLI, TUI, desktop app, or an
-editor over ACP), Hermes shifts into a **coding posture**. This module is the
+When the user runs Savarez inside a code workspace (CLI, TUI, desktop app, or an
+editor over ACP), Savarez shifts into a **coding posture**. This module is the
 single place that decides whether we're in that posture and what it implies,
 so the rest of the codebase never re-derives "are we coding?" on its own.
 
@@ -190,6 +190,10 @@ CODING_AGENT_GUIDANCE = (
     "Verify, and know when to stop:\n"
     "- Use `terminal` for git, builds, tests, and inspection. Run the relevant "
     "tests/linter/build and confirm they pass before claiming the work is done.\n"
+    "- Terminal state persists across calls: current directory and exported "
+    "environment variables carry forward. Activate a virtualenv or export setup "
+    "vars once, then reuse that state instead of re-sourcing it before every "
+    "test command.\n"
     "- Fix root causes, not symptoms: when you find a bug, check sibling call "
     "paths for the same flaw and fix the class, not just the reported site.\n"
     "- When fixing linter/type errors on a file, stop after about three "
@@ -504,7 +508,7 @@ def is_coding_context(
     cwd: Optional[str | Path] = None,
     config: Optional[dict[str, Any]] = None,
 ) -> bool:
-    """Whether Hermes should operate in its coding posture right now."""
+    """Whether Savarez should operate in its coding posture right now."""
     return resolve_runtime_mode(platform=platform, cwd=cwd, config=config).is_coding
 
 
@@ -711,10 +715,13 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
             lines.append("- Branch: (detached HEAD)")
 
         # Linked worktree: the per-worktree git dir differs from the shared common dir.
+        # We surface the fact that it's a worktree (so the model knows branches/stashes
+        # are shared state) but deliberately do NOT expose the primary tree path —
+        # giving the model a second absolute path causes it to sometimes run commands
+        # in the wrong directory.
         git_dir, common_dir = _git(root, "rev-parse", "--git-dir"), _git(root, "rev-parse", "--git-common-dir")
         if git_dir and common_dir and Path(git_dir).resolve() != Path(common_dir).resolve():
-            main_tree = Path(common_dir).resolve().parent
-            lines.append(f"- Worktree: linked (primary tree at {main_tree})")
+            lines.append("- Worktree: linked (git state shared with primary tree)")
 
         dirty = [f"{n} {label}" for label, n in (
             ("staged", counts["staged"]), ("modified", counts["modified"]),

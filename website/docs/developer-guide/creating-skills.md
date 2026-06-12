@@ -356,7 +356,7 @@ metadata:
 
 Because a blueprint **is** a skill, it flows through the entire skills pipeline unchanged — search, inspect, install, security scan, provenance, taps, the centralized index, and `hermes skills publish` for sharing. Nothing new to learn.
 
-**Installing a blueprint.** When you install a skill that carries a `blueprint:` block, Hermes registers it as a **suggested cron job** rather than scheduling it. Scheduling is **opt-in** — installing never silently creates a recurring job. You review and accept it via `/suggestions`:
+**Installing a blueprint.** When you install a skill that carries a `blueprint:` block, Savarez registers it as a **suggested cron job** rather than scheduling it. Scheduling is **opt-in** — installing never silently creates a recurring job. You review and accept it via `/suggestions`:
 
 ```bash
 hermes skills install owner/morning-brief
@@ -377,7 +377,7 @@ The blueprint layer adds no new object type, store, or transport — the bluepri
 
 ## Suggested Cron Jobs
 
-Hermes can *propose* automations and let you accept them with one tap, instead of making you assemble cron jobs by hand. Every proposal flows through one surface — the `/suggestions` command — regardless of where it came from:
+Savarez can *propose* automations and let you accept them with one tap, instead of making you assemble cron jobs by hand. Every proposal flows through one surface — the `/suggestions` command — regardless of where it came from:
 
 | Source | Trigger |
 |--------|---------|

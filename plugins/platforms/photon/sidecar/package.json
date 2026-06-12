@@ -1,8 +1,8 @@
 {
   "name": "@savarez-agent/photon-sidecar",
   "private": true,
-  "version": "0.2.0",
-  "description": "Spectrum-ts bridge for the Savarez Photon platform plugin.",
+  "version": "0.3.0",
+  "description": "Spectrum-ts bridge for the Savarez Agent Photon platform plugin.",
   "type": "module",
   "main": "index.mjs",
   "scripts": {
@@ -12,7 +12,7 @@
     "node": ">=18.17"
   },
   "dependencies": {
-    "spectrum-ts": "^1.18.0"
+    "spectrum-ts": "3.1.0"
   },
   "overrides": {
     "protobufjs": "8.6.1",

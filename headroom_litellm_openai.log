@@ -1,0 +1,50 @@
+
+╔═══════════════════════════════════════════════════════════════════════╗
+║                         HEADROOM PROXY                                 ║
+║           The Context Optimization Layer for LLM Applications          ║
+╚═══════════════════════════════════════════════════════════════════════╝
+
+Starting proxy server...
+
+  URL:          http://127.0.0.1:8787
+  Mode:         token
+  Optimization: ENABLED
+  Caching:      ENABLED
+  Rate Limit:   ENABLED
+  Memory:       DISABLED
+  License:      OSS (no license key)
+  Code-Aware:   DISABLED  (install headroom-ai[code] to enable)
+  Context Tool: rtk
+  Extensions:   (none discovered)
+  Telemetry:    ENABLED (anonymous aggregate stats)
+                Disable: HEADROOM_TELEMETRY=off or headroom proxy --no-telemetry
+
+IMPORTANT for OPENAI users:
+  1. Set credentials: See docs
+  2. Set a dummy Anthropic key: ANTHROPIC_API_KEY="sk-ant-dummy"
+     (Headroom ignores this - it uses your OPENAI credentials)
+  3. Set base URL: ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+
+Routing:
+  /v1/messages                    → https://api.anthropic.com
+  /v1/chat/completions            → http://127.0.0.1:20128
+  /v1/responses                   → http://127.0.0.1:20128  (HTTP + WebSocket)
+  /v1internal:streamGenerateContent → https://cloudcode-pa.googleapis.com
+
+Usage:
+  Claude Code:   ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude
+  Codex / OpenAI: OPENAI_BASE_URL=http://127.0.0.1:8787/v1 your-app
+
+Endpoints:
+  GET  /livez      Process liveness
+  GET  /readyz     Traffic readiness
+  GET  /health     Aggregate health
+  GET  /stats      Detailed statistics
+  GET  /stats-history Durable compression history + display session
+  GET  /metrics    Prometheus metrics
+
+Press Ctrl+C to stop.
+
+[0;93m2026-06-11 21:04:30.902636512 [W:onnxruntime:Default, device_discovery.cc:283 GetGpuDevices] Failed to detect devices under "/sys/class/drm/card0": device_discovery.cc:93 ReadFileContents Failed to open file: "/sys/class/drm/card0/device/vendor"[m
+[transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+ERROR:    [Errno 98] error while attempting to bind on address ('127.0.0.1', 8787): address already in use

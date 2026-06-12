@@ -1194,7 +1194,7 @@ export default function SystemPage() {
             <ConfirmDialog
               open={importConfirmOpen}
               title="Restore from backup?"
-              description={`This will overwrite your current Hermes configuration, skills, sessions, and data with the contents of ${importPath.trim() || "the archive"}. This cannot be undone.`}
+              description={`This will overwrite your current Savarez configuration, skills, sessions, and data with the contents of ${importPath.trim() || "the archive"}. This cannot be undone.`}
               destructive
               confirmLabel="Restore"
               cancelLabel="Cancel"

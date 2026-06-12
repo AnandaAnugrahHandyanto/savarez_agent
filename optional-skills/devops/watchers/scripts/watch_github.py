@@ -8,7 +8,7 @@ Usage (via cron with --no-agent):
       --script "$SAVAREZ_HOME/skills/devops/watchers/scripts/watch_github.py" \\
       --script-args "--name savarez-issues --repo AnandaAnugrahHandyanto/savarez-agent --scope issues"
 
-Set GITHUB_TOKEN (or GH_TOKEN) in the Hermes .env file
+Set GITHUB_TOKEN (or GH_TOKEN) in the Savarez .env file
 (``${HERMES_HOME:-~/.hermes}/.env``) to avoid the 60 req/hr
 anonymous rate limit.
 

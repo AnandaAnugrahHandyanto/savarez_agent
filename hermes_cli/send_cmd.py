@@ -59,8 +59,21 @@ def _read_message_body(
             return sys.stdin.read()
         try:
             return Path(file_path).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            print(f"savarez send: cannot read {file_path}: {exc}", file=sys.stderr)
+        except UnicodeDecodeError:
+            print(
+                f"hermes send: {file_path} is not a text file. --file reads the "
+                "message *body* (logs, reports, markdown).\n"
+                "To send an image/document/audio file as a native attachment, "
+                "reference it with MEDIA: in the message text instead:\n"
+                f'  hermes send --to telegram "MEDIA:{file_path}"\n'
+                f'  hermes send --to telegram "optional caption MEDIA:{file_path}"\n'
+                "Add [[as_document]] to deliver an image as an uncompressed file:\n"
+                f'  hermes send --to telegram "[[as_document]] MEDIA:{file_path}"',
+                file=sys.stderr,
+            )
+            sys.exit(_USAGE_EXIT)
+        except OSError as exc:
+            print(f"hermes send: cannot read {file_path}: {exc}", file=sys.stderr)
             sys.exit(_USAGE_EXIT)
 
     # Piped input: only consume stdin when it is not a TTY. Reading from a
@@ -363,12 +376,13 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
         ),
         epilog=(
             "Examples:\n"
-            "  savarez send --to telegram \"deploy finished\"\n"
-            "  echo \"RAM 92%\" | savarez send --to telegram:-1001234567890\n"
-            "  savarez send --to discord:#ops --file /tmp/report.md\n"
-            "  savarez send --to slack:#eng --subject \"[CI]\" --file build.log\n"
-            "  savarez send --list                  # all platforms\n"
-            "  savarez send --list telegram         # filter by platform\n"
+            "  hermes send --to telegram \"deploy finished\"\n"
+            "  echo \"RAM 92%\" | hermes send --to telegram:-1001234567890\n"
+            "  hermes send --to discord:#ops --file /tmp/report.md\n"
+            "  hermes send --to slack:#eng --subject \"[CI]\" --file build.log\n"
+            "  hermes send --to telegram \"MEDIA:/tmp/chart.png\"   # send a media attachment\n"
+            "  hermes send --list                  # all platforms\n"
+            "  hermes send --list telegram         # filter by platform\n"
             "\n"
             "Exit codes: 0 ok, 1 delivery/backend error, 2 usage error."
         ),
@@ -403,7 +417,11 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
         "--file",
         metavar="PATH",
         default=None,
-        help="Read message body from PATH. Use '-' to force stdin.",
+        help=(
+            "Read message body from PATH (text only). Use '-' to force stdin. "
+            "To send an image/document as an attachment, use MEDIA:<path> in "
+            "the message text instead."
+        ),
     )
 
     parser.add_argument(

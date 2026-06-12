@@ -4,9 +4,9 @@ Instructions for AI coding assistants and developers working on the savarez-agen
 
 **Never give up on the right solution.**
 
-## What Hermes Is
+## What Savarez Is
 
-Hermes is a personal AI agent that runs the same agent core across a CLI, a
+Savarez is a personal AI agent that runs the same agent core across a CLI, a
 messaging gateway (Telegram, Discord, Slack, and ~20 other platforms), a TUI,
 and an Electron desktop app. It learns across sessions (memory + skills),
 delegates to subagents, runs scheduled jobs, and drives a real terminal and
@@ -40,7 +40,7 @@ This is the project's intent layer. Use it two ways:
    job here is to recognize design intent and *avoid wrongly closing a
    legitimate contribution*, not to make the won't-implement call itself.
 
-Read the balance right: Hermes ships a **lot** — most merges are bug fixes to
+Read the balance right: Savarez ships a **lot** — most merges are bug fixes to
 real reported behavior, and the product surface (platforms, channels,
 providers, models, desktop/TUI features) expands aggressively and on purpose.
 The restraint below is aimed squarely at the **core agent + the model tool
@@ -499,7 +499,7 @@ A **separate** chat surface from both the classic CLI and the dashboard's embedd
 
 Before adding any tool, settle the footprint question first (see "The
 Footprint Ladder" in the Contribution Rubric): most capabilities should NOT
-be core tools. For custom or local-only tools, do **not** edit Hermes core.
+be core tools. For custom or local-only tools, do **not** edit Savarez core.
 Use the plugin route instead: create `~/.hermes/plugins/<name>/plugin.yaml`
 and `~/.hermes/plugins/<name>/__init__.py`, then register tools with
 `ctx.register_tool(...)`. Plugin toolsets are discovered automatically and can be

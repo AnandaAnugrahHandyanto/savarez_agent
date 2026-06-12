@@ -16,14 +16,14 @@ Before setup, here's the part most people want to know: how Savarez behaves once
 
 | Context | Behavior |
 |---------|----------|
-| **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. Set `MATRIX_DM_MENTION_THREADS=true` to start a thread when the bot is `@mentioned` in a DM. |
-| **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. |
-| **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
-| **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for DM messages — this is distinct from `MATRIX_DM_MENTION_THREADS`, which only starts a thread when the bot is `@mentioned` in a DM. |
-| **Commands** | Hermes accepts normal `/commands` when your Matrix client sends them. If your client reserves `/` for local commands, use `!commands` instead; Hermes normalizes known `!command` aliases to `/command`. |
+| **DMs** | Savarez responds to every message. No `@mention` needed. Each DM has its own session. Set `MATRIX_DM_MENTION_THREADS=true` to start a thread when the bot is `@mentioned` in a DM. |
+| **Rooms** | By default, Savarez requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. |
+| **Threads** | Savarez supports Matrix threads (MSC3440). If you reply in a thread, Savarez keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
+| **Auto-threading** | By default, Savarez auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for DM messages — this is distinct from `MATRIX_DM_MENTION_THREADS`, which only starts a thread when the bot is `@mentioned` in a DM. |
+| **Commands** | Savarez accepts normal `/commands` when your Matrix client sends them. If your client reserves `/` for local commands, use `!commands` instead; Savarez normalizes known `!command` aliases to `/command`. |
 | **Interactive controls** | Dangerous-command approval and `/model` selection can use Matrix reactions. Approval reactions can be limited to the user who requested the action. |
 | **Thinking and tool activity** | Matrix uses threaded, editable thinking/tool-activity panes when gateway progress is enabled, so updates do not flood the main room timeline. |
-| **Shared rooms with multiple users** | By default, Hermes isolates session history per user inside the room. Two people talking in the same room do not share one transcript unless you explicitly disable that. |
+| **Shared rooms with multiple users** | By default, Savarez isolates session history per user inside the room. Two people talking in the same room do not share one transcript unless you explicitly disable that. |
 
 :::tip
 The bot automatically joins rooms when invited. Just invite the bot's Matrix user to any room and it will join and start responding.
@@ -120,7 +120,7 @@ MATRIX_ALLOW_ROOM_MENTIONS=false
 :::
 
 :::tip Room-wide mentions
-Hermes sends structured Matrix user mentions for explicit Matrix IDs such as `@alice:example.org`. Room-wide `@room` notifications are disabled by default; set `MATRIX_ALLOW_ROOM_MENTIONS=true` only in rooms where the bot is allowed to notify everyone.
+Savarez sends structured Matrix user mentions for explicit Matrix IDs such as `@alice:example.org`. Room-wide `@room` notifications are disabled by default; set `MATRIX_ALLOW_ROOM_MENTIONS=true` only in rooms where the bot is allowed to notify everyone.
 :::
 
 :::note
@@ -145,7 +145,7 @@ MATRIX_AUTO_THREAD=false
 | `room` | Unthreaded room messages stay in one stable room session. Real Matrix threads still use their thread root. |
 | `thread` | Unthreaded room messages synthesize a thread/session from the triggering event ID. |
 
-Hermes now includes the current Matrix room name, room ID, topic, message ID,
+Savarez now includes the current Matrix room name, room ID, topic, message ID,
 and a Matrix room-boundary note in the agent prompt. `/status` also shows the
 current Matrix room/session scope, and `/resume` will not silently resume a
 named session from another Matrix room unless you explicitly use
@@ -300,7 +300,7 @@ MATRIX_ALLOWED_USERS=@alice:matrix.example.org,@bob:matrix.example.org
 MATRIX_ALLOWED_ROOMS=!ops:matrix.example.org,!dmroom:matrix.example.org
 ```
 
-Bridge and appservice deployments need extra loop protection. Hermes always
+Bridge and appservice deployments need extra loop protection. Savarez always
 ignores its own events, Matrix appservice-style users whose localpart starts
 with `_`, duplicate event IDs, old startup events, edit replacement events, and
 `m.notice` events by default. Add deployment-specific bridge ghost patterns when
@@ -398,7 +398,7 @@ Optional mode may fall back to non-E2EE operation when crypto setup is unavailab
 
 For backwards compatibility, `MATRIX_ENCRYPTION=true` still enables required E2EE behavior.
 
-When E2EE is enabled, Hermes:
+When E2EE is enabled, Savarez:
 
 - Stores encryption keys in `~/.savarez/platforms/matrix/store/` (legacy installs: `~/.savarez/matrix/store/`)
 - Uploads device keys on first connection
@@ -407,7 +407,7 @@ When E2EE is enabled, Hermes:
 
 ### Matrix Tools and Controls
 
-In Matrix conversations, Hermes exposes Matrix-specific tools to the agent:
+In Matrix conversations, Savarez exposes Matrix-specific tools to the agent:
 
 - `matrix_send_reaction`
 - `matrix_redact_message`
@@ -430,11 +430,11 @@ Reaction controls use:
 - ❌ deny
 - number reactions for `/model` choices
 
-Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any authorized Matrix user in the room to operate an approval/model picker prompt. The default is requester-bound when Hermes knows who requested the action.
+Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any authorized Matrix user in the room to operate an approval/model picker prompt. The default is requester-bound when Savarez knows who requested the action.
 
 ### Media Limits
 
-Hermes uploads and downloads Matrix images, files, audio, and video through Matrix media APIs. Multiple generated images are sent as one ordered logical batch, preserving captions and thread context across the batch.
+Savarez uploads and downloads Matrix images, files, audio, and video through Matrix media APIs. Multiple generated images are sent as one ordered logical batch, preserving captions and thread context across the batch.
 
 By default, Matrix media over 100 MB is rejected before upload/download. Override with:
 
@@ -442,13 +442,13 @@ By default, Matrix media over 100 MB is rejected before upload/download. Overrid
 MATRIX_MAX_MEDIA_BYTES=104857600
 ```
 
-Inbound media must use Matrix `mxc://` content URIs. Hermes rejects arbitrary
+Inbound media must use Matrix `mxc://` content URIs. Savarez rejects arbitrary
 HTTP(S) media URLs in Matrix events to avoid turning a federated room into an
 unrestricted downloader.
 
 ## Synapse Integration Tests
 
-Hermes includes an opt-in Synapse harness for local validation:
+Savarez includes an opt-in Synapse harness for local validation:
 
 ```bash
 docker compose -f tests/e2e/matrix_synapse_gateway/docker-compose.yml up -d
@@ -476,7 +476,7 @@ MATRIX_RECOVERY_KEY=EsT... your recovery key here
 
 On each startup, if `MATRIX_RECOVERY_KEY` is set, Savarez imports cross-signing keys from the homeserver's secure secret storage and signs the current device. This is idempotent and safe to leave enabled permanently.
 
-If Hermes bootstraps a new Matrix recovery key, it never logs the raw key. Set
+If Savarez bootstraps a new Matrix recovery key, it never logs the raw key. Set
 `MATRIX_RECOVERY_KEY_OUTPUT_FILE=/secure/path/matrix-recovery-key.txt` before
 startup to write a generated key once with file mode `0600`; the file is not
 overwritten if it already exists.
@@ -883,9 +883,9 @@ mautrix's `handle_sync()` machinery. A raw `client.sync()` poll that never calls
 `handle_sync()` can leave the adapter connected (send works) while inbound
 messages never reach `_on_room_message`.
 
-**Fix**: Hermes uses an explicit sync loop that calls `client.handle_sync()` on
+**Fix**: Savarez uses an explicit sync loop that calls `client.handle_sync()` on
 both the initial sync and every incremental sync response. This matches the
-diagnosis in upstream issue #7914 and closed PR #37807, but keeps Hermes's own
+diagnosis in upstream issue #7914 and closed PR #37807, but keeps Savarez's own
 background maintenance tasks (joined-room tracking, invite handling, E2EE key
 share) instead of delegating the full lifecycle to `client.start()`. If inbound
 messages still fail after a gateway restart, verify handlers are registered before

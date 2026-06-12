@@ -388,6 +388,23 @@ journalctl -u savarez-gateway -f
 
 Use the user service on laptops and dev boxes. Use the system service on VPS or headless hosts that should come back at boot without relying on systemd linger.
 
+:::tip Headless VMs: user service + linger avoids root prompts
+A system service needs root for every restart — including the automatic gateway restart at the end of `hermes update`. When `hermes update` runs as a non-root user, it tries passwordless `sudo systemctl`; if that's unavailable, it skips the restart and prints the manual `sudo systemctl restart hermes-gateway` command (it never blocks on an interactive password prompt).
+
+For a headless VM you never log into, a **user** service with lingering enabled gives you the same start-at-boot behavior with zero root involvement:
+
+```bash
+hermes gateway install          # user service
+sudo loginctl enable-linger $USER   # one-time: start at boot, survive logout
+```
+
+After that, `hermes update` can restart the gateway without any privileges. If you prefer to keep the system service, either run updates with `sudo hermes update`, or grant the service account passwordless sudo for systemctl, e.g. in `sudo visudo -f /etc/sudoers.d/hermes-gateway`:
+
+```
+hermes ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password reset-failed hermes-gateway*, /usr/bin/systemctl --no-ask-password start hermes-gateway*, /usr/bin/systemctl --no-ask-password restart hermes-gateway*
+```
+:::
+
 Avoid keeping both the user and system gateway units installed at once unless you really mean to. Savarez will warn if it detects both because start/stop/status behavior gets ambiguous.
 
 :::info Multiple installations
@@ -424,29 +441,30 @@ Each platform has its own toolset:
 
 | Platform | Toolset | Capabilities |
 |----------|---------|--------------|
-| CLI | `savarez-cli` | Full access |
-| Telegram | `savarez-telegram` | Full tools including terminal |
-| Discord | `savarez-discord` | Full tools including terminal |
-| WhatsApp | `savarez-whatsapp` | Full tools including terminal |
-| Slack | `savarez-slack` | Full tools including terminal |
-| Google Chat | `savarez-google_chat` | Full tools including terminal |
-| Signal | `savarez-signal` | Full tools including terminal |
-| SMS | `savarez-sms` | Full tools including terminal |
-| Email | `savarez-email` | Full tools including terminal |
-| Home Assistant | `savarez-homeassistant` | Full tools + HA device control (ha_list_entities, ha_get_state, ha_call_service, ha_list_services) |
-| Mattermost | `savarez-mattermost` | Full tools including terminal |
-| Matrix | `savarez-matrix` | Full tools including terminal |
-| DingTalk | `savarez-dingtalk` | Full tools including terminal |
-| Feishu/Lark | `savarez-feishu` | Full tools including terminal |
-| WeCom | `savarez-wecom` | Full tools including terminal |
-| WeCom Callback | `savarez-wecom-callback` | Full tools including terminal |
-| Weixin | `savarez-weixin` | Full tools including terminal |
-| BlueBubbles | `savarez-bluebubbles` | Full tools including terminal |
-| QQBot | `savarez-qqbot` | Full tools including terminal |
-| Yuanbao | `savarez-yuanbao` | Full tools including terminal |
-| Microsoft Teams | `savarez-teams` | Full tools including terminal |
-| API Server | `savarez-api-server` | Full tools (drops `clarify`, `send_message`, `text_to_speech` — programmatic access doesn't have an interactive user) |
-| Webhooks | `savarez-webhook` | Full tools including terminal |
+| CLI | `hermes-cli` | Full access |
+| Telegram | `hermes-telegram` | Full tools including terminal |
+| Discord | `hermes-discord` | Full tools including terminal |
+| WhatsApp | `hermes-whatsapp` | Full tools including terminal |
+| WhatsApp Cloud API | `hermes-whatsapp` | Full tools including terminal (shares toolset with the Baileys bridge) |
+| Slack | `hermes-slack` | Full tools including terminal |
+| Google Chat | `hermes-google_chat` | Full tools including terminal |
+| Signal | `hermes-signal` | Full tools including terminal |
+| SMS | `hermes-sms` | Full tools including terminal |
+| Email | `hermes-email` | Full tools including terminal |
+| Home Assistant | `hermes-homeassistant` | Full tools + HA device control (ha_list_entities, ha_get_state, ha_call_service, ha_list_services) |
+| Mattermost | `hermes-mattermost` | Full tools including terminal |
+| Matrix | `hermes-matrix` | Full tools including terminal |
+| DingTalk | `hermes-dingtalk` | Full tools including terminal |
+| Feishu/Lark | `hermes-feishu` | Full tools including terminal |
+| WeCom | `hermes-wecom` | Full tools including terminal |
+| WeCom Callback | `hermes-wecom-callback` | Full tools including terminal |
+| Weixin | `hermes-weixin` | Full tools including terminal |
+| BlueBubbles | `hermes-bluebubbles` | Full tools including terminal |
+| QQBot | `hermes-qqbot` | Full tools including terminal |
+| Yuanbao | `hermes-yuanbao` | Full tools including terminal |
+| Microsoft Teams | `hermes-teams` | Full tools including terminal |
+| API Server | `hermes-api-server` | Full tools (drops `clarify`, `send_message`, `text_to_speech` — programmatic access doesn't have an interactive user) |
+| Webhooks | `hermes-webhook` | Full tools including terminal |
 
 ## Operating a multi-platform gateway
 
@@ -557,6 +575,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Slack Setup](slack.md)
 - [Google Chat Setup](google_chat.md)
 - [WhatsApp Setup](whatsapp.md)
+- [WhatsApp Business Cloud API Setup](whatsapp-cloud.md)
 - [Signal Setup](signal.md)
 - [SMS Setup (Twilio)](sms.md)
 - [Email Setup](email.md)

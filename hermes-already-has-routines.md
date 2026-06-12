@@ -149,7 +149,7 @@ savarez webhook subscribe pr-review \
   --deliver github_comment
 ```
 
-Full automation templates gallery: [savarez-agent.nousresearch.com/docs/guides/automation-templates](https://savarez-agent.nousresearch.com/docs/guides/automation-templates)
+Full automation blueprints gallery: [hermes-agent.nousresearch.com/docs/reference/automation-blueprints-catalog](https://hermes-agent.nousresearch.com/docs/reference/automation-blueprints-catalog)
 
 Documentation: [savarez-agent.nousresearch.com](https://savarez-agent.nousresearch.com)
 

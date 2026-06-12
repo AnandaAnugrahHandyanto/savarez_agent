@@ -235,7 +235,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if _env_hints:
         stable_parts.append(_env_hints)
 
-    # Coding posture (base Hermes, any interactive coding surface in a code
+    # Coding posture (base Savarez, any interactive coding surface in a code
     # workspace — see agent/coding_context.py). The operating brief + the live
     # git/workspace snapshot are built once here and cached for the session;
     # the snapshot is never re-probed per turn (that would break the prompt

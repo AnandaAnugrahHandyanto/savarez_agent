@@ -489,6 +489,23 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "whatsapp_cloud": (
+        "You are on a text messaging communication platform, WhatsApp "
+        "(via Meta's official Business Cloud API). Standard markdown "
+        "(**bold**, ~~strike~~, # headers, [links](url)) is auto-converted "
+        "to WhatsApp's native syntax (*bold*, ~strike~, etc.) — feel free "
+        "to write in markdown. Tables are NOT supported — prefer bullet "
+        "lists or labeled key:value pairs. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.jpg, .png) become photo attachments, "
+        "videos (.mp4) play inline, audio (.mp3, .ogg) sends as voice/audio "
+        "messages, other files arrive as documents. Image URLs in markdown "
+        "format ![alt](url) also work. "
+        "IMPORTANT: this platform has a 24-hour conversation window — if the "
+        "user hasn't messaged in 24h, free-form replies are refused by Meta "
+        "(error 131047). This rarely matters for live chat, but is worth "
+        "knowing if you're scheduling a delayed message."
+    ),
     "telegram": (
         "You are on a text messaging communication platform, Telegram. "
         "Standard markdown is automatically converted to Telegram format. "
@@ -885,14 +902,14 @@ def build_environment_hints() -> str:
                 f"`uname -a && whoami && pwd`."
             )
 
-    # Hermes desktop GUI — any agent running under the desktop app should know
+    # Savarez desktop GUI — any agent running under the desktop app should know
     # it. HERMES_DESKTOP marks the backend powering the chat; HERMES_DESKTOP_TERMINAL
     # marks a hermes launched in the embedded terminal pane. Both set by main.cjs.
     _truthy = ("1", "true", "yes")
     _in_desktop = (os.getenv("HERMES_DESKTOP") or "").strip().lower() in _truthy
     _in_desktop_term = (os.getenv("HERMES_DESKTOP_TERMINAL") or "").strip().lower() in _truthy
     if _in_desktop or _in_desktop_term:
-        _desktop_hint = "Runtime surface: you're running inside the Hermes desktop GUI app."
+        _desktop_hint = "Runtime surface: you're running inside the Savarez desktop GUI app."
         if _in_desktop_term:
             _desktop_hint += (
                 " You're in its embedded terminal pane, beside the GUI chat — the user can "
@@ -1418,13 +1435,13 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 
     lines = [
         "# Nous Subscription",
-        "Nous subscription includes managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, and browser automation (Browser Use) by default. Modal execution is optional.",
+        "Nous subscription includes managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, OpenAI Whisper STT, and browser automation (Browser Use) by default. Modal execution is optional.",
         "Current capability status:",
     ]
     lines.extend(_status_line(feature) for feature in features.items())
     lines.extend(
         [
-            "When a Nous-managed feature is active, do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browser-Use API keys.",
+            "When a Nous-managed feature is active, do not ask the user for Firecrawl, FAL, OpenAI TTS, OpenAI Whisper, or Browser-Use API keys.",
             "If the user is not subscribed and asks for a capability that Nous subscription would unlock or simplify, suggest Nous subscription as one option alongside direct setup or local alternatives.",
             "Do not mention subscription unless the user asks about it or it directly solves the current missing capability.",
             "Useful commands: savarez setup, savarez setup tools, savarez setup terminal, savarez status.",

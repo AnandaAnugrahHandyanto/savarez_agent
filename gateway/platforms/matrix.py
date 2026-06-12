@@ -777,7 +777,7 @@ class MatrixAdapter(BasePlatformAdapter):
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
 
     # Matrix clients commonly reserve typed "/" for client-local commands;
-    # the adapter accepts "!command" as the alias that always reaches Hermes
+    # the adapter accepts "!command" as the alias that always reaches Savarez
     # (see _normalize_matrix_bang_command), so instruction text shows "!".
     typed_command_prefix = "!"
 

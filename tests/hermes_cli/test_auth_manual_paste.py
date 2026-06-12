@@ -559,7 +559,7 @@ def test_xai_loopback_login_timeout_falls_back_to_manual_paste(monkeypatch):
 
 
 def test_xai_wait_for_callback_accepts_ready_stdin_code(monkeypatch):
-    """Users can paste the Grok Build code while Hermes is still waiting."""
+    """Users can paste the Grok Build code while Savarez is still waiting."""
     class _StubServer:
         shutdown_called = False
         close_called = False
