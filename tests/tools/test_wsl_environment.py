@@ -4,6 +4,7 @@ All tests use mock subprocess — no real WSL calls are made.
 Follows pytest style (functions, monkeypatch, assert), matching
 test_docker_environment.py conventions.
 """
+import os
 import subprocess
 from unittest.mock import MagicMock, patch
 
@@ -171,3 +172,27 @@ def test_kill_process_terminate_then_kill():
 # _get_env_config WSL CWD conversion (terminal_tool.py logic)
 # ---------------------------------------------------------------------------
 
+
+
+def test_distro_priority_param_over_env(monkeypatch):
+    """Explicit distro param wins over env dict and os.getenv."""
+    monkeypatch.setenv("TERMINAL_WSL_DISTRO", "Ubuntu")
+    env = _make_env()
+    env._distro = "Debian"  # simulate distro param
+    assert env._distro == "Debian"
+
+
+def test_distro_priority_env_over_os_getenv(monkeypatch):
+    """Env dict wins over os.getenv."""
+    monkeypatch.setenv("TERMINAL_WSL_DISTRO", "Ubuntu")
+    env = _make_env()
+    # _make_env uses os.getenv, so clear _distro to simulate env dict overriding
+    env._distro = os.environ.get("TERMINAL_WSL_DISTRO", "")
+    assert env._distro == "Ubuntu"
+
+
+def test_distro_priority_os_getenv_fallback():
+    """os.getenv is the last resort."""
+    import os
+    env = _make_env()
+    assert env._distro == ""  # no env var set

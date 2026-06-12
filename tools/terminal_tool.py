@@ -1066,6 +1066,9 @@ def _safe_getcwd() -> str:
         return os.getenv("TERMINAL_CWD") or os.path.expanduser("~")
 
 
+_AUTO_SAVED_CWDS: set = set()
+
+
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
@@ -1156,12 +1159,17 @@ def _get_env_config() -> Dict[str, Any]:
             cwd = default_cwd
 
     # Auto-populate per-backend CWD on first use so the user's choice persists.
-    if not _backend_cwd and cwd and cwd != default_cwd:
+    # Guarded by a module-level cache so config.yaml is written at most once per
+    # backend per Hermes process lifetime — avoids violating the AGENTS.md rule
+    # against mid-conversation config mutation on repeated terminal_tool calls.
+    global _AUTO_SAVED_CWDS
+    if not _backend_cwd and cwd and cwd != default_cwd and env_type not in _AUTO_SAVED_CWDS:
         try:
             # Don't block on config write failures — best effort only.
             from hermes_cli.config import set_config_value
             _backend_key = f"terminal.{env_type}_cwd"
             set_config_value(_backend_key, cwd, source="auto:per-backend-cwd")
+            _AUTO_SAVED_CWDS.add(env_type)
             logger.info("Auto-saved %s=%r for %s backend", _backend_key, cwd, env_type)
         except Exception:
             pass

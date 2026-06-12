@@ -59,9 +59,9 @@ def _probe_wsl_home(wsl_exe: str, distro: str = "") -> str:
 class WslEnvironment(BaseEnvironment):
     """Run terminal commands inside WSL2 via ``wsl -e bash``.
 
-    No path translation - same as Docker. The agent receives prompt hints
-    telling it to use Linux paths for ``terminal`` and Windows paths for
-    ``read_file``/``write_file``/``patch``/``search_files``.
+    Windows CWDs are auto-converted to /mnt/c/... by _get_env_config()
+    on backend switch.  The agent receives prompt hints to use Linux
+    paths for all tools (terminal + file I/O).
 
     Optional env vars:
       TERMINAL_WSL_DISTRO  - WSL distribution name (e.g. "Debian")
@@ -80,9 +80,13 @@ class WslEnvironment(BaseEnvironment):
         super().__init__(cwd=cwd, timeout=timeout, env=env)
         self.init_session()
 
+    # _before_execute is intentionally NOT overridden — unlike SSH/Daytona,
+    # WSL mounts the Windows filesystem at /mnt/c/, so ~/.hermes/ (on C:)
+    # is accessible natively without FileSyncManager syncing.
+
     @staticmethod
     def get_temp_dir() -> str:
-        return "/tmp"
+        return os.environ.get("TMPDIR", "/tmp")
 
     def _run_bash(
         self,
@@ -127,12 +131,18 @@ class WslEnvironment(BaseEnvironment):
         )
 
     def _kill_process(self, proc):
-        # Windows: terminate() sends Ctrl+C to wsl.exe.  If wsl.exe
-        # itself is the process, this should propagate to the bash
-        # session inside WSL.  For orphaned grandchildren, WSL's own
-        # process tree will clean up when the session exits.
+        # First try SIGTERM via the wsl.exe process itself.  wsl.exe
+        # forwards the signal to the init process inside WSL, which
+        # propagates to the entire bash session tree.
         try:
             proc.terminate()
+        except Exception:
+            pass
+        # On non-Windows or if wsl.exe is still alive, kill the entire
+        # process tree.  os.killpg ensures no orphaned grandchildren
+        # are left behind, matching LocalEnvironment's behavior.
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except Exception:
             try:
                 proc.kill()
