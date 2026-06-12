@@ -3837,7 +3837,79 @@ def run_conversation(
                 # prior housekeeping tool turn and should not silence the
                 # final response path.
                 agent._mute_post_response = False
-                
+
+                # ── Narrative stall detection ─────────────────────
+                # Some models (especially via BlackboxAI proxy) narrate
+                # plans ("I'll do X...", "Let me check Y...") instead of
+                # calling tools. Detect this pattern and nudge the model
+                # to actually execute.
+                _stripped_content = agent._strip_think_blocks(final_response).strip()
+                if (
+                    _stripped_content
+                    and agent.valid_tool_names
+                    and len(_stripped_content) > 40
+                    and api_call_count > 1  # not the first turn
+                ):
+                    _narrative_patterns = (
+                        r"^(?:I(?:'ll| will| need to|'m going to| can| shall) )",
+                        r"^Let me ",
+                        r"^First[,.] ",
+                        r"^To (?:do|fix|solve|address|handle) this",
+                        r"^(?:Here(?:'s| is) (?:what|how|my) )",
+                        r"^(?:Now[,.] (?:I|let|we) )",
+                    )
+                    _looks_narrative = any(
+                        re.search(p, _stripped_content, re.IGNORECASE)
+                        for p in _narrative_patterns
+                    )
+                    if _looks_narrative:
+                        _narrative_stall_count = getattr(
+                            agent, "_narrative_stall_count", 0
+                        ) + 1
+                        agent._narrative_stall_count = _narrative_stall_count
+                        if _narrative_stall_count <= 2:
+                            logger.info(
+                                "Narrative stall detected (%d/2) — model "
+                                "narrated instead of calling tools, nudging",
+                                _narrative_stall_count,
+                            )
+                            agent._buffer_status(
+                                f"⚠️ Model narrated a plan instead of "
+                                f"executing — nudging to use tools "
+                                f"({_narrative_stall_count}/2)"
+                            )
+                            # Append the narrative as assistant message,
+                            # then inject a strong user nudge
+                            _nar_msg = agent._build_assistant_message(
+                                assistant_message, finish_reason
+                            )
+                            messages.append(_nar_msg)
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    "[System: You just described what you "
+                                    "would do instead of actually doing it. "
+                                    "Stop narrating. Call the tools NOW. "
+                                    "Execute the required tool calls and "
+                                    "only send your final answer after "
+                                    "completing the task.]"
+                                ),
+                                "_narrative_stall_nudge": True,
+                            })
+                            continue
+                        else:
+                            # Exhausted retries — reset counter and let
+                            # the response through so the user sees what
+                            # happened
+                            agent._narrative_stall_count = 0
+                            logger.warning(
+                                "Narrative stall persisted after 2 nudges "
+                                "— returning narrative as final response"
+                            )
+                    else:
+                        # Reset counter on non-narrative response
+                        agent._narrative_stall_count = 0
+
                 # Check if response only has think block with no actual content after it
                 if not agent._has_content_after_think_block(final_response):
                     # ── Partial stream recovery ─────────────────────
