@@ -102,7 +102,7 @@ mcp_servers:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-github"]
     env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: "***"
+      GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_PERSONAL_ACCESS_TOKEN}
     tools:
       include: [list_issues, create_issue, search_code]
 ```
@@ -272,7 +272,7 @@ mcp_servers:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-github"]
     env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: "***"
+      GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_PERSONAL_ACCESS_TOKEN}
     tools:
       include: [list_issues, create_issue, update_issue, search_code]
       prompts: false
@@ -346,7 +346,7 @@ mcp_servers:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-github"]
     env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: "***"
+      GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_PERSONAL_ACCESS_TOKEN}
     tools:
       include: [list_issues, create_issue, search_code]
       prompts: false
@@ -382,7 +382,7 @@ mcp_servers:
     command: "npx"
     args: ["-y", "@modelcontextprotocol/server-github"]
     env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: "***"
+      GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_PERSONAL_ACCESS_TOKEN}
     tools:
       include: [list_issues, create_issue, update_issue, search_code]
       prompts: false
