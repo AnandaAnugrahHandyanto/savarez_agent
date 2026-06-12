@@ -65,6 +65,7 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
+import { useProfileScope } from "@/contexts/useProfileScope";
 
 const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
   {
@@ -659,6 +660,7 @@ export default function SessionsPage() {
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
+  const { profile: selectedProfile } = useProfileScope();
 
   const refreshEmptyCount = useCallback(() => {
     api
@@ -718,10 +720,10 @@ export default function SessionsPage() {
 
   const loadStats = useCallback(() => {
     api
-      .getSessionStats()
+      .getSessionStats(selectedProfile || undefined)
       .then(setStats)
       .catch(() => {});
-  }, []);
+  }, [selectedProfile]);
 
   useEffect(() => {
     loadStats();

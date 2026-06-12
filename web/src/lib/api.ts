@@ -367,7 +367,10 @@ export const api = {
         body: JSON.stringify({ title }),
       },
     ),
-  getSessionStats: () => fetchJSON<SessionStoreStats>("/api/sessions/stats"),
+  getSessionStats: (profile?: string) => {
+    const query = profile ? `?profile=${encodeURIComponent(profile)}` : "";
+    return fetchJSON<SessionStoreStats>(`/api/sessions/stats${query}`);
+  },
   exportSessionUrl: (id: string) =>
     `/api/sessions/${encodeURIComponent(id)}/export`,
   pruneSessions: (older_than_days: number, source?: string) =>

@@ -6254,15 +6254,15 @@ async def delete_empty_sessions_endpoint():
 
 
 @app.get("/api/sessions/stats")
-async def get_session_stats():
+async def get_session_stats(profile: Optional[str] = None):
     """Session-store statistics for the Sessions page (mirrors `hermes sessions stats`).
 
     Registered before ``/api/sessions/{session_id}`` so the literal ``stats``
-    path isn't captured as a session id by the parameterized route.
+    path isn't captured as a session id by the parameterized route.  ``profile``
+    scopes the read to another local profile's state.db; omitted preserves the
+    historical current-backend store behavior.
     """
-    from hermes_state import SessionDB
-
-    db = SessionDB()
+    db = _open_session_db_for_profile(profile)
     try:
         total = db.session_count(include_archived=True)
         active_store = db.session_count(include_archived=False)
