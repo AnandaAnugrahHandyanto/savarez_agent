@@ -158,6 +158,76 @@ def test_resolve_codex_runtime_credentials_falls_back_to_pool_when_singleton_emp
     assert resolved["api_key"] == "pool-fallback-token"
     assert resolved["source"] == "credential_pool"
     assert resolved["base_url"]  # default codex backend URL
+    auth = json.loads((hermes_home / "auth.json").read_text())
+    assert auth["providers"]["openai-codex"]["tokens"]["access_token"] == "pool-fallback-token"
+    assert auth["providers"]["openai-codex"]["tokens"]["refresh_token"] == "pool-refresh"
+
+
+def test_resolve_codex_runtime_credentials_promotes_and_refreshes_pool_only_oauth(
+    tmp_path,
+    monkeypatch,
+):
+    """Pool-only Codex OAuth entries must become refreshable runtime creds.
+
+    ``hermes auth add openai-codex`` writes a self-contained
+    ``manual:device_code`` pool entry.  If no provider singleton exists,
+    runtime resolution must promote that token pair into
+    ``providers.openai-codex.tokens`` before refresh, otherwise the access
+    token works only until expiry and then falls back into "No Codex
+    credentials stored" / stale-token behavior.
+    """
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    expired_token = _jwt_with_exp(int(time.time()) - 10)
+    auth_store = {
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "id": "fleet",
+                    "source": "manual:device_code",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "access_token": expired_token,
+                    "refresh_token": "pool-refresh-old",
+                    "last_refresh": "2026-06-01T00:00:00Z",
+                    "last_status": "exhausted",
+                    "last_error_code": 401,
+                    "last_error_reason": "token_invalidated",
+                },
+            ],
+        },
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_store))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    called = {"count": 0}
+
+    def _fake_refresh(access_token, refresh_token, *, timeout_seconds):
+        called["count"] += 1
+        assert access_token == expired_token
+        assert refresh_token == "pool-refresh-old"
+        return {"access_token": "access-new", "refresh_token": "refresh-new"}
+
+    monkeypatch.setattr("hermes_cli.auth.refresh_codex_oauth_pure", _fake_refresh)
+
+    resolved = resolve_codex_runtime_credentials()
+
+    assert called["count"] == 1
+    assert resolved["api_key"] == "access-new"
+
+    auth = json.loads((hermes_home / "auth.json").read_text())
+    provider_tokens = auth["providers"]["openai-codex"]["tokens"]
+    assert provider_tokens["access_token"] == "access-new"
+    assert provider_tokens["refresh_token"] == "refresh-new"
+
+    pool_entry = auth["credential_pool"]["openai-codex"][0]
+    assert pool_entry["access_token"] == "access-new"
+    assert pool_entry["refresh_token"] == "refresh-new"
+    assert pool_entry["last_status"] is None
+    assert pool_entry["last_error_code"] is None
+    assert pool_entry["last_error_reason"] is None
 
 
 def test_resolve_codex_runtime_credentials_pool_fallback_skips_exhausted(tmp_path, monkeypatch):

@@ -3724,13 +3724,45 @@ def resolve_codex_runtime_credentials(
     HTTP 401 ``Missing Authentication header`` from the wire instead of a usable
     credential. See issue #32992.
     """
+    refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
     try:
         data = _read_codex_tokens()
     except AuthError:
-        pool_token = _pool_codex_access_token()
-        if pool_token:
+        pool_creds = _pool_codex_credentials()
+        if pool_creds:
+            pool_token = str(pool_creds.get("access_token", "") or "").strip()
+            pool_refresh = str(pool_creds.get("refresh_token", "") or "").strip()
+            if pool_refresh:
+                _save_codex_tokens(
+                    {
+                        "access_token": pool_token,
+                        "refresh_token": pool_refresh,
+                    },
+                    last_refresh=pool_creds.get("last_refresh"),
+                )
+            should_refresh_pool = bool(force_refresh)
+            if (not should_refresh_pool) and refresh_if_expiring:
+                should_refresh_pool = _codex_access_token_is_expiring(
+                    pool_token,
+                    refresh_skew_seconds,
+                )
+            if should_refresh_pool:
+                if not pool_refresh:
+                    raise AuthError(
+                        "Codex credential_pool entry is missing refresh_token. "
+                        "Run `hermes auth` to re-authenticate.",
+                        provider="openai-codex",
+                        code="codex_auth_missing_refresh_token",
+                        relogin_required=True,
+                    )
+                return resolve_codex_runtime_credentials(
+                    force_refresh=True,
+                    refresh_if_expiring=False,
+                    refresh_skew_seconds=refresh_skew_seconds,
+                )
             base_url = (
                 os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+                or str(pool_creds.get("base_url", "") or "").strip().rstrip("/")
                 or DEFAULT_CODEX_BASE_URL
             )
             return {
@@ -3738,14 +3770,13 @@ def resolve_codex_runtime_credentials(
                 "base_url": base_url,
                 "api_key": pool_token,
                 "source": "credential_pool",
-                "last_refresh": None,
+                "last_refresh": pool_creds.get("last_refresh"),
                 "auth_mode": "chatgpt",
             }
         raise
 
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
-    refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
 
     should_refresh = bool(force_refresh)
     if (not should_refresh) and refresh_if_expiring:
@@ -3780,6 +3811,66 @@ def resolve_codex_runtime_credentials(
     }
 
 
+def _pool_codex_credentials() -> Dict[str, Any]:
+    """Return the first usable OAuth credential from the openai-codex pool.
+
+    ``hermes auth add openai-codex`` intentionally writes independent
+    credentials as pool-only ``manual:device_code`` entries.  Runtime
+    resolution still needs the full token pair, not just the access token, so
+    it can promote the selected pool entry into the singleton provider state
+    and refresh it under the normal Codex lock path.
+    """
+    try:
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+        pool = auth_store.get("credential_pool")
+        if not isinstance(pool, dict):
+            return {}
+        entries = pool.get("openai-codex")
+        if not isinstance(entries, list):
+            return {}
+
+        def _entry_usable(entry: Dict[str, Any]) -> bool:
+            if not isinstance(entry, dict):
+                return False
+            token = entry.get("access_token")
+            if not isinstance(token, str) or not token.strip():
+                return False
+            status = str(entry.get("last_status") or "").strip().lower()
+            if status == "dead":
+                return False
+            reset_at = entry.get("last_error_reset_at")
+            if isinstance(reset_at, (int, float)) and reset_at > time.time():
+                return False
+            return True
+
+        def _entry_priority(entry: Dict[str, Any]) -> int:
+            try:
+                return int(entry.get("priority") or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        sorted_entries = sorted(
+            (entry for entry in entries if isinstance(entry, dict)),
+            key=_entry_priority,
+        )
+        for entry in sorted_entries:
+            if not _entry_usable(entry):
+                continue
+            return {
+                "access_token": str(entry.get("access_token", "") or "").strip(),
+                "refresh_token": str(entry.get("refresh_token", "") or "").strip(),
+                "base_url": str(entry.get("base_url", "") or "").strip(),
+                "last_refresh": entry.get("last_refresh"),
+                "source": entry.get("source"),
+                "id": entry.get("id"),
+                "label": entry.get("label"),
+            }
+    except Exception:
+        logger.debug("Codex pool credential lookup failed", exc_info=True)
+    return {}
+
+
 def _pool_codex_access_token() -> str:
     """Return the most-recent usable access_token from the openai-codex pool.
 
@@ -3790,34 +3881,7 @@ def _pool_codex_access_token() -> str:
     Returns ``""`` when no usable entry is found (caller handles by raising
     the original AuthError).
     """
-    try:
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
-        pool = auth_store.get("credential_pool")
-        if not isinstance(pool, dict):
-            return ""
-        entries = pool.get("openai-codex")
-        if not isinstance(entries, list):
-            return ""
-
-        def _entry_usable(entry: Dict[str, Any]) -> bool:
-            if not isinstance(entry, dict):
-                return False
-            token = entry.get("access_token")
-            if not isinstance(token, str) or not token.strip():
-                return False
-            # Skip entries currently in an exhaustion cooldown window.
-            reset_at = entry.get("last_error_reset_at")
-            if isinstance(reset_at, (int, float)) and reset_at > time.time():
-                return False
-            return True
-
-        for entry in entries:
-            if _entry_usable(entry):
-                return str(entry.get("access_token", "")).strip()
-    except Exception:
-        logger.debug("Codex pool fallback lookup failed", exc_info=True)
-    return ""
+    return str(_pool_codex_credentials().get("access_token", "") or "")
 
 
 # =============================================================================
