@@ -182,7 +182,7 @@ def ensure_dirs():
 # Schedule Parsing
 # =============================================================================
 
-def parse_duration(s: str) -> int:
+def parse_duration(s: str) -> float:
     """
     Parse duration string into minutes (fractional for sub-minute durations).
 
@@ -238,7 +238,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         return {
             "kind": "interval",
             "minutes": minutes,
-            "display": display
+            "display": display,
         }
     
     # Check for cron expression (5 or 6 space-separated fields)
@@ -390,13 +390,14 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 
     elif schedule["kind"] == "interval":
         minutes = schedule["minutes"]
+        total_seconds = max(1, round(minutes * 60))
         if last_run_at:
             # Next run is last_run + interval
             last = _ensure_aware(datetime.fromisoformat(last_run_at))
-            next_run = last + timedelta(minutes=minutes)
+            next_run = last + timedelta(seconds=total_seconds)
         else:
             # First run is now + interval
-            next_run = now + timedelta(minutes=minutes)
+            next_run = now + timedelta(seconds=total_seconds)
         return next_run.isoformat()
 
     elif schedule["kind"] == "cron":
