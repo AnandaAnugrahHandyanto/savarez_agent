@@ -94,6 +94,29 @@ class TestWeComConnect:
         assert "WECOM_BOT_ID" in (adapter.fatal_error_message or "")
 
     @pytest.mark.asyncio
+    async def test_connect_rejects_same_bot_id_lock(self, monkeypatch):
+        import gateway.platforms.wecom as wecom_module
+        from gateway.platforms.wecom import WeComAdapter
+
+        monkeypatch.setattr(wecom_module, "AIOHTTP_AVAILABLE", True)
+        monkeypatch.setattr(wecom_module, "HTTPX_AVAILABLE", True)
+        monkeypatch.setattr(
+            "gateway.status.acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (False, {"pid": 4242}),
+        )
+
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"bot_id": "bot-1", "secret": "secret-1"})
+        )
+
+        success = await adapter.connect()
+
+        assert success is False
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_code == "wecom-bot-id_lock"
+        assert "already in use" in (adapter.fatal_error_message or "")
+
+    @pytest.mark.asyncio
     async def test_connect_records_handshake_failure_details(self, monkeypatch):
         import gateway.platforms.wecom as wecom_module
         from gateway.platforms.wecom import WeComAdapter
@@ -121,6 +144,43 @@ class TestWeComConnect:
         assert adapter.has_fatal_error is True
         assert adapter.fatal_error_code == "wecom_connect_error"
         assert "invalid secret" in (adapter.fatal_error_message or "")
+
+    @pytest.mark.asyncio
+    async def test_connect_releases_bot_lock_on_failure(self, monkeypatch):
+        import gateway.platforms.wecom as wecom_module
+        from gateway.platforms.wecom import WeComAdapter
+
+        class DummyClient:
+            async def aclose(self):
+                return None
+
+        release_calls = []
+
+        monkeypatch.setattr(wecom_module, "AIOHTTP_AVAILABLE", True)
+        monkeypatch.setattr(wecom_module, "HTTPX_AVAILABLE", True)
+        monkeypatch.setattr(
+            "gateway.status.acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (True, None),
+        )
+        monkeypatch.setattr(
+            "gateway.status.release_scoped_lock",
+            lambda scope, identity: release_calls.append((scope, identity)),
+        )
+        monkeypatch.setattr(
+            wecom_module,
+            "httpx",
+            SimpleNamespace(AsyncClient=lambda **kwargs: DummyClient()),
+        )
+
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"bot_id": "bot-1", "secret": "secret-1"})
+        )
+        adapter._open_connection = AsyncMock(side_effect=RuntimeError("boom"))
+
+        success = await adapter.connect()
+
+        assert success is False
+        assert release_calls == [("wecom-bot-id", "bot-1")]
 
 
 class TestWeComQrScan:
