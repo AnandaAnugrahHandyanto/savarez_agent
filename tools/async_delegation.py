@@ -105,7 +105,11 @@ _completed_lock = threading.Lock()
 _completion_cv = threading.Condition()
 
 # Cancellation requests (delegation_ids that should be aborted ASAP).
+# Only used for *queued* task cancellation in _promotion_loop / cancel().
+# Running tasks use their per-task cancel_event (threading.Event) which is
+# already thread-safe — no need to touch _cancel_requests for them.
 _cancel_requests: Set[str] = set()
+_cancel_requests_lock = threading.Lock()  # M1 fix: protect _cancel_requests
 
 # Condition variable used to signal the promotion thread when a slot opens.
 _promotion_cv = threading.Condition(_running_lock)
@@ -154,9 +158,12 @@ def _promotion_loop() -> None:
             # to avoid lock-ordering deadlock (_running_lock → _completed_lock).
             while _waiting:
                 candidate = _waiting[0]
-                if candidate.delegation_id in _cancel_requests:
+                with _cancel_requests_lock:
+                    is_cancelled = candidate.delegation_id in _cancel_requests
+                    if is_cancelled:
+                        _cancel_requests.discard(candidate.delegation_id)
+                if is_cancelled:
                     _waiting.popleft()
-                    _cancel_requests.discard(candidate.delegation_id)
                     logger.info(
                         "Async delegation %s cancelled while queued", candidate.delegation_id
                     )
@@ -190,8 +197,8 @@ def _timeout_watcher_loop() -> None:
                 "Async delegation %s timed out after %.0fs",
                 did, info.get("timeout_seconds"),
             )
-            # Signal cancel so the runner cleans up
-            _cancel_requests.add(did)
+            # Signal cancel via cancel_event (per-task, thread-safe).
+            # No need to touch _cancel_requests — the runner checks cancel_event.
             cancel_ev = info.get("cancel_event")
             if cancel_ev:
                 cancel_ev.set()
@@ -222,9 +229,11 @@ def _timeout_watcher_loop() -> None:
                 _completed[did] = evt
             with _completion_cv:
                 _completion_cv.notify_all()
-            with _running_lock:
-                _running.pop(did, None)
+            # M3 fix: pop from _running and notify promotion thread in one lock
+            # acquisition, so the slot is never briefly "gone from _running but
+            # promotion not yet signalled".
             with _promotion_cv:
+                _running.pop(did, None)
                 _promotion_cv.notify()
 
 
@@ -279,6 +288,17 @@ def _do_dispatch(item: QueuedDispatch) -> None:
         """Worker thread: runs the subagent and pushes result to completion_queue."""
         logger.info("Async delegation %s started", delegation_id)
 
+        # C2 fix: the timeout watcher may have already written a timed_out event
+        # and evicted us from _running before this thread even gets scheduled.
+        # If so, skip all work — a duplicate completion event would confuse callers.
+        with _completed_lock:
+            if delegation_id in _completed:
+                logger.info(
+                    "Async delegation %s already completed by watcher — skipping runner",
+                    delegation_id,
+                )
+                return
+
         # Heartbeat: periodically touch the parent so the gateway doesn't
         # think the parent agent is idle and kill it.
         _heartbeat_stop = threading.Event()
@@ -291,14 +311,13 @@ def _do_dispatch(item: QueuedDispatch) -> None:
 
         try:
             # If already cancelled before we even start, skip the work.
-            if delegation_id in _cancel_requests or cancel_event.is_set():
+            # Use cancel_event (per-task, thread-safe) rather than _cancel_requests.
+            if cancel_event.is_set():
                 result = {"error": "cancelled", "status": "cancelled"}
-                _cancel_requests.discard(delegation_id)
             else:
                 result = runner_fn()
                 # If cancel was requested while running, mark the result.
-                if delegation_id in _cancel_requests or cancel_event.is_set():
-                    _cancel_requests.discard(delegation_id)
+                if cancel_event.is_set():
                     if isinstance(result, dict):
                         result["status"] = "cancelled"
                     else:
@@ -510,13 +529,14 @@ def cancel(delegation_id: str) -> Dict[str, Any]:
 
     Returns ``{"cancelled": True, "state": "queued"|"running"|"not_found"}``.
     """
-    # Check queued first (no lock gymnastics needed — promotion_loop holds
-    # _running_lock, so grabbing it here is safe).
+    # Check queued first — remove from _waiting under _running_lock so the
+    # promotion thread cannot race us.
     with _running_lock:
         for i, item in enumerate(_waiting):
             if item.delegation_id == delegation_id:
                 del _waiting[i]
-                _cancel_requests.discard(delegation_id)
+                with _cancel_requests_lock:
+                    _cancel_requests.discard(delegation_id)
                 break
         else:
             item = None  # type: ignore[assignment]
@@ -526,12 +546,12 @@ def cancel(delegation_id: str) -> Dict[str, Any]:
         logger.info("Async delegation %s cancelled from queue", delegation_id)
         return {"cancelled": True, "state": "queued", "delegation_id": delegation_id}
 
-    # Check running
+    # Check running — use cancel_event only (no _cancel_requests needed for
+    # running tasks; M1 fix keeps _cancel_requests for queued tasks only).
     with _running_lock:
         info = _running.get(delegation_id)
 
     if info is not None:
-        _cancel_requests.add(delegation_id)
         cancel_ev = info.get("cancel_event")
         if cancel_ev:
             cancel_ev.set()
@@ -549,7 +569,6 @@ def interrupt_all() -> int:
     with _running_lock:
         count = 0
         for did, info in list(_running.items()):
-            _cancel_requests.add(did)
             cancel_ev = info.get("cancel_event")
             if cancel_ev:
                 cancel_ev.set()
