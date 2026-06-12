@@ -1227,8 +1227,19 @@ def _managed_files_policy(request: Request, *, create_root: bool = True) -> Mana
         root = _ensure_managed_root(raw_forced_root) if create_root else _canonical_path(Path(raw_forced_root))
         return ManagedFilesPolicy(default_path=root, locked_root=root, can_change_path=False)
 
-    if not _local_dashboard_request(request) or _default_hermes_root_is_opt_data():
+    # Docker: always use /opt/data when HERMES_HOME is /opt/data
+    if _default_hermes_root_is_opt_data():
         root = _ensure_managed_root(_HOSTED_MANAGED_FILES_ROOT) if create_root else _HOSTED_MANAGED_FILES_ROOT
+        return ManagedFilesPolicy(default_path=root, locked_root=root, can_change_path=False)
+
+    # Remote non-Docker: lock to HERMES_HOME (not /opt/data)
+    if not _local_dashboard_request(request):
+        try:
+            from hermes_constants import get_hermes_home
+            remote_root = get_hermes_home()
+        except (OSError, RuntimeError):
+            remote_root = Path.home() / ".hermes"
+        root = _ensure_managed_root(remote_root) if create_root else _canonical_path(remote_root)
         return ManagedFilesPolicy(default_path=root, locked_root=root, can_change_path=False)
 
     home = _canonical_path(Path.home())
