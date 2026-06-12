@@ -198,6 +198,89 @@ def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatc
     assert response.choices[0].message.content == "hello"
 
 
+@pytest.mark.parametrize(
+    ("model", "expected_suffix"),
+    [
+        ("models/gemini-2.5-flash", "/models/gemini-2.5-flash:generateContent"),
+        ("tunedModels/custom-gemini-model", "/tunedModels/custom-gemini-model:generateContent"),
+    ],
+)
+def test_native_client_preserves_resource_style_model_names(monkeypatch, model, expected_suffix):
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    recorded = {}
+
+    class DummyHTTP:
+        def post(self, url, json=None, headers=None, timeout=None):
+            recorded["url"] = url
+            return DummyResponse(
+                payload={
+                    "candidates": [
+                        {
+                            "content": {"parts": [{"text": "hello"}]},
+                            "finishReason": "STOP",
+                        }
+                    ]
+                }
+            )
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
+
+    client = GeminiNativeClient(api_key="AIza-test", base_url="https://generativelanguage.googleapis.com/v1beta")
+    client.chat.completions.create(model=model, messages=[{"role": "user", "content": "Hello"}])
+
+    assert recorded["url"] == f"https://generativelanguage.googleapis.com/v1beta{expected_suffix}"
+
+
+def test_native_stream_client_preserves_resource_style_model_name(monkeypatch):
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    recorded = {}
+
+    class DummyStreamResponse:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+        def iter_text(self):
+            yield 'data: {"candidates":[{"content":{"parts":[{"text":"hello"}]},"finishReason":"STOP"}]}'
+            yield "\n\n"
+
+        def read(self):
+            return b""
+
+    class DummyHTTP:
+        def stream(self, method, url, json=None, headers=None, timeout=None):
+            recorded["method"] = method
+            recorded["url"] = url
+            return DummyStreamResponse()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr("agent.gemini_native_adapter.httpx.Client", lambda *a, **k: DummyHTTP())
+
+    client = GeminiNativeClient(api_key="AIza-test", base_url="https://generativelanguage.googleapis.com/v1beta")
+    chunks = list(client.chat.completions.create(
+        model="models/gemini-2.5-flash",
+        messages=[{"role": "user", "content": "Hello"}],
+        stream=True,
+    ))
+
+    assert recorded["url"] == (
+        "https://generativelanguage.googleapis.com/v1beta/"
+        "models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+    )
+    assert chunks[0].choices[0].delta.content == "hello"
+
+
 def test_native_http_error_keeps_status_and_retry_after():
     from agent.gemini_native_adapter import gemini_http_error
 
