@@ -98,6 +98,9 @@ jobs:
                   --platform ${{ matrix.platform }}
                   --arch ${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}
 
+            - name: Validate bootstrap tool archives
+              run: python scripts/prepare_bootstrap_tools.py --validate-only
+
             - name: Build installer
               run: npm run tauri:build
               working-directory: apps/bootstrap-installer

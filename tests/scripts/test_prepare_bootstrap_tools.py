@@ -166,6 +166,134 @@ class PrepareBootstrapToolsTests(unittest.TestCase):
             output_dir.rmdir()
             root.rmdir()
 
+    def test_validate_manifest_rejects_archive_checksum_mismatch(self):
+        module = _load_script_module()
+        root = Path("tmp-bootstrap-tools-validate-test")
+        output_dir = root / "bootstrap-tools"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        archive = output_dir / "uv-x86_64-pc-windows-msvc.zip"
+        archive.write_bytes(b"uv archive")
+
+        try:
+            spec = module.ArchiveSpec(
+                name="uv-x86_64-pc-windows-msvc.zip",
+                url="https://example.invalid/uv.zip",
+            )
+            prepared = module.prepared_archive_record("x64", spec, archive)
+            module.write_manifest(output_dir, [prepared])
+
+            self.assertEqual(module.validate_manifest(output_dir), 1)
+
+            archive.write_bytes(b"badarchive")
+            with self.assertRaisesRegex(RuntimeError, "checksum mismatch"):
+                module.validate_manifest(output_dir)
+        finally:
+            if archive.exists():
+                archive.unlink()
+            manifest = output_dir / "bootstrap-tools-manifest.json"
+            if manifest.exists():
+                manifest.unlink()
+            output_dir.rmdir()
+            root.rmdir()
+
+    def test_validate_manifest_rejects_archive_without_url(self):
+        module = _load_script_module()
+        root = Path("tmp-bootstrap-tools-url-test")
+        output_dir = root / "bootstrap-tools"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        archive = output_dir / "uv-x86_64-pc-windows-msvc.zip"
+        archive.write_bytes(b"uv archive")
+        manifest = output_dir / "bootstrap-tools-manifest.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "archives": [
+                        {
+                            "arch": "x64",
+                            "name": "uv-x86_64-pc-windows-msvc.zip",
+                            "sizeBytes": len(b"uv archive"),
+                            "sha256": module.sha256_file(archive),
+                        }
+                    ],
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        try:
+            with self.assertRaisesRegex(RuntimeError, "missing url"):
+                module.validate_manifest(output_dir)
+        finally:
+            if archive.exists():
+                archive.unlink()
+            if manifest.exists():
+                manifest.unlink()
+            output_dir.rmdir()
+            root.rmdir()
+
+    def test_validate_manifest_rejects_archive_without_arch(self):
+        module = _load_script_module()
+        root = Path("tmp-bootstrap-tools-arch-test")
+        output_dir = root / "bootstrap-tools"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        archive = output_dir / "uv-x86_64-pc-windows-msvc.zip"
+        archive.write_bytes(b"uv archive")
+        manifest = output_dir / "bootstrap-tools-manifest.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "archives": [
+                        {
+                            "name": "uv-x86_64-pc-windows-msvc.zip",
+                            "url": "https://example.invalid/uv.zip",
+                            "sizeBytes": len(b"uv archive"),
+                            "sha256": module.sha256_file(archive),
+                        }
+                    ],
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        try:
+            with self.assertRaisesRegex(RuntimeError, "missing arch"):
+                module.validate_manifest(output_dir)
+        finally:
+            if archive.exists():
+                archive.unlink()
+            if manifest.exists():
+                manifest.unlink()
+            output_dir.rmdir()
+            root.rmdir()
+
+    def test_installer_workflows_upload_bootstrap_tools_manifest(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        windows_workflow_path = repo_root / ".github" / "workflows" / "build-windows-installer.yml"
+        windows_workflow = windows_workflow_path.read_text(encoding="utf-8")
+        unix_workflow = (
+            repo_root / ".github" / "workflows" / "build-unix-installers.yml"
+        ).read_text(encoding="utf-8")
+        manifest_path = "apps/bootstrap-installer/src-tauri/bootstrap-tools/bootstrap-tools-manifest.json"
+
+        self.assertIn(manifest_path, windows_workflow)
+        self.assertIn(manifest_path, unix_workflow)
+        self.assertIn("python scripts/prepare_bootstrap_tools.py --validate-only", windows_workflow)
+        self.assertIn("python scripts/prepare_bootstrap_tools.py --validate-only", unix_workflow)
+        upload_sections = [
+            section
+            for section in windows_workflow.split("\n      - name: ")
+            if "actions/upload-artifact@" in section
+        ]
+        self.assertGreaterEqual(len(upload_sections), 3)
+        for section in upload_sections:
+            self.assertIn("if-no-files-found: error", section)
+
 
 if __name__ == "__main__":
     unittest.main()

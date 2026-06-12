@@ -262,6 +262,51 @@ def write_manifest(output_dir: Path, archives: list[PreparedArchive]) -> Path:
     return manifest_path
 
 
+def validate_manifest(output_dir: Path) -> int:
+    """Validate that the tool manifest matches archives in the output directory."""
+
+    manifest_path = output_dir / MANIFEST_NAME
+    if not manifest_path.is_file():
+        raise RuntimeError(f"missing bootstrap tools manifest: {manifest_path}")
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if payload.get("schemaVersion") != 1:
+        raise RuntimeError(f"unsupported bootstrap tools manifest schema: {payload.get('schemaVersion')}")
+    archives = payload.get("archives")
+    if not isinstance(archives, list) or not archives:
+        raise RuntimeError("bootstrap tools manifest has no archives")
+
+    for archive in archives:
+        name = archive.get("name")
+        if not isinstance(name, str) or not name:
+            raise RuntimeError("bootstrap tools manifest archive is missing name")
+        arch = archive.get("arch")
+        if not isinstance(arch, str) or not arch:
+            raise RuntimeError(f"manifest archive is missing arch: {name}")
+        url = archive.get("url")
+        if not isinstance(url, str) or not url:
+            raise RuntimeError(f"manifest archive is missing url: {name}")
+        path = output_dir / name
+        if not path.is_file():
+            raise RuntimeError(f"manifest archive is missing: {path}")
+        expected_size = archive.get("sizeBytes")
+        if not isinstance(expected_size, int) or expected_size <= 0:
+            raise RuntimeError(f"manifest archive has invalid sizeBytes: {name}")
+        actual_size = path.stat().st_size
+        if actual_size != expected_size:
+            raise RuntimeError(
+                f"archive size mismatch for {name}: expected {expected_size}, got {actual_size}"
+            )
+        expected_sha256 = archive.get("sha256")
+        if not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha256):
+            raise RuntimeError(f"manifest archive has invalid sha256: {name}")
+        actual_sha256 = sha256_file(path)
+        if actual_sha256.lower() != expected_sha256.lower():
+            raise RuntimeError(
+                f"archive checksum mismatch for {name}: expected {expected_sha256}, got {actual_sha256}"
+            )
+    return len(archives)
+
+
 def prepare_archives(
     output_dir: Path,
     arches: list[str],
@@ -318,6 +363,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--force", action="store_true", help="Re-download archives that already exist.")
     parser.add_argument("--dry-run", action="store_true", help="Print the planned archive URLs without downloading.")
+    parser.add_argument("--validate-only", action="store_true", help="Validate an existing bootstrap tools manifest.")
     return parser.parse_args(argv)
 
 
@@ -327,13 +373,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     arches = args.arch or ["x64"]
     try:
-        prepared = prepare_archives(
-            args.output_dir,
-            arches,
-            args.force,
-            args.dry_run,
-            args.platform,
-        )
+        if args.validate_only:
+            count = validate_manifest(args.output_dir)
+            print(f"[bootstrap-tools] validated {count} archive(s) in {args.output_dir}")
+            return 0
+        prepared = prepare_archives(args.output_dir, arches, args.force, args.dry_run, args.platform)
     except Exception as exc:
         print(f"[bootstrap-tools] error: {exc}", file=sys.stderr)
         return 1
