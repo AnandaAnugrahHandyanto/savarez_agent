@@ -22,6 +22,18 @@ The core idea is simple: your phone connects directly to your server over WireGu
 
 Tailscale's personal tier is free for up to 3 users and 100 devices, which is more than enough for a single-user Hermes deployment.
 
+:::info A note on Cloudflare Tunnel
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) is a valid alternative — the guide lists it in the table above. However, there are two meaningful differences for a single-user mobile setup:
+
+1. **Encryption model**: Cloudflare Tunnel terminates TLS at Cloudflare's edge — your traffic is encrypted in transit, but Cloudflare's infrastructure *can* inspect the plaintext. Tailscale's WireGuard tunnel is end-to-end encrypted — only your phone and your server can decrypt the data. For a dashboard that exposes your `.env` editor, API keys, and agent sessions, this distinction matters.
+
+2. **Login friction**: Cloudflare Access with email OTP means opening a login page, waiting for a PIN email, and re-authenticating when your session expires (default: 24 hours, max: 30 days). With device posture checks, you need the [WARP client](https://developers.cloudflare.com/cloudflare-one/connections/connect-devices/warp/) installed — a separate VPN app that routes through Cloudflare. Tailscale authenticates once via WireGuard keypair and stays transparent after that. For something you check multiple times a day, that friction compounds.
+
+**When Cloudflare Tunnel wins:** If you're already in the Cloudflare ecosystem (using their CDN, WAF, DNS), need multi-user access with SSO/OIDC integration, or want per-user audit logging, Cloudflare Tunnel + Access is the better fit. If you're starting from zero and just want to reach your agent dashboard from your phone, Tailscale is the simpler path.
+
+See the [Cloudflare Tunnel](#cloudflare-tunnel-1) section under HTTPS options for setup details.
+::: 
+
 ## Prerequisites
 
 - A server running Hermes Agent (Linux, macOS, or WSL)
@@ -133,7 +145,19 @@ Access `https://hermes.yourdomain.com` over Tailscale — Caddy handles the cert
 
 ### Cloudflare Tunnel
 
-If you already use Cloudflare, `cloudflared tunnel` gives you HTTPS with Cloudflare's edge certificates. Similar caveat to Funnel — the endpoint is internet-reachable.
+If you already use Cloudflare, [`cloudflared tunnel`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) gives you HTTPS with Cloudflare's edge certificates. Install `cloudflared`, authenticate, and create a tunnel pointing to `localhost:9119`.
+
+To lock it down, combine it with [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/):
+
+- **Email OTP**: Users enter their email on a Cloudflare-hosted login page and receive a one-time PIN. Sessions last 24 hours by default (configurable up to 30 days). After expiry, you re-authenticate.
+- **Device posture**: Restrict access to specific devices by requiring the [WARP client](https://developers.cloudflare.com/cloudflare-one/connections/connect-devices/warp/) (Cloudflare's device agent) and checking OS version, disk encryption, or corporate certs.
+- **SSO / OIDC**: Integrate with Google, GitHub, Azure AD, or any OIDC provider for identity-based access. Free for up to 50 users.
+
+:::caution TLS termination and privacy
+Cloudflare Tunnel terminates TLS at Cloudflare's edge — your traffic is encrypted between your phone and Cloudflare, and separately between Cloudflare and your server, but Cloudflare's infrastructure can technically inspect the plaintext in between. For a dashboard that serves your `.env` editor and API keys, this means you're trusting Cloudflare with visibility into your Hermes configuration. Tailscale's WireGuard tunnels are end-to-end encrypted — the coordination server never sees your data plane traffic. Choose based on your threat model.
+:::
+
+Similar caveat to Funnel — the endpoint is internet-reachable. Always pair with Access policies if using this approach.
 
 ## Android-specific notes
 
