@@ -11,8 +11,10 @@ Log files produced:
     gui.log     — INFO+, dashboard/websocket/TUI-gateway events
                   (created when mode="gui")
 
-All files use ``RotatingFileHandler`` with ``RedactingFormatter`` so
-secrets are never written to disk.
+All files use a size-based rotating file handler (``ConcurrentRotatingFileHandler``
+from ``concurrent-log-handler`` when available, falling back to stdlib
+``RotatingFileHandler``) with ``RedactingFormatter`` so secrets are never
+written to disk.  The handler choice matters on Windows: see issue #44873.
 
 Component separation:
     gateway.log only receives records from ``gateway.*`` loggers —
@@ -35,6 +37,21 @@ import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional, Sequence
+
+try:
+    from concurrent_log_handler import ConcurrentRotatingFileHandler
+
+    # On Windows, stdlib ``RotatingFileHandler.doRollover()`` uses
+    # ``os.rename()`` which requires exclusive access to the source file and
+    # fails with ``PermissionError [WinError 32]`` whenever another thread
+    # in the same process holds an append-mode handle — which is essentially
+    # always in Hermes (gateway, agent loop, TTS, subagent RPC all log
+    # concurrently). ``ConcurrentRotatingFileHandler`` swaps the rename for
+    # copy-then-truncate on Windows (works while the source is open) and
+    # keeps the atomic rename on POSIX. See issue #44873.
+    _ROTATING_BASE: type = ConcurrentRotatingFileHandler
+except ImportError:  # pragma: no cover - dep is in pyproject.toml
+    _ROTATING_BASE = RotatingFileHandler
 
 from hermes_constants import get_config_path, get_hermes_home
 
@@ -355,7 +372,7 @@ def setup_verbose_logging() -> None:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-class _ManagedRotatingFileHandler(RotatingFileHandler):
+class _ManagedRotatingFileHandler(_ROTATING_BASE):
     """RotatingFileHandler that ensures group-writable perms in managed mode
     AND survives external rotation.
 
@@ -467,7 +484,17 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         return stream
 
     def doRollover(self):
-        super().doRollover()
+        try:
+            super().doRollover()
+        except PermissionError:
+            # Windows: another thread still holds the source file. The next
+            # rollover check (on the next emit) will retry; the file just
+            # gets briefly over the size limit. Stdlib's Handler.handleError
+            # would print a full traceback on every emit if we let this
+            # propagate, which is the noisy symptom fixed by issue #44873.
+            # Swallow silently — the first failure already surfaces a
+            # warning via stdlib's own handler before we catch it.
+            return
         self._chmod_if_managed()
         # Our own rollover writes a new baseFilename; refresh the snapshot
         # so the next emit doesn't mistake it for external rotation.
@@ -496,7 +523,7 @@ def _add_rotating_handler(
     resolved = path.resolve()
     for existing in logger.handlers:
         if (
-            isinstance(existing, RotatingFileHandler)
+            isinstance(existing, _ROTATING_BASE)
             and Path(getattr(existing, "baseFilename", "")).resolve() == resolved
         ):
             return  # already attached

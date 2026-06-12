@@ -112,6 +112,23 @@ dependencies = [
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
   "Pillow==12.2.0",
+  # Log rotation on Windows. The stdlib ``RotatingFileHandler.doRollover()``
+  # calls ``os.rename()`` to atomically swap ``agent.log`` → ``agent.log.1``;
+  # on Windows this requires exclusive access to the source and fails with
+  # ``PermissionError [WinError 32]`` whenever any other thread in the same
+  # process still holds an append-mode handle (which is essentially always
+  # in Hermes — gateway, agent loop, TTS, subagent RPC all log concurrently).
+  # The result is that ``agent.log`` pins at the 5 MiB threshold and stderr
+  # is flooded with a full traceback on every subsequent emit (see #44873).
+  # ``concurrent-log-handler`` swaps the rename for copy-then-truncate on
+  # Windows (which works while the source is open) and keeps the atomic
+  # rename on POSIX. Apache-2.0, 110M+ PyPI downloads, ~10 years old, used
+  # by Django and AWS CLI for the same reason. Pure-Python on top of
+  # ``portalocker`` (also pure-Python, no compiled extensions), so it's
+  # safe to ship in the base install — every Windows user hits this once
+  # ``agent.log`` reaches 5 MiB, and gating it behind an extra would mean
+  # the bug survives the very first session.
+  "concurrent-log-handler==0.9.29",
 ]
 
 [project.optional-dependencies]

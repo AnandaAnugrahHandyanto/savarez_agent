@@ -33,7 +33,7 @@ def _reset_logging_state():
     # pollute our counts.
     pre_existing = []
     for h in list(root.handlers):
-        if isinstance(h, RotatingFileHandler):
+        if isinstance(h, hermes_logging._ROTATING_BASE):
             root.removeHandler(h)
             h.close()
         else:
@@ -76,7 +76,7 @@ class TestSetupLogging:
 
         agent_handlers = [
             h for h in root.handlers
-            if isinstance(h, RotatingFileHandler)
+            if isinstance(h, hermes_logging._ROTATING_BASE)
             and "agent.log" in getattr(h, "baseFilename", "")
         ]
         assert len(agent_handlers) == 1
@@ -88,7 +88,7 @@ class TestSetupLogging:
 
         error_handlers = [
             h for h in root.handlers
-            if isinstance(h, RotatingFileHandler)
+            if isinstance(h, hermes_logging._ROTATING_BASE)
             and "errors.log" in getattr(h, "baseFilename", "")
         ]
         assert len(error_handlers) == 1
@@ -101,7 +101,7 @@ class TestSetupLogging:
         root = logging.getLogger()
         agent_handlers = [
             h for h in root.handlers
-            if isinstance(h, RotatingFileHandler)
+            if isinstance(h, hermes_logging._ROTATING_BASE)
             and "agent.log" in getattr(h, "baseFilename", "")
         ]
         assert len(agent_handlers) == 1
@@ -115,7 +115,7 @@ class TestSetupLogging:
         root = logging.getLogger()
         agent_handlers = [
             h for h in root.handlers
-            if isinstance(h, RotatingFileHandler)
+            if isinstance(h, hermes_logging._ROTATING_BASE)
             and "agent.log" in getattr(h, "baseFilename", "")
         ]
         assert len(agent_handlers) == 1
@@ -126,7 +126,7 @@ class TestSetupLogging:
         root = logging.getLogger()
         agent_handlers = [
             h for h in root.handlers
-            if isinstance(h, RotatingFileHandler)
+            if isinstance(h, hermes_logging._ROTATING_BASE)
             and "agent.log" in getattr(h, "baseFilename", "")
         ]
         assert agent_handlers[0].level == logging.DEBUG
@@ -139,7 +139,7 @@ class TestSetupLogging:
         root = logging.getLogger()
         agent_handlers = [
             h for h in root.handlers
-            if isinstance(h, RotatingFileHandler)
+            if isinstance(h, hermes_logging._ROTATING_BASE)
             and "agent.log" in getattr(h, "baseFilename", "")
         ]
         assert agent_handlers[0].maxBytes == 10 * 1024 * 1024
@@ -205,7 +205,7 @@ class TestSetupLogging:
         root = logging.getLogger()
         agent_handlers = [
             h for h in root.handlers
-            if isinstance(h, RotatingFileHandler)
+            if isinstance(h, hermes_logging._ROTATING_BASE)
             and "agent.log" in getattr(h, "baseFilename", "")
         ]
         assert agent_handlers[0].level == logging.DEBUG
@@ -223,7 +223,7 @@ class TestSetupLogging:
         root = logging.getLogger()
         agent_handlers = [
             h for h in root.handlers
-            if isinstance(h, RotatingFileHandler)
+            if isinstance(h, hermes_logging._ROTATING_BASE)
             and "agent.log" in getattr(h, "baseFilename", "")
         ]
         assert agent_handlers[0].level == logging.WARNING
@@ -249,7 +249,7 @@ class TestGatewayMode:
 
         gw_handlers = [
             h for h in root.handlers
-            if isinstance(h, RotatingFileHandler)
+            if isinstance(h, hermes_logging._ROTATING_BASE)
             and "gateway.log" in getattr(h, "baseFilename", "")
         ]
         assert len(gw_handlers) == 1
@@ -260,7 +260,7 @@ class TestGatewayMode:
 
         gw_handlers = [
             h for h in root.handlers
-            if isinstance(h, RotatingFileHandler)
+            if isinstance(h, hermes_logging._ROTATING_BASE)
             and "gateway.log" in getattr(h, "baseFilename", "")
         ]
         assert len(gw_handlers) == 0
@@ -273,7 +273,7 @@ class TestGatewayMode:
         root = logging.getLogger()
         gw_handlers = [
             h for h in root.handlers
-            if isinstance(h, RotatingFileHandler)
+            if isinstance(h, hermes_logging._ROTATING_BASE)
             and "gateway.log" in getattr(h, "baseFilename", "")
         ]
         assert len(gw_handlers) == 1
@@ -296,7 +296,7 @@ class TestGatewayMode:
         root = logging.getLogger()
         gw_handlers = [
             h for h in root.handlers
-            if isinstance(h, RotatingFileHandler)
+            if isinstance(h, hermes_logging._ROTATING_BASE)
             and "gateway.log" in getattr(h, "baseFilename", "")
         ]
         assert len(gw_handlers) == 1
@@ -368,7 +368,7 @@ class TestGuiMode:
 
         gui_handlers = [
             h for h in root.handlers
-            if isinstance(h, RotatingFileHandler)
+            if isinstance(h, hermes_logging._ROTATING_BASE)
             and "gui.log" in getattr(h, "baseFilename", "")
         ]
         assert len(gui_handlers) == 1
@@ -380,7 +380,7 @@ class TestGuiMode:
         root = logging.getLogger()
         gui_handlers = [
             h for h in root.handlers
-            if isinstance(h, RotatingFileHandler)
+            if isinstance(h, hermes_logging._ROTATING_BASE)
             and "gui.log" in getattr(h, "baseFilename", "")
         ]
         assert len(gui_handlers) == 1
@@ -625,7 +625,7 @@ class TestSetupVerboseLogging:
         verbose_handlers = [
             h for h in root.handlers
             if isinstance(h, logging.StreamHandler)
-            and not isinstance(h, RotatingFileHandler)
+            and not isinstance(h, hermes_logging._ROTATING_BASE)
             and getattr(h, "_hermes_verbose", False)
         ]
         assert len(verbose_handlers) == 1
@@ -640,7 +640,7 @@ class TestSetupVerboseLogging:
         verbose_handlers = [
             h for h in root.handlers
             if isinstance(h, logging.StreamHandler)
-            and not isinstance(h, RotatingFileHandler)
+            and not isinstance(h, hermes_logging._ROTATING_BASE)
             and getattr(h, "_hermes_verbose", False)
         ]
         assert len(verbose_handlers) == 1
@@ -663,7 +663,7 @@ class TestAddRotatingHandler:
         assert log_path.parent.is_dir()
         # Clean up
         for h in list(logger.handlers):
-            if isinstance(h, RotatingFileHandler):
+            if isinstance(h, hermes_logging._ROTATING_BASE):
                 logger.removeHandler(h)
                 h.close()
 
@@ -685,12 +685,12 @@ class TestAddRotatingHandler:
 
         rotating_handlers = [
             h for h in logger.handlers
-            if isinstance(h, RotatingFileHandler)
+            if isinstance(h, hermes_logging._ROTATING_BASE)
         ]
         assert len(rotating_handlers) == 1
         # Clean up
         for h in list(logger.handlers):
-            if isinstance(h, RotatingFileHandler):
+            if isinstance(h, hermes_logging._ROTATING_BASE):
                 logger.removeHandler(h)
                 h.close()
 
@@ -708,12 +708,12 @@ class TestAddRotatingHandler:
             log_filter=component_filter,
         )
 
-        handlers = [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]
+        handlers = [h for h in logger.handlers if isinstance(h, hermes_logging._ROTATING_BASE)]
         assert len(handlers) == 1
         assert component_filter in handlers[0].filters
         # Clean up
         for h in list(logger.handlers):
-            if isinstance(h, RotatingFileHandler):
+            if isinstance(h, hermes_logging._ROTATING_BASE):
                 logger.removeHandler(h)
                 h.close()
 
@@ -729,7 +729,7 @@ class TestAddRotatingHandler:
             formatter=formatter,
         )
 
-        handlers = [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]
+        handlers = [h for h in logger.handlers if isinstance(h, hermes_logging._ROTATING_BASE)]
         assert len(handlers) == 1
         # No _SessionFilter on the handler — record factory handles it
         assert len(handlers[0].filters) == 0
@@ -743,7 +743,7 @@ class TestAddRotatingHandler:
 
         # Clean up
         for h in list(logger.handlers):
-            if isinstance(h, RotatingFileHandler):
+            if isinstance(h, hermes_logging._ROTATING_BASE):
                 logger.removeHandler(h)
                 h.close()
 
@@ -767,7 +767,7 @@ class TestAddRotatingHandler:
         assert stat.S_IMODE(log_path.stat().st_mode) == 0o660
 
         for h in list(logger.handlers):
-            if isinstance(h, RotatingFileHandler):
+            if isinstance(h, hermes_logging._ROTATING_BASE):
                 logger.removeHandler(h)
                 h.close()
 
@@ -785,7 +785,7 @@ class TestAddRotatingHandler:
                     formatter=formatter,
                 )
                 handler = next(
-                    h for h in logger.handlers if isinstance(h, RotatingFileHandler)
+                    h for h in logger.handlers if isinstance(h, hermes_logging._ROTATING_BASE)
                 )
                 logger.info("a" * 256)
                 handler.flush()
@@ -796,7 +796,7 @@ class TestAddRotatingHandler:
         assert stat.S_IMODE(log_path.stat().st_mode) == 0o660
 
         for h in list(logger.handlers):
-            if isinstance(h, RotatingFileHandler):
+            if isinstance(h, hermes_logging._ROTATING_BASE):
                 logger.removeHandler(h)
                 h.close()
 
