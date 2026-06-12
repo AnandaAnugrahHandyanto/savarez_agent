@@ -109,6 +109,19 @@ def _is_cron_session() -> bool:
         return env_var_enabled("HERMES_CRON_SESSION")
 
 
+def _is_context_cron_session() -> bool:
+    """Return True only when cron state is bound to the current ContextVar scope."""
+    try:
+        from gateway.session_context import _UNSET, _VAR_MAP
+
+        value = _VAR_MAP["HERMES_CRON_SESSION"].get()
+        if value is _UNSET:
+            return False
+        return is_truthy_value(value)
+    except Exception:
+        return False
+
+
 def _is_gateway_approval_context() -> bool:
     """True when this call is inside a gateway/API session.
 
@@ -116,10 +129,12 @@ def _is_gateway_approval_context() -> bool:
     Newer concurrent gateway paths bind HERMES_SESSION_PLATFORM via
     contextvars so approval mode does not depend on process-global flags.
 
-    Cron jobs are NEVER gateway-approval contexts. The scheduler binds a
-    context-local cron flag so a leaked process-global env var cannot
-    override a live gateway turn in the same process.
+    Cron jobs are NEVER gateway-approval contexts. A context-local cron flag is
+    authoritative over stale process-global gateway markers, while live gateway
+    contextvars still suppress a leaked process-global cron marker.
     """
+    if _is_context_cron_session():
+        return False
     if env_var_enabled("HERMES_GATEWAY_SESSION"):
         return True
     if _is_cron_session():

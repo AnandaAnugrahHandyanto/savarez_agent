@@ -17,6 +17,7 @@ never the child's intermediate tool calls or reasoning.
 """
 
 import enum
+import contextvars
 import json
 import logging
 
@@ -109,6 +110,17 @@ def _get_subagent_approval_callback():
     if is_truthy_value(val):
         return _subagent_auto_approve
     return _subagent_auto_deny
+
+
+def _propagate_contextvars_to_thread(target):
+    """Propagate ContextVars without overriding subagent thread-local callbacks."""
+    ctx = contextvars.copy_context()
+
+    def _runner(*args, **kwargs):
+        return ctx.run(target, *args, **kwargs)
+
+    return _runner
+
 
 # Build a description fragment listing toolsets available for subagents.
 # Excludes toolsets where ALL tools are blocked, composite/platform toolsets
@@ -1509,7 +1521,9 @@ def _run_single_child(
                 task_id=child_task_id,
             )
 
-        _child_future = _timeout_executor.submit(_run_with_thread_capture)
+        _child_future = _timeout_executor.submit(
+            _propagate_contextvars_to_thread(_run_with_thread_capture)
+        )
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
@@ -2102,7 +2116,7 @@ def delegate_task(
             futures = {}
             for i, t, child in children:
                 future = executor.submit(
-                    _run_single_child,
+                    _propagate_contextvars_to_thread(_run_single_child),
                     task_index=i,
                     goal=t["goal"],
                     child=child,

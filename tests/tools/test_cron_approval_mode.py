@@ -372,6 +372,27 @@ class TestGatewayAfterCronSession:
         assert result.get("approval_pending") is True
         assert "cron_mode" not in result["message"]
 
+    def test_context_cron_session_takes_precedence_over_gateway_env_marker(self, monkeypatch):
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+
+        from gateway.session_context import set_session_vars, clear_session_vars
+        tokens = set_session_vars(cron_session="1")
+        try:
+            from unittest.mock import patch as mock_patch
+            with mock_patch("tools.approval._get_cron_approval_mode", return_value="deny"):
+                result = check_all_command_guards("rm -rf /tmp/stuff", "local")
+        finally:
+            clear_session_vars(tokens)
+
+        assert not result["approved"]
+        assert "BLOCKED" in result["message"]
+        assert "cron_mode" in result["message"]
+        assert result.get("status") != "pending_approval"
+
     def test_gateway_context_session_takes_precedence_over_cron_marker(self, monkeypatch):
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
