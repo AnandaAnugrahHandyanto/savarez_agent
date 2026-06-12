@@ -74,7 +74,8 @@ import {
   setSessionProfileTotals,
   setSessions,
   setSessionsLoading,
-  setSessionsTotal
+  setSessionsTotal,
+  sessionMatchesStoredId
 } from '../store/session'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 import { isSecondaryWindow } from '../store/windows'
@@ -549,7 +550,7 @@ export function DesktopController() {
 
       const storedProfile = $sessions
         .get()
-        .find(session => session.id === storedSessionId || session._lineage_root_id === storedSessionId)?.profile
+        .find(session => sessionMatchesStoredId(session, storedSessionId))?.profile
 
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
