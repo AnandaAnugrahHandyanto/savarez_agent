@@ -3278,7 +3278,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Some Slack slash-command surfaces include thread context. Preserve it
         # when present so session-scoped commands such as ``/model`` apply to
         # the same Slack thread/session as the next normal threaded message.
-        thread_id = command.get("thread_ts") or command.get("message_ts")
+        # Prefer explicit parent-thread IDs over message timestamps; ``message_ts``
+        # is only a fallback for payloads that expose no thread parent.
+        thread_id = command.get("thread_ts")
         if not thread_id:
             message_payload = command.get("message")
             if isinstance(message_payload, dict):
@@ -3287,6 +3289,8 @@ class SlackAdapter(BasePlatformAdapter):
             container_payload = command.get("container")
             if isinstance(container_payload, dict):
                 thread_id = container_payload.get("thread_ts")
+        if not thread_id:
+            thread_id = command.get("message_ts")
         is_dm = str(channel_id).startswith("D")
         source = self.build_source(
             chat_id=channel_id,

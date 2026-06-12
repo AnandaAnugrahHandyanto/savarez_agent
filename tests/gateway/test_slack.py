@@ -239,6 +239,47 @@ class TestSlashCommandSessionIsolation:
         assert event.source.thread_id == expected_thread
 
     @pytest.mark.asyncio
+    async def test_slash_command_prefers_thread_parent_over_message_timestamp(
+        self, adapter
+    ):
+        command = {
+            "command": "/model",
+            "text": "gpt-5.5",
+            "user_id": "U123",
+            "channel_id": "C123",
+            "team_id": "T123",
+            "message_ts": "1700000000.999999",
+            "message": {"thread_ts": "1700000000.222222"},
+            "container": {"thread_ts": "1700000000.333333"},
+        }
+
+        await adapter._handle_slash_command(command)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.thread_id == "1700000000.222222"
+
+    @pytest.mark.asyncio
+    async def test_slash_command_prefers_top_level_thread_id_over_nested_payloads(
+        self, adapter
+    ):
+        command = {
+            "command": "/model",
+            "text": "gpt-5.5",
+            "user_id": "U123",
+            "channel_id": "C123",
+            "team_id": "T123",
+            "thread_ts": "1700000000.111111",
+            "message_ts": "1700000000.999999",
+            "message": {"thread_ts": "1700000000.222222"},
+            "container": {"thread_ts": "1700000000.333333"},
+        }
+
+        await adapter._handle_slash_command(command)
+
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.thread_id == "1700000000.111111"
+
+    @pytest.mark.asyncio
     async def test_slash_command_ignores_malformed_nested_thread_payloads(self, adapter):
         command = {
             "command": "/model",
