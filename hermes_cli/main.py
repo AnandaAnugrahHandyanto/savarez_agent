@@ -5213,6 +5213,8 @@ def cmd_gui(args: argparse.Namespace):
         pass
 
     env = os.environ.copy()
+    if not env.get("ELECTRON_MIRROR"):
+        env["ELECTRON_MIRROR"] = "https://github.com/electron/electron/releases/download/"
     if getattr(args, "fake_boot", False):
         env["HERMES_DESKTOP_BOOT_FAKE"] = "1"
     if getattr(args, "ignore_existing", False):
