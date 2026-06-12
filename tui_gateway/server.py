@@ -8096,14 +8096,15 @@ def _(rid, params: dict) -> dict:
             state = mgr.resume()
             if state is None:
                 return _ok(rid, {"type": "exec", "output": "No goal to resume."})
+            prompt = mgr.next_continuation_prompt()
+            if not prompt:
+                return _ok(rid, {"type": "exec", "output": f"▶ Goal resumed: {state.goal}"})
             return _ok(
                 rid,
                 {
-                    "type": "exec",
-                    "output": (
-                        f"▶ Goal resumed: {state.goal}\n"
-                        "Send any message to continue, or wait — I'll take the next step on the next turn."
-                    ),
+                    "type": "send",
+                    "notice": f"▶ Goal resumed: {state.goal}",
+                    "message": prompt,
                 },
             )
         if goal_cmd.action == "clear":

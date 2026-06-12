@@ -1591,6 +1591,21 @@ class GatewaySlashCommandsMixin:
             state = mgr.resume()
             if state is None:
                 return t("gateway.goal.no_resume")
+            adapter = self.adapters.get(event.source.platform) if event.source else None
+            _quick_key = self._session_key_for_source(event.source) if event.source else None
+            prompt = mgr.next_continuation_prompt()
+            if adapter and _quick_key and prompt:
+                try:
+                    kickoff_event = MessageEvent(
+                        text=prompt,
+                        message_type=MessageType.TEXT,
+                        source=event.source,
+                        message_id=event.message_id,
+                        channel_prompt=event.channel_prompt,
+                    )
+                    self._enqueue_fifo(_quick_key, kickoff_event, adapter)
+                except Exception as exc:
+                    logger.debug("goal resume continuation enqueue failed: %s", exc)
             return t("gateway.goal.resumed", goal=state.goal)
 
         if goal_cmd.action == "clear":

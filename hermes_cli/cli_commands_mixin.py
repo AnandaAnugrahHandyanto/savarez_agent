@@ -1823,10 +1823,12 @@ class CLICommandsMixin:
                 _cprint(f"  {_DIM}No goal to resume.{_RST}")
             else:
                 _cprint(f"  ▶ Goal resumed: {state.goal}")
-                _cprint(
-                    f"  {_DIM}Send any message (or press Enter on an empty prompt "
-                    f"is a no-op; type 'continue' to kick it off).{_RST}"
-                )
+                prompt = mgr.next_continuation_prompt()
+                if prompt:
+                    pending = getattr(self, "_pending_input", None)
+                    if pending is not None:
+                        pending.put(prompt)
+                    _cprint(f"  {_DIM}Queued the next continuation turn.{_RST}")
             return
 
         if goal_cmd.action == "clear":
