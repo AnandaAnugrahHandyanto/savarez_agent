@@ -125,6 +125,9 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     openxr_presentation.add_argument("--approve", action="store_true")
     openxr_presentation.add_argument("--attempt-window-capture", action="store_true")
     openxr_presentation.add_argument("--require-pairing", action="store_true")
+    openxr_presentation.add_argument("--require-hmd", action="store_true")
+    openxr_presentation.add_argument("--min-hmd-width", type=int, default=None)
+    openxr_presentation.add_argument("--min-hmd-height", type=int, default=None)
     openxr_presentation.add_argument("--immersive-check", action="store_true")
     openxr_presentation.add_argument("--frames", type=int, default=None)
     openxr_presentation.add_argument("--timeout-seconds", type=int, default=None)
@@ -407,6 +410,14 @@ def questframe_command(args: argparse.Namespace) -> int:
             extra.append("--attempt-window-capture")
         if bool(getattr(args, "require_pairing", False)):
             extra.append("--require-pairing")
+        if bool(getattr(args, "require_hmd", False)):
+            extra.append("--require-hmd")
+        min_hmd_width = getattr(args, "min_hmd_width", None)
+        if min_hmd_width:
+            extra.extend(["--min-hmd-width", str(min_hmd_width)])
+        min_hmd_height = getattr(args, "min_hmd_height", None)
+        if min_hmd_height:
+            extra.extend(["--min-hmd-height", str(min_hmd_height)])
         if bool(getattr(args, "immersive_check", False)):
             extra.append("--immersive-check")
         frames = getattr(args, "frames", None)

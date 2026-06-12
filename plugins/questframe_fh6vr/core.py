@@ -428,6 +428,22 @@ OPENXR_PRESENTATION_SELFTEST_SCHEMA = {
                 "type": "boolean",
                 "description": "When true, pass --require-pairing and fail if pairing did not pass.",
             },
+            "require_hmd": {
+                "type": "boolean",
+                "description": "When true, pass --require-hmd and fail if no active OpenXR HMD presentation session is exposed.",
+            },
+            "min_hmd_width": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 8192,
+                "description": "Minimum HMD swapchain width for strict headset output; default launcher floor is 1980.",
+            },
+            "min_hmd_height": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 8192,
+                "description": "Minimum HMD swapchain height for strict headset output; default launcher floor is 1280.",
+            },
             "immersive_check": {
                 "type": "boolean",
                 "description": "When true, pass --immersive-check to require stereo projection layer metrics.",
@@ -1398,6 +1414,12 @@ def handle_openxr_presentation_selftest(args: dict[str, Any] | None = None, **_:
         extra.append("--attempt-window-capture")
     if bool(args.get("require_pairing")):
         extra.append("--require-pairing")
+    if bool(args.get("require_hmd")):
+        extra.append("--require-hmd")
+    if args.get("min_hmd_width"):
+        extra.extend(["--min-hmd-width", str(int(args["min_hmd_width"]))])
+    if args.get("min_hmd_height"):
+        extra.extend(["--min-hmd-height", str(int(args["min_hmd_height"]))])
     if bool(args.get("immersive_check")):
         extra.append("--immersive-check")
     return _json(
@@ -1594,7 +1616,7 @@ HELP = """questframe commands:
   /questframe depth-producer-selftest [--fixture] [--metadata PATH]
   /questframe companion-depth-producer-selftest [--approve] [--metadata PATH] [--output-dir PATH]
   /questframe color-depth-pairing-selftest [--approve] [--attempt-window-capture]
-  /questframe openxr-presentation-selftest [--approve] [--require-pairing]
+  /questframe openxr-presentation-selftest [--approve] [--require-pairing] [--require-hmd] [--min-hmd-width N] [--min-hmd-height N]
   /questframe cockpit-presence-selftest [--approve] [--attempt-window-capture] [--seconds N]
   /questframe kofi-parity-selftest [--approve] [--attempt-window-capture]
   /questframe pcvr-management-selftest [--allow-missing-runtime]
@@ -1678,14 +1700,22 @@ def handle_slash(raw_args: str) -> str:
         "openxr-presentation",
         "presentation-selftest",
     }:
-        return handle_openxr_presentation_selftest(
-            {
-                "approve": "--approve" in argv,
-                "attempt_window_capture": "--attempt-window-capture" in argv,
-                "require_pairing": "--require-pairing" in argv,
-                "immersive_check": "--immersive-check" in argv,
-            }
-        )
+        args = {
+            "approve": "--approve" in argv,
+            "attempt_window_capture": "--attempt-window-capture" in argv,
+            "require_pairing": "--require-pairing" in argv,
+            "require_hmd": "--require-hmd" in argv,
+            "immersive_check": "--immersive-check" in argv,
+        }
+        if "--min-hmd-width" in argv:
+            index = argv.index("--min-hmd-width")
+            if index + 1 < len(argv):
+                args["min_hmd_width"] = int(argv[index + 1])
+        if "--min-hmd-height" in argv:
+            index = argv.index("--min-hmd-height")
+            if index + 1 < len(argv):
+                args["min_hmd_height"] = int(argv[index + 1])
+        return handle_openxr_presentation_selftest(args)
     if command in {
         "immersive-presentation-loop-selftest",
         "immersive-presentation-loop",

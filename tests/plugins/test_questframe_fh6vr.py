@@ -290,6 +290,51 @@ def test_cli_cockpit_presence_selftest_dispatch(monkeypatch):
     assert "72" in extra
 
 
+def test_cli_openxr_presentation_require_hmd_dispatch(monkeypatch):
+    seen = {}
+
+    def fake_run_launcher(command, **kwargs):
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+        return {"ok": True}
+
+    monkeypatch.setattr(core, "run_launcher", fake_run_launcher)
+    parser = questframe_cli.argparse.ArgumentParser()
+    questframe_cli.register_cli(parser)
+    args = parser.parse_args(
+        [
+            "openxr-presentation-selftest",
+            "--approve",
+            "--attempt-window-capture",
+            "--require-pairing",
+            "--require-hmd",
+            "--min-hmd-width",
+            "1980",
+            "--min-hmd-height",
+            "1280",
+            "--frames",
+            "72",
+        ]
+    )
+
+    exit_code = questframe_cli.questframe_command(args)
+
+    assert exit_code == 0
+    assert seen["command"] == "openxr-presentation-selftest"
+    extra = seen["kwargs"]["extra_args"]
+    assert "--json" in extra
+    assert "--approve" in extra
+    assert "--attempt-window-capture" in extra
+    assert "--require-pairing" in extra
+    assert "--require-hmd" in extra
+    assert "--min-hmd-width" in extra
+    assert "1980" in extra
+    assert "--min-hmd-height" in extra
+    assert "1280" in extra
+    assert "--frames" in extra
+    assert "72" in extra
+
+
 def test_cli_depth_surface_selftest_dispatch(monkeypatch):
     seen = {}
 

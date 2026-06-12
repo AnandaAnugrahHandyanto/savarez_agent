@@ -35,7 +35,13 @@ def test_openxr_presentation_dispatches_launcher():
     with patch.object(core, "run_launcher", return_value=fake) as run:
         payload = json.loads(
             core.handle_openxr_presentation_selftest(
-                {"approve": True, "require_pairing": True}
+                {
+                    "approve": True,
+                    "require_pairing": True,
+                    "require_hmd": True,
+                    "min_hmd_width": 1980,
+                    "min_hmd_height": 1280,
+                }
             )
         )
     assert payload["ok"] is True
@@ -44,6 +50,11 @@ def test_openxr_presentation_dispatches_launcher():
     extra = run.call_args.kwargs["extra_args"]
     assert "--approve" in extra
     assert "--require-pairing" in extra
+    assert "--require-hmd" in extra
+    assert "--min-hmd-width" in extra
+    assert "1980" in extra
+    assert "--min-hmd-height" in extra
+    assert "1280" in extra
 
 
 def test_slash_color_depth_pairing_alias():
