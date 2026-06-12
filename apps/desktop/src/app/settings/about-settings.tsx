@@ -63,6 +63,7 @@ export function AboutSettings() {
   const behind = status?.behind ?? 0
   const supported = status?.supported !== false
   const applying = apply.applying || apply.stage === 'restart'
+  const rebuildNeeded = status?.rebuildNeeded === true
 
   const handleCheck = async () => {
     setJustChecked(false)
@@ -84,6 +85,9 @@ export function AboutSettings() {
     statusTone = 'available'
   } else if (behind > 0) {
     statusLine = a.updateReady(behind)
+    statusTone = 'available'
+  } else if (rebuildNeeded) {
+    statusLine = a.rebuildNeeded
     statusTone = 'available'
   } else if (status) {
     statusLine = a.onLatest
@@ -143,6 +147,12 @@ export function AboutSettings() {
             {behind > 0 && supported && !applying && (
               <Button onClick={() => openUpdatesWindow()} size="sm">
                 {a.seeWhatsNew}
+              </Button>
+            )}
+
+            {rebuildNeeded && supported && !applying && (
+              <Button onClick={() => openUpdatesWindow()} size="sm">
+                {a.rebuildNow}
               </Button>
             )}
 
