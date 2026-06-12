@@ -264,7 +264,12 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
     is still empty (no ``cd`` run yet) is warned on the very first write.
     """
     try:
-        if Path(filepath).expanduser().is_absolute():
+        # Normalize MSYS paths before checking is_absolute so that
+        # /d/Project/file (which pathlib sees as relative on Windows
+        # because it has no drive letter) is correctly recognized as
+        # absolute after conversion to D:\Project\file.
+        normalized = _normalize_msys_path(filepath)
+        if Path(normalized).expanduser().is_absolute():
             return None
         workspace_root = _authoritative_workspace_root(task_id)
         if not workspace_root:
@@ -276,11 +281,12 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
             return None  # Inside the workspace — expected.
         except ValueError:
             return (
-                f"Relative path {filepath!r} resolved to {str(resolved)!r}, which is "
+                f"Path {filepath!r} resolved to {str(resolved)!r}, which is "
                 f"OUTSIDE the active workspace ({str(root)!r}). The edit will land in "
                 f"a different directory than the terminal's cwd. If this is not "
                 f"intended (e.g. a git-worktree session writing into the main "
-                f"checkout), pass an absolute path under the workspace instead."
+                f"checkout), pass a native absolute path (e.g. D:\\Project\file "
+                f"on Windows) under the workspace instead."
             )
     except Exception:
         return None
