@@ -8455,6 +8455,31 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         agent = getattr(self, "agent", None)
         last_dur = getattr(agent, "last_api_duration", 0.0) or 0.0
         last_out = getattr(agent, "last_output_tokens", 0) or 0
+
+        # In gateway slash-worker mode, the local agent has no session data.
+        # Try the gateway RPC which reads from the real session agent.
+        if last_dur <= 0 or last_out <= 0:
+            sid = os.environ.get("HERMES_SLASH_SESSION_ID", "").strip()
+            port = os.environ.get("HERMES_SLASH_GATEWAY_PORT", "").strip()
+            if sid and port:
+                try:
+                    import urllib.request
+                    payload = json.dumps({"jsonrpc": "2.0", "method": "session.tps", "params": {"session_id": sid}, "id": 1}).encode()
+                    req = urllib.request.Request(f"http://127.0.0.1:{port}/api", data=payload, headers={"Content-Type": "application/json"})
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        result = json.loads(resp.read().decode())
+                    tps_data = (result.get("result") if "result" in result else None) or {}
+                    tps_val = tps_data.get("tps")
+                    if tps_val is not None:
+                        print()
+                        print("  ⚡ Tokens per second")
+                        print(f"  {'─' * 41}")
+                        print(f"  Last response:      {tps_data.get('tokens', 0):,} tokens in {tps_data.get('duration_s', 0):.1f}s")
+                        print(f"  Output speed:       {tps_val:,.0f} tok/s")
+                        return
+                except Exception:
+                    pass
+
         print()
         print("  ⚡ Tokens per second")
         print(f"  {'─' * 41}")

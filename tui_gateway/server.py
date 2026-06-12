@@ -229,7 +229,7 @@ _detached_ws_transport = _DropTransport()
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
-    def __init__(self, session_key: str, model: str):
+    def __init__(self, session_key: str, model: str, session_id: str = ""):
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
@@ -245,6 +245,11 @@ class _SlashWorker:
         if model:
             argv += ["--model", model]
 
+        env = os.environ.copy()
+        # Pass the gateway port so slash commands can call RPCs (default 9120)
+        env["HERMES_SLASH_GATEWAY_PORT"] = os.environ.get("HERMES_DESKTOP_GATEWAY_PORT", "9120")
+        env["HERMES_SLASH_SESSION_ID"] = session_id
+
         self._closed = False
         self.proc = subprocess.Popen(
             argv,
@@ -254,7 +259,7 @@ class _SlashWorker:
             text=True,
             bufsize=1,
             cwd=os.getcwd(),
-            env=os.environ.copy(),
+            env=env,
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
         threading.Thread(target=self._drain_stderr, daemon=True).start()
@@ -939,7 +944,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             current["agent"] = agent
 
             try:
-                worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
+                worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()), session_id=sid)
                 _attach_worker(sid, current, worker)
             except Exception:
                 pass
@@ -1837,6 +1842,7 @@ def _restart_slash_worker(sid: str, session: dict):
         new_worker = _SlashWorker(
             session["session_key"],
             getattr(session.get("agent"), "model", _resolve_model()),
+            session_id=sid,
         )
     except Exception:
         session["slash_worker"] = None
@@ -4412,6 +4418,21 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
     return _ok(rid, usage)
+
+
+@method("session.tps")
+def _(rid, params: dict) -> dict:
+    """Return tokens-per-second of the last API response for this session."""
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    if agent is None:
+        return _ok(rid, {"tps": None, "tokens": 0, "duration_s": 0.0})
+    last_dur = getattr(agent, "last_api_duration", 0.0) or 0.0
+    last_out = getattr(agent, "last_output_tokens", 0) or 0
+    tps = round(last_out / last_dur, 1) if last_dur > 0 and last_out > 0 else None
+    return _ok(rid, {"tps": tps, "tokens": last_out, "duration_s": round(last_dur, 2)})
 
 
 @method("credits.view")
