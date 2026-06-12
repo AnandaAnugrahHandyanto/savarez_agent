@@ -162,6 +162,9 @@ _PHASE_TRANSITIONS: Dict[int, set] = {
 # Feishu server auto-closes streaming after ~10 minutes; rotate at ~8 min.
 _STREAM_CARD_TTL_SECONDS = 500
 
+# Feishu cards have a ~200 element limit; split before hitting it.
+_STREAM_CARD_ELEMENT_LIMIT = 180
+
 # cardkit v1 is optional — older lark_oapi SDKs may lack it.  When
 # unavailable the streaming-card feature gracefully degrades.
 HAS_CARDKIT = False
@@ -2250,6 +2253,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "message_id": im_message_id,
                 "last_content": truncated,
                 "created_at": time.monotonic(),
+                "element_count": 1,
             }
             cards_dict = self._streaming_cards.setdefault(chat_id, {})
             cards_dict[card_id] = card_state
@@ -2316,9 +2320,12 @@ class FeishuAdapter(BasePlatformAdapter):
             # Update tracked sequence and last content
             card_state["sequence"] = sequence
             card_state["last_content"] = truncated
+            card_state["element_count"] = card_state.get("element_count", 1) + 1
 
             if finalize and is_turn_final:
                 await self._close_streaming_card(chat_id, card_id, card_state=card_state)
+            elif card_state["element_count"] >= _STREAM_CARD_ELEMENT_LIMIT:
+                await self._split_streaming_card(chat_id, card_id, card_state=card_state)
 
             return SendResult(success=True, message_id=card_id)
 
@@ -2335,6 +2342,7 @@ class FeishuAdapter(BasePlatformAdapter):
         status: str = "completed",
         error_summary: str = "",
         last_content: str = "",
+        elapsed_seconds: float = 0,
     ) -> str:
         """Build a card JSON with status-appropriate header for post-stream update."""
         _display_name = bot_name or "Hermes"
@@ -2373,19 +2381,25 @@ class FeishuAdapter(BasePlatformAdapter):
             "subtitle": subtitle if subtitle else {"tag": "plain_text", "content": ""},
         }
 
+        elements: list = [
+            {
+                "tag": "markdown",
+                "content": last_content,
+                "element_id": "markdown_1",
+            }
+        ]
+        if elapsed_seconds > 0 and status == "completed":
+            elements.append({
+                "tag": "markdown",
+                "content": f"<text_align alignment='center'><font color='grey'>Completed in {elapsed_seconds:.1f}s</font></text_align>",
+                "element_id": "footer_stats",
+            })
+
         card: Dict[str, Any] = {
             "schema": "2.0",
             "header": header,
             "config": {"streaming_mode": False},
-            "body": {
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "content": last_content,
-                        "element_id": "markdown_1",
-                    }
-                ]
-            },
+            "body": {"elements": elements},
         }
         return json.dumps(card, ensure_ascii=False)
 
@@ -2397,6 +2411,7 @@ class FeishuAdapter(BasePlatformAdapter):
         bot_name: str = "Hermes",
         status: str = "completed",
         error_summary: str = "",
+        elapsed_seconds: float = 0,
     ) -> None:
         """Update the streaming card header to reflect completion/error status."""
         if not HAS_CARDKIT:
@@ -2406,6 +2421,7 @@ class FeishuAdapter(BasePlatformAdapter):
             card_json = self._build_finalized_header_json(
                 bot_name=bot_name, status=status, error_summary=error_summary,
                 last_content=card_state.get("last_content", ""),
+                elapsed_seconds=elapsed_seconds,
             )
             card_obj = CardKitCard.builder() \
                 .type("card_json") \
@@ -2477,11 +2493,13 @@ class FeishuAdapter(BasePlatformAdapter):
                 # Only attempt if we have content to preserve — otherwise
                 # skip to avoid wiping the card body with empty content.
                 last_content = card_state.get("last_content", "")
+                elapsed = time.monotonic() - card_state.get("created_at", time.monotonic())
                 if last_content:
                     await self._update_card_header(
                         card_id, card_state,
                         bot_name=self._bot_name, status=status,
                         error_summary=error_summary,
+                        elapsed_seconds=elapsed,
                     )
                 else:
                     logger.debug(
@@ -2534,6 +2552,34 @@ class FeishuAdapter(BasePlatformAdapter):
             seen_states.add(state_id)
             real_card_id = card_state.get("card_id", key)
             await self._close_streaming_card(chat_id, real_card_id, card_state=card_state)
+
+    async def _split_streaming_card(
+        self,
+        chat_id: str,
+        card_id: str,
+        card_state: Dict[str, Any],
+    ) -> None:
+        """Finalize the current card and open a fresh one for continued streaming.
+
+        Called when ``element_count`` approaches the Feishu card limit (~200).
+        The new card replies to the old card's message for threading continuity.
+        """
+        old_msg_id = card_state.get("message_id")
+        last_content = card_state.get("last_content", "")
+        logger.info(
+            "[Feishu] Splitting streaming card: card_id=%s elements=%d",
+            card_id, card_state.get("element_count", 0),
+        )
+        await self._close_streaming_card(chat_id, card_id, card_state=card_state)
+        # Create fresh card, replying to old for continuity.
+        new_result = await self._send_streaming_card(
+            chat_id=chat_id, content=last_content, reply_to=old_msg_id,
+        )
+        if new_result is None:
+            logger.warning(
+                "[Feishu] Split card creation failed for chat=%s; falling back",
+                chat_id,
+            )
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
