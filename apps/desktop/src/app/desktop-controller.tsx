@@ -55,8 +55,8 @@ import {
   $gatewayState,
   $messages,
   $messagingSessions,
-  $resumeFailedSessionId,
   $resumeExhaustedSessionId,
+  $resumeFailedSessionId,
   $selectedStoredSessionId,
   $sessions,
   $workingSessionIds,
@@ -118,6 +118,7 @@ import { usePreviewRouting } from './session/hooks/use-preview-routing'
 import { usePromptActions } from './session/hooks/use-prompt-actions'
 import { useRouteResume } from './session/hooks/use-route-resume'
 import { useSessionActions } from './session/hooks/use-session-actions'
+import { useSessionPresence } from './session/hooks/use-session-presence'
 import { useSessionStateCache } from './session/hooks/use-session-state-cache'
 import { AppShell } from './shell/app-shell'
 import { useOverlayRouting } from './shell/hooks/use-overlay-routing'
@@ -587,6 +588,8 @@ export function DesktopController() {
     requestGateway
   })
 
+  useSessionPresence(gatewayState, requestGateway)
+
   const hydrateFromStoredSession = useCallback(
     async (
       attempts = 1,
@@ -663,6 +666,7 @@ export function DesktopController() {
     branchCurrentSession,
     createBackendSessionForSend,
     openSettings,
+    openPresenceSession,
     removeSession,
     resumeSession,
     selectSidebarItem,
@@ -938,6 +942,7 @@ export function DesktopController() {
       }}
       onNavigate={selectSidebarItem}
       onNewSessionInWorkspace={startSessionInWorkspace}
+      onOpenPresenceSession={openPresenceSession}
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
       onTriggerCronJob={jobId => {
         void triggerCronJob(jobId)
