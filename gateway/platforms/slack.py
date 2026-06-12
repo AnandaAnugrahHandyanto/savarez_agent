@@ -672,6 +672,43 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 await self._handle_slash_command(command)
 
+            # Register config-driven slash forwards (slack.slash_forwards in
+            # config.yaml). In Socket Mode, Slack never calls a slash
+            # command's HTTP Request URL, so commands owned by an external
+            # local service must be relayed by the gateway — re-signed with
+            # SLACK_SIGNING_SECRET so the receiving service's standard Slack
+            # signature verification keeps working. See slack_slash_forward.py.
+            from gateway.platforms.slack_slash_forward import parse_slash_forwards
+
+            _forwards = parse_slash_forwards(self.config.extra.get("slash_forwards"))
+            for _name in set(_forwards) & set(_slash_names):
+                logger.warning(
+                    "[Slack] slash_forwards entry /%s collides with a gateway "
+                    "command; the gateway command wins and the forward is ignored",
+                    _name,
+                )
+                _forwards.pop(_name)
+            if _forwards:
+                _fwd_pattern = _re.compile(
+                    r"^/(?:" + "|".join(_re.escape(n) for n in _forwards) + r")$"
+                )
+
+                @self._app.command(_fwd_pattern)
+                async def handle_forwarded_slash(ack, command):
+                    slash = (command.get("command") or "").lstrip("/")
+                    await ack(
+                        response_type="ephemeral",
+                        text=f"Running `/{slash}`…",
+                    )
+                    await self._handle_forwarded_slash_command(
+                        command, _forwards[slash]
+                    )
+
+                logger.info(
+                    "[Slack] slash forwards registered: %s",
+                    ", ".join(f"/{n}" for n in sorted(_forwards)),
+                )
+
             # Register Block Kit action handlers for approval buttons
             for _action_id in (
                 "hermes_approve_once",
@@ -2863,6 +2900,42 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)
             return ""
+
+    async def _handle_forwarded_slash_command(self, command: dict, url: str) -> None:
+        """Relay a config-forwarded slash command to its external service.
+
+        The initial ephemeral ack is already sent by the Bolt handler; the
+        forwarded service's reply (or an error notice) is delivered through
+        the slash payload's ``response_url``.
+        """
+        from gateway.platforms.slack_slash_forward import (
+            forward_slash_command,
+            post_response_url,
+        )
+
+        slash = (command.get("command") or "").lstrip("/")
+        signing_secret = os.environ.get("SLACK_SIGNING_SECRET", "")
+        result = await forward_slash_command(command, url, signing_secret)
+
+        response_url = command.get("response_url", "")
+        if not response_url:
+            if not result.get("ok"):
+                logger.warning(
+                    "[Slack] /%s forward failed (no response_url to notify): %s",
+                    slash,
+                    result.get("error"),
+                )
+            return
+
+        if result.get("ok"):
+            payload = dict(result["payload"])
+            payload.setdefault("response_type", "ephemeral")
+        else:
+            payload = {
+                "response_type": "ephemeral",
+                "text": f"`/{slash}` failed: {result.get('error', 'unknown error')}",
+            }
+        await post_response_url(response_url, payload)
 
     async def _handle_slash_command(self, command: dict) -> None:
         """Handle Slack slash commands.
