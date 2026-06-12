@@ -142,6 +142,9 @@ def build_turn_context(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    if hasattr(agent, "_progress_outcome_canary"):
+        agent._progress_outcome_canary.reset_for_turn()
+    agent._progress_outcome_events = []
     agent._vision_supported = True
 
     # Pre-turn connection health check: clean up dead TCP connections.
