@@ -13013,9 +13013,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # reaches this OS-signal path. This matches how Claude Code
             # handles the same Windows quirk (cancellation is driven by
             # the TUI key handler, not by OS signals).
-            #
-            # POSIX: leave the default SIGINT handler alone. prompt_toolkit
-            # installs its own handler there and it works as expected.
             if sys.platform == "win32":
                 def _sigint_absorb(signum, frame):
                     # Absorb silently. Do NOT call agent.interrupt() here:
@@ -13027,6 +13024,43 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     # Claude Code's Windows handling).
                     return
                 _signal.signal(_signal.SIGINT, _sigint_absorb)
+            else:
+                # POSIX: install a SIGINT handler that interrupts the agent
+                # instead of raising KeyboardInterrupt.  When prompt_toolkit
+                # is in raw mode, Ctrl+C is read as a key byte and handled
+                # by the @kb.add('c-c') binding — this handler never fires.
+                # But when raw mode isn't active (SSH quirks, terminal
+                # multiplexers, or timing during startup/shutdown), Ctrl+C
+                # reaches the OS signal path.  Without this handler the
+                # default Python behaviour raises KeyboardInterrupt, which
+                # unwinds app.run() and exits the TUI instead of gracefully
+                # interrupting the running command.  Belt-and-suspenders
+                # with the prompt_toolkit key binding: whichever path catches
+                # the Ctrl+C first handles it; the other is a harmless no-op.
+                def _sigint_posix(signum, frame):
+                    _cli_ref = cli_ref  # capture from enclosing scope
+                    if getattr(_cli_ref, '_agent_running', False) and getattr(_cli_ref, 'agent', None):
+                        try:
+                            _cli_ref.agent.interrupt()
+                        except Exception:
+                            pass
+                        # Schedule a prompt_toolkit UI repaint so the
+                        # interrupt message (if printed by the key binding
+                        # handler on the event-loop thread) is flushed.
+                        try:
+                            _app_ref = getattr(_cli_ref, '_app', None)
+                            if _app_ref is not None and _app_ref.is_running:
+                                _app_ref.invalidate()
+                        except Exception:
+                            pass
+                    # Do NOT raise KeyboardInterrupt — let the TUI stay alive
+                    # so the user gets back to the prompt after the interrupt.
+                    # If there's truly no agent running (idle prompt), fall
+                    # through to default behaviour so Ctrl+C still clears
+                    # the input buffer or exits as expected.
+                    elif not getattr(_cli_ref, '_agent_running', False):
+                        raise KeyboardInterrupt()
+                _signal.signal(_signal.SIGINT, _sigint_posix)
         except Exception:
             pass  # Signal handlers may fail in restricted environments
         

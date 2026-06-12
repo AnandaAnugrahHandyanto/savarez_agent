@@ -87,25 +87,29 @@
   }
 
   // Order matches BOARD_COLUMNS in plugin_api.py.
-  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "done"];
+  const COLUMN_ORDER = ["triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done"];
   // English fallback dictionaries — used when the i18n catalog is missing
   // a key, and as defaults for the get*() helpers below so callers running
   // outside any React component (where there's no `t`) still get sane text.
   const FALLBACK_COLUMN_LABEL = {
     triage: "Triage",
     todo: "Todo",
+    scheduled: "Scheduled",
     ready: "Ready",
     running: "In Progress",
     blocked: "Blocked",
+    review: "Review",
     done: "Done",
     archived: "Archived",
   };
   const FALLBACK_COLUMN_HELP = {
     triage: "Raw ideas — a specifier will flesh out the spec",
     todo: "Waiting on dependencies or unassigned",
+    scheduled: "Waiting on a known time delay or scheduled follow-up",
     ready: "Dependencies satisfied; assign a profile to dispatch",
     running: "Claimed by a worker — in-flight",
     blocked: "Worker asked for human input",
+    review: "Completed, awaiting human review",
     done: "Completed",
     archived: "Archived",
   };
@@ -154,9 +158,11 @@
   const COLUMN_DOT = {
     triage: "hermes-kanban-dot-triage",
     todo: "hermes-kanban-dot-todo",
+    scheduled: "hermes-kanban-dot-scheduled",
     ready: "hermes-kanban-dot-ready",
     running: "hermes-kanban-dot-running",
     blocked: "hermes-kanban-dot-blocked",
+    review: "hermes-kanban-dot-review",
     done: "hermes-kanban-dot-done",
     archived: "hermes-kanban-dot-archived",
   };
@@ -2227,10 +2233,55 @@
   }
 
   // -------------------------------------------------------------------------
+  // Dashboard settings — read column visibility from localStorage so the
+  // board respects the user's preferences without requiring SDK changes.
+  // -------------------------------------------------------------------------
+
+  const DASHBOARD_SETTINGS_KEY = "hermes-dashboard-settings";
+
+  function readColumnVisibility() {
+    try {
+      const raw = localStorage.getItem(DASHBOARD_SETTINGS_KEY);
+      if (!raw) return null; // no prefs saved yet → show all
+      const parsed = JSON.parse(raw);
+      return (parsed && parsed.kanbanColumns) ? parsed.kanbanColumns : null;
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Columns
   // -------------------------------------------------------------------------
 
   function BoardColumns(props) {
+    const [columnVisibility, setColumnVisibility] = useState(readColumnVisibility);
+
+    useEffect(function () {
+      function onStorage(e) {
+        if (e.key === DASHBOARD_SETTINGS_KEY) {
+          setColumnVisibility(readColumnVisibility());
+        }
+      }
+      window.addEventListener("storage", onStorage);
+      return function () { window.removeEventListener("storage", onStorage); };
+    }, []);
+
+    // Also re-read on mount_focus: the user may have changed settings in
+    // another tab or in the dashboard-settings page and navigated back.
+    useEffect(function () {
+      function onFocus() { setColumnVisibility(readColumnVisibility()); }
+      window.addEventListener("focus", onFocus);
+      return function () { window.removeEventListener("focus", onFocus); };
+    }, []);
+
+    const visibleColumns = useMemo(function () {
+      if (!columnVisibility) return props.board.columns;
+      return props.board.columns.filter(function (col) {
+        // Columns not in the settings map (e.g. unexpected future columns) default to visible.
+        return columnVisibility[col.name] !== false;
+      });
+    }, [props.board.columns, columnVisibility]);
     const handleDragStart = useCallback(function (e) {
       const card = e.target.closest && e.target.closest(".hermes-kanban-card");
       if (!card) return;
@@ -2241,7 +2292,7 @@
       if (props.onDragEnd) props.onDragEnd();
     }, [props.onDragEnd]);
     return h("div", { className: "hermes-kanban-columns", onDragStart: handleDragStart, onDragEnd: handleDragEnd },
-      props.board.columns.map(function (col) {
+      visibleColumns.map(function (col) {
         return h(Column, {
           key: col.name,
           column: col,

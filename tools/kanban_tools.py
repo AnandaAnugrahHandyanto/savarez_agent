@@ -753,7 +753,10 @@ def _handle_create(args: dict, **kw) -> str:
     workspace_kind = args.get("workspace_kind")
     workspace_path = args.get("workspace_path")
     _inherit_workspace = workspace_kind is None and workspace_path is None
-    if workspace_kind is None:
+    # When creating child tasks (has parents) without explicit workspace,
+    # inherit parent's workspace so children can access parent artifacts.
+    # Independent tasks (no parents) default to scratch.
+    if workspace_kind is None and not parents:
         workspace_kind = "scratch"
     triage, bool_error = _parse_bool_arg(args, "triage")
     if bool_error:

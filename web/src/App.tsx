@@ -17,19 +17,13 @@ import {
   useNavigate,
 } from "react-router-dom";
 import {
-  Activity,
   BarChart3,
   BookOpen,
   Clock,
-  Code,
   Cpu,
-  Database,
   Download,
-  Eye,
   FolderOpen,
   FileText,
-  Globe,
-  Heart,
   KeyRound,
   Menu,
   MessageSquare,
@@ -41,16 +35,12 @@ import {
   Radio,
   RotateCw,
   Settings,
-  Shield,
   ShieldCheck,
-  Sparkles,
-  Star,
   Terminal,
   Users,
   Webhook,
   Wrench,
   X,
-  Zap,
 } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
@@ -99,6 +89,12 @@ import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
 import type { StatusResponse } from "@/lib/api";
+import { useDashboardSettings } from "@/contexts/dashboard-settings-context";
+import {
+  applySidebarOrder,
+} from "@/contexts/dashboard-settings-context";
+import { ICON_REGISTRY } from "@/lib/icon-registry";
+import DashboardSettingsPage from "@/pages/DashboardSettingsPage";
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
@@ -117,6 +113,12 @@ const CHAT_NAV_ITEM: NavItem = {
   labelKey: "chat",
   label: "Chat",
   icon: Terminal,
+};
+
+const DASHBOARD_SETTINGS_NAV_ITEM: NavItem = {
+  path: "/dashboard-settings",
+  label: "Dashboard Settings",
+  icon: Settings,
 };
 
 /**
@@ -148,6 +150,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
+  "/dashboard-settings": DashboardSettingsPage,
 };
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
@@ -198,34 +201,8 @@ const BUILTIN_NAV_REST: NavItem[] = [
   },
 ];
 
-const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
-  Activity,
-  BarChart3,
-  Clock,
-  Cpu,
-  FileText,
-  FolderOpen,
-  KeyRound,
-  MessageSquare,
-  Package,
-  Settings,
-  Puzzle,
-  Sparkles,
-  Terminal,
-  Globe,
-  Database,
-  Shield,
-  Users,
-  Wrench,
-  Zap,
-  Heart,
-  Star,
-  Code,
-  Eye,
-};
-
 function resolveIcon(name: string): ComponentType<{ className?: string }> {
-  return ICON_MAP[name] ?? Puzzle;
+  return ICON_REGISTRY[name] ?? Puzzle;
 }
 
 function buildNavItems(
@@ -344,11 +321,36 @@ function buildRoutes(
 
 const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
 
+/**
+ * Map a nav-item path to the corresponding SideMenuTabVisibility key.
+ * Returns null for paths that have no toggle (e.g. /dashboard-settings itself).
+ */
+const PATH_TO_TAB_KEY: Record<string, string> = {
+  "/chat": "chat",
+  "/sessions": "sessions",
+  "/analytics": "analytics",
+  "/models": "models",
+  "/logs": "logs",
+  "/cron": "cron",
+  "/skills": "skills",
+  "/plugins": "plugins",
+  "/mcp": "mcp",
+  "/channels": "channels",
+  "/webhooks": "webhooks",
+  "/pairing": "pairing",
+  "/profiles": "profiles",
+  "/config": "config",
+  "/env": "env",
+  "/system": "system",
+  "/docs": "docs",
+};
+
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
   const { manifests, loading: pluginsLoading } = usePlugins();
   const { theme } = useTheme();
+  const dashboardSettings = useDashboardSettings();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
 
@@ -437,6 +439,35 @@ export default function App() {
     () => partitionSidebarNav(builtinNav, manifests),
     [builtinNav, manifests],
   );
+
+  // Filter core nav items by per-user side-menu tab visibility settings
+  // and apply saved sidebar ordering.
+  const filteredSidebarNav = useMemo(() => {
+    const sideMenuTabs = dashboardSettings.settings.sideMenuTabs;
+    const sidebarOrder = dashboardSettings.settings.sidebarItemOrder;
+    const folded = sidebarOrder.pluginsFoldedIntoSidebar;
+
+    // Filter by visibility
+    const visibleCore = sidebarNav.coreItems.filter((item) => {
+      const tabKey = PATH_TO_TAB_KEY[item.path];
+      if (!tabKey) return true;
+      return sideMenuTabs[tabKey as keyof typeof sideMenuTabs] !== false;
+    });
+    const visiblePlugin = sidebarNav.pluginItems;
+
+    if (folded) {
+      // Merge core + plugin, then apply unified order
+      const merged = [...visibleCore, ...visiblePlugin];
+      const ordered = applySidebarOrder(merged, sidebarOrder.unifiedOrder);
+      return { coreItems: ordered, pluginItems: [], folded: true };
+    }
+
+    // Separate: apply coreOrder and pluginOrder independently
+    const orderedCore = applySidebarOrder(visibleCore, sidebarOrder.coreOrder);
+    const orderedPlugin = applySidebarOrder(visiblePlugin, sidebarOrder.pluginOrder);
+    return { coreItems: orderedCore, pluginItems: orderedPlugin, folded: false };
+  }, [sidebarNav, dashboardSettings.settings.sideMenuTabs, dashboardSettings.settings.sidebarItemOrder]);
+
   const routes = useMemo(
     () => buildRoutes(builtinRoutes, manifests),
     [builtinRoutes, manifests],
@@ -615,19 +646,24 @@ export default function App() {
               aria-label={t.app.navigation}
             >
               <ul className="flex flex-col">
-                {sidebarNav.coreItems.map((item) => (
-                  <SidebarNavLink
-                    closeMobile={closeMobile}
-                    collapsed={isDesktopCollapsed}
-                    item={item}
-                    key={item.path}
-                    t={t}
-                    tooltipWarmRef={tooltipWarmRef}
-                  />
-                ))}
+                {filteredSidebarNav.coreItems.map((item) => {
+                  const itemId = item.path.replace(/^\//, "");
+                  const customization = dashboardSettings.getSidebarItemCustomization(itemId);
+                  return (
+                    <SidebarNavLink
+                      closeMobile={closeMobile}
+                      collapsed={isDesktopCollapsed}
+                      item={item}
+                      key={item.path}
+                      t={t}
+                      tooltipWarmRef={tooltipWarmRef}
+                      customization={customization}
+                    />
+                  );
+                })}
               </ul>
 
-              {sidebarNav.pluginItems.length > 0 && (
+              {filteredSidebarNav.pluginItems.length > 0 && !filteredSidebarNav.folded && (
                 <div
                   aria-labelledby="hermes-sidebar-plugin-nav-heading"
                   className="flex flex-col border-t border-current/10 pb-2"
@@ -645,19 +681,37 @@ export default function App() {
                   </span>
 
                   <ul className="flex flex-col">
-                    {sidebarNav.pluginItems.map((item) => (
-                      <SidebarNavLink
-                        closeMobile={closeMobile}
-                        collapsed={isDesktopCollapsed}
-                        item={item}
-                        key={item.path}
-                        t={t}
-                        tooltipWarmRef={tooltipWarmRef}
-                      />
-                    ))}
+                    {filteredSidebarNav.pluginItems.map((item) => {
+                      const itemId = item.path.replace(/^\//, "");
+                      const customization = dashboardSettings.getSidebarItemCustomization(itemId);
+                      return (
+                        <SidebarNavLink
+                          closeMobile={closeMobile}
+                          collapsed={isDesktopCollapsed}
+                          item={item}
+                          key={item.path}
+                          t={t}
+                          tooltipWarmRef={tooltipWarmRef}
+                          customization={customization}
+                        />
+                      );
+                    })}
                   </ul>
                 </div>
               )}
+
+              <div className="border-t border-current/10 pt-1 pb-1">
+                <ul className="flex flex-col">
+                  <SidebarNavLink
+                    closeMobile={closeMobile}
+                    collapsed={isDesktopCollapsed}
+                    item={DASHBOARD_SETTINGS_NAV_ITEM}
+                    key={DASHBOARD_SETTINGS_NAV_ITEM.path}
+                    t={t}
+                    tooltipWarmRef={tooltipWarmRef}
+                  />
+                </ul>
+              </div>
             </nav>
 
             <SidebarSystemActions
@@ -810,14 +864,30 @@ function SidebarNavLink({
   item,
   tooltipWarmRef,
   t,
+  customization,
 }: SidebarNavLinkProps) {
-  const { path, label, labelKey, icon: Icon } = item;
+  const { path, label, labelKey, icon: DefaultIcon } = item;
   const liRef = useRef<HTMLLIElement>(null);
   const [hovered, setHovered] = useState(false);
 
-  const navLabel = labelKey
-    ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
-    : label;
+  // Apply customization: custom label overrides default, custom icon overrides default
+  const customLabel = customization?.label;
+  const customIcon = customization?.icon;
+
+  // Resolve icon component from custom icon name
+  const Icon = useMemo(() => {
+    if (customIcon) {
+      const resolved = ICON_REGISTRY[customIcon];
+      if (resolved) return resolved;
+    }
+    return DefaultIcon;
+  }, [customIcon, DefaultIcon]);
+
+  const navLabel = customLabel
+    ? customLabel
+    : labelKey
+      ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
+      : label;
 
   return (
     <li
@@ -1174,6 +1244,7 @@ interface GatewayDotProps {
 }
 
 interface NavItem {
+  id?: string;
   icon: ComponentType<{ className?: string }>;
   label: string;
   labelKey?: string;
@@ -1193,6 +1264,7 @@ interface SidebarNavLinkProps {
   item: NavItem;
   t: Translations;
   tooltipWarmRef: TooltipWarmRef;
+  customization?: { label?: string; icon?: string };
 }
 
 interface SidebarSystemActionsProps {
