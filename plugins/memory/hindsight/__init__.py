@@ -1432,6 +1432,8 @@ class HindsightMemoryProvider(MemoryProvider):
             kwargs["document_id"] = document_id
         if retain_async is not None:
             kwargs["retain_async"] = retain_async
+        else:
+            kwargs["retain_async"] = self._retain_async
         merged_tags = _normalize_retain_tags(self._retain_tags)
         for tag in _normalize_retain_tags(tags):
             if tag not in merged_tags:
