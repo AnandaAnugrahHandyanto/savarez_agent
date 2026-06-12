@@ -8,12 +8,12 @@
 #   iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 #
 # Or download and run with options:
-#   .\install.ps1 -NoVenv -SkipSetup
+#   .\install.ps1 -SkipSetup
 #
 # ============================================================================
 
 param(
-    [switch]$NoVenv,
+    
     [switch]$SkipSetup,
     [string]$Branch = "main",
     # -Commit and -Tag are higher-precedence variants of -Branch for users
@@ -1360,12 +1360,7 @@ function Install-Repository {
 }
 
 function Install-Venv {
-    if ($NoVenv) {
-        Write-Info "Skipping virtual environment (-NoVenv)"
-        return
-    }
-    
-    Write-Info "Creating virtual environment with Python $PythonVersion..."
+Write-Info "Creating virtual environment with Python $PythonVersion..."
     
     Push-Location $InstallDir
     
@@ -1399,220 +1394,215 @@ function Install-Dependencies {
     
     Push-Location $InstallDir
     
-    if (-not $NoVenv) {
-        # Tell uv to install into our venv (no activation needed)
-        $env:VIRTUAL_ENV = "$InstallDir\venv"
-    }
+    
 
-    # Re-pin UV_PYTHON to the venv interpreter. Install-Venv already does this,
-    # but the bootstrap runs install stages (venv, python-deps) as separate
-    # processes, so the env var set in Install-Venv does NOT survive into a
-    # separate python-deps invocation. Re-deriving it here covers that path.
-    # Without it, an inherited $env:UV_PYTHON = "3.14" makes the uv sync/pip
-    # tiers below recreate the venv at 3.14 and fail the maturin source build
-    # (no cp314 wheels yet).
-    if (-not $NoVenv) {
-        $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
-        if (Test-Path $venvPythonExe) {
-            $env:UV_PYTHON = $venvPythonExe
-        }
-    }
+    # Tell uv to install into our venv (no activation needed)
+    $env:VIRTUAL_ENV = "$InstallDir\venv"
+}
 
-    # Hash-verified install (Tier 0) -- when uv.lock is present, prefer
-    # `uv sync --locked`. The lockfile records SHA256 hashes for every
-    # transitive dependency, so a compromised transitive (different hash
-    # than what we shipped) is REJECTED by the resolver. This is the
-    # *only* path that protects against the "direct dep is fine, but the
-    # dep's dep got worm-poisoned overnight" failure mode. The
-    # `uv pip install` tiers below re-resolve transitives fresh from PyPI
-    # without any hash verification -- they exist to keep installs working
-    # when the lockfile is stale, missing, or out-of-sync with the
-    # current extras spec, NOT because they're equivalent in posture.
-    if (Test-Path "uv.lock") {
-        Write-Info "Trying tier: hash-verified (uv.lock) ..."
-        # Critical flag choice: `--extra all`, NOT `--all-extras`.
-        #   --all-extras = every [project.optional-dependencies] key,
-        #                  bypassing the curated [all] extra. On Windows
-        #                  that means [matrix] -> python-olm (no wheel,
-        #                  needs `make` to build from sdist) and the
-        #                  install fails.
-        #   --extra all  = just the [all] extra's contents (curated).
-        #
-        # UV_PROJECT_ENVIRONMENT pins the sync target to our venv\.
-        # Without it, modern uv (>=0.5) ignores VIRTUAL_ENV for `sync`
-        # and creates a sibling .venv\ inside the repo -- leaving venv\
-        # empty and producing the broken state where `hermes.exe` exists
-        # in the wrong directory and imports fail with ModuleNotFoundError.
-        # (Mirrors the same flag in scripts/install.sh::install_deps.)
-        $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
-        & $UvCmd sync --extra all --locked
-        if ($LASTEXITCODE -eq 0) {
-            Write-Success "Main package installed (hash-verified via uv.lock)"
-            $script:InstalledTier = "hash-verified (uv.lock)"
-            # Skip the rest of the tiered cascade -- we already have a
-            # complete, hash-verified install.
-            $skipPipFallback = $true
-        } else {
-            Write-Warn "uv.lock sync failed (lockfile may be stale), falling back to PyPI resolve..."
-            $skipPipFallback = $false
-        }
+# Re-pin UV_PYTHON to the venv interpreter. Install-Venv already does this,
+# but the bootstrap runs install stages (venv, python-deps) as separate
+# processes, so the env var set in Install-Venv does NOT survive into a
+# separate python-deps invocation. Re-deriving it here covers that path.
+# Without it, an inherited $env:UV_PYTHON = "3.14" makes the uv sync/pip
+# tiers below recreate the venv at 3.14 and fail the maturin source build
+# (no cp314 wheels yet).
+$venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+if (Test-Path $venvPythonExe) {
+    $env:UV_PYTHON = $venvPythonExe
+}
+}
+
+# Hash-verified install (Tier 0) -- when uv.lock is present, prefer
+# `uv sync --locked`. The lockfile records SHA256 hashes for every
+# transitive dependency, so a compromised transitive (different hash
+# than what we shipped) is REJECTED by the resolver. This is the
+# *only* path that protects against the "direct dep is fine, but the
+# dep's dep got worm-poisoned overnight" failure mode. The
+# `uv pip install` tiers below re-resolve transitives fresh from PyPI
+# without any hash verification -- they exist to keep installs working
+# when the lockfile is stale, missing, or out-of-sync with the
+# current extras spec, NOT because they're equivalent in posture.
+if (Test-Path "uv.lock") {
+    Write-Info "Trying tier: hash-verified (uv.lock) ..."
+    # Critical flag choice: `--extra all`, NOT `--all-extras`.
+    #   --all-extras = every [project.optional-dependencies] key,
+    #                  bypassing the curated [all] extra. On Windows
+    #                  that means [matrix] -> python-olm (no wheel,
+    #                  needs `make` to build from sdist) and the
+    #                  install fails.
+    #   --extra all  = just the [all] extra's contents (curated).
+    #
+    # UV_PROJECT_ENVIRONMENT pins the sync target to our venv\.
+    # Without it, modern uv (>=0.5) ignores VIRTUAL_ENV for `sync`
+    # and creates a sibling .venv\ inside the repo -- leaving venv\
+    # empty and producing the broken state where `hermes.exe` exists
+    # in the wrong directory and imports fail with ModuleNotFoundError.
+    # (Mirrors the same flag in scripts/install.sh::install_deps.)
+    $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
+    & $UvCmd sync --extra all --locked
+    if ($LASTEXITCODE -eq 0) {
+        Write-Success "Main package installed (hash-verified via uv.lock)"
+        $script:InstalledTier = "hash-verified (uv.lock)"
+        # Skip the rest of the tiered cascade -- we already have a
+        # complete, hash-verified install.
+        $skipPipFallback = $true
     } else {
-        Write-Info "uv.lock not found -- falling back to PyPI resolve (no hash verification)"
+        Write-Warn "uv.lock sync failed (lockfile may be stale), falling back to PyPI resolve..."
         $skipPipFallback = $false
     }
+} else {
+    Write-Info "uv.lock not found -- falling back to PyPI resolve (no hash verification)"
+    $skipPipFallback = $false
+}
 
-    # Install main package.  Tiered fallback so a single flaky transitive
-    # doesn't silently drop everything.  Each tier's stdout/stderr is
-    # preserved -- no Out-Null swallowing -- so the user can see what failed.
-    #
-    # Tier 1: [all] -- the curated extra in pyproject.toml.
-    # Tier 2: [all] minus the currently-broken extras list ($brokenExtras).
-    #         Edit $brokenExtras below when something on PyPI breaks; this
-    #         lets users keep the rest of [all] when one transitive is
-    #         unavailable. The list of [all]'s contents is parsed from
-    #         pyproject.toml at runtime -- there is NO hand-mirrored copy
-    #         to drift out of sync.
-    # Tier 3: bare `.` -- last-resort so at least the core CLI launches.
+# Install main package.  Tiered fallback so a single flaky transitive
+# doesn't silently drop everything.  Each tier's stdout/stderr is
+# preserved -- no Out-Null swallowing -- so the user can see what failed.
+#
+# Tier 1: [all] -- the curated extra in pyproject.toml.
+# Tier 2: [all] minus the currently-broken extras list ($brokenExtras).
+#         Edit $brokenExtras below when something on PyPI breaks; this
+#         lets users keep the rest of [all] when one transitive is
+#         unavailable. The list of [all]'s contents is parsed from
+#         pyproject.toml at runtime -- there is NO hand-mirrored copy
+#         to drift out of sync.
+# Tier 3: bare `.` -- last-resort so at least the core CLI launches.
 
-    # Currently-broken extras. Edit this list when an upstream package
-    # gets quarantined / yanked / breaks resolution. Empty means everything
-    # in [all] should be installable; populate with the names of extras
-    # whose deps are temporarily unavailable.
-    $brokenExtras = @()
+# Currently-broken extras. Edit this list when an upstream package
+# gets quarantined / yanked / breaks resolution. Empty means everything
+# in [all] should be installable; populate with the names of extras
+# whose deps are temporarily unavailable.
+$brokenExtras = @()
 
-    # Parse [project.optional-dependencies].all from pyproject.toml.
-    # tomllib is stdlib on Python 3.11+ which the bootstrap guarantees.
-    $pythonExeForParse = if (-not $NoVenv) { "$InstallDir\venv\Scripts\python.exe" } else { (& $UvCmd python find $PythonVersion) }
-    $allExtras = @()
-    if (Test-Path $pythonExeForParse) {
-        $parsed = & $pythonExeForParse -c @"
+# Parse [project.optional-dependencies].all from pyproject.toml.
+# tomllib is stdlib on Python 3.11+ which the bootstrap guarantees.
+$pythonExeForParse = "$InstallDir\venv\Scripts\python.exe"
+$allExtras = @()
+if (Test-Path $pythonExeForParse) {
+    $parsed = & $pythonExeForParse -c @"
 import re, sys, tomllib
 try:
-    with open('pyproject.toml', 'rb') as fh:
-        data = tomllib.load(fh)
-    specs = data['project']['optional-dependencies']['all']
-    out = []
-    for s in specs:
-        m = re.search(r'hermes-agent\[([\w-]+)\]', s)
-        if m: out.append(m.group(1))
-    print(','.join(out))
+with open('pyproject.toml', 'rb') as fh:
+    data = tomllib.load(fh)
+specs = data['project']['optional-dependencies']['all']
+out = []
+for s in specs:
+    m = re.search(r'hermes-agent\[([\w-]+)\]', s)
+    if m: out.append(m.group(1))
+print(','.join(out))
 except Exception:
-    sys.exit(1)
+sys.exit(1)
 "@ 2>$null
-        if ($LASTEXITCODE -eq 0 -and $parsed) {
-            $allExtras = $parsed.Trim().Split(',')
-        }
+    if ($LASTEXITCODE -eq 0 -and $parsed) {
+        $allExtras = $parsed.Trim().Split(',')
     }
-    if (-not $allExtras -or $allExtras.Count -eq 0) {
-        Write-Warn "Could not parse [all] from pyproject.toml; Tier 2 will be a no-op."
-        $safeAll = "all"
-    } else {
-        $safeAll = ($allExtras | Where-Object { $brokenExtras -notcontains $_ }) -join ","
-    }
-    $brokenLabel = if ($brokenExtras) { ($brokenExtras -join ", ") } else { "none" }
-
-    $installTiers = @(
-        @{ Name = "all"; Spec = ".[all]" },
-        @{ Name = "all minus known-broken ($brokenLabel)"; Spec = ".[$safeAll]" },
-        @{ Name = "core only (no extras)"; Spec = "." }
-    )
-    $installed = $skipPipFallback
-    if (-not $skipPipFallback) {
-        foreach ($tier in $installTiers) {
-        Write-Info "Trying tier: $($tier.Name) ..."
-        & $UvCmd pip install -e $tier.Spec
-        if ($LASTEXITCODE -eq 0) {
-            Write-Success "Main package installed ($($tier.Name))"
-            $script:InstalledTier = $tier.Name
-            $installed = $true
-            break
-        }
-        Write-Warn "Tier '$($tier.Name)' failed (exit $LASTEXITCODE). Trying next tier..."
-        }
-    }
-    if (-not $installed) {
-        throw "Failed to install hermes-agent package even with no extras. Inspect the uv pip install output above."
-    }
-
-    # Baseline-import gate. Even if a tier reported success above, the
-    # actual deps may have landed somewhere other than $InstallDir\venv\
-    # (e.g. uv 0.5+ syncing into a sibling .venv\ when UV_PROJECT_ENVIRONMENT
-    # isn't set, leaving venv\ empty and hermes.exe broken with
-    # `ModuleNotFoundError: No module named 'dotenv'` on first run).
-    # We probe via the venv's own python so a misdirected sync is caught
-    # here, not 30 seconds later when the user runs `hermes`.
-    if (-not $NoVenv) {
-        $venvPython = "$InstallDir\venv\Scripts\python.exe"
-        if (-not (Test-Path $venvPython)) {
-            throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, manually: cd '$InstallDir'; Remove-Item -Recurse -Force venv,.venv; uv venv venv --python $PythonVersion; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
-        }
-        # Relax EAP=Stop while running the import probe.  Python writes
-        # deprecation warnings and import-system info to stderr; under
-        # EAP=Stop the 2>&1 merge wraps those as ErrorRecord objects and
-        # throws even when the imports succeed.  $LASTEXITCODE is the
-        # reliable signal (it's 0 iff the python invocation exited 0,
-        # regardless of what was written to stderr).
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        & $venvPython -c "import dotenv, openai, rich, prompt_toolkit" 2>&1 | Out-Null
-        $importExitCode = $LASTEXITCODE
-        $ErrorActionPreference = $prevEAP
-        if ($importExitCode -ne 0) {
-            $sibling = "$InstallDir\.venv"
-            $hint = if (Test-Path $sibling) {
-                "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Recover with: cd '$InstallDir'; Remove-Item -Recurse -Force venv; Move-Item .venv venv"
-            } else {
-                "Recover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
-            }
-            throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
-        }
-        Write-Success "Baseline imports verified in venv"
-    }
-
-    # Verify the dashboard deps specifically -- they're the most common thing
-    # users hit and lazy-import errors from `hermes dashboard` are confusing.
-    # If tier 1 failed (the common case), [web] was still picked up by tiers
-    # 2-3; only tier 4 leaves you without it.
-    $pythonExe = if (-not $NoVenv) { "$InstallDir\venv\Scripts\python.exe" } else { (& $UvCmd python find $PythonVersion) }
-    if (Test-Path $pythonExe) {
-        $webOk = $false
-        # Relax EAP=Stop while running the import probe; see the matching
-        # comment on the baseline-imports check above.  Python writes
-        # deprecation warnings to stderr and we don't want those wrapped
-        # as ErrorRecords that silently force the "not importable" path
-        # even when fastapi/uvicorn are actually installed.
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        try {
-            & $pythonExe -c "import fastapi, uvicorn" 2>&1 | Out-Null
-            if ($LASTEXITCODE -eq 0) { $webOk = $true }
-        } catch { }
-        $ErrorActionPreference = $prevEAP
-        if (-not $webOk) {
-            Write-Warn "fastapi/uvicorn not importable -- `hermes dashboard` will not work."
-            Write-Info "Attempting targeted install of [web] extra as last resort..."
-            & $UvCmd pip install -e ".[web]"
-            if ($LASTEXITCODE -eq 0) {
-                Write-Success "[web] extra installed; `hermes dashboard` should now work."
-            } else {
-                Write-Warn "Could not install [web] extra. Run manually: uv pip install --python `"$pythonExe`" `"fastapi>=0.104,<1`" `"uvicorn[standard]>=0.24,<1`""
-            }
-        }
-    }
-    
-    Pop-Location
-    
-    Write-Success "All dependencies installed"
 }
+if (-not $allExtras -or $allExtras.Count -eq 0) {
+    Write-Warn "Could not parse [all] from pyproject.toml; Tier 2 will be a no-op."
+    $safeAll = "all"
+} else {
+    $safeAll = ($allExtras | Where-Object { $brokenExtras -notcontains $_ }) -join ","
+}
+$brokenLabel = if ($brokenExtras) { ($brokenExtras -join ", ") } else { "none" }
+
+$installTiers = @(
+    @{ Name = "all"; Spec = ".[all]" },
+    @{ Name = "all minus known-broken ($brokenLabel)"; Spec = ".[$safeAll]" },
+    @{ Name = "core only (no extras)"; Spec = "." }
+)
+$installed = $skipPipFallback
+if (-not $skipPipFallback) {
+    foreach ($tier in $installTiers) {
+    Write-Info "Trying tier: $($tier.Name) ..."
+    & $UvCmd pip install -e $tier.Spec
+    if ($LASTEXITCODE -eq 0) {
+        Write-Success "Main package installed ($($tier.Name))"
+        $script:InstalledTier = $tier.Name
+        $installed = $true
+        break
+    }
+    Write-Warn "Tier '$($tier.Name)' failed (exit $LASTEXITCODE). Trying next tier..."
+    }
+}
+if (-not $installed) {
+    throw "Failed to install hermes-agent package even with no extras. Inspect the uv pip install output above."
+}
+
+# Baseline-import gate. Even if a tier reported success above, the
+# actual deps may have landed somewhere other than $InstallDir\venv\
+# (e.g. uv 0.5+ syncing into a sibling .venv\ when UV_PROJECT_ENVIRONMENT
+# isn't set, leaving venv\ empty and hermes.exe broken with
+# `ModuleNotFoundError: No module named 'dotenv'` on first run).
+# We probe via the venv's own python so a misdirected sync is caught
+# here, not 30 seconds later when the user runs `hermes`.
+$venvPython = "$InstallDir\venv\Scripts\python.exe"
+if (-not (Test-Path $venvPython)) {
+    throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, manually: cd '$InstallDir'; Remove-Item -Recurse -Force venv,.venv; uv venv venv --python $PythonVersion; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
+}
+# Relax EAP=Stop while running the import probe.  Python writes
+# deprecation warnings and import-system info to stderr; under
+# EAP=Stop the 2>&1 merge wraps those as ErrorRecord objects and
+# throws even when the imports succeed.  $LASTEXITCODE is the
+# reliable signal (it's 0 iff the python invocation exited 0,
+# regardless of what was written to stderr).
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $venvPython -c "import dotenv, openai, rich, prompt_toolkit" 2>&1 | Out-Null
+    $importExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+    if ($importExitCode -ne 0) {
+        $sibling = "$InstallDir\.venv"
+        $hint = if (Test-Path $sibling) {
+            "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Recover with: cd '$InstallDir'; Remove-Item -Recurse -Force venv; Move-Item .venv venv"
+        } else {
+            "Recover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
+        }
+        throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
+    }
+    Write-Success "Baseline imports verified in venv"
+}
+
+# Verify the dashboard deps specifically -- they're the most common thing
+# users hit and lazy-import errors from `hermes dashboard` are confusing.
+# If tier 1 failed (the common case), [web] was still picked up by tiers
+# 2-3; only tier 4 leaves you without it.
+$pythonExe = "$InstallDir\venv\Scripts\python.exe"
+if (Test-Path $pythonExe) {
+    $webOk = $false
+    # Relax EAP=Stop while running the import probe; see the matching
+    # comment on the baseline-imports check above.  Python writes
+    # deprecation warnings to stderr and we don't want those wrapped
+    # as ErrorRecords that silently force the "not importable" path
+    # even when fastapi/uvicorn are actually installed.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $pythonExe -c "import fastapi, uvicorn" 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { $webOk = $true }
+    } catch { }
+    $ErrorActionPreference = $prevEAP
+    if (-not $webOk) {
+        Write-Warn "fastapi/uvicorn not importable -- `hermes dashboard` will not work."
+        Write-Info "Attempting targeted install of [web] extra as last resort..."
+        & $UvCmd pip install -e ".[web]"
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "[web] extra installed; `hermes dashboard` should now work."
+        } else {
+            Write-Warn "Could not install [web] extra. Run manually: uv pip install --python `"$pythonExe`" `"fastapi>=0.104,<1`" `"uvicorn[standard]>=0.24,<1`""
+        }
+    }
+}
+
+Pop-Location
+
+Write-Success "All dependencies installed"
+
 
 function Set-PathVariable {
     Write-Info "Setting up hermes command..."
     
-    if ($NoVenv) {
-        $hermesBin = "$InstallDir"
-    } else {
-        $hermesBin = "$InstallDir\venv\Scripts"
-    }
+    $hermesBin = "$InstallDir\venv\Scripts"
     
     # Add the venv Scripts dir to user PATH so hermes is globally available
     # On Windows, the hermes.exe in venv\Scripts\ has the venv Python baked in
@@ -2403,10 +2393,6 @@ function Install-PlatformSdks {
     #
     # Strategy: for each token set in .env, verify the matching SDK imports.
     # If not, run one targeted `uv pip install` as last-chance recovery.
-    if ($NoVenv) {
-        Write-Info "Skipping platform-SDK verification (-NoVenv: no venv to bootstrap)"
-        return
-    }
 
     $pythonExe = "$InstallDir\venv\Scripts\python.exe"
     if (-not (Test-Path $pythonExe)) {
@@ -2506,14 +2492,15 @@ function Invoke-SetupWizard {
     Push-Location $InstallDir
 
     # Run hermes setup using the venv Python directly (no activation needed)
-    if (-not $NoVenv) {
-        & ".\venv\Scripts\python.exe" -m hermes_cli.main setup
-    } else {
-        python -m hermes_cli.main setup
-    }
+    
 
-    Pop-Location
+    & ".\venv\Scripts\python.exe" -m hermes_cli.main setup
+} else {
+    python -m hermes_cli.main setup
 }
+
+Pop-Location
+
 
 function Start-GatewayIfConfigured {
     $envPath = "$HermesHome\.env"
