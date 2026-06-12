@@ -29,14 +29,10 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import {
-  Menu,
-  Pencil,
-  Check,
-  X,
-} from "lucide-react";
+import { Menu, Pencil, Check, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ICON_REGISTRY, ICON_NAMES } from "@/lib/icon-registry";
+
 interface ReorderItem {
   id: string;
   label: string;
@@ -49,7 +45,7 @@ interface ItemCustomization {
   icon?: string;
 }
 
-/* ── Icon picker using CSS anchor positioning (same as DropdownMenu) */
+/* ── Icon picker using CSS anchor positioning ───────────────────── */
 
 type AnchorStyle = React.CSSProperties & Record<string, string | number>;
 
@@ -93,7 +89,11 @@ function IconPicker({
   return (
     <span className="relative inline-block align-top" ref={ref}>
       <button
-        onClick={() => setOpen(!open)}
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen(!open);
+        }}
         style={{ anchorName: anchor } as AnchorStyle}
         className={cn(
           "flex h-6 w-6 items-center justify-center rounded transition-colors",
@@ -118,6 +118,7 @@ function IconPicker({
             const Icon = ICON_REGISTRY[name];
             return (
               <button
+                type="button"
                 key={name}
                 onClick={() => {
                   onSelect(name);
@@ -135,6 +136,7 @@ function IconPicker({
             );
           })}
           <button
+            type="button"
             onClick={() => {
               onSelect("");
               setOpen(false);
@@ -213,14 +215,19 @@ function SortableItem({
       ref={setNodeRef}
       style={style}
       className={cn(
-        "group flex items-center gap-2 px-4 py-2 cursor-grab active:cursor-grabbing select-none",
+        "group flex items-center gap-2 px-4 py-2",
         "transition-colors hover:bg-secondary/30",
         "border-b border-border last:border-b-0",
         isDragging && "shadow-lg rounded bg-background-base",
         isOverlay && "shadow-2xl rounded bg-background-base ring-2 ring-midground/30",
       )}
     >
-      <div {...attributes} {...listeners}>
+      {/* Drag handle — ONLY here gets pointer listeners */}
+      <div
+        {...attributes}
+        {...listeners}
+        className="cursor-grab active:cursor-grabbing select-none"
+      >
         <Menu className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
       </div>
 
@@ -248,6 +255,7 @@ function SortableItem({
             onClick={(e) => e.stopPropagation()}
           />
           <button
+            type="button"
             onClick={(e) => {
               e.stopPropagation();
               handleSaveEdit();
@@ -257,6 +265,7 @@ function SortableItem({
             <Check className="h-3.5 w-3.5" />
           </button>
           <button
+            type="button"
             onClick={(e) => {
               e.stopPropagation();
               handleCancelEdit();
@@ -271,6 +280,7 @@ function SortableItem({
           <span className="flex-1 text-sm truncate">{displayLabel}</span>
           {onLabelChange && (
             <button
+              type="button"
               onClick={(e) => {
                 e.stopPropagation();
                 handleStartEdit();
