@@ -12008,11 +12008,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from tools.process_registry import process_registry as _pr_check
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
                     from tools.ansi_strip import strip_ansi
+                    from tools.process_registry import format_completion_output
                     _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
-                    # Truncate at line boundaries so notifications never start
-                    # mid-line (fixes #23284). Keep the last ~2000 chars but
-                    # snap to the nearest preceding newline, then prepend a
-                    # truncation marker when output was cut.
+                    # Mirror process_registry tail semantics (last 2000 chars)
+                    # but avoid a truncated fragment that starts mid-line: trim to
+                    # the first newline within the kept tail when possible and mark
+                    # truncation explicitly.
                     _LIMIT = 2000
                     if len(_raw) > _LIMIT:
                         _tail = _raw[-_LIMIT:]
@@ -12021,6 +12022,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _out = f"[… output truncated — showing last {len(_tail)} chars]\n{_tail}"
                     else:
                         _out = _raw
+                    _out = format_completion_output(_out, for_agent=True)
                     synth_text = (
                         f"[IMPORTANT: Background process {session_id} completed "
                         f"(exit code {session.exit_code}).\n"
@@ -12076,7 +12078,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     or (notify_mode == "error" and session.exit_code not in {0, None})
                 )
                 if should_notify:
-                    new_output = session.output_buffer[-1000:] if session.output_buffer else ""
+                    from tools.process_registry import format_completion_output
+                    new_output = format_completion_output(
+                        session.output_buffer[-1000:] if session.output_buffer else "",
+                        for_agent=False,
+                    )
                     message_text = (
                         f"[Background process {session_id} finished with exit code {session.exit_code}~ "
                         f"Here's the final output:\n{new_output}]"
