@@ -112,6 +112,34 @@ class GatewayStreamConsumer:
     # calls in the same chat, so we need a fresh non-zero id per response.
     _draft_id_counter: int = 0
 
+    def _streaming_edit_safe_limit(self, raw_limit: int, len_fn: Callable[[str], int]) -> int:
+        """Return the effective per-message budget for progressive edits.
+
+        The platform hard cap is not always a good progressive-edit target.
+        Telegram, in particular, has a 4096 UTF-16 message cap, but repeatedly
+        editing a near-limit Markdown message forces mobile clients to re-render
+        a very large bubble on every frame and the final MarkdownV2 formatting
+        pass can expand escaping enough to trip ``Message_too_long``.  Adapters
+        may therefore expose ``STREAMING_EDIT_SAFE_LIMIT`` to seal a streaming
+        segment before the platform's absolute cap and continue in a fresh
+        message.
+        """
+        safe_limit = max(500, raw_limit - len_fn(self.cfg.cursor) - 100)
+        adapter_limit = getattr(self.adapter, "STREAMING_EDIT_SAFE_LIMIT", None)
+        if adapter_limit is None or isinstance(adapter_limit, bool) or not isinstance(
+            adapter_limit, (int, float, str)
+        ):
+            return safe_limit
+        try:
+            adapter_limit_int = int(adapter_limit)
+        except (TypeError, ValueError):
+            return safe_limit
+        if adapter_limit_int <= 0:
+            return safe_limit
+        # Keep enough headroom for the streaming cursor and chunk suffixes.
+        platform_safe = max(500, adapter_limit_int - len_fn(self.cfg.cursor) - 20)
+        return min(safe_limit, platform_safe)
+
     def __init__(
         self,
         adapter: Any,
@@ -421,7 +449,7 @@ class GatewayStreamConsumer:
             else len
         )
         _raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
-        _safe_limit = max(500, _raw_limit - _len_fn(self.cfg.cursor) - 100)
+        _safe_limit = self._streaming_edit_safe_limit(_raw_limit, _len_fn)
 
         # Resolve native draft streaming once per run.  When enabled the
         # consumer routes mid-stream frames through adapter.send_draft and
