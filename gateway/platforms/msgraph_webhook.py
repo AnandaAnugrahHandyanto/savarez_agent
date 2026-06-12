@@ -20,13 +20,8 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import (
-    BasePlatformAdapter,
-    MessageEvent,
-    MessageType,
-    SendResult,
-    is_network_accessible,
-)
+from gateway.ingress import build_ingress_message_event, IngressEnvelope, schedule_ingress_event
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult, is_network_accessible
 
 logger = logging.getLogger(__name__)
 
@@ -356,21 +351,18 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         receipt_key: Optional[str],
     ) -> MessageEvent:
         message_id = receipt_key or f"sha1:{sha1(json.dumps(notification, sort_keys=True).encode('utf-8')).hexdigest()}"
-        source = self.build_source(
+        envelope = IngressEnvelope(
+            text=self._render_prompt(notification),
+            message_id=message_id,
             chat_id=f"msgraph:{notification.get('subscriptionId', 'unknown')}",
             chat_name="msgraph/webhook",
             chat_type="webhook",
             user_id="msgraph",
             user_name="Microsoft Graph",
-        )
-        return MessageEvent(
-            text=self._render_prompt(notification),
-            message_type=MessageType.TEXT,
-            source=source,
-            raw_message=notification,
-            message_id=message_id,
+            raw_payload=notification,
             internal=True,
         )
+        return build_ingress_message_event(self, envelope)
 
     def _render_prompt(self, notification: Dict[str, Any]) -> str:
         template = self.config.extra.get("prompt", "")
@@ -416,6 +408,4 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
                 task.add_done_callback(self._background_tasks.discard)
             return
 
-        task = asyncio.create_task(self.handle_message(event))
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        schedule_ingress_event(self, event)
