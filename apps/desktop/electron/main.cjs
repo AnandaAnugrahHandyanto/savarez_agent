@@ -1977,20 +1977,33 @@ async function applyUpdatesPosixInApp() {
   // macOS handoff: a detached watcher waits for us to exit (freeing the binary),
   // then relaunches it. Without this the backend + GUI update successfully but
   // the app never restarts and the overlay hangs on "applying" forever, with no
-  // close button, until the user kills it by hand. Guard on actually running the
-  // rebuilt unpacked binary; AppImage / unknown launchers fall through to the
-  // "restart to load the new version" result below.
+  // close button, until the user kills it by hand.
+  //
+  // Coverage: this fires ONLY for a source build whose binary lives under the
+  // repo's release/ dir (the `hermes desktop` install path). Other Linux package
+  // formats — AppImage, .deb, .rpm — run from elsewhere, fail the startsWith()
+  // guard, and fall through to the "restart to load the new version" result,
+  // which they pick up on the next manual launch.
   if (!IS_MAC) {
     const releaseDir = path.join(updateRoot, 'apps', 'desktop', 'release') + path.sep
     if (process.execPath.startsWith(releaseDir)) {
       emitUpdateProgress({ stage: 'restart', message: 'Restarting Hermes…', percent: 100 })
+      // Wait up to ~30s for a graceful exit, then SIGKILL: a hung/zombie parent
+      // must be gone before we relaunch, or the new instance bails on the
+      // single-instance lock. The watcher self-deletes before exec so temp
+      // scripts don't accumulate across updates.
       const relaunchScript = `#!/bin/bash
 set -u
 APP_PID=${process.pid}
-for _ in $(seq 1 240); do
+for _ in $(seq 1 60); do
   kill -0 "$APP_PID" 2>/dev/null || break
   sleep 0.5
 done
+if kill -0 "$APP_PID" 2>/dev/null; then
+  kill -9 "$APP_PID" 2>/dev/null || true
+  sleep 0.5
+fi
+rm -f -- "$0" 2>/dev/null || true
 exec ${shellQuote(process.execPath)}
 `
       const scriptPath = path.join(app.getPath('temp'), `hermes-desktop-update-${Date.now()}.sh`)
