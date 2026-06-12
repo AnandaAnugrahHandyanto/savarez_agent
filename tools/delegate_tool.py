@@ -2020,6 +2020,7 @@ def delegate_task(
     role: Optional[str] = None,
     parent_agent=None,
     background: bool = False,
+    timeout_seconds: Optional[float] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2080,11 +2081,15 @@ def delegate_task(
         from tools.process_registry import process_registry as _process_registry
 
         session_key = getattr(parent_agent, "session_id", None) or ""
+        _pa_model = getattr(parent_agent, "model", None) or ""
+        _pa_provider = getattr(parent_agent, "provider", None) or ""
         task_info = {
             "goal": goal,
             "context": context,
             "toolsets": toolsets,
             "role": top_role,
+            "model": _pa_model,
+            "provider": _pa_provider,
         }
 
         result = _async_dispatch(
@@ -2100,6 +2105,7 @@ def delegate_task(
             completion_queue=_process_registry.completion_queue,
             session_key=session_key,
             parent_agent=parent_agent,
+            timeout_seconds=float(timeout_seconds) if timeout_seconds is not None else None,
         )
         return json.dumps(result, ensure_ascii=False)
 
@@ -3029,6 +3035,16 @@ DELEGATE_TASK_SCHEMA = {
                     "Capacity is limited by delegation.max_async_children (default 3)."
                 ),
             },
+            "timeout_seconds": {
+                "type": "number",
+                "description": (
+                    "Optional wall-clock deadline for background delegations. "
+                    "If the subagent has not finished within this many seconds after dispatch, "
+                    "it is marked status='timed_out' and evicted. "
+                    "Only honoured when background=True. "
+                    "Omit to disable (default: no timeout)."
+                ),
+            },
         },
         "required": [],
     },
@@ -3053,6 +3069,7 @@ registry.register(
         role=args.get("role"),
         parent_agent=kw.get("parent_agent"),
         background=args.get("background", False),
+        timeout_seconds=args.get("timeout_seconds"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

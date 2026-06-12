@@ -16,6 +16,26 @@ Async delegation is capped at ``delegation.max_async_children`` (default 3).
 When at capacity, dispatches are queued (FIFO) and promoted automatically as
 running slots free up — no manual retry needed.
 
+Result Storage
+--------------
+Completed delegation results are stored in ``_completed`` (in-memory, keyed by
+delegation_id).  Use ``get_result(delegation_id)`` or ``list_completed()`` to
+retrieve them.  Results are kept until ``clear_result()`` or
+``clear_completed()`` is called.
+
+Cancel
+------
+``cancel(delegation_id)`` cancels a queued OR running delegation:
+- queued → removed from the FIFO waiting queue immediately
+- running → marked as cancel-requested; the subagent finishes naturally but
+  the result is flagged ``status="cancelled"`` in the completion event
+
+Timeout
+-------
+Pass ``timeout_seconds`` to ``dispatch()``.  A background watcher checks every
+30 s; tasks that exceed their deadline are marked ``status="timed_out"`` and
+evicted from ``_running``.
+
 Event shape
 -----------
 ``{"type": "async_delegation", "delegation_id": str, "session_key": str,
@@ -33,7 +53,8 @@ import logging
 import threading
 import time
 import uuid
-from typing import Any, Callable, Dict, List, NamedTuple, Optional
+from collections import deque
+from typing import Any, Callable, Deque, Dict, List, NamedTuple, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -62,34 +83,57 @@ class QueuedDispatch(NamedTuple):
     session_key: str
     parent_agent: Any
     enqueue_time: float
+    timeout_seconds: Optional[float]
 
 
 # ----------------------------------------------------------------------
-# Daemon executor registry
+# State stores
 # ----------------------------------------------------------------------
 
 # In-memory registry of running async delegations.
-# Key = delegation_id, Value = {"thread": threading.Thread, "stop_event": threading.Event, ...}
+# Key = delegation_id, Value = {"thread", "stop_event", "cancel_event", ...}
 _running: Dict[str, Dict[str, Any]] = {}
 _running_lock = threading.Lock()
 
 # FIFO waiting queue for at-capacity dispatches.
-_waiting: List[QueuedDispatch] = []
+_waiting: Deque[QueuedDispatch] = deque()
 _waiting_lock = threading.Lock()
+
+# Completed results: key = delegation_id, value = completion event dict.
+_completed: Dict[str, Dict[str, Any]] = {}
+_completed_lock = threading.Lock()
+
+# Cancellation requests (delegation_ids that should be aborted ASAP).
+_cancel_requests: Set[str] = set()
 
 # Condition variable used to signal the promotion thread when a slot opens.
 _promotion_cv = threading.Condition(_running_lock)
 
-# Daemon promotion thread: waits for a free slot and promotes the next
-# queued item. Started on first dispatch, lives for process lifetime.
+# Daemon threads — started on first dispatch, live for process lifetime.
 _promotion_thread: Optional[threading.Thread] = None
+_timeout_watcher_thread: Optional[threading.Thread] = None
 
+
+# ----------------------------------------------------------------------
+# Promotion thread
+# ----------------------------------------------------------------------
 
 def _start_promotion_thread() -> None:
     global _promotion_thread
     if _promotion_thread is None or not _promotion_thread.is_alive():
-        _promotion_thread = threading.Thread(target=_promotion_loop, daemon=True, name="async-delegation-promotion")
+        _promotion_thread = threading.Thread(
+            target=_promotion_loop, daemon=True, name="async-delegation-promotion"
+        )
         _promotion_thread.start()
+
+
+def _start_timeout_watcher() -> None:
+    global _timeout_watcher_thread
+    if _timeout_watcher_thread is None or not _timeout_watcher_thread.is_alive():
+        _timeout_watcher_thread = threading.Thread(
+            target=_timeout_watcher_loop, daemon=True, name="async-delegation-timeout"
+        )
+        _timeout_watcher_thread.start()
 
 
 def _promotion_loop() -> None:
@@ -97,14 +141,109 @@ def _promotion_loop() -> None:
     while True:
         item: Optional[QueuedDispatch] = None
         with _promotion_cv:
-            # Wait until there is a free slot AND something in the queue.
             while len(_running) >= _get_max_async_children() or not _waiting:
                 _promotion_cv.wait()
-            # Dequeue the oldest item.
-            item = _waiting.pop(0)
+            # Skip cancelled items
+            while _waiting:
+                candidate = _waiting[0]
+                if candidate.delegation_id in _cancel_requests:
+                    _waiting.popleft()
+                    _cancel_requests.discard(candidate.delegation_id)
+                    logger.info(
+                        "Async delegation %s cancelled while queued", candidate.delegation_id
+                    )
+                    # Push a cancelled event so caller knows it was handled
+                    _push_cancelled_event(candidate)
+                    continue
+                item = _waiting.popleft()
+                break
 
         if item is not None:
             _do_dispatch(item)
+
+
+def _timeout_watcher_loop() -> None:
+    """Daemon loop: evicts running delegations that exceed their timeout."""
+    while True:
+        time.sleep(30)
+        now = time.time()
+        with _running_lock:
+            timed_out = [
+                (did, info)
+                for did, info in _running.items()
+                if info.get("timeout_seconds") is not None
+                and now - info.get("dispatch_time", now) > info["timeout_seconds"]
+            ]
+        for did, info in timed_out:
+            logger.warning(
+                "Async delegation %s timed out after %.0fs",
+                did, info.get("timeout_seconds"),
+            )
+            # Signal cancel so the runner cleans up
+            _cancel_requests.add(did)
+            cancel_ev = info.get("cancel_event")
+            if cancel_ev:
+                cancel_ev.set()
+            # Push TIMED_OUT event
+            evt = {
+                "type": "async_delegation",
+                "delegation_id": did,
+                "session_key": info.get("session_key", ""),
+                "status": "timed_out",
+                "goal": info.get("goal", ""),
+                "context": info.get("context", ""),
+                "toolsets": info.get("toolsets"),
+                "role": info.get("role"),
+                "model": info.get("model"),
+                "provider": info.get("provider"),
+                "result": {"error": "timeout", "status": "timed_out"},
+                "dispatch_time": info.get("dispatch_time", 0),
+                "completion_time": now,
+                "duration_seconds": round(now - info.get("dispatch_time", now), 2),
+            }
+            cq = info.get("completion_queue")
+            if cq is not None:
+                try:
+                    cq.put(evt)
+                except Exception:
+                    pass
+            with _completed_lock:
+                _completed[did] = evt
+            with _running_lock:
+                _running.pop(did, None)
+            with _promotion_cv:
+                _promotion_cv.notify()
+
+
+# ----------------------------------------------------------------------
+# Core dispatch
+# ----------------------------------------------------------------------
+
+def _push_cancelled_event(item: QueuedDispatch) -> None:
+    """Push a 'cancelled' completion event for a queued item."""
+    now = time.time()
+    evt = {
+        "type": "async_delegation",
+        "delegation_id": item.delegation_id,
+        "session_key": item.session_key,
+        "status": "cancelled",
+        "goal": item.task_info.get("goal", ""),
+        "context": item.task_info.get("context", ""),
+        "toolsets": item.task_info.get("toolsets"),
+        "role": item.task_info.get("role"),
+        "model": item.task_info.get("model"),
+        "provider": item.task_info.get("provider"),
+        "result": {"error": "cancelled", "status": "cancelled"},
+        "dispatch_time": item.enqueue_time,
+        "completion_time": now,
+        "duration_seconds": round(now - item.enqueue_time, 2),
+    }
+    try:
+        item.completion_queue.put(evt)
+    except Exception:
+        pass
+    with _completed_lock:
+        _completed[item.delegation_id] = evt
 
 
 def _do_dispatch(item: QueuedDispatch) -> None:
@@ -116,7 +255,10 @@ def _do_dispatch(item: QueuedDispatch) -> None:
     completion_queue = item.completion_queue
     session_key = item.session_key
     parent_agent = item.parent_agent
+    timeout_seconds = item.timeout_seconds
     dispatch_time = time.time()
+
+    cancel_event = threading.Event()
 
     def _runner() -> None:
         """Worker thread: runs the subagent and pushes result to completion_queue."""
@@ -133,7 +275,19 @@ def _do_dispatch(item: QueuedDispatch) -> None:
         _heartbeat_thread.start()
 
         try:
-            result = runner_fn()
+            # If already cancelled before we even start, skip the work.
+            if delegation_id in _cancel_requests or cancel_event.is_set():
+                result = {"error": "cancelled", "status": "cancelled"}
+                _cancel_requests.discard(delegation_id)
+            else:
+                result = runner_fn()
+                # If cancel was requested while running, mark the result.
+                if delegation_id in _cancel_requests or cancel_event.is_set():
+                    _cancel_requests.discard(delegation_id)
+                    if isinstance(result, dict):
+                        result["status"] = "cancelled"
+                    else:
+                        result = {"original_result": result, "status": "cancelled"}
         except Exception as exc:
             logger.exception("Async delegation %s raised: %s", delegation_id, exc)
             result = {"error": str(exc), "status": "error"}
@@ -142,11 +296,12 @@ def _do_dispatch(item: QueuedDispatch) -> None:
             _heartbeat_thread.join(timeout=2.0)
 
         completion_time = time.time()
+        status = result.get("status", "completed") if isinstance(result, dict) else "completed"
         evt = {
             "type": "async_delegation",
             "delegation_id": delegation_id,
             "session_key": session_key,
-            "status": result.get("status", "completed") if isinstance(result, dict) else "completed",
+            "status": status,
             "goal": task_info.get("goal", ""),
             "context": task_info.get("context", ""),
             "toolsets": task_info.get("toolsets"),
@@ -159,27 +314,45 @@ def _do_dispatch(item: QueuedDispatch) -> None:
             "duration_seconds": round(completion_time - dispatch_time, 2),
         }
 
+        # Store in completed registry.
+        with _completed_lock:
+            _completed[delegation_id] = evt
+
         try:
             completion_queue.put(evt)
             logger.info(
-                "Async delegation %s completed in %.1fs, result queued",
+                "Async delegation %s %s in %.1fs, result queued",
                 delegation_id,
+                status,
                 evt["duration_seconds"],
             )
         except Exception:
-            logger.exception("Failed to push async delegation %s result to queue", delegation_id)
+            logger.exception(
+                "Failed to push async delegation %s result to queue", delegation_id
+            )
 
         # Signal the promotion thread that a slot has freed up.
         with _promotion_cv:
             _running.pop(delegation_id, None)
             _promotion_cv.notify()
 
-    thread = threading.Thread(target=_runner, daemon=True, name=f"async-delegation-{delegation_id}")
+    thread = threading.Thread(
+        target=_runner, daemon=True, name=f"async-delegation-{delegation_id}"
+    )
     with _running_lock:
         _running[delegation_id] = {
             "thread": thread,
+            "cancel_event": cancel_event,
             "dispatch_time": dispatch_time,
-            "goal": task_info.get("goal", "")[:40],
+            "goal": task_info.get("goal", "")[:80],
+            "context": task_info.get("context", ""),
+            "toolsets": task_info.get("toolsets"),
+            "role": task_info.get("role"),
+            "model": task_info.get("model"),
+            "provider": task_info.get("provider"),
+            "session_key": session_key,
+            "completion_queue": completion_queue,
+            "timeout_seconds": timeout_seconds,
         }
     thread.start()
 
@@ -190,6 +363,7 @@ def dispatch(
     completion_queue,  # queue.Queue — shared with process_registry
     session_key: str,
     parent_agent=None,
+    timeout_seconds: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Dispatch a subagent to run in the background.
@@ -218,6 +392,9 @@ def dispatch(
         to inject the result into. Typically ``f"{platform}:{chat_id}"``.
     parent_agent
         The parent AIAgent instance (for heartbeat / stale detection).
+    timeout_seconds
+        Optional wall-clock deadline.  If the subagent has not finished within
+        this many seconds, it is marked ``status="timed_out"`` and evicted.
 
     Returns
     -------
@@ -232,22 +409,26 @@ def dispatch(
 
     if active >= max_children:
         # At capacity — enqueue for later promotion.
+        item = QueuedDispatch(
+            delegation_id=delegation_id,
+            runner_fn=runner_fn,
+            task_info=task_info_copy,
+            completion_queue=completion_queue,
+            session_key=session_key,
+            parent_agent=parent_agent,
+            enqueue_time=time.time(),
+            timeout_seconds=timeout_seconds,
+        )
         with _running_lock:
-            _waiting.append(QueuedDispatch(
-                delegation_id=delegation_id,
-                runner_fn=runner_fn,
-                task_info=task_info_copy,
-                completion_queue=completion_queue,
-                session_key=session_key,
-                parent_agent=parent_agent,
-                enqueue_time=time.time(),
-            ))
+            _waiting.append(item)
             queue_depth = len(_waiting)
         logger.info(
             "Async delegation %s queued (at capacity %d/%d). Queue depth: %d",
             delegation_id, active, max_children, queue_depth,
         )
         _start_promotion_thread()
+        if timeout_seconds is not None:
+            _start_timeout_watcher()
         return {
             "status": "queued",
             "delegation_id": delegation_id,
@@ -256,6 +437,9 @@ def dispatch(
         }
 
     _start_promotion_thread()
+    if timeout_seconds is not None:
+        _start_timeout_watcher()
+
     item = QueuedDispatch(
         delegation_id=delegation_id,
         runner_fn=runner_fn,
@@ -264,10 +448,15 @@ def dispatch(
         session_key=session_key,
         parent_agent=parent_agent,
         enqueue_time=time.time(),
+        timeout_seconds=timeout_seconds,
     )
     _do_dispatch(item)
     return {"status": "dispatched", "delegation_id": delegation_id, "mode": "background"}
 
+
+# ----------------------------------------------------------------------
+# Heartbeat
+# ----------------------------------------------------------------------
 
 def _async_heartbeat_loop(
     parent_agent, delegation_id: str, stop_event: threading.Event
@@ -287,21 +476,115 @@ def _async_heartbeat_loop(
 
 
 # ----------------------------------------------------------------------
-# Admin / CLI helpers
+# Cancel API
 # ----------------------------------------------------------------------
+
+def cancel(delegation_id: str) -> Dict[str, Any]:
+    """
+    Cancel a queued or running delegation.
+
+    - queued  → removed immediately; a ``status="cancelled"`` event is pushed
+    - running → ``cancel_event`` is set; the subagent finishes naturally but
+                the result is flagged ``status="cancelled"``
+
+    Returns ``{"cancelled": True, "state": "queued"|"running"|"not_found"}``.
+    """
+    # Check queued first (no lock gymnastics needed — promotion_loop holds
+    # _running_lock, so grabbing it here is safe).
+    with _running_lock:
+        for i, item in enumerate(_waiting):
+            if item.delegation_id == delegation_id:
+                del _waiting[i]
+                _cancel_requests.discard(delegation_id)
+                break
+        else:
+            item = None  # type: ignore[assignment]
+
+    if item is not None:
+        _push_cancelled_event(item)
+        logger.info("Async delegation %s cancelled from queue", delegation_id)
+        return {"cancelled": True, "state": "queued", "delegation_id": delegation_id}
+
+    # Check running
+    with _running_lock:
+        info = _running.get(delegation_id)
+
+    if info is not None:
+        _cancel_requests.add(delegation_id)
+        cancel_ev = info.get("cancel_event")
+        if cancel_ev:
+            cancel_ev.set()
+        logger.info("Async delegation %s cancel requested (running)", delegation_id)
+        return {"cancelled": True, "state": "running", "delegation_id": delegation_id}
+
+    return {"cancelled": False, "state": "not_found", "delegation_id": delegation_id}
+
 
 def interrupt_all() -> int:
     """
-    Signal all running async delegations to stop.
+    Signal all running async delegations to cancel.
     Returns the number of delegations that were signalled.
     """
     with _running_lock:
         count = 0
-        for info in _running.values():
-            info["stop_event"].set()
-            count += 1
+        for did, info in list(_running.items()):
+            _cancel_requests.add(did)
+            cancel_ev = info.get("cancel_event")
+            if cancel_ev:
+                cancel_ev.set()
+                count += 1
     return count
 
+
+# ----------------------------------------------------------------------
+# Result store API
+# ----------------------------------------------------------------------
+
+def get_result(delegation_id: str) -> Optional[Dict[str, Any]]:
+    """Return the stored completion event for a finished delegation, or None."""
+    with _completed_lock:
+        return _completed.get(delegation_id)
+
+
+def list_completed(limit: int = 50) -> List[Dict[str, Any]]:
+    """Return summary list of completed delegations (newest first)."""
+    with _completed_lock:
+        items = sorted(
+            _completed.values(),
+            key=lambda e: e.get("completion_time", 0),
+            reverse=True,
+        )
+    result = []
+    for evt in items[:limit]:
+        result.append({
+            "delegation_id": evt.get("delegation_id", ""),
+            "status": evt.get("status", ""),
+            "goal": evt.get("goal", "")[:60],
+            "duration_seconds": evt.get("duration_seconds"),
+            "completion_time": evt.get("completion_time"),
+        })
+    return result
+
+
+def clear_result(delegation_id: str) -> bool:
+    """Remove a single completed result. Returns True if it existed."""
+    with _completed_lock:
+        existed = delegation_id in _completed
+        _completed.pop(delegation_id, None)
+    return existed
+
+
+def clear_completed() -> int:
+    """Clear all completed results. Returns count cleared."""
+    with _completed_lock:
+        count = len(_completed)
+        _completed.clear()
+    return count
+
+
+# ----------------------------------------------------------------------
+# Status / admin helpers (used by CLI)
+# ----------------------------------------------------------------------
 
 def count_running() -> int:
     """Return the number of currently active async delegations."""
@@ -313,6 +596,12 @@ def count_queued() -> int:
     """Return the number of queued (waiting) async delegations."""
     with _running_lock:
         return len(_waiting)
+
+
+def count_completed() -> int:
+    """Return the number of stored completed results."""
+    with _completed_lock:
+        return len(_completed)
 
 
 def get_running_ids() -> list[str]:
@@ -329,6 +618,7 @@ def get_running_details() -> List[Dict[str, Any]]:
                 "delegation_id": did,
                 "goal": info.get("goal", ""),
                 "dispatch_time": info.get("dispatch_time", 0),
+                "timeout_seconds": info.get("timeout_seconds"),
                 "is_alive": info.get("thread").is_alive() if info.get("thread") else False,
             }
             for did, info in _running.items()
@@ -343,13 +633,14 @@ def get_queued_details() -> List[Dict[str, Any]]:
                 "delegation_id": item.delegation_id,
                 "goal": item.task_info.get("goal", "")[:60],
                 "enqueue_time": item.enqueue_time,
+                "timeout_seconds": item.timeout_seconds,
             }
             for item in _waiting
         ]
 
 
-def get_detail(delegation_id: str) -> Dict[str, Any] | None:
-    """Return details for a specific delegation_id (running or queued)."""
+def get_detail(delegation_id: str) -> Optional[Dict[str, Any]]:
+    """Return details for a specific delegation_id (running, queued, or completed)."""
     with _running_lock:
         if delegation_id in _running:
             info = _running[delegation_id]
@@ -358,6 +649,7 @@ def get_detail(delegation_id: str) -> Dict[str, Any] | None:
                 "state": "running",
                 "goal": info.get("goal", ""),
                 "dispatch_time": info.get("dispatch_time", 0),
+                "timeout_seconds": info.get("timeout_seconds"),
                 "is_alive": info.get("thread").is_alive() if info.get("thread") else False,
             }
         for item in _waiting:
@@ -367,5 +659,18 @@ def get_detail(delegation_id: str) -> Dict[str, Any] | None:
                     "state": "queued",
                     "goal": item.task_info.get("goal", "")[:60],
                     "enqueue_time": item.enqueue_time,
+                    "timeout_seconds": item.timeout_seconds,
                 }
+    # Check completed store
+    with _completed_lock:
+        if delegation_id in _completed:
+            evt = _completed[delegation_id]
+            return {
+                "delegation_id": delegation_id,
+                "state": evt.get("status", "completed"),
+                "goal": evt.get("goal", ""),
+                "completion_time": evt.get("completion_time"),
+                "duration_seconds": evt.get("duration_seconds"),
+                "result_available": True,
+            }
     return None
