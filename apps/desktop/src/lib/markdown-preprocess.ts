@@ -322,6 +322,34 @@ function rewriteLatexBracketDelimiters(text: string): string {
     .replace(LATEX_DISPLAY_RE, (_, body: string) => `$$${body}$$`)
 }
 
+// Put the `$$` delimiters of multi-line display math on their own lines.
+// remark-math's display ("flow") construct is fence-shaped: text after the
+// opening `$$` on the same line is a meta string (like a code-fence language
+// tag) that gets DISCARDED, and the closing `$$` only counts when it sits
+// alone on its own line. Models routinely hug the delimiters instead —
+// `$$\begin{aligned} ... \end{aligned}$$` — which eats the first line as
+// meta, never closes the block, and hands KaTeX a mangled fragment that
+// error-falls-back to raw muted text. Single-line `$$...$$` is left alone:
+// it already renders via the inline math-text construct.
+const DISPLAY_MATH_BLOCK_RE = /\$\$([\s\S]+?)\$\$/g
+
+function normalizeDisplayMathBlocks(text: string): string {
+  return text.replace(DISPLAY_MATH_BLOCK_RE, (match: string, body: string, offset: number) => {
+    // Backticks in the body mean the `$$`s are almost certainly prose
+    // discussing math syntax (e.g. "use `$$` to open ... `$$` to close"),
+    // not an actual equation — leave those untouched.
+    if (!body.includes('\n') || body.includes('`')) {
+      return match
+    }
+
+    const before = offset === 0 || text[offset - 1] === '\n' ? '' : '\n'
+    const afterIndex = offset + match.length
+    const after = afterIndex === text.length || text[afterIndex] === '\n' ? '' : '\n'
+
+    return `${before}$$\n${body.trim()}\n$$${after}`
+  })
+}
+
 // Escape `$<digit>` patterns so they don't get eaten as math delimiters.
 // Models commonly write currency amounts ($5, $19.99, $1,299) in prose.
 // With `singleDollarTextMath: true`, remark-math is greedy and matches
@@ -375,8 +403,11 @@ export function preprocessMarkdown(text: string): string {
       // we don't accidentally touch `\(` inside a code block.
       // escapeCurrencyDollars likewise only runs on prose, so legit
       // `$5` literals inside fenced code stay intact.
+      // normalizeDisplayMathBlocks runs AFTER the bracket rewrite so a
+      // multi-line `\[...\]` block (rewritten to hugging `$$...$$`) gets
+      // its delimiters re-broken onto their own lines too.
       const transformed = normalizeVisibleProse(
-        stripPreviewTargets(rewriteLatexBracketDelimiters(escapeCurrencyDollars(part)))
+        stripPreviewTargets(normalizeDisplayMathBlocks(rewriteLatexBracketDelimiters(escapeCurrencyDollars(part))))
       )
 
       return leading + transformed + trailing

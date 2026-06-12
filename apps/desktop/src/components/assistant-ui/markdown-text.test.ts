@@ -201,4 +201,59 @@ describe('preprocessMarkdown', () => {
 
     expect(output).toContain('<https://example.com/a_b/c~d/page>')
   })
+
+  it('moves hugging $$ delimiters of multi-line display math onto their own lines', () => {
+    // remark-math's display construct drops same-line text after the opening
+    // `$$` as fence meta and requires the closing `$$` alone on its own line,
+    // so this very common LLM emission renders as raw error text untouched.
+    const input = [
+      '$$\\begin{aligned}',
+      '\\nabla \\cdot \\mathbf{E} &= \\frac{\\rho}{\\varepsilon_0} \\\\',
+      '\\nabla \\cdot \\mathbf{B} &= 0',
+      '\\end{aligned}$$'
+    ].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toBe(
+      [
+        '$$',
+        '\\begin{aligned}',
+        '\\nabla \\cdot \\mathbf{E} &= \\frac{\\rho}{\\varepsilon_0} \\\\',
+        '\\nabla \\cdot \\mathbf{B} &= 0',
+        '\\end{aligned}',
+        '$$'
+      ].join('\n')
+    )
+  })
+
+  it('separates multi-line display math from surrounding prose lines', () => {
+    const input = ['Maxwell wrote: $$\\begin{aligned}', 'a &= b', '\\end{aligned}$$ as shown.'].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    // Trailing whitespace before the inserted newline is stripped by the
+    // pipeline's final `[ \t]+\n` cleanup.
+    expect(output).toBe(['Maxwell wrote:', '$$', '\\begin{aligned}', 'a &= b', '\\end{aligned}', '$$', ' as shown.'].join('\n'))
+  })
+
+  it('leaves single-line $$...$$ display math untouched', () => {
+    const input = 'The integral $$\\int_{-\\infty}^{\\infty} e^{-x^2} dx = \\sqrt{\\pi}$$ converges.'
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
+
+  it('rewrites multi-line \\[...\\] display math to block-form $$ delimiters', () => {
+    const input = ['\\[ \\begin{aligned}', 'a &= b \\\\', 'c &= d', '\\end{aligned} \\]'].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toBe(['$$', '\\begin{aligned}', 'a &= b \\\\', 'c &= d', '\\end{aligned}', '$$'].join('\n'))
+  })
+
+  it('does not treat $$ inside inline code spans as math delimiters', () => {
+    const input = ['Use `$$` to open display math', 'and another `$$` to close it.'].join('\n')
+
+    expect(preprocessMarkdown(input)).toBe(input)
+  })
 })
