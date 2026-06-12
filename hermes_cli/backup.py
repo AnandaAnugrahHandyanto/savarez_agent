@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 # are not accidentally excluded.
 _EXCLUDED_DIRS = {
     "hermes-agent",     # the codebase repo — re-clone instead
+    "git",              # Git for Windows installation (~9,500 files, 390 MB)
     "__pycache__",      # bytecode caches — regenerated on import
     ".git",             # nested git dirs (profiles shouldn't have these, but safety)
     "node_modules",     # js deps if website/ somehow leaks in
