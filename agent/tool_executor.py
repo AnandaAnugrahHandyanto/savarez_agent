@@ -326,7 +326,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # checkpoint state (dedup slot, real snapshots).
         block_result = None
         blocked_by_guardrail = False
-if _ts_scope_block is not None:
+        if _ts_scope_block is not None:
             # Out-of-scope tool_call: reject before hooks/guardrails/dispatch.
             block_result = _ts_scope_block
             _emit_terminal_post_tool_call(
@@ -340,12 +340,6 @@ if _ts_scope_block is not None:
                 error_type="tool_scope_block",
                 error_message=_ts_scope_block,
                 middleware_trace=list(middleware_trace),
-try:
-            from hermes_cli.plugins import get_pre_tool_call_block_message
-            block_message = get_pre_tool_call_block_message(
-                function_name, function_args, task_id=effective_task_id or "",
-                session_id=agent.session_id or "",
-                gateway_session_key=getattr(agent, "_gateway_session_key", None) or "",
             )
         else:
             try:
@@ -354,7 +348,8 @@ try:
                     function_name,
                     function_args,
                     task_id=effective_task_id or "",
-                    session_id=getattr(agent, "session_id", "") or "",
+                    session_id=agent.session_id or "",
+                    gateway_session_key=getattr(agent, "_gateway_session_key", None) or "",
                     tool_call_id=getattr(tool_call, "id", "") or "",
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
                     api_request_id=getattr(agent, "_current_api_request_id", "") or "",
@@ -809,7 +804,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # underlying tool directly, so session toolset scope is enforced here).
         _ts_scope_block: Optional[str] = None
         try:
-from tools import tool_search as _ts
+            from tools import tool_search as _ts
             if function_name == _ts.TOOL_CALL_NAME:
                 _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
                 if not _err and _underlying:
@@ -821,12 +816,6 @@ from tools import tool_search as _ts
                             f"'{_underlying}' is not available in this session. "
                             "Use tool_search to find tools you can call."
                         )
-from hermes_cli.plugins import get_pre_tool_call_block_message
-            _block_msg = get_pre_tool_call_block_message(
-                function_name, function_args, task_id=effective_task_id or "",
-                session_id=agent.session_id or "",
-                gateway_session_key=getattr(agent, "_gateway_session_key", None) or "",
-            )
         except Exception:
             pass
 
@@ -852,6 +841,7 @@ from hermes_cli.plugins import get_pre_tool_call_block_message
                     function_args,
                     task_id=effective_task_id or "",
                     session_id=getattr(agent, "session_id", "") or "",
+                    gateway_session_key=getattr(agent, "_gateway_session_key", None) or "",
                     tool_call_id=getattr(tool_call, "id", "") or "",
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
                     api_request_id=getattr(agent, "_current_api_request_id", "") or "",

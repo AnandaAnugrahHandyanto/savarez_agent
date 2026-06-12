@@ -420,7 +420,7 @@ def run_conversation(
         set_current_write_origin=set_current_write_origin,
         ra=_ra,
     )
-user_message = _ctx.user_message
+    user_message = _ctx.user_message
     original_user_message = _ctx.original_user_message
     messages = _ctx.messages
     conversation_history = _ctx.conversation_history
@@ -433,7 +433,7 @@ user_message = _ctx.user_message
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
     # Main conversation loop counters (pure locals consumed by the loop below).
-# Initialize conversation (copy to avoid mutating the caller's list)
+    # Initialize conversation (copy to avoid mutating the caller's list)
     messages = list(conversation_history) if conversation_history else []
 
     # Hydrate todo store from conversation history (gateway creates a fresh
