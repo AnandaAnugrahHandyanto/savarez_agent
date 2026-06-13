@@ -12,6 +12,7 @@ the codebase were migrated to the helper; these tests pin that invariant.
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import sys
@@ -37,11 +38,20 @@ def _write_tmp(dir_: Path, content: str) -> Path:
     return tmp
 
 
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Symlink creation requires elevated privileges on Windows")
+        raise
+
+
 def test_atomic_replace_preserves_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.yaml"
     link = tmp_path / "link.yaml"
     real.write_text("original\n", encoding="utf-8")
-    link.symlink_to(real)
+    _symlink_or_skip(link, real)
 
     tmp = _write_tmp(tmp_path, "updated\n")
     returned = atomic_replace(tmp, link)
@@ -98,7 +108,7 @@ def test_atomic_json_write_preserves_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.json"
     link = tmp_path / "link.json"
     real.write_text("{}", encoding="utf-8")
-    link.symlink_to(real)
+    _symlink_or_skip(link, real)
 
     atomic_json_write(link, {"hello": "world"})
 
@@ -111,7 +121,7 @@ def test_atomic_yaml_write_preserves_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.yaml"
     link = tmp_path / "link.yaml"
     real.write_text("placeholder: true\n", encoding="utf-8")
-    link.symlink_to(real)
+    _symlink_or_skip(link, real)
 
     atomic_yaml_write(link, {"model": {"provider": "openrouter"}})
 
@@ -129,7 +139,7 @@ def test_atomic_json_write_preserves_symlink_permissions(tmp_path: Path) -> None
     link = tmp_path / "link.json"
     real.write_text("{}", encoding="utf-8")
     os.chmod(real, 0o644)
-    link.symlink_to(real)
+    _symlink_or_skip(link, real)
 
     atomic_json_write(link, {"x": 1})
 
@@ -148,7 +158,7 @@ def test_atomic_replace_broken_symlink_creates_target(tmp_path: Path) -> None:
     """
     missing = tmp_path / "does_not_exist_yet.yaml"
     link = tmp_path / "link.yaml"
-    link.symlink_to(missing)
+    _symlink_or_skip(link, missing)
     assert link.is_symlink()
     assert not missing.exists()
 
@@ -158,3 +168,113 @@ def test_atomic_replace_broken_symlink_creates_target(tmp_path: Path) -> None:
     assert link.is_symlink(), "symlink must be preserved"
     assert missing.exists(), "real target should now exist"
     assert missing.read_text(encoding="utf-8") == "created-through-link\n"
+
+
+# ─── EXDEV / EBUSY copy fallback ───────────────────────────────────────────
+
+
+@pytest.mark.parametrize("fail_errno", [errno.EXDEV, errno.EBUSY])
+def test_atomic_replace_copy_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail_errno: int
+) -> None:
+    target = tmp_path / "config.yaml"
+    target.write_text("old\n", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new\n")
+
+    def fail_replace(src: str, dst: str) -> None:
+        raise OSError(fail_errno, os.strerror(fail_errno), src, None, dst)
+
+    monkeypatch.setattr("utils.os.replace", fail_replace)
+
+    assert Path(atomic_replace(tmp, target)) == target
+    assert target.read_text(encoding="utf-8") == "new\n"
+    assert not tmp.exists()
+
+
+def test_atomic_replace_copy_fallback_preserves_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = tmp_path / "real.yaml"
+    link = tmp_path / "link.yaml"
+    real.write_text("old\n", encoding="utf-8")
+    _symlink_or_skip(link, real)
+    tmp = _write_tmp(tmp_path, "new\n")
+
+    def fail_replace(src: str, dst: str) -> None:
+        raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), src, None, dst)
+
+    monkeypatch.setattr("utils.os.replace", fail_replace)
+
+    assert Path(atomic_replace(tmp, link)) == real
+    assert link.is_symlink()
+    assert real.read_text(encoding="utf-8") == "new\n"
+    assert not tmp.exists()
+
+
+def test_atomic_replace_copy_fallback_preserves_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "posix":
+        pytest.skip("POSIX-only")
+
+    target = tmp_path / "config.yaml"
+    target.write_text("old\n", encoding="utf-8")
+    os.chmod(target, 0o600)
+    tmp = _write_tmp(tmp_path, "new\n")
+    os.chmod(tmp, 0o644)
+
+    def fail_replace(src: str, dst: str) -> None:
+        raise OSError(errno.EBUSY, os.strerror(errno.EBUSY), src, None, dst)
+
+    monkeypatch.setattr("utils.os.replace", fail_replace)
+
+    atomic_replace(tmp, target)
+    assert target.read_text(encoding="utf-8") == "new\n"
+    assert target.stat().st_mode & 0o777 == 0o644
+
+
+def test_atomic_replace_other_oserror_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "config.yaml"
+    target.write_text("old\n", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new\n")
+
+    def fail_replace(src: str, dst: str) -> None:
+        raise OSError(errno.EACCES, os.strerror(errno.EACCES), src, None, dst)
+
+    monkeypatch.setattr("utils.os.replace", fail_replace)
+
+    with pytest.raises(OSError) as excinfo:
+        atomic_replace(tmp, target)
+    assert excinfo.value.errno == errno.EACCES
+    assert target.read_text(encoding="utf-8") == "old\n"
+    assert tmp.exists()
+
+
+def test_atomic_replace_real_cross_device(tmp_path: Path) -> None:
+    shm = Path("/dev/shm")
+    if os.name != "posix" or not os.access(shm, os.W_OK):
+        pytest.skip("requires writable /dev/shm")
+
+    import shutil as _shutil
+    import uuid as _uuid
+
+    other_fs_dir = shm / f"hermes-exdev-test-{_uuid.uuid4().hex[:8]}"
+    other_fs_dir.mkdir()
+    try:
+        real = other_fs_dir / "config.yaml"
+        real.write_text("old\n", encoding="utf-8")
+        if os.stat(real).st_dev == os.stat(tmp_path).st_dev:
+            pytest.skip("/dev/shm is not a separate filesystem here")
+
+        link = tmp_path / "config.yaml"
+        link.symlink_to(real)
+        tmp = _write_tmp(tmp_path, "new\n")
+
+        assert Path(atomic_replace(tmp, link)) == real
+        assert link.is_symlink()
+        assert real.read_text(encoding="utf-8") == "new\n"
+        assert not tmp.exists()
+    finally:
+        _shutil.rmtree(other_fs_dir, ignore_errors=True)

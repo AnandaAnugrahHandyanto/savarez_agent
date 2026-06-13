@@ -208,6 +208,11 @@ _SENSITIVE_WRITE_TARGET = (
     rf'{_SHELL_RC_FILES}|'
     rf'{_CREDENTIAL_FILES})'
 )
+_USER_SENSITIVE_WRITE_TARGET = (
+    rf'(?:{_SSH_SENSITIVE_PATH}|'
+    rf'{_SHELL_RC_FILES}|'
+    rf'{_CREDENTIAL_FILES})'
+)
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
 _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
 
@@ -441,6 +446,27 @@ DANGEROUS_PATTERNS = [
     # /private/etc/ mirror).
     (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
     (rf'\b(cp|mv|install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
+    # cp/mv/install OVERWRITING a sensitive credential/SSH/shell-rc/Hermes file.
+    # The tee/redirection patterns above already gate _SENSITIVE_WRITE_TARGET
+    # (~/.ssh/*, ~/.netrc/.pgpass/.npmrc/.pypirc, shell rc files,
+    # ~/.hermes/config.yaml/.env), but cp/mv/install was only paired for /etc and
+    # project-relative env/config — so `cp evil ~/.ssh/authorized_keys` (key
+    # implant), `cp creds ~/.netrc`, and `cp evil ~/.bashrc` (login-time command
+    # injection) slipped through with auto-approve. Same unpaired-door rationale
+    # as #14639 / the sed-tee-redirect pairing on these targets.
+    # Anchor the sensitive target to the command tail so this fires on the
+    # DESTINATION (last arg) only — `cp evil ~/.ssh/authorized_keys` is gated,
+    # but reading OUT of a sensitive path (`cp ~/.ssh/config /tmp/x`) stays safe.
+    # The trailing `[^\s"\']*` consumes the rest of the destination filename
+    # (e.g. `authorized_keys` after the `~/.ssh/` fragment).
+    (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
+    # In-place edits mutate the target file directly, bypassing redirection,
+    # tee, and copy/move/install coverage. Gate the same user-controlled
+    # startup/credential files so `sed -i ... ~/.bashrc` and `perl -i ...
+    # ~/.ssh/authorized_keys` cannot silently plant login commands or keys.
+    (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),
+    (rf'\bsed\s+--in-place\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (long flag)"),
+    (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path (perl/ruby)"),
     (rf'\bsed\s+-[^\s]*i.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config"),
     (rf'\bsed\s+--in-place\b.*\s{_SYSTEM_CONFIG_PATH}', "in-place edit of system config (long flag)"),
     # In-place edit of a Hermes-managed security file (~/.hermes/config.yaml or
@@ -543,10 +569,18 @@ def _normalize_command_for_detection(command: str) -> str:
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
+    command = _rewrite_resolved_hermes_home(command)
+    command = _rewrite_resolved_user_home(command)
     # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
     command = re.sub(r'\\([^\n])', r'\1', command)
     # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
     command = re.sub(r"''|\"\"", '', command)
+    # Fold the current user's resolved absolute home path into ~/ at detection
+    # time so static user-sensitive patterns catch /home/alice/.bashrc the same
+    # way they catch ~/.bashrc. Do not snapshot this at import time: tests and
+    # profile/session launchers can set HOME after this module is imported.
+    command = _rewrite_resolved_hermes_home(command)
+    command = _rewrite_resolved_user_home(command)
     # Fold the resolved absolute active-profile home path into the canonical
     # ~/.hermes/ form so the Hermes config/env patterns catch it. In Docker and
     # gateway deployments the agent often references the resolved absolute path
@@ -554,7 +588,40 @@ def _normalize_command_for_detection(command: str) -> str:
     # ~, $HOME, or $HERMES_HOME. Done at detection time (not via an import-time
     # pattern snapshot) so it tracks the live HERMES_HOME even when that is set
     # after this module is imported — as the hermetic test conftest does.
-    command = _rewrite_resolved_hermes_home(command)
+    return command
+
+
+def _rewrite_resolved_user_home(command: str) -> str:
+    """Rewrite the current user's absolute home prefix to ``~/``.
+
+    Resolves HOME at detection time, including its symlink-resolved form, so
+    terminal commands targeting absolute home paths are checked by the same
+    static patterns as tilde and $HOME forms. No-op when HOME is unset or
+    degenerate.
+    """
+    try:
+        env_home = os.environ.get("HOME")
+        home = os.path.expanduser("~")
+        candidates = [
+            env_home,
+            home.rstrip("/"),
+            os.path.realpath(home).rstrip("/"),
+        ]
+        if env_home:
+            candidates.append(os.path.realpath(env_home).rstrip("/"))
+    except Exception:
+        return command
+    seen: set[str] = set()
+    for path in candidates:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        # Require an absolute path below root so a bad HOME cannot rewrite the
+        # whole filesystem namespace.
+        normalized = _normalize_detection_path_prefix(path)
+        if normalized is None:
+            continue
+        command = _replace_detection_path_prefix(command, normalized, "~/")
     return command
 
 
@@ -584,10 +651,44 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
         # unrelated paths: require an absolute path with at least one non-root
         # component. The active profile home is always a real directory like
         # /home/hermes/.hermes or a per-test tempdir, never a bare root.
-        normalized = path.rstrip("/")
-        if not normalized.startswith("/") or normalized.count("/") < 2:
+        normalized = _normalize_detection_path_prefix(path)
+        if normalized is None:
             continue
-        command = command.replace(normalized + "/", "~/.hermes/")
+        command = _replace_detection_path_prefix(command, normalized, "~/.hermes/")
+    return command
+
+
+def _normalize_detection_path_prefix(path: str) -> str | None:
+    """Return a safe absolute path prefix for command detection rewriting."""
+    normalized = str(path).rstrip("/\\")
+    if not normalized:
+        return None
+    slash_path = normalized.replace("\\", "/")
+    is_posix_abs = slash_path.startswith("/")
+    is_windows_abs = bool(re.match(r"^[a-zA-Z]:/", slash_path))
+    if not (is_posix_abs or is_windows_abs):
+        return None
+    parts = [part for part in slash_path.split("/") if part and not part.endswith(":")]
+    if len(parts) < 2:
+        return None
+    return slash_path.rstrip("/")
+
+
+def _replace_detection_path_prefix(command: str, slash_prefix: str, replacement: str) -> str:
+    """Replace POSIX and Windows spellings of an absolute path prefix."""
+    variants = {slash_prefix, slash_prefix.replace("/", "\\")}
+    flags = re.IGNORECASE if re.match(r"^[a-zA-Z]:/", slash_prefix) else 0
+    for variant in variants:
+        pattern = re.compile(
+            re.escape(variant) + r"(?P<tail>[\\/][^\s\"'`;&|)]*)",
+            flags,
+        )
+
+        def _replace(match: re.Match[str]) -> str:
+            tail = match.group("tail").lstrip("/\\").replace("\\", "/")
+            return replacement + tail
+
+        command = pattern.sub(_replace, command)
     return command
 
 
