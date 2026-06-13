@@ -21,22 +21,24 @@ const SYSTEM_MONO =
 
 export const DEFAULT_TYPOGRAPHY: DesktopThemeTypography = { fontSans: SYSTEM_SANS, fontMono: SYSTEM_MONO }
 
-const NOUS_BLUE = '#0053FD'
-const PSYCHE_BLUE = '#1540B1'
-const PSYCHE_WARM = '#FFE6CB'
+const NOUS_BLUE = '#009EE0'
+const NOUS_BLUE_DEEP = '#0A3954'
+const NOUS_BLUE_MID = '#0D4C6D'
+const NOUS_BLUE_SURFACE = '#08344A'
+const NOUS_ICE = '#EAF9FF'
 
 const nousTint = (pct: number) => `color-mix(in srgb, ${NOUS_BLUE} ${pct}%, #FFFFFF)`
 const nousTintTransparent = (pct: number) => `color-mix(in srgb, ${NOUS_BLUE} ${pct}%, transparent)`
 
 /**
- * Nous — canonical Hermes desktop identity. The palette keeps the current
- * glass geometry neutral, then lets the old bb/gui blue and psyche cream
- * return as accent seeds.
+ * Nous — canonical desktop identity with the NOverhead logo blue as the
+ * accent seed. The glass geometry stays neutral; only the brand accent chain
+ * shifts so provider/runtime semantics are untouched.
  */
 export const nousTheme: DesktopTheme = {
   name: 'nous',
   label: 'Nous',
-  description: 'Glass neutrals with Nous blue accents',
+  description: 'Glass neutrals with NOverhead blue accents',
   colors: {
     background: '#F8FAFF',
     foreground: '#17171A',
@@ -65,31 +67,31 @@ export const nousTheme: DesktopTheme = {
     userBubbleBorder: nousTintTransparent(24)
   },
   darkColors: {
-    background: '#0D2F86',
-    foreground: PSYCHE_WARM,
-    card: '#12378F',
-    cardForeground: PSYCHE_WARM,
-    muted: '#183F9A',
-    mutedForeground: '#B5C7F3',
-    popover: '#123A96',
-    popoverForeground: PSYCHE_WARM,
-    primary: PSYCHE_WARM,
-    primaryForeground: '#0D2F86',
-    secondary: '#1B45A4',
-    secondaryForeground: '#E0E8FF',
-    accent: PSYCHE_BLUE,
-    accentForeground: '#F0F4FF',
-    border: '#3158AD',
-    input: '#0B2566',
-    ring: PSYCHE_WARM,
+    background: NOUS_BLUE_DEEP,
+    foreground: NOUS_ICE,
+    card: NOUS_BLUE_SURFACE,
+    cardForeground: NOUS_ICE,
+    muted: NOUS_BLUE_MID,
+    mutedForeground: '#A8DDF3',
+    popover: '#09415E',
+    popoverForeground: NOUS_ICE,
+    primary: NOUS_BLUE,
+    primaryForeground: '#031821',
+    secondary: '#0E567B',
+    secondaryForeground: NOUS_ICE,
+    accent: '#0C4260',
+    accentForeground: NOUS_ICE,
+    border: '#1E6B8E',
+    input: '#0B3550',
+    ring: NOUS_BLUE,
     midground: NOUS_BLUE,
-    composerRing: PSYCHE_WARM,
-    destructive: '#C0473A',
+    composerRing: NOUS_BLUE,
+    destructive: '#CC5C56',
     destructiveForeground: '#FEF2F2',
-    sidebarBackground: '#09286F',
-    sidebarBorder: '#234A9C',
-    userBubble: '#143B91',
-    userBubbleBorder: '#3A63BD'
+    sidebarBackground: '#062B40',
+    sidebarBorder: '#165775',
+    userBubble: '#0A3954',
+    userBubbleBorder: '#2A7D9F'
   },
   typography: {
     fontSans: SYSTEM_SANS,
