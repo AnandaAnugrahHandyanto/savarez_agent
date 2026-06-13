@@ -414,6 +414,49 @@ class TestSessionManagementEndpoints:
         assert {"total", "active_store", "archived", "messages", "by_source"} <= set(body)
         assert body["total"] >= 1
 
+    def test_stats_without_profile_uses_current_backend_store(self):
+        r = self.client.get("/api/sessions/stats")
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 1
+        assert body["by_source"] == {"cli": 1}
+
+    def test_stats_profile_query_uses_named_profile_store(self):
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        profile_home = get_hermes_home() / "profiles" / "jimmy"
+        profile_home.mkdir(parents=True)
+        db = SessionDB(db_path=profile_home / "state.db")
+        db.create_session(session_id="jimmy-telegram", source="telegram")
+        db.create_session(session_id="jimmy-cli", source="cli")
+        db.close()
+
+        r = self.client.get("/api/sessions/stats?profile=jimmy")
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 2
+        assert body["by_source"] == {"telegram": 1, "cli": 1}
+
+    def test_stats_profile_default_query_uses_default_store(self):
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        profile_home = get_hermes_home() / "profiles" / "jimmy"
+        profile_home.mkdir(parents=True)
+        db = SessionDB(db_path=profile_home / "state.db")
+        db.create_session(session_id="jimmy-telegram", source="telegram")
+        db.close()
+
+        r = self.client.get("/api/sessions/stats?profile=default")
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 1
+        assert body["by_source"] == {"cli": 1}
+
     def test_rename(self):
         r = self.client.patch("/api/sessions/sess-x", json={"title": "Renamed"})
         assert r.status_code == 200 and r.json()["title"] == "Renamed"
