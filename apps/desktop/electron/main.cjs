@@ -37,6 +37,7 @@ const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPort } = require('./backend-ready.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
+const { hasUsableActiveInstall } = require('./runtime-resolver.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { buildDesktopBackendEnv } = require('./backend-env.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
@@ -276,6 +277,12 @@ const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
+// Cache the successful CLI import probe used by the CLI-first runtime resolver.
+// Spawning Python is expensive on some cold-start paths (notably Windows with
+// antivirus), so a same-version Desktop launch can skip the subprocess after a
+// known-good result. The cache lives in Electron userData and is invalidated by
+// the app version, active root, and venv Python path.
+const DESKTOP_RESOLVER_CACHE_PATH = path.join(app.getPath('userData'), 'resolverCache.json')
 // active-profile.json records which Hermes profile the desktop launches its
 // local backend as. When set, startHermes() passes `hermes --profile <name>
 // dashboard …`, which deterministically pins HERMES_HOME (see
@@ -2344,7 +2351,35 @@ function resolveHermesBackend(dashboardArgs) {
     return createActiveBackend(dashboardArgs)
   }
 
-  // 4. Existing `hermes` on PATH -- installed via install.ps1 / install.sh from
+  // 4. Existing source install at ACTIVE_HERMES_ROOT without a desktop marker.
+  //    This is the common CLI-first path on macOS/Linux: Finder-launched apps
+  //    often cannot see ~/.local/bin on PATH, but the canonical checkout and
+  //    venv are already present and runnable. Reuse it without writing the
+  //    desktop bootstrap marker so Desktop does not claim ownership of a
+  //    manual install.
+  if (
+    process.env.HERMES_DESKTOP_IGNORE_EXISTING !== '1' &&
+    hasUsableActiveInstall({
+      activeRoot: ACTIVE_HERMES_ROOT,
+      appVersion: resolveHermesVersion(),
+      canImportHermesCli,
+      fileExists,
+      getVenvPython,
+      isHermesSourceRoot,
+      readResolverCache: () => readJson(DESKTOP_RESOLVER_CACHE_PATH),
+      rememberLog,
+      venvRoot: VENV_ROOT,
+      writeResolverCache: cache => {
+        fs.mkdirSync(path.dirname(DESKTOP_RESOLVER_CACHE_PATH), { recursive: true })
+        writeFileAtomic(DESKTOP_RESOLVER_CACHE_PATH, JSON.stringify(cache, null, 2) + '\n', 'utf8')
+      }
+    })
+  ) {
+    rememberLog(`Using existing Hermes source install at ${ACTIVE_HERMES_ROOT} without desktop bootstrap marker.`)
+    return createActiveBackend(dashboardArgs)
+  }
+
+  // 5. Existing `hermes` on PATH -- installed via install.ps1 / install.sh from
   //    a previous tool-only setup, or pip-installed system-wide. Use it but
   //    do NOT write a bootstrap marker; the user did this themselves and we
   //    don't want to take ownership of an install we didn't perform.
