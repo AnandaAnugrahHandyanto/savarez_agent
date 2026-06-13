@@ -610,7 +610,19 @@ export function ChatBar({
     }
 
     const before = textBeforeCaret(editor)
-    const detected = detectTrigger(before ?? composerPlainText(editor))
+    let detected = detectTrigger(before ?? composerPlainText(editor))
+
+    // The arg-stage popover (command name + space + args) is only useful for
+    // commands with an inline options screen. For a no-arg command it would
+    // dead-end on "No matches", so drop the trigger — the directive is already
+    // complete. (Mirrors the menu only opening at this stage when args exist.)
+    if (detected?.kind === '/' && detected.query.includes(' ')) {
+      const command = detected.query.split(/\s+/, 1)[0] ?? ''
+
+      if (!desktopSlashCommandTakesArgs(command)) {
+        detected = null
+      }
+    }
 
     setTrigger(detected)
 
