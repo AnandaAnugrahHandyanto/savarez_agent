@@ -3,10 +3,11 @@
 import json
 import time
 import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from agent.memory_provider import MemoryProvider
-from agent.memory_manager import MemoryManager
+from agent.memory_manager import MemoryManager, inject_memory_provider_tools
 
 # ---------------------------------------------------------------------------
 # Concrete test provider
@@ -1499,11 +1500,11 @@ class TestMemoryToolToolsetGate:
     causing 10x latency on local models (Qwen3-30B: 1.7s → 42s) and
     tool-call loops on small models.
 
-    These tests mirror the gate logic in agent/agent_init.py around the
-    memory provider tool injection block. The gate condition is:
+    These tests exercise the shared gate used by agent init and ACP refreshes.
+    The gate condition is:
 
         enabled_toolsets is None        → no filter, inject (backward compat)
-        "memory" in enabled_toolsets    → user opted in, inject
+        selected toolsets include memory → user opted in, inject
         otherwise (incl. [])            → skip injection
     """
 
@@ -1555,6 +1556,13 @@ class TestMemoryToolToolsetGate:
         tools, names = self._run_memory_injection(["terminal", "memory", "web"], mgr)
         assert "fact_store" in names
 
+    def test_composite_toolset_with_memory_injects(self):
+        """Composite toolsets that include memory should inject provider tools."""
+        mgr = self._mgr_with_tools("hindsight_recall")
+        tools, names = self._run_memory_injection(["hermes-acp"], mgr)
+        assert "hindsight_recall" in names
+        assert any(t["function"]["name"] == "hindsight_recall" for t in tools)
+
     def test_empty_toolsets_blocks_injection(self):
         """`platform_toolsets: telegram: []` must suppress memory tools. (#5544)"""
         mgr = self._mgr_with_tools("fact_store")
@@ -1563,7 +1571,7 @@ class TestMemoryToolToolsetGate:
         assert names == set()
 
     def test_toolsets_without_memory_blocks_injection(self):
-        """Toolset list that doesn't name 'memory' must suppress injection."""
+        """Toolsets that don't include memory must suppress injection."""
         mgr = self._mgr_with_tools("fact_store")
         tools, names = self._run_memory_injection(["terminal", "web"], mgr)
         assert tools == []

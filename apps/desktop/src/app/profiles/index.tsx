@@ -12,6 +12,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import {
   deleteProfile,
@@ -148,6 +149,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
             await refresh()
           }}
           open={createOpen}
+          profiles={profiles ?? []}
         />
 
         <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
