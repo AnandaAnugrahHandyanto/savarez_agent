@@ -5579,7 +5579,6 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
             evt.get("pattern", ""),
             evt.get("output", ""),
             evt.get("suppressed", 0),
-            evt.get("message_id", ""),
         )
     if evt_type.startswith("watch_overflow_") or evt_type == "watch_disabled":
         return (

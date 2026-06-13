@@ -6682,9 +6682,11 @@ def test_notification_event_dedup_key_preserves_distinct_watch_matches():
     identical = dict(base)
     distinct_output = {**base, "output": "READY on port 9000"}
     distinct_pattern = {**base, "pattern": "MIGRATION_DONE"}
+    different_message_id = {**base, "message_id": "topic-reply-anchor"}
 
     base_key = server._notification_event_dedup_key(base)
     assert server._notification_event_dedup_key(identical) == base_key
+    assert server._notification_event_dedup_key(different_message_id) == base_key
     assert server._notification_event_dedup_key(distinct_output) != base_key
     assert server._notification_event_dedup_key(distinct_pattern) != base_key
 
