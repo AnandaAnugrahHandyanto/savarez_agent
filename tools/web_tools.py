@@ -16,6 +16,7 @@ Backend compatibility:
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
 - Tavily: https://tavily.com (search, extract)
+- fastCRW: https://fastcrw.com (search [cloud/self-hosted], extract; single binary, runs locally with no key)
 
 LLM Processing:
 - Uses OpenRouter API with Gemini 3 Flash Preview for intelligent content extraction
@@ -73,6 +74,7 @@ from plugins.web.parallel.provider import (  # noqa: F401 — backward-compat na
     _get_parallel_client,
 )
 from plugins.web.exa.provider import _get_exa_client  # noqa: F401
+from plugins.web.crw.provider import _get_crw_client  # noqa: F401
 
 # Module-level cache slots for the per-vendor clients. The plugins read/write
 # these via tools.web_tools so unit tests that reset
@@ -82,6 +84,7 @@ _firecrawl_client_config: Optional[Any] = None
 _parallel_client: Optional[Any] = None
 _async_parallel_client: Optional[Any] = None
 _exa_client: Optional[Any] = None
+_crw_client: Optional[Any] = None
 
 from agent.auxiliary_client import (
     async_call_llm,
@@ -145,7 +148,7 @@ def _load_web_config() -> dict:
 # ``web.search_backend`` / ``web.extract_backend``). Kept as a single source of
 # truth for config validation across the selection helpers.
 _KNOWN_WEB_BACKENDS = frozenset(
-    {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}
+    {"parallel", "firecrawl", "tavily", "exa", "crw", "searxng", "brave-free", "ddgs", "xai"}
 )
 
 # Backends that only service web_search (their provider's ``supports_extract()``
@@ -186,6 +189,12 @@ def _get_backend(capability: str = "search") -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")),
         ("firecrawl", _is_tool_gateway_ready()),
+        # fastCRW only auto-selects when explicit cloud / self-hosted creds are
+        # set (CRW_API_KEY / CRW_API_URL). Keyless subprocess mode is NOT
+        # auto-detected here — it stays opt-in via web.backend=crw — so simply
+        # having the crw extra installed never silently hijacks the default
+        # backend for existing users.
+        ("crw", _has_env("CRW_API_KEY") or _has_env("CRW_API_URL")),
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         # Keyless Parallel free MCP — always available, the intended no-key
@@ -269,6 +278,18 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
+    if backend == "crw":
+        # Cloud / self-hosted creds → usable. Otherwise usable only when the
+        # crw-mcp binary is already present locally (network-free check — never
+        # downloads here, since this runs on every dispatch + `hermes tools`
+        # repaint). Mirrors CrwWebSearchProvider.is_available().
+        if _has_env("CRW_API_KEY") or _has_env("CRW_API_URL"):
+            return True
+        try:
+            from plugins.web.crw.provider import _crw_binary_present
+            return _crw_binary_present()
+        except Exception:
+            return False
     if backend == "xai":
         # Cheap probe — env var OR auth.json has OAuth tokens. Must not
         # call resolve_xai_http_credentials() here because the OAuth path
@@ -1423,6 +1444,15 @@ if __name__ == "__main__":
             print("   Using Brave Search free tier (search only)")
         elif backend == "ddgs":
             print("   Using DuckDuckGo via ddgs package (search only)")
+        elif backend == "crw":
+            crw_url = os.getenv("CRW_API_URL", "").strip().rstrip("/")
+            crw_key = os.getenv("CRW_API_KEY", "").strip()
+            if crw_url:
+                print(f"   Using fastCRW self-hosted: {crw_url}")
+            elif crw_key:
+                print("   Using fastCRW cloud API (fastcrw.com)")
+            else:
+                print("   Using fastCRW subprocess mode (crw-mcp binary, extract only)")
         elif firecrawl_url_available:
             print(f"   Using self-hosted Firecrawl: {os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')}")
         elif firecrawl_key_available:
@@ -1434,7 +1464,7 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, CRW_API_KEY, CRW_API_URL, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
             f"{_firecrawl_backend_help_suffix()}"
         )
 
