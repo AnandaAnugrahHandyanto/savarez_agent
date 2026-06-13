@@ -21,16 +21,19 @@ Lemonade server runs on ``localhost:13305`` by default and exposes an
 OpenAI-compatible ``/v1/images/generations`` endpoint.
 
 Model selection precedence (first hit wins):
-1. ``LEMONADE_IMAGE_MODEL`` env var
-2. ``image_gen.lemonade.model`` in ``config.yaml``
+1. ``image_gen.lemonade.model`` in ``config.yaml``
+2. ``image_gen.model`` (top-level fallback)
 3. :data:`DEFAULT_MODEL`
+
+All behavioural settings (model, base_url, steps, cfg_scale, seed, per-aspect
+size) live in ``image_gen.lemonade.*`` in ``config.yaml`` — only
+``LEMONADE_API_KEY`` stays in ``.env`` because it is a credential.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -41,6 +44,7 @@ from agent.image_gen_provider import (
     error_response,
     resolve_aspect_ratio,
     save_b64_image,
+    save_url_image,
     success_response,
 )
 
@@ -119,11 +123,13 @@ def _load_image_gen_section() -> Dict[str, Any]:
 
 
 def _resolve_model() -> Tuple[str, Dict[str, Any]]:
-    """Decide which model to use and return ``(model_id, meta)``."""
-    env_override = os.environ.get("LEMONADE_IMAGE_MODEL")
-    if env_override and env_override in _MODELS:
-        return env_override, _MODELS[env_override]
+    """Decide which model to use and return ``(model_id, meta)``.
 
+    Precedence (config-only — no env override per the core policy):
+    1. ``image_gen.lemonade.model`` in ``config.yaml``
+    2. ``image_gen.model`` (top-level fallback)
+    3. :data:`DEFAULT_MODEL`
+    """
     cfg = _load_lemonade_config()
     candidate = cfg.get("model") if isinstance(cfg.get("model"), str) else None
     if candidate and candidate in _MODELS:
@@ -139,12 +145,19 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
 
 
 def _resolve_base_url() -> str:
-    """Return the lemonade server base URL."""
-    env_url = os.environ.get("LEMONADE_BASE_URL")
-    if env_url:
-        return env_url.strip().rstrip("/")
+    """Return the lemonade server base URL.
+
+    Precedence (config-only):
+    1. ``image_gen.lemonade.base_url`` in ``config.yaml``
+    2. ``image_gen.base_url`` (top-level fallback)
+    3. ``http://localhost:13305/api/v1``
+    """
     cfg = _load_lemonade_config()
     url = cfg.get("base_url")
+    if isinstance(url, str) and url.strip():
+        return url.strip().rstrip("/")
+    top = _load_image_gen_section()
+    url = top.get("base_url")
     if isinstance(url, str) and url.strip():
         return url.strip().rstrip("/")
     return "http://localhost:13305/api/v1"
@@ -177,82 +190,18 @@ def _resolve_seed() -> Optional[int]:
     return None
 
 
-# ---------------------------------------------------------------------------
-# URL caching
-# ---------------------------------------------------------------------------
+def _resolve_size(aspect: str) -> str:
+    """Return the WIDTHxHEIGHT string for *aspect*, from config or default.
 
-
-# Maximum size we will buffer for a single lemonade image. The default
-# lemonade output is well under 25 MB even at 1024x1024, but cap defensively
-# so a misconfigured server can't fill the disk.
-_URL_CACHE_MAX_BYTES = 25 * 1024 * 1024
-
-# Map of Content-Type → file extension. We deliberately keep this small
-# (mirrors ``agent.image_gen_provider._URL_IMAGE_CONTENT_TYPES``) — the
-# default lemonade server always serves ``image/png`` for SD outputs.
-_URL_CONTENT_TYPES = {
-    "image/png": "png",
-    "image/jpeg": "jpg",
-    "image/jpg": "jpg",
-    "image/webp": "webp",
-}
-
-
-def _cache_url_bytes(url: str, *, prefix: str) -> Path:
-    """Download ``url`` and write the bytes under ``$HERMES_HOME/cache/images/``.
-
-    Inlined here (rather than depending on ``agent.image_gen_provider``'s
-    :func:`save_url_image` helper) to keep this plugin self-contained —
-    lemonade runs locally so the download endpoint is on ``localhost`` and
-    the wire format is well known.
-
-    Returns the absolute :class:`Path` to the cached file. Raises on any
-    network / HTTP / oversize / non-image-content-type error so callers can
-    fall back to the bare URL.
+    Priority (config-only — ``image_gen.lemonade.size_<aspect>`` in
+    ``config.yaml`` → hardcoded :data:`_ASPECT_SIZES`).
     """
-    from agent.image_gen_provider import _images_cache_dir
-
-    response = requests.get(url, timeout=60, stream=True)
-    response.raise_for_status()
-
-    content_type = (
-        (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-    )
-    extension = _URL_CONTENT_TYPES.get(content_type, "png")
-
-    import datetime as _dt
-    import uuid as _uuid
-
-    cache_dir = _images_cache_dir()
-    ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    short = _uuid.uuid4().hex[:8]
-    path = cache_dir / f"{prefix}_{ts}_{short}.{extension}"
-
-    bytes_written = 0
-    with path.open("wb") as fh:
-        for chunk in response.iter_content(chunk_size=64 * 1024):
-            if not chunk:
-                continue
-            bytes_written += len(chunk)
-            if bytes_written > _URL_CACHE_MAX_BYTES:
-                fh.close()
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
-                raise ValueError(
-                    f"Image at {url} exceeds {_URL_CACHE_MAX_BYTES // (1024 * 1024)}MB cap"
-                )
-            fh.write(chunk)
-
-    if bytes_written == 0:
-        try:
-            path.unlink()
-        except OSError:
-            pass
-        raise ValueError(f"Image at {url} returned 0 bytes")
-
-    return path
+    cfg = _load_lemonade_config()
+    key = f"size_{aspect}"
+    override = cfg.get(key)
+    if isinstance(override, str) and override.strip():
+        return override.strip()
+    return _ASPECT_SIZES.get(aspect, _ASPECT_SIZES["square"])
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +267,7 @@ class LemonadeImageGenProvider(ImageGenProvider):
 
         model_id, meta = _resolve_model()
         base_url = _resolve_base_url()
-        size = _ASPECT_SIZES.get(aspect, _ASPECT_SIZES["square"])
+        size = _resolve_size(aspect)
         steps = _resolve_steps(meta)
         cfg_scale = _resolve_cfg_scale(meta)
         seed = _resolve_seed()
@@ -348,13 +297,6 @@ class LemonadeImageGenProvider(ImageGenProvider):
             response.raise_for_status()
             result = response.json()
             data = result.get("data", [])
-        except ImportError:
-            return error_response(
-                error="requests package not installed (pip install requests)",
-                error_type="missing_dependency",
-                provider="lemonade",
-                aspect_ratio=aspect,
-            )
         except requests.Timeout:
             return error_response(
                 error="Lemonade image generation timed out (300s)",
@@ -431,11 +373,11 @@ class LemonadeImageGenProvider(ImageGenProvider):
             # server (typically ``http://localhost:13305/...``). It's not a
             # signed/expiring link like xAI or OpenAI return, so the bare URL
             # is normally safe to pass through to the gateway — but we cache
-            # the bytes locally anyway as a belt-and-suspenders measure for
-            # the cases where the server has been shut down by the time the
-            # gateway goes to deliver the image.
+            # the bytes locally via the shared ``save_url_image()`` helper as
+            # a belt-and-suspenders measure for cases where the server has
+            # been shut down by the time the gateway goes to deliver.
             try:
-                saved_path = _cache_url_bytes(url, prefix=f"lemonade_{model_id}")
+                saved_path = save_url_image(url, prefix=f"lemonade_{model_id}")
             except Exception as exc:
                 logger.warning(
                     "Lemonade image URL %s could not be cached (%s); falling back to bare URL.",

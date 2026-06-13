@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -96,34 +95,94 @@ class TestAvailability:
 
 
 class TestConfigResolution:
-    def test_default_model_when_no_config(self, monkeypatch):
-        monkeypatch.delenv("LEMONADE_IMAGE_MODEL", raising=False)
+    def test_default_model(self):
         from plugins.image_gen.lemonade import _resolve_model, DEFAULT_MODEL
         model_id, _ = _resolve_model()
         assert model_id == DEFAULT_MODEL
 
-    def test_env_var_overrides_config(self, monkeypatch):
-        monkeypatch.setenv("LEMONADE_IMAGE_MODEL", "Z-Image-Turbo")
+    def test_model_from_config(self, monkeypatch):
+        monkeypatch.setattr(
+            "plugins.image_gen.lemonade._load_lemonade_config",
+            lambda: {"model": "Z-Image-Turbo"},
+        )
         from plugins.image_gen.lemonade import _resolve_model
         model_id, _ = _resolve_model()
         assert model_id == "Z-Image-Turbo"
 
-    def test_env_var_with_unknown_model_falls_through(self, monkeypatch):
-        monkeypatch.setenv("LEMONADE_IMAGE_MODEL", "NotARealModel")
-        from plugins.image_gen.lemonade import _resolve_model, DEFAULT_MODEL
+    def test_model_from_top_level_image_gen_fallback(self, monkeypatch):
+        """``image_gen.model`` must be used when ``image_gen.lemonade.model`` is not set."""
+        monkeypatch.setattr(
+            "plugins.image_gen.lemonade._load_lemonade_config",
+            lambda: {},
+        )
+        monkeypatch.setattr(
+            "plugins.image_gen.lemonade._load_image_gen_section",
+            lambda: {"model": "Z-Image-Turbo"},
+        )
+        from plugins.image_gen.lemonade import _resolve_model
         model_id, _ = _resolve_model()
-        assert model_id == DEFAULT_MODEL
+        assert model_id == "Z-Image-Turbo"
 
-    def test_base_url_default(self, monkeypatch):
-        monkeypatch.delenv("LEMONADE_BASE_URL", raising=False)
+    def test_default_base_url(self):
         from plugins.image_gen.lemonade import _resolve_base_url
         assert _resolve_base_url() == "http://localhost:13305/api/v1"
 
-    def test_base_url_env_override(self, monkeypatch):
-        monkeypatch.setenv("LEMONADE_BASE_URL", "http://10.0.0.5:9000/api/v1/")
+    def test_base_url_from_config(self, monkeypatch):
+        monkeypatch.setattr(
+            "plugins.image_gen.lemonade._load_lemonade_config",
+            lambda: {"base_url": "http://127.0.0.1:13305/api/v1/"},
+        )
         from plugins.image_gen.lemonade import _resolve_base_url
-        # Trailing slash and whitespace are stripped.
-        assert _resolve_base_url() == "http://10.0.0.5:9000/api/v1"
+        assert _resolve_base_url() == "http://127.0.0.1:13305/api/v1"
+
+    def test_base_url_top_level_fallback(self, monkeypatch):
+        """``image_gen.base_url`` should be read when ``image_gen.lemonade.base_url`` is not set."""
+        monkeypatch.setattr(
+            "plugins.image_gen.lemonade._load_lemonade_config",
+            lambda: {},
+        )
+        monkeypatch.setattr(
+            "plugins.image_gen.lemonade._load_image_gen_section",
+            lambda: {"base_url": "http://127.0.0.1:13305/api/v1"},
+        )
+        from plugins.image_gen.lemonade import _resolve_base_url
+        assert _resolve_base_url() == "http://127.0.0.1:13305/api/v1"
+
+    def test_base_url_lemonade_wins_over_top_level(self, monkeypatch):
+        """``image_gen.lemonade.base_url`` must take priority over ``image_gen.base_url``."""
+        monkeypatch.setattr(
+            "plugins.image_gen.lemonade._load_lemonade_config",
+            lambda: {"base_url": "http://127.0.0.1:13305/api/v1"},
+        )
+        monkeypatch.setattr(
+            "plugins.image_gen.lemonade._load_image_gen_section",
+            lambda: {"base_url": "http://127.0.0.2:13305/api/v1"},
+        )
+        from plugins.image_gen.lemonade import _resolve_base_url
+        assert _resolve_base_url() == "http://127.0.0.1:13305/api/v1"
+
+    def test_default_size(self):
+        from plugins.image_gen.lemonade import _resolve_size
+        assert _resolve_size("square") == "1024x1024"
+        assert _resolve_size("landscape") == "1024x768"
+        assert _resolve_size("portrait") == "768x1024"
+
+    def test_size_from_config(self, monkeypatch):
+        monkeypatch.setattr(
+            "plugins.image_gen.lemonade._load_lemonade_config",
+            lambda: {"size_square": "512x512"},
+        )
+        from plugins.image_gen.lemonade import _resolve_size
+        assert _resolve_size("square") == "512x512"
+
+    def test_size_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setattr(
+            "plugins.image_gen.lemonade._load_lemonade_config",
+            lambda: {"size_square": "512x512"},
+        )
+        from plugins.image_gen.lemonade import _resolve_size
+        # portrait not overridden — must fall back to _ASPECT_SIZES
+        assert _resolve_size("portrait") == "768x1024"
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +214,7 @@ class TestGenerateSuccess:
         assert mock_save.call_args.args[0] == b64
         assert mock_save.call_args.kwargs["prefix"].startswith("lemonade_")
 
-    def test_url_response_uses_cache_url_bytes(self):
+    def test_url_response_uses_save_url_image(self):
         """URL fallback must be cached locally, not returned as-is."""
         from plugins.image_gen.lemonade import LemonadeImageGenProvider
 
@@ -163,25 +222,25 @@ class TestGenerateSuccess:
 
         with patch("plugins.image_gen.lemonade.requests.post", return_value=mock_resp):
             with patch(
-                "plugins.image_gen.lemonade._cache_url_bytes",
+                "plugins.image_gen.lemonade.save_url_image",
                 return_value=MagicMock(__str__=lambda self: "/tmp/cached.png"),
-            ) as mock_cache:
+            ) as mock_save:
                 result = LemonadeImageGenProvider().generate(prompt="a corgi in space")
 
         assert result["success"] is True
         assert result["image"] == "/tmp/cached.png"
-        assert mock_cache.call_args.args[0] == "https://lemonade.local/tmp/abc.png"
-        assert mock_cache.call_args.kwargs["prefix"].startswith("lemonade_")
+        assert mock_save.call_args.args[0] == "https://lemonade.local/tmp/abc.png"
+        assert mock_save.call_args.kwargs["prefix"].startswith("lemonade_")
 
     def test_url_response_falls_back_to_bare_url_if_cache_fails(self):
-        """If _cache_url_bytes raises, the bare URL is returned (with a warning logged)."""
+        """If save_url_image raises, the bare URL is returned (with a warning logged)."""
         from plugins.image_gen.lemonade import LemonadeImageGenProvider
 
         mock_resp = _fake_response(url="https://lemonade.local/tmp/abc.png")
 
         with patch("plugins.image_gen.lemonade.requests.post", return_value=mock_resp):
             with patch(
-                "plugins.image_gen.lemonade._cache_url_bytes",
+                "plugins.image_gen.lemonade.save_url_image",
                 side_effect=ValueError("expired"),
             ):
                 result = LemonadeImageGenProvider().generate(prompt="x")
