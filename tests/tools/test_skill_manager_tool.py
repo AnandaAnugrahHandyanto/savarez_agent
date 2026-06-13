@@ -19,6 +19,8 @@ from tools.skill_manager_tool import (
     _write_file,
     _remove_file,
     skill_manage,
+    SKILL_MANAGE_SCHEMA,
+    _skill_gate_bypass,
     MAX_NAME_LENGTH,
 )
 
@@ -28,7 +30,8 @@ def _skill_dir(tmp_path):
     """Patch both SKILLS_DIR and get_all_skills_dirs so _find_skill searches
     only the temp directory — not the real ~/.hermes/skills/."""
     with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
-         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]), \
+         patch("tools.approval._YOLO_MODE_FROZEN", True):
         yield
 
 
@@ -957,3 +960,99 @@ class TestPinnedGuard:
                        side_effect=RuntimeError("sidecar broken")):
                 result = _delete_skill("my-skill")
         assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Write approval gate (upstream _apply_skill_write_gate)
+# ---------------------------------------------------------------------------
+
+
+class TestWriteApprovalGate:
+    """Tests for the write-approval gate that stages skill writes for review.
+
+    The gate is controlled by skills.write_approval in config.yaml (default
+    False). When off, writes flow freely. When on, skill writes are staged
+    to <HERMES_HOME>/pending/skills/ for user review.
+    """
+
+    def test_gate_off_writes_flow(self, tmp_path):
+        """When write_approval is off (default), skill_manage proceeds directly."""
+        with _skill_dir(tmp_path), \
+             patch("tools.write_approval.evaluate_gate") as mock_eval:
+            from tools.write_approval import GateDecision
+            mock_eval.return_value = GateDecision(allow=True)
+            result = json.loads(skill_manage("create", "test-skill", content=VALID_SKILL_CONTENT))
+        assert result["success"] is True
+        assert "staged" not in result
+
+    def test_gate_on_stages_write(self, tmp_path):
+        """When write_approval is on, skill_manage stages instead of writing."""
+        with _skill_dir(tmp_path), \
+             patch("tools.write_approval.evaluate_gate") as mock_eval, \
+             patch("tools.write_approval.stage_write") as mock_stage, \
+             patch("tools.write_approval.current_origin", return_value="foreground"):
+            from tools.write_approval import GateDecision
+            mock_eval.return_value = GateDecision(
+                stage=True, message="Staged for approval."
+            )
+            mock_stage.return_value = {"id": "abc123", "summary": "create test-skill"}
+            result = json.loads(skill_manage("create", "test-skill", content=VALID_SKILL_CONTENT))
+        assert result["success"] is True
+        assert result["staged"] is True
+        assert result["pending_id"] == "abc123"
+        mock_stage.assert_called_once()
+
+    def test_gate_bypass_allows_direct_write(self, tmp_path):
+        """_skill_gate_bypass ContextVar skips the gate during replay."""
+        token = _skill_gate_bypass.set(True)
+        try:
+            with _skill_dir(tmp_path), \
+                 patch("tools.write_approval.evaluate_gate") as mock_eval:
+                from tools.write_approval import GateDecision
+                mock_eval.return_value = GateDecision(allow=True)
+                result = json.loads(skill_manage("create", "test-skill", content=VALID_SKILL_CONTENT))
+        finally:
+            _skill_gate_bypass.reset(token)
+        assert result["success"] is True
+        assert "staged" not in result
+        mock_eval.assert_not_called()
+
+    def test_apply_skill_pending_replays_create(self, tmp_path):
+        """apply_skill_pending replays a staged create through skill_manage."""
+        with _skill_dir(tmp_path), \
+             patch("tools.write_approval.evaluate_gate") as mock_eval:
+            from tools.write_approval import GateDecision
+            mock_eval.return_value = GateDecision(allow=True)
+            from tools.skill_manager_tool import apply_skill_pending
+            payload = {"action": "create", "name": "replayed-skill", "content": VALID_SKILL_CONTENT}
+            raw = apply_skill_pending(payload)
+            result = json.loads(raw)
+        assert result["success"] is True
+        assert "replayed-skill" in result.get("message", "")
+
+    def test_gate_off_all_actions_bypass(self, tmp_path):
+        """All 6 mutating actions bypass the gate when write_approval is off."""
+        with _skill_dir(tmp_path), \
+             patch("tools.write_approval.evaluate_gate") as mock_eval:
+            from tools.write_approval import GateDecision
+            mock_eval.return_value = GateDecision(allow=True)
+            _create_skill("gate-test", VALID_SKILL_CONTENT)
+            for action in ("edit", "patch", "write_file", "delete"):
+                if action == "edit":
+                    kwargs = {"content": VALID_SKILL_CONTENT}
+                elif action == "patch":
+                    kwargs = {"old_string": "Do the thing.", "new_string": "Do the thing. Now."}
+                elif action == "write_file":
+                    kwargs = {"file_path": "references/note.md", "file_content": "hi"}
+                elif action == "delete":
+                    kwargs = {}
+                result = json.loads(skill_manage(action, "gate-test", **kwargs))
+                assert result["success"] is True, f"action {action} failed: {result}"
+                if action == "delete":
+                    _create_skill("gate-test", VALID_SKILL_CONTENT)
+
+    def test_schema_matches_mutating_actions(self):
+        """SKILL_MANAGE_SCHEMA enum lists exactly the 6 mutating actions."""
+        schema_actions = set(SKILL_MANAGE_SCHEMA["parameters"]["properties"]["action"]["enum"])
+        expected = {"create", "edit", "patch", "delete", "write_file", "remove_file"}
+        assert schema_actions == expected
