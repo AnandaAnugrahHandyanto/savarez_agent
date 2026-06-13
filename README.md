@@ -176,7 +176,49 @@ cd nautilus-agent
 
 MIT — see [LICENSE](LICENSE).
 
+## Acknowledgments — Built on Hermes Agent
+
+Nautilus Agent is a **friendly fork** of [Hermes Agent](https://github.com/NousResearch/hermes-agent) — the self-improving AI agent built by the incredible team at [Nous Research](https://nousresearch.com). Hermes is one of the most capable and thoughtfully designed open-source agent frameworks available today, and Nautilus would not exist without it.
+
+### What makes Hermes special
+
+- **Built-in learning loop** — Agent-curated memory, autonomous skill creation, and skills that self-improve during use
+- **Cross-session recall** — FTS5 session search with LLM summarization so your agent remembers what you talked about last week
+- **Scheduled automations** — Built-in cron scheduler that runs unattended jobs and delivers results anywhere
+- **Parallel subagents** — Spawn isolated subagents for parallel workstreams
+- **Six terminal backends** — Local, Docker, SSH, Singularity, Modal, and Daytona
+- **Unified gateway** — One process that serves Telegram, Discord, Slack, WhatsApp, Signal, Matrix, and more
+- **200+ models** via OpenRouter, Nous Portal, and native providers
+
+### Give Hermes some love ❤️
+
+| Resource | Link |
+|----------|------|
+| **Hermes GitHub** | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) |
+| **Hermes Docs** | [hermes-agent.nousresearch.com/docs](https://hermes-agent.nousresearch.com/docs/) |
+| **Hermes Discord** | [discord.gg/NousResearch](https://discord.gg/NousResearch) |
+| **Nous Research** | [nousresearch.com](https://nousresearch.com) |
+| **Skills Hub** | [agentskills.io](https://agentskills.io) |
+
+> If you like Nautilus Agent, **please star the upstream [Hermes Agent repo](https://github.com/NousResearch/hermes-agent)** — that's where the real magic happens.
+
+## Nautilus + Hermes = 🐚⚡
+
+Nautilus takes everything that makes Hermes great and layers science-specific capabilities on top:
+
+- **Protocol Automation** built on Hermes' skill and cron infrastructure
+- **Literature Synthesis** powered by Hermes' web search and session memory
+- **Data Pipelines** driven by Hermes' terminal and code execution tools
+- **Reproducibility** enforced by Hermes' built-in versioning and audit trails
+
+Every Nautilus feature is a Hermes feature, extended. When you use Nautilus, you're using Hermes — just with a snorkel and a lab coat.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
 Built on [Hermes Agent](https://github.com/NousResearch/hermes-agent) by [Nous Research](https://nousresearch.com).
-Branded for science by the Nautilus community.
 
 <p align="center"><i>"The ocean of data awaits. Dive in."</i></p>
