@@ -2,6 +2,8 @@ import { useStore } from '@nanostores/react'
 import type { CSSProperties, ReactNode } from 'react'
 import { useSyncExternalStore } from 'react'
 
+import { DesktopRenderWatchdog } from '@/components/desktop-render-watchdog'
+
 import { NotificationStack } from '@/components/notifications'
 import { PaneShell } from '@/components/pane-shell'
 import { SidebarProvider } from '@/components/ui/sidebar'
@@ -193,6 +195,7 @@ export function AppShell({
 
       {/* Mounted at the shell root (after overlays) so success/error toasts
           surface above every route and overlay — not just the chat view. */}
+      <DesktopRenderWatchdog />
       <NotificationStack />
     </SidebarProvider>
   )
