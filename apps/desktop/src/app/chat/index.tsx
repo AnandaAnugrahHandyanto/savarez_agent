@@ -7,7 +7,7 @@ import {
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
-import { Suspense, useCallback, useMemo, useRef } from 'react'
+import { Suspense, useCallback, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 
 import { Thread } from '@/components/assistant-ui/thread'
@@ -58,6 +58,19 @@ import { useFileDropZone } from './hooks/use-file-drop-zone'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { threadLoadingState } from './thread-loading'
+
+const LARGE_SESSION_RENDER_LIMIT = 300
+
+export function chatRenderWindow(
+  messages: readonly ChatMessage[],
+  fullHistoryLoaded: boolean,
+  limit = LARGE_SESSION_RENDER_LIMIT
+): { cappedMessageCount: number; renderMessages: readonly ChatMessage[] } {
+  const cappedMessageCount = Math.max(0, messages.length - limit)
+  const renderMessages = !fullHistoryLoaded && cappedMessageCount > 0 ? messages.slice(cappedMessageCount) : messages
+
+  return { cappedMessageCount, renderMessages }
+}
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   gateway: HermesGateway | null
@@ -168,6 +181,7 @@ interface ChatRuntimeBoundaryProps {
   /** Route points at an unloaded session — render empty until resume swaps in
    *  the new transcript, so the previous session's messages don't linger. */
   suppressMessages: boolean
+  threadKey: string
 }
 
 const NO_MESSAGES: ChatMessage[] = []
@@ -189,11 +203,15 @@ function ChatRuntimeBoundary({
   onEdit,
   onReload,
   onThreadMessagesChange,
-  suppressMessages
+  suppressMessages,
+  threadKey
 }: ChatRuntimeBoundaryProps) {
   const storeMessages = useStore($messages)
   const messages = suppressMessages ? NO_MESSAGES : storeMessages
+  const [fullHistorySessionId, setFullHistorySessionId] = useState<string | null>(null)
   const runtimeMessageCacheRef = useRef(new WeakMap<ChatMessage, ThreadMessage>())
+  const fullHistoryLoaded = Boolean(threadKey && fullHistorySessionId === threadKey)
+  const { cappedMessageCount, renderMessages } = chatRenderWindow(messages, fullHistoryLoaded)
 
   const runtimeMessageRepository = useMemo(() => {
     const items: { message: ThreadMessage; parentId: string | null }[] = []
@@ -201,7 +219,7 @@ function ChatRuntimeBoundary({
     let visibleParentId: string | null = null
     let headId: string | null = null
 
-    for (const message of messages) {
+    for (const message of renderMessages) {
       let parentId = visibleParentId
 
       if (message.role === 'assistant' && message.branchGroupId) {
@@ -228,7 +246,7 @@ function ChatRuntimeBoundary({
     }
 
     return ExportedMessageRepository.fromBranchableArray(items, { headId })
-  }, [messages])
+  }, [renderMessages])
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: runtimeMessageRepository,
@@ -243,7 +261,23 @@ function ChatRuntimeBoundary({
     onReload
   })
 
-  return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      {cappedMessageCount > 0 && !fullHistoryLoaded && (
+        <div className="pointer-events-none absolute left-0 right-0 top-3 z-20 flex justify-center px-4">
+          <div className="pointer-events-auto flex max-w-(--composer-width) items-center gap-3 rounded-full border border-border/70 bg-background/95 px-4 py-2 text-sm text-muted-foreground shadow-lg backdrop-blur">
+            <span>
+              Showing latest {renderMessages.length.toLocaleString()} of {messages.length.toLocaleString()} messages to keep this large session responsive.
+            </span>
+            <Button onClick={() => setFullHistorySessionId(threadKey)} size="sm" variant="secondary">
+              Load full history
+            </Button>
+          </div>
+        </div>
+      )}
+      {children}
+    </AssistantRuntimeProvider>
+  )
 }
 
 export function ChatView({
@@ -416,6 +450,7 @@ export function ChatView({
           onReload={onReload}
           onThreadMessagesChange={onThreadMessagesChange}
           suppressMessages={routeSessionMismatch}
+          threadKey={threadKey}
         >
           <Thread
             clampToComposer={showChatBar}
