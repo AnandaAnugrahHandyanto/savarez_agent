@@ -41,3 +41,29 @@ def test_lead_slash_commands_and_system_note(tmp_path: Path):
 def test_lead_slash_does_not_accept_legacy_multiplexer(tmp_path: Path):
     reply = handle_lead_slash("orchestrator-mode 2", hermes_home=tmp_path)
     assert "사용법: /hugo-lead 또는 /clara-lead" in reply
+
+
+def test_env_pin_overrides_global_mode_for_reads(tmp_path: Path, monkeypatch):
+    handle_lead_slash("clara-lead", hermes_home=tmp_path)
+    monkeypatch.setenv("HERMES_LEAD_MODE", "hugo-lead")
+    data = read_mode(tmp_path)
+    assert data["mode"] == MODE_HUGO_LEAD
+    assert data.get("pinned") is True
+    assert "hugo-lead" in mode_system_note(tmp_path)
+
+
+def test_env_pin_blocks_mode_switch_and_keeps_global_file(tmp_path: Path, monkeypatch):
+    handle_lead_slash("clara-lead", hermes_home=tmp_path)
+    monkeypatch.setenv("HERMES_LEAD_MODE", "hugo-lead")
+    reply = handle_lead_slash("clara-lead", hermes_home=tmp_path)
+    assert "고정" in reply
+    reply = handle_mode_text("1번", hermes_home=tmp_path, source="test")
+    assert reply is not None and "고정" in reply
+    monkeypatch.delenv("HERMES_LEAD_MODE")
+    assert read_mode(tmp_path)["mode"] == MODE_CLARA_LEAD
+
+
+def test_env_pin_invalid_value_is_ignored(tmp_path: Path, monkeypatch):
+    handle_lead_slash("clara-lead", hermes_home=tmp_path)
+    monkeypatch.setenv("HERMES_LEAD_MODE", "banana")
+    assert read_mode(tmp_path)["mode"] == MODE_CLARA_LEAD

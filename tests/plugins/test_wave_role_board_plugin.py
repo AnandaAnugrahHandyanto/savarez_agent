@@ -153,12 +153,12 @@ def test_council_note_handler_writes_opinions(isolated_home):
     assert {msg["status"] for msg in messages} == {"opinion"}
 
 
-def test_pre_llm_call_injects_mode_context_and_notes(isolated_home):
+def test_pre_llm_call_emits_mode_notes_without_user_context(isolated_home):
     plugin = _load_plugin()
 
     ret = plugin._pre_llm_call(user_message="이거 어떻게 생각해?")
 
-    assert ret and "Wave role-board routing" in ret["context"]
-    assert "mode: chat" in ret["context"]
+    assert ret is None
     messages = (isolated_home / "wave-hub" / "messages.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(messages) == 4
+    assert "Wave role-board routing" not in "\n".join(messages)

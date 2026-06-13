@@ -473,18 +473,12 @@ def _pre_llm_call(user_message: str = "", platform: str = "", **_: Any) -> Optio
         scope = route.get("scope", "global")
         if mode in {"chat", "scratch"}:
             emit_mode_notes(route)
-        context = (
-            "Wave role-board routing for this turn:\n"
-            f"- mode: {mode}\n"
-            f"- scope: {scope}\n"
-            f"- reason: {route.get('reason')}\n"
-            f"- needs_project: {route.get('needs_project')}\n"
-            f"- recommended_action: {route.get('recommended_action')}\n"
-            "Rules: chat/scratch mode should avoid automatic four-subagent calls and only emit short T2 role notes; "
-            "council mode should gather meaningful Coda/Clara/Mira/Nova opinions and show them in T2; "
-            "project mode must use an explicit or active project path and ask if ambiguous."
-        )
-        return {"context": context}
+        # Do not return routing text as pre_llm_call context.  Hermes injects
+        # plugin context into the user message, and LLMs can echo that block in
+        # T1/Slack replies.  The route is used only for T2 notes/stage markers;
+        # user-facing replies must never include the internal
+        # "Wave role-board routing for this turn" block.
+        return None
     except Exception:
         return None
 

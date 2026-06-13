@@ -16047,6 +16047,7 @@ class GatewayRunner:
                     channel_prompt=channel_prompt,
                     history=history,
                     hermes_home=_hermes_home,
+                    bridge_session_key=f"gateway:{session_id}",
                 )
                 return {
                     "final_response": bridge_result.final_response,

@@ -434,7 +434,7 @@ class TestResolveSkillCommandKey:
             assert resolve_skill_command_key("auto_review라는") == "/auto-review"
             assert resolve_skill_command_key("auto-review") == "/auto-review"
 
-    def test_auto_workflow_prompt_enforces_three_cycle_budget(self):
+    def test_auto_workflow_prompt_loads_claude_forge_skill(self):
         from agent.skill_commands import (
             AUTO_WORKFLOW_USAGE,
             build_auto_workflow_prompt,
@@ -443,10 +443,11 @@ class TestResolveSkillCommandKey:
         assert build_auto_workflow_prompt("") is None
         prompt = build_auto_workflow_prompt("fix the login UI")
         assert prompt is not None
-        assert "Run at most 3 cycles total" in prompt
-        assert "20-turn standing-goal budget" in prompt
+        assert "claude-forge one-button pipeline" in prompt
+        assert "end-to-end without asking for confirmation" in prompt
         assert "fix the login UI" in prompt
-        assert "최대 3 cycles" in AUTO_WORKFLOW_USAGE
+        assert "승인 후에만" not in AUTO_WORKFLOW_USAGE
+        assert "원버튼 파이프라인" in AUTO_WORKFLOW_USAGE
 
 
 class TestBuildPreloadedSkillsPrompt:

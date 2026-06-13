@@ -11996,6 +11996,7 @@ class HermesCLI:
                             channel_prompt=None,
                             history=self.conversation_history[:-1],  # Exclude the message we just added
                             hermes_home=get_hermes_home(),
+                            bridge_session_key=f"cli:{self.session_id}",
                         )
                         previous_history = list(self.conversation_history[:-1])
                         result = {
@@ -15353,6 +15354,7 @@ def main(
                             channel_prompt=None,
                             history=cli.conversation_history,
                             hermes_home=get_hermes_home(),
+                            bridge_session_key=f"cli:{cli.session_id}",
                         )
                         result = {
                             "final_response": bridge_result.final_response,

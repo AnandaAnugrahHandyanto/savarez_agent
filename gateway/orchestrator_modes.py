@@ -9,6 +9,7 @@ used as runtimes without accidentally routing through API billing providers.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -25,6 +26,18 @@ MODE_CLARA_LEAD = "clara-lead"
 VALID_MODES = {MODE_HUGO_LEAD, MODE_CLARA_LEAD}
 
 _MODE_FILE = "runtime/orchestrator-mode.json"
+
+# Per-process lead-mode pin.  When set (e.g. `HERMES_LEAD_MODE=hugo-lead hermes`
+# in one Wave pane), this process ignores the global mode file for reads and
+# refuses mode switches, so two panes can run different leads concurrently
+# without flipping each other or the Slack gateway.  The gateway daemon must be
+# launched WITHOUT this variable so Slack keeps following the global file.
+ENV_LEAD_MODE = "HERMES_LEAD_MODE"
+
+
+def env_pinned_mode() -> str | None:
+    """Return the lead mode pinned via HERMES_LEAD_MODE for this process, if any."""
+    return normalize_mode(os.environ.get(ENV_LEAD_MODE))
 
 
 _HUGO_ALIASES = {
@@ -93,6 +106,9 @@ def normalize_mode(value: str | None) -> str | None:
 
 
 def read_mode(hermes_home: Path | None = None) -> dict[str, Any]:
+    pinned = env_pinned_mode()
+    if pinned:
+        return {"mode": pinned, "source": f"env:{ENV_LEAD_MODE}", "pinned": True}
     path = mode_path(hermes_home)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -202,6 +218,16 @@ def parse_mode_request(text: str) -> tuple[str, str | None] | None:
     return None
 
 
+def _pinned_switch_notice() -> str | None:
+    pinned = env_pinned_mode()
+    if not pinned:
+        return None
+    return (
+        f"이 세션은 {ENV_LEAD_MODE}={pinned} 로 고정(pinned)되어 있어 모드를 전환하지 않았습니다.\n"
+        "이 pane은 계속 고정된 lead로 동작하며, 전역 모드 전환은 고정 없이 실행된 세션이나 Slack에서 해주세요."
+    )
+
+
 def handle_mode_text(text: str, *, hermes_home: Path | None = None, source: str = "gateway") -> str | None:
     parsed = parse_mode_request(text)
     if parsed is None:
@@ -210,6 +236,9 @@ def handle_mode_text(text: str, *, hermes_home: Path | None = None, source: str 
     if action == "status":
         return describe_mode(hermes_home=hermes_home)
     assert mode is not None
+    pinned_notice = _pinned_switch_notice()
+    if pinned_notice:
+        return pinned_notice
     write_mode(mode, hermes_home=hermes_home, source=source)
     return "✓ 오케스트레이터 운용 모드를 전환했습니다.\n\n" + describe_mode(mode, hermes_home=hermes_home)
 
@@ -227,5 +256,8 @@ def handle_lead_slash(command: str, *, hermes_home: Path | None = None, source: 
             "사용법: /hugo-lead 또는 /clara-lead\n"
             "현재 상태 확인은 `현재 모드`라고 보내면 됩니다."
         )
+    pinned_notice = _pinned_switch_notice()
+    if pinned_notice:
+        return pinned_notice
     write_mode(mode, hermes_home=hermes_home, source=source)
     return "✓ 오케스트레이터 운용 모드를 전환했습니다.\n\n" + describe_mode(mode, hermes_home=hermes_home)

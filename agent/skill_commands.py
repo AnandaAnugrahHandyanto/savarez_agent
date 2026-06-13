@@ -43,13 +43,13 @@ _KOREAN_COMMAND_SUFFIXES = (
     "만",
 )
 
-AUTO_WORKFLOW_MAX_CYCLES = 3
-
 AUTO_WORKFLOW_USAGE = (
-    "사용법: /auto <목표>\n"
-    "예: /auto 이 저장소에서 로그인 버튼 UI 깨짐을 고치고 테스트까지 돌려줘\n\n"
-    f"/auto는 최대 {AUTO_WORKFLOW_MAX_CYCLES} cycles까지만 실행합니다.\n"
-    "빈 /auto는 워크플로 목표가 없어서 실행하지 않습니다."
+    "사용법: /auto [작업 설명] [--mode feature|bugfix|refactor]\n"
+    "예: /auto 로그인 페이지 만들기\n"
+    "예: /auto --mode bugfix 결제 금액이 0원으로 표시되는 버그\n\n"
+    "/auto는 claude-forge 원버튼 파이프라인(plan -> tdd -> code-review -> "
+    "handoff-verify -> commit-push-pr -> sync-docs)을 실행합니다.\n"
+    "빈 /auto는 작업 설명이 없어서 실행하지 않습니다."
 )
 
 
@@ -67,14 +67,16 @@ def build_auto_workflow_prompt(user_instruction: str) -> str | None:
         return None
     return (
         "[AUTO WORKFLOW INVOCATION]\n"
-        "The user invoked /auto. Load skill_view(name=\"auto\") now and follow "
-        f"the auto workflow for the goal below. Run at most {AUTO_WORKFLOW_MAX_CYCLES} cycles total; "
-        "do not reinterpret /goal's max_turns or any 20-turn standing-goal budget as the /auto budget. "
-        "If blockers remain after cycle 3, stop and report them instead of continuing autonomously. "
-        "Do not paste the full skill text "
-        "back to the user; execute the workflow and report in Korean using the "
-        "auto skill's final report shape.\n\n"
-        "Goal:\n"
+        "The user invoked /auto. Load skill_view(name=\"auto\") now and run the "
+        "claude-forge one-button pipeline it defines for the task below, parsing "
+        "any --mode flag (feature/bugfix/refactor) from the task text per the "
+        "skill's step 0. Run the pipeline end-to-end without asking for "
+        "confirmation, stopping only on CRITICAL security issues "
+        "per the skill's rules. Do not paste the full skill text "
+        "back to the user; execute the "
+        "pipeline and report in Korean using the auto skill's final summary "
+        "shape.\n\n"
+        "Task:\n"
         f"{goal}"
     )
 

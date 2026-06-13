@@ -14,6 +14,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import time
 import uuid
 from dataclasses import dataclass
@@ -57,6 +58,8 @@ _SECRET_ENV_KEYS = (
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_API_KEY",
 )
+_CLAUDE_SESSION_MAP = "runtime/claude-code-bridge-sessions.json"
+_ENV_DISABLE_RESUME = "HERMES_CLARA_DISABLE_RESUME"
 
 
 @dataclass
@@ -116,11 +119,33 @@ def extract_explicit_workdir(message: str) -> str | None:
     return None
 
 
-def resolve_workdir(config: dict[str, Any] | None, message: str) -> str:
-    """Resolve the cwd for Claude Code, preferring an explicit prompt path."""
+def _active_wave_project_path(hermes_home: Path | None = None) -> str | None:
+    """Return the active Wave project path when it points at a local directory."""
+    home = _canonical_hermes_home(hermes_home or Path.home() / ".hermes")
+    project = _read_json_file(home / "wave-hub" / "current_project.json")
+    value = str(project.get("project_path") or "").strip()
+    if not value:
+        return None
+    path = Path(_expand_path(value))
+    if path.is_dir():
+        return str(path)
+    return None
+
+
+def resolve_workdir(config: dict[str, Any] | None, message: str, hermes_home: Path | None = None) -> str:
+    """Resolve the cwd for Claude Code, preferring user/project context.
+
+    Explicit prompt paths remain the strongest user intent. Otherwise Clara
+    lead should run from Wave's active project path before falling back to
+    bridge/terminal defaults, so project-mode turns operate in the same repo
+    Hugo/Wave routed for the request.
+    """
     explicit = extract_explicit_workdir(message)
     if explicit:
         return explicit
+    active_project = _active_wave_project_path(hermes_home)
+    if active_project:
+        return active_project
     bcfg = bridge_config(config)
     for key in ("workdir", "default_workdir", "cwd"):
         value = bcfg.get(key)
@@ -134,6 +159,85 @@ def resolve_workdir(config: dict[str, Any] | None, message: str) -> str:
         if path.is_dir():
             return str(path)
     return os.getcwd()
+
+
+def _is_error_max_turns(parsed: dict[str, Any] | None, stderr: str = "", stdout: str = "") -> bool:
+    """Detect Claude Code's max-turns stop condition across JSON/log variants."""
+    if isinstance(parsed, dict):
+        values = [
+            parsed.get("subtype"),
+            parsed.get("error"),
+            parsed.get("error_type"),
+            parsed.get("type"),
+            parsed.get("message"),
+            parsed.get("result"),
+        ]
+        if any("error_max_turns" in str(value) for value in values if value is not None):
+            return True
+    combined = f"{stderr}\n{stdout}"
+    return "error_max_turns" in combined
+
+
+def _is_quota_or_spend_limit(parsed: dict[str, Any] | None, stderr: str = "", stdout: str = "") -> bool:
+    """Detect Claude Code account quota/spend-limit failures."""
+    if isinstance(parsed, dict):
+        status = parsed.get("api_error_status")
+        if str(status).strip() == "429":
+            return True
+        values = [
+            parsed.get("subtype"),
+            parsed.get("error"),
+            parsed.get("error_type"),
+            parsed.get("type"),
+            parsed.get("message"),
+            parsed.get("result"),
+        ]
+        if any("monthly spend limit" in str(value).casefold() for value in values if value is not None):
+            return True
+    combined = f"{stderr}\n{stdout}".casefold()
+    return "monthly spend limit" in combined or "api_error_status\":429" in combined
+
+
+def _format_failure_result(
+    *,
+    parsed: dict[str, Any] | None,
+    stderr: str,
+    stdout: str,
+    job_id: str,
+    exit_code: int,
+    log_dir: Path,
+    max_turns: int,
+) -> str:
+    """Render a user-facing Clara bridge failure/continuation message."""
+    tail = "\n".join((stderr or stdout).splitlines()[-12:]).strip()
+    if _is_error_max_turns(parsed, stderr, stdout):
+        result_text = (
+            "⏸️ Clara Claude Code CLI 작업이 실패한 것이 아니라 작업 제한(max_turns)에 도달했습니다.\n"
+            "이전 작업 로그/맥락이 남아 있으므로 같은 요청을 이어서 진행할 수 있습니다.\n"
+            f"현재 제한: max_turns={max_turns}\n"
+            f"job_id: {job_id}\n"
+            f"exit_code: {exit_code}\n"
+            f"log_dir: {log_dir}\n"
+        )
+    elif _is_quota_or_spend_limit(parsed, stderr, stdout):
+        result_text = (
+            "⚠️ Clara Claude Code CLI가 Claude 계정 월 사용 한도에 걸려 실행되지 못했습니다.\n"
+            "Claude 한도를 올리거나 다음 결제 주기까지 기다려야 Claude Code CLI 경로를 다시 사용할 수 있습니다.\n"
+            "즉시 작업을 계속하려면 새 Wave pane에서 `hermes-hugo`를 실행해 Hugo/Codex 작업대로 진행하세요.\n"
+            f"job_id: {job_id}\n"
+            f"exit_code: {exit_code}\n"
+            f"log_dir: {log_dir}\n"
+        )
+    else:
+        result_text = (
+            "⚠️ Clara Claude Code CLI 작업이 실패했습니다.\n"
+            f"job_id: {job_id}\n"
+            f"exit_code: {exit_code}\n"
+            f"log_dir: {log_dir}\n"
+        )
+    if tail:
+        result_text += f"\n최근 로그:\n{tail}"
+    return result_text
 
 
 def _last_history(history: Iterable[dict[str, Any]], limit: int) -> list[dict[str, str]]:
@@ -194,6 +298,69 @@ def _canonical_hermes_home(hermes_home: Path) -> Path:
         except Exception:
             pass
         return hermes_home
+
+
+def _find_repo_root(start: str | None) -> Path | None:
+    if not start:
+        return None
+    try:
+        path = Path(start).expanduser().resolve()
+    except Exception:
+        return None
+    if not path.is_dir():
+        return None
+    for candidate in (path, *path.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def _latest_obsidian_handoffs(limit: int = 3) -> list[Path]:
+    root = Path.home() / "Library/CloudStorage/OneDrive-Personal/OneSyncFiles/ObsidianVault/AI-Sessions/handover"
+    try:
+        files = [p for p in root.glob("*.md") if p.is_file()]
+    except Exception:
+        return []
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return files[: max(1, int(limit))]
+
+
+def _handover_context_lines(workdir: str | None) -> list[str]:
+    """Return handoff/resume continuity hints shared by Hugo and Clara."""
+    candidates: list[Path] = []
+    repo_root = _find_repo_root(workdir)
+    if repo_root:
+        candidates.append(repo_root / "handover.md")
+    if workdir:
+        candidates.append(Path(workdir).expanduser() / "handover.md")
+    existing: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except Exception:
+            resolved = path
+        key = str(resolved)
+        if key not in seen and path.exists() and path.is_file():
+            seen.add(key)
+            existing.append(path)
+
+    obsidian = _latest_obsidian_handoffs()
+    if not existing and not obsidian:
+        return []
+
+    lines = [
+        "\nSession handoff continuity:",
+        "- /session-handoff writes canonical handover.md plus an Obsidian copy; /session-resume must read that file before continuing work.",
+        "- HERMES_CLARA_DISABLE_RESUME only disables Claude Code native session resume; it does not disable handover.md / Obsidian file continuity shared with Hugo.",
+    ]
+    if existing:
+        lines.append("- Canonical handover candidates:")
+        lines.extend(f"  - {p}" for p in existing)
+    if obsidian:
+        lines.append("- Latest Obsidian handover copies:")
+        lines.extend(f"  - {p}" for p in obsidian)
+    return lines
 
 
 def _query_recent_session_snippets(hermes_home: Path, terms: list[str], limit: int = 4) -> list[str]:
@@ -266,6 +433,7 @@ def build_continuity_context(*, hermes_home: Path, message: str, workdir: str | 
         for key in ("mode", "scope", "project_name", "project_path"):
             if wave_context.get(key):
                 lines.append(f"- {key}: {wave_context[key]}")
+    lines.extend(_handover_context_lines(workdir))
     terms = _extract_search_terms(message, workdir, wave_context)
     snippets = _query_recent_session_snippets(canonical_home, terms)
     if snippets:
@@ -420,6 +588,136 @@ def _safe_env() -> dict[str, str]:
     return env
 
 
+def _emit_progress(message: str) -> None:
+    """Best-effort parent-process progress for long non-streaming Claude jobs."""
+    try:
+        print(message, file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
+
+def _run_claude_subprocess(
+    args: list[str],
+    *,
+    cwd: str,
+    env: dict[str, str],
+    timeout: int,
+    job_id: str,
+    progress_interval: int,
+) -> tuple[str, str, int]:
+    """Run Claude Code while emitting heartbeat progress from the parent.
+
+    Claude Code's JSON output is only valid at process completion, so Hermes
+    cannot true-stream the final assistant text here.  The heartbeat prevents
+    CLI/Wave users from seeing a completely silent pane during long Clara turns.
+    """
+    started = time.time()
+    interval = max(0, int(progress_interval or 0))
+    next_progress = started + interval if interval else float("inf")
+    proc = subprocess.Popen(
+        args,
+        cwd=cwd,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    while True:
+        now = time.time()
+        remaining = timeout - (now - started)
+        if remaining <= 0:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            stderr = (stderr or "") + f"\nClaude Code CLI timed out after {timeout}s."
+            return stdout or "", stderr, 124
+        wait_for = min(1.0, remaining)
+        if interval:
+            wait_for = min(wait_for, max(0.0, next_progress - now))
+        try:
+            stdout, stderr = proc.communicate(timeout=max(0.05, wait_for))
+            return stdout or "", stderr or "", int(proc.returncode or 0)
+        except subprocess.TimeoutExpired:
+            if interval and time.time() >= next_progress:
+                elapsed = int(time.time() - started)
+                _emit_progress(f"🟪 Clara/클라라 — Claude Code CLI 실행 중… {elapsed}s elapsed, job {job_id}")
+                next_progress = time.time() + interval
+
+
+def _session_map_path(hermes_home: Path) -> Path:
+    return Path(hermes_home) / _CLAUDE_SESSION_MAP
+
+
+def _normalize_bridge_session_key(value: str | None) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    # Keep keys filesystem/log friendly while preserving enough uniqueness for
+    # Hermes session IDs, Slack thread IDs, and Wave pane labels.
+    return re.sub(r"[^A-Za-z0-9_.:@-]+", "-", text)[:160]
+
+
+def _load_claude_session_map(hermes_home: Path) -> dict[str, Any]:
+    path = _session_map_path(hermes_home)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_claude_session_map(hermes_home: Path, data: dict[str, Any]) -> None:
+    path = _session_map_path(hermes_home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _remember_claude_session(
+    *,
+    hermes_home: Path,
+    bridge_session_key: str | None,
+    claude_session_id: str | None,
+    workdir: str,
+    job_id: str,
+) -> None:
+    key = _normalize_bridge_session_key(bridge_session_key)
+    sid = str(claude_session_id or "").strip()
+    if not key or not sid:
+        return
+    data = _load_claude_session_map(hermes_home)
+    data[key] = {
+        "session_id": sid,
+        "workdir": workdir,
+        "updated_at": time.time(),
+        "job_id": job_id,
+    }
+    _save_claude_session_map(hermes_home, data)
+
+
+def _lookup_claude_session(
+    *,
+    hermes_home: Path,
+    bridge_session_key: str | None,
+    workdir: str,
+    enabled: bool,
+) -> str | None:
+    if not enabled:
+        return None
+    key = _normalize_bridge_session_key(bridge_session_key)
+    if not key:
+        return None
+    entry = _load_claude_session_map(hermes_home).get(key)
+    if not isinstance(entry, dict):
+        return None
+    # Claude Code sessions are workspace-sensitive.  Avoid resuming a pane's old
+    # session if the active workdir changed under the same Hermes session.
+    if str(entry.get("workdir") or "") != str(workdir):
+        return None
+    sid = str(entry.get("session_id") or "").strip()
+    return sid or None
+
+
 def run_claude_code_bridge_sync(
     *,
     config: dict[str, Any] | None,
@@ -428,12 +726,19 @@ def run_claude_code_bridge_sync(
     channel_prompt: str | None,
     history: Iterable[dict[str, Any]] | None,
     hermes_home: Path,
+    bridge_session_key: str | None = None,
 ) -> ClaudeCodeBridgeResult:
     """Run a gateway turn via local Claude Code CLI and return a Hermes result."""
     bcfg = bridge_config(config)
     claude_bin = str(bcfg.get("command") or shutil.which("claude") or "claude")
     timeout = int(bcfg.get("timeout_seconds") or bcfg.get("timeout") or 1800)
-    max_turns = int(bcfg.get("max_turns") or 20)
+    progress_interval = int(bcfg.get("progress_interval_seconds") or bcfg.get("progress_interval") or 15)
+    agent_cfg = config.get("agent") if isinstance(config, dict) else {}
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {}
+    # Clara lead / Claude Code CLI bridge follows the same agent loop budget
+    # as normal Hermes turns. Do not maintain a separate bridge-only cap.
+    max_turns = int(agent_cfg.get("max_turns") or 20)
     configured_allowed_tools = bcfg.get("allowed_tools")
     history_limit = int(bcfg.get("history_limit") or 12)
     model = str(bcfg.get("model") or "").strip()
@@ -458,7 +763,17 @@ def run_claude_code_bridge_sync(
     else:
         allowed_tools = "".join(_DEFAULT_ALLOWED_TOOLS)
 
-    workdir = resolve_workdir(config, message)
+    workdir = resolve_workdir(config, message, hermes_home=hermes_home)
+    resume_disabled_env = str(os.environ.get(_ENV_DISABLE_RESUME, "")).strip().casefold() in {"1", "true", "yes", "on"}
+    resume_cfg = bcfg.get("resume_enabled")
+    resume_disabled_config = isinstance(resume_cfg, bool) and not resume_cfg
+    resume_enabled = not (resume_disabled_env or resume_disabled_config)
+    resume_session_id = _lookup_claude_session(
+        hermes_home=hermes_home,
+        bridge_session_key=bridge_session_key,
+        workdir=workdir,
+        enabled=resume_enabled,
+    )
     continuity_context = build_continuity_context(
         hermes_home=hermes_home,
         message=message,
@@ -487,7 +802,11 @@ def run_claude_code_bridge_sync(
         "max_turns": max_turns,
         "allowed_tools": allowed_tools or "default",
         "timeout_seconds": timeout,
+        "progress_interval_seconds": progress_interval,
         "role_mode": role_mode,
+        "bridge_session_key": _normalize_bridge_session_key(bridge_session_key),
+        "resume_session_id": resume_session_id,
+        "resume_enabled": resume_enabled,
     }
     (log_dir / "metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -502,6 +821,8 @@ def run_claude_code_bridge_sync(
         "--max-turns",
         str(max_turns),
     ]
+    if resume_session_id:
+        args[1:1] = ["--resume", resume_session_id]
     if allowed_tools:
         args.extend(["--allowedTools", allowed_tools])
     if permission_mode:
@@ -512,18 +833,17 @@ def run_claude_code_bridge_sync(
         args.extend(["--effort", effort])
 
     try:
-        completed = subprocess.run(
+        stdout, stderr, exit_code = _run_claude_subprocess(
             args,
             cwd=workdir,
             env=_safe_env(),
-            text=True,
-            capture_output=True,
             timeout=timeout,
+            job_id=job_id,
+            progress_interval=progress_interval,
         )
-        stdout = completed.stdout or ""
-        stderr = completed.stderr or ""
-        exit_code = int(completed.returncode)
     except subprocess.TimeoutExpired as exc:
+        # Defensive fallback for tests/monkeypatches that still raise the old
+        # subprocess.run-style timeout exception.
         stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", "replace")
         stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode("utf-8", "replace")
         stderr += f"\nClaude Code CLI timed out after {timeout}s."
@@ -537,21 +857,28 @@ def run_claude_code_bridge_sync(
         (log_dir / "result.json").write_text(
             json.dumps(parsed, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+        _remember_claude_session(
+            hermes_home=hermes_home,
+            bridge_session_key=bridge_session_key,
+            claude_session_id=parsed.get("session_id"),
+            workdir=workdir,
+            job_id=job_id,
+        )
 
     if exit_code == 0 and parsed and not parsed.get("is_error"):
         result_text = str(parsed.get("result") or "").strip()
         if not result_text:
             result_text = "Claude Code CLI completed but returned an empty result."
     else:
-        tail = "\n".join((stderr or stdout).splitlines()[-12:]).strip()
-        result_text = (
-            "⚠️ Clara Claude Code CLI 작업이 실패했습니다.\n"
-            f"job_id: {job_id}\n"
-            f"exit_code: {exit_code}\n"
-            f"log_dir: {log_dir}\n"
+        result_text = _format_failure_result(
+            parsed=parsed,
+            stderr=stderr,
+            stdout=stdout,
+            job_id=job_id,
+            exit_code=exit_code,
+            log_dir=log_dir,
+            max_turns=max_turns,
         )
-        if tail:
-            result_text += f"\n최근 로그:\n{tail}"
 
     prefix = str(bcfg.get("response_prefix") or "🟪 Clara/클라라 — ")
     if prefix:

@@ -214,6 +214,8 @@ all = [
 
 [project.scripts]
 hermes = "hermes_cli.main:main"
+hermes-hugo = "hermes_cli.lead_entrypoints:main_hugo"
+hermes-clara = "hermes_cli.lead_entrypoints:main_clara"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
 
