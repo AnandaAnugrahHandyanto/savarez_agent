@@ -1243,6 +1243,7 @@ export interface Translations {
     source: string
     renderedPreview: string
     expand: string
+    diagramError: string
     unknownSize: string
     binaryTitle: string
     binaryBody: (label: string) => string

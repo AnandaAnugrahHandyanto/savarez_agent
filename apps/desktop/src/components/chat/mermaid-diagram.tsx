@@ -1,8 +1,7 @@
 'use client'
 
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-streamdown'
-import { mermaid as mermaidPlugin } from '@streamdown/mermaid'
-import { type FC, useEffect, useState } from 'react'
+import { type FC, memo, useEffect, useId, useRef, useState } from 'react'
 
 import {
   CodeCard,
@@ -13,6 +12,7 @@ import {
   CodeCardTitle
 } from '@/components/chat/code-card'
 import { SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
+import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
 import { useTheme } from '@/themes/context'
@@ -31,15 +31,17 @@ interface MermaidDiagramProps extends SyntaxHighlighterProps {
   defer?: boolean
 }
 
-// mermaid.render() requires a document-unique element id per call.
-let renderSeq = 0
-
-export const MermaidDiagram: FC<MermaidDiagramProps> = props => {
+const MermaidDiagramImpl: FC<MermaidDiagramProps> = props => {
   const { code, defer = false } = props
   const { t } = useI18n()
   const { renderedMode } = useTheme()
   const [svg, setSvg] = useState('')
-  const [failed, setFailed] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // mermaid.render() needs a document-unique element id per call. useId is unique
+  // per component instance (no colons — they break SVG id/CSS selectors); the
+  // counter keeps successive re-renders within one instance unique too.
+  const baseId = useId().replace(/:/g, '')
+  const renderCount = useRef(0)
   const source = (code ?? '').trim()
 
   useEffect(() => {
@@ -48,31 +50,56 @@ export const MermaidDiagram: FC<MermaidDiagramProps> = props => {
     }
 
     let cancelled = false
+    setError(null)
 
-    setFailed(false)
-    const instance = mermaidPlugin.getMermaid({ theme: renderedMode === 'dark' ? 'dark' : 'default' })
+    // Import mermaid only when a diagram actually renders. The desktop build is
+    // a single chunk, so this doesn't shrink the bundle, but it defers the heavy
+    // library's module-level initialization from app boot to first diagram use.
+    void import('@streamdown/mermaid')
+      .then(({ mermaid }) => {
+        const instance = mermaid.getMermaid({ theme: renderedMode === 'dark' ? 'dark' : 'default' })
 
-    instance
-      .render(`hermes-mermaid-${++renderSeq}`, source)
+        return instance.render(`${baseId}-${++renderCount.current}`, source)
+      })
       .then(({ svg: rendered }) => {
         if (!cancelled) {
           setSvg(rendered)
         }
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (!cancelled) {
           setSvg('')
-          setFailed(true)
+          setError(err instanceof Error ? err.message : String(err))
         }
       })
 
     return () => {
       cancelled = true
     }
-  }, [source, defer, renderedMode])
+  }, [source, defer, renderedMode, baseId])
 
-  if (defer || failed || !source) {
+  if (defer || !source) {
     return <SyntaxHighlighter {...props} defer={defer} />
+  }
+
+  // Parse/render failure: show the source with a visible error badge so the
+  // user knows *why* no diagram appeared instead of a silent fall-through.
+  if (error) {
+    return (
+      <div className="space-y-1">
+        <div
+          className="flex items-start gap-1.5 px-0.5 text-[0.7rem] leading-snug text-destructive"
+          role="alert"
+          title={error}
+        >
+          <Codicon className="mt-px shrink-0" name="warning" size={12} />
+          <span>
+            {t.preview.diagramError}: {error.split('\n')[0]}
+          </span>
+        </div>
+        <SyntaxHighlighter {...props} />
+      </div>
+    )
   }
 
   // Async render pending: keep showing the source, swap in the diagram when ready.
@@ -100,6 +127,7 @@ export const MermaidDiagram: FC<MermaidDiagramProps> = props => {
       <CodeCardBody>
         {/* Mermaid output is sanitized by the library (securityLevel: strict). */}
         <div
+          aria-label="mermaid diagram"
           className="flex justify-center overflow-x-auto bg-background p-3 [&_svg]:h-auto [&_svg]:max-w-full"
           dangerouslySetInnerHTML={{ __html: svg }}
           role="img"
@@ -108,3 +136,5 @@ export const MermaidDiagram: FC<MermaidDiagramProps> = props => {
     </CodeCard>
   )
 }
+
+export const MermaidDiagram = memo(MermaidDiagramImpl)

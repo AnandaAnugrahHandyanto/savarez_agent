@@ -1,7 +1,7 @@
 'use client'
 
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-streamdown'
-import { type FC, useState } from 'react'
+import { type FC, memo, useState } from 'react'
 import ShikiHighlighter from 'react-shiki'
 
 import {
@@ -64,7 +64,7 @@ const PreviewFrame: FC<{ className: string; reloadKey: number; source: string }>
 const HEADER_ICON_BUTTON =
   'flex size-5 items-center justify-center rounded-md text-muted-foreground opacity-55 transition-colors hover:bg-muted hover:text-foreground hover:opacity-100'
 
-export const HtmlPreview: FC<HtmlPreviewProps> = props => {
+const HtmlPreviewImpl: FC<HtmlPreviewProps> = props => {
   const { code, defer = false } = props
   const { t } = useI18n()
   const [showCode, setShowCode] = useState(false)
@@ -180,3 +180,5 @@ export const HtmlPreview: FC<HtmlPreviewProps> = props => {
     </>
   )
 }
+
+export const HtmlPreview = memo(HtmlPreviewImpl)

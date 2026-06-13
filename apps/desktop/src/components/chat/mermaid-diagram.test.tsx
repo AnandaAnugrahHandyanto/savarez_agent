@@ -53,7 +53,7 @@ describe('MermaidDiagram', () => {
     expect(within(container).getByText(/graph TD/)).toBeTruthy()
   })
 
-  it('falls back to the source (no diagram) when the source fails to parse', async () => {
+  it('shows an error badge and the source when the source fails to parse', async () => {
     mockRender.mockRejectedValue(new Error('Parse error on line 1'))
 
     const { container } = render(<MermaidDiagram {...highlighterProps('graph TD; A--')} />)
@@ -62,7 +62,11 @@ describe('MermaidDiagram', () => {
       expect(mockRender).toHaveBeenCalled()
     })
     await waitFor(() => {
+      // No diagram, but a visible alert explaining why — not a silent fall-through.
       expect(container.querySelector('[role="img"]')).toBeNull()
+      const alert = container.querySelector('[role="alert"]')
+      expect(alert).toBeTruthy()
+      expect(alert?.textContent).toContain('Parse error on line 1')
       expect(container.textContent).toContain('graph TD')
     })
   })

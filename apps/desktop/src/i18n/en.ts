@@ -1582,6 +1582,7 @@ export const en: Translations = {
     source: 'SOURCE',
     renderedPreview: 'PREVIEW',
     expand: 'Expand preview',
+    diagramError: 'Diagram error',
     unknownSize: 'unknown size',
     binaryTitle: 'This looks like a binary file',
     binaryBody: label => `Previewing ${label} may show unreadable text.`,

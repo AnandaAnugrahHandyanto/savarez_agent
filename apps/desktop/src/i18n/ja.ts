@@ -1722,6 +1722,7 @@ export const ja = defineLocale({
     source: 'ソース',
     renderedPreview: 'プレビュー',
     expand: 'プレビューを拡大',
+    diagramError: '図のエラー',
     unknownSize: 'サイズ不明',
     binaryTitle: 'これはバイナリファイルのようです',
     binaryBody: label => `${label} をプレビューすると読み取り不能なテキストが表示される場合があります。`,
