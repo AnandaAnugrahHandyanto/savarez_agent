@@ -515,9 +515,10 @@ export function useSessionActions({
     async (storedSessionId: string, replaceRoute = false) => {
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
+      let expectedStoredSessionId = storedSessionId
 
       const isCurrentResume = () =>
-        resumeRequestRef.current === requestId && selectedStoredSessionIdRef.current === storedSessionId
+        resumeRequestRef.current === requestId && selectedStoredSessionIdRef.current === expectedStoredSessionId
 
       // Swap the single live gateway to this session's profile before any
       // gateway call (no-op when it's already on that profile / single-profile).
@@ -642,6 +643,20 @@ export function useSessionActions({
           return
         }
 
+        const resumedStoredSessionId =
+          (resumed.resumed || resumed.session_key || storedSessionId).trim() || storedSessionId
+        const resumedDifferentStoredSession = resumedStoredSessionId !== storedSessionId
+
+        if (resumedDifferentStoredSession) {
+          expectedStoredSessionId = resumedStoredSessionId
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+          setSelectedStoredSessionId(resumedStoredSessionId)
+          selectedStoredSessionIdRef.current = resumedStoredSessionId
+          navigate(sessionRoute(resumedStoredSessionId), { replace: true })
+        } else if (replaceRoute) {
+          navigate(sessionRoute(resumedStoredSessionId), { replace: true })
+        }
+
         const currentMessages = $messages.get()
 
         const resumedMessages = preserveLocalAssistantErrors(
@@ -650,7 +665,7 @@ export function useSessionActions({
         )
         // Keep the local snapshot when resume would only reshuffle runtime projection.
         const preferredMessages =
-          localSnapshot.length > 0
+          !resumedDifferentStoredSession && localSnapshot.length > 0
             ? localSnapshot
             : chatMessageArraysEquivalent(currentMessages, resumedMessages)
               ? currentMessages
@@ -662,9 +677,9 @@ export function useSessionActions({
         activeSessionIdRef.current = resumed.session_id
         const runtimeInfo = applyRuntimeInfo(resumed.info)
 
-        patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
+        patchSessionWorkspace(resumedStoredSessionId, runtimeInfo?.cwd)
 
-        resumedRunning = Boolean((resumed as { running?: boolean }).running)
+        resumedRunning = Boolean(resumed.running)
 
         updateSessionState(
           resumed.session_id,
@@ -675,7 +690,7 @@ export function useSessionActions({
             busy: resumedRunning,
             awaitingResponse: resumedRunning
           }),
-          storedSessionId
+          resumedStoredSessionId
         )
       } catch (err) {
         if (!isCurrentResume()) {
@@ -704,6 +719,7 @@ export function useSessionActions({
       copy,
       requestGateway,
       runtimeIdByStoredSessionIdRef,
+      navigate,
       selectedStoredSessionIdRef,
       sessionStateByRuntimeIdRef,
       syncSessionStateToView,
