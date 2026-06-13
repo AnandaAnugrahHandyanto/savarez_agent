@@ -13,6 +13,7 @@ import json
 import os
 import threading
 import time
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -141,6 +142,48 @@ class TestChildSystemPrompt(unittest.TestCase):
     def test_empty_context_ignored(self):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
+
+    def test_context_preamble_injected_before_task(self):
+        prompt = _build_child_system_prompt(
+            "Fix the tests",
+            context_preamble="Read the profile rulebook before routing.",
+        )
+        self.assertLess(
+            prompt.index("Read the profile rulebook before routing."),
+            prompt.index("YOUR TASK"),
+        )
+        self.assertIn("PARENT / PROFILE POLICY", prompt)
+
+    @patch("tools.delegate_tool._load_config")
+    def test_configured_context_preamble_file_reaches_child_prompt(self, mock_cfg):
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as fh:
+            fh.write("Current default reviewer: laura-aider-review-diff")
+            preamble_path = fh.name
+        self.addCleanup(lambda: os.path.exists(preamble_path) and os.unlink(preamble_path))
+        mock_cfg.return_value = {"context_preamble_file": preamble_path}
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+            _build_child_agent(
+                task_index=0,
+                goal="Choose reviewer",
+                context=None,
+                toolsets=["file"],
+                model=None,
+                max_iterations=3,
+                task_count=1,
+                parent_agent=parent,
+            )
+
+            _, kwargs = MockAgent.call_args
+            prompt = kwargs["ephemeral_system_prompt"]
+            self.assertIn("Current default reviewer: laura-aider-review-diff", prompt)
+            self.assertLess(
+                prompt.index("Current default reviewer: laura-aider-review-diff"),
+                prompt.index("YOUR TASK"),
+            )
 
 
 class TestStripBlockedTools(unittest.TestCase):

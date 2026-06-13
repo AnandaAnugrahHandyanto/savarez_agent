@@ -566,6 +566,7 @@ DEFAULT_MAX_ITERATIONS = 50
 # in via delegation.child_timeout_seconds.
 DEFAULT_CHILD_TIMEOUT: Optional[float] = None
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
+_CONTEXT_PREAMBLE_MAX_CHARS = 12000
 # Stale-heartbeat thresholds. A child with no API-call progress is either:
 #   - idle between turns (no current_tool) — probably stuck on a slow API call
 #   - inside a tool (current_tool set) — probably running a legitimately long
@@ -625,6 +626,7 @@ def _build_child_system_prompt(
     goal: str,
     context: Optional[str] = None,
     *,
+    context_preamble: Optional[str] = None,
     workspace_path: Optional[str] = None,
     role: str = "leaf",
     max_spawn_depth: int = 2,
@@ -638,11 +640,13 @@ def _build_child_system_prompt(
     The depth note is literal truth (grounded in the passed config) so
     the LLM doesn't confabulate nesting capabilities that don't exist.
     """
-    parts = [
-        "You are a focused subagent working on a specific delegated task.",
-        "",
-        f"YOUR TASK:\n{goal}",
-    ]
+    parts = ["You are a focused subagent working on a specific delegated task."]
+    if context_preamble and str(context_preamble).strip():
+        parts.append(
+            "\nPARENT / PROFILE POLICY:\n"
+            f"{str(context_preamble).strip()}"
+        )
+    parts.extend(["", f"YOUR TASK:\n{goal}"])
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -695,6 +699,47 @@ def _build_child_system_prompt(
             f"is capped at max_spawn_depth={max_spawn_depth}. {child_note}"
         )
     return "\n".join(parts)
+
+
+def _load_context_preamble(cfg: Optional[dict]) -> str:
+    """Load optional profile/delegation policy injected into child prompts.
+
+    User-facing config:
+      - delegation.context_preamble: inline text
+      - delegation.context_preamble_file: path to a UTF-8 text/markdown file
+
+    The file form keeps profile-specific policy out of Hermes core while still
+    letting every delegated child inherit a small guard. Missing/unreadable
+    files are warnings, not hard failures: delegation should not break because
+    an optional guard path is stale.
+    """
+    if not isinstance(cfg, dict):
+        return ""
+
+    chunks: List[str] = []
+    inline = cfg.get("context_preamble")
+    if inline and str(inline).strip():
+        chunks.append(str(inline).strip())
+
+    file_value = cfg.get("context_preamble_file")
+    if file_value and str(file_value).strip():
+        path = os.path.expandvars(os.path.expanduser(str(file_value).strip()))
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                content = fh.read(_CONTEXT_PREAMBLE_MAX_CHARS + 1).strip()
+            if content:
+                chunks.append(content[:_CONTEXT_PREAMBLE_MAX_CHARS])
+        except Exception as exc:
+            logger.warning(
+                "Could not read delegation.context_preamble_file %r: %s",
+                path,
+                exc,
+            )
+
+    preamble = "\n\n".join(chunks).strip()
+    if len(preamble) > _CONTEXT_PREAMBLE_MAX_CHARS:
+        preamble = preamble[:_CONTEXT_PREAMBLE_MAX_CHARS].rstrip()
+    return preamble
 
 
 def _resolve_workspace_hint(parent_agent) -> Optional[str]:
@@ -1029,9 +1074,11 @@ def _build_child_agent(
         child_toolsets.append("delegation")
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
+    context_preamble = _load_context_preamble(delegation_cfg)
     child_prompt = _build_child_system_prompt(
         goal,
         context,
+        context_preamble=context_preamble,
         workspace_path=workspace_hint,
         role=effective_role,
         max_spawn_depth=max_spawn,

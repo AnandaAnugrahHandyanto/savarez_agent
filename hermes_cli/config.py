@@ -1782,6 +1782,11 @@ DEFAULT_CONFIG = {
         # Flip to true only if you trust delegated work to run dangerous cmds
         # without human review (cron pipelines, batch automation, etc.).
         "subagent_auto_approve": False,
+        # Optional policy/preamble injected into every delegate_task child
+        # system prompt. Use the file form for profile-local policy generated
+        # outside Hermes core (for example ~/.local/share/.../DELEGATION_GUARD.md).
+        "context_preamble": "",
+        "context_preamble_file": "",
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
