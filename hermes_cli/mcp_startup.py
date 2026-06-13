@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-import os
 import threading
 from typing import Optional
 
 _mcp_discovery_lock = threading.Lock()
 _mcp_discovery_started = False
 _mcp_discovery_thread: Optional[threading.Thread] = None
+
+# Lock for serializing agent tool updates.  The late-refresh background
+# thread and the main thread both mutate ``agent.tools`` /
+# ``agent.valid_tool_names``; without a lock a concurrent read during
+# tool iteration could see a half-written list.
+_agent_tools_lock = threading.Lock()
 
 
 def _has_configured_mcp_servers() -> bool:
@@ -76,6 +81,29 @@ def wait_for_mcp_discovery(timeout: float = 0.75) -> None:
 
 _mcp_late_refresh_thread: Optional[threading.Thread] = None
 
+# Default timeout (seconds) for waiting on MCP discovery to complete
+# before giving up on the late-refresh path.
+_LATE_REFRESH_DISCOVERY_TIMEOUT_S = 30.0
+
+
+def _update_agent_tools(agent, new_defs, new_tool_names, logger, on_refreshed, added):
+    """Thread-safe helper to swap agent tools in-place."""
+    with _agent_tools_lock:
+        agent.tools = new_defs
+        agent.valid_tool_names = new_tool_names
+
+    logger.info(
+        "MCP late refresh: %d new tool(s) added (%s)",
+        len(added),
+        ", ".join(sorted(added)[:5]) + ("..." if len(added) > 5 else ""),
+    )
+
+    if on_refreshed:
+        try:
+            on_refreshed(len(added), len(new_tool_names))
+        except Exception:
+            pass
+
 
 def spawn_late_mcp_refresh(
     *,
@@ -105,44 +133,44 @@ def spawn_late_mcp_refresh(
         # Slow servers may have connected since then — do one inline refresh
         # check right now.
         try:
-            current_tools = set()
-            if hasattr(agent, "tools") and agent.tools:
-                current_tools = {t["function"]["name"] for t in agent.tools}
+            with _agent_tools_lock:
+                current_tools = set()
+                if hasattr(agent, "tools") and agent.tools:
+                    current_tools = {t["function"]["name"] for t in agent.tools}
             new_defs = get_tool_definitions_fn(quiet_mode=True)
             new_tool_names = {t["function"]["name"] for t in new_defs} if new_defs else set()
             added = new_tool_names - current_tools
             if added:
-                agent.tools = new_defs
-                agent.valid_tool_names = new_tool_names
-                if on_refreshed:
-                    try:
-                        on_refreshed(len(added), len(new_tool_names))
-                    except Exception:
-                        pass
+                _update_agent_tools(agent, new_defs, new_tool_names, logger, on_refreshed, added)
         except Exception:
             pass
         return
 
-    # Avoid spawning multiple late-refresh threads
+    # Avoid spawning multiple late-refresh threads (checked inside the lock
+    # so two concurrent callers can't both pass the guard).
     with _mcp_discovery_lock:
         if _mcp_late_refresh_thread is not None and _mcp_late_refresh_thread.is_alive():
             return
 
     def _refresh() -> None:
         try:
-            # Wait for discovery to fully complete (up to 120s)
+            # Wait for discovery to fully complete
             discovery_thread = _mcp_discovery_thread
             if discovery_thread is not None:
-                discovery_thread.join(timeout=120.0)
+                discovery_thread.join(timeout=_LATE_REFRESH_DISCOVERY_TIMEOUT_S)
 
             if discovery_thread and discovery_thread.is_alive():
-                logger.debug("MCP discovery still running after 120s, skipping late refresh")
+                logger.debug(
+                    "MCP discovery still running after %.0fs, skipping late refresh",
+                    _LATE_REFRESH_DISCOVERY_TIMEOUT_S,
+                )
                 return
 
-            # Snapshot current tools from the registry
-            current_tools = set()
-            if hasattr(agent, "tools") and agent.tools:
-                current_tools = {t["function"]["name"] for t in agent.tools}
+            # Snapshot current tools (read under lock)
+            with _agent_tools_lock:
+                current_tools = set()
+                if hasattr(agent, "tools") and agent.tools:
+                    current_tools = {t["function"]["name"] for t in agent.tools}
 
             # Get fresh tool definitions from the registry
             new_defs = get_tool_definitions_fn(quiet_mode=True)
@@ -155,28 +183,16 @@ def spawn_late_mcp_refresh(
                 return
 
             # Update agent in-place (same as /reload-mcp)
-            agent.tools = new_defs
-            agent.valid_tool_names = new_tool_names
-
-            logger.info(
-                "MCP late refresh: %d new tool(s) added (%s)",
-                len(added),
-                ", ".join(sorted(added)[:5]) + ("..." if len(added) > 5 else ""),
-            )
-
-            if on_refreshed:
-                try:
-                    on_refreshed(len(added), len(new_tool_names))
-                except Exception:
-                    pass
+            _update_agent_tools(agent, new_defs, new_tool_names, logger, on_refreshed, added)
 
         except Exception as exc:
             logger.debug("MCP late refresh failed: %s", exc)
 
-    late_thread = threading.Thread(
-        target=_refresh,
-        name="mcp-late-refresh",
-        daemon=True,
-    )
-    _mcp_late_refresh_thread = late_thread
-    late_thread.start()
+    with _mcp_discovery_lock:
+        late_thread = threading.Thread(
+            target=_refresh,
+            name="mcp-late-refresh",
+            daemon=True,
+        )
+        _mcp_late_refresh_thread = late_thread
+        late_thread.start()
