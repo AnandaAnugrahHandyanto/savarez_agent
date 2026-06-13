@@ -535,10 +535,22 @@ class TestCLI:
     def test_board_flag_rejects_unknown(self, tmp_path):
         env = {"HERMES_HOME": str(tmp_path)}
         r = _cli(["--board", "ghost", "list"], env_extra=env)
-        # main.py's dispatcher doesn't propagate return codes today, so we
-        # assert the user-visible signal: a stderr error message. Whether
-        # the exit code stays 0 is a separate (pre-existing) issue.
+        assert r.returncode == 1
         assert "does not exist" in r.stderr
+
+    def test_board_flag_rejects_invalid_slug_with_nonzero_exit(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        too_long = "a" * 65
+        r = _cli(["--board", too_long, "list"], env_extra=env)
+        assert r.returncode == 2
+        assert "invalid board slug" in r.stderr
+
+    def test_boards_create_rejects_invalid_slug_with_nonzero_exit(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        too_long = "a" * 65
+        r = _cli(["boards", "create", too_long], env_extra=env)
+        assert r.returncode == 2
+        assert "invalid board slug" in r.stderr
 
     def test_board_flag_rejects_empty_board_dir(self, tmp_path):
         env = {"HERMES_HOME": str(tmp_path)}
