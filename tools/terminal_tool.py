@@ -827,10 +827,14 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     if not has_configured_password and not sudo_password and _sudo_nopasswd_works():
         return command, None
 
+    has_interactive_sudo_prompt = (
+        env_var_enabled("HERMES_INTERACTIVE")
+        or _get_sudo_password_callback() is not None
+    )
     if (
         not has_configured_password
         and not sudo_password
-        and env_var_enabled("HERMES_INTERACTIVE")
+        and has_interactive_sudo_prompt
     ):
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
         if sudo_password:
@@ -1081,6 +1085,19 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
         )
 
 
+def _parse_docker_env_var(
+    env_type: str,
+    name: str,
+    default: str,
+    converter=json.loads,
+    type_label: str = "valid JSON",
+):
+    """Parse Docker-only env vars only when the Docker backend is selected."""
+    if env_type != "docker":
+        return converter(default)
+    return _parse_env_var(name, default, converter, type_label)
+
+
 def _safe_getcwd() -> str:
     """Return the current working directory, tolerating a deleted CWD.
 
@@ -1152,8 +1169,8 @@ def _get_env_config() -> Dict[str, Any]:
         "env_type": env_type,
         "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
         "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
-        "docker_forward_env": _parse_env_var(
-            "TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON"
+        "docker_forward_env": _parse_docker_env_var(
+            env_type, "TERMINAL_DOCKER_FORWARD_ENV", "[]"
         ),
         "singularity_image": os.getenv(
             "TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"
@@ -1193,18 +1210,18 @@ def _get_env_config() -> Dict[str, Any]:
             "TERMINAL_CONTAINER_PERSISTENT", "true"
         ).lower()
         in {"true", "1", "yes"},
-        "docker_volumes": _parse_env_var(
-            "TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"
+        "docker_volumes": _parse_docker_env_var(
+            env_type, "TERMINAL_DOCKER_VOLUMES", "[]"
         ),
-        "docker_env": _parse_env_var(
-            "TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON"
+        "docker_env": _parse_docker_env_var(
+            env_type, "TERMINAL_DOCKER_ENV", "{}"
         ),
         "docker_run_as_host_user": os.getenv(
             "TERMINAL_DOCKER_RUN_AS_HOST_USER", "false"
         ).lower()
         in {"true", "1", "yes"},
-        "docker_extra_args": _parse_env_var(
-            "TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON"
+        "docker_extra_args": _parse_docker_env_var(
+            env_type, "TERMINAL_DOCKER_EXTRA_ARGS", "[]"
         ),
         # Cross-process container reuse (issue #20561).  The docs claim
         # "ONE long-lived container shared across sessions" — this toggle

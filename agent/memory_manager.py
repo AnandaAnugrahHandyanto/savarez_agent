@@ -30,6 +30,7 @@ import logging
 import re
 import inspect
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
@@ -43,6 +44,66 @@ logger = logging.getLogger(__name__)
 # teardown indefinitely — the worker threads are daemon, so anything still
 # running past this window dies with the interpreter.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
+
+
+def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]]) -> bool:
+    """Return whether external memory-provider tools should be exposed."""
+    if enabled_toolsets is None:
+        return True
+    if not enabled_toolsets:
+        return False
+    if "memory" in enabled_toolsets:
+        return True
+
+    try:
+        from toolsets import resolve_toolset
+
+        return any("memory" in resolve_toolset(name) for name in enabled_toolsets)
+    except Exception:
+        logger.debug("Failed to resolve enabled toolsets for memory-provider tools", exc_info=True)
+        return False
+
+
+def inject_memory_provider_tools(agent: Any) -> int:
+    """Append external memory-provider tool schemas to an agent tool surface."""
+    memory_manager = getattr(agent, "_memory_manager", None)
+    tools = getattr(agent, "tools", None)
+    if not memory_manager or tools is None:
+        return 0
+
+    existing_tool_names = {
+        tool.get("function", {}).get("name")
+        for tool in tools
+        if isinstance(tool, dict)
+    }
+    if (
+        "memory" not in existing_tool_names
+        and not memory_provider_tools_enabled(getattr(agent, "enabled_toolsets", None))
+    ):
+        return 0
+
+    get_schemas = getattr(memory_manager, "get_all_tool_schemas", None)
+    if not callable(get_schemas):
+        return 0
+
+    valid_tool_names = getattr(agent, "valid_tool_names", None)
+    if valid_tool_names is None:
+        valid_tool_names = set()
+        agent.valid_tool_names = valid_tool_names
+
+    added = 0
+    for schema in get_schemas():
+        if not isinstance(schema, dict):
+            continue
+        tool_name = schema.get("name", "")
+        if not tool_name or tool_name in existing_tool_names:
+            continue
+        tools.append({"type": "function", "function": schema})
+        valid_tool_names.add(tool_name)
+        existing_tool_names.add(tool_name)
+        added += 1
+
+    return added
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +330,13 @@ class MemoryManager:
         # _submit_background() and the sync_all/queue_prefetch_all rationale.
         self._sync_executor: Optional[ThreadPoolExecutor] = None
         self._sync_executor_lock = threading.Lock()
+        self._idle_sleep_enabled: bool = False
+        self._idle_after_seconds: float = 0.0
+        self._idle_sleep_args: Dict[str, Any] = {}
+        self._idle_wake_greeting: str = ""
+        self._pending_wake_greeting: str = ""
+        self._last_activity_at: float = time.monotonic()
+        self._slept_for_idle: bool = False
 
     # -- Registration --------------------------------------------------------
 
@@ -417,6 +485,55 @@ class MemoryManager:
                     )
 
         self._submit_background(_run)
+
+    # -- Idle sleep ----------------------------------------------------------
+
+    def configure_idle_sleep(
+        self,
+        config: Optional[Dict[str, Any]],
+        *,
+        now: Optional[float] = None,
+    ) -> None:
+        """Configure lazy idle sleep for providers with an Ebbinghaus tool."""
+        cfg = config or {}
+        self._idle_sleep_enabled = bool(cfg.get("enabled", False))
+        try:
+            self._idle_after_seconds = max(0.0, float(cfg.get("idle_after_seconds", 0) or 0))
+        except (TypeError, ValueError):
+            self._idle_after_seconds = 0.0
+        self._idle_wake_greeting = str(cfg.get("wake_greeting") or "")
+        sleep_cfg = cfg.get("sleep") or {}
+        self._idle_sleep_args = dict(sleep_cfg) if isinstance(sleep_cfg, dict) else {}
+        self._pending_wake_greeting = ""
+        self._slept_for_idle = False
+        self._last_activity_at = time.monotonic() if now is None else now
+
+    def maybe_sleep_for_idle(self, *, now: Optional[float] = None) -> Dict[str, Any]:
+        """Run a provider sleep pass once after the configured idle window."""
+        current = time.monotonic() if now is None else now
+        if not self._idle_sleep_enabled:
+            return {"slept": False, "reason": "disabled"}
+        if self._slept_for_idle:
+            return {"slept": False, "reason": "already_slept"}
+        if self._idle_after_seconds <= 0:
+            return {"slept": False, "reason": "not_configured"}
+        if current - self._last_activity_at < self._idle_after_seconds:
+            return {"slept": False, "reason": "not_idle"}
+        if "ebbinghaus_memory" not in self._tool_to_provider:
+            return {"slept": False, "reason": "missing_tool"}
+
+        args = {"action": "sleep", **self._idle_sleep_args}
+        result = self.handle_tool_call("ebbinghaus_memory", args)
+        self._slept_for_idle = True
+        self._last_activity_at = current
+        self._pending_wake_greeting = self._idle_wake_greeting
+        return {"slept": True, "result": result}
+
+    def consume_wake_greeting(self) -> str:
+        """Return and clear the greeting armed by the last idle sleep pass."""
+        greeting = self._pending_wake_greeting
+        self._pending_wake_greeting = ""
+        return greeting
 
     # -- Sync ----------------------------------------------------------------
 
@@ -622,6 +739,8 @@ class MemoryManager:
 
         kwargs may include: remaining_tokens, model, platform, tool_count.
         """
+        self._last_activity_at = time.monotonic()
+        self._slept_for_idle = False
         for provider in self._providers:
             try:
                 provider.on_turn_start(turn_number, message, **kwargs)

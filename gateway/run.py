@@ -395,18 +395,19 @@ def _prepare_gateway_status_message(
     text = str(message or "").strip()
     if not text:
         return None
-    # lifecycle notices (e.g. Codex gpt-5.5 compression autoraise) are CLI-only.
-    # Sending them as regular messages on LINE/Discord/etc. breaks conversations.
-    if event_type == "lifecycle":
-        return None
     if _gateway_platform_value(platform) != "telegram":
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
-    if _TELEGRAM_NOISY_STATUS_RE.search(text):
-        return None
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
+    # lifecycle notices (e.g. Codex gpt-5.5 compression autoraise) are CLI-only.
+    # Sending them as regular Telegram messages breaks conversations, except
+    # provider errors already normalized above.
+    if event_type == "lifecycle":
+        return None
+    if _TELEGRAM_NOISY_STATUS_RE.search(text):
+        return None
     return text
 
 
@@ -1519,6 +1520,8 @@ def _build_media_placeholder(event) -> str:
             parts.append(f"[User sent an image: {url}]")
         elif mtype.startswith("audio/"):
             parts.append(f"[User sent audio: {url}]")
+        elif mtype.startswith("video/") or getattr(event, "message_type", None) == MessageType.VIDEO:
+            parts.append(f"[User sent a video: {url}]")
         else:
             parts.append(f"[User sent a file: {url}]")
     return "\n".join(parts)
@@ -3863,19 +3866,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
-        if (
-            self._queue_depth(session_key, adapter=adapter)
-            >= self._BUSY_QUEUE_MAX_PENDING
-        ):
-            logger.warning(
-                "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
-                session_key,
-                self._BUSY_QUEUE_MAX_PENDING,
-            )
-            return
-
-        self._enqueue_fifo(session_key, event, adapter)
-
     async def _handle_active_session_busy_message(
         self, event: MessageEvent, session_key: str
     ) -> bool:
@@ -4855,6 +4845,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 continue
 
+            # Claim the session slot *before* spawning the task so that an
+            # inbound message arriving between task creation and the task's
+            # first await (where _process_message_background sets the real
+            # sentinel) sees the slot as occupied and queues behind it
+            # instead of spinning up a duplicate AIAgent (#45456).
+            self._running_agents[entry.session_key] = _AGENT_PENDING_SENTINEL
+            self._running_agents_ts[entry.session_key] = time.time()
+
             # Empty-text internal event — the _is_resume_pending branch in
             # _handle_message_with_agent prepends the proper reason-aware
             # system note before the turn runs.
@@ -4864,7 +4862,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source=source,
                 internal=True,
             )
-            task = asyncio.create_task(adapter.handle_message(event))
+
+            async def _guarded_handle_message(
+                _adapter: Any, _event: MessageEvent, _key: str = entry.session_key,
+            ) -> None:
+                """Ensure the pre-claimed sentinel is always released.
+
+                In the normal flow the resume turn reaches
+                ``_handle_message``, which replaces our pre-claim with
+                its own ``_AGENT_PENDING_SENTINEL`` (and releases it in
+                its ``finally`` block) once the run begins.  If
+                ``handle_message`` raises *before* the runner takes over
+                the slot (e.g. during topic recovery or session-key
+                resolution), nobody clears our pre-claim — so we do it
+                here unconditionally.  The ``is _AGENT_PENDING_SENTINEL``
+                guard below only releases the slot we ourselves placed,
+                never one a live run currently owns.
+                """
+                try:
+                    await _adapter.handle_message(_event)
+                finally:
+                    # Only release if the sentinel we set is still there
+                    # (i.e. _process_message_background hasn't replaced
+                    # and cleaned it already).
+                    if self._running_agents.get(_key) is _AGENT_PENDING_SENTINEL:
+                        self._release_running_agent_state(_key)
+
+            task = asyncio.create_task(_guarded_handle_message(adapter, event))
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
             scheduled += 1
@@ -8199,6 +8223,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Declare at outer scope so the audio-file-paths handling block below
         # remains safe when ``event.media_urls`` is empty (no inner block runs).
         audio_file_paths: list[str] = []
+        video_paths: list[str] = []
 
         if event.media_urls:
             image_paths = []
@@ -8220,6 +8245,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     not in {MessageType.AUDIO, MessageType.DOCUMENT}
                 ):
                     audio_paths.append(path)
+                if mtype.startswith("video/") or event.message_type == MessageType.VIDEO:
+                    video_paths.append(path)
 
             if image_paths:
                 # Decide routing: native (attach pixels) vs text (vision_analyze
@@ -8321,6 +8348,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"Its content is not inlined here. If the user's request involves "
                     f"what the audio contains, transcribe or process it yourself — for "
                     f"example by passing the path to a transcription or media tool — "
+                    f"instead of asking the user to describe it. Only ask what to do "
+                    f"with it if their intent is genuinely unclear.]"
+                )
+                message_text = f"{_note}\n\n{message_text}"
+
+        if video_paths:
+            from tools.credential_files import to_agent_visible_cache_path as _to_agent_path
+            for _vpath in video_paths:
+                _basename = os.path.basename(_vpath)
+                _parts = _basename.split("_", 2)
+                _display = _parts[2] if len(_parts) >= 3 else _basename
+                _display = re.sub(r'[^\w.\- ]', '_', _display)
+                _agent_path = _to_agent_path(_vpath)
+                _note = (
+                    f"[The user sent a video attachment: '{_display}'. "
+                    f"It is saved at: {_agent_path}. "
+                    f"Its content is not inlined here. If the user's request involves "
+                    f"what the video contains, inspect or process it yourself — for "
+                    f"example by passing the path to a video analysis or media tool — "
                     f"instead of asking the user to describe it. Only ask what to do "
                     f"with it if their intent is genuinely unclear.]"
                 )
@@ -9507,12 +9553,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Auto-resetting session %s after compression exhaustion.",
                     session_entry.session_id,
                 )
-                self.session_store.reset_session(session_key)
+                new_entry = self.session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
                 if hasattr(self, "_pending_model_notes"):
                     self._pending_model_notes.pop(session_key, None)
+                if new_entry is not None:
+                    # Drop the stale reference to the bloated compressed child and
+                    # re-point the Telegram topic binding at the fresh session.
+                    # Compression rotated session_entry.session_id to the oversized
+                    # compressed child earlier this turn (the agent-result sync
+                    # above), and that _sync also rewrote the (chat_id, thread_id)
+                    # -> bloated-child binding. reset_session swaps in a clean,
+                    # parentless session, but without re-syncing the binding the
+                    # next inbound message in this topic gets switch_session'd back
+                    # onto the bloated child by the binding-heal walk, reloads the
+                    # oversized transcript, and re-triggers compression exhaustion
+                    # forever (#35809 — regression of the #9893/#10063 auto-reset).
+                    # No-op on non-topic lanes.
+                    session_entry = new_entry
+                    self._sync_telegram_topic_binding(
+                        source, session_entry, reason="compression-exhausted-reset",
+                    )
                 response = (response or "") + (
                     "\n\n🔄 Session auto-reset — the conversation exceeded the "
                     "maximum context size and could not be compressed further. "
@@ -14378,7 +14441,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 and isinstance(args.get("command"), str)
                 and args["command"].strip()
             ):
-                _bash_block = f"```bash\n{args['command'].rstrip()}\n```"
+                from agent.display import get_tool_preview_max_len
+
+                _cmd_full = args["command"].rstrip()
+                _block_header = (
+                    "" if last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
+                )
+                _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
+
+                _pl = get_tool_preview_max_len()
+                _cap = _pl if _pl > 0 else 40
+                _lines = _cmd_full.splitlines()
+                _cmd_short = _lines[0] if _lines else _cmd_full
+                _multiline = len(_lines) > 1
+                if len(_cmd_short) > _cap:
+                    _cmd_short = _cmd_short[: _cap - 3] + "..."
+                elif _multiline:
+                    _cmd_short = _cmd_short + " ..."
+                _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
 
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
@@ -14421,8 +14501,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if len(preview) > _cap:
                     preview = preview[: _cap - 3] + "..."
                 msg = f'{emoji} {tool_name}: "{preview}"'
+                last_was_terminal_block[0] = False
             else:
                 msg = f"{emoji} {tool_name}..."
+                last_was_terminal_block[0] = False
 
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
@@ -15697,6 +15779,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
+            # Sync session_id immediately after run_conversation(). Compression
+            # can rotate before a follow-up model call fails; the failure return
+            # below must still point the gateway at the compressed child.
+            agent = agent_holder[0]
+            _session_was_split = False
+            agent_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
+            if agent and session_key and agent_session_id != session_id:
+                _session_was_split = True
+                logger.info(
+                    "Session split detected: %s → %s (compression)",
+                    session_id, agent_session_id,
+                )
+                entry = self.session_store._entries.get(session_key)
+                if entry:
+                    entry.session_id = agent_session_id
+                    self.session_store._save()
+
+                # If this is a Telegram DM and source.thread_id was lost during
+                # the session split (synthetic / recovered event), restore it
+                # from the binding so _thread_metadata_for_source produces the
+                # correct message_thread_id instead of routing to the General
+                # thread.  Failure here is non-fatal — we log and continue;
+                # worst case the message lands in General, which is the
+                # pre-fix behaviour.
+                if (
+                    getattr(source, "platform", None) == Platform.TELEGRAM
+                    and getattr(source, "chat_type", None) == "dm"
+                    and getattr(source, "thread_id", None) is None
+                    and self._session_db is not None
+                ):
+                    try:
+                        _binding = self._session_db.get_telegram_topic_binding_by_session(
+                            session_id=agent_session_id,
+                        )
+                        if _binding and _binding.get("thread_id"):
+                            source.thread_id = str(_binding["thread_id"])
+                            logger.debug(
+                                "Restored source.thread_id=%s from binding after session split %s → %s",
+                                source.thread_id,
+                                session_id,
+                                agent_session_id,
+                            )
+                    except Exception:
+                        logger.debug(
+                            "Failed to restore thread_id from binding after session split",
+                            exc_info=True,
+                        )
+                if entry:
+                    self._sync_telegram_topic_binding(
+                        source, entry, reason="agent-run-compression",
+                    )
+
+            effective_session_id = agent_session_id
+            _effective_history_offset = 0 if _session_was_split else len(agent_history)
+
             if not final_response:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
                 return {
@@ -15711,7 +15848,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "error": result.get("error"),
                     "compression_exhausted": result.get("compression_exhausted", False),
                     "tools": tools_holder[0] or [],
-                    "history_offset": len(agent_history),
+                    "history_offset": _effective_history_offset,
+                    "session_id": effective_session_id,
                     "last_prompt_tokens": _last_prompt_toks,
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,

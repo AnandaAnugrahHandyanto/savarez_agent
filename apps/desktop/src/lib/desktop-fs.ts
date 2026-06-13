@@ -1,6 +1,11 @@
+import type {
+  HermesConnection,
+  HermesReadDirResult,
+  HermesReadFileTextResult,
+  HermesSelectPathsOptions,
+  HermesWorktreeInfo
+} from '@/global'
 import { $connection } from '@/store/session'
-
-import type { HermesConnection, HermesReadDirResult, HermesReadFileTextResult, HermesSelectPathsOptions } from '@/global'
 
 export interface DesktopFsRemotePicker {
   selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
@@ -16,6 +21,7 @@ function connectionCacheKey(connection: HermesConnection | null) {
   if (!connection) {
     return 'local:'
   }
+
   return `${connection.mode || 'local'}:${connection.profile || ''}:${connection.baseUrl || ''}`
 }
 
@@ -33,46 +39,69 @@ function fsPath(endpoint: string, filePath: string) {
 
 function bridge() {
   const desktop = window.hermesDesktop
+
   if (!desktop) {
     throw new Error('Hermes Desktop bridge is unavailable')
   }
+
   return desktop
 }
 
 export async function readDesktopDir(path: string): Promise<HermesReadDirResult> {
   const desktop = bridge()
+
   if (!isDesktopFsRemoteMode()) {
     return desktop.readDir(path)
   }
+
   return desktop.api<HermesReadDirResult>({ path: fsPath('list', path) })
 }
 
 export async function readDesktopFileText(path: string): Promise<HermesReadFileTextResult> {
   const desktop = bridge()
+
   if (!isDesktopFsRemoteMode()) {
     return desktop.readFileText(path)
   }
+
   return desktop.api<HermesReadFileTextResult>({ path: fsPath('read-text', path) })
 }
 
 export async function readDesktopFileDataUrl(path: string): Promise<string> {
   const desktop = bridge()
+
   if (!isDesktopFsRemoteMode()) {
     return desktop.readFileDataUrl(path)
   }
 
   const result = await desktop.api<string | { dataUrl?: string }>({ path: fsPath('read-data-url', path) })
+
   return typeof result === 'string' ? result : result.dataUrl || ''
 }
 
 export async function desktopGitRoot(path: string): Promise<string | null> {
   const desktop = bridge()
+
   if (!isDesktopFsRemoteMode()) {
     return desktop.gitRoot ? desktop.gitRoot(path) : null
   }
 
   const result = await desktop.api<{ root: string | null }>({ path: fsPath('git-root', path) })
+
   return result.root
+}
+
+// Worktree detection runs against the LOCAL filesystem (the electron main
+// process). For a remote backend the session cwds live on another machine, so
+// we can't resolve them here — callers fall back to the path-name heuristic.
+export async function desktopWorktrees(cwds: string[]): Promise<Record<string, HermesWorktreeInfo | null>> {
+  if (isDesktopFsRemoteMode()) {
+    return {}
+  }
+
+  const desktop = bridge()
+
+  return desktop.worktrees ? desktop.worktrees(cwds) : {}
 }
 
 export async function desktopDefaultCwd(): Promise<{ branch: string; cwd: string } | null> {
@@ -85,11 +114,14 @@ export async function desktopDefaultCwd(): Promise<{ branch: string; cwd: string
 
 export async function selectDesktopPaths(options?: HermesSelectPathsOptions): Promise<string[]> {
   const desktop = bridge()
+
   if (!isDesktopFsRemoteMode()) {
     return desktop.selectPaths(options)
   }
+
   if (!options?.directories || options.multiple !== false) {
     return []
   }
+
   return remotePicker ? remotePicker.selectPaths(options) : []
 }

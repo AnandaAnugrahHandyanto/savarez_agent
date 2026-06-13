@@ -1,5 +1,6 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
+import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
@@ -19,6 +20,7 @@ function workspaceCwdKey(connection: HermesConnection | null = $connection.get()
 
   const base = encodeURIComponent(connection.baseUrl || 'remote')
   const profile = encodeURIComponent(connection.profile || 'default')
+
   return `${WORKSPACE_CWD_KEY}.remote.${base}.${profile}`
 }
 
@@ -64,6 +66,7 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
 
   if ($connection.get()?.mode === 'remote') {
     seedLiveCwd(remembered)
+
     return
   }
 
@@ -140,6 +143,7 @@ export function mergeSessionPage(
   }
 
   const incomingIds = new Set(incoming.map(session => session.id))
+
   // Deduplicate by compression lineage: when auto-compression rotates the tip
   // id (old #4 → new #5), the incoming page carries the new tip but the
   // previous list still holds the old one.  Without lineage-level dedup both
@@ -195,6 +199,15 @@ export const $workingSessionIds = atom<string[]>([])
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
 export const $messages = atom<ChatMessage[]>([])
+
+// Streaming-stable derivations of $messages. During a token stream the array
+// is replaced ~30×/s; components that only care about coarse facts (is the
+// thread empty? is the tail a user message?) subscribe to these instead of
+// $messages so per-token flushes don't re-render them — nanostores' `computed`
+// only notifies when the derived VALUE changes.
+export const $messagesEmpty = computed($messages, messages => messages.length === 0)
+export const $lastVisibleMessageIsUser = computed($messages, lastVisibleMessageIsUser)
+
 export const $freshDraftReady = atom(false)
 export const $busy = atom(false)
 export const $awaitingResponse = atom(false)

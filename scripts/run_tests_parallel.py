@@ -74,17 +74,14 @@ _DEFAULT_ROOTS = ["tests"]
 #                        rebuild). The full pytest-shard runner can't
 #                        host these because the session-scoped
 #                        ``built_image`` fixture would do a 3-7min
-#                        ``docker build`` inside a 180s per-test
-#                        pytest-timeout cap (set by tests/docker/conftest.py),
+#                        ``docker build``,
 #                        so the build is guaranteed to die in fixture
 #                        setup. The dedicated job sidesteps both costs.
 _SKIP_PARTS = {"integration", "e2e", "docker"}
 
-# Per-file wall-clock cap. Generous default — pytest-timeout still
-# enforces per-test caps inside each subprocess; this is just an outer
-# safety net so a single hung file can't stall the whole suite. Override
+# Per-file wall-clock cap. Override
 # via --file-timeout or HERMES_TEST_FILE_TIMEOUT.
-_DEFAULT_FILE_TIMEOUT_SECONDS = 600.0  # 10 minutes
+_DEFAULT_FILE_TIMEOUT_SECONDS = 140.0 # set by observing the slowest file at commit time was ~100s in CI and adding some leeway
 
 # Duration cache: maps relative file paths to last-observed subprocess
 # wall-clock seconds. Used by ``--slice`` to distribute files across
@@ -260,17 +257,34 @@ def _spawn_pytest_once(
     cmd: List[str],
     repo_root: Path,
     file_timeout: float,
-    *,
     timeout_note: str = "per-file timeout",
 ) -> Tuple[int, str]:
-    """Run one ``pytest`` subprocess to completion and return ``(rc, output)``.
+    """Run one pytest subprocess and return exit code plus combined output.
 
-    Spawns the child in its own process group / session so a hung file and
-    its grandchildren (uvicorn servers, async runtimes, etc.) can be SIGKILL'd
-    as a tree on timeout rather than orphaning onto PID 1. Shared by the
-    primary per-file run and the exit-4 retry loop so the lifecycle/cleanup
-    logic lives in exactly one place.
+    The caller handles pytest exit-code interpretation and summary parsing.
+
+    ``summary_counts`` is the result of ``_parse_pytest_summary(output)`` —
+
+    pytest exit codes (https://docs.pytest.org/en/stable/reference/exit-codes.html):
+        0 = all tests passed
+        1 = some tests failed
+        2 = test execution interrupted
+        3 = internal error
+        4 = pytest CLI usage error
+        5 = no tests collected
+
+    We treat exit 5 as a pass: it just means every test in the file was
+    skipped or filtered by a marker (e.g. ``-m 'not integration'`` skips
+    files where every test is marked integration). That's intentional and
+    not a failure mode.
+
+    On per-file timeout (``file_timeout`` seconds) or any other exception
+    during ``communicate()``, we kill the whole process group / process
+    tree so grandchildren (uvicorn servers, async runtimes, etc.) do not
+    orphan onto PID 1. This outer timeout exists only to
+    bound a pathologically slow or hung file as a whole.
     """
+    # launch the pytest process
     proc = subprocess.Popen(
         cmd,
         cwd=repo_root,
@@ -279,6 +293,8 @@ def _spawn_pytest_once(
         text=True,
         encoding="utf-8",
         errors="replace",
+        # Avoid concurrent bytecode writes from many per-file pytest workers.
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         # POSIX: place the child at the head of its own process group so
         # _kill_tree can SIGKILL the group atomically.
         # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
@@ -737,7 +753,7 @@ def main() -> int:
         help=(
             "Per-file wall-clock cap in seconds. On timeout, the pytest "
             "subprocess and its full process tree are SIGKILL'd. "
-            "Default: 600 (10 min), env: HERMES_TEST_FILE_TIMEOUT."
+            f"Default: {_DEFAULT_FILE_TIMEOUT_SECONDS}s ({round(_DEFAULT_FILE_TIMEOUT_SECONDS/60)} min), env: HERMES_TEST_FILE_TIMEOUT."
         ),
     )
     parser.add_argument(

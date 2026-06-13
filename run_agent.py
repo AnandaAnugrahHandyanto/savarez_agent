@@ -1315,6 +1315,19 @@ class AIAgent:
                 pass
         return AIAgent._model_requires_responses_api(model)
 
+    @staticmethod
+    def _model_requires_max_completion_tokens(model: str) -> bool:
+        """Return True for chat-completions models that reject max_tokens."""
+        m = (model or "").strip().lower()
+        if "/" in m:
+            m = m.rsplit("/", 1)[-1]
+        return (
+            m.startswith("gpt-5")
+            or m.startswith("gpt-4o")
+            or m.startswith("gpt-4.1")
+            or re.match(r"^o[1-9](?:[.-]|$)", m) is not None
+        )
+
     def _max_tokens_param(self, value: int) -> dict:
         """Return the correct max tokens kwarg for the current provider.
 
@@ -1334,6 +1347,7 @@ class AIAgent:
             self._is_direct_openai_url()
             or self._is_azure_openai_url()
             or self._is_github_copilot_url()
+            or self._model_requires_max_completion_tokens(self.model)
         ):
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
@@ -1638,7 +1652,12 @@ class AIAgent:
             if not self._session_db_created:
                 self._ensure_db_session()
             start_idx = len(conversation_history) if conversation_history else 0
-            flush_from = max(start_idx, self._last_flushed_db_idx)
+            # Guard against the flush cursor overshooting the message list.
+            # This can happen when repair_message_sequence compacts the list
+            # (merging consecutive users, dropping stray tools) after the
+            # cursor was set.  Fall back to start_idx so we don't skip
+            # persisting the assistant/tool chain (#44837).
+            flush_from = max(start_idx, min(self._last_flushed_db_idx, len(messages)))
             for msg in messages[flush_from:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")

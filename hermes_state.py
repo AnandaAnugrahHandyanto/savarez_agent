@@ -1814,7 +1814,13 @@ class SessionDB:
     def set_session_archived(self, session_id: str, archived: bool) -> bool:
         """Archive or unarchive a session without deleting its messages."""
         def _do(conn):
-            cursor = conn.execute(
+            exists = conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if exists is None:
+                return False
+            conn.execute(
                 """
                 WITH RECURSIVE
                   ancestors(id) AS (
@@ -1848,10 +1854,9 @@ class SessionDB:
                 """,
                 (session_id, session_id, 1 if archived else 0),
             )
-            return cursor.rowcount
+            return True
 
-        rowcount = self._execute_write(_do)
-        return rowcount > 0
+        return bool(self._execute_write(_do))
 
     def get_session_by_title(
         self,

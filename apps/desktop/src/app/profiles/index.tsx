@@ -11,7 +11,6 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import {
   deleteProfile,
@@ -29,6 +28,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { OverlayMain, OverlayNewButton, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
+
 import { CreateProfileDialog } from './create-profile-dialog'
 import { RenameProfileDialog } from './rename-profile-dialog'
 
@@ -148,6 +148,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
             await refresh()
           }}
           open={createOpen}
+          profiles={profiles ?? []}
         />
 
         <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>

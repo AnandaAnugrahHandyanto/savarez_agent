@@ -2118,6 +2118,39 @@ def _terminal_width_for_streaming() -> int:
     return max(20, cols - len(_STREAM_PAD) - 2)
 
 
+def _estimate_tui_input_height(
+    lines: list[str] | tuple[str, ...],
+    prompt_text: str,
+    terminal_columns: int,
+    *,
+    max_height: int = 8,
+) -> int:
+    """Estimate classic prompt_toolkit input rows using live terminal cells."""
+    try:
+        from prompt_toolkit.utils import get_cwidth
+    except Exception:
+        get_cwidth = lambda value: len(value or "")  # type: ignore[assignment]
+
+    try:
+        columns = int(terminal_columns or 0)
+    except (TypeError, ValueError):
+        columns = 0
+
+    columns = max(1, columns)
+    prompt_width = max(0, get_cwidth(prompt_text or ""))
+
+    visual_lines = 0
+    for index, line in enumerate(lines or [""]):
+        line_width = get_cwidth(line or "")
+        display_width = line_width + (prompt_width if index == 0 else 0)
+        if display_width <= 0:
+            visual_lines += 1
+        else:
+            visual_lines += max(1, -(-display_width // columns))
+
+    return min(max(visual_lines, 1), max(1, int(max_height or 1)))
+
+
 def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
     from rich.markdown import Markdown
@@ -3865,9 +3898,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         startup UI and ``_replay_output_history`` cannot reconstruct it
         (the banner was never added to ``_OUTPUT_HISTORY``).
 
-        Instead we just reset prompt_toolkit's renderer cache so the next
-        incremental redraw starts from a clean slate, then let
-        ``original_on_resize`` recalculate layout for the new size.
+        Let prompt_toolkit's own resize path run with its renderer cursor
+        cache intact. Its Application._on_resize() starts with
+        renderer.erase(leave_alternate_screen=False), which needs the cached
+        cursor position to move back to the live prompt origin before
+        erase_down(). Resetting the renderer before that erase loses the
+        origin and can leave stale prompt glyphs after a narrow resize.
 
         We also flag ``_status_bar_suppressed_after_resize`` so the dynamic
         status bar and input separator rules stay hidden until the next user
@@ -3878,14 +3914,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         next prompt restores the bar cleanly.
         """
         self._status_bar_suppressed_after_resize = True
-        try:
-            app.renderer.reset(leave_alternate_screen=False)
-        except Exception:
-            pass
-        try:
-            app.invalidate()
-        except Exception:
-            pass
         original_on_resize()
 
     def _schedule_resize_recovery(
@@ -10402,9 +10430,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         show_full = state.get("show_full", False)
 
         title = "⚠️  Dangerous Command"
-        cmd_display = (
-            command if show_full or len(command) <= 70 else command[:70] + "..."
-        )
+        cmd_display = command
         choice_labels = {
             "once": "Allow once",
             "session": "Allow for this session",
@@ -10486,9 +10512,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         max_cmd_rows = max(1, available - chrome_rows - len(choice_wrapped))
         if len(cmd_wrapped) > max_cmd_rows:
             keep = max(1, max_cmd_rows - 1) if max_cmd_rows > 1 else 1
-            cmd_wrapped = cmd_wrapped[:keep] + [
-                "… (command truncated — use /logs or /debug for full text)"
-            ]
+            cmd_wrapped = cmd_wrapped[:keep] + _wrap_panel_text(
+                "… (command truncated — use /logs or /debug for full text)",
+                inner_text_width,
+            )
 
         # Allocate any remaining rows to description. The extra -1 in full mode
         # accounts for the blank separator between choices and description.
@@ -12930,30 +12957,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         def _input_height():
             try:
                 from prompt_toolkit.application import get_app
-                from prompt_toolkit.utils import get_cwidth
 
                 doc = input_area.buffer.document
-                prompt_width = max(2, get_cwidth(self._get_tui_prompt_text()))
                 try:
-                    available_width = get_app().output.get_size().columns - prompt_width
+                    terminal_columns = get_app().output.get_size().columns
                 except Exception:
-                    available_width = (
-                        shutil.get_terminal_size((80, 24)).columns - prompt_width
-                    )
-                if available_width < 10:
-                    available_width = 40
-                visual_lines = 0
-                for line in doc.lines:
-                    # Each logical line takes at least 1 visual row; long lines wrap.
-                    # Use prompt_toolkit's cell width so CJK wide characters count as 2.
-                    line_width = get_cwidth(line)
-                    if line_width <= 0:
-                        visual_lines += 1
-                    else:
-                        visual_lines += max(
-                            1, -(-line_width // available_width)
-                        )  # ceil division
-                return min(max(visual_lines, 1), 8)
+                    terminal_columns = shutil.get_terminal_size((80, 24)).columns
+                prompt_fragments = cli_ref._get_tui_prompt_fragments()
+                prompt_text = "".join(text for _style, text in prompt_fragments)
+                return _estimate_tui_input_height(
+                    doc.lines,
+                    prompt_text,
+                    terminal_columns,
+                    max_height=8,
+                )
             except Exception:
                 return 1
 
@@ -13823,6 +13840,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             style=style,
             full_screen=False,
             mouse_support=False,
+            # The status bar contains wall-clock read-outs (live prompt elapsed
+            # and idle-since-last-turn). Once a turn finishes there may be no
+            # further events to invalidate the app, so prompt_toolkit would keep
+            # rendering the first post-turn value (usually ``✓ 0s``) forever.
+            # A low-rate refresh keeps the clock honest without reintroducing a
+            # custom repaint thread or touching conversation state.
+            refresh_interval=1.0,
             # Erase the live bottom chrome (status bar, input box, separator
             # rules) on exit instead of freezing a final copy into scrollback.
             # Without this, prompt_toolkit's render_as_done teardown repaints
