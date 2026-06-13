@@ -20,7 +20,6 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const http = require('node:http')
 const https = require('node:https')
-const net = require('node:net')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
@@ -5979,6 +5978,27 @@ function terminalChannel(id, suffix) {
   return `hermes:terminal:${id}:${suffix}`
 }
 
+function disposeTerminalSessionListeners(sessionInfo) {
+  for (const disposable of sessionInfo.disposables || []) {
+    try {
+      disposable.dispose()
+    } catch {
+      // Listener may already be detached.
+    }
+  }
+
+  sessionInfo.disposables = []
+
+  if (sessionInfo.removeSenderDestroyedListener) {
+    try {
+      sessionInfo.removeSenderDestroyedListener()
+    } catch {
+      // Sender may already be destroyed.
+    }
+    sessionInfo.removeSenderDestroyedListener = null
+  }
+}
+
 function disposeTerminalSession(id) {
   const sessionInfo = terminalSessions.get(id)
 
@@ -5987,6 +6007,7 @@ function disposeTerminalSession(id) {
   }
 
   terminalSessions.delete(id)
+  disposeTerminalSessionListeners(sessionInfo)
 
   try {
     sessionInfo.pty.kill()
@@ -5995,6 +6016,12 @@ function disposeTerminalSession(id) {
   }
 
   return true
+}
+
+function disposeAllTerminalSessions() {
+  for (const id of [...terminalSessions.keys()]) {
+    disposeTerminalSession(id)
+  }
 }
 
 ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dirPath))
@@ -6023,22 +6050,27 @@ ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
     rows
   })
 
-  terminalSessions.set(id, { pty: ptyProcess, webContentsId: event.sender.id })
+  const sessionInfo = { disposables: [], removeSenderDestroyedListener: null, pty: ptyProcess, webContentsId: event.sender.id }
+  terminalSessions.set(id, sessionInfo)
 
   const send = (suffix, payload) => {
-    if (event.sender.isDestroyed()) {
+    if (!terminalSessions.has(id) || event.sender.isDestroyed()) {
       return
     }
 
     event.sender.send(terminalChannel(id, suffix), payload)
   }
 
-  ptyProcess.onData(data => send('data', data))
-  ptyProcess.onExit(({ exitCode, signal }) => {
-    terminalSessions.delete(id)
+  const dataDisposable = ptyProcess.onData(data => send('data', data))
+  const exitDisposable = ptyProcess.onExit(({ exitCode, signal }) => {
+    disposeTerminalSessionListeners(sessionInfo)
     send('exit', { code: exitCode, signal: signal || null })
+    terminalSessions.delete(id)
   })
-  event.sender.once('destroyed', () => disposeTerminalSession(id))
+  sessionInfo.disposables.push(dataDisposable, exitDisposable)
+  const senderDestroyedListener = () => disposeTerminalSession(id)
+  sessionInfo.removeSenderDestroyedListener = () => event.sender.off('destroyed', senderDestroyedListener)
+  event.sender.once('destroyed', senderDestroyedListener)
 
   return { cwd, id, shell: name }
 })
@@ -6512,6 +6544,7 @@ app.on('before-quit', () => {
   }
   flushDesktopLogBufferSync()
   closePreviewWatchers()
+  disposeAllTerminalSessions()
 
   if (hermesProcess && !hermesProcess.killed) {
     hermesProcess.kill('SIGTERM')
