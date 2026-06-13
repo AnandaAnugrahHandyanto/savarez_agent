@@ -1087,11 +1087,11 @@ def handle_function_call(
             if not _ro_is_tool_allowed(function_name):
                 return json.dumps(
                     {
-                        "error": (
-                            f"Read-only mode: '{function_name}' is blocked. "
-                            "Only whitelisted read-only tools are available. "
-                            "Ask the user to run /ro (or /ro off) to disable "
-                            "read-only mode before making changes."
+                        "result": "read_only_blocked",
+                        "message": (
+                            f"Cannot run '{function_name}' — read-only mode is active. "
+                            "Politely tell the user you are in read-only mode and ask them "
+                            "to run /ro off to disable it before you can make changes."
                         )
                     },
                     ensure_ascii=False,
