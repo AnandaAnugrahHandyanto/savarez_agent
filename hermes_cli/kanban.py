@@ -79,6 +79,13 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        # Per-task model override (added in this branch to surface the
+        # column in `hermes kanban create --json` and `hermes kanban show
+        # --json`). The dispatcher uses this when spawning the worker;
+        # surfacing it lets callers verify the override without reading
+        # the SQLite DB directly. The dispatcher cmd's `-m <model>` is
+        # added at kanban_db.py:6843 when this field is truthy.
+        "model_override": t.model_override,
     }
 
 
@@ -307,6 +314,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("title", help="Task title")
     p_create.add_argument("--body", default=None, help="Optional opening post")
     p_create.add_argument("--assignee", default=None, help="Profile name to assign")
+    p_create.add_argument("--model", dest="model_override", default=None,
+                          help="Override the assignee profile's default model for "
+                               "this task only. The dispatcher passes `-m <model>` "
+                               "to the spawned worker (so `hermes kanban show` and "
+                               "the worker log reflect the requested model id). "
+                               "Use this for one-off model swaps without creating a "
+                               "new profile; for stable routing, prefer a dedicated "
+                               "profile (e.g. --assignee coder for kimi-k2.7-code).")
     p_create.add_argument("--parent", action="append", default=[],
                           help="Parent task id (repeatable)")
     p_create.add_argument("--workspace", default="scratch",
@@ -1346,6 +1361,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            model_override=getattr(args, "model_override", None),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
