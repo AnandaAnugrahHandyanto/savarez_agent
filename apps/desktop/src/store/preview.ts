@@ -254,13 +254,21 @@ function shouldAutoOpenPreview(target: PreviewTarget): boolean {
   try {
     const parsed = new URL(target.url)
 
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    // Local file previews are the feature's purpose -- auto-open them.
+    if (parsed.protocol === 'file:') {
       return true
     }
 
-    const host = parsed.hostname.toLowerCase()
+    // Loopback dev servers auto-open; all other http/https is remote.
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      const host = parsed.hostname.toLowerCase()
 
-    return host === 'localhost' || host === '127.0.0.1' || host === '::1'
+      return host === 'localhost' || host === '127.0.0.1' || host === '::1'
+    }
+
+    // Everything else -- data:, blob:, javascript:, about: -- can autoplay or run
+    // script in the webview, so it stays click-to-open (default-deny).
+    return false
   } catch {
     return false
   }
