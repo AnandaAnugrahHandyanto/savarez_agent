@@ -56,6 +56,7 @@ from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.subprocess_env import scrubbed_env
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -1495,6 +1496,7 @@ async def _probe_audio_duration(path: str) -> Optional[str]:
             "ffprobe", "-v", "error", "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1", path,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            env=scrubbed_env(),
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
         if proc.returncode == 0:
@@ -4458,6 +4460,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
+                env=scrubbed_env(),
             )
             logger.info(
                 "Launched systemd planned-restart helper for %s (pid=%s)",
