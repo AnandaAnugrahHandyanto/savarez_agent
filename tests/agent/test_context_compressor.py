@@ -289,6 +289,7 @@ class TestNonStringContent:
 
         kwargs = mock_call.call_args.kwargs
         assert "temperature" not in kwargs
+        assert kwargs["extra_body"]["reasoning"] == {"enabled": True, "effort": "medium"}
 
     def test_summary_prompt_avoids_filter_sensitive_handoff_framing(self):
         mock_response = MagicMock()
