@@ -6606,10 +6606,10 @@ def _recover_from_interrupted_install() -> None:
                                 "  Restart Hermes from a different terminal, "
                                 "then run the manual recovery command below:"
                             )
-                            print(f"    cd {PROJECT_ROOT}")
+                            print(f'    cd /d "{PROJECT_ROOT}"')
                             print(
-                                f"    {sys.executable} -m pip install "
-                                "-e '.[all]'"
+                                f'    "{sys.executable}" -m pip install '
+                                '-e ".[all]"'
                             )
                             _clear_update_incomplete_marker()
                             try:
@@ -6618,7 +6618,11 @@ def _recover_from_interrupted_install() -> None:
                                 pass
                             return
                 except Exception:
-                    pass  # psutil is best-effort; fall through to install
+                    logger.debug(
+                        "Self-lock detection skipped (psutil unavailable); "
+                        "falling through to install",
+                        exc_info=True,
+                    )
 
     saved_stdout_fd = None
     saved_sys_stdout = sys.stdout
@@ -6677,9 +6681,9 @@ def _recover_from_interrupted_install() -> None:
             logger.debug("Interrupted-install recovery failed: %s", exc)
             print("✗ Could not auto-recover the interrupted install.")
             print("  Recover manually with:")
-            print(f"    cd {PROJECT_ROOT}")
-            print(f"    {sys.executable} -m ensurepip --upgrade")
-            print(f"    {sys.executable} -m pip install -e '.[all]'")
+            print(f'    cd /d "{PROJECT_ROOT}"')
+            print(f'    "{sys.executable}" -m ensurepip --upgrade')
+            print(f'    "{sys.executable}" -m pip install -e ".[all]"')
     finally:
         sys.stdout = saved_sys_stdout
         if saved_stdout_fd is not None:
