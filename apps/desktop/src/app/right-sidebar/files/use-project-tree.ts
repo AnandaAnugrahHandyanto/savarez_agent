@@ -71,10 +71,14 @@ export interface UseProjectTreeResult {
   openState: Record<string, boolean>
   rootError: string | null
   rootLoading: boolean
+  /** When true, gitignored entries are visible in the tree. */
+  showIgnored: boolean
   collapseAll: () => void
   loadChildren: (id: string) => Promise<void>
   refreshRoot: () => Promise<void>
   setNodeOpen: (id: string, open: boolean) => void
+  /** Toggle gitignore filtering on/off and reload the tree immediately. */
+  toggleShowIgnored: () => void
 }
 
 interface ProjectTreeState {
@@ -104,6 +108,7 @@ const initialState: ProjectTreeState = {
 
 const inflight = new Set<string>()
 const $projectTree = atom<ProjectTreeState>(initialState)
+const $showIgnored = atom<boolean>(false)
 let nextRootRequestId = 0
 let lastConnectionKey = ''
 
@@ -180,14 +185,15 @@ async function loadRoot(cwd: string, { force = false }: { force?: boolean } = {}
     rootLoading: true
   })
 
+  const showIgnored = $showIgnored.get()
   let resolvedCwd = cwd
-  let { entries, error } = await readProjectDir(cwd, cwd)
+  let { entries, error } = await readProjectDir(cwd, cwd, { showIgnored })
 
   if (error) {
     const fallback = await fallbackRootFor(cwd)
 
     if (fallback) {
-      const retry = await readProjectDir(fallback, fallback)
+      const retry = await readProjectDir(fallback, fallback, { showIgnored })
 
       if (!retry.error) {
         resolvedCwd = fallback
@@ -229,9 +235,15 @@ export function resetProjectTreeState() {
 export function useProjectTree(cwd: string): UseProjectTreeResult {
   const state = useStore($projectTree)
   const connection = useStore($connection)
+  const showIgnored = useStore($showIgnored)
   const connectionKey = `${connection?.mode || 'local'}:${connection?.profile || ''}:${connection?.baseUrl || ''}`
 
   const refreshRoot = useCallback(() => loadRoot(cwd, { force: true }), [cwd])
+
+  const toggleShowIgnored = useCallback(() => {
+    $showIgnored.set(!$showIgnored.get())
+    void loadRoot(cwd, { force: true })
+  }, [cwd])
 
   const setNodeOpen = useCallback(
     (id: string, open: boolean) => {
@@ -285,7 +297,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
       })
 
       const rootPath = $projectTree.get().resolvedCwd || cwd
-      const { entries, error } = await readProjectDir(id, rootPath)
+      const { entries, error } = await readProjectDir(id, rootPath, { showIgnored: $showIgnored.get() })
 
       inflight.delete(id)
 
@@ -372,7 +384,9 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
       refreshRoot,
       rootError: state.cwd === cwd ? state.rootError : null,
       rootLoading: state.cwd === cwd ? state.rootLoading : Boolean(cwd),
-      setNodeOpen
+      setNodeOpen,
+      showIgnored,
+      toggleShowIgnored
     }),
     [
       collapseAll,
@@ -380,6 +394,8 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
       loadChildren,
       refreshRoot,
       setNodeOpen,
+      showIgnored,
+      toggleShowIgnored,
       state.collapseNonce,
       state.cwd,
       state.data,
