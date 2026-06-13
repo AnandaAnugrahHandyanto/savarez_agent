@@ -553,6 +553,48 @@ def test_gui_does_not_override_user_electron_mirror(tmp_path, monkeypatch, capsy
     assert "Desktop GUI build failed" in capsys.readouterr().out
 
 
+def test_macos_relaunchable_fixup_uses_explicit_signing_identity(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    _make_packaged_executable(root, monkeypatch, platform="darwin")
+    entitlements = desktop_dir / "electron" / "entitlements.mac.plist"
+    entitlements.parent.mkdir(parents=True)
+    entitlements.write_text("<plist />", encoding="utf-8")
+
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("CSC_NAME", raising=False)
+    monkeypatch.setenv("HERMES_DESKTOP_SIGNING_IDENTITY", "Apple Development: Test (TEAMID)")
+
+    ok = subprocess.CompletedProcess([], 0)
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/codesign"), \
+         patch("hermes_cli.main.subprocess.run", return_value=ok) as run:
+        cli_main._desktop_macos_relaunchable_fixup(desktop_dir)
+
+    commands = [call.args[0] for call in run.call_args_list]
+    assert commands[0] == ["xattr", "-cr", str(desktop_dir / "release" / "mac-arm64" / "Hermes.app")]
+    assert any(cmd[:7] == ["find", str(desktop_dir / "release" / "mac-arm64" / "Hermes.app"), "-name", "_CodeSignature", "-type", "d", "-prune"] for cmd in commands)
+    sign_cmd = commands[-1]
+    assert sign_cmd[:6] == ["/usr/bin/codesign", "--force", "--deep", "--sign", "Apple Development: Test (TEAMID)", "--options"]
+    assert "runtime" in sign_cmd
+    assert "--timestamp=none" in sign_cmd
+    assert "--entitlements" in sign_cmd
+    assert str(entitlements) in sign_cmd
+
+
+def test_macos_relaunchable_fixup_skips_release_signing_env(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    _make_packaged_executable(root, monkeypatch, platform="darwin")
+    monkeypatch.setenv("CSC_NAME", "Developer ID Application: Nous Research")
+
+    with patch("hermes_cli.main.shutil.which") as which, \
+         patch("hermes_cli.main.subprocess.run") as run:
+        cli_main._desktop_macos_relaunchable_fixup(desktop_dir)
+
+    which.assert_not_called()
+    run.assert_not_called()
+
+
 class _FakeProc:
     """Minimal psutil.Process stand-in for the lock-breaker tests."""
 

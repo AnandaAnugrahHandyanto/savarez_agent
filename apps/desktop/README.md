@@ -83,6 +83,16 @@ npm run pack         # unpacked app under release/ (no installer)
 
 Installers are built and uploaded to GitHub Releases manually. macOS/Windows signing & notarization happen automatically when the relevant credentials are present in the environment (`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_*` for macOS, `WIN_CSC_*` for Windows).
 
+For local source-built macOS apps (`npm run pack`, `hermes desktop`, or the installer desktop stage), ad-hoc signing is still the fallback. Ad-hoc bundles can relaunch after rebuilds, but macOS privacy grants such as Microphone/TCC are tied to the app's code-signing requirement and may not survive rebuild churn. To keep a stable local identity, export an explicit local signing certificate name before building:
+
+```bash
+export HERMES_DESKTOP_SIGNING_IDENTITY="Apple Development: Your Name (TEAMID)"
+# or, for existing scripts:
+export APPLE_SIGNING_IDENTITY="$HERMES_DESKTOP_SIGNING_IDENTITY"
+```
+
+The local signer uses the desktop entitlements, including microphone/audio input, and skips official `CSC_LINK`/`CSC_NAME` release-signing builds so it does not clobber notarized artifacts.
+
 ### How it works
 
 The packaged app ships only the Electron shell. On first launch it installs the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — the **same layout a CLI install uses**, so the two are interchangeable. The renderer (React, in `src/`) talks to a `hermes dashboard` backend over the standard gateway APIs and reuses the embedded TUI rather than reimplementing chat. The install, backend-resolution, and self-update logic all live in `electron/main.cjs`.
