@@ -46,7 +46,7 @@ export function SearchField({
         containerClassName
       )}
     >
-      <Search className="pointer-events-none size-3.5 shrink-0 text-muted-foreground/70" />
+      <Search className="pointer-events-none size-3.5 shrink-0 text-(--ui-search-icon-color) transition-colors" />
       <input
         aria-label={ariaLabel}
         className={cn(

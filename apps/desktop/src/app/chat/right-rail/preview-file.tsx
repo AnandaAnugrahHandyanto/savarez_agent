@@ -21,7 +21,8 @@ import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
 import { $currentCwd } from '@/store/session'
 
-const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
+import { FILE_PREVIEW_SHIKI_THEME } from './shiki-theme'
+
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 
 type EmptyStateTone = 'neutral' | 'warning'
@@ -268,7 +269,7 @@ function MarkdownCode({ className, children, ...props }: ComponentProps<'code'>)
       delay={80}
       language={language}
       showLanguage={false}
-      theme={SHIKI_THEME}
+      theme={FILE_PREVIEW_SHIKI_THEME}
     >
       {String(children).replace(/\n$/, '')}
     </ShikiHighlighter>
@@ -440,7 +441,7 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
           delay={80}
           language={language || 'text'}
           showLanguage={false}
-          theme={SHIKI_THEME}
+          theme={FILE_PREVIEW_SHIKI_THEME}
         >
           {text}
         </ShikiHighlighter>

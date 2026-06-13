@@ -244,6 +244,61 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    def test_dashboard_themes_include_catppuccin_mocha(self):
+        """The backend picker metadata must stay in sync with frontend presets."""
+        resp = self.client.get("/api/dashboard/themes")
+        assert resp.status_code == 200
+        data = resp.json()
+        theme_names = {theme["name"] for theme in data["themes"]}
+        assert "catppuccin-mocha" in theme_names
+        assert data["themes"] == [
+            {
+                "name": "default",
+                "label": "Hermes Teal",
+                "description": "Classic dark teal — the canonical Hermes look",
+            },
+            {
+                "name": "default-large",
+                "label": "Hermes Teal (Large)",
+                "description": "Hermes Teal with bigger fonts and roomier spacing",
+            },
+            {
+                "name": "nous-blue",
+                "label": "Nous Blue",
+                "description": "Light mode — vivid Nous-blue accents on cream canvas",
+            },
+            {
+                "name": "catppuccin-mocha",
+                "label": "Catppuccin Mocha",
+                "description": "Soft pastel dark dashboard inspired by Catppuccin Mocha",
+            },
+            {
+                "name": "midnight",
+                "label": "Midnight",
+                "description": "Deep blue-violet with cool accents",
+            },
+            {
+                "name": "ember",
+                "label": "Ember",
+                "description": "Warm crimson and bronze — forge vibes",
+            },
+            {
+                "name": "mono",
+                "label": "Mono",
+                "description": "Clean grayscale — minimal and focused",
+            },
+            {
+                "name": "cyberpunk",
+                "label": "Cyberpunk",
+                "description": "Neon green on black — matrix terminal",
+            },
+            {
+                "name": "rose",
+                "label": "Rosé",
+                "description": "Soft pink and warm ivory — easy on the eyes",
+            },
+        ]
+
     # ── GET /api/media (remote image display) ───────────────────────────
 
     def test_get_media_serves_image_in_root(self):

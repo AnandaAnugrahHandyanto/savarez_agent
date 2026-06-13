@@ -104,6 +104,7 @@ BUILT-IN SKINS
 - ``slate``   — Cool blue developer-focused theme
 - ``daylight`` — Light background theme with dark text and blue accents
 - ``warm-lightmode`` — Warm brown/gold text for light terminal backgrounds
+- ``catppuccin-mocha`` — Soft pastel dark theme inspired by Catppuccin Mocha
 
 USER SKINS
 ==========
@@ -641,6 +642,88 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 [#F29C38]⠀⠀⠀⠀⠀⠀⠀⠀⣰⡿⢿⣆⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#F29C38]⠀⠀⠀⠀⠀⠀⠀⣼⡟⠀⠀⢻⣧⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [dim #7A3511]⠀⠀⠀⠀⠀⠀⠀tail flame lit⠀⠀⠀⠀⠀⠀⠀⠀[/]""",
+    },
+    "catppuccin-mocha": {
+        "name": "catppuccin-mocha",
+        "description": "Catppuccin Mocha — soft pastel dark theme",
+        "colors": {
+            "banner_border": "#B4BEFE",
+            "banner_title": "#F5C2E7",
+            "banner_accent": "#CBA6F7",
+            "banner_dim": "#A6ADC8",
+            "banner_text": "#CDD6F4",
+            "ui_primary": "#F5C2E7",
+            "ui_accent": "#CBA6F7",
+            "ui_border": "#B4BEFE",
+            "ui_label": "#89DCEB",
+            "ui_ok": "#A6E3A1",
+            "ui_error": "#F38BA8",
+            "ui_warn": "#F9E2AF",
+            "prompt": "#FAB387",
+            "shell_dollar": "#FAB387",
+            "input_rule": "#313244",
+            "response_border": "#B4BEFE",
+            "status_bar_bg": "#11111B",
+            "status_bar_text": "#CDD6F4",
+            "status_bar_strong": "#CBA6F7",
+            "status_bar_dim": "#6C7086",
+            "status_bar_good": "#A6E3A1",
+            "status_bar_warn": "#F9E2AF",
+            "status_bar_bad": "#FAB387",
+            "status_bar_critical": "#F38BA8",
+            "session_label": "#89DCEB",
+            "session_border": "#B4BEFE",
+            "voice_status_bg": "#11111B",
+            "selection_bg": "#585B70",
+            "completion_menu_bg": "#1E1E2E",
+            "completion_menu_current_bg": "#313244",
+            "completion_menu_meta_bg": "#181825",
+            "completion_menu_meta_current_bg": "#45475A",
+        },
+        "spinner": {
+            "waiting_faces": ["(☕)", "(✦)", "(◌)", "(♡)", "(⋆)"],
+            "thinking_faces": ["(☕)", "(✦)", "(⌁)", "(♡)", "(⋆)"],
+            "thinking_verbs": [
+                "steeping", "softening edges", "mixing pastels", "tuning contrast",
+                "polishing surfaces", "brewing context", "layering mauve", "warming the mantle",
+            ],
+            "wings": [
+                ["⟪☕", "☕⟫"],
+                ["⟪✦", "✦⟫"],
+                ["⟪♡", "♡⟫"],
+                ["⟪⋆", "⋆⟫"],
+            ],
+        },
+        "branding": {
+            "agent_name": "Hermes Agent",
+            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
+            "goodbye": "Goodbye! ☕",
+            "response_label": " ☕ Hermes ",
+            "prompt_symbol": "☕",
+            "help_header": "(☕) Available Commands",
+        },
+        "tool_prefix": "│",
+        "banner_logo": """[bold #F38BA8]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
+[bold #FAB387]██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
+[bold #F9E2AF]███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
+[bold #A6E3A1]██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
+[bold #89DCEB]██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
+[bold #CBA6F7]╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]""",
+        "banner_hero": """[bold #F38BA8]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[bold #FAB387]⠀⠀⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣇⠸⣿⣿⠇⣸⣿⣿⣷⣦⣄⡀⠀⠀⠀⠀⠀⠀[/]
+[bold #F9E2AF]⠀⢀⣠⣴⣶⠿⠋⣩⡿⣿⡿⠻⣿⡇⢠⡄⢸⣿⠟⢿⣿⢿⣍⠙⠿⣶⣦⣄⡀⠀[/]
+[bold #A6E3A1]⠀⠀⠉⠉⠁⠶⠟⠋⠀⠉⠀⢀⣈⣁⡈⢁⣈⣁⡀⠀⠉⠀⠙⠻⠶⠈⠉⠉⠀⠀[/]
+[bold #94E2D5]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⡿⠛⢁⡈⠛⢿⣿⣦⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[bold #89DCEB]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠿⣿⣦⣤⣈⠁⢠⣴⣿⠿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[bold #74C7EC]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠻⢿⣿⣦⡉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[bold #89B4FA]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⢷⣦⣈⠛⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[bold #B4BEFE]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣴⠦⠈⠙⠿⣦⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[bold #CBA6F7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⣿⣤⡈⠁⢤⣿⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[bold #F5C2E7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠛⠷⠄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[bold #F38BA8]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⠑⢶⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[bold #FAB387]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⠁⢰⡆⠈⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[bold #F9E2AF]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⠈⣡⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[bold #A6E3A1]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]""",
     },
 }
 

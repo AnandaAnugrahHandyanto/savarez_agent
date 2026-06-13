@@ -301,11 +301,27 @@ describe('fromSkin', () => {
     expect(fromSkin({}, {}, 'LOGO', 'HERO').bannerHero).toBe('HERO')
   })
 
-  it('maps ui_ color keys + cascades to status', async () => {
+  it('maps status_bar color keys before ui_ status fallbacks', async () => {
     const { fromSkin } = await importThemeWithCleanEnv()
-    const { color } = fromSkin({ ui_ok: '#008000' }, {})
+
+    const { color } = fromSkin({
+      status_bar_bad: '#fab387',
+      status_bar_bg: '#11111b',
+      status_bar_critical: '#f38ba8',
+      status_bar_good: '#a6e3a1',
+      status_bar_text: '#cdd6f4',
+      status_bar_warn: '#f9e2af',
+      ui_ok: '#008000',
+      ui_warn: '#ffff00'
+    }, {})
 
     expect(color.ok).toBe('#008000')
-    expect(color.statusGood).toBe('#008000')
+    expect(color.warn).toBe('#ffff00')
+    expect(color.statusBg).toBe('#11111b')
+    expect(color.statusFg).toBe('#cdd6f4')
+    expect(color.statusGood).toBe('#a6e3a1')
+    expect(color.statusWarn).toBe('#f9e2af')
+    expect(color.statusBad).toBe('#fab387')
+    expect(color.statusCritical).toBe('#f38ba8')
   })
 })

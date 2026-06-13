@@ -170,7 +170,7 @@ function FolderRow({ disabled = false, name, onClick }: { disabled?: boolean; na
       onClick={onClick}
       type="button"
     >
-      <Codicon name="folder" size="0.875rem" />
+      <Codicon className="text-(--ui-folder-icon-color) transition-colors" name="folder" size="0.875rem" />
       <span className="min-w-0 truncate">{name}</span>
     </button>
   )

@@ -278,13 +278,89 @@ export const slateTheme: DesktopTheme = {
   }
 }
 
+const catppuccinMochaColors = {
+  background: '#1E1E2E',
+  foreground: '#CDD6F4',
+  card: '#1E1E2E',
+  cardForeground: '#CDD6F4',
+  muted: '#313244',
+  mutedForeground: '#A6ADC8',
+  popover: '#313244',
+  popoverForeground: '#CDD6F4',
+  primary: '#CBA6F7',
+  primaryForeground: '#1E1E2E',
+  secondary: '#313244',
+  secondaryForeground: '#CDD6F4',
+  accent: '#45475A',
+  accentForeground: '#CDD6F4',
+  border: '#313244',
+  input: '#45475A',
+  ring: '#89B4FA',
+  midground: '#B4BEFE',
+  midgroundForeground: '#1E1E2E',
+  composerRing: '#89B4FA',
+  destructive: '#F38BA8',
+  destructiveForeground: '#1E1E2E',
+  chatBackground: '#1E1E2E',
+  chatBackdropOpacity: '0',
+  sidebarBackground: '#11111B',
+  sidebarBorder: '#313244',
+  fileIcon: '#89B4FA',
+  folderIcon: '#F9E2AF',
+  folderOpenIcon: '#CBA6F7',
+  navNewSessionIcon: '#A6E3A1',
+  navSkillsIcon: '#FAB387',
+  navMessagingIcon: '#74C7EC',
+  navArtifactsIcon: '#F5C2E7',
+  searchIcon: '#B4BEFE',
+  userBubble: '#313244',
+  userBubbleBorder: '#585B70'
+}
+
+const catppuccinMochaTerminal = {
+  foreground: '#CDD6F4',
+  cursor: '#F5E0DC',
+  selectionBackground: '#585B7080',
+  black: '#45475A',
+  red: '#F38BA8',
+  green: '#A6E3A1',
+  yellow: '#F9E2AF',
+  blue: '#89B4FA',
+  magenta: '#CBA6F7',
+  cyan: '#94E2D5',
+  white: '#BAC2DE',
+  brightBlack: '#585B70',
+  brightRed: '#F38BA8',
+  brightGreen: '#A6E3A1',
+  brightYellow: '#F9E2AF',
+  brightBlue: '#89B4FA',
+  brightMagenta: '#F5C2E7',
+  brightCyan: '#89DCEB',
+  brightWhite: '#CDD6F4'
+}
+
+/** Catppuccin Mocha-inspired dark palette with matching terminal ANSI colors. */
+export const catppuccinMochaTheme: DesktopTheme = {
+  name: 'catppuccin-mocha',
+  label: 'Catppuccin Mocha',
+  description: 'Soft pastel dark palette inspired by Catppuccin Mocha',
+  colors: catppuccinMochaColors,
+  darkColors: catppuccinMochaColors,
+  terminal: catppuccinMochaTerminal,
+  darkTerminal: catppuccinMochaTerminal,
+  typography: {
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`
+  }
+}
+
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   nous: nousTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
-  slate: slateTheme
+  slate: slateTheme,
+  'catppuccin-mocha': catppuccinMochaTheme
 }
 
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)

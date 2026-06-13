@@ -41,8 +41,28 @@ export interface DesktopThemeColors {
   composerRing?: string
   destructive: string
   destructiveForeground: string
+  /** Solid chat/thread background. Falls back to the mixed chrome surface. */
+  chatBackground?: string
+  /** Multiplier for decorative chat backdrop imagery. Use '0' for flat themes. */
+  chatBackdropOpacity?: string
   sidebarBackground?: string
   sidebarBorder?: string
+  /** Right-sidebar file tree icon color. */
+  fileIcon?: string
+  /** Right-sidebar closed folder icon color. */
+  folderIcon?: string
+  /** Right-sidebar open folder icon color. Falls back to `folderIcon`. */
+  folderOpenIcon?: string
+  /** Primary sidebar New Session icon color. */
+  navNewSessionIcon?: string
+  /** Primary sidebar Skills & Tools icon color. */
+  navSkillsIcon?: string
+  /** Primary sidebar Messaging icon color. */
+  navMessagingIcon?: string
+  /** Primary sidebar Artifacts icon color. */
+  navArtifactsIcon?: string
+  /** Search-field magnifier icon color. */
+  searchIcon?: string
   userBubble?: string
   userBubbleBorder?: string
 }

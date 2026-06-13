@@ -144,6 +144,7 @@
     --theme-fill-tertiary-accent-mix: 8%;
     --theme-fill-quaternary-accent-mix: 5%;
     --theme-fill-quinary-accent-mix: 3%;
+    --theme-backdrop-opacity-mul: 1;
     --theme-stroke-primary-accent-mix: 24%;
     --theme-stroke-secondary-accent-mix: 16%;
     --theme-stroke-tertiary-accent-mix: 10%;
@@ -255,8 +256,19 @@
     --ui-sash-hover-background: color-mix(in srgb, var(--ui-accent) 6%, transparent);
     --ui-surface-background: var(--ui-bg-editor);
     --ui-sidebar-surface-background: var(--ui-bg-sidebar);
-    --ui-chat-surface-background: var(--ui-bg-chrome);
+    --ui-chat-surface-background: var(--dt-chat-background, var(--ui-bg-chrome));
     --ui-editor-surface-background: var(--ui-bg-chrome);
+    --ui-file-icon-color: var(--dt-file-icon, var(--ui-text-tertiary));
+    --ui-folder-icon-color: var(--dt-folder-icon, var(--ui-text-tertiary));
+    --ui-folder-open-icon-color: var(--dt-folder-open-icon, var(--ui-folder-icon-color));
+    --ui-nav-new-session-icon-color: var(
+      --dt-nav-new-session-icon,
+      color-mix(in srgb, currentColor 72%, transparent)
+    );
+    --ui-nav-skills-icon-color: var(--dt-nav-skills-icon, color-mix(in srgb, currentColor 72%, transparent));
+    --ui-nav-messaging-icon-color: var(--dt-nav-messaging-icon, color-mix(in srgb, currentColor 72%, transparent));
+    --ui-nav-artifacts-icon-color: var(--dt-nav-artifacts-icon, color-mix(in srgb, currentColor 72%, transparent));
+    --ui-search-icon-color: var(--dt-search-icon, color-mix(in srgb, var(--ui-text-tertiary) 70%, transparent));
     --ui-chat-bubble-background: color-mix(
       in srgb,
       var(--theme-bubble-seed) var(--theme-mix-bubble),

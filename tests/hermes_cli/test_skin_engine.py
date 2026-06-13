@@ -108,6 +108,42 @@ class TestBuiltinSkins:
         assert skin.get_color("completion_menu_meta_current_bg") == "#5A260D"
         assert skin.get_color("selection_bg") == "#5A260D"
 
+    def test_catppuccin_mocha_skin_uses_mocha_palette(self):
+        from hermes_cli.skin_engine import load_skin
+
+        skin = load_skin("catppuccin-mocha")
+        assert skin.name == "catppuccin-mocha"
+        assert skin.get_color("banner_border") == "#B4BEFE"
+        assert skin.get_color("banner_title") == "#F5C2E7"
+        assert skin.get_color("banner_accent") == "#CBA6F7"
+        assert skin.get_color("banner_text") == "#CDD6F4"
+        assert skin.get_color("banner_dim") == "#A6ADC8"
+        assert skin.get_color("ui_primary") == "#F5C2E7"
+        assert skin.get_color("ui_border") == "#B4BEFE"
+        assert skin.get_color("ui_label") == "#89DCEB"
+        assert skin.get_color("ui_ok") == "#A6E3A1"
+        assert skin.get_color("ui_error") == "#F38BA8"
+        assert skin.get_color("prompt") == "#FAB387"
+        assert skin.get_color("shell_dollar") == "#FAB387"
+        assert skin.get_color("status_bar_bg") == "#11111B"
+        assert skin.get_color("status_bar_strong") == "#CBA6F7"
+        assert skin.get_color("session_label") == "#89DCEB"
+        assert skin.get_color("session_border") == "#B4BEFE"
+        assert skin.get_color("completion_menu_bg") == "#1E1E2E"
+        assert skin.get_color("completion_menu_current_bg") == "#313244"
+        assert skin.get_color("completion_menu_meta_current_bg") == "#45475A"
+        assert skin.get_color("selection_bg") == "#585B70"
+        assert "[bold #F38BA8]" in skin.banner_logo
+        assert "[bold #F9E2AF]" in skin.banner_logo
+        assert "[bold #A6E3A1]" in skin.banner_logo
+        assert "[bold #CBA6F7]" in skin.banner_logo
+        assert "[bold #FAB387]" in skin.banner_hero
+        assert "[bold #74C7EC]" in skin.banner_hero
+        assert "[bold #F5C2E7]" in skin.banner_hero
+        assert "[bold #A6E3A1]" in skin.banner_hero
+        assert skin.get_branding("agent_name") == "Hermes Agent"
+        assert skin.tool_prefix == "│"
+
     def test_unknown_skin_falls_back_to_default(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("nonexistent_skin_xyz")
@@ -146,6 +182,7 @@ class TestSkinManagement:
         assert "slate" in names
         assert "daylight" in names
         assert "warm-lightmode" in names
+        assert "catppuccin-mocha" in names
         for s in skins:
             assert "source" in s
             assert s["source"] == "builtin"

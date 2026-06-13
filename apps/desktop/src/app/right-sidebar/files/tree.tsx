@@ -152,6 +152,16 @@ function ProjectTreeRow({
   const isPlaceholder = Boolean(node.data.placeholder)
   const isErrorPlaceholder = node.data.placeholder === 'error'
 
+  const iconTone = isErrorPlaceholder
+    ? 'text-(--dt-destructive)'
+    : isPlaceholder
+      ? 'text-(--ui-text-tertiary)'
+      : isFolder
+        ? node.isOpen
+          ? 'text-(--ui-folder-open-icon-color)'
+          : 'text-(--ui-folder-icon-color)'
+        : 'text-(--ui-file-icon-color)'
+
   return (
     <div
       aria-expanded={isFolder ? node.isOpen : undefined}
@@ -212,7 +222,7 @@ function ProjectTreeRow({
     >
       {/* No chevron column — the folder icon (open/closed) already carries the
           expand state, so the extra glyph was pure noise. */}
-      <span aria-hidden className="flex w-3.5 items-center justify-center text-(--ui-text-tertiary)">
+      <span aria-hidden className={cn('flex w-3.5 items-center justify-center transition-colors', iconTone)}>
         {isPlaceholder && !isErrorPlaceholder ? (
           <Codicon name="loading" size="0.75rem" spinning />
         ) : isErrorPlaceholder ? (

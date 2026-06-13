@@ -282,6 +282,8 @@ Each built-in ships its own palette, typography, and layout — switching produc
 |-------|---------|------------|--------|
 | **Hermes Teal** (`default`) | Dark teal + cream | System stack, 15px | 0.5rem radius, comfortable |
 | **Hermes Teal (Large)** (`default-large`) | Same as default | System stack, 18px, line-height 1.65 | 0.5rem radius, spacious |
+| **Nous Blue** (`nous-blue`) | Light cream canvas + vivid Nous-blue accents | Inter + JetBrains Mono, 15px | 0.5rem radius, comfortable |
+| **Catppuccin Mocha** (`catppuccin-mocha`) | Mocha base/mantle/crust + pastel mauve/blue/pink accents | Inter + JetBrains Mono, 15px | 0.85rem radius, comfortable |
 | **Midnight** (`midnight`) | Deep blue-violet | Inter + JetBrains Mono, 14px | 0.75rem radius, comfortable |
 | **Ember** (`ember`) | Warm crimson + bronze | Spectral (serif) + IBM Plex Mono, 15px | 0.25rem radius, comfortable |
 | **Mono** (`mono`) | Grayscale | IBM Plex Sans + IBM Plex Mono, 13px | 0 radius, compact |
