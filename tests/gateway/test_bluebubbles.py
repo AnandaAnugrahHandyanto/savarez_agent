@@ -558,15 +558,20 @@ class TestBlueBubblesWebhookUrl:
 
     def test_default_host(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        # Default webhook_host is 0.0.0.0 → normalized to localhost
-        assert "localhost" in adapter._webhook_url
+        # Default webhook_host is 127.0.0.1 — preserved (not normalized) per GH-45308
+        assert "127.0.0.1" in adapter._webhook_url
         assert str(adapter.webhook_port) in adapter._webhook_url
         assert adapter.webhook_path in adapter._webhook_url
 
-    @pytest.mark.parametrize("host", ["0.0.0.0", "127.0.0.1", "localhost", "::"])
+    @pytest.mark.parametrize("host", ["0.0.0.0", "localhost", "::"])
     def test_local_hosts_normalized(self, monkeypatch, host):
         adapter = _make_adapter(monkeypatch, webhook_host=host)
         assert adapter._webhook_url.startswith("http://localhost:")
+
+    def test_127_0_0_1_preserved(self, monkeypatch):
+        """Explicit IPv4 loopback must round-trip unchanged (GH-45308)."""
+        adapter = _make_adapter(monkeypatch, webhook_host="127.0.0.1")
+        assert adapter._webhook_url.startswith("http://127.0.0.1:")
 
     def test_custom_host_preserved(self, monkeypatch):
         adapter = _make_adapter(monkeypatch, webhook_host="192.168.1.50")
