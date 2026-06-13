@@ -3471,6 +3471,12 @@ class AIAgent:
         impersonate = AIAgent._tls_impersonation_profile()
         if impersonate and AIAgent._is_cloudflare_protected(base_url):
             try:
+                try:
+                    from tools.lazy_deps import ensure as _lazy_ensure
+                    _lazy_ensure("provider.curl_cffi", prompt=False)
+                except ImportError:
+                    pass
+
                 from agent.curl_cffi_transport import build_curl_cffi_http_client
                 _proxy = _get_proxy_for_base_url(base_url)
                 logger.info(

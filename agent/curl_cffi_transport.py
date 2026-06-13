@@ -21,6 +21,19 @@ _CFFI_STRIP_REQUEST_HEADERS = {
 }
 
 
+class _CurlCffiByteStream(httpx.SyncByteStream):
+    """Expose a curl_cffi streaming response through httpx's stream API."""
+
+    def __init__(self, curl_response) -> None:
+        self._curl_response = curl_response
+
+    def __iter__(self):
+        yield from self._curl_response.iter_content(chunk_size=65536)
+
+    def close(self) -> None:
+        self._curl_response.close()
+
+
 class CurlCffiClient(httpx.Client):
     """httpx.Client that routes actual HTTP requests through curl_cffi.
 
@@ -71,6 +84,8 @@ class CurlCffiClient(httpx.Client):
             data=content,
             stream=stream,
         )
+        if curl_resp is None:
+            raise RuntimeError("curl_cffi returned no response")
 
         # Convert response headers — strip Content-Encoding since
         # curl_cffi already decompressed the response body
@@ -80,12 +95,18 @@ class CurlCffiClient(httpx.Client):
                 continue
             resp_headers.append((k, v))
 
-        resp_body = curl_resp.content if not stream else b""
+        if stream:
+            return httpx.Response(
+                status_code=curl_resp.status_code,
+                headers=resp_headers,
+                stream=_CurlCffiByteStream(curl_resp),
+                request=request,
+            )
 
         return httpx.Response(
             status_code=curl_resp.status_code,
             headers=resp_headers,
-            content=resp_body,
+            content=curl_resp.content,
             request=request,
         )
 
