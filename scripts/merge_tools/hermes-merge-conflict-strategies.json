@@ -34,6 +34,11 @@
       "note": "Take official deps; re-apply fork-only optional extras after merge."
     },
     {
+      "pattern": "skills/media/youtube-content/**",
+      "action": "upstream",
+      "note": "Official helper tracks youtube-transcript-api v1.x and Hermes uv execution."
+    },
+    {
       "pattern": ".github/workflows/*",
       "action": "upstream",
       "note": "Keep official CI and security workflow changes."
