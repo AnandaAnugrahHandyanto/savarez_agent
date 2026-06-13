@@ -17,6 +17,7 @@ from tools.mcp_oauth import (
     build_oauth_auth,
     remove_oauth_tokens,
     _find_free_port,
+    _nginx_domain_callback_url,
     _can_open_browser,
     _is_interactive,
     _wait_for_callback,
@@ -567,6 +568,49 @@ def test_build_client_metadata_uses_nginx_domain_for_remote_callback(monkeypatch
     md = _build_client_metadata(cfg)
 
     assert md.redirect_uris == ["https://mcp.example.com/callback"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "http://mcp.example.com",
+        "https://127.0.0.1",
+        "https://10.0.0.5",
+        "https://172.16.0.1",
+        "https://192.168.1.20",
+        "https://169.254.169.254",
+        "https://224.0.0.1",
+        "https://127.1",
+        "https://2130706433",
+        "https://0x7f.0.0.1",
+        "https://[::1]",
+        "https://localhost",
+        "https://mcp.example.com/path",
+        "javascript:alert(1)",
+        "mcp.example.com/callback?code=abc",
+        "mcp.example.com callback",
+    ],
+)
+def test_nginx_domain_callback_url_rejects_unsafe_values(monkeypatch, value):
+    """Remote OAuth callbacks must be HTTPS public origins, not SSRF/local targets."""
+    monkeypatch.setenv("HERMES_NGINX_DOMAIN", value)
+
+    assert _nginx_domain_callback_url() == ""
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("mcp.example.com", "https://mcp.example.com/callback"),
+        ("https://mcp.example.com/", "https://mcp.example.com/callback"),
+        ("https://8.8.8.8", "https://8.8.8.8/callback"),
+    ],
+)
+def test_nginx_domain_callback_url_accepts_https_public_origins(monkeypatch, value, expected):
+    """Valid nginx callback origins normalize to the fixed /callback endpoint."""
+    monkeypatch.setenv("HERMES_NGINX_DOMAIN", value)
+
+    assert _nginx_domain_callback_url() == expected
 
 
 def test_remote_callback_suppresses_noninteractive_cached_token_warning(tmp_path, monkeypatch, caplog):

@@ -33,6 +33,7 @@ Configuration in config.yaml::
 """
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -180,16 +181,43 @@ def _nginx_domain_callback_url() -> str:
     candidate = raw if "://" in raw else f"https://{raw}"
     try:
         parsed = urlparse(candidate)
+        # Accessing .port validates numeric port syntax and catches values like
+        # ``https://javascript:alert(1)`` after the default-scheme prefix.
+        parsed.port
     except ValueError:
         logger.warning("Ignoring malformed HERMES_NGINX_DOMAIN value")
         return ""
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if parsed.scheme != "https" or not parsed.netloc or not parsed.hostname:
+        logger.warning("Ignoring malformed HERMES_NGINX_DOMAIN value")
+        return ""
+    if parsed.username or parsed.password:
         logger.warning("Ignoring malformed HERMES_NGINX_DOMAIN value")
         return ""
     if parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
         logger.warning("Ignoring malformed HERMES_NGINX_DOMAIN value")
         return ""
-    return f"{parsed.scheme}://{parsed.netloc}/callback"
+
+    hostname = parsed.hostname.rstrip(".").lower()
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        logger.warning("Ignoring non-public HERMES_NGINX_DOMAIN value")
+        return ""
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        try:
+            legacy_ipv4 = ipaddress.ip_address(socket.inet_ntoa(socket.inet_aton(hostname)))
+        except OSError:
+            pass
+        else:
+            if not legacy_ipv4.is_global or legacy_ipv4.is_multicast:
+                logger.warning("Ignoring non-public HERMES_NGINX_DOMAIN value")
+                return ""
+    else:
+        if not ip.is_global or ip.is_multicast:
+            logger.warning("Ignoring non-public HERMES_NGINX_DOMAIN value")
+            return ""
+
+    return f"https://{parsed.netloc}/callback"
 
 
 def _oauth_callback_redirect_uri(cfg: dict) -> str:
