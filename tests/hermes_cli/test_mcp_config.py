@@ -302,6 +302,34 @@ class TestMcpAdd:
             "DEBUG": "true",
         }
 
+    def test_add_repeated_env_flag_accumulates(self):
+        """Repeated --env flags accumulate instead of keeping only the last.
+
+        Regression test for issue #45672: argparse ``nargs="*"`` overwrites
+        the list on each flag occurrence, silently dropping earlier values.
+        ``action="append"`` accumulates correctly.
+        """
+        import argparse as ap
+
+        parser = ap.ArgumentParser()
+        parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE")
+        parser.add_argument("name")
+
+        # --env FOO=1 --env BAR=2 --env BAZ=3
+        args = parser.parse_args(["--env", "FOO=1", "--env", "BAR=2", "--env", "BAZ=3", "srv"])
+        assert args.env == ["FOO=1", "BAR=2", "BAZ=3"]
+
+    def test_add_single_env_flag(self):
+        """Single --env flag with one value still works."""
+        import argparse as ap
+
+        parser = ap.ArgumentParser()
+        parser.add_argument("--env", action="append", default=[], metavar="KEY=VALUE")
+        parser.add_argument("name")
+
+        args = parser.parse_args(["--env", "FOO=1", "srv"])
+        assert args.env == ["FOO=1"]
+
     def test_add_stdio_server_rejects_invalid_env_name(self, capsys):
         """Invalid environment variable names are rejected up front."""
         from hermes_cli.mcp_config import cmd_mcp_add
