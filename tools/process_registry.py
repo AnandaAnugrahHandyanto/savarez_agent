@@ -872,10 +872,17 @@ class ProcessRegistry:
             self._finished[session.id] = session
         self._write_checkpoint()
 
-        # Only enqueue completion notification on the FIRST move.  Without
-        # this guard, kill_process() and the reader thread can both call
+        # Only enqueue completion notification on the FIRST move and only
+        # for successful exits (exit_code == 0).  Without this guard,
+        # kill_process() and the reader thread can both call
         # _move_to_finished(), producing duplicate [IMPORTANT: ...] messages.
-        if was_running and session.notify_on_complete:
+        # Non-zero exits (errors, SIGTERM/SIGKILL) are silently discarded
+        # to avoid flooding the conversation with "corpse" notifications
+        # from failed/killed intermediate attempts.  (exit_code is None
+        # for detached recovered sessions — treat as unknown, still notify.)
+        if was_running and session.notify_on_complete and (
+            session.exit_code is None or session.exit_code == 0
+        ):
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
             self.completion_queue.put({
