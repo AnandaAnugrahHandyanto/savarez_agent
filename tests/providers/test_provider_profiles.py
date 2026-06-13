@@ -156,7 +156,9 @@ class TestOpenRouterProfile:
         p = get_provider_profile("openrouter")
         cfg = {"enabled": False, "analysis_models": ["openai/gpt-5-mini"]}
         assert p.build_extra_body(openrouter_fusion=cfg) == {}
-        assert p.build_server_tools(openrouter_fusion=cfg) == []
+        server_tools = p.build_server_tools(openrouter_fusion=cfg)
+        assert server_tools.tools == []
+        assert server_tools.replace_local_tools is False
 
     def test_fusion_config_emits_server_tool(self):
         p = get_provider_profile("openrouter")
@@ -170,7 +172,8 @@ class TestOpenRouterProfile:
             "temperature": "0.2",
         }
         assert p.build_extra_body(openrouter_fusion=cfg) == {}
-        assert p.build_server_tools(openrouter_fusion=cfg) == [
+        server_tools = p.build_server_tools(openrouter_fusion=cfg)
+        assert server_tools.tools == [
             {
                 "type": "openrouter:fusion",
                 "parameters": {
@@ -186,6 +189,7 @@ class TestOpenRouterProfile:
                 },
             }
         ]
+        assert server_tools.replace_local_tools is False
 
     def test_fusion_config_drops_invalid_optional_values(self):
         p = get_provider_profile("openrouter")
@@ -196,7 +200,8 @@ class TestOpenRouterProfile:
             "max_completion_tokens": 0,
             "temperature": 2.5,
         }
-        assert p.build_server_tools(openrouter_fusion=cfg) == [
+        server_tools = p.build_server_tools(openrouter_fusion=cfg)
+        assert server_tools.tools == [
             {
                 "type": "openrouter:fusion",
                 "parameters": {
@@ -204,6 +209,15 @@ class TestOpenRouterProfile:
                 },
             }
         ]
+        assert server_tools.replace_local_tools is False
+
+    def test_fusion_force_replaces_local_tools(self):
+        p = get_provider_profile("openrouter")
+        server_tools = p.build_server_tools(
+            openrouter_fusion={"enabled": True, "force": True},
+        )
+        assert server_tools.tools == [{"type": "openrouter:fusion", "parameters": {}}]
+        assert server_tools.replace_local_tools is True
 
     def test_fusion_force_sets_tool_choice_required(self):
         p = get_provider_profile("openrouter")
