@@ -261,6 +261,23 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     tap_rm = tap_subparsers.add_parser("remove", help="Remove a tap")
     tap_rm.add_argument("name", help="Tap name to remove")
 
+    # skill history subcommands
+    skills_log = skills_subparsers.add_parser(
+        "log", help="Show version history of a skill"
+    )
+    skills_log.add_argument("name", help="Skill name to inspect")
+
+    skills_revert = skills_subparsers.add_parser(
+        "revert", help="Revert a skill to a previous version"
+    )
+    skills_revert.add_argument("name", help="Skill name to revert")
+    skills_revert.add_argument(
+        "--to",
+        type=int,
+        required=True,
+        help="Target version number (use `hermes skills log <name>` to see available versions)",
+    )
+
     # config sub-action: interactive enable/disable
     skills_subparsers.add_parser(
         "config",
