@@ -12223,38 +12223,6 @@ def start_server(
     # Host headers against it. Defends against DNS rebinding (GHSA-ppp5-vxwm-4cf7).
     app.state.bound_host = host
 
-    if open_browser:
-        import webbrowser
-
-        # On headless Linux (no DISPLAY or WAYLAND_DISPLAY) some registered
-        # browsers are TUI programs (links, lynx, www-browser) that try to
-        # take over the terminal.  That can send SIGHUP to the server process
-        # and cause an immediate exit even though uvicorn bound successfully.
-        # Skip the auto-open attempt on headless systems and let the user
-        # open the URL manually.  macOS and Windows are always considered
-        # display-capable.
-        _has_display = (
-            sys.platform != "linux"
-            or bool(os.environ.get("DISPLAY"))
-            or bool(os.environ.get("WAYLAND_DISPLAY"))
-        )
-
-        if _has_display:
-
-            def _open():
-                try:
-                    time.sleep(1.0)
-                    webbrowser.open(_open_url)
-                except Exception:
-                    pass
-
-            threading.Thread(target=_open, daemon=True).start()
-        else:
-            _log.debug(
-                "Skipping browser-open: no DISPLAY or WAYLAND_DISPLAY detected "
-                "(headless Linux). Pass --no-open to suppress this detection."
-            )
-
     print(f"  Hermes Web UI → http://{host}:{port}")
     # proxy_headers defaults to False so _ws_client_is_allowed sees the real
     # connection peer rather than X-Forwarded-For's rewritten value (which
@@ -12262,7 +12230,7 @@ def start_server(
     # OAuth gate is active we are explicitly running behind a TLS terminator
     # (Fly.io) and need X-Forwarded-Proto to decide cookie Secure flags, so
     # we flip proxy_headers on for that mode.
-    uvicorn.run(
+    config = uvicorn.Config(
         app,
         host=host,
         port=port,

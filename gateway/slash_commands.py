@@ -2725,7 +2725,8 @@ class GatewaySlashCommandsMixin:
         def _session_in_scope(session: dict | None) -> bool:
             if not session:
                 return False
-            if user_source and session.get("source") != user_source:
+            session_source = session.get("source")
+            if user_source and session_source is not None and session_source != user_source:
                 return False
             session_user_id = session.get("user_id")
             if (
@@ -2802,11 +2803,14 @@ class GatewaySlashCommandsMixin:
             if _session_in_scope(session):
                 target_id = session["id"]
             else:
-                target_id = self._session_db.resolve_session_by_title(
-                    name,
-                    source=user_source,
-                    user_id=scoped_user_id,
-                )
+                if source.platform == Platform.MATRIX:
+                    target_id = self._session_db.resolve_session_by_title(name)
+                else:
+                    target_id = self._session_db.resolve_session_by_title(
+                        name,
+                        source=user_source,
+                        user_id=scoped_user_id,
+                    )
         if not target_id:
             return t("gateway.resume.not_found", name=name)
         # Compression creates child continuations that hold the live transcript.
