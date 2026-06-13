@@ -52,11 +52,11 @@ async function stampExeIdentity(exe, desktopRoot = path.resolve(__dirname, '..')
     throw new Error(`icon not found: ${icon}`)
   }
 
-  // rcedit is a direct devDependency of apps/desktop, so it resolves whether
+  // @electron/rcedit is a direct devDependency of apps/desktop, so it resolves whether
   // we're run from the desktop dir or the repo root (workspace hoist).
-  // rcedit@5 exports a NAMED `rcedit` function (CommonJS: { rcedit }), not a
+  // @electron/rcedit@5 exports a NAMED `rcedit` function (CommonJS: { rcedit }), not a
   // default export.
-  const mod = require('rcedit')
+  const mod = require('@electron/rcedit')
   const rcedit = typeof mod === 'function' ? mod : mod.rcedit
   if (typeof rcedit !== 'function') {
     throw new Error(`unexpected rcedit export shape: ${typeof mod} keys=${Object.keys(mod)}`)
