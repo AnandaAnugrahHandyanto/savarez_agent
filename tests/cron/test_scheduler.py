@@ -1873,6 +1873,93 @@ class TestRunJobSkillBacked:
         assert "Instructions for maps." in prompt_arg
         assert "Combine the results." in prompt_arg
 
+    def test_run_job_passes_target_model_to_resolve_runtime_provider(
+        self, tmp_path
+    ):
+        """Cron job's model must drive api_mode via target_model (#45245).
+
+        When model.default is an anthropic-routed model (e.g. minimax-m3)
+        on the same provider as the job, the resolver would otherwise derive
+        api_mode from the config default instead of the job's own model.
+        """
+        job = {
+            "id": "target-model-job",
+            "name": "test",
+            "prompt": "hello",
+            "model": "deepseek-v4-flash",
+            "provider": "opencode-go",
+        }
+
+        captured_kwargs = {}
+
+        def _capture_resolve(**kwargs):
+            captured_kwargs.update(kwargs)
+            return {
+                "api_key": "test-key",
+                "base_url": "https://example.invalid/v1",
+                "provider": "opencode-go",
+                "api_mode": "chat_completions",
+            }
+
+        fake_db = MagicMock()
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 side_effect=_capture_resolve,
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        assert captured_kwargs.get("target_model") == "deepseek-v4-flash"
+        assert captured_kwargs.get("requested") == "opencode-go"
+
+    def test_run_job_omits_target_model_when_job_has_no_model(self, tmp_path):
+        """When the job has no model, target_model must not be passed.
+
+        The resolver should fall back to model.default in that case.
+        """
+        job = {
+            "id": "no-model-job",
+            "name": "test",
+            "prompt": "hello",
+            "provider": "openrouter",
+        }
+
+        captured_kwargs = {}
+
+        def _capture_resolve(**kwargs):
+            captured_kwargs.update(kwargs)
+            return {
+                "api_key": "test-key",
+                "base_url": "https://example.invalid/v1",
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+            }
+
+        fake_db = MagicMock()
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 side_effect=_capture_resolve,
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            run_job(job)
+
+        assert "target_model" not in captured_kwargs
+        assert captured_kwargs.get("requested") == "openrouter"
+
 
 class TestSilentDelivery:
     """Verify that [SILENT] responses suppress delivery while still saving output."""

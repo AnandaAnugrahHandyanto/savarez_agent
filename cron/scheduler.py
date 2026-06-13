@@ -1655,6 +1655,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             runtime_kwargs = {
                 "requested": job.get("provider"),
             }
+            # Pass target_model so the resolver computes api_mode from
+            # the model the job will actually use, not from model.default.
+            # Without this, a cron job pinned to a chat-completions model
+            # (e.g. deepseek-v4-flash) inherits the api_mode of model.default
+            # when that default happens to be an anthropic-routed model on
+            # the same provider.  (#45245)
+            if model:
+                runtime_kwargs["target_model"] = model
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
             runtime = resolve_runtime_provider(**runtime_kwargs)
@@ -1669,6 +1677,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     continue
                 try:
                     fb_kwargs = {"requested": entry.get("provider")}
+                    if model:
+                        fb_kwargs["target_model"] = model
                     if entry.get("base_url"):
                         fb_kwargs["explicit_base_url"] = entry["base_url"]
                     if entry.get("api_key"):
