@@ -1,0 +1,19 @@
+name: aituber-onair
+version: 0.1.0
+description: "Hermes bridge for AITuber OnAir FBX streaming and Codex-auth Hakua character chat."
+author: "Hermes local plugin"
+kind: standalone
+platforms:
+  - windows
+  - linux
+  - macos
+provides_tools:
+  - aituber_onair_status
+  - aituber_onair_configure_hakua
+  - aituber_onair_prepare
+  - aituber_onair_start
+  - aituber_onair_stop
+  - aituber_onair_say
+  - aituber_onair_smoke
+provides_cli:
+  - aituber-onair

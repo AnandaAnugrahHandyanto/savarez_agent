@@ -1,0 +1,58 @@
+name: AITuber OnAir Plugin
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "plugins/aituber_onair/**"
+      - "tests/plugins/test_aituber_onair_plugin.py"
+      - ".github/workflows/aituber-onair-plugin.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "plugins/aituber_onair/**"
+      - "tests/plugins/test_aituber_onair_plugin.py"
+      - ".github/workflows/aituber-onair-plugin.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aituber-onair-plugin-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plugin-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --locked --python 3.11 --extra dev
+
+      - name: Compile plugin
+        run: |
+          source .venv/bin/activate
+          python -m py_compile \
+            plugins/aituber_onair/__init__.py \
+            plugins/aituber_onair/core.py \
+            plugins/aituber_onair/cli.py
+
+      - name: Run plugin tests
+        run: |
+          source .venv/bin/activate
+          python -m pytest -q tests/plugins/test_aituber_onair_plugin.py -o addopts=
