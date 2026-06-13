@@ -338,8 +338,12 @@ export interface SessionResumeResponse {
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]
+  requested?: string
   resumed: string
+  running?: boolean
   session_id: string
+  session_key?: string
+  status?: string
 }
 
 export interface SessionRuntimeInfo {

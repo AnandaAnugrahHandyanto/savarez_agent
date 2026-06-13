@@ -4039,6 +4039,7 @@ def _(rid, params: dict) -> dict:
     target = params.get("session_id", "")
     if not target:
         return _err(rid, 4006, "session_id required")
+    requested_target = target
     try:
         cols = int(params.get("cols", 80))
     except (TypeError, ValueError):
@@ -4066,6 +4067,20 @@ def _(rid, params: dict) -> dict:
             target = found["id"]
         else:
             return _err(rid, 4007, "session not found")
+
+    try:
+        compression_tip = db.get_compression_tip(target)
+    except AttributeError:
+        compression_tip = None
+    except Exception:
+        logger.exception("session.resume failed to resolve compression tip for %s", target)
+        compression_tip = None
+    if compression_tip and compression_tip != target:
+        tip_found = db.get_session(compression_tip)
+        if tip_found:
+            target = compression_tip
+            found = tip_found
+
     def _reuse_live_payload(sid: str, session: dict) -> dict:
         payload = _live_session_payload(
             sid,
@@ -4074,6 +4089,7 @@ def _(rid, params: dict) -> dict:
             touch=True,
             transport=current_transport() or _stdio_transport,
         )
+        payload["requested"] = requested_target
         payload["resumed"] = target
         # A lazy watch session never owns a run loop, so its payload's running
         # flag is always False — overlay the child-run registry so a reconnecting
@@ -4164,6 +4180,7 @@ def _(rid, params: dict) -> dict:
             rid,
             {
                 "session_id": sid,
+                "requested": requested_target,
                 "resumed": target,
                 "message_count": len(messages),
                 "messages": messages,
@@ -4253,6 +4270,7 @@ def _(rid, params: dict) -> dict:
                 touch=True,
                 transport=current_transport() or _stdio_transport,
             )
+            payload["requested"] = requested_target
             payload["resumed"] = target
             return _ok(rid, payload)
         try:
@@ -4278,6 +4296,7 @@ def _(rid, params: dict) -> dict:
         rid,
         {
             "session_id": sid,
+            "requested": requested_target,
             "resumed": target,
             "message_count": len(messages),
             "messages": messages,

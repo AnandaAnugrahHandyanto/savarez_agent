@@ -543,9 +543,10 @@ export function useSessionActions({
     async (storedSessionId: string, replaceRoute = false) => {
       const requestId = resumeRequestRef.current + 1
       resumeRequestRef.current = requestId
+      let expectedStoredSessionId = storedSessionId
 
       const isCurrentResume = () =>
-        resumeRequestRef.current === requestId && selectedStoredSessionIdRef.current === storedSessionId
+        resumeRequestRef.current === requestId && selectedStoredSessionIdRef.current === expectedStoredSessionId
 
       // Paint the click before the profile-resolve / gateway-swap awaits below,
       // so there's zero dead air: highlight the row instantly (the sidebar reads
@@ -704,6 +705,20 @@ export function useSessionActions({
           return
         }
 
+        const resumedStoredSessionId =
+          (resumed.resumed || resumed.session_key || storedSessionId).trim() || storedSessionId
+        const resumedDifferentStoredSession = resumedStoredSessionId !== storedSessionId
+
+        if (resumedDifferentStoredSession) {
+          expectedStoredSessionId = resumedStoredSessionId
+          runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+          setSelectedStoredSessionId(resumedStoredSessionId)
+          selectedStoredSessionIdRef.current = resumedStoredSessionId
+          navigate(sessionRoute(resumedStoredSessionId), { replace: true })
+        } else if (replaceRoute) {
+          navigate(sessionRoute(resumedStoredSessionId), { replace: true })
+        }
+
         const currentMessages = $messages.get()
 
         // Keep the local snapshot when resume would only reshuffle runtime
@@ -712,7 +727,7 @@ export function useSessionActions({
         // 1000+-message session that second conversion plus the deep
         // equivalence compare costs over a second of main-thread time.
         const preferredMessages =
-          localSnapshot.length > 0
+          !resumedDifferentStoredSession && localSnapshot.length > 0
             ? localSnapshot
             : (() => {
                 const resumedMessages = preserveLocalAssistantErrors(
@@ -729,9 +744,9 @@ export function useSessionActions({
         activeSessionIdRef.current = resumed.session_id
         const runtimeInfo = applyRuntimeInfo(resumed.info)
 
-        patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
+        patchSessionWorkspace(resumedStoredSessionId, runtimeInfo?.cwd)
 
-        resumedRunning = Boolean((resumed as { running?: boolean }).running)
+        resumedRunning = Boolean(resumed.running)
 
         updateSessionState(
           resumed.session_id,
@@ -742,7 +757,7 @@ export function useSessionActions({
             busy: resumedRunning,
             awaitingResponse: resumedRunning
           }),
-          storedSessionId
+          resumedStoredSessionId
         )
       } catch (err) {
         if (!isCurrentResume()) {
@@ -771,6 +786,7 @@ export function useSessionActions({
       copy,
       requestGateway,
       runtimeIdByStoredSessionIdRef,
+      navigate,
       selectedStoredSessionIdRef,
       sessionStateByRuntimeIdRef,
       syncSessionStateToView,

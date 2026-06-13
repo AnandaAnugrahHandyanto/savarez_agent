@@ -394,6 +394,75 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
     ]
 
 
+def test_session_resume_projects_compression_root_to_tip(server, monkeypatch):
+    """Desktop may reconnect with an old route after context compression.
+
+    Resuming the compression root must bind the live runtime to the latest
+    continuation so prompt submission and model changes do not keep targeting
+    the ended parent session.
+    """
+
+    root = "20260613_074135_root"
+    tip = "20260613_212635_tip"
+    reopened: list[str] = []
+    made_agents: list[tuple[str, str]] = []
+    initialized: list[str] = []
+
+    class _DB:
+        def get_session(self, sid):
+            if sid in {root, tip}:
+                return {"id": sid}
+            return None
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def get_compression_tip(self, sid):
+            return tip if sid == root else sid
+
+        def reopen_session(self, sid):
+            reopened.append(sid)
+
+        def get_messages_as_conversation(self, sid, include_ancestors=False):
+            assert sid == tip
+            return [
+                {"role": "user", "content": "compressed prompt"},
+                {"role": "assistant", "content": "continued"},
+            ]
+
+    def _make_agent(sid, key, session_id=None, session_db=None):
+        made_agents.append((key, session_id))
+        return types.SimpleNamespace(model="test/model", session_id=session_id or key)
+
+    def _init_session(_sid, key, _agent, _history, cols=80):
+        initialized.append(key)
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_make_agent", _make_agent)
+    monkeypatch.setattr(server, "_init_session", _init_session)
+    monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
+
+    resp = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": root, "cols": 100},
+        }
+    )
+
+    assert "error" not in resp
+    assert resp["result"]["requested"] == root
+    assert resp["result"]["resumed"] == tip
+    assert resp["result"]["session_key"] == tip
+    assert resp["result"]["messages"] == [
+        {"role": "user", "text": "compressed prompt"},
+        {"role": "assistant", "text": "continued"},
+    ]
+    assert reopened == [tip]
+    assert made_agents == [(tip, tip)]
+    assert initialized == [tip]
+
+
 def test_session_resume_lazy_registers_watch_session_without_agent(server, monkeypatch):
     """``lazy: true`` (subagent watch windows) must register the live session
     — keyed for the child mirror, on this transport — WITHOUT building an
