@@ -35,11 +35,11 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
-import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import {
   Select,
   SelectOption,
 } from "@nous-research/ui/ui/components/select";
+import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
@@ -312,7 +312,7 @@ export default function ProfilesPage() {
   // Create modal
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [newName, setNewName] = useState("");
-  const [cloneFromDefault, setCloneFromDefault] = useState(true);
+  const [cloneFrom, setCloneFrom] = useState<string | null>(null);
   const [cloneAll, setCloneAll] = useState(false);
   const [noSkills, setNoSkills] = useState(false);
   const [newDescription, setNewDescription] = useState("");
@@ -429,7 +429,7 @@ export default function ProfilesPage() {
     }
     setCreating(true);
     try {
-      const cloning = cloneAll || cloneFromDefault;
+      const cloning = cloneAll || cloneFrom !== null;
       const picked = modelChoice
         ? modelChoices?.find(
             (c) => `${c.provider}\u0000${c.model}` === modelChoice,
@@ -437,7 +437,7 @@ export default function ProfilesPage() {
         : undefined;
       const res = await api.createProfile({
         name,
-        clone_from_default: cloneAll ? false : cloneFromDefault,
+        clone_from: cloning ? cloneFrom : null,
         clone_all: cloneAll,
         no_skills: cloning ? false : noSkills,
         description: newDescription.trim() || undefined,
@@ -455,7 +455,7 @@ export default function ProfilesPage() {
       setNewDescription("");
       setNoSkills(false);
       setCloneAll(false);
-      setCloneFromDefault(true);
+      setCloneFrom(null);
       setModelChoice("");
       setCreateModalOpen(false);
       load();
@@ -772,7 +772,7 @@ export default function ProfilesPage() {
     };
   }, [setEnd, t.common.create, loading, navigate]);
 
-  const cloning = cloneAll || cloneFromDefault;
+  const cloning = cloneAll || cloneFrom !== null;
 
   if (loading) {
     return (
@@ -863,6 +863,22 @@ export default function ProfilesPage() {
               </div>
 
               <div className="grid gap-2">
+                <Label htmlFor="clone-from">{t.profiles.cloneFrom}</Label>
+                <Select
+                  id="clone-from"
+                  value={cloneFrom ?? ""}
+                  onValueChange={(v) => setCloneFrom(v || null)}
+                >
+                  <SelectOption value="">{t.profiles.cloneFromNone}</SelectOption>
+                  {profiles.map((profile) => (
+                    <SelectOption key={profile.name} value={profile.name}>
+                      {profile.name}
+                    </SelectOption>
+                  ))}
+                </Select>
+              </div>
+
+              <div className="grid gap-2">
                 <Label htmlFor="profile-description">
                   {L.descriptionOptional}
                 </Label>
@@ -908,24 +924,6 @@ export default function ProfilesPage() {
                 <legend className="font-mondwest text-display text-xs tracking-wider text-muted-foreground">
                   {L.advancedOptions}
                 </legend>
-
-                <div className="flex items-center gap-2.5">
-                  <Checkbox
-                    checked={cloneFromDefault}
-                    id="clone-from-default"
-                    disabled={cloneAll}
-                    onCheckedChange={(checked) =>
-                      setCloneFromDefault(checked === true)
-                    }
-                  />
-
-                  <Label
-                    className="font-mondwest normal-case tracking-normal text-sm cursor-pointer"
-                    htmlFor="clone-from-default"
-                  >
-                    {t.profiles.cloneFromDefault}
-                  </Label>
-                </div>
 
                 <div className="flex items-center gap-2.5">
                   <Checkbox

@@ -507,6 +507,11 @@ export const api = {
     profile = "default",
   ) =>
     fetchJSON<CronJob>(`/api/cron/blueprints/instantiate?profile=${encodeURIComponent(profile)}`, {
+  // Profiles (minimal)
+  getProfiles: () =>
+    fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
+  createProfile: (body: { name: string; clone_from: string | null }) =>
+    fetchJSON<{ ok: boolean; name: string; path: string }>("/api/profiles", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

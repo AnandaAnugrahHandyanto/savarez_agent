@@ -8490,15 +8490,10 @@ async def scan_skill_hub(identifier: str = ""):
 
 class ProfileCreate(BaseModel):
     name: str
-    clone_from_default: bool = False
+    clone_from: Optional[str] = None
     clone_all: bool = False
     no_skills: bool = False
     description: Optional[str] = None
-    # Explicit source profile to clone from (e.g. duplicating an existing
-    # profile). When set, it takes precedence over ``clone_from_default``,
-    # which always sources from "default". ``clone_all`` still selects a full
-    # state copytree vs. a config/skills/SOUL copy.
-    clone_from: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
     # Profile-builder additions — all optional, all applied best-effort AFTER
@@ -8771,15 +8766,15 @@ async def create_profile_endpoint(body: ProfileCreate):
         clone_from = explicit_source
         clone_config = not body.clone_all
     else:
-        clone = body.clone_from_default or body.clone_all
+        clone = body.clone_all
         clone_from = "default" if clone else None
-        clone_config = body.clone_from_default and not body.clone_all
+        clone_config = clone and not body.clone_all
     try:
         path = profiles_mod.create_profile(
             name=body.name,
-            clone_from=clone_from,
+            clone_from=body.clone_from,
             clone_all=body.clone_all,
-            clone_config=clone_config,
+            clone_config=body.clone_from is not None,
             no_skills=body.no_skills,
             description=body.description,
         )
@@ -8788,7 +8783,7 @@ async def create_profile_endpoint(body: ProfileCreate):
         # has already copied the source profile's skills, including any
         # user-installed skills. When no_skills=True, create_profile() wrote
         # the opt-out marker and seed_profile_skills() will no-op.
-        if not clone:
+        if body.clone_from is None:
             profiles_mod.seed_profile_skills(path, quiet=True)
 
         # Match the CLI's profile-create flow: named profiles should get a
