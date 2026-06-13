@@ -677,6 +677,12 @@ export function ChatBar({
 
   const triggerLoading = trigger?.kind === '@' ? at.loading : trigger?.kind === '/' ? slash.loading : false
 
+  // Suppress the "No matches" empty state once a slash command is past its name
+  // (arg stage): a no-arg command has nothing to offer, and a fully-typed arg
+  // is committed on Space/Tab — neither should dead-end on a popover.
+  const argStageEmpty =
+    trigger?.kind === '/' && trigger.query.includes(' ') && !triggerLoading && triggerItems.length === 0
+
   const closeTrigger = () => {
     setTrigger(null)
     setTriggerItems([])
@@ -686,6 +692,26 @@ export function ChatBar({
   useEffect(() => {
     setTriggerActive(idx => Math.min(idx, Math.max(0, triggerItems.length - 1)))
   }, [triggerItems.length])
+
+  // Commit the literally-typed `/command arg` as a directive chip — used when
+  // the completion list is empty because the arg is already fully typed (the
+  // backend completer drops exact matches). Reuses the chip path via a
+  // synthetic item whose serialized form is the verbatim text.
+  const commitTypedSlashDirective = () => {
+    if (trigger?.kind !== '/') {
+      return
+    }
+
+    const text = `/${trigger.query.trimEnd()}`
+    const command = `/${(trigger.query.split(/\s+/, 1)[0] ?? '').toLowerCase()}`
+
+    replaceTriggerWithChip({
+      id: text,
+      type: 'slash',
+      label: text.slice(1),
+      metadata: { command, display: text, meta: '', group: '', action: '', rawText: text }
+    })
+  }
 
   const replaceTriggerWithChip = (item: Unstable_TriggerItem) => {
     const editor = editorRef.current
@@ -834,7 +860,15 @@ export function ChatBar({
         return
       }
 
-      if (event.key === 'Enter' || event.key === 'Tab') {
+      // Enter / Tab / Space all accept the highlighted item: a no-arg command
+      // commits its directive chip, an arg-taking command expands to its
+      // options step, and an arg option commits the full `/cmd arg` chip. Space
+      // is slash-only (an `@` mention takes a literal space) and gated to a
+      // non-empty query so a bare `/ ` still types a space.
+      const acceptOnSpace = event.key === ' ' && trigger.kind === '/' && trigger.query.trim().length > 0
+      const accept = event.key === 'Enter' || event.key === 'Tab' || acceptOnSpace
+
+      if (accept) {
         event.preventDefault()
         triggerKeyConsumedRef.current = true
         const item = triggerItems[triggerActive]
@@ -844,24 +878,6 @@ export function ChatBar({
         }
 
         return
-      }
-
-      // Space accepts the highlighted command while its name is still being
-      // typed (no arg yet). Without this, space on a no-arg command
-      // (`/hermes-agent `) falls through to text insertion, re-detects the
-      // trigger as an arg query, and dead-ends on "No matches" since there are
-      // no args to complete. Mirrors Tab/Enter: arg-taking commands expand to
-      // their options step, no-arg commands commit the directive chip.
-      if (event.key === ' ' && trigger.kind === '/' && trigger.query.length > 0 && !trigger.query.includes(' ')) {
-        const item = triggerItems[triggerActive]
-
-        if (item) {
-          event.preventDefault()
-          triggerKeyConsumedRef.current = true
-          replaceTriggerWithChip(item)
-
-          return
-        }
       }
 
       if (event.key === 'Escape') {
@@ -871,6 +887,24 @@ export function ChatBar({
 
         return
       }
+    }
+
+    // Arg stage with nothing left to suggest — a fully-typed arg the backend
+    // completer no longer echoes (it drops the exact match), e.g.
+    // `/personality creative`. Space/Tab still commit what's typed as a single
+    // directive chip; Enter falls through to submit (send it as-is).
+    if (
+      trigger?.kind === '/' &&
+      triggerItems.length === 0 &&
+      (event.key === ' ' || event.key === 'Tab') &&
+      trigger.query.includes(' ') &&
+      trigger.query.trim().length > 0
+    ) {
+      event.preventDefault()
+      triggerKeyConsumedRef.current = true
+      commitTypedSlashDirective()
+
+      return
     }
 
     // ArrowUp/ArrowDown navigate, in priority order: the queue (edit entries in
@@ -1795,7 +1829,7 @@ export function ChatBar({
           ref={composerRef}
         >
           {showHelpHint && <HelpHint />}
-          {trigger && (
+          {trigger && !argStageEmpty && (
             <ComposerTriggerPopover
               activeIndex={triggerActive}
               items={triggerItems}
