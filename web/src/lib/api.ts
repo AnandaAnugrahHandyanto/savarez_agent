@@ -58,12 +58,12 @@ export function getManagementProfile(): string {
   return _managementProfile;
 }
 
-// Endpoint families that honor ?profile= on the backend (web_server.py
-// _profile_scope). Anything else — sessions, analytics, ops, pairing,
-// telegram onboarding, cron (which has its own per-job profile params),
-// profiles themselves — is machine-global or self-scoped and must NOT be
-// rewritten.
+// Endpoint families that honor ?profile= on the backend. Anything else —
+// sessions, ops, pairing, telegram onboarding, cron (which has its own per-job
+// profile params), profiles themselves — is machine-global or self-scoped and
+// must NOT be rewritten.
 const PROFILE_SCOPED_PREFIXES = [
+  "/api/analytics",
   "/api/skills",
   "/api/tools/toolsets",
   "/api/config",
