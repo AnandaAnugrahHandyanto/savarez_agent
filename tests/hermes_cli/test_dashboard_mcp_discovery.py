@@ -156,18 +156,30 @@ class TestMakeAgentInlineDiscovery:
 
     def test_make_agent_inline_discover_failure_does_not_block(self, monkeypatch):
         """If discover_mcp_tools() raises, _make_agent still creates the agent."""
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch as _patch
         import tui_gateway.server as server
 
         monkeypatch.setattr("tui_gateway.entry.wait_for_mcp_discovery", MagicMock())
         monkeypatch.setattr(
             "tools.mcp_tool.discover_mcp_tools",
-            side_effect=RuntimeError("mcp crash"),
+            MagicMock(side_effect=RuntimeError("mcp crash")),
         )
         monkeypatch.setattr(server, "_load_cfg", lambda: {"agent": {}})
         monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("gpt-4", None))
-        from unittest.mock import patch as _patch
-        with _patch("run_agent.AIAgent") as mock_agent:
+        fake_runtime = {
+            "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-test",
+            "api_mode": "chat_completions",
+            "command": None,
+            "args": None,
+            "credential_pool": None,
+        }
+        with (
+            _patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=fake_runtime),
+            _patch("run_agent.AIAgent") as mock_agent,
+        ):
             mock_agent.return_value = MagicMock()
             # Should not raise
             server._make_agent("sid", "key", session_id="sess-1")
