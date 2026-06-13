@@ -15,6 +15,7 @@ import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $newChatProfile, $profiles, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $currentCwd,
+  $desktopYoloDefault,
   $messages,
   $sessions,
   $yoloActive,
@@ -413,9 +414,9 @@ export function useSessionActions({
       setCurrentReasoningEffort('')
       setCurrentServiceTier('')
       setCurrentFastMode(false)
-      setYoloActive(false)
       setCurrentCwd(workspaceCwdForNewSession())
       setCurrentBranch('')
+      setYoloActive($desktopYoloDefault.get())
       // Never clear the composer here — ChatBar's per-thread draft swap owns it.
       setFreshDraftReady(true)
     },
