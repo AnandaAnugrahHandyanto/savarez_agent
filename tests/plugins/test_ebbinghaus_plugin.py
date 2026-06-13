@@ -74,6 +74,29 @@ def test_rehearsal_restores_retention_after_decay(tmp_path):
     store.close()
 
 
+def test_legacy_iso_timestamps_do_not_break_stats_or_sleep(tmp_path):
+    clock = {"now": 1_700_000_000.0}
+    store = EbbinghausMemoryStore(tmp_path / "memory.db", time_fn=lambda: clock["now"])
+    memory = store.remember("Legacy import used ISO timestamps.", salience=0.8)
+    store._conn.execute(
+        """
+        UPDATE memories
+        SET created_at = ?, updated_at = ?, last_rehearsed_at = NULL, last_retrieved_at = NULL
+        WHERE memory_id = ?
+        """,
+        ("2026-06-11T11:28:25.014828", "2026-06-11T11:28:25.014828", memory["memory_id"]),
+    )
+    store._conn.commit()
+
+    assert store.stats()["count"] == 1
+    result = store.get(memory["memory_id"])
+    assert result["age_days"] >= 0
+
+    report = store.sleep_cycle(prune=True)
+    assert report["mode"] == "sleep_cycle"
+    store.close()
+
+
 def test_decay_can_prune_forgotten_memories(tmp_path):
     clock = {"now": 1_700_000_000.0}
     store = EbbinghausMemoryStore(

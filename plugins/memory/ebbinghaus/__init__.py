@@ -19,6 +19,7 @@ import sqlite3
 import time
 import unicodedata
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
@@ -157,6 +158,30 @@ def _split_tags(tags: Any) -> list[str]:
 
 def _join_tags(tags: Iterable[str]) -> str:
     return ",".join(_split_tags(list(tags)))
+
+
+def _timestamp_value(value: Any, *, default: float = 0.0) -> float:
+    """Return a Unix timestamp for legacy REAL or ISO-8601 timestamp values."""
+    if value is None or value == "":
+        return float(default)
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return float(default)
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    try:
+        normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return float(parsed.timestamp())
+    except ValueError:
+        logger.debug("Invalid Ebbinghaus timestamp value %r; using default", value)
+        return float(default)
 
 
 def _encode_memory(content: str, tags: Iterable[str]) -> dict:
@@ -509,9 +534,9 @@ class EbbinghausMemoryStore:
     def _retention(self, row: sqlite3.Row) -> float:
         now = self._now()
         anchors = [
-            float(row["created_at"] or now),
-            float(row["last_rehearsed_at"] or 0),
-            float(row["last_retrieved_at"] or 0),
+            _timestamp_value(row["created_at"], default=now),
+            _timestamp_value(row["last_rehearsed_at"]),
+            _timestamp_value(row["last_retrieved_at"]),
         ]
         elapsed_days = max(0.0, (now - max(anchors)) / 86400.0)
         return forgetting_retention(elapsed_days, self._stability_days(row))
@@ -527,9 +552,9 @@ class EbbinghausMemoryStore:
         encoded = self._decode(row["encoded"])
         now = self._now()
         last_anchor = max(
-            float(row["created_at"] or now),
-            float(row["last_rehearsed_at"] or 0),
-            float(row["last_retrieved_at"] or 0),
+            _timestamp_value(row["created_at"], default=now),
+            _timestamp_value(row["last_rehearsed_at"]),
+            _timestamp_value(row["last_retrieved_at"]),
         )
         result = {
             "memory_id": int(row["memory_id"]),
@@ -540,7 +565,7 @@ class EbbinghausMemoryStore:
             "valence": round(float(row["valence"] or 0.0), 3),
             "retention": round(float(retention), 4),
             "stability_days": round(self._stability_days(row), 3),
-            "age_days": round(max(0.0, (now - float(row["created_at"] or now)) / 86400.0), 3),
+            "age_days": round(max(0.0, (now - _timestamp_value(row["created_at"], default=now)) / 86400.0), 3),
             "days_since_reinforcement": round(max(0.0, (now - last_anchor) / 86400.0), 3),
             "rehearsal_count": int(row["rehearsal_count"] or 0),
             "retrieval_count": int(row["retrieval_count"] or 0),
