@@ -167,6 +167,7 @@ class SimulatorProofHarness:
         if not screenshot.is_file():
             raise RuntimeError(f"iOS simulator screenshot was not created: {screenshot}")
         _assert_screenshot_has_visual_content(screenshot)
+        _assert_deep_link_not_auth_gated("iOS", proof_dir / "ios-metro.stdout.log", deep_link)
         return str(screenshot)
 
     def _prepare_ios_native_project(self, app_dir: Path, timeout_seconds: int) -> None:
@@ -257,6 +258,7 @@ class SimulatorProofHarness:
         if not screenshot.is_file() or screenshot.stat().st_size == 0:
             raise RuntimeError(f"Android emulator screenshot was not created: {screenshot}")
         _assert_screenshot_has_visual_content(screenshot)
+        _assert_deep_link_not_auth_gated("Android", proof_dir / "android-metro.stdout.log", deep_link)
         return str(screenshot)
 
 
@@ -961,6 +963,46 @@ def _assert_android_not_expo_dev_client_launcher(
         or "java.lang." in normalized and "reload" in normalized and "go home" in normalized
     ):
         raise RuntimeError("Android proof captured Expo Dev Client error instead of real app UI.")
+
+
+def _assert_deep_link_not_auth_gated(platform: str, metro_stdout: Path, deep_link: str) -> None:
+    clean_deep_link = str(deep_link or "").strip()
+    if not clean_deep_link or _deep_link_targets_auth_surface(clean_deep_link):
+        return
+    try:
+        log_text = metro_stdout.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    normalized = " ".join(log_text.lower().split())
+    if not normalized:
+        return
+    auth_markers = (
+        "not logged in",
+        "no session found",
+        "initial_session none",
+    )
+    auth_destination_markers = (
+        "→ onboarding",
+        "-> onboarding",
+        "screen.load /onboarding",
+        '"screen": "/onboarding"',
+        "screen.load /login",
+        '"screen": "/login"',
+        "enter your mobile number",
+    )
+    if any(marker in normalized for marker in auth_markers) and any(
+        marker in normalized for marker in auth_destination_markers
+    ):
+        raise RuntimeError(
+            f"{platform} proof deep link landed on onboarding/login instead of the target screen. "
+            "Configure seeded simulator auth or a test login before treating this proof as complete. "
+            f"deep_link={clean_deep_link}"
+        )
+
+
+def _deep_link_targets_auth_surface(deep_link: str) -> bool:
+    normalized = deep_link.lower()
+    return "onboarding" in normalized or "login" in normalized or "auth" in normalized
 
 
 def _terminate_process(proc: subprocess.Popen[str]) -> None:

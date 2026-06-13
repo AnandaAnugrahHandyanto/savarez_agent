@@ -274,6 +274,44 @@ def test_simulator_proof_ios_preserves_installed_app_by_default(monkeypatch, tmp
     assert uninstall_calls == []
 
 
+def test_simulator_proof_ios_rejects_auth_gated_deep_link(tmp_path):
+    proof_dir = tmp_path / "proof"
+    worktree = _worktree(tmp_path / "app")
+
+    def run_text(args, cwd, timeout):
+        if args[:4] == ("xcrun", "simctl", "io", "SIM-123"):
+            Path(args[-1]).write_bytes(_png_bytes())
+        return "ok"
+
+    def run_ios_until_ready(_args, _cwd, _timeout, _target, _bundle_id, _dev_client_url, log_dir, while_ready):
+        assert log_dir is not None
+        (log_dir / "ios-metro.stdout.log").write_text(
+            "\n".join(
+                [
+                    "iOS Bundled 2634ms apps/elixir-card/index.ts (12563 modules)",
+                    "DEBUG  [startupPipeline] Not logged in → Onboarding",
+                    'LOG  [APP-PERF-METRIC] ui.load | screen.load /Onboarding | 32ms | ok {"screen": "/Onboarding"}',
+                ]
+            ),
+            encoding="utf-8",
+        )
+        while_ready()
+
+    harness = SimulatorProofHarness(run_text=run_text, run_ios_until_ready=run_ios_until_ready)
+
+    with pytest.raises(RuntimeError, match="iOS proof deep link landed on onboarding"):
+        harness.run(
+            worktree=worktree,
+            proof_dir=proof_dir,
+            platforms=("ios",),
+            dev_client_scheme="elixir-card",
+            ios_simulator_udid="SIM-123",
+            ios_bundle_id="com.elixir.card",
+            deep_link="elixir-card://gymMembership/screens/GymPdpScreen?programSlug=fitness-first",
+            timeout_seconds=90,
+        )
+
+
 def test_simulator_proof_ios_temporarily_overrides_existing_fingerprint_config(tmp_path):
     proof_dir = tmp_path / "proof"
     worktree = _worktree(tmp_path / "app")
@@ -615,6 +653,59 @@ def test_simulator_proof_android_rejects_expo_dev_client_error_screen(monkeypatc
             dev_client_scheme="elixir-card",
             android_serial="emulator-5554",
             android_package="com.elixir.card.staging",
+            timeout_seconds=120,
+        )
+
+
+def test_simulator_proof_android_rejects_auth_gated_deep_link(tmp_path):
+    proof_dir = tmp_path / "proof"
+    worktree = _worktree(tmp_path / "app")
+
+    def run_text(args, cwd, timeout):
+        if args[-4:] == ("exec-out", "uiautomator", "dump", "/dev/tty"):
+            return "<hierarchy><node text=\"EARN 3-5% REWARDS ON EVERY SPEND\" /></hierarchy>"
+        return "ok"
+
+    def run_android_until_foreground(
+        _args,
+        _cwd,
+        _timeout,
+        _adb,
+        _package,
+        log_dir,
+        open_dev_client,
+        capture_foreground,
+        open_dev_client_before_foreground=False,
+    ):
+        assert log_dir is not None
+        (log_dir / "android-metro.stdout.log").write_text(
+            "\n".join(
+                [
+                    "Android Bundled 3102ms apps/elixir-card/index.ts (12568 modules)",
+                    "DEBUG  [startupPipeline] Not logged in → Onboarding",
+                    'LOG  [APP-PERF-METRIC] ui.load | screen.load /Onboarding | 111ms | ok {"screen": "/Onboarding"}',
+                ]
+            ),
+            encoding="utf-8",
+        )
+        open_dev_client()
+        capture_foreground()
+
+    harness = SimulatorProofHarness(
+        run_text=run_text,
+        run_bytes=lambda _args, _cwd, _timeout: _png_bytes(),
+        run_android_until_foreground=run_android_until_foreground,
+    )
+
+    with pytest.raises(RuntimeError, match="Android proof deep link landed on onboarding"):
+        harness.run(
+            worktree=worktree,
+            proof_dir=proof_dir,
+            platforms=("android",),
+            dev_client_scheme="elixir-card",
+            android_serial="emulator-5554",
+            android_package="com.elixir.card.staging",
+            deep_link="elixir-card://gymMembership/screens/GymPdpScreen?programSlug=fitness-first",
             timeout_seconds=120,
         )
 
