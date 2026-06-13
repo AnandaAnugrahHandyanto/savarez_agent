@@ -484,6 +484,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.reactions import ReactionEvent  # noqa: F401 -- forward-ref target for handle_reaction signature
 from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
@@ -3320,6 +3321,104 @@ class BasePlatformAdapter(ABC):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Hook called when background processing completes."""
+
+    # Bounded LRU of (channel_id, message_id) keys for messages Hermes itself
+    # sent.  Reaction signals only make sense for reactions on Hermes-authored
+    # messages, so we correlate against this set and drop reactions on user /
+    # third-party messages.  Bounded so a long-lived gateway can't grow it
+    # without limit.
+    _AUTHORED_MESSAGE_CAP = 4096
+
+    def record_authored_message(self, channel_id: Any, message_id: Any) -> None:
+        """Remember that Hermes sent ``message_id`` in ``channel_id``.
+
+        Adapters call this for every outbound message so :meth:`handle_reaction`
+        can tell a reaction on a Hermes message apart from a reaction on a user
+        or third-party message (issue #27438 / #27451).
+        """
+        if message_id is None or channel_id is None:
+            return
+        store = getattr(self, "_authored_message_keys", None)
+        if store is None:
+            from collections import OrderedDict
+            store = OrderedDict()
+            self._authored_message_keys = store
+        key = (str(channel_id), str(message_id))
+        store[key] = None
+        store.move_to_end(key)
+        while len(store) > self._AUTHORED_MESSAGE_CAP:
+            store.popitem(last=False)
+
+    def is_authored_message(self, channel_id: Any, message_id: Any) -> bool:
+        """True when ``message_id`` in ``channel_id`` was sent by Hermes."""
+        store = getattr(self, "_authored_message_keys", None)
+        if not store:
+            return False
+        return (str(channel_id), str(message_id)) in store
+
+    async def handle_reaction(self, reaction_event: "ReactionEvent") -> None:
+        """Default sink for incoming emoji-reaction events (issue #27438).
+
+        Adapters that capture reactions (Telegram MessageReactionHandler,
+        Discord ``on_raw_reaction_add``, Slack ``reaction_added``) build a
+        :class:`gateway.reactions.ReactionEvent` and dispatch through this
+        method.  The default implementation:
+
+        1. Honours the master ``reaction_signals.enabled`` config.yaml flag
+           (overridable via ``HERMES_REACTION_SIGNALS_ENABLED``) -- when
+           disabled, this is a no-op so accidentally-registered handlers
+           can't pollute reactions.db.
+        2. Drops reactions on messages Hermes did not author (a reaction on a
+           user's own message is not feedback about Hermes), correlating
+           against the bounded :meth:`record_authored_message` set.
+        3. Persists the event via :func:`gateway.reaction_store.get_reaction_store`.
+        4. Fires :meth:`on_reaction` so subclasses (and future consumers --
+           memory weighting, skill confidence) can subscribe without
+           having to know about the storage layer.
+
+        All failures are logged and swallowed -- a reaction handler bug
+        must never break the main message flow.
+        """
+        try:
+            from gateway.reactions import ReactionConfig
+            from gateway.reaction_store import get_reaction_store
+        except Exception as exc:
+            logger.debug("[%s] reaction subsystem unavailable: %s", self.name, exc)
+            return
+
+        cfg = ReactionConfig.from_env()
+        if not cfg.enabled:
+            return
+
+        # Only record reactions on Hermes-authored messages.  Reactions on a
+        # user's own message (or another bot's) are not reinforcement about
+        # Hermes and would pollute the signal.
+        if not self.is_authored_message(
+            reaction_event.channel_id, reaction_event.target_message_id
+        ):
+            logger.debug(
+                "[%s] dropping reaction on non-Hermes message %s in %s",
+                self.name,
+                reaction_event.target_message_id,
+                reaction_event.channel_id,
+            )
+            return
+
+        try:
+            get_reaction_store().record(reaction_event)
+        except Exception as exc:
+            logger.warning("[%s] failed to persist reaction event: %s", self.name, exc)
+
+        await self._run_processing_hook("on_reaction", reaction_event)
+
+    async def on_reaction(self, reaction_event: "ReactionEvent") -> None:
+        """Subclass extension point fired after a reaction has been stored.
+
+        Default no-op.  Override to drive memory weighting, skill
+        confidence scoring, response-style tuning, etc.  Exceptions
+        raised here are caught by :meth:`_run_processing_hook` and never
+        affect the writer path.
+        """
 
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""

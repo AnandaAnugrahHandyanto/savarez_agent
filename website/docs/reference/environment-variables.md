@@ -585,6 +585,24 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_CRON_SCRIPT_TIMEOUT` | Timeout for pre-run scripts attached to cron jobs in seconds (default: `120`). Override for scripts that need longer execution (e.g., randomized delays for anti-bot timing). Also configurable via `cron.script_timeout_seconds` in `config.yaml`. |
 | `HERMES_CRON_MAX_PARALLEL` | Max cron jobs run in parallel per tick (default: `4`). |
 
+## Emoji Reaction Reinforcement
+
+Emoji Reaction Reinforcement is configured in `config.yaml` under the
+`reaction_signals:` block — these are non-secret behavioural settings, so
+they live in `config.yaml`, not environment variables. See
+[Reaction Reinforcement](../user-guide/reaction-reinforcement.md) for the
+user guide. (This is distinct from the `*_REACTIONS` lifecycle variables
+above, which control the outgoing `👀/✅/❌` markers on the user's trigger
+message.)
+
+```yaml
+reaction_signals:
+  enabled: false           # master switch; strictly opt-in (default false)
+  min_signal_threshold: 0.5  # aggregated weight below which a message has "no clear signal"
+  decay_days: 30           # retention before prune_older_than() is eligible
+  include_unknown: false   # record emoji outside the built-in weight table at neutral weight
+```
+
 ## Agent Behavior
 
 | Variable | Description |
