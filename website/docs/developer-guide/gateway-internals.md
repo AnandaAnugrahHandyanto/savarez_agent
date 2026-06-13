@@ -15,6 +15,7 @@ The messaging gateway is the long-running process that connects Hermes to 20+ ex
 | `gateway/run.py` | `GatewayRunner` — main loop, slash commands, message dispatch (large file; check git for current LOC) |
 | `gateway/session.py` | `SessionStore` — conversation persistence and session key construction |
 | `gateway/delivery.py` | Outbound message delivery to target platforms/channels |
+| `gateway/voice_sessions.py` | Platform-neutral live voice session lifecycle, provider selection, interruption, and guardrails |
 | `gateway/pairing.py` | DM pairing flow for user authorization |
 | `gateway/channel_directory.py` | Maps chat IDs to human-readable names for cron delivery |
 | `gateway/hooks.py` | Hook discovery, loading, and lifecycle event dispatch |
@@ -175,6 +176,24 @@ Adapters implement a common interface:
 - `connect()` / `disconnect()` — lifecycle management
 - `send_message()` — outbound message delivery
 - `on_message()` — inbound message normalization → `MessageEvent`
+
+## Live Voice Sessions
+
+Discord `/voice live` is wired as a gateway-managed live voice session rather than a separate agent loop. The Discord adapter still owns joining/leaving voice channels, decrypting RTP, decoding Discord-native 48 kHz stereo PCM frames, and playing TTS audio. `GatewayRunner` owns the `VoiceSessionManager`, authorization, config loading from `voice.live`, and cleanup on `/voice leave`, timeout, disconnect, or guardrail failure.
+
+The MVP provider stack is intentionally conservative:
+
+- `pipeline` is the default provider and reuses the existing STT → Hermes text agent → TTS path.
+- `openai_realtime` is a readiness gate: it checks for `OPENAI_API_KEY` or `VOICE_TOOLS_OPENAI_KEY`, marks the session degraded, and falls back to `pipeline` until the websocket event adapter is implemented.
+- Raw audio is not persisted by default; decoded frames are used for state, barge-in, and budget accounting.
+
+Important contracts for future realtime providers:
+
+1. Keep provider-specific websocket/event code behind `RealtimeVoiceProvider`; do not put provider protocol details in the Discord adapter.
+2. Preserve `VoiceSessionManager` as the single owner of session conflict checks, auth checks, duration/input/event guardrails, and session snapshots.
+3. Barge-in must call the runner playback stopper before provider cancellation so Discord audio stops even if a provider call hangs or fails.
+4. Network/provider failures should close or degrade the live session with a user-visible reason rather than leaving the bot connected with a dead audio path.
+5. Do not persist raw audio unless `voice.live.allow_raw_audio_persistence` is explicitly enabled by config and documented for the provider.
 
 ### Token Locks
 
