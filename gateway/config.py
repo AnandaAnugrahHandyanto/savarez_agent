@@ -941,6 +941,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]
                 if "reply_in_thread" in platform_cfg:
                     bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
+                if plat == Platform.SLACK and "thread_title_prefix" in platform_cfg:
+                    bridged["thread_title_prefix"] = platform_cfg["thread_title_prefix"]
                 if "require_mention" in platform_cfg:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if plat == Platform.TELEGRAM and "allowed_chats" in platform_cfg:
@@ -975,6 +977,12 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_user_allowed_commands"] = platform_cfg["group_user_allowed_commands"]
                 if plat in {Platform.DISCORD, Platform.SLACK} and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
+                if plat == Platform.SLACK and "slash_forwards" in platform_cfg:
+                    bridged["slash_forwards"] = platform_cfg["slash_forwards"]
+                if plat == Platform.SLACK and "event_forwards" in platform_cfg:
+                    bridged["event_forwards"] = platform_cfg["event_forwards"]
+                if plat == Platform.SLACK and "action_forwards" in platform_cfg:
+                    bridged["action_forwards"] = platform_cfg["action_forwards"]
                 if "channel_prompts" in platform_cfg:
                     channel_prompts = platform_cfg["channel_prompts"]
                     if isinstance(channel_prompts, dict):

@@ -128,6 +128,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",),
                args_hint="[auto|codex_app_server]"),
+    CommandDef("hugo-lead", "Legacy global switch; prefer hermes-hugo for a fixed Wave pane",
+               "Configuration"),
+    CommandDef("clara-lead", "Legacy global switch; prefer hermes-clara for a fixed Wave pane",
+               "Configuration"),
     CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
                cli_only=True),
 
@@ -1031,6 +1035,10 @@ _SLACK_RESERVED_COMMANDS = frozenset({
     "topic", "mute", "pro", "shortcuts",
 })
 
+# Default skill slashes to promote into the Slack app manifest when installed.
+# Operators can override this via platforms.slack.native_skill_slashes.
+_SLACK_PRIORITY_SKILL_COMMANDS = ("auto",)
+
 # High-value aliases that must survive Slack's 50-slash cap even when the
 # registry fills up. Without this, adding a new canonical command silently
 # clamps off low-priority aliases (they're added in the second pass), so a
@@ -1053,7 +1061,10 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 # the telegram-parity test reads it so an entry here is a deliberate
 # "Slack-via-/hermes" decision, not a silent clamp.
 #   - credits: the billing/top-up surface; reached via /hermes credits on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits"})
+#   - debug/update/version: low-frequency diagnostics/update helpers; reached via
+#     /hermes on Slack so the configured native skill slash slot (e.g. /auto)
+#     can stay pinned without silent clamp drift.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "debug", "update", "version"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -1068,6 +1079,85 @@ def _sanitize_slack_name(raw: str) -> str:
     return name[:_SLACK_NAME_LIMIT]
 
 
+def _configured_slack_native_skill_slashes() -> list[tuple[str, str, str]]:
+    """Return configured skill commands to expose as native Slack slashes.
+
+    Slack only sends native slash events for commands declared in the app
+    manifest. To avoid registering every installed skill, operators may opt in
+    a small allowlist::
+
+        platforms:
+          slack:
+            native_skill_slashes:
+              - auto
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+    except Exception:
+        return []
+
+    value: Any = None
+    if isinstance(cfg, dict):
+        platforms = cfg.get("platforms")
+        if isinstance(platforms, dict):
+            slack_cfg = platforms.get("slack")
+            if isinstance(slack_cfg, dict):
+                value = slack_cfg.get("native_skill_slashes")
+        # Backward-compatible/top-level escape hatch for simple configs.
+        if value is None:
+            slack_cfg = cfg.get("slack")
+            if isinstance(slack_cfg, dict):
+                value = slack_cfg.get("native_skill_slashes")
+
+    if isinstance(value, str):
+        raw_value = value.strip()
+        if raw_value.startswith("["):
+            try:
+                import json
+
+                parsed = json.loads(raw_value)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                requested = [str(part).strip() for part in parsed if str(part).strip()]
+            else:
+                requested = [part.strip() for part in raw_value.split(",") if part.strip()]
+        else:
+            requested = [part.strip() for part in raw_value.split(",") if part.strip()]
+    elif isinstance(value, (list, tuple, set)):
+        requested = [str(part).strip() for part in value if str(part).strip()]
+    else:
+        requested = list(_SLACK_PRIORITY_SKILL_COMMANDS)
+
+    try:
+        from agent.skill_commands import get_skill_commands, resolve_skill_command_key
+
+        skill_cmds = get_skill_commands()
+    except Exception:
+        return []
+
+    entries: list[tuple[str, str, str]] = []
+    for raw_name in requested:
+        lookup = raw_name.strip().lstrip("/")
+        if not lookup:
+            continue
+        slack_name = _sanitize_slack_name(lookup.replace("_", "-"))
+        # Never let a skill shadow a built-in/gateway command or Slack built-in.
+        if not slack_name or slack_name in _SLACK_RESERVED_COMMANDS or resolve_command(slack_name):
+            continue
+        try:
+            cmd_key = resolve_skill_command_key(lookup)
+        except Exception:
+            cmd_key = None
+        if cmd_key is None or cmd_key not in skill_cmds:
+            continue
+        info = skill_cmds[cmd_key]
+        description = str(info.get("description") or f"Load the {lookup} skill")
+        entries.append((slack_name, description, "[prompt]"))
+    return entries
+
+
 def slack_native_slashes() -> list[tuple[str, str, str]]:
     """Return (slash_name, description, usage_hint) triples for Slack.
 
@@ -1078,10 +1168,12 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
 
     Both canonical names and aliases are included so users can type any
     documented form (e.g. ``/background``, ``/bg``, and ``/btw`` all work).
-    Plugin-registered slash commands are included too.
+    Plugin-registered slash commands are included too. A small allowlist of
+    skill commands may be promoted via
+    ``platforms.slack.native_skill_slashes`` (for example ``auto``).
 
     Commands whose sanitized name collides with a Slack built-in
-    (e.g. ``/status``, ``/me``, ``/join``) are silently skipped.  Users
+    (e.g. ``/status``, ``/me``, ``/join``) are silently skipped. Users
     can still reach them via ``/hermes <command>``.
 
     Results are clamped to Slack's 50-command limit with duplicate-name
@@ -1127,13 +1219,19 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         if cmd is not None:
             _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
 
+    # Skill pass: explicitly configured skill slashes. These are operator
+    # selected and should survive the 50-command cap ahead of lower-priority
+    # aliases/plugins.
+    for name, description, args_hint in _configured_slack_native_skill_slashes():
+        _add(name, description, args_hint)
+
     # First pass: canonical names (so they win slots if we hit the cap).
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
         _add(cmd.name, cmd.description, cmd.args_hint or "")
 
-    # Second pass: aliases.
+    # Third pass: aliases.
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
@@ -1142,12 +1240,11 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
             # normalization (already covered by _add dedup).
             _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
 
-    # Third pass: plugin commands.
+    # Fourth pass: plugin commands.
     for name, description, args_hint in _iter_plugin_command_entries():
         _add(name, description, args_hint or "")
 
     return entries
-
 
 def slack_app_manifest(request_url: str = "https://hermes-agent.local/slack/commands") -> dict[str, Any]:
     """Generate a Slack app manifest with all gateway commands as slashes.
@@ -1194,6 +1291,9 @@ def slack_subcommand_map() -> dict[str, str]:
         for alias in cmd.aliases:
             mapping[alias] = f"/{alias}"
     for name, _description, _args_hint in _iter_plugin_command_entries():
+        if name not in mapping:
+            mapping[name] = f"/{name}"
+    for name, _description, _args_hint in _configured_slack_native_skill_slashes():
         if name not in mapping:
             mapping[name] = f"/{name}"
     return mapping
@@ -1833,7 +1933,7 @@ class SlashCommandCompleter(Completer):
                 description = str(info.get("description", "Skill command"))
                 short_desc = description[:50] + ("..." if len(description) > 50 else "")
                 yield Completion(
-                    self._completion_text(cmd_name, word),
+                    f"{cmd_name} ",
                     start_position=-len(word),
                     display=cmd,
                     display_meta=f"⚡ {short_desc}",
