@@ -114,6 +114,18 @@ class TestLoadMCPConfig:
         result = _load_mcp_config()
         assert result["demo"]["command"] == "new"
 
+    def test_safe_mode_short_circuits_before_config_loading(self):
+        """Safe mode should skip loading MCP config entirely."""
+        with patch("hermes_cli.env_loader.load_hermes_dotenv"), patch(
+            "utils.env_var_enabled", return_value=True
+        ), patch(
+            "hermes_cli.config.load_config",
+            side_effect=AssertionError("load_config should not be called"),
+        ):
+            from tools.mcp_tool import _load_mcp_config
+
+            assert _load_mcp_config() == {}
+
 
 class TestMCPStatus:
     def test_status_distinguishes_configured_connecting_failed_and_disabled(
