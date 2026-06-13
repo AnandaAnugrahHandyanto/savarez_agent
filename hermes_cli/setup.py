@@ -56,7 +56,7 @@ def _set_credential_pool_strategy(config: Dict[str, Any], provider: str, strateg
 
 
 def _supports_same_provider_pool_setup(provider: str) -> bool:
-    if not provider or provider == "custom":
+    if not provider or provider in {"custom", "custom_dynamic"}:
         return False
     if provider == "openrouter":
         return True

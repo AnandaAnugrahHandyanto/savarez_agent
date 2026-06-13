@@ -861,7 +861,7 @@ def switch_model(
 
         # --- Step e: detect_provider_for_model() as last resort ---
         _base = current_base_url or ""
-        is_custom = current_provider in {"custom", "local"} or (
+        is_custom = current_provider in {"custom", "custom_dynamic", "local"} or (
             "localhost" in _base or "127.0.0.1" in _base
         )
 
@@ -1802,6 +1802,12 @@ def list_authenticated_providers(
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
 
+            # Read optional kind: "static" | "dynamic". When unset, the
+            # existing _user_curated_models heuristic decides whether to
+            # probe (preserves pre-kind behaviour for old configs).
+            entry_kind_raw = str(entry.get("kind") or "").strip().lower()
+            entry_kind = entry_kind_raw if entry_kind_raw in {"static", "dynamic"} else ""
+
             group_key = (api_url, credential_identity, api_mode)
             if group_key not in groups:
                 # Strip per-model suffix so "Ollama — GLM 5.1" becomes
@@ -1815,7 +1821,7 @@ def list_authenticated_providers(
                         break
                 if not display_name:
                     display_name = raw_name
-                slug = custom_provider_slug(display_name)
+                slug = custom_provider_slug(display_name, kind=entry_kind)
                 groups[group_key] = {
                     "slug": slug,
                     "name": display_name,
@@ -1823,6 +1829,9 @@ def list_authenticated_providers(
                     "api_key": api_key,
                     "models": [],
                     "discover_models": discover,
+                    # Tri-state: "dynamic" / "static" / "" (no explicit kind →
+                    # fall back to existing heuristic at probe time).
+                    "kind": entry_kind,
                     # Narrowing-intent signal. True when EITHER an entry
                     # contributed an explicit ``models:`` list, OR multiple
                     # entries collectively pin a subset via singular
@@ -1842,6 +1851,18 @@ def list_authenticated_providers(
                 # honour that for the whole grouped row.
                 if not discover:
                     groups[group_key]["discover_models"] = False
+                # First explicit kind wins for the grouped row; mixed entries
+                # without/with kind keep whatever the first kind-bearing entry
+                # declared. Absent kind everywhere → "" → heuristic fallback.
+                if entry_kind and not groups[group_key].get("kind"):
+                    groups[group_key]["kind"] = entry_kind
+                    # When any entry in the group declares kind: dynamic, the
+                    # slug should reflect the dynamic provider id so the
+                    # picker and dashboard distinguish it.
+                    if entry_kind == "dynamic":
+                        groups[group_key]["slug"] = custom_provider_slug(
+                            groups[group_key]["name"], kind="dynamic"
+                        )
 
             # The singular ``model:`` field only holds the currently
             # active model. Hermes's own writer (main.py::_save_custom_provider)
@@ -1956,11 +1977,25 @@ def list_authenticated_providers(
             # catalogue. The ollama.com narrowing cases (users explicitly
             # listing a subset via ``models:`` OR via multiple singular
             # entries) are preserved by the flag.
-            should_probe = (
-                bool(api_url)
-                and (bool(api_key) or not grp.get("_user_curated_models"))
-                and grp.get("discover_models", True)
-            )
+            # Three-way kind branching (see config.yaml schema docs):
+            #   - kind == "dynamic": always probe live /models (llama-swap,
+            #     local Ollama, Bifrost — endpoint is source of truth)
+            #   - kind == "static":  never probe (ollama.com narrowing — config
+            #     is source of truth)
+            #   - kind == "" (no explicit kind): fall back to the existing
+            #     _user_curated_models heuristic for backwards compat with
+            #     entries written by pre-`kind` Hermes versions.
+            _grp_kind = str(grp.get("kind") or "").strip().lower()
+            if _grp_kind == "dynamic":
+                should_probe = bool(api_url) and grp.get("discover_models", True)
+            elif _grp_kind == "static":
+                should_probe = False
+            else:
+                should_probe = (
+                    bool(api_url)
+                    and (bool(api_key) or not grp.get("_user_curated_models"))
+                    and grp.get("discover_models", True)
+                )
             if should_probe:
                 try:
                     from hermes_cli.models import fetch_api_models
@@ -1971,11 +2006,11 @@ def list_authenticated_providers(
                         grp["total_models"] = len(live_models)
                 except Exception:
                     pass
-            results.append({
+            _row = {
                 "slug": slug,
                 "name": grp["name"],
                 "is_current": slug == current_provider or (
-                    current_provider == "custom"
+                    current_provider in {"custom", "custom_dynamic"}
                     and bool(_current_base_url_norm)
                     and _grp_url_norm == _current_base_url_norm
                     and _current_base_url_group_count == 1
@@ -1985,7 +2020,10 @@ def list_authenticated_providers(
                 "total_models": len(grp["models"]),
                 "source": "user-config",
                 "api_url": grp["api_url"],
-            })
+            }
+            if _grp_kind in {"static", "dynamic"}:
+                _row["kind"] = _grp_kind
+            results.append(_row)
             seen_slugs.add(slug.lower())
             _section4_emitted_slugs.add(slug.lower())
 

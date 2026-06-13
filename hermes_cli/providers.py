@@ -582,14 +582,16 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
     )
 
 
-def custom_provider_slug(display_name: str) -> str:
+def custom_provider_slug(display_name: str, kind: str = "") -> str:
     """Build a canonical slug for a custom_providers entry.
 
     Matches the convention used by runtime_provider and credential_pool
-    (``custom:<normalized-name>``).  Centralised here so all call-sites
-    produce identical slugs.
+    (``custom:<normalized-name>`` or ``custom_dynamic:<normalized-name>``
+    when the entry has ``kind: dynamic``). Centralised here so all
+    call-sites produce identical slugs.
     """
-    return "custom:" + display_name.strip().lower().replace(" ", "-")
+    prefix = "custom_dynamic:" if (kind or "").strip().lower() == "dynamic" else "custom:"
+    return prefix + display_name.strip().lower().replace(" ", "-")
 
 
 def resolve_custom_provider(
@@ -628,8 +630,14 @@ def resolve_custom_provider(
         if first_valid is None:
             first_valid = (display_name, api_url)
 
-        slug = custom_provider_slug(display_name)
-        if requested not in {display_name.lower(), slug}:
+        kind = str(entry.get("kind") or "").strip().lower()
+        slug = custom_provider_slug(display_name, kind=kind)
+        # Accept either prefix form so callers that hard-code custom:<name>
+        # against a kind=dynamic entry still resolve, and vice versa.
+        alt_slug = custom_provider_slug(
+            display_name, kind="dynamic" if kind != "dynamic" else "static"
+        )
+        if requested not in {display_name.lower(), slug, alt_slug}:
             continue
 
         return ProviderDef(

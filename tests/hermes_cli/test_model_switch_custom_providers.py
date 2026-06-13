@@ -802,3 +802,138 @@ def test_custom_providers_multi_entry_singular_model_preserves_narrowing(monkeyp
         "Multiple singular-`model:` entries narrowing the same endpoint must NOT probe"
     )
     assert row["total_models"] == 4
+
+
+# ---------------------------------------------------------------------------
+# kind: static | dynamic | absent — three-way probe branching
+# ---------------------------------------------------------------------------
+
+
+def test_kind_dynamic_always_probes(monkeypatch):
+    """An entry with ``kind: dynamic`` MUST trigger live /models discovery
+    regardless of whether an api_key is set or whether the entry already
+    pins a singular ``model:``. The dynamic provider id is exposed as
+    `custom_dynamic:<name>`."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url):
+        calls.append((api_key, base_url))
+        return ["live-a", "live-b", "live-c"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    custom_providers = [
+        {
+            "name": "Hanyu-b760.local:8081",
+            "base_url": "http://hanyu-b760.local:8081/v1",
+            "model": "pinned-default",
+            "kind": "dynamic",
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    row = next((p for p in providers if p["name"] == "Hanyu-b760.local:8081"), None)
+    assert row is not None
+    assert calls == [("", "http://hanyu-b760.local:8081/v1")], (
+        "kind: dynamic must trigger live discovery unconditionally"
+    )
+    assert row["slug"].startswith("custom_dynamic:"), (
+        "dynamic entries must surface as custom_dynamic:<name> in the picker"
+    )
+    assert row["kind"] == "dynamic"
+    assert row["total_models"] == 3
+
+
+def test_kind_static_never_probes(monkeypatch):
+    """An entry with ``kind: static`` MUST skip live /models discovery
+    even when an api_key is present (which would normally trigger probing
+    in the heuristic path)."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url):
+        calls.append((api_key, base_url))
+        return ["should-not-appear"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    custom_providers = [
+        {
+            "name": "static-gateway",
+            "api_key": "sk-secret",
+            "base_url": "https://gateway.example.com/v1",
+            "model": "pinned-only",
+            "kind": "static",
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    row = next((p for p in providers if p["name"] == "static-gateway"), None)
+    assert row is not None
+    assert calls == [], "kind: static must bypass live discovery"
+    assert row["slug"].startswith("custom:"), (
+        "static entries keep the existing custom:<name> slug"
+    )
+    assert row["kind"] == "static"
+    assert row["models"] == ["pinned-only"]
+
+
+def test_no_kind_falls_back_to_heuristic(monkeypatch):
+    """An entry WITHOUT a ``kind:`` field must fall back to the existing
+    _user_curated_models heuristic — this is the backwards-compat path
+    that protects entries written by pre-`kind` Hermes versions. Here we
+    repeat the lone-entry singular-`model:` scenario without `kind:` and
+    verify it still probes (same behaviour as today)."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url):
+        calls.append((api_key, base_url))
+        return ["live-x", "live-y"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    custom_providers = [
+        # No `kind:` — exact pre-existing shape `hermes setup` used to write.
+        {
+            "name": "legacy-endpoint",
+            "base_url": "http://legacy.example.com:8081/v1",
+            "model": "default-only",
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    row = next((p for p in providers if p["name"] == "legacy-endpoint"), None)
+    assert row is not None
+    # Heuristic: lone-entry singular `model:` without api_key → probe.
+    assert calls == [("", "http://legacy.example.com:8081/v1")], (
+        "absent kind must defer to the existing _user_curated_models heuristic"
+    )
+    # Absent kind → no `kind` field in the row payload, slug stays `custom:`.
+    assert "kind" not in row
+    assert row["slug"].startswith("custom:")
