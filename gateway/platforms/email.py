@@ -552,6 +552,8 @@ class EmailAdapter(BasePlatformAdapter):
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
+        # RFC 3834: mark replies as automatic so autoresponders don't answer back
+        msg["Auto-Submitted"] = "auto-replied"
 
         msg.attach(MIMEText(body, "plain", "utf-8"))
 
@@ -661,6 +663,8 @@ class EmailAdapter(BasePlatformAdapter):
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
+        # RFC 3834: mark replies as automatic so autoresponders don't answer back
+        msg["Auto-Submitted"] = "auto-replied"
 
         if body:
             msg.attach(MIMEText(body, "plain", "utf-8"))
@@ -742,6 +746,8 @@ class EmailAdapter(BasePlatformAdapter):
         msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
+        # RFC 3834: mark replies as automatic so autoresponders don't answer back
+        msg["Auto-Submitted"] = "auto-replied"
 
         if body:
             msg.attach(MIMEText(body, "plain", "utf-8"))
