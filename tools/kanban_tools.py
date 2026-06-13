@@ -288,6 +288,92 @@ def _parse_bool_arg(args: dict, name: str, *, default: bool = False):
     return default, f"{name} must be a boolean or 'true'/'false'"
 
 
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _strict_completion_evidence_error(
+    *,
+    summary: Optional[str],
+    result: Optional[str],
+    metadata: Any,
+    artifacts: Optional[list[str]],
+) -> Optional[str]:
+    """Return a human/actionable error when strict worker handoff is incomplete.
+
+    This gate is enabled by dispatcher-spawned workers via
+    ``HERMES_KANBAN_REQUIRE_COMPLETION_EVIDENCE``. It keeps legacy/manual
+    completions compatible while forcing autonomous workers to leave enough
+    evidence for humans and downstream agents to trust a DONE state.
+    """
+    if not _env_truthy("HERMES_KANBAN_REQUIRE_COMPLETION_EVIDENCE"):
+        return None
+    if not isinstance(metadata, dict):
+        return (
+            "strict completion evidence requires metadata with changed_files, "
+            "validation, and workspace_root when a workspace is assigned; "
+            "no state change."
+        )
+
+    validation = metadata.get("validation")
+    if not isinstance(validation, list) or not validation:
+        return (
+            "strict completion evidence requires metadata.validation as a "
+            "non-empty list of {command, status, summary}; no state change."
+        )
+    valid_statuses = {"PASS", "FAIL", "BLOCKED", "NOT_RUN"}
+    has_pass = False
+    for idx, item in enumerate(validation):
+        if not isinstance(item, dict):
+            return f"metadata.validation[{idx}] must be an object; no state change."
+        command = str(item.get("command", "")).strip()
+        status = str(item.get("status", "")).strip().upper()
+        if not command:
+            return f"metadata.validation[{idx}].command is required; no state change."
+        if status not in valid_statuses:
+            return (
+                f"metadata.validation[{idx}].status must be one of "
+                f"{sorted(valid_statuses)}; no state change."
+            )
+        has_pass = has_pass or status == "PASS"
+    if not has_pass:
+        return (
+            "strict completion evidence requires at least one PASS validation "
+            "entry before kanban_complete can mark DONE; use kanban_block for "
+            "blocked work; no state change."
+        )
+
+    changed_files = metadata.get("changed_files")
+    if not isinstance(changed_files, list):
+        return "metadata.changed_files must be a list, even if empty; no state change."
+
+    workspace = os.environ.get("HERMES_KANBAN_WORKSPACE", "").strip()
+    if workspace:
+        claimed = str(metadata.get("workspace_root", "")).strip()
+        if claimed != workspace:
+            return (
+                f"metadata.workspace_root must match assigned workspace_root "
+                f"{workspace!r}, got {claimed!r}; no state change."
+            )
+
+    text = " ".join(str(x or "") for x in (summary, result)).lower()
+    artifact_claim_keywords = ("screenshot", "screen shot", "build", "built", "vm", "iso", "boot")
+    if any(word in text for word in artifact_claim_keywords):
+        md_artifacts = metadata.get("artifacts")
+        combined_artifacts: list[str] = []
+        if isinstance(artifacts, list):
+            combined_artifacts.extend(str(p).strip() for p in artifacts if str(p).strip())
+        if isinstance(md_artifacts, list):
+            combined_artifacts.extend(str(p).strip() for p in md_artifacts if str(p).strip())
+        if not combined_artifacts:
+            return (
+                "summary/result claims screenshot/build/VM/ISO/boot evidence but "
+                "no artifact paths were provided; pass artifacts=[...] or "
+                "metadata.artifacts; no state change."
+            )
+    return None
+
+
 def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     """Belt-and-suspenders runtime guard for orchestrator-only handlers.
 
@@ -548,6 +634,14 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(
             f"metadata must be an object/dict, got {type(metadata).__name__}"
         )
+    evidence_error = _strict_completion_evidence_error(
+        summary=summary,
+        result=result,
+        metadata=metadata,
+        artifacts=artifacts,
+    )
+    if evidence_error:
+        return tool_error(f"kanban_complete blocked: {evidence_error}")
     metadata = _stamp_worker_session_metadata(tid, metadata)
     board = args.get("board")
     try:
@@ -955,8 +1049,13 @@ KANBAN_COMPLETE_SCHEMA = {
         "Mark your current task done with a structured handoff for "
         "downstream workers and humans. Prefer ``summary`` for a "
         "human-readable 1-3 sentence description of what you did; put "
-        "machine-readable facts in ``metadata`` (changed_files, "
-        "tests_run, decisions, findings, etc). At least one of "
+        "machine-readable evidence in ``metadata``. Dispatcher workers run "
+        "with strict evidence gates: metadata must include ``workspace_root`` "
+        "matching ``$HERMES_KANBAN_WORKSPACE``, ``changed_files`` as a list, "
+        "and ``validation`` as a non-empty list of {command, status, summary} "
+        "with at least one PASS. If you claim screenshot/build/VM/ISO/boot "
+        "evidence, also pass artifact paths via ``artifacts`` or "
+        "``metadata.artifacts``. At least one of "
         "``summary`` or ``result`` is required. If you created new "
         "tasks via ``kanban_create`` during this run, list their ids "
         "in ``created_cards`` — the kernel verifies them so phantom "

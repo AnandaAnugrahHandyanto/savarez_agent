@@ -2270,6 +2270,7 @@ class TestSharedBoardPaths:
             default_home / "kanban" / "workspaces"
         )
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
+        assert env["HERMES_KANBAN_REQUIRE_COMPLETION_EVIDENCE"] == "1"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
 
 

@@ -290,6 +290,85 @@ def test_list_rejects_bad_include_archived(monkeypatch, worker_env):
     assert "include_archived must be" in json.loads(out).get("error", "")
 
 
+def test_strict_complete_rejects_missing_validation_metadata(monkeypatch, worker_env):
+    monkeypatch.setenv("HERMES_KANBAN_REQUIRE_COMPLETION_EVIDENCE", "1")
+    from tools import kanban_tools as kt
+
+    out = kt._handle_complete({"summary": "fixed the bug"})
+    error = json.loads(out).get("error", "")
+
+    assert "validation" in error
+    assert "no state change" in error
+
+
+def test_strict_complete_rejects_workspace_root_drift(monkeypatch, worker_env):
+    workspace = "/tmp/assigned-workspace"
+    monkeypatch.setenv("HERMES_KANBAN_REQUIRE_COMPLETION_EVIDENCE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", workspace)
+    from tools import kanban_tools as kt
+
+    out = kt._handle_complete({
+        "summary": "fixed the bug",
+        "metadata": {
+            "workspace_root": "/tmp/other-workspace",
+            "changed_files": ["calc.py"],
+            "validation": [{
+                "command": "python -m unittest -q",
+                "status": "PASS",
+                "summary": "2 passed",
+            }],
+        },
+    })
+    error = json.loads(out).get("error", "")
+
+    assert "workspace_root" in error
+    assert workspace in error
+
+
+def test_strict_complete_rejects_artifact_claim_without_paths(monkeypatch, worker_env):
+    monkeypatch.setenv("HERMES_KANBAN_REQUIRE_COMPLETION_EVIDENCE", "1")
+    from tools import kanban_tools as kt
+
+    out = kt._handle_complete({
+        "summary": "Built the VM image and captured a screenshot",
+        "metadata": {
+            "changed_files": [],
+            "validation": [{
+                "command": "make iso",
+                "status": "PASS",
+                "summary": "build exited 0",
+            }],
+        },
+    })
+    error = json.loads(out).get("error", "")
+
+    assert "artifact" in error.lower()
+    assert "screenshot" in error.lower() or "build" in error.lower()
+
+
+def test_strict_complete_accepts_validation_workspace_and_artifacts(monkeypatch, worker_env):
+    workspace = "/tmp/assigned-workspace"
+    monkeypatch.setenv("HERMES_KANBAN_REQUIRE_COMPLETION_EVIDENCE", "1")
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", workspace)
+    from tools import kanban_tools as kt
+
+    out = kt._handle_complete({
+        "summary": "Built the VM image and captured a screenshot",
+        "metadata": {
+            "workspace_root": workspace,
+            "changed_files": ["scripts/build_iso.py"],
+            "validation": [{
+                "command": "make iso",
+                "status": "PASS",
+                "summary": "build exited 0",
+            }],
+        },
+        "artifacts": ["/tmp/synapseos.png"],
+    })
+
+    assert json.loads(out)["ok"] is True
+
+
 def test_complete_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_complete({
