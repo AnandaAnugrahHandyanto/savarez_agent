@@ -16730,8 +16730,33 @@ def _running_under_service_supervisor() -> bool:
     return comm in {"systemd", "(systemd)"}
 
 
-def _replace_force_env_set() -> bool:
-    """Return True when ``HERMES_GATEWAY_REPLACE_FORCE`` is set to a truthy value."""
+def _replace_force_enabled() -> bool:
+    """Return True when the supervised-replace guard should be bypassed.
+
+    The documented, user-facing surface is ``gateway.replace_force`` in
+    ``config.yaml`` (a non-secret behavioural setting — per the contribution
+    rubric it belongs in config.yaml, not a new ``HERMES_*`` env var). The
+    ``HERMES_GATEWAY_REPLACE_FORCE`` env var is retained ONLY as an internal /
+    automation escape hatch (e.g. a one-off ``HERMES_GATEWAY_REPLACE_FORCE=1
+    hermes gateway run --replace``); it is intentionally not advertised as a
+    configuration knob.
+    """
+    # config.yaml — the documented configuration surface.
+    try:
+        from hermes_constants import get_hermes_home
+        import yaml as _yaml
+        cfg_path = get_hermes_home() / "config.yaml"
+        if cfg_path.exists():
+            with open(cfg_path, encoding="utf-8") as fh:
+                cfg = _yaml.safe_load(fh) or {}
+            gw = cfg.get("gateway")
+            if isinstance(gw, dict) and bool(gw.get("replace_force", False)):
+                return True
+    except Exception:
+        # A malformed config must never wedge gateway startup — fall back to
+        # the internal env override below.
+        pass
+    # Internal / automation-only override (not user-facing config).
     return os.environ.get("HERMES_GATEWAY_REPLACE_FORCE", "").strip().lower() in {
         "1", "true", "yes", "on",
     }
@@ -16745,11 +16770,11 @@ def _should_skip_supervised_replace(existing_pid: int) -> bool:
       * this process was NOT itself launched by that supervisor (so the
         ``--replace`` invocation is coming from an unrelated caller such as
         ``hermes-web-ui``'s startup hook — see #27041), AND
-      * the ``HERMES_GATEWAY_REPLACE_FORCE`` escape hatch is not set.
+      * the ``gateway.replace_force`` override is not enabled.
     """
     if existing_pid <= 0:
         return False
-    if _replace_force_env_set():
+    if _replace_force_enabled():
         return False
     if not _existing_pid_is_service_supervised(existing_pid):
         return False
@@ -16806,13 +16831,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             # calls ``launchctl kickstart`` / ``systemctl restart``) are
             # unaffected — by the time the supervisor relaunches the
             # gateway, the old PID is already gone and ``existing_pid`` is
-            # ``None`` here.  Escape hatch: ``HERMES_GATEWAY_REPLACE_FORCE=1``.
+            # ``None`` here.  Override: set ``gateway.replace_force: true`` in
+            # config.yaml.
             if _should_skip_supervised_replace(existing_pid):
                 logger.warning(
                     "Existing gateway PID %d is supervised by launchd/systemd; "
                     "refusing to replace it from an unsupervised --replace call. "
                     "Use 'hermes gateway restart' to restart the service, or set "
-                    "HERMES_GATEWAY_REPLACE_FORCE=1 to override.",
+                    "gateway.replace_force: true in config.yaml to override.",
                     existing_pid,
                 )
                 print(

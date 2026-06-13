@@ -136,24 +136,52 @@ class TestRunningUnderServiceSupervisor:
 
 
 # ---------------------------------------------------------------------------
-# _replace_force_env_set
+# _replace_force_enabled — config.yaml-first, env var as internal fallback
 # ---------------------------------------------------------------------------
 
 
-class TestReplaceForceEnvSet:
+class TestReplaceForceEnabled:
     @pytest.mark.parametrize("value", ["1", "true", "TRUE", "Yes", "on", " on ", "  1  "])
-    def test_truthy_values_enable_force(self, monkeypatch, value):
+    def test_truthy_env_values_enable_force(self, monkeypatch, tmp_path, value):
+        # No config.yaml present → falls back to the internal env override.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("HERMES_GATEWAY_REPLACE_FORCE", value)
-        assert gateway_run._replace_force_env_set() is True
+        assert gateway_run._replace_force_enabled() is True
 
     @pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "maybe"])
-    def test_falsy_values_keep_force_disabled(self, monkeypatch, value):
+    def test_falsy_env_values_keep_force_disabled(self, monkeypatch, tmp_path, value):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("HERMES_GATEWAY_REPLACE_FORCE", value)
-        assert gateway_run._replace_force_env_set() is False
+        assert gateway_run._replace_force_enabled() is False
 
-    def test_unset_env_disables_force(self, monkeypatch):
+    def test_unset_disables_force(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("HERMES_GATEWAY_REPLACE_FORCE", raising=False)
-        assert gateway_run._replace_force_env_set() is False
+        assert gateway_run._replace_force_enabled() is False
+
+    def test_config_yaml_enables_force(self, monkeypatch, tmp_path):
+        """The documented surface: gateway.replace_force in config.yaml."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_GATEWAY_REPLACE_FORCE", raising=False)
+        (tmp_path / "config.yaml").write_text(
+            "gateway:\n  replace_force: true\n", encoding="utf-8"
+        )
+        assert gateway_run._replace_force_enabled() is True
+
+    def test_config_yaml_false_keeps_force_disabled(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_GATEWAY_REPLACE_FORCE", raising=False)
+        (tmp_path / "config.yaml").write_text(
+            "gateway:\n  replace_force: false\n", encoding="utf-8"
+        )
+        assert gateway_run._replace_force_enabled() is False
+
+    def test_malformed_config_does_not_wedge(self, monkeypatch, tmp_path):
+        """A broken config.yaml must never block startup — fall back to env."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_GATEWAY_REPLACE_FORCE", raising=False)
+        (tmp_path / "config.yaml").write_text("gateway: [oops\n", encoding="utf-8")
+        assert gateway_run._replace_force_enabled() is False
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +197,7 @@ class TestShouldSkipSupervisedReplace:
         monkeypatch.setattr(
             gateway_run, "_running_under_service_supervisor", lambda: False
         )
-        monkeypatch.setattr(gateway_run, "_replace_force_env_set", lambda: False)
+        monkeypatch.setattr(gateway_run, "_replace_force_enabled", lambda: False)
         assert gateway_run._should_skip_supervised_replace(1234) is True
 
     def test_allows_replace_when_caller_is_supervisor(self, monkeypatch):
@@ -182,7 +210,7 @@ class TestShouldSkipSupervisedReplace:
         monkeypatch.setattr(
             gateway_run, "_running_under_service_supervisor", lambda: True
         )
-        monkeypatch.setattr(gateway_run, "_replace_force_env_set", lambda: False)
+        monkeypatch.setattr(gateway_run, "_replace_force_enabled", lambda: False)
         assert gateway_run._should_skip_supervised_replace(1234) is False
 
     def test_allows_replace_when_existing_not_supervised(self, monkeypatch):
@@ -194,7 +222,7 @@ class TestShouldSkipSupervisedReplace:
         monkeypatch.setattr(
             gateway_run, "_running_under_service_supervisor", lambda: False
         )
-        monkeypatch.setattr(gateway_run, "_replace_force_env_set", lambda: False)
+        monkeypatch.setattr(gateway_run, "_replace_force_enabled", lambda: False)
         assert gateway_run._should_skip_supervised_replace(1234) is False
 
     def test_force_env_overrides_guard(self, monkeypatch):
@@ -206,7 +234,7 @@ class TestShouldSkipSupervisedReplace:
         monkeypatch.setattr(
             gateway_run, "_running_under_service_supervisor", lambda: False
         )
-        monkeypatch.setattr(gateway_run, "_replace_force_env_set", lambda: True)
+        monkeypatch.setattr(gateway_run, "_replace_force_enabled", lambda: True)
         assert gateway_run._should_skip_supervised_replace(1234) is False
 
     def test_zero_pid_never_skips(self, monkeypatch):
@@ -216,7 +244,7 @@ class TestShouldSkipSupervisedReplace:
         monkeypatch.setattr(
             gateway_run, "_running_under_service_supervisor", lambda: False
         )
-        monkeypatch.setattr(gateway_run, "_replace_force_env_set", lambda: False)
+        monkeypatch.setattr(gateway_run, "_replace_force_enabled", lambda: False)
         assert gateway_run._should_skip_supervised_replace(0) is False
 
 

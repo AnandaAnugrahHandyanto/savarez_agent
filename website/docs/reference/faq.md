@@ -516,7 +516,7 @@ To verify the fix is active, look for this line in `~/.hermes/logs/gateway.log` 
 Existing gateway PID <pid> is supervised by launchd/systemd; refusing to replace it from an unsupervised --replace call.
 ```
 
-If you need to override the guard from a maintenance script (e.g. for a controlled takeover), set `HERMES_GATEWAY_REPLACE_FORCE=1` before invoking `hermes gateway run --replace`. Routine restarts should keep using `hermes gateway restart`, which goes through `launchctl kickstart` and is unaffected by the guard.
+If you need to override the guard (e.g. for a controlled takeover), set `gateway.replace_force: true` in `config.yaml` before invoking `hermes gateway run --replace`. Routine restarts should keep using `hermes gateway restart`, which goes through `launchctl kickstart` and is unaffected by the guard.
 
 To clean up the orphaned processes left behind by previous runs:
 
