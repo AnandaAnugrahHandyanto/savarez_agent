@@ -30,6 +30,12 @@ import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import {
+  buildVCardDocumentContent,
+  safeContactFilename,
+  summarizeContactMessage,
+  summarizeContactsArrayMessage,
+} from './contact-card.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -164,6 +170,17 @@ function getContextInfo(messageContent) {
     }
   }
   return {};
+}
+
+function writeVCardDocument(vcards, displayName = 'contacts') {
+  const content = buildVCardDocumentContent(vcards, displayName);
+  mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
+  const filePath = path.join(
+    DOCUMENT_CACHE_DIR,
+    `vcards_${randomBytes(6).toString('hex')}_${safeContactFilename(displayName)}.vcf`,
+  );
+  writeFileSync(filePath, content, 'utf8');
+  return filePath;
 }
 
 mkdirSync(SESSION_DIR, { recursive: true });
@@ -397,6 +414,25 @@ async function startSocket() {
           mediaUrls.push(filePath);
         } catch (err) {
           console.error('[bridge] Failed to download audio:', err.message);
+        }
+      } else if (messageContent.contactMessage) {
+        body = summarizeContactMessage(messageContent.contactMessage);
+        hasMedia = true;
+        mediaType = 'document';
+        try {
+          mediaUrls.push(writeVCardDocument(messageContent.contactMessage, messageContent.contactMessage.displayName || 'contact'));
+        } catch (err) {
+          console.error('[bridge] Failed to save contact vCard:', err.message);
+        }
+      } else if (messageContent.contactsArrayMessage) {
+        const contacts = messageContent.contactsArrayMessage.contacts || [];
+        body = summarizeContactsArrayMessage(messageContent.contactsArrayMessage);
+        hasMedia = true;
+        mediaType = 'document';
+        try {
+          mediaUrls.push(writeVCardDocument(contacts, 'contacts'));
+        } catch (err) {
+          console.error('[bridge] Failed to save contacts vCard:', err.message);
         }
       } else if (messageContent.documentMessage) {
         body = messageContent.documentMessage.caption || '';
