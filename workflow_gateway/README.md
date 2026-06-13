@@ -72,13 +72,15 @@ Postgres data is persisted in the `postgres_data` Docker volume.
 
 ## API
 
-All routes are mounted at `/api/v5`.
+All routes are mounted at `/api/v1`. The caller identity comes from the
+BFF-injected `X-User-Id` header (gated by the shared service token), not the
+request body.
 
-### `POST /api/v5/create_session`
+### `POST /api/v1/session`
 
 **Body**
 ```json
-{ "user_id": "user_123" }
+{ "workspace_id": "my-workspace", "feature_id": "search" }
 ```
 
 **Response**
@@ -86,7 +88,7 @@ All routes are mounted at `/api/v5`.
 { "session_id": "sess_abc123..." }
 ```
 
-### `POST /api/v5/stream_chat`
+### `POST /api/v1/chat`
 
 **Body**
 ```json

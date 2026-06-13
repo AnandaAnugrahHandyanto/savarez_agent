@@ -32,7 +32,6 @@ def set_context(session_id: str, workspace_id: str, feature_id: str) -> None:
     """Record the workspace/feature IDs for a session (and the current thread)."""
     with _lock:
         _by_session[session_id] = (workspace_id, feature_id)
-    _local.session_id = session_id
     _local.workspace_id = workspace_id
     _local.feature_id = feature_id
     logger.info(

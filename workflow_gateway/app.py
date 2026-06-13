@@ -74,7 +74,7 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
 
-    app.include_router(router, prefix="/api/v5")
+    app.include_router(router, prefix="/api/v1")
 
     @app.get("/health")
     async def health() -> dict:

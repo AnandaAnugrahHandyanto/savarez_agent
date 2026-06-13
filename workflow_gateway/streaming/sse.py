@@ -45,8 +45,6 @@ class HermesSSETranslator:
     """
 
     def __init__(self, model: str = "hermes") -> None:
-        import asyncio
-
         self._loop = asyncio.get_running_loop()
         self._queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
         self._model = model
@@ -117,7 +115,7 @@ class HermesSSETranslator:
                     "artifact": _WRITE_TOOL_ARTIFACTS[name],
                 }))
 
-    def on_usage(self, input_tokens: int = 0, output_tokens: int = 0, cached_tokens: int = 0, **_: Any) -> None:
+    def on_usage(self, input_tokens: int = 0, output_tokens: int = 0, **_: Any) -> None:
         self._usage = {
             "prompt_tokens": input_tokens,
             "completion_tokens": output_tokens,

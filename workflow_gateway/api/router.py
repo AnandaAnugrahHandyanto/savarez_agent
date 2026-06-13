@@ -1,12 +1,12 @@
 """FastAPI router for the workflow gateway.
 
 Routes:
-    POST /create_session                 — create a new session
-    GET  /sessions                       — list sessions for a workspace+feature
-    GET  /sessions/{session_id}/messages — load a session's transcript
-    POST /stream_chat                    — run one agent turn and stream SSE back
+    POST /session — create a new session
+    GET /sessions — list sessions for a workspace+feature
+    GET /sessions/{session_id}/messages — load a session's transcript
+    POST /chat — run one agent turn and stream SSE back
 
-The router is mounted at ``/api/v5`` in ``workflow_gateway/app.py``.
+The router is mounted at ``/api/v1`` in ``workflow_gateway/app.py``.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import asyncio
 import logging
 import os
 import threading
-from typing import Any, AsyncIterator, Dict, Set
+from typing import AsyncIterator, Set
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -31,6 +31,7 @@ from workflow_gateway.db import (
     set_session_title,
     touch_session,
 )
+from workflow_gateway.api.identity import Identity, require_identity
 from workflow_gateway.db.session_db_proxy import make_gateway_session_db
 from workflow_gateway.streaming import HermesSSETranslator
 
@@ -63,7 +64,9 @@ async def _get_db(request: Request) -> AsyncIterator[AsyncSession]:
 
 
 class CreateSessionRequest(BaseModel):
-    user_id: str
+    # Identity is taken from the BFF-injected X-User-Id header, not the body.
+    # user_id is kept (optional) only as a fallback for direct/local calls.
+    user_id: str = ""
     workspace_id: str = ""
     feature_id: str = ""
 
@@ -81,22 +84,26 @@ class StreamChatRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# POST /create_session
+# POST /session
 # ---------------------------------------------------------------------------
 
 
-@router.post("/create_session", response_model=CreateSessionResponse)
+@router.post("/session", response_model=CreateSessionResponse)
 async def create_session_endpoint(
     body: CreateSessionRequest,
+    identity: Identity = Depends(require_identity),
     db: AsyncSession = Depends(_get_db),
 ) -> CreateSessionResponse:
+    user_id = identity.user_id or body.user_id
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Missing caller identity.")
     session_id = await create_session(
         db,
-        user_id=body.user_id,
+        user_id=user_id,
         workspace_id=body.workspace_id,
         feature_id=body.feature_id,
     )
-    logger.info("Created session %s for user %s", session_id, body.user_id)
+    logger.info("Created session %s for user %s", session_id, user_id)
     return CreateSessionResponse(session_id=session_id)
 
 
@@ -110,6 +117,7 @@ async def list_sessions_endpoint(
     workspace_id: str = Query(..., description="Workspace slug or ID"),
     feature_id: str = Query(..., description="Feature slug or ID"),
     limit: int = Query(50, ge=1, le=200, description="Max sessions to return"),
+    _identity: Identity = Depends(require_identity),
     db: AsyncSession = Depends(_get_db),
 ) -> JSONResponse:
     """Return non-archived sessions for a workspace+feature, newest-first."""
@@ -127,6 +135,7 @@ async def list_sessions_endpoint(
 @router.get("/sessions/{session_id}/messages")
 async def get_session_messages_endpoint(
     session_id: str,
+    _identity: Identity = Depends(require_identity),
     db: AsyncSession = Depends(_get_db),
 ) -> JSONResponse:
     """Return the full transcript for a session, oldest-first."""
@@ -138,17 +147,19 @@ async def get_session_messages_endpoint(
 
 
 # ---------------------------------------------------------------------------
-# POST /stream_chat
+# POST /chat
 # ---------------------------------------------------------------------------
 
 
-@router.post("/stream_chat")
+@router.post("/chat")
 async def stream_chat_endpoint(
     request: Request,
     body: StreamChatRequest,
+    identity: Identity = Depends(require_identity),
     db: AsyncSession = Depends(_get_db),
 ) -> StreamingResponse:
     """Run one agent turn and stream the response as SSE."""
+    user_id = identity.user_id or body.user_id
     session = await get_session(db, body.session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found.")
@@ -174,7 +185,7 @@ async def stream_chat_endpoint(
     await touch_session(
         db,
         body.session_id,
-        user_id=body.user_id,
+        user_id=user_id,
         workspace_id=body.workspace_id,
         feature_id=body.feature_id,
     )
@@ -185,7 +196,6 @@ async def stream_chat_endpoint(
     # The request body may omit them; the session row is the authoritative source.
     workspace_id = session.workspace_id or body.workspace_id
     feature_id = session.feature_id or body.feature_id
-    context_vars = {"workspace_id": workspace_id, "feature_id": feature_id}
     logger.info(
         "stream_chat session=%s resolved workspace_id=%r feature_id=%r "
         "(session row: %r/%r, request body: %r/%r)",
@@ -221,8 +231,6 @@ async def stream_chat_endpoint(
                 tool_complete_callback=translator.on_tool_complete,
             )
             agent_ref[0] = agent
-
-            agent._context_vars = context_vars  # type: ignore[attr-defined]
 
             # Publish workspace/feature IDs so the workflow plugin can resolve
             # them: the pre_llm_call hook looks them up by session_id, and tool

@@ -1,6 +1,6 @@
 """workflow_gateway — FastAPI gateway wrapping hermes AIAgent.
 
-Exposes POST /api/v5/create_session and POST /api/v5/stream_chat.
-Streams SSE in the voyager envelope to workflow-backend (and from there
-to digital-factory-ui).
+Exposes POST /api/v1/session and POST /api/v1/chat.
+Streams SSE to the workflow-bff gateway (and from there to
+digital-factory-ui).
 """
