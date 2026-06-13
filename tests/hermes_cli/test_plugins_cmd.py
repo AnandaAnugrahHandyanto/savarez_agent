@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -252,6 +253,10 @@ class TestResolveSubdirWithin:
         with pytest.raises(PluginOperationError, match="escapes the repository"):
             _resolve_subdir_within(clone, "/etc")
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Symlink creation requires elevated privileges on Windows",
+    )
     def test_rejects_symlink_escape(self, tmp_path):
         clone = tmp_path / "clone"
         clone.mkdir()
@@ -755,6 +760,7 @@ class TestCursesRadiolist:
             result = curses_radiolist("Pick", ["x", "y"], selected=0, cancel_returns=1)
             assert result == 1
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="curses is not available on Windows")
     def test_keyboard_interrupt_returns_cancel_value(self):
         from hermes_cli.curses_ui import curses_radiolist
 
@@ -792,20 +798,20 @@ class TestProviderDiscovery:
         """Saving a memory provider persists to config.yaml."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("memory:\n  provider: ''\n")
+        config_file.write_text("memory:\n  provider: ''\n", encoding="utf-8")
         from hermes_cli.plugins_cmd import _save_memory_provider
         _save_memory_provider("honcho")
-        content = yaml.safe_load(config_file.read_text())
+        content = yaml.safe_load(config_file.read_text(encoding="utf-8"))
         assert content["memory"]["provider"] == "honcho"
 
     def test_save_context_engine(self, tmp_path, monkeypatch):
         """Saving a context engine persists to config.yaml."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("context:\n  engine: compressor\n")
+        config_file.write_text("context:\n  engine: compressor\n", encoding="utf-8")
         from hermes_cli.plugins_cmd import _save_context_engine
         _save_context_engine("lcm")
-        content = yaml.safe_load(config_file.read_text())
+        content = yaml.safe_load(config_file.read_text(encoding="utf-8"))
         assert content["context"]["engine"] == "lcm"
 
     def test_discover_memory_providers_empty(self):
@@ -837,7 +843,7 @@ class TestNoAutoActivation:
         # This tests the run_agent.py logic indirectly by checking that the
         # code path for default config doesn't call get_plugin_context_engine.
         import run_agent as ra_module
-        source = open(ra_module.__file__).read()
+        source = Path(ra_module.__file__).read_text(encoding="utf-8")
         # The old code had: "Even with default config, check if a plugin registered one"
         # The fix removes this. Verify it's gone.
         assert "Even with default config, check if a plugin registered one" not in source
