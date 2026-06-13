@@ -521,7 +521,7 @@ _AUTO_CONTINUE_FRESHNESS_SECS_DEFAULT = 60 * 60
 def _coerce_gateway_timestamp(value: Any) -> Optional[float]:
     """Best-effort conversion of stored gateway timestamps to epoch seconds.
 
-    Missing/unparseable timestamps return None so legacy transcripts keep the
+    Missing/unparsable timestamps return None so legacy transcripts keep the
     historical auto-continue behaviour instead of being silently dropped.
     Accepts: datetime, epoch seconds (int/float), epoch milliseconds (when
     the magnitude exceeds year-2286), ISO-8601 strings (with or without a

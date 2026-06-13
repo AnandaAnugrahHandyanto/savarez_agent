@@ -1466,7 +1466,7 @@ def _tui_need_npm_install(root: Path) -> bool:
     Extra entries that exist only in the hidden lock are ignored — stale
     transitives left over from a removed dependency don't break runtime and
     we'd rather not force a reinstall for them. Falls back to mtime
-    comparison if either lockfile is unparseable.
+    comparison if either lockfile is unparsable.
     """
     # Prebuilt self-contained bundle (nix / packaged release): no lockfile
     # shipped, dist/entry.js is the single runtime artefact.
@@ -1488,7 +1488,7 @@ def _tui_need_npm_install(root: Path) -> bool:
 
     # Compare lockfile contents, not mtimes: git checkouts and npm rewrites
     # can bump the root lockfile timestamp even when installed deps already
-    # match. Fall back to mtime when either file is unparseable.
+    # match. Fall back to mtime when either file is unparsable.
     try:
         wanted = json.loads(lock.read_text(encoding="utf-8")).get("packages") or {}
         installed = json.loads(marker.read_text(encoding="utf-8")).get("packages") or {}
@@ -7023,7 +7023,7 @@ def _format_concurrent_instances_message(
 def _quarantine_running_hermes_exe(
     scripts_dir: Path, *, max_attempts: int = 4
 ) -> list[tuple[Path, Path]]:
-    """Pre-empt Windows file lock on the running ``hermes.exe``.
+    """Preempt Windows file lock on the running ``hermes.exe``.
 
     Windows allows RENAMING a mapped/running executable (the kernel tracks the
     file by handle, not path), but blocks DELETE/REPLACE while it's loaded. uv

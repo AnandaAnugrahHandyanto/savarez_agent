@@ -4487,7 +4487,7 @@ _PLATFORM_ORDER: tuple[str, ...] = (
 )
 
 # Display labels for env vars not in OPTIONAL_ENV_VARS (HOME_CHANNEL_*, bridge
-# toggles, Twilio, HASS, Email, etc.). Anything missing from OPTIONAL_ENV_VARS
+# toggles, Twilio, HASH, Email, etc.). Anything missing from OPTIONAL_ENV_VARS
 # falls back here so the UI can still render a friendly label.
 _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
     "SIGNAL_HTTP_URL": {
