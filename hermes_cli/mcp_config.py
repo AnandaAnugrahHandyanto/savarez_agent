@@ -533,6 +533,17 @@ def cmd_mcp_list(args=None):
     print(f"  {'─' * 16} {'─' * 30} {'─' * 12} {'─' * 10}")
 
     for name, cfg in servers.items():
+        # Coerce string shorthand (e.g. from `hermes config set mcp_servers.x URL`)
+        # to the canonical dict form so the listing can proceed.
+        if isinstance(cfg, str):
+            cfg = {"url": cfg}
+        elif not isinstance(cfg, dict):
+            _warning(
+                f"Skipping malformed MCP entry '{name}': "
+                f"expected dict, got {type(cfg).__name__}"
+            )
+            continue
+
         # Transport info
         if "url" in cfg:
             url = cfg["url"]

@@ -113,6 +113,37 @@ class TestMcpList:
         assert "myserver" in out
         assert "enabled" in out
 
+    def test_list_string_entry_coerced(self, tmp_path, capsys):
+        """A raw string entry (e.g. from `hermes config set mcp_servers.x URL`)
+        is coerced to {'url': str} instead of crashing with AttributeError."""
+        _seed_config(tmp_path, {
+            "good": {"url": "https://good.example.com/mcp"},
+            "broken": "https://example.com/mcp",  # string instead of dict
+        })
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()  # should not raise
+        out = capsys.readouterr().out
+        assert "good" in out
+        assert "broken" in out  # string entry still shows up as a URL transport
+        assert "example.com" in out  # URL from string shorthand is visible
+
+    def test_list_non_dict_entry_skipped_with_warning(self, tmp_path, capsys):
+        """Non-dict, non-string entries are skipped with a warning instead of
+        crashing the entire listing."""
+        _seed_config(tmp_path, {
+            "good": {"url": "https://good.example.com/mcp"},
+            "bad": 42,  # int — not coercible
+        })
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()  # should not raise
+        out = capsys.readouterr().out
+        assert "good" in out
+        # "bad" appears only in the warning, not as a server table row
+        assert "Skipping" in out
+        assert "expected dict, got int" in out
+
 
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_remove
