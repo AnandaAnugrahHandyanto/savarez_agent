@@ -3324,7 +3324,7 @@ def _apply_model_assignment_sync(
         # ``model.*`` and the picker has no proper ready row for it — the
         # GUI then surfaces a "needs setup" dead-end on the bare ``custom``
         # provider. Dedups by base_url, so re-saving is idempotent.
-        if provider.strip().lower() in {"custom", "local"} and base_url:
+        if provider.strip().lower() in {"custom", "custom_dynamic", "local"} and base_url:
             try:
                 from hermes_cli.main import _auto_provider_name, _save_custom_provider
 
@@ -3333,6 +3333,7 @@ def _apply_model_assignment_sync(
                     api_key,
                     model,
                     name=_auto_provider_name(base_url),
+                    kind="dynamic" if provider.strip().lower() == "custom_dynamic" else None,
                 )
             except Exception:
                 # Never block the assignment on the bookkeeping write —
@@ -7581,6 +7582,9 @@ class CredentialPoolAdd(BaseModel):
     # an interactive browser flow that doesn't belong in a single POST).
     api_key: str
     label: Optional[str] = None
+    # Optional base_url for custom_dynamic / custom endpoints (no canonical
+    # inference_base_url in PROVIDER_REGISTRY). Required for custom_dynamic.
+    base_url: Optional[str] = None
 
 
 def _pool_entry_summary(entry: Any, index: int) -> Dict[str, Any]:
@@ -7642,8 +7646,23 @@ async def add_credential_pool_entry(body: CredentialPoolAdd):
 
     provider = (body.provider or "").strip().lower()
     api_key = (body.api_key or "").strip()
+    explicit_base_url = (body.base_url or "").strip().rstrip("/")
     if not provider or not api_key:
         raise HTTPException(status_code=400, detail="provider and api_key are required")
+
+    # `custom_dynamic` is a first-class provider id but, like `custom`, has
+    # no registry inference_base_url — the caller MUST supply one (mirrors the
+    # bare-`custom` rejection a few lines down). Refuse early with a clear
+    # message so the dashboard surfaces the missing field, not a generic
+    # "no inference base_url" error.
+    if provider == "custom_dynamic" and not explicit_base_url:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Cannot add credential for provider 'custom_dynamic': a non-empty "
+                "base_url is required. Provide the endpoint URL alongside the api_key."
+            ),
+        )
 
     # Resolve the canonical provider for base_url lookup so aliases (e.g.
     # "google" → "gemini") inherit the registry's inference_base_url instead
@@ -7658,7 +7677,7 @@ async def add_credential_pool_entry(body: CredentialPoolAdd):
         canonical = _resolve_provider(provider)
     except Exception:
         canonical = provider
-    base_url = _provider_base_url(canonical)
+    base_url = explicit_base_url or _provider_base_url(canonical)
     if not base_url:
         # No known inference endpoint for this provider id. Bare "custom"
         # and unknown aliases fall here — they need a `custom:<name>` form

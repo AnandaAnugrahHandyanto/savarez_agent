@@ -746,9 +746,14 @@ export async function saveOnboardingApiKey(
   // The "Local / custom endpoint" option carries a base URL (in `value`) plus
   // an optional API key. It must be wired into config (provider=custom +
   // base_url + model + api_key), not dropped into .env — runtime resolution
-  // ignores OPENAI_BASE_URL.
+  // ignores OPENAI_BASE_URL. The sentinel "__DYNAMIC" suffix marks the
+  // sibling onboarding row that should write provider=custom_dynamic so the
+  // runtime probes /models live (llama-swap / Bifrost-style endpoints).
   if (envKey === 'OPENAI_BASE_URL') {
-    return saveOnboardingLocalEndpoint(trimmed, endpointApiKey?.trim() ?? '', ctx)
+    return saveOnboardingLocalEndpoint(trimmed, endpointApiKey?.trim() ?? '', ctx, 'static')
+  }
+  if (envKey === 'OPENAI_BASE_URL__DYNAMIC') {
+    return saveOnboardingLocalEndpoint(trimmed, endpointApiKey?.trim() ?? '', ctx, 'dynamic')
   }
 
   // No key validation here on purpose: we previously live-probed the key and
@@ -792,7 +797,14 @@ export async function saveOnboardingApiKey(
 // re-assigns the model from /api/model/options WITHOUT a base_url, which would
 // wipe the base_url we just wrote. We have a concrete model already, so we
 // verify the runtime directly and finish.
-export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: string, ctx: OnboardingContext) {
+export async function saveOnboardingLocalEndpoint(
+  baseUrl: string,
+  apiKey: string,
+  ctx: OnboardingContext,
+  // 'static' = pin the first discovered model and stop probing; 'dynamic' =
+  // write provider=custom_dynamic so the runtime always re-probes /models.
+  kind: 'static' | 'dynamic' = 'static'
+) {
   const url = baseUrl.trim()
   const key = apiKey.trim()
 
@@ -829,7 +841,13 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   }
 
   try {
-    await setModelAssignment({ scope: 'main', provider: 'custom', model, base_url: url, api_key: key })
+    await setModelAssignment({
+      scope: 'main',
+      provider: kind === 'dynamic' ? 'custom_dynamic' : 'custom',
+      model,
+      base_url: url,
+      api_key: key
+    })
     await ctx.requestGateway('reload.env').catch(() => undefined)
 
     const runtime = await checkRuntime(ctx)
