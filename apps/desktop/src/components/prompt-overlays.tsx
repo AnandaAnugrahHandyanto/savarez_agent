@@ -3,6 +3,7 @@
 import { useStore } from '@nanostores/react'
 import { type FormEvent, useCallback, useEffect, useState } from 'react'
 
+import { ApprovalPromptFallback } from '@/components/assistant-ui/tool-approval'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -227,6 +228,7 @@ function SecretDialog() {
 export function PromptOverlays() {
   return (
     <>
+      <ApprovalPromptFallback />
       <SudoDialog />
       <SecretDialog />
     </>

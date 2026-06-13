@@ -1773,6 +1773,8 @@ export const zhHant = defineLocale({
     approval: {
       gatewayDisconnected: 'Hermes 閘道未連線',
       sendFailed: '無法傳送核准回應',
+      promptTitle: '需要核准',
+      promptDescription: 'Hermes 需要核准才能繼續。',
       run: '執行',
       command: '指令',
       moreOptions: '更多核准選項',

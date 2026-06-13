@@ -15,7 +15,7 @@ import {
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { ChevronDown, Loader2 } from '@/lib/icons'
+import { AlertTriangle, ChevronDown, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
@@ -53,7 +53,80 @@ export const PendingToolApproval: FC<{ part: ToolPart }> = ({ part }) => {
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
 
-const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
+function inlineApprovalVisible(): boolean {
+  if (typeof document === 'undefined') {
+    return false
+  }
+
+  const inline = document.querySelector('[data-slot="tool-approval-inline"]')
+
+  if (!(inline instanceof HTMLElement) || inline.closest('[hidden]')) {
+    return false
+  }
+
+  const style = window.getComputedStyle(inline)
+
+  if (style.display === 'none' || style.visibility === 'hidden') {
+    return false
+  }
+
+  const rect = inline.getBoundingClientRect()
+
+  if (rect.width === 0 && rect.height === 0) {
+    return true
+  }
+
+  return rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth
+}
+
+export const ApprovalPromptFallback: FC = () => {
+  const { t } = useI18n()
+  const copy = t.assistant.approval
+  const request = useStore($approvalRequest)
+  const [showFallback, setShowFallback] = useState(false)
+
+  useEffect(() => {
+    if (!request || typeof document === 'undefined') {
+      setShowFallback(false)
+
+      return
+    }
+
+    const update = () => setShowFallback(!inlineApprovalVisible())
+    const timer = window.setTimeout(update, 0)
+
+    const observer = new MutationObserver(update)
+    observer.observe(document.body, { childList: true, subtree: true })
+
+    return () => {
+      window.clearTimeout(timer)
+      observer.disconnect()
+    }
+  }, [request])
+
+  if (!request || !showFallback) {
+    return null
+  }
+
+  return (
+    <Dialog open>
+      <DialogContent className="max-w-xl" showCloseButton={false}>
+        <DialogHeader>
+          <DialogTitle icon={AlertTriangle}>{copy.promptTitle}</DialogTitle>
+          <DialogDescription>{request.description || copy.promptDescription}</DialogDescription>
+        </DialogHeader>
+
+        <ApprovalBar className="mt-0 ps-0" request={request} surface="fallback" />
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+const ApprovalBar: FC<{ className?: string; request: ApprovalRequest; surface?: 'fallback' | 'inline' }> = ({
+  className,
+  request,
+  surface = 'inline'
+}) => {
   const { t } = useI18n()
   const copy = t.assistant.approval
   const gateway = useStore($gateway)
@@ -126,7 +199,10 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
   }, [confirmAlways, respond])
 
   return (
-    <div className="mt-1 ps-5" data-slot="tool-approval-inline">
+    <div
+      className={cn('mt-1 ps-5', className)}
+      data-slot={surface === 'inline' ? 'tool-approval-inline' : 'tool-approval-fallback'}
+    >
       <div className="flex items-center gap-2.5">
         <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
           <Button

@@ -1689,6 +1689,8 @@ export const en: Translations = {
     approval: {
       gatewayDisconnected: 'Hermes gateway is not connected',
       sendFailed: 'Could not send approval response',
+      promptTitle: 'Approval required',
+      promptDescription: 'Hermes needs approval before it can continue.',
       run: 'Run',
       command: 'Command',
       moreOptions: 'More approval options',

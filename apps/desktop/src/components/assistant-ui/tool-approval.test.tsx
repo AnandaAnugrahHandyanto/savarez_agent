@@ -6,7 +6,7 @@ import { $gateway } from '@/store/gateway'
 import { $approvalRequest, clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
 
-import { PendingToolApproval } from './tool-approval'
+import { ApprovalPromptFallback, PendingToolApproval } from './tool-approval'
 import type { ToolPart } from './tool-fallback-model'
 
 // Radix's DropdownMenu touches pointer-capture + scrollIntoView, which jsdom
@@ -129,5 +129,43 @@ describe('PendingToolApproval', () => {
     // The session + reject options still render, but never the permanent allow.
     expect(await screen.findByRole('menuitem', { name: /Allow this session/ })).toBeTruthy()
     expect(screen.queryByRole('menuitem', { name: /Always allow/ })).toBeNull()
+  })
+})
+
+describe('ApprovalPromptFallback', () => {
+  it('renders a dialog when an approval request has no mounted inline row', async () => {
+    setRequest('echo blocked')
+    render(<ApprovalPromptFallback />)
+
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+    expect(screen.getByText('Approval required')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
+  })
+
+  it('does not render the dialog when the inline approval row is mounted', async () => {
+    setRequest('echo blocked')
+    render(
+      <>
+        <PendingToolApproval part={part('terminal')} />
+        <ApprovalPromptFallback />
+      </>
+    )
+
+    expect(await screen.findByRole('button', { name: /Run/ })).toBeTruthy()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('sends approval.respond from the fallback dialog', async () => {
+    const request = mockGateway()
+    setRequest('echo blocked')
+    render(<ApprovalPromptFallback />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /Run/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'once', session_id: 'sess-1' })
+    })
+    expect($approvalRequest.get()).toBeNull()
   })
 })

@@ -1869,6 +1869,8 @@ export const zh: Translations = {
     approval: {
       gatewayDisconnected: 'Hermes 网关未连接',
       sendFailed: '无法发送审批响应',
+      promptTitle: '需要审批',
+      promptDescription: 'Hermes 需要审批才能继续。',
       run: '运行',
       command: '命令',
       moreOptions: '更多审批选项',

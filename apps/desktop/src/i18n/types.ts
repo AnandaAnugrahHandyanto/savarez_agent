@@ -1348,6 +1348,8 @@ export interface Translations {
     approval: {
       gatewayDisconnected: string
       sendFailed: string
+      promptTitle: string
+      promptDescription: string
       run: string
       command: string
       moreOptions: string
