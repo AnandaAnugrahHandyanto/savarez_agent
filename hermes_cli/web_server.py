@@ -3325,13 +3325,19 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
                     "confirm_message": warning.message,
                 }
 
+        target_profile = body.profile or profile
+        with _profile_scope(target_profile):
+            cfg = load_config()
+
         if scope == "main":
             if not provider or not model:
                 raise HTTPException(
                     status_code=400, detail="provider and model required for main"
                 )
+            with _profile_scope(target_profile):
+                provider, model = _normalize_main_model_assignment(provider, model)
             model_cfg = _apply_main_model_assignment(
-                cfg.get("model", {}), provider, model, base_url
+                cfg.get("model", {}), provider, model, base_url, api_key
             )
             cfg["model"] = model_cfg
 
@@ -3364,7 +3370,8 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
                     # must never block saving the model assignment.
                     _log.debug("apply_nous_managed_defaults skipped", exc_info=True)
 
-            save_config(cfg)
+            with _profile_scope(target_profile):
+                save_config(cfg)
 
             # Surface auxiliary slots still pinned to a *different* provider than
             # the new main one. Switching the main model does NOT touch aux pins
@@ -3420,7 +3427,8 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
                 slot_cfg["model"] = ""
                 aux[slot] = slot_cfg
             cfg["auxiliary"] = aux
-            save_config(cfg)
+            with _profile_scope(target_profile):
+                save_config(cfg)
             return {"ok": True, "scope": "auxiliary", "reset": True}
 
         if not provider:
@@ -3442,7 +3450,8 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
             aux[slot] = slot_cfg
 
         cfg["auxiliary"] = aux
-        save_config(cfg)
+        with _profile_scope(target_profile):
+            save_config(cfg)
         return {
             "ok": True,
             "scope": "auxiliary",

@@ -10822,6 +10822,7 @@ _BUILTIN_SUBCOMMANDS = frozenset({
     "version",
     "webhook",
     "whatsapp",
+    "whatsapp-cloud",
     "chat",
     "secrets",
     "security",
