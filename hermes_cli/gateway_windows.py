@@ -384,6 +384,78 @@ def _build_gateway_cmd_script(
     return "\r\n".join(lines) + "\r\n"
 
 
+def _quote_vbs_string(value: str) -> str:
+    """Quote a value as a VBScript double-quoted string literal.
+
+    VBScript escapes an embedded double-quote by doubling it. A newline cannot
+    appear inside a literal, so refuse it (same guard as ``_quote_cmd_script_arg``).
+    """
+    if "\r" in value or "\n" in value:
+        raise ValueError(f"refusing to quote VBScript value containing newline: {value!r}")
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _build_gateway_vbs_script(
+    python_path: str,
+    working_dir: str,
+    hermes_home: str,
+    profile_arg: str,
+) -> str:
+    """Build a console-less ``gateway.vbs`` launcher (CRLF-terminated).
+
+    The Scheduled Task runs this through ``wscript.exe`` instead of ``cmd.exe``.
+
+    Why: issue #45599 root cause #1. Driving the gateway through ``cmd.exe``
+    allocates a console, and during logon Windows broadcasts ``CTRL_CLOSE_EVENT``
+    to console process groups — reaping cmd.exe and the half-initialized gateway
+    with ``STATUS_CONTROL_C_EXIT`` (``0xC000013A``). Task Scheduler treats that
+    code as a user cancel, so the ``RestartOnFailure`` policy never fires and the
+    gateway silently disappears on every reboot.
+
+    ``wscript.exe`` and ``pythonw.exe`` are both GUI-subsystem executables with
+    no console, so this launcher receives no console control events. It mirrors
+    ``_build_gateway_cmd_script`` (same env + argv via ``_resolve_detached_python``)
+    but sets the environment on the WScript.Shell process and ``Run``s pythonw
+    directly — no cmd.exe anywhere in the chain.
+    """
+    pythonw_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
+
+    prog_args = [pythonw_path, "-m", "hermes_cli.main"]
+    if profile_arg:
+        prog_args.extend(profile_arg.split())
+    prog_args.extend(["gateway", "run"])
+    # list2cmdline gives CreateProcess-correct quoting for WScript.Shell.Run.
+    command_line = subprocess.list2cmdline(prog_args)
+
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    static_pythonpath = os.pathsep.join([repo_root, *extra_pythonpath])
+
+    lines = [
+        f"' {_TASK_DESCRIPTION}",
+        "Option Explicit",
+        "Dim sh, env, existing_pp",
+        'Set sh = CreateObject("WScript.Shell")',
+        'Set env = sh.Environment("PROCESS")',
+        f"env.Item({_quote_vbs_string('HERMES_HOME')}) = {_quote_vbs_string(hermes_home)}",
+        f"env.Item({_quote_vbs_string('PYTHONIOENCODING')}) = {_quote_vbs_string('utf-8')}",
+        f"env.Item({_quote_vbs_string('HERMES_GATEWAY_DETACHED')}) = {_quote_vbs_string('1')}",
+        f"env.Item({_quote_vbs_string('VIRTUAL_ENV')}) = {_quote_vbs_string(str(venv_dir))}",
+        # Mirror the cmd wrapper's ``PYTHONPATH=<static>;%PYTHONPATH%``: chain onto
+        # whatever PYTHONPATH the task environment already carries, at runtime.
+        f"existing_pp = env.Item({_quote_vbs_string('PYTHONPATH')})",
+        "If Len(existing_pp) > 0 Then",
+        f"  env.Item({_quote_vbs_string('PYTHONPATH')}) = {_quote_vbs_string(static_pythonpath + os.pathsep)} & existing_pp",
+        "Else",
+        f"  env.Item({_quote_vbs_string('PYTHONPATH')}) = {_quote_vbs_string(static_pythonpath)}",
+        "End If",
+        f"sh.CurrentDirectory = {_quote_vbs_string(working_dir)}",
+        # Window style 0 = hidden; bWaitOnReturn False = detached/async. pythonw is
+        # GUI-subsystem so no console is ever created for the gateway either.
+        f"sh.Run {_quote_vbs_string(command_line)}, 0, False",
+    ]
+    return "\r\n".join(lines) + "\r\n"
+
+
 def _build_startup_launcher(script_path: Path) -> str:
     """The tiny .cmd that goes in the Startup folder. Just minimizes and chains.
 
@@ -430,6 +502,15 @@ def _write_task_script() -> Path:
     tmp = script_path.with_suffix(".tmp")
     tmp.write_text(content, encoding="utf-8", newline="")
     tmp.replace(script_path)
+
+    # Also render the console-less .vbs launcher the Scheduled Task runs via
+    # wscript.exe (issue #45599 fix A). The .cmd above stays for the
+    # Startup-folder fallback and direct /Run paths.
+    vbs_content = _build_gateway_vbs_script(python_path, working_dir, hermes_home, profile_arg)
+    vbs_path = script_path.with_suffix(".vbs")
+    vbs_tmp = vbs_path.with_name(vbs_path.name + ".tmp")
+    vbs_tmp.write_text(vbs_content, encoding="utf-8", newline="")
+    vbs_tmp.replace(vbs_path)
     return script_path
 
 
@@ -448,8 +529,13 @@ def _resolve_task_user() -> str | None:
     return f"{domain}\\{username}" if domain else username
 
 
-def _build_scheduled_task_xml(task_name: str, script_path: Path, user: str | None) -> str:
-    """Render a Task Scheduler XML definition with safe long-running defaults."""
+def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | None) -> str:
+    """Render a Task Scheduler XML definition with safe long-running defaults.
+
+    ``launcher_path`` is the console-less ``.vbs`` the task runs via
+    ``wscript.exe`` — not the ``.cmd`` (see ``_build_gateway_vbs_script`` /
+    issue #45599 root cause #1).
+    """
     user_principal = f"\n      <UserId>{escape(user)}</UserId>" if user else ""
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -493,18 +579,18 @@ def _build_scheduled_task_xml(task_name: str, script_path: Path, user: str | Non
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>cmd.exe</Command>
-      <Arguments>/d /c "{escape(str(script_path))}"</Arguments>
+      <Command>wscript.exe</Command>
+      <Arguments>//B //Nologo "{escape(str(launcher_path))}"</Arguments>
     </Exec>
   </Actions>
 </Task>
 """
 
 
-def _write_scheduled_task_xml(task_name: str, script_path: Path, user: str | None) -> Path:
-    xml_path = script_path.with_suffix(".task.xml")
+def _write_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | None) -> Path:
+    xml_path = launcher_path.with_suffix(".task.xml")
     xml_path.write_text(
-        _build_scheduled_task_xml(task_name, script_path, user),
+        _build_scheduled_task_xml(task_name, launcher_path, user),
         encoding="utf-16",
         newline="",
     )
@@ -527,7 +613,10 @@ def _install_scheduled_task(task_name: str, script_path: Path) -> tuple[bool, st
         # Non-fatal: /Create /F below may still replace it. Keep the detail in
         # the final error if creation also fails.
     user = _resolve_task_user()
-    xml_path = _write_scheduled_task_xml(task_name, script_path, user)
+    # The Scheduled Task launches the console-less .vbs (issue #45599 fix A), not
+    # the .cmd. The .cmd stays for the Startup-folder fallback and direct /Run.
+    launcher_path = script_path.with_suffix(".vbs")
+    xml_path = _write_scheduled_task_xml(task_name, launcher_path, user)
     base = ["/Create", "/F", "/TN", task_name, "/XML", str(xml_path)]
     variants = [[*base, "/RU", user, "/NP", "/IT"]] if user else []
     variants.append(base)

@@ -310,6 +310,78 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>" in xml_seen["text"]
     assert "<RestartOnFailure>" in xml_seen["text"]
     assert "<Count>999</Count>" in xml_seen["text"]
+    # Scheduled Task launches the console-less .vbs via wscript.exe, never cmd.exe
+    # (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A).
+    assert "<Command>wscript.exe</Command>" in xml_seen["text"]
+    assert "//B //Nologo" in xml_seen["text"]
+    assert "Hermes_Gateway_alice.vbs" in xml_seen["text"]
+    assert "cmd.exe" not in xml_seen["text"]
+
+
+def test_gateway_vbs_script_is_console_less(monkeypatch):
+    """The .vbs launcher must avoid cmd.exe entirely and Run pythonw hidden
+    (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A)."""
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (r"C:\venv\Scripts\pythonw.exe", Path(r"C:\venv"), []),
+    )
+    content = gateway_windows._build_gateway_vbs_script(
+        r"C:\venv\Scripts\python.exe",
+        r"C:\Hermes",
+        r"C:\Hermes",
+        "--profile work",
+    )
+    assert "cmd.exe" not in content.lower()
+    assert 'CreateObject("WScript.Shell")' in content
+    assert "pythonw.exe" in content
+    assert "hermes_cli.main" in content
+    assert "gateway run" in content
+    assert ", 0, False" in content  # hidden window, detached/async
+    for var in ("HERMES_HOME", "PYTHONIOENCODING", "HERMES_GATEWAY_DETACHED", "VIRTUAL_ENV", "PYTHONPATH"):
+        assert var in content
+    assert "--profile" in content and "work" in content
+    assert content.endswith("\r\n")
+
+
+def test_gateway_vbs_script_quotes_spaced_paths(monkeypatch):
+    """Spaced exe/dir paths stay correctly quoted through the VBScript literal."""
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (r"C:\Program Files\Py\pythonw.exe", Path(r"C:\v env"), []),
+    )
+    content = gateway_windows._build_gateway_vbs_script(
+        r"C:\Program Files\Py\python.exe",
+        r"C:\work dir",
+        r"C:\h home",
+        "",
+    )
+    # list2cmdline quotes the spaced exe; _quote_vbs_string doubles those quotes.
+    assert '""C:\\Program Files\\Py\\pythonw.exe""' in content
+    assert 'sh.CurrentDirectory = "C:\\work dir"' in content
+
+
+def test_gateway_vbs_script_pythonpath_chains_runtime_value(monkeypatch):
+    """PYTHONPATH chains onto the task env's existing value, like ;%PYTHONPATH%."""
+    monkeypatch.setattr(
+        gateway_windows,
+        "_resolve_detached_python",
+        lambda exe: (r"C:\v\pythonw.exe", Path(r"C:\v"), [r"C:\v\Lib\site-packages"]),
+    )
+    content = gateway_windows._build_gateway_vbs_script(
+        r"C:\v\python.exe", r"C:\w", r"C:\h", "",
+    )
+    assert 'existing_pp = env.Item("PYTHONPATH")' in content
+    assert "If Len(existing_pp) > 0 Then" in content
+    assert r"C:\v\Lib\site-packages" in content
+
+
+def test_quote_vbs_string_doubles_quotes_and_rejects_newlines():
+    assert gateway_windows._quote_vbs_string("plain") == '"plain"'
+    assert gateway_windows._quote_vbs_string('a"b') == '"a""b"'
+    with pytest.raises(ValueError):
+        gateway_windows._quote_vbs_string("line1\nline2")
 
 
 def test_install_scheduled_task_success_start_now_uses_direct_spawn_not_task_run(monkeypatch, tmp_path, capsys):
