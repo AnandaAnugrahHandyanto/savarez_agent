@@ -293,11 +293,18 @@ def build_turn_context(
             )
             for _pass in range(3):
                 _orig_len = len(messages)
+                _orig_tokens = _preflight_tokens
                 messages, active_system_prompt = agent._compress_context(
                     messages, system_message, approx_tokens=_preflight_tokens,
                     task_id=effective_task_id,
                 )
-                if len(messages) >= _orig_len:
+                _post_preflight_tokens = estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=active_system_prompt or "",
+                    tools=agent.tools or None,
+                )
+                if len(messages) >= _orig_len and _post_preflight_tokens >= _orig_tokens:
+                    _preflight_tokens = _post_preflight_tokens
                     break  # Cannot compress further
                 conversation_history = None
                 agent._empty_content_retries = 0
@@ -305,11 +312,10 @@ def build_turn_context(
                 agent._last_content_with_tools = None
                 agent._last_content_tools_all_housekeeping = False
                 agent._mute_post_response = False
-                _preflight_tokens = estimate_request_tokens_rough(
-                    messages,
-                    system_prompt=active_system_prompt or "",
-                    tools=agent.tools or None,
-                )
+                # Re-use the post-compression estimate above.  A compressor may
+                # keep the same number of messages while replacing large
+                # contents with summaries; that is still useful progress.
+                _preflight_tokens = _post_preflight_tokens
                 if not _compressor.should_compress(_preflight_tokens):
                     break
 
