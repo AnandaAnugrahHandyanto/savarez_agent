@@ -172,10 +172,6 @@ cd nautilus-agent
 
 ---
 
-## License
-
-MIT — see [LICENSE](LICENSE).
-
 ## Acknowledgments — Built on Hermes Agent
 
 Nautilus Agent is a **friendly fork** of [Hermes Agent](https://github.com/NousResearch/hermes-agent) — the self-improving AI agent built by the incredible team at [Nous Research](https://nousresearch.com). Hermes is one of the most capable and thoughtfully designed open-source agent frameworks available today, and Nautilus would not exist without it.
