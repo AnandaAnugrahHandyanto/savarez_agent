@@ -101,11 +101,26 @@ function terminalTierWidthPx(host: HTMLElement | null): number {
   return Math.max(1, Math.round(layout));
 }
 
-/** True when the browser can actually create a WebGL(2) context. */
+/**
+ * True when the browser can create a *hardware-accelerated* WebGL context.
+ * Software renderers (llvmpipe, SwiftShader, softpipe) report WebGL support
+ * but lack the extensions regl needs — so we check the unmasked renderer
+ * string via WEBGL_debug_renderer_info.
+ */
 function _hasWebgl(): boolean {
   try {
     const c = document.createElement("canvas");
-    return !!(c.getContext("webgl2") || c.getContext("webgl"));
+    const gl = c.getContext("webgl2") || c.getContext("webgl");
+    if (!gl) return false;
+    const ext = gl.getExtension("WEBGL_debug_renderer_info");
+    if (ext) {
+      const renderer = gl
+        .getParameter(ext.UNMASKED_RENDERER_WEBGL)
+        .toLowerCase();
+      if (/llvmpipe|swiftshader|softpipe|software/.test(renderer))
+        return false;
+    }
+    return true;
   } catch {
     return false;
   }
