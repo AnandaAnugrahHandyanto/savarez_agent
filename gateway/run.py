@@ -3147,6 +3147,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
+    def _runtime_status_active_state(self) -> str:
+        """Return the runtime state to persist while work is still active."""
+        return "draining" if getattr(self, "_draining", False) else "running"
+
+    async def _runtime_status_heartbeat_loop(self, session_key: str) -> None:
+        """Keep ``gateway_state.json`` fresh while a gateway turn is busy.
+
+        External watchdogs use the runtime status file as the cheap liveness
+        signal for the gateway process. A single agent turn can legitimately
+        run for much longer than the watchdog window, so claiming/releasing
+        ``active_agents`` is not enough: ``updated_at`` must continue moving
+        while the turn is active so a healthy-but-busy gateway is not mistaken
+        for a wedged process and restarted mid-turn.
+        """
+        if not session_key:
+            return
+        interval = _float_env("HERMES_GATEWAY_STATUS_HEARTBEAT_INTERVAL", 30.0)
+        if interval <= 0:
+            return
+        try:
+            while session_key in getattr(self, "_running_agents", {}):
+                await asyncio.sleep(interval)
+                if session_key not in getattr(self, "_running_agents", {}):
+                    return
+                self._update_runtime_status(self._runtime_status_active_state())
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("Runtime status heartbeat stopped for %s: %s", session_key, exc)
+
     def _update_platform_runtime_status(
         self,
         platform: str,
@@ -7546,6 +7576,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
         self._running_agents_ts[_quick_key] = time.time()
         _run_generation = self._begin_session_run_generation(_quick_key)
+        self._update_runtime_status(self._runtime_status_active_state())
+        _runtime_status_heartbeat_task = asyncio.create_task(
+            self._runtime_status_heartbeat_loop(_quick_key)
+        )
 
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
@@ -7580,13 +7614,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return _agent_result
         finally:
             # Unconditional release covers every exit path. _release_running_agent_state
-            # is idempotent (pop-on-absent is harmless) and, called without a
-            # run_generation guard, always clears the slot regardless of which
-            # generation it holds. This evicts the zombie left when session_reset
-            # bumps the generation (N -> N+1) mid-flight: gen-N's guarded release
-            # inside _run_agent returns False, and the old sentinel-only check here
-            # missed the leftover real agent — locking the session out forever (#28686).
+            # is idempotent and clears stale real-agent slots left when session_reset
+            # bumps the generation mid-flight. Always cancel the heartbeat task too.
             self._release_running_agent_state(_quick_key)
+            _runtime_status_heartbeat_task.cancel()
+            try:
+                await _runtime_status_heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.debug(
+                    "Runtime status heartbeat cleanup failed for %s: %s",
+                    _quick_key,
+                    exc,
+                )
 
     async def _prepare_inbound_message_text(
         self,
@@ -12348,16 +12389,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_key, run_generation
         ):
             return False
+        released = self._running_agents.pop(session_key, None) is not None
         lease = getattr(self, "_active_session_leases", {}).pop(session_key, None)
         if lease is not None:
             try:
                 lease.release()
             except Exception:
                 logger.debug("Failed to release active session slot", exc_info=True)
-        self._running_agents.pop(session_key, None)
         self._running_agents_ts.pop(session_key, None)
         if hasattr(self, "_busy_ack_ts"):
             self._busy_ack_ts.pop(session_key, None)
+        if released:
+            self._update_runtime_status(self._runtime_status_active_state())
         return True
 
     def _clear_session_boundary_security_state(self, session_key: str) -> None:
@@ -13125,10 +13168,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _env_tp and not _tool_progress_configured
             else (_resolved_tp or _env_tp or "all")
         )
+        _progress_tool_filter = resolve_display_setting(
+            user_config, platform_key, "tool_progress_tools"
+        )
+        progress_tool_allowlist = {
+            str(name).strip().lower()
+            for name in (_progress_tool_filter or [])
+            if str(name).strip()
+        }
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        tool_progress_enabled = (
+            source.platform != Platform.WEBHOOK
+            and (progress_mode != "off" or bool(progress_tool_allowlist))
+        )
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
@@ -13254,6 +13308,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
             if event_type not in {"tool.started",}:
+                return
+
+            # Optional per-tool allowlist.  This keeps high-signal progress
+            # (for example 🧠 memory writes) visible while suppressing noisy
+            # operational calls like terminal/read_file/search_files.
+            if (
+                progress_tool_allowlist
+                and str(tool_name or "").strip().lower() not in progress_tool_allowlist
+            ):
                 return
 
             # Suppress tool-progress bubbles once the user has sent `stop`.
@@ -14663,18 +14726,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     from agent.title_generator import maybe_auto_title
                     all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []
-                    # In Gateway mode, auto-title failures must NOT be
-                    # surfaced as user-visible messages (fixes #23246).
-                    # Log them at debug level only — they are not actionable
-                    # to the end user. CLI mode keeps the existing behaviour
-                    # via the agent's _emit_auxiliary_failure path.
-                    def _title_failure_cb(task: str, exc: BaseException) -> None:
-                        logger.debug(
-                            "Gateway auto-title failure suppressed (not user-visible): %s: %s",
-                            task, exc,
-                        )
+                    # Title generation is a best-effort background convenience.
+                    # In chat gateways, do not surface failures to the user: a
+                    # transient auxiliary/provider error should not post an
+                    # extra warning message after the main answer was already delivered.
                     maybe_auto_title_kwargs = {
-                        "failure_callback": _title_failure_cb,
+                        "failure_callback": None,
                         "main_runtime": {
                             "model": getattr(agent, "model", None),
                             "provider": getattr(agent, "provider", None),

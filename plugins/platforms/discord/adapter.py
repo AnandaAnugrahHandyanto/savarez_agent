@@ -21,7 +21,7 @@ import threading
 import time
 from collections import defaultdict
 from contextlib import suppress
-from typing import Callable, Dict, List, Optional, Any, Tuple
+from typing import Callable, Dict, List, Optional, Any, Tuple, Set
 
 logger = logging.getLogger(__name__)
 
@@ -567,6 +567,196 @@ class VoiceReceiver:
                 pass
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if not value:
+        return default
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    logger.warning("Invalid boolean for %s=%r; using default %s", name, raw, default)
+    return default
+
+
+def _env_int(name: str, default: int, *, min_value: Optional[int] = None) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r; using default %s", name, raw, default)
+        return default
+    if min_value is not None and value < min_value:
+        logger.warning("Invalid integer for %s=%r; using default %s", name, raw, default)
+        return default
+    return value
+
+
+def _env_float(name: str, default: float, *, min_value: Optional[float] = None) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        logger.warning("Invalid float for %s=%r; using default %s", name, raw, default)
+        return default
+    if min_value is not None and value < min_value:
+        logger.warning("Invalid float for %s=%r; using default %s", name, raw, default)
+        return default
+    return value
+
+
+def _discord_allow_bots_mode() -> str:
+    raw = os.getenv("DISCORD_ALLOW_BOTS", "none")
+    mode = raw.strip().lower()
+    if mode in {"none", "mentions", "all"}:
+        return mode
+    if mode:
+        logger.warning(
+            "Invalid DISCORD_ALLOW_BOTS=%r; expected one of none, mentions, all. Using none.",
+            raw,
+        )
+    return "none"
+
+
+def _discord_allowed_bot_ids() -> Set[str]:
+    raw = os.getenv("DISCORD_ALLOWED_BOTS", "")
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def _normalise_dialogue_text(text: str) -> str:
+    text = re.sub(r"<@!?\d+>", "", text or "")
+    text = re.sub(r"\s+", "", text)
+    return text.strip().lower()
+
+
+_DEFAULT_BOT_DIALOGUE_STOP_PHRASES = (
+    "了解",
+    "承知",
+    "確認しました",
+    "完了として",
+    "ここで止めます",
+    "ここまでにします",
+    "返信はここで止めます",
+    "会話は終了",
+    "終了済み",
+    "未決点なし",
+    "追加なし",
+    "大丈夫です",
+    "👍",
+)
+
+
+def _bot_dialogue_stop_phrases() -> Tuple[str, ...]:
+    raw = os.getenv("DISCORD_BOT_DIALOGUE_STOP_PHRASES", "")
+    phrases = [p.strip() for p in raw.split(",") if p.strip()]
+    if not phrases:
+        phrases = list(_DEFAULT_BOT_DIALOGUE_STOP_PHRASES)
+    return tuple(_normalise_dialogue_text(p) for p in phrases if _normalise_dialogue_text(p))
+
+
+def _is_bot_dialogue_closure_only(text: str) -> bool:
+    """Return True for bot replies that should end a bot-to-bot handoff.
+
+    The guard intentionally catches short acknowledgement / closure-only
+    messages before they reach the LLM.  Short messages may still contain
+    useful next actions (for example, "了解しました。ログを確認します。"), so
+    acknowledgements are treated as closure-only only when the remainder is
+    just polite suffixes, emoji, or punctuation.
+    """
+    norm = _normalise_dialogue_text(text)
+    if not norm:
+        return True
+
+    # Hermes gateway status/busy notices are control-plane messages, not
+    # conversational content.  When one Hermes Discord bot is talking to
+    # another, these notices can otherwise be fed back into the peer LLM and
+    # create noisy "same thing twice" acknowledgement loops.  This predicate is
+    # used only for peer-bot messages, so it is safe to block these aggressively
+    # before the normal substantive-reply heuristics below.
+    status_prefixes = (
+        "⚡interruptingcurrenttask",
+        "operationinterrupted:",
+        "operationinterrupted",
+        "gatewayrestarting",
+        "gatewayshutdown",
+        "gatewayisrestarting",
+        "sessionautomaticallyreset",
+        "◐sessionautomaticallyreset",
+    )
+    if norm.startswith(status_prefixes):
+        return True
+
+    status_contains = (
+        "i'llrespondtoyourmessageshortly",
+        "i’llrespondtoyourmessageshortly",
+        "waitingformodelresponse",
+        "interruptingcurrenttask",
+        "queuedforthenextturn",
+        "currenttaskisstillrunning",
+    )
+    if any(marker in norm for marker in status_contains):
+        return True
+
+    if "?" in norm or "？" in norm:
+        return False
+
+    stripped = norm.strip("。．.!！、,…〜~ー-()（）[]【】{}『』\"'` ")
+    if stripped in {"👍", "+1", "ok", "okay"}:
+        return True
+
+    # Avoid false positives on short substantive handoffs such as
+    # "了解しました。ログを確認します。" while still blocking pure acks.
+    for ack in ("了解", "承知"):
+        if stripped.startswith(ack):
+            rest = stripped[len(ack):]
+            if re.fullmatch(
+                r"(しました|いたしました|です|ですー|です〜|です!|です！|ます|[。．.!！、,…〜~ー\-()（）\[\]【】{}『』\"'`🙏👍🙇])*",
+                rest,
+            ):
+                return True
+            return False
+
+    substantive_markers = (
+        "追加で",
+        "次に",
+        "ただし",
+        "しかし",
+        "一方",
+        "また、",
+        "さらに",
+        "必要",
+        "ログ",
+        "設定",
+        "実装",
+        "調査",
+        "確認します",
+        "送ります",
+        "対応します",
+        "進めます",
+        "提案",
+        "理由",
+        "手順",
+        "todo",
+        "http",
+    )
+    if any(marker in norm for marker in substantive_markers):
+        return False
+
+    for phrase in _bot_dialogue_stop_phrases():
+        if not phrase or phrase in {"了解", "承知"}:
+            continue
+        if norm == phrase or (phrase in norm and len(norm) <= max(24, len(phrase) + 14)):
+            return True
+    return False
+
+
 def _read_dm_role_auth_guild() -> Optional[int]:
     """Return the guild ID opted-in for DM role-based auth, or None.
 
@@ -675,6 +865,75 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+        # Per-thread peer-bot dialogue guard.  This is intentionally local to
+        # each Discord bot process: it prevents one Hermes bot from continuing
+        # to feed closure/ack-only messages from another bot into the LLM.
+        self._bot_dialogue_counts: Dict[str, Tuple[float, int]] = {}
+
+    def _bot_dialogue_key(self, message: DiscordMessage) -> str:
+        channel = getattr(message, "channel", None)
+        channel_id = getattr(channel, "id", None)
+        if channel_id is not None:
+            return str(channel_id)
+        parent_id = getattr(channel, "parent_id", None)
+        return str(parent_id or "unknown")
+
+    def _accept_peer_bot_message(self, message: DiscordMessage) -> bool:
+        """Gateway-level safety guard for bot-to-bot Discord handoffs."""
+        if not _env_bool("DISCORD_BOT_DIALOGUE_GUARD", True):
+            return True
+
+        content = getattr(message, "content", "") or ""
+        key = self._bot_dialogue_key(message)
+        now = time.time()
+        reset_seconds = _env_float("DISCORD_BOT_DIALOGUE_RESET_SECONDS", 900.0, min_value=0.0)
+        max_messages = _env_int("DISCORD_BOT_DIALOGUE_MAX_MESSAGES", 5, min_value=0)
+
+        last_ts, count = self._bot_dialogue_counts.get(key, (0.0, 0))
+        if now - last_ts > reset_seconds:
+            count = 0
+
+        has_non_text_payload = bool(
+            getattr(message, "attachments", None)
+            or getattr(message, "embeds", None)
+            or getattr(message, "stickers", None)
+        )
+        if _is_bot_dialogue_closure_only(content) and not has_non_text_payload:
+            logger.info(
+                "[Discord] Bot dialogue guard blocked closure-only bot message "
+                "channel=%s author=%s content=%r",
+                key,
+                getattr(getattr(message, "author", None), "id", "unknown"),
+                content[:120],
+            )
+            self._bot_dialogue_counts[key] = (now, count)
+            return False
+
+        allowed_bot_ids = _discord_allowed_bot_ids()
+        author_id = str(getattr(getattr(message, "author", None), "id", ""))
+        if allowed_bot_ids and author_id not in allowed_bot_ids:
+            logger.info(
+                "[Discord] Bot dialogue guard blocked unlisted peer-bot message "
+                "channel=%s author=%s",
+                key,
+                author_id or "unknown",
+            )
+            self._bot_dialogue_counts[key] = (now, count)
+            return False
+
+        if max_messages > 0 and count >= max_messages:
+            logger.info(
+                "[Discord] Bot dialogue guard blocked peer-bot message after limit "
+                "channel=%s count=%s max=%s",
+                key,
+                count,
+                max_messages,
+            )
+            self._bot_dialogue_counts[key] = (now, count)
+            return False
+
+        self._bot_dialogue_counts[key] = (now, count + 1)
+        return True
 
     def _handle_bot_task_done(self, task: asyncio.Task) -> None:
         """Surface post-startup discord.py task exits to the gateway supervisor.
@@ -897,12 +1156,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
                 _role_authorized = False
                 if getattr(message.author, "bot", False):
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+                    allow_bots = _discord_allow_bots_mode()
                     if allow_bots == "none":
                         return
                     elif allow_bots == "mentions":
                         if not self._client.user or self._client.user not in message.mentions:
                             return
+                    if not adapter_self._accept_peer_bot_message(message):
+                        return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
                 else:
