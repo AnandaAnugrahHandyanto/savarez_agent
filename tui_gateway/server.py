@@ -2455,55 +2455,73 @@ def _sessions_patch_handler(rid, params: dict) -> dict:
             f"(supported: {sorted(_SESSION_PATCH_SUPPORTED_FIELDS)})",
         )
 
+    # --- Validate ALL fields before mutating anything -----------------------
+    # A combined {title, system_prompt} patch must not change the title and
+    # then bail on an invalid system_prompt (or vice versa).  We validate the
+    # whole patch first, then perform the writes, so any input-level rejection
+    # leaves session state untouched.
+    new_title: str | None = None
+    if "title" in patch:
+        raw_title = patch["title"]
+        new_title = (raw_title or "").strip() if isinstance(raw_title, str) else ""
+        if not new_title:
+            return _err(rid, 4021, "title must be a non-empty string")
+
+    set_system_prompt = "system_prompt" in patch
+    new_system_prompt = ""
+    if set_system_prompt:
+        raw_sp = patch["system_prompt"]
+        if raw_sp is None:
+            return _err(rid, 4027, "system_prompt cannot be null; pass '' to clear")
+        if not isinstance(raw_sp, str):
+            return _err(rid, 4027, "system_prompt must be a string")
+        new_system_prompt = raw_sp
+
     applied: dict[str, Any] = {}
 
     # title ----------------------------------------------------------------
-    if "title" in patch:
-        raw_title = patch["title"]
-        title = (raw_title or "").strip() if isinstance(raw_title, str) else ""
-        if not title:
-            return _err(rid, 4021, "title must be a non-empty string")
+    if new_title is not None:
         try:
-            if db.set_session_title(key, title):
+            if db.set_session_title(key, new_title):
                 session["pending_title"] = None
-                applied["title"] = title
+                applied["title"] = new_title
             else:
                 existing_row = db.get_session(key)
                 if existing_row:
                     session["pending_title"] = None
-                    applied["title"] = (existing_row.get("title") or title)
+                    applied["title"] = (existing_row.get("title") or new_title)
                 else:
                     # Row doesn't exist yet (lazy build hasn't flushed) -- defer.
-                    session["pending_title"] = title
-                    applied["title"] = title
+                    session["pending_title"] = new_title
+                    applied["title"] = new_title
         except ValueError as e:
             return _err(rid, 4022, str(e))
         except Exception as e:
             return _err(rid, 5007, f"title update failed: {e}")
 
     # system_prompt --------------------------------------------------------
-    if "system_prompt" in patch:
-        raw_sp = patch["system_prompt"]
-        if raw_sp is None:
-            return _err(rid, 4027, "system_prompt cannot be null; pass '' to clear")
-        if not isinstance(raw_sp, str):
-            return _err(rid, 4027, "system_prompt must be a string")
+    if set_system_prompt:
         try:
-            db.update_system_prompt(key, raw_sp)
+            db.update_system_prompt(key, new_system_prompt)
         except Exception as e:
             return _err(rid, 5007, f"system_prompt update failed: {e}")
-        # Keep the in-memory agent in sync: invalidate the cached prompt so
-        # the next conversation_loop iteration rebuilds it from the DB.  If
-        # the agent hasn't been built yet (lazy build still pending), the
-        # next build will read the updated row.
+        # Keep the in-memory agent in sync.  The editable user/config prompt is
+        # the agent's *ephemeral* system prompt (appended at API-call time,
+        # NOT the byte-stable assembled base prompt cached for the session).
+        # Mirror the /prompt + /personality side-effect path: set the
+        # ephemeral overlay and invalidate the cache so the next loop turn
+        # rebuilds the base prompt cleanly.  Never overwrite
+        # _cached_system_prompt with raw client text — that would replace the
+        # full assembled Hermes prompt and break the prompt-cache invariant.
         agent = session.get("agent")
         if agent is not None:
             try:
-                agent._cached_system_prompt = raw_sp
+                agent.ephemeral_system_prompt = new_system_prompt or None
+                agent._cached_system_prompt = None
             except Exception:
                 # Worst case the next loop turn re-derives from the DB.
                 pass
-        applied["system_prompt"] = raw_sp
+        applied["system_prompt"] = new_system_prompt
 
     return _ok(
         rid,

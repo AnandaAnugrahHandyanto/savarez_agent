@@ -110,9 +110,18 @@ without breaking older gateways.
 | `4027` | `system_prompt` is not a string (pass `""` to clear)     |
 | `5007` | session DB unavailable / write failed                    |
 
-When `system_prompt` is patched the in-memory agent's cached prompt is
-invalidated so the next conversation-loop turn picks up the new value
-without restarting the session.
+When `system_prompt` is patched it is stored as the session's editable
+*ephemeral* prompt (appended at API-call time), not baked into the byte-stable
+assembled base prompt. The in-memory agent's cached base prompt is invalidated
+so the next conversation-loop turn rebuilds it cleanly and picks up the new
+overlay without restarting the session.
+
+**Validation and write order:** all supplied fields are validated *before* any
+write, so an input-level rejection (e.g. a valid `title` paired with an invalid
+`system_prompt`) leaves the session untouched — no partial mutation. Writes
+then apply in order (`title`, then `system_prompt`); a rare DB-write failure on
+the second field after the first has been written is reported via `5007` and
+leaves the first field's write in place.
 
 ### Events streamed back
 

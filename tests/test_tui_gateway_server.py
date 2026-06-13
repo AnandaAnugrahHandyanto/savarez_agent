@@ -4983,7 +4983,10 @@ def test_sessions_patch_title_queued_when_row_not_ready(monkeypatch):
 
 def test_sessions_patch_system_prompt_updates_db_and_agent(monkeypatch):
     db = _PatchFakeDB()
-    agent = types.SimpleNamespace(_cached_system_prompt="old prompt")
+    agent = types.SimpleNamespace(
+        _cached_system_prompt="old assembled base prompt",
+        ephemeral_system_prompt=None,
+    )
     server._sessions["sid"] = _session(agent=agent)
     monkeypatch.setattr(server, "_get_db", lambda: db)
     try:
@@ -4999,7 +5002,11 @@ def test_sessions_patch_system_prompt_updates_db_and_agent(monkeypatch):
         )
         assert resp["result"]["patched"] == {"system_prompt": "You are a helpful coder."}
         assert db.system_prompt_writes == ["You are a helpful coder."]
-        assert agent._cached_system_prompt == "You are a helpful coder."
+        # Editable user prompt goes to the ephemeral overlay, not the
+        # byte-stable assembled base prompt; the cache is invalidated so the
+        # next loop turn rebuilds the base prompt cleanly.
+        assert agent.ephemeral_system_prompt == "You are a helpful coder."
+        assert agent._cached_system_prompt is None
     finally:
         server._sessions.pop("sid", None)
 
@@ -5077,7 +5084,10 @@ def test_sessions_patch_system_prompt_non_string_returns_4027(monkeypatch):
 
 def test_sessions_patch_combined_title_and_system_prompt(monkeypatch):
     db = _PatchFakeDB()
-    agent = types.SimpleNamespace(_cached_system_prompt="old")
+    agent = types.SimpleNamespace(
+        _cached_system_prompt="old assembled base prompt",
+        ephemeral_system_prompt=None,
+    )
     server._sessions["sid"] = _session(agent=agent)
     monkeypatch.setattr(server, "_get_db", lambda: db)
     try:
@@ -5094,7 +5104,43 @@ def test_sessions_patch_combined_title_and_system_prompt(monkeypatch):
         assert resp["result"]["patched"] == {"title": "T", "system_prompt": "S"}
         assert db.title_writes == ["T"]
         assert db.system_prompt_writes == ["S"]
-        assert agent._cached_system_prompt == "S"
+        assert agent.ephemeral_system_prompt == "S"
+        assert agent._cached_system_prompt is None
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_sessions_patch_invalid_system_prompt_does_not_change_title(monkeypatch):
+    """Combined patch validates all fields before any write.
+
+    A valid title paired with an invalid system_prompt must reject the whole
+    call WITHOUT having already changed the title (no partial mutation on an
+    input-level rejection).
+    """
+    db = _PatchFakeDB()
+    agent = types.SimpleNamespace(
+        _cached_system_prompt="base", ephemeral_system_prompt=None
+    )
+    server._sessions["sid"] = _session(agent=agent)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "sessions.patch",
+                "params": {
+                    "session_id": "sid",
+                    # title is valid, system_prompt is the wrong type.
+                    "patch": {"title": "NewTitle", "system_prompt": 123},
+                },
+            }
+        )
+        assert resp["error"]["code"] == 4027
+        # Nothing was written — the title must not have changed.
+        assert db.title_writes == []
+        assert db.system_prompt_writes == []
+        assert agent.ephemeral_system_prompt is None
+        assert agent._cached_system_prompt == "base"
     finally:
         server._sessions.pop("sid", None)
 
