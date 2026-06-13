@@ -1,0 +1,58 @@
+{
+  "tasks": [
+    {
+      "task_id": "bob-strategy-001",
+      "agent": "bob",
+      "attempts": [
+        {
+          "passed": true,
+          "cost_usd": 0.021,
+          "latency_ms": 1350,
+          "api_calls": 1,
+          "model": "openrouter:deepseek/deepseek-v4-flash"
+        }
+      ]
+    },
+    {
+      "task_id": "steve-implementation-001",
+      "agent": "steve",
+      "runs": [
+        {
+          "completed": false,
+          "api_calls": 2,
+          "metadata": {"model": "anthropic/claude-sonnet-4-20250514"},
+          "usage": {
+            "cost_usd": 0.12,
+            "latency_ms": 1500,
+            "input_tokens": 1000,
+            "output_tokens": 200
+          }
+        },
+        {
+          "completed": true,
+          "api_calls": 3,
+          "metadata": {"model": "anthropic/claude-sonnet-4-20250514"},
+          "usage": {
+            "cost_usd": 0.34,
+            "latency_ms": 2500,
+            "input_tokens": 1400,
+            "output_tokens": 350
+          }
+        }
+      ]
+    },
+    {
+      "task_id": "vera-review-001",
+      "agent": "vera",
+      "attempts": [{"passed": true, "cost_usd": 0.01, "latency_ms": 800}],
+      "expected_findings": [
+        {"id": "missing-test", "severity": "high"},
+        {"id": "secret-log", "severity": "critical"}
+      ],
+      "reported_findings": [
+        {"id": "missing-test", "severity": "high"},
+        {"id": "style-nit", "severity": "low"}
+      ]
+    }
+  ]
+}
