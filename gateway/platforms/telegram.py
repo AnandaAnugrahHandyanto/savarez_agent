@@ -1087,7 +1087,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     # Endpoint missing (old PTB/server) — latch rich off so
                     # every later send doesn't pay a doomed extra roundtrip.
                     self._rich_send_disabled = True
-                logger.debug(
+                logger.warning(
                     "[%s] sendRichMessage rejected (%s) — falling back to MarkdownV2",
                     self.name, exc,
                 )
