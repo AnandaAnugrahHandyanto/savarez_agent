@@ -107,7 +107,11 @@ function ScopeChip({ active, label, onSelect }: { active: boolean; label: string
   )
 }
 
-export function GatewaySettings() {
+interface GatewaySettingsProps {
+  onReconnectApplied?: () => void
+}
+
+export function GatewaySettings({ onReconnectApplied }: GatewaySettingsProps) {
   const { t } = useI18n()
   const g = t.settings.gateway
   const [loading, setLoading] = useState(true)
@@ -341,6 +345,10 @@ export function GatewaySettings() {
     setSaving(true)
 
     try {
+      if (apply) {
+        onReconnectApplied?.()
+      }
+
       const next = apply
         ? await window.hermesDesktop.applyConnectionConfig(payload())
         : await window.hermesDesktop.saveConnectionConfig(payload())
