@@ -100,6 +100,15 @@ RETRY_DELAY_SECONDS = 2
 BACKOFF_DELAY_SECONDS = 30
 SESSION_EXPIRED_ERRCODE = -14
 RATE_LIMIT_ERRCODE = -2  # iLink frequency limit — backoff and retry
+
+class RateLimitedError(RuntimeError):
+    """iLink rate limit — caller should back off, not retry immediately.
+
+    Raised by _send_text_chunk when iLink returns ret=-2 with a descriptive
+    errmsg (genuine rate limit). Carries a [RATE_LIMITED] prefix so
+    _send_with_retry can identify it without importing the exception class.
+    """
+
 MESSAGE_DEDUP_TTL_SECONDS = 300
 
 
@@ -1215,6 +1224,10 @@ class WeixinAdapter(BasePlatformAdapter):
             default=False,
         )
 
+        # Rate-limit cooldown: suppress outbound calls (typing + send) until this
+        # timestamp to avoid resetting the iLink cooldown window. 0.0 = no cooldown.
+        self._rate_limited_until: float = 0.0
+
         if self._account_id and not self._token:
             persisted = load_weixin_account(hermes_home, self._account_id)
             if persisted:
@@ -1634,44 +1647,36 @@ class WeixinAdapter(BasePlatformAdapter):
                                 self.name, _safe_id(chat_id),
                             )
                             continue
-                        # Rate limit (-2) — backoff and retry
+                        # Rate limit (-2) — fail fast, avoid retry amplification
                         is_rate_limited = (
                             ret == RATE_LIMIT_ERRCODE
                             or errcode == RATE_LIMIT_ERRCODE
                         )
                         if is_rate_limited:
                             errmsg = resp.get("errmsg") or resp.get("msg") or "rate limited"
-                            # Record the error so we raise a descriptive
-                            # RuntimeError (instead of AssertionError) if the
-                            # loop exhausts with the server still rate-limiting.
-                            last_error = RuntimeError(
-                                f"iLink sendmessage rate limited: ret={ret} errcode={errcode} errmsg={errmsg}"
-                            )
-                            if attempt >= self._send_chunk_retries:
-                                break
-                            # Exponential backoff (base × 2^attempt) capped,
-                            # so the total retry window spans a real iLink
-                            # frequency cooldown (15-30s) instead of the old
-                            # fixed 3s. Honour a server-supplied retry-after
-                            # hint when present.
-                            wait = min(
-                                self._rate_limit_backoff_cap_seconds,
-                                self._send_chunk_retry_delay_seconds * (2 ** (attempt + 1)),
-                            )
+                            # Set cooldown so typing and subsequent sends back off.
+                            # Prefer server-supplied hint, fall back to 30s default.
                             retry_after = resp.get("retry_after") or resp.get("wait")
+                            cooldown = 30.0
                             if isinstance(retry_after, (int, float)) and retry_after > 0:
-                                wait = max(wait, min(float(retry_after), self._rate_limit_backoff_cap_seconds))
+                                cooldown = min(float(retry_after), self._rate_limit_backoff_cap_seconds)
+                            self._rate_limited_until = time.time() + cooldown
                             logger.warning(
-                                "[%s] rate limited for %s; backing off %.1fs before retry (attempt %d/%d)",
-                                self.name, _safe_id(chat_id), wait, attempt + 1, self._send_chunk_retries + 1,
+                                "[%s] rate limited for %s; cooling down for %.1fs (no retry)",
+                                self.name, _safe_id(chat_id), cooldown,
                             )
-                            await asyncio.sleep(wait)
-                            continue
+                            raise RateLimitedError(
+                                f"[RATE_LIMITED] iLink sendmessage rate limited: "
+                                f"ret={ret} errcode={errcode} errmsg={errmsg} "
+                                f"(cooldown={cooldown:.0f}s)"
+                            )
                         errmsg = resp.get("errmsg") or resp.get("msg") or "unknown error"
                         raise RuntimeError(
                             f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg}"
                         )
                 return
+            except RateLimitedError:
+                raise  # 限流错误不重试，直接向上传播
             except Exception as exc:
                 last_error = exc
                 if attempt >= self._send_chunk_retries:
@@ -1759,6 +1764,8 @@ class WeixinAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         if not self._send_session or not self._token:
             return
+        if time.time() < self._rate_limited_until:
+            return  # 冷却期间跳过 typing，避免消耗限流配额
         typing_ticket = self._typing_cache.get(chat_id)
         if not typing_ticket:
             return

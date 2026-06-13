@@ -2239,6 +2239,12 @@ class BasePlatformAdapter(ABC):
                     logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
                 return result
 
+        # Rate-limit errors are not formatting problems — plain-text fallback
+        # would just hit the same limit and amplify the cooldown. Return the
+        # failure so the caller (or user) can retry after the cooldown expires.
+        if "rate limited" in error_str.lower() or "[RATE_LIMITED]" in error_str:
+            return result
+
         # Non-network / post-retry formatting failure: try plain text as fallback
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
         fallback_result = await self.send(

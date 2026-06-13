@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -386,19 +387,24 @@ class TestWeixinChunkDelivery:
 
     @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
     @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
-    def test_rate_limit_backoff_is_exponential(self, send_message_mock, sleep_mock):
-        # #31131: a genuine rate limit (populated errmsg) must back off
-        # exponentially, capped, so the retry window spans a real iLink
-        # cooldown instead of the old fixed 3s × 4.
+    def test_rate_limit_fails_fast_no_retry(self, send_message_mock, sleep_mock):
+        # Post-fix: a genuine rate limit (populated errmsg) must NOT retry.
+        # Retrying resets the iLink cooldown window and amplifies the limit.
+        # Instead, raise RateLimitedError immediately and set cooldown state.
         adapter = self._connected_adapter()
         send_message_mock.return_value = {"ret": -2, "errcode": -2, "errmsg": "freq limit"}
 
         result = asyncio.run(adapter.send("wxid_test123", "hello"))
 
         assert result.success is False
-        # Exponential schedule: base(1.0) × 2^(attempt+1), capped at 30s.
+        assert "[RATE_LIMITED]" in (result.error or "")
+
+        # No retry → no sleep calls for backoff.
         waits = [c.args[0] for c in sleep_mock.await_args_list]
-        assert waits == [2, 4, 8, 16, 30, 30]
+        assert waits == [], f"expected no backoff sleeps, got {waits}"
+
+        # Cooldown state must be set.
+        assert adapter._rate_limited_until > 0
 
 
 class TestWeixinOutboundMedia:
