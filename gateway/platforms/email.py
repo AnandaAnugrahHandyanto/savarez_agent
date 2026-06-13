@@ -479,12 +479,19 @@ class EmailAdapter(BasePlatformAdapter):
             "message_id": msg_data["message_id"],
         }
 
+        # Derive a stable thread key from the normalized subject so that
+        # replies to the same email thread land in the same Hermes session.
+        # chat_id stays as the real sender address (used for SMTP delivery);
+        # thread_id carries the subject anchor so gateway.session gives us
+        # agent:main:<platform>:dm:<sender>:<subject_slug> isolation.
+        _subject_slug = re.sub(r"[^a-z0-9]+", "-", subject.lower()).strip("-")[:80]
         source = self.build_source(
             chat_id=sender_addr,
             chat_name=msg_data["sender_name"] or sender_addr,
             chat_type="dm",
             user_id=sender_addr,
             user_name=msg_data["sender_name"] or sender_addr,
+            thread_id=_subject_slug or None,
         )
 
         event = MessageEvent(
@@ -499,6 +506,17 @@ class EmailAdapter(BasePlatformAdapter):
 
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
         await self.handle_message(event)
+
+    def format_tool_event(self, event: Any, *, mode: str = "all",
+                           preview_max_len: int = 40) -> None:
+        """Suppress tool-progress chrome for email delivery.
+
+        Email is a plain-text, non-editable medium — there is no way to update
+        a previously sent message, so emitting a separate email per tool call
+        would spam the user's inbox. Return None to drop all tool-progress
+        events; the final assistant response is the only message sent.
+        """
+        return None
 
     async def send(
         self,
