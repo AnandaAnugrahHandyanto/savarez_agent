@@ -3194,11 +3194,41 @@ _resolved_launchd_domain: str | None = None
 
 
 def _launchd_domain() -> str:
-    # The `user/<uid>` domain (vs the older `gui/<uid>`) is reachable from
-    # non-Aqua/background sessions (SSH, headless, login items) and is the only
-    # one that supports service management on macOS 26+. `gui/<uid>` returns
-    # error 125 ("Domain does not support specified action") there. See #23387.
-    return f"user/{_posix_uid()}"
+    global _resolved_launchd_domain
+    if _resolved_launchd_domain:
+        return _resolved_launchd_domain
+
+    uid = _posix_uid()
+    label = get_launchd_label()
+    candidates = (f"gui/{uid}", f"user/{uid}")
+
+    for domain in candidates:
+        try:
+            result = subprocess.run(
+                ["launchctl", "print", f"{domain}/{label}"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
+            continue
+        if result.returncode == 0:
+            _resolved_launchd_domain = domain
+            return domain
+
+    try:
+        result = subprocess.run(
+            ["launchctl", "managername"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        manager_name = (result.stdout or "").strip().lower()
+    except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
+        manager_name = ""
+
+    _resolved_launchd_domain = f"gui/{uid}" if manager_name == "aqua" else f"user/{uid}"
+    return _resolved_launchd_domain
 
 
 # On macOS, exit code 125 ("Domain does not support specified action") and

@@ -395,18 +395,19 @@ def _prepare_gateway_status_message(
     text = str(message or "").strip()
     if not text:
         return None
-    # lifecycle notices (e.g. Codex gpt-5.5 compression autoraise) are CLI-only.
-    # Sending them as regular messages on LINE/Discord/etc. breaks conversations.
-    if event_type == "lifecycle":
-        return None
     if _gateway_platform_value(platform) != "telegram":
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
-    if _TELEGRAM_NOISY_STATUS_RE.search(text):
-        return None
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
+    # lifecycle notices (e.g. Codex gpt-5.5 compression autoraise) are CLI-only.
+    # Sending them as regular Telegram messages breaks conversations, except
+    # provider errors already normalized above.
+    if event_type == "lifecycle":
+        return None
+    if _TELEGRAM_NOISY_STATUS_RE.search(text):
+        return None
     return text
 
 
@@ -3856,19 +3857,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
-            logger.warning(
-                "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
-                session_key,
-                self._BUSY_QUEUE_MAX_PENDING,
-            )
-            return
-
-        self._enqueue_fifo(session_key, event, adapter)
-
-        if (
-            self._queue_depth(session_key, adapter=adapter)
-            >= self._BUSY_QUEUE_MAX_PENDING
-        ):
             logger.warning(
                 "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
                 session_key,
@@ -14453,7 +14441,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 and isinstance(args.get("command"), str)
                 and args["command"].strip()
             ):
-                _bash_block = f"```bash\n{args['command'].rstrip()}\n```"
+                from agent.display import get_tool_preview_max_len
+
+                _cmd_full = args["command"].rstrip()
+                _block_header = (
+                    "" if last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
+                )
+                _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
+
+                _pl = get_tool_preview_max_len()
+                _cap = _pl if _pl > 0 else 40
+                _lines = _cmd_full.splitlines()
+                _cmd_short = _lines[0] if _lines else _cmd_full
+                _multiline = len(_lines) > 1
+                if len(_cmd_short) > _cap:
+                    _cmd_short = _cmd_short[: _cap - 3] + "..."
+                elif _multiline:
+                    _cmd_short = _cmd_short + " ..."
+                _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
 
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
@@ -14496,8 +14501,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if len(preview) > _cap:
                     preview = preview[: _cap - 3] + "..."
                 msg = f'{emoji} {tool_name}: "{preview}"'
+                last_was_terminal_block[0] = False
             else:
                 msg = f"{emoji} {tool_name}..."
+                last_was_terminal_block[0] = False
 
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same

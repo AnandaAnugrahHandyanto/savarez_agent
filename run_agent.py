@@ -1315,6 +1315,19 @@ class AIAgent:
                 pass
         return AIAgent._model_requires_responses_api(model)
 
+    @staticmethod
+    def _model_requires_max_completion_tokens(model: str) -> bool:
+        """Return True for chat-completions models that reject max_tokens."""
+        m = (model or "").strip().lower()
+        if "/" in m:
+            m = m.rsplit("/", 1)[-1]
+        return (
+            m.startswith("gpt-5")
+            or m.startswith("gpt-4o")
+            or m.startswith("gpt-4.1")
+            or re.match(r"^o[1-9](?:[.-]|$)", m) is not None
+        )
+
     def _max_tokens_param(self, value: int) -> dict:
         """Return the correct max tokens kwarg for the current provider.
 
@@ -1334,6 +1347,7 @@ class AIAgent:
             self._is_direct_openai_url()
             or self._is_azure_openai_url()
             or self._is_github_copilot_url()
+            or self._model_requires_max_completion_tokens(self.model)
         ):
             return {"max_completion_tokens": value}
         return {"max_tokens": value}

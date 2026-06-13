@@ -210,7 +210,7 @@ class XAIWebSearchProvider(WebSearchProvider):
         return True
 
     def supports_extract(self) -> bool:
-        return True
+        return False
 
     # -- Search -----------------------------------------------------------
 

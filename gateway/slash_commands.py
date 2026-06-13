@@ -2719,10 +2719,30 @@ class GatewaySlashCommandsMixin:
         ):
             name = name[1:-1].strip()
 
+        user_source = source.platform.value if source.platform else None
+        scoped_user_id = source.user_id
+
+        def _session_in_scope(session: dict | None) -> bool:
+            if not session:
+                return False
+            if user_source and session.get("source") != user_source:
+                return False
+            session_user_id = session.get("user_id")
+            if (
+                scoped_user_id is not None
+                and session_user_id is not None
+                and session_user_id != scoped_user_id
+            ):
+                return False
+            return True
+
         def _list_titled_sessions() -> list[dict]:
             user_source = source.platform.value if source.platform else None
-            sessions = self._session_db.list_sessions_rich(source=user_source, limit=10)
-            return [s for s in sessions if s.get("title")][:10]
+            sessions = self._session_db.list_sessions_rich(
+                source=user_source,
+                limit=20,
+            )
+            return [s for s in sessions if s.get("title") and _session_in_scope(s)][:10]
 
         if not name:
             # List recent titled sessions for this user/platform
@@ -2779,10 +2799,14 @@ class GatewaySlashCommandsMixin:
             # Try direct session ID lookup first (so `/resume <session_id>`
             # works in the gateway, not just `/resume <title>`).
             session = self._session_db.get_session(name)
-            if session:
+            if _session_in_scope(session):
                 target_id = session["id"]
             else:
-                target_id = self._session_db.resolve_session_by_title(name)
+                target_id = self._session_db.resolve_session_by_title(
+                    name,
+                    source=user_source,
+                    user_id=scoped_user_id,
+                )
         if not target_id:
             return t("gateway.resume.not_found", name=name)
         # Compression creates child continuations that hold the live transcript.
@@ -2895,6 +2919,7 @@ class GatewaySlashCommandsMixin:
             self._session_db.create_session(
                 session_id=new_session_id,
                 source=source.platform.value if source.platform else "gateway",
+                user_id=source.user_id,
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
                 model_config={"_branched_from": parent_session_id},
                 parent_session_id=parent_session_id,

@@ -2118,6 +2118,39 @@ def _terminal_width_for_streaming() -> int:
     return max(20, cols - len(_STREAM_PAD) - 2)
 
 
+def _estimate_tui_input_height(
+    lines: list[str] | tuple[str, ...],
+    prompt_text: str,
+    terminal_columns: int,
+    *,
+    max_height: int = 8,
+) -> int:
+    """Estimate classic prompt_toolkit input rows using live terminal cells."""
+    try:
+        from prompt_toolkit.utils import get_cwidth
+    except Exception:
+        get_cwidth = lambda value: len(value or "")  # type: ignore[assignment]
+
+    try:
+        columns = int(terminal_columns or 0)
+    except (TypeError, ValueError):
+        columns = 0
+
+    columns = max(1, columns)
+    prompt_width = max(0, get_cwidth(prompt_text or ""))
+
+    visual_lines = 0
+    for index, line in enumerate(lines or [""]):
+        line_width = get_cwidth(line or "")
+        display_width = line_width + (prompt_width if index == 0 else 0)
+        if display_width <= 0:
+            visual_lines += 1
+        else:
+            visual_lines += max(1, -(-display_width // columns))
+
+    return min(max(visual_lines, 1), max(1, int(max_height or 1)))
+
+
 def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
     from rich.markdown import Markdown
@@ -10397,9 +10430,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         show_full = state.get("show_full", False)
 
         title = "⚠️  Dangerous Command"
-        cmd_display = (
-            command if show_full or len(command) <= 70 else command[:70] + "..."
-        )
+        cmd_display = command
         choice_labels = {
             "once": "Allow once",
             "session": "Allow for this session",
@@ -10481,9 +10512,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         max_cmd_rows = max(1, available - chrome_rows - len(choice_wrapped))
         if len(cmd_wrapped) > max_cmd_rows:
             keep = max(1, max_cmd_rows - 1) if max_cmd_rows > 1 else 1
-            cmd_wrapped = cmd_wrapped[:keep] + [
-                "… (command truncated — use /logs or /debug for full text)"
-            ]
+            cmd_wrapped = cmd_wrapped[:keep] + _wrap_panel_text(
+                "… (command truncated — use /logs or /debug for full text)",
+                inner_text_width,
+            )
 
         # Allocate any remaining rows to description. The extra -1 in full mode
         # accounts for the blank separator between choices and description.
@@ -12930,23 +12962,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 try:
                     terminal_columns = get_app().output.get_size().columns
                 except Exception:
-                    available_width = (
-                        shutil.get_terminal_size((80, 24)).columns - prompt_width
-                    )
-                if available_width < 10:
-                    available_width = 40
-                visual_lines = 0
-                for line in doc.lines:
-                    # Each logical line takes at least 1 visual row; long lines wrap.
-                    # Use prompt_toolkit's cell width so CJK wide characters count as 2.
-                    line_width = get_cwidth(line)
-                    if line_width <= 0:
-                        visual_lines += 1
-                    else:
-                        visual_lines += max(
-                            1, -(-line_width // available_width)
-                        )  # ceil division
-                return min(max(visual_lines, 1), 8)
+                    terminal_columns = shutil.get_terminal_size((80, 24)).columns
+                prompt_fragments = cli_ref._get_tui_prompt_fragments()
+                prompt_text = "".join(text for _style, text in prompt_fragments)
+                return _estimate_tui_input_height(
+                    doc.lines,
+                    prompt_text,
+                    terminal_columns,
+                    max_height=8,
+                )
             except Exception:
                 return 1
 
