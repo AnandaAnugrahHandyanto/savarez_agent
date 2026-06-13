@@ -112,19 +112,21 @@ Common options:
 | `--pass-session-id` | Pass the session ID into the system prompt. |
 | `--ignore-user-config` | Ignore `~/.savarez/config.yaml` and use built-in defaults. Credentials in `.env` are still loaded. Useful for isolated CI runs, reproducible bug reports, and third-party integrations. |
 | `--ignore-rules` | Skip auto-injection of `AGENTS.md`, `SOUL.md`, `.cursorrules`, persistent memory, and preloaded skills. Combine with `--ignore-user-config` for a fully isolated run. |
+| `--safe-mode` | Troubleshooting mode: disable ALL customizations — user config, rules/memory injection, plugins, and MCP servers (implies `--ignore-user-config` and `--ignore-rules`). Use to isolate whether a problem comes from your setup or from Hermes itself. |
 | `--source <tag>` | Session source tag for filtering (default: `cli`). Use `tool` for third-party integrations that should not appear in user session lists. |
 | `--max-turns <N>` | Maximum tool-calling iterations per conversation turn (default: 90, or `agent.max_turns` in config). |
 
 Examples:
 
 ```bash
-savarez
-savarez chat -q "Summarize the latest PRs"
-savarez chat --provider openrouter --model anthropic/claude-sonnet-4.6
-savarez chat --toolsets web,terminal,skills
-savarez chat --quiet -q "Return only JSON"
-savarez chat --worktree -q "Review this repo and open a PR"
-savarez chat --ignore-user-config --ignore-rules -q "Repro without my personal setup"
+hermes
+hermes chat -q "Summarize the latest PRs"
+hermes chat --provider openrouter --model anthropic/claude-sonnet-4.6
+hermes chat --toolsets web,terminal,skills
+hermes chat --quiet -q "Return only JSON"
+hermes chat --worktree -q "Review this repo and open a PR"
+hermes chat --ignore-user-config --ignore-rules -q "Repro without my personal setup"
+hermes chat --safe-mode -q "Is this bug mine or Hermes'?"
 ```
 
 ### `savarez -z <prompt>` — scripted one-shot
@@ -1394,7 +1396,7 @@ Manage profiles — multiple isolated Savarez instances, each with its own confi
 |------------|-------------|
 | `list` | List all profiles. |
 | `use <name>` | Set a sticky default profile. |
-| `create <name> [--clone] [--clone-all] [--clone-from <source>] [--no-alias]` | Create a new profile. `--clone` copies config, `.env`, and `SOUL.md` from the active profile. `--clone-all` copies all state. `--clone-from` specifies a source profile. |
+| `create <name> [--clone] [--clone-all] [--clone-from <source>] [--no-alias]` | Create a new profile. `--clone` copies config, `.env`, `SOUL.md`, and skills from the active profile. `--clone-all` copies all state. `--clone-from` specifies a source profile and implies config clone unless paired with `--clone-all`. |
 | `delete <name> [-y]` | Delete a profile. |
 | `show <name>` | Show profile details (home directory, config, etc.). |
 | `alias <name> [--remove] [--name NAME]` | Manage wrapper scripts for quick profile access. |

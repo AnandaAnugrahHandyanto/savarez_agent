@@ -75,7 +75,8 @@ def test_read_codex_tokens_missing(tmp_path, monkeypatch):
 def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkeypatch):
     hermes_home = tmp_path / "savarez"
     _setup_hermes_auth(hermes_home, access_token="")
-    monkeypatch.setenv("SAVAREZ_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex"))
 
     with pytest.raises(AuthError) as exc:
         resolve_codex_runtime_credentials()
