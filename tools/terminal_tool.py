@@ -825,7 +825,11 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
 # Environment classes now live in tools/environments/
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
-from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
+from tools.environments.ssh import (
+    SSHEnvironment as _SSHEnvironment,
+    detect_windows_ssh_host as _detect_windows_ssh_host,
+)
+from tools.environments.ssh_windows import WindowsSSHEnvironment as _WindowsSSHEnvironment
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
@@ -1336,11 +1340,25 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
+        host = ssh_config["host"]
+        user = ssh_config["user"]
+        port = ssh_config.get("port", 22)
+        key_path = ssh_config.get("key", "")
+        if _detect_windows_ssh_host(host, user, port, key_path):
+            logger.info("SSH: detected Windows host; using PowerShell backend")
+            return _WindowsSSHEnvironment(
+                host=host,
+                user=user,
+                port=port,
+                key_path=key_path,
+                cwd=cwd,
+                timeout=timeout,
+            )
         return _SSHEnvironment(
-            host=ssh_config["host"],
-            user=ssh_config["user"],
-            port=ssh_config.get("port", 22),
-            key_path=ssh_config.get("key", ""),
+            host=host,
+            user=user,
+            port=port,
+            key_path=key_path,
             cwd=cwd,
             timeout=timeout,
         )
