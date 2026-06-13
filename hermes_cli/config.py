@@ -4253,6 +4253,22 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "Move fallback_model to the top level of config.yaml (no indentation)",
         ))
 
+    # ── Check for fallback keys mistakenly nested under model: ──────────
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        for nested_key in ("fallback_providers", "fallback_model"):
+            if nested_key in model_cfg:
+                issues.append(ConfigIssue(
+                    "warning",
+                    f"'{nested_key}' is nested under 'model:' — "
+                    "it should be a top-level key",
+                    f"Move '{nested_key}' to the top level of config.yaml:\n"
+                    f"  {nested_key}:\n"
+                    f"    - provider: ...\n"
+                    f"      model: ...\n"
+                    f"(not indented under 'model:')",
+                ))
+
     # ── model section: should exist when custom_providers is configured ──
     model_cfg = config.get("model")
     if cp and not model_cfg:

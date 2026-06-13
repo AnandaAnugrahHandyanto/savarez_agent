@@ -61,8 +61,18 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     chain: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
 
+    model_cfg = config.get("model")
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+
     for key in ("fallback_providers", "fallback_model"):
-        for entry in _iter_fallback_entries(config.get(key)):
+        # Top-level key takes priority (documented location).
+        entries = config.get(key)
+        # Also check under model: — a natural but unsupported placement
+        # that users sometimes choose, mirroring default/provider.
+        if entries is None:
+            entries = model_cfg.get(key)
+        for entry in _iter_fallback_entries(entries):
             identity = _entry_identity(entry)
             if identity in seen:
                 continue
