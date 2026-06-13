@@ -122,6 +122,41 @@ DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
 # effect of normal API traffic.
 DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 
+# Default runtime cap for NON-native (external-harness) workers when the task
+# has no explicit ``max_runtime_seconds``. Native workers stay fresh via
+# ``_touch_activity`` and are reclaimed by the heartbeat-stale backstop when
+# wedged; an opaque external CLI (cli-exec, tmux lane) has no such API-traffic
+# signal, so its heartbeat-stale backstop is driven by worker-log mtime
+# (``supervise_external_workers``) and bounded above by this cap. Two hours is
+# long enough for a substantial autonomous coding session but short enough to
+# reclaim a wedged/silent opaque worker without an operator noticing. Override
+# with ``HERMES_KANBAN_EXTERNAL_MAX_RUNTIME_SECONDS`` for legitimately long
+# external jobs.
+DEFAULT_EXTERNAL_WORKER_MAX_RUNTIME_SECONDS = 2 * 60 * 60
+
+# Maximum size (bytes) of a single ``worker_log`` progress excerpt emitted per
+# dispatcher tick. The log-tailer truncates to the most-recent bytes so a
+# chatty external worker can't flood ``task_events``.
+WORKER_LOG_EVENT_MAX_BYTES = 2000
+
+
+def _resolve_external_max_runtime_seconds() -> int:
+    """Effective runtime cap for external workers with no explicit cap.
+
+    A positive integer in ``HERMES_KANBAN_EXTERNAL_MAX_RUNTIME_SECONDS``
+    overrides the built-in default; invalid/non-positive values fall back
+    silently so existing installs keep working.
+    """
+    raw = os.environ.get("HERMES_KANBAN_EXTERNAL_MAX_RUNTIME_SECONDS", "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = 0
+        if parsed > 0:
+            return parsed
+    return DEFAULT_EXTERNAL_WORKER_MAX_RUNTIME_SECONDS
+
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """Return the effective claim TTL, honoring the kanban env override.
@@ -809,6 +844,11 @@ class Task:
     # wedging dispatch (see ``resolve_spawn_backend``). Honoured per-task
     # by ``_select_spawn_backend``.
     harness: Optional[str] = None
+    # Byte offset into the worker log up to which the external-worker
+    # supervisor has already emitted ``worker_log`` progress events. Lets the
+    # log-tailer resume across dispatcher ticks without re-emitting old lines.
+    # NULL/0 = nothing tailed yet. Only meaningful for non-native backends.
+    worker_log_offset: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -886,6 +926,11 @@ class Task:
             ),
             harness=(
                 row["harness"] if "harness" in keys and row["harness"] else None
+            ),
+            worker_log_offset=(
+                row["worker_log_offset"]
+                if "worker_log_offset" in keys and row["worker_log_offset"]
+                else None
             ),
         )
 
@@ -1053,7 +1098,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- into the spawn-backend registry. NULL (the common case) selects the
     -- default ``hermes-native`` backend; unknown values fall back to native
     -- with a warning. Honoured per-task by ``_select_spawn_backend``.
-    harness              TEXT
+    harness              TEXT,
+    -- Byte offset into the worker log already surfaced as ``worker_log``
+    -- progress events by the external-worker supervisor. Lets the log-tailer
+    -- resume across dispatcher ticks without re-emitting old lines. NULL/0 =
+    -- nothing tailed yet; only meaningful for non-native backends.
+    worker_log_offset    INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1717,6 +1767,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # with a warning (see ``resolve_spawn_backend``), so a stale value
         # never wedges dispatch.
         _add_column_if_missing(conn, "tasks", "harness", "harness TEXT")
+
+    if "worker_log_offset" not in cols:
+        # Persisted log-tail offset for the external-worker supervisor's
+        # progress tailer. NULL on legacy rows = nothing tailed yet, the
+        # correct default (the tailer starts from offset 0). Only non-native
+        # backends ever write it.
+        _add_column_if_missing(
+            conn, "tasks", "worker_log_offset", "worker_log_offset INTEGER"
+        )
 
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
@@ -3225,9 +3284,182 @@ def heartbeat_claim(
         return False
 
 
+# ---------------------------------------------------------------------------
+# External (non-native) worker supervision: heartbeat (log-mtime bridge) +
+# live card progress (log-tailer). External harnesses (cli-exec, tmux lane)
+# never call the kanban heartbeat/comment tools — they just write to the
+# board-anchored worker log. This block bridges that one observable signal
+# (the log) into the dispatcher's liveness + progress machinery via a single
+# per-task supervisor: it is the external equivalent of the native worker's
+# ``_touch_activity`` heartbeat bridge plus its ``kanban_comment`` progress
+# reports.
+# ---------------------------------------------------------------------------
+
+# ANSI escape sequences (colour/cursor) that an interactive harness piped into
+# the log via ``tmux pipe-pane`` would otherwise embed in a progress excerpt.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_ESCAPE_RE.sub("", text)
+
+
+def _task_is_native(task: "Task", board: Optional[str]) -> bool:
+    """True when ``task`` runs on the always-available native backend.
+
+    Resolution honours the full selection precedence (task column > board >
+    profile > native). Any failure to resolve falls back to *native* so a
+    classification hiccup never changes reclaim/timeout behaviour for the
+    common case.
+    """
+    try:
+        return _select_spawn_backend(task, board).name == DEFAULT_SPAWN_BACKEND
+    except Exception:
+        return True
+
+
+def _worker_log_mtime(task_id: str, board: Optional[str]) -> Optional[int]:
+    """Integer mtime of the task's worker log, or None when it's absent."""
+    try:
+        return int(worker_log_path(task_id, board=board).stat().st_mtime)
+    except OSError:
+        return None
+
+
+def _effective_last_activity(
+    task: "Task",
+    board: Optional[str],
+    last_heartbeat_at: Optional[int],
+) -> Optional[int]:
+    """Liveness timestamp used by the heartbeat-stale backstop.
+
+    Native workers report progress as API traffic, bridged into
+    ``last_heartbeat_at`` by ``_touch_activity`` — so for them this is just
+    ``last_heartbeat_at`` unchanged.
+
+    Non-native workers never call the heartbeat APIs; their observable
+    progress is worker-log output. Fold the log mtime in so an actively
+    logging external worker stays alive even with a stale ``last_heartbeat_at``
+    (the false-reclaim this guards against), while one silent for longer than
+    the stale threshold is still treated as wedged and reclaimed.
+    """
+    hb = int(last_heartbeat_at) if last_heartbeat_at is not None else None
+    if _task_is_native(task, board):
+        return hb
+    mtime = _worker_log_mtime(task.id, board)
+    if mtime is None:
+        return hb
+    return max(hb or 0, mtime)
+
+
+def supervise_external_workers(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str] = None,
+) -> int:
+    """Per-task supervisor for running NON-native (external-harness) workers.
+
+    For every ``running`` task whose backend is non-native this:
+
+      * **bridges** the worker-log mtime into ``last_heartbeat_at``
+        (``max(last_heartbeat_at, log_mtime)``) — the external equivalent of
+        the native ``_touch_activity`` heartbeat, so dashboards and the
+        heartbeat-stale backstop see real progress; and
+      * **tails** new log bytes since the persisted ``worker_log_offset`` and
+        appends at most one throttled, truncated ``worker_log`` progress
+        event, then advances the offset (no duplicate lines next tick).
+
+    PID-liveness / crash handling stays with ``detect_crashed_workers`` and the
+    runtime cap with ``enforce_max_runtime``; this supervisor never reclaims a
+    task. Returns the number of ``worker_log`` events emitted (for telemetry /
+    tests). Wired into ``dispatch_once`` BEFORE the reclaim steps so the bridge
+    is visible to ``release_stale_claims`` in the same tick.
+    """
+    rows = conn.execute(
+        "SELECT id, last_heartbeat_at, worker_log_offset, current_run_id "
+        "FROM tasks WHERE status = 'running'"
+    ).fetchall()
+    emitted = 0
+    for row in rows:
+        tid = row["id"]
+        try:
+            task = get_task(conn, tid)
+            if task is None or _task_is_native(task, board):
+                continue
+            log_path = worker_log_path(tid, board=board)
+            try:
+                size = log_path.stat().st_size
+                mtime = int(log_path.stat().st_mtime)
+            except OSError:
+                continue  # no log yet — nothing to bridge or tail
+
+            # (i) heartbeat bridge: fold log mtime into last_heartbeat_at.
+            hb = row["last_heartbeat_at"]
+            if mtime > (int(hb) if hb is not None else 0):
+                with write_txn(conn):
+                    conn.execute(
+                        "UPDATE tasks SET last_heartbeat_at = ? WHERE id = ?",
+                        (mtime, tid),
+                    )
+                    run_id = row["current_run_id"]
+                    if run_id is not None:
+                        conn.execute(
+                            "UPDATE task_runs SET last_heartbeat_at = ? "
+                            "WHERE id = ?",
+                            (mtime, run_id),
+                        )
+
+            # (ii) log-tailer: emit one throttled+truncated worker_log event
+            # for new bytes, then advance the offset.
+            offset = int(row["worker_log_offset"] or 0)
+            if offset > size:
+                # File shrank → rotated/truncated. Re-read from the start.
+                offset = 0
+            if size <= offset:
+                continue  # no new output this tick
+            try:
+                with open(log_path, "rb") as f:
+                    f.seek(offset)
+                    raw = f.read(size - offset)
+            except OSError:
+                continue
+            delta_bytes = len(raw)
+            excerpt = _strip_ansi(raw.decode("utf-8", errors="replace")).strip()
+            truncated = False
+            if len(excerpt) > WORKER_LOG_EVENT_MAX_BYTES:
+                # Keep the most-recent bytes — that's where progress is.
+                excerpt = excerpt[-WORKER_LOG_EVENT_MAX_BYTES:]
+                truncated = True
+            with write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET worker_log_offset = ? WHERE id = ?",
+                    (size, tid),
+                )
+                if excerpt:
+                    _append_event(
+                        conn, tid, "worker_log",
+                        {
+                            "excerpt": excerpt,
+                            "bytes": delta_bytes,
+                            "offset": offset,
+                            "truncated": truncated,
+                        },
+                        run_id=row["current_run_id"],
+                    )
+                    emitted += 1
+        except Exception:
+            # A single misbehaving task must never break the dispatcher tick.
+            _log.debug(
+                "supervise_external_workers: skipping task %s", tid, exc_info=True
+            )
+            continue
+    return emitted
+
+
 def release_stale_claims(
     conn: sqlite3.Connection,
     *,
+    board: Optional[str] = None,
     signal_fn=None,
 ) -> int:
     """Reset any ``running`` task whose claim has expired.
@@ -3268,11 +3500,25 @@ def release_stale_claims(
     for row in stale:
         lock = row["claim_lock"] or ""
         host_local = lock.startswith(host_prefix)
-        hb = row["last_heartbeat_at"]
-        # Heartbeat staleness backstop: if we have a heartbeat at all
-        # and it's older than the max-stale threshold, the worker is
-        # not making observable progress.  Reclaim instead of extending,
-        # even if the PID is still alive (it's likely in a logic loop).
+        # Backend-aware liveness signal. Native workers report progress as
+        # API traffic bridged into ``last_heartbeat_at``; an external harness
+        # (cli-exec, tmux lane) never calls the heartbeat APIs, so its
+        # observable-progress signal is worker-log output. ``_effective_last_
+        # activity`` folds the log mtime in for non-native backends (leaving
+        # native unchanged), so an actively-logging external worker isn't
+        # falsely reclaimed despite a stale ``last_heartbeat_at``, while one
+        # silent past the threshold is still treated as wedged.
+        _stale_task = get_task(conn, row["id"])
+        hb = (
+            _effective_last_activity(_stale_task, board, row["last_heartbeat_at"])
+            if _stale_task is not None
+            else row["last_heartbeat_at"]
+        )
+        # Heartbeat staleness backstop: if we have a (possibly log-bridged)
+        # liveness timestamp at all and it's older than the max-stale
+        # threshold, the worker is not making observable progress.  Reclaim
+        # instead of extending, even if the PID is still alive (it's likely
+        # in a logic loop, or — for an opaque external CLI — wedged/silent).
         heartbeat_stale = (
             hb is not None
             and (now - int(hb)) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS
@@ -5263,15 +5509,23 @@ def heartbeat_worker(
 def enforce_max_runtime(
     conn: sqlite3.Connection,
     *,
+    board: Optional[str] = None,
     signal_fn=None,
 ) -> list[str]:
-    """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
+    """Terminate workers whose effective ``max_runtime`` has elapsed.
 
     Sends SIGTERM, waits a short grace window, then SIGKILL. Emits a
     ``timed_out`` event and drops the task back to ``ready`` so the next
     dispatcher tick re-spawns it — unless the spawn-failure circuit
     breaker has already given up, in which case the task stays blocked
     where ``_record_spawn_failure`` parked it.
+
+    The effective limit is the task's explicit ``max_runtime_seconds`` when
+    set; otherwise NON-native (external-harness) tasks fall back to
+    ``_resolve_external_max_runtime_seconds`` (the relaxed-heartbeat-backstop
+    bound — an opaque external worker has no API-traffic liveness signal, so
+    this runtime cap is its hard upper bound). Native tasks with no explicit
+    cap stay unbounded here, exactly as before.
 
     Runs host-local: only tasks claimed by this host are candidates
     (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a
@@ -5288,7 +5542,7 @@ def enforce_max_runtime(
         "       t.max_runtime_seconds, t.claim_lock "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
-        "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
+        "WHERE t.status = 'running' "
         "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
         "  AND t.worker_pid IS NOT NULL"
     ).fetchall()
@@ -5296,11 +5550,20 @@ def enforce_max_runtime(
         lock = row["claim_lock"] or ""
         if not lock.startswith(host_prefix):
             continue
+        # Effective limit: explicit cap wins; else external workers fall back
+        # to the default external cap; native-with-no-cap stays unbounded.
+        if row["max_runtime_seconds"] is not None:
+            limit = int(row["max_runtime_seconds"])
+        else:
+            _rt_task = get_task(conn, row["id"])
+            if _rt_task is None or _task_is_native(_rt_task, board):
+                continue
+            limit = _resolve_external_max_runtime_seconds()
         # Runtime is per attempt, not lifetime-of-task. ``tasks.started_at``
         # intentionally records the first time a task ever started, so retries
         # must be measured from the active task_runs row when present.
         elapsed = now - int(row["active_started_at"])
-        if elapsed < int(row["max_runtime_seconds"]):
+        if elapsed < limit:
             continue
 
         pid = int(row["worker_pid"])
@@ -5343,13 +5606,13 @@ def enforce_max_runtime(
                 payload = {
                     "pid": pid,
                     "elapsed_seconds": int(elapsed),
-                    "limit_seconds": int(row["max_runtime_seconds"]),
+                    "limit_seconds": int(limit),
                     "sigkill": killed,
                 }
                 run_id = _end_run(
                     conn, tid,
                     outcome="timed_out", status="timed_out",
-                    error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
+                    error=f"elapsed {int(elapsed)}s > limit {int(limit)}s",
                     metadata=payload,
                 )
                 _append_event(
@@ -5364,7 +5627,7 @@ def enforce_max_runtime(
         if cur.rowcount == 1:
             _record_task_failure(
                 conn, tid,
-                error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
+                error=f"elapsed {int(elapsed)}s > limit {int(limit)}s",
                 outcome="timed_out",
                 release_claim=False,
                 end_run=False,
@@ -6145,8 +6408,15 @@ def dispatch_once(
     # reap_worker_zombies() for the full rationale.
     reap_worker_zombies()
 
+    # Supervise running NON-native workers BEFORE the reclaim steps: bridge
+    # their worker-log mtime into ``last_heartbeat_at`` (so the heartbeat-stale
+    # backstop in ``release_stale_claims`` below sees observable progress this
+    # same tick) and surface incremental log output as ``worker_log`` progress
+    # events. External harnesses never call the kanban heartbeat/comment tools,
+    # so this is their only liveness + progress bridge.
     result = DispatchResult()
-    result.reclaimed = release_stale_claims(conn)
+    supervise_external_workers(conn, board=board)
+    result.reclaimed = release_stale_claims(conn, board=board)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
@@ -6167,7 +6437,7 @@ def dispatch_once(
     )
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
-    result.timed_out = enforce_max_runtime(conn)
+    result.timed_out = enforce_max_runtime(conn, board=board)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
     # Count tasks already running so max_spawn enforces concurrency rather

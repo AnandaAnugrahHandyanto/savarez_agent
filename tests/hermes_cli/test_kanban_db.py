@@ -4937,3 +4937,448 @@ def test_cleanup_worker_tmux_skips_live_pane(kanban_home, tmp_path, monkeypatch)
     with kb.connect() as conn:
         kb._cleanup_worker_tmux(conn, tid)
     assert not fake.has("tmux", "kill-session")  # never tear down a running worker
+
+
+# ---------------------------------------------------------------------------
+# Per-task external-worker supervisor: heartbeat (log-mtime bridge +
+# backend-aware backstop) and live card progress (log-tailer -> worker_log
+# events).  Items 2+3 of the BYO-harness work — one supervisor, build once.
+# ---------------------------------------------------------------------------
+
+
+def _supervisor_running_task(
+    conn, *, harness=None, assignee="coder", pid=4242,
+    max_runtime_seconds=None,
+):
+    """Create a claimed, running task with a worker PID recorded.
+
+    ``harness`` selects the spawn backend ("cli-exec"/"tmux" are non-native
+    and registered at import; None resolves to hermes-native).
+    """
+    host = kb._claimer_id().split(":", 1)[0]
+    tid = kb.create_task(
+        conn, title="rt", assignee=assignee, harness=harness,
+        max_runtime_seconds=max_runtime_seconds,
+    )
+    kb.claim_task(conn, tid, claimer=f"{host}:worker")
+    kb._set_worker_pid(conn, tid, pid)
+    return tid
+
+
+def _write_worker_log(tid, text, *, mtime=None, board=None, mode="ab"):
+    """Append ``text`` to the task's worker log; optionally pin its mtime."""
+    p = kb.worker_log_path(tid, board=board)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    data = text.encode() if isinstance(text, str) else text
+    with open(p, mode) as f:
+        f.write(data)
+    if mtime is not None:
+        os.utime(p, (mtime, mtime))
+    return p
+
+
+def _worker_log_events(conn, tid):
+    return conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'worker_log' ORDER BY id",
+        (tid,),
+    ).fetchall()
+
+
+def _offset(conn, tid):
+    row = conn.execute(
+        "SELECT worker_log_offset FROM tasks WHERE id = ?", (tid,)
+    ).fetchone()
+    return row["worker_log_offset"]
+
+
+# --- schema / migration -----------------------------------------------------
+
+def test_worker_log_offset_column_exists_on_fresh_db(kanban_home):
+    with kb.connect() as conn:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)")}
+    assert "worker_log_offset" in cols
+
+
+def test_worker_log_offset_added_to_legacy_db(tmp_path):
+    """A legacy DB missing the column is migrated forward on connect."""
+    db_path = tmp_path / "legacy-offset-kanban.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_by TEXT,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+            workspace_path TEXT,
+            claim_lock TEXT,
+            claim_expires INTEGER
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO tasks (id, title, status, created_at) "
+        "VALUES ('legacy', 'old board task', 'ready', 1)"
+    )
+    conn.commit()
+    conn.close()
+    with kb.connect(db_path) as migrated:
+        cols = {r["name"] for r in migrated.execute("PRAGMA table_info(tasks)")}
+        legacy = kb.get_task(migrated, "legacy")
+    assert "worker_log_offset" in cols
+    assert legacy is not None and legacy.worker_log_offset is None
+
+
+# --- classification + helpers -----------------------------------------------
+
+def test_task_is_native_classification(kanban_home):
+    with kb.connect() as conn:
+        native = kb.get_task(conn, kb.create_task(conn, title="n", assignee="coder"))
+        nonnative = kb.get_task(
+            conn, kb.create_task(conn, title="x", assignee="coder", harness="cli-exec")
+        )
+        bogus = kb.get_task(
+            conn, kb.create_task(conn, title="b", assignee="coder", harness="nope")
+        )
+    assert kb._task_is_native(native, None) is True
+    assert kb._task_is_native(nonnative, None) is False
+    # Unknown backend names fall back to native (never wedge dispatch).
+    assert kb._task_is_native(bogus, None) is True
+
+
+def test_worker_log_mtime_none_when_missing(kanban_home):
+    assert kb._worker_log_mtime("t_does_not_exist", None) is None
+
+
+def test_worker_log_mtime_reads_file(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="m", assignee="coder")
+    when = int(time.time()) - 123
+    _write_worker_log(tid, "hi\n", mtime=when)
+    assert kb._worker_log_mtime(tid, None) == when
+
+
+# --- item 2b: log-mtime heartbeat bridge ------------------------------------
+
+def test_supervisor_bridges_log_mtime_into_heartbeat(kanban_home):
+    now = int(time.time())
+    with kb.connect() as conn:
+        tid = _supervisor_running_task(conn, harness="cli-exec")
+        conn.execute(
+            "UPDATE tasks SET last_heartbeat_at = ? WHERE id = ?",
+            (now - 7200, tid),
+        )
+        _write_worker_log(tid, "working\n", mtime=now)
+        kb.supervise_external_workers(conn, board=None)
+        hb = kb.get_task(conn, tid).last_heartbeat_at
+    assert hb == now  # bridged up to the live log mtime
+
+
+def test_supervisor_does_not_bridge_native_tasks(kanban_home):
+    now = int(time.time())
+    with kb.connect() as conn:
+        tid = _supervisor_running_task(conn, harness=None)  # native
+        conn.execute(
+            "UPDATE tasks SET last_heartbeat_at = ? WHERE id = ?",
+            (now - 7200, tid),
+        )
+        _write_worker_log(tid, "native chatter\n", mtime=now)
+        kb.supervise_external_workers(conn, board=None)
+        hb = kb.get_task(conn, tid).last_heartbeat_at
+    assert hb == now - 7200  # native heartbeat untouched by log mtime
+
+
+# --- item 2a: backend-aware release_stale_claims ----------------------------
+
+def test_release_stale_claims_keeps_fresh_nonnative_via_log_mtime(
+    kanban_home, monkeypatch,
+):
+    """A non-native worker that never calls the heartbeat APIs but is
+    actively writing its log must NOT be reclaimed even though
+    ``last_heartbeat_at`` is hours stale — the log mtime is its
+    observable-progress signal."""
+    import hermes_cli.kanban_db as _kb
+    now = int(time.time())
+    with kb.connect() as conn:
+        tid = _supervisor_running_task(conn, harness="cli-exec")
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ?",
+            (now - 60, now - 7200, tid),   # TTL expired, hb 2h stale
+        )
+        _write_worker_log(tid, "step 3/6\n", mtime=now)  # fresh output
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        killed: list[int] = []
+        reclaimed = kb.release_stale_claims(
+            conn, board=None, signal_fn=lambda _p, sig: killed.append(sig),
+        )
+        task = kb.get_task(conn, tid)
+    assert reclaimed == 0
+    assert task.status == "running"
+    assert killed == []
+
+
+def test_release_stale_claims_reclaims_silent_nonnative_worker(
+    kanban_home, monkeypatch,
+):
+    """A non-native worker whose log has been silent for >1h (no output) is
+    wedged and IS reclaimed even though its PID is still alive."""
+    import hermes_cli.kanban_db as _kb
+    now = int(time.time())
+    with kb.connect() as conn:
+        tid = _supervisor_running_task(conn, harness="cli-exec")
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ?",
+            (now - 60, now - 7200, tid),
+        )
+        _write_worker_log(tid, "old output\n", mtime=now - 7200)  # silent 2h
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        reclaimed = kb.release_stale_claims(
+            conn, board=None, signal_fn=lambda _p, _s: None,
+        )
+        task = kb.get_task(conn, tid)
+    assert reclaimed == 1
+    assert task.status == "ready"
+
+
+def test_release_stale_claims_native_still_reclaimed_by_backstop(
+    kanban_home, monkeypatch,
+):
+    """The native 1h heartbeat-stale backstop is unchanged: a native worker
+    with a stale ``last_heartbeat_at`` is reclaimed even if its log file is
+    fresh and its PID alive (native ignores log mtime)."""
+    import hermes_cli.kanban_db as _kb
+    now = int(time.time())
+    with kb.connect() as conn:
+        tid = _supervisor_running_task(conn, harness=None)  # native
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+            "WHERE id = ?",
+            (now - 60, now - 7200, tid),
+        )
+        _write_worker_log(tid, "fresh native log\n", mtime=now)
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+        reclaimed = kb.release_stale_claims(
+            conn, board=None, signal_fn=lambda _p, _s: None,
+        )
+        task = kb.get_task(conn, tid)
+    assert reclaimed == 1
+    assert task.status == "ready"
+
+
+# --- item 3a: log-tailer -> worker_log progress events ----------------------
+
+def test_supervisor_emits_worker_log_event_for_new_lines(kanban_home):
+    now = int(time.time())
+    with kb.connect() as conn:
+        tid = _supervisor_running_task(conn, harness="cli-exec")
+        size = _write_worker_log(tid, "step 1/6\nstep 2/6\n", mtime=now).stat().st_size
+        emitted = kb.supervise_external_workers(conn, board=None)
+        events = _worker_log_events(conn, tid)
+        off = _offset(conn, tid)
+    assert emitted >= 1
+    assert len(events) == 1
+    assert "step 2/6" in events[0]["payload"]
+    assert off == size  # offset advanced to end of file
+
+
+def test_supervisor_tailer_no_event_when_no_new_bytes(kanban_home):
+    with kb.connect() as conn:
+        tid = _supervisor_running_task(conn, harness="cli-exec")
+        _write_worker_log(tid, "line\n", mtime=int(time.time()))
+        kb.supervise_external_workers(conn, board=None)
+        first = _offset(conn, tid)
+        # Second tick, nothing new written.
+        kb.supervise_external_workers(conn, board=None)
+        events = _worker_log_events(conn, tid)
+        second = _offset(conn, tid)
+    assert len(events) == 1          # no duplicate event
+    assert second == first           # offset unchanged
+
+
+def test_supervisor_tailer_advances_offset_no_dupes(kanban_home):
+    with kb.connect() as conn:
+        tid = _supervisor_running_task(conn, harness="cli-exec")
+        _write_worker_log(tid, "alpha\n", mtime=int(time.time()))
+        kb.supervise_external_workers(conn, board=None)
+        # New output on the next tick.
+        _write_worker_log(tid, "bravo\n", mtime=int(time.time()))
+        kb.supervise_external_workers(conn, board=None)
+        events = _worker_log_events(conn, tid)
+    assert len(events) == 2
+    # The second event carries only the NEW line, not the old one.
+    assert "bravo" in events[1]["payload"]
+    assert "alpha" not in events[1]["payload"]
+
+
+def test_supervisor_tailer_truncates_large_delta(kanban_home):
+    with kb.connect() as conn:
+        tid = _supervisor_running_task(conn, harness="cli-exec")
+        big = ("x" * 50 + "\n") * 200   # ~10KB, well over the cap
+        _write_worker_log(tid, big, mtime=int(time.time()))
+        kb.supervise_external_workers(conn, board=None)
+        events = _worker_log_events(conn, tid)
+    import json as _json
+    payload = _json.loads(events[0]["payload"])
+    assert payload["truncated"] is True
+    assert len(payload["excerpt"]) <= kb.WORKER_LOG_EVENT_MAX_BYTES
+
+
+def test_supervisor_tailer_handles_log_rotation(kanban_home):
+    """If the file shrank below the persisted offset (rotation/truncation),
+    the tailer resets to 0 and re-reads from the start instead of crashing
+    or skipping."""
+    with kb.connect() as conn:
+        tid = _supervisor_running_task(conn, harness="cli-exec")
+        # Pretend a previous, larger generation advanced the offset far past
+        # the current (rotated, smaller) file.
+        conn.execute(
+            "UPDATE tasks SET worker_log_offset = ? WHERE id = ?", (999999, tid)
+        )
+        size = _write_worker_log(
+            tid, "post-rotation line\n", mtime=int(time.time()), mode="wb"
+        ).stat().st_size
+        emitted = kb.supervise_external_workers(conn, board=None)
+        events = _worker_log_events(conn, tid)
+        off = _offset(conn, tid)
+    assert emitted == 1
+    assert "post-rotation line" in events[0]["payload"]
+    assert off == size
+
+
+def test_supervisor_skips_native_tailer(kanban_home):
+    """Native workers report progress via their own kanban_comment tool; the
+    log-tailer only runs for non-native backends."""
+    with kb.connect() as conn:
+        tid = _supervisor_running_task(conn, harness=None)
+        _write_worker_log(tid, "native line\n", mtime=int(time.time()))
+        kb.supervise_external_workers(conn, board=None)
+        events = _worker_log_events(conn, tid)
+    assert events == []
+
+
+# --- item 2a bound: default external max_runtime ----------------------------
+
+def test_enforce_max_runtime_applies_default_for_nonnative(
+    kanban_home, monkeypatch,
+):
+    import hermes_cli.kanban_db as _kb
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    now = int(time.time())
+    with kb.connect() as conn:
+        tid = _supervisor_running_task(conn, harness="cli-exec")  # NULL max_runtime
+        old = now - (kb.DEFAULT_EXTERNAL_WORKER_MAX_RUNTIME_SECONDS + 600)
+        conn.execute("UPDATE tasks SET started_at = ? WHERE id = ?", (old, tid))
+        conn.execute(
+            "UPDATE task_runs SET started_at = ? WHERE task_id = ?", (old, tid)
+        )
+        timed_out = kb.enforce_max_runtime(conn, board=None, signal_fn=lambda _p, _s: None)
+        task = kb.get_task(conn, tid)
+    assert tid in timed_out
+    assert task.status == "ready"
+
+
+def test_enforce_max_runtime_default_does_not_bound_native(
+    kanban_home, monkeypatch,
+):
+    import hermes_cli.kanban_db as _kb
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    now = int(time.time())
+    with kb.connect() as conn:
+        tid = _supervisor_running_task(conn, harness=None)  # native, NULL max_runtime
+        old = now - (kb.DEFAULT_EXTERNAL_WORKER_MAX_RUNTIME_SECONDS + 600)
+        conn.execute("UPDATE tasks SET started_at = ? WHERE id = ?", (old, tid))
+        conn.execute(
+            "UPDATE task_runs SET started_at = ? WHERE task_id = ?", (old, tid)
+        )
+        timed_out = kb.enforce_max_runtime(conn, board=None, signal_fn=lambda _p, _s: None)
+        task = kb.get_task(conn, tid)
+    assert tid not in timed_out          # native with no explicit cap is unbounded
+    assert task.status == "running"
+
+
+def test_external_max_runtime_env_override(kanban_home, monkeypatch):
+    import hermes_cli.kanban_db as _kb
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_EXTERNAL_MAX_RUNTIME_SECONDS", "100")
+    now = int(time.time())
+    with kb.connect() as conn:
+        tid = _supervisor_running_task(conn, harness="cli-exec")
+        conn.execute("UPDATE tasks SET started_at = ? WHERE id = ?", (now - 200, tid))
+        conn.execute(
+            "UPDATE task_runs SET started_at = ? WHERE task_id = ?", (now - 200, tid)
+        )
+        timed_out = kb.enforce_max_runtime(conn, board=None, signal_fn=lambda _p, _s: None)
+    assert tid in timed_out  # 200s elapsed > 100s override
+
+
+def test_explicit_max_runtime_wins_over_external_default(kanban_home, monkeypatch):
+    """A task with an explicit max_runtime_seconds keeps it; the external
+    default only fills in for NULL."""
+    import hermes_cli.kanban_db as _kb
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    now = int(time.time())
+    with kb.connect() as conn:
+        tid = _supervisor_running_task(
+            conn, harness="cli-exec", max_runtime_seconds=99999,
+        )
+        conn.execute("UPDATE tasks SET started_at = ? WHERE id = ?", (now - 300, tid))
+        conn.execute(
+            "UPDATE task_runs SET started_at = ? WHERE task_id = ?", (now - 300, tid)
+        )
+        timed_out = kb.enforce_max_runtime(conn, board=None, signal_fn=lambda _p, _s: None)
+    assert tid not in timed_out  # 300s < explicit 99999s cap
+
+
+# --- supervisor integration (bridge + tail together) + dispatch wiring ------
+
+def test_supervise_external_workers_bridges_and_tails_together(kanban_home):
+    now = int(time.time())
+    with kb.connect() as conn:
+        tid = _supervisor_running_task(conn, harness="cli-exec")
+        conn.execute(
+            "UPDATE tasks SET last_heartbeat_at = ? WHERE id = ?", (now - 7200, tid)
+        )
+        _write_worker_log(tid, "progress 1\nprogress 2\n", mtime=now)
+        emitted = kb.supervise_external_workers(conn, board=None)
+        task = kb.get_task(conn, tid)
+        events = _worker_log_events(conn, tid)
+    assert emitted == 1
+    assert task.last_heartbeat_at == now          # bridged
+    assert len(events) == 1                        # tailed
+    assert task.worker_log_offset is not None and task.worker_log_offset > 0
+
+
+def test_dispatch_once_invokes_supervisor(kanban_home, monkeypatch):
+    import hermes_cli.kanban_db as _kb
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: True)
+    now = int(time.time())
+    with kb.connect() as conn:
+        tid = _supervisor_running_task(conn, harness="cli-exec")
+        conn.execute(
+            "UPDATE tasks SET last_heartbeat_at = ? WHERE id = ?", (now - 600, tid)
+        )
+        _write_worker_log(tid, "tick-step a\ntick-step b\n", mtime=now)
+        kb.dispatch_once(conn, spawn_fn=lambda *a, **k: None, board=None)
+        task = kb.get_task(conn, tid)
+        events = _worker_log_events(conn, tid)
+    assert task.status == "running"               # not falsely reclaimed
+    assert task.last_heartbeat_at == now          # heartbeat bridged in the tick
+    assert len(events) == 1                        # progress surfaced
+    assert "tick-step b" in events[0]["payload"]
