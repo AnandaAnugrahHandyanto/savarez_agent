@@ -12216,9 +12216,13 @@ def main():
         cmd_chat(args)
         return
 
-    # Execute the command
+    # Execute the command. Most subcommands return None on success, but
+    # argparse-style command handlers may return a shell exit code. Preserve
+    # non-zero codes so automation can reliably detect CLI failures.
     if hasattr(args, "func"):
-        args.func(args)
+        result = args.func(args)
+        if isinstance(result, int) and result != 0:
+            sys.exit(result)
     else:
         parser.print_help()
 
