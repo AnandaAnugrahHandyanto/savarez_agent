@@ -911,6 +911,18 @@ The rich path is skipped automatically when content exceeds the 32,768-byte rich
 
 There's nothing to configure for the fallback — the adapter picks the right rendering per message. If you want the legacy "always code-block" behavior, disable table normalization by setting `telegram.pretty_tables: false` in `config.yaml` (default: `true`).
 
+**Disable rich messages.** If you prefer plain MarkdownV2 rendering (no native tables, headings, task lists, etc.) — for example, on a smartwatch client where rich messages render as media blocks — set `disable_rich_messages: true` in the `extra` section:
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        disable_rich_messages: true
+```
+
+Both the final reply and the streaming draft will use the legacy MarkdownV2 `sendMessage` path. Rich messages are enabled by default and this setting has no effect if the Bot API server doesn't support `sendRichMessage` (the adapter already falls back automatically).
+
 **Link previews.** Telegram auto-generates link previews for URLs in bot messages. If you'd rather suppress those (long `/tools` output, agent reply that mentions ten links, etc.):
 
 ```yaml

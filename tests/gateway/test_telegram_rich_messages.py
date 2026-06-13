@@ -465,3 +465,25 @@ def test_streaming_overflow_limit_none_when_rich_latched_off():
     adapter = _make_adapter()
     adapter._rich_send_disabled = True
     assert adapter.streaming_overflow_limit() is None
+
+
+# ----------------------------------------------------------------------
+# Config-driven disable_rich_messages
+# ----------------------------------------------------------------------
+def test_disable_rich_messages_extra_disables_send():
+    """Setting telegram.extra.disable_rich_messages=true disables rich sends."""
+    adapter = _make_adapter(extra={"disable_rich_messages": True})
+    assert adapter._rich_send_disabled is True
+
+
+def test_disable_rich_messages_extra_disables_draft():
+    """Setting telegram.extra.disable_rich_messages=true disables rich drafts."""
+    adapter = _make_adapter(extra={"disable_rich_messages": True})
+    assert adapter._rich_draft_disabled is True
+
+
+def test_disable_rich_messages_default_is_enabled():
+    """Without the extra key, rich messages remain enabled."""
+    adapter = _make_adapter()
+    assert adapter._rich_send_disabled is False
+    assert adapter._rich_draft_disabled is False
