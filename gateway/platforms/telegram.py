@@ -195,6 +195,57 @@ def _strip_mdv2(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Single-line code-fence → inline code
+# ---------------------------------------------------------------------------
+# Telegram renders fenced code blocks as a full-width gray monospace box.  For a
+# short one-line log/snippet that box is visually clunky; inline `code` reads far
+# better.  This rewrites *bare* fenced blocks whose body is a single non-empty
+# line into inline code, while leaving anything where the block form actually
+# matters untouched.  It runs on raw Markdown BEFORE MarkdownV2 escaping (and on
+# the raw Markdown handed to the rich send/draft path), so escaping/rendering of
+# the resulting inline code happens exactly as for any other inline code.
+_FENCED_BLOCK_RE = re.compile(r'```([^\n]*)\n([\s\S]*?)```')
+
+
+def _collapse_single_line_code_fences(text: str) -> str:
+    """Convert a bare, single-line fenced code block into inline code.
+
+    A fence is collapsed only when ALL of these hold (otherwise it is left
+    exactly as-is, so real code blocks and indentation are never harmed):
+
+    * no info/language string on the opening fence (bare ``​```​``; e.g.
+      ``​```python​`` is kept as a block so the language label survives);
+    * the body is exactly one non-empty line, ignoring blank lines around it
+      (multi-line bodies — YAML/config/code — stay fenced because newlines and
+      indentation matter);
+    * that single line has no leading/trailing whitespace (an indented line is
+      kept fenced so its indentation is preserved verbatim);
+    * the line contains no backtick (inline code cannot safely contain one).
+
+    Code contents are otherwise preserved exactly; only the surrounding fence is
+    swapped for inline backticks.
+    """
+    if "```" not in text:
+        return text
+
+    def _maybe_collapse(m: "re.Match[str]") -> str:
+        info = m.group(1)
+        body = m.group(2)
+        if info.strip():
+            return m.group(0)  # labelled fence — keep the language block
+        single = body.strip("\n")  # drop surrounding blank lines only
+        if not single or "\n" in single:
+            return m.group(0)  # empty or multi-line — keep fenced
+        if single != single.strip():
+            return m.group(0)  # indented/padded — preserve as a block
+        if "`" in single:
+            return m.group(0)  # can't represent safely as inline code
+        return f"`{single}`"
+
+    return _FENCED_BLOCK_RE.sub(_maybe_collapse, text)
+
+
+# ---------------------------------------------------------------------------
 # Markdown table → Telegram-friendly row groups
 # ---------------------------------------------------------------------------
 # Telegram's MarkdownV2 has no table syntax — '|' is just an escaped literal,
@@ -977,9 +1028,13 @@ class TelegramAdapter(BasePlatformAdapter):
         """Build the ``InputRichMessage`` object from RAW markdown.
 
         Never pass ``format_message(content)`` here — that converts to
-        MarkdownV2 and would escape/destroy rich syntax like table pipes.
+        MarkdownV2 and would escape/destroy rich syntax like table pipes.  We do
+        apply :func:`_collapse_single_line_code_fences`, a pure Markdown→Markdown
+        normalization (single-line bare fence → inline code) that keeps the
+        payload raw markdown while sparing the rich renderer the same clunky
+        one-line code box.
         """
-        payload: Dict[str, Any] = {"markdown": content}
+        payload: Dict[str, Any] = {"markdown": _collapse_single_line_code_fences(content)}
         if skip_entity_detection:
             payload["skip_entity_detection"] = True
         return payload
@@ -4647,8 +4702,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
         text = content
 
-        # 0) Rewrite GFM-style pipe tables into Telegram-friendly row groups
-        #    before the normal MarkdownV2 conversions run.
+        # 0a) Collapse bare single-line fenced blocks to inline code so short
+        #     one-line logs/snippets don't render as a clunky full-width box.
+        #     Runs first so the resulting inline code is protected in step 2.
+        text = _collapse_single_line_code_fences(text)
+
+        # 0b) Rewrite GFM-style pipe tables into Telegram-friendly row groups
+        #     before the normal MarkdownV2 conversions run.
         text = _wrap_markdown_tables(text)
 
         # 1) Protect fenced code blocks (``` ... ```)

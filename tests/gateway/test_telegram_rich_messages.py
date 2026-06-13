@@ -596,3 +596,79 @@ def test_streaming_overflow_limit_none_when_rich_latched_off():
     adapter = _make_adapter()
     adapter._rich_send_disabled = True
     assert adapter.streaming_overflow_limit() is None
+
+
+# ----------------------------------------------------------------------
+# Code-fence policy on the rich path: a bare single-line fence is collapsed to
+# inline code in the raw markdown handed to sendRichMessage (cleaner than a
+# one-line code box), while multi-line blocks are preserved.
+# ----------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_rich_payload_collapses_single_line_fence():
+    adapter = _make_adapter()
+    content = "Result:\n```\none line log\n```"
+
+    result = await adapter.send("12345", content)
+
+    assert result.success is True
+    markdown = _rich_api_kwargs(adapter)["rich_message"]["markdown"]
+    assert "`one line log`" in markdown
+    assert "```" not in markdown
+
+
+@pytest.mark.asyncio
+async def test_rich_payload_preserves_multiline_block():
+    adapter = _make_adapter()
+    content = "```\ndisplay:\n  telegram:\n    streaming: false\n```"
+
+    await adapter.send("12345", content)
+
+    markdown = _rich_api_kwargs(adapter)["rich_message"]["markdown"]
+    assert "```\ndisplay:\n  telegram:\n    streaming: false\n```" in markdown
+
+
+# ----------------------------------------------------------------------
+# Streaming finalization (rich OFF → MarkdownV2 edit path): the final edit must
+# apply Telegram formatting, and the answer must not be sent twice.
+# ----------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_streaming_finalize_applies_markdownv2_without_duplicate_send():
+    import asyncio
+    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+    adapter = _make_adapter()
+    # Rich OFF: do_api_request must NOT be a coroutine, so finalization goes
+    # through the MarkdownV2 edit path (not the rich send path).
+    adapter._bot.do_api_request = MagicMock()
+    _sends = []
+
+    async def _fake_send_message(**kwargs):
+        _sends.append(kwargs)
+        return SimpleNamespace(message_id=100 + len(_sends))
+
+    adapter._bot.send_message = AsyncMock(side_effect=_fake_send_message)
+    adapter._bot.edit_message_text = AsyncMock()
+    adapter._bot.send_chat_action = AsyncMock()
+
+    cfg = StreamConsumerConfig(
+        chat_type="group", edit_interval=0.01, buffer_threshold=3, cursor="",
+    )
+    consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+    consumer.on_delta("**bold** and `code`")
+    task = asyncio.create_task(consumer.run())
+    await asyncio.sleep(0.05)
+    consumer.finish()
+    await task
+
+    # The final edit applied MarkdownV2 formatting: a parse_mode was supplied
+    # (the mocked `telegram` package makes ParseMode.* a sentinel, so assert it
+    # is present rather than equal to a string) and the text was converted via
+    # format_message — **bold** → *bold* with inline `code` preserved.
+    assert adapter._bot.edit_message_text.await_count >= 1
+    final_edit = adapter._bot.edit_message_text.await_args_list[-1].kwargs
+    assert final_edit.get("parse_mode") is not None
+    assert final_edit["text"] == "*bold* and `code`"
+    # The reply was edited to its final form, not re-sent: exactly one send
+    # (the initial streaming preview).  No duplicate final send.
+    assert adapter._bot.send_message.await_count == 1
+    assert consumer.final_content_delivered is True

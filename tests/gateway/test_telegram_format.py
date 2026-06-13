@@ -37,6 +37,7 @@ _ensure_telegram_mock()
 
 from gateway.platforms.telegram import (  # noqa: E402
     TelegramAdapter,
+    _collapse_single_line_code_fences,
     _escape_mdv2,
     _strip_mdv2,
     _wrap_markdown_tables,
@@ -456,10 +457,14 @@ class TestFormatMessageBlockquote:
 
 class TestFormatMessageComplex:
     def test_code_block_with_bold_outside(self, adapter):
+        # A *bare* single-line fenced block now collapses to inline code (it
+        # renders far cleaner than a full-width gray box for one-liners); the
+        # surrounding bold still converts and the code content is preserved.
         text = "**Note:**\n```\ncode here\n```"
         result = adapter.format_message(text)
         assert "*Note:*" in result or "*Note\\:*" in result
-        assert "```\ncode here\n```" in result
+        assert "`code here`" in result
+        assert "```" not in result
 
     def test_bold_inside_code_not_converted(self, adapter):
         """Bold markers inside code blocks should not be converted."""
@@ -473,10 +478,13 @@ class TestFormatMessageComplex:
         assert "`[not a link](url)`" in result
 
     def test_header_after_code_block(self, adapter):
+        # Bare single-line fence collapses to inline code; the header after it
+        # still converts to bold.
         text = "```\ncode\n```\n## Title"
         result = adapter.format_message(text)
         assert "*Title*" in result
-        assert "```\ncode\n```" in result
+        assert "`code`" in result
+        assert "```" not in result
 
     def test_multiple_bold_segments(self, adapter):
         result = adapter.format_message("**a** and **b** and **c**")
@@ -901,6 +909,102 @@ class TestEditMessageStreamingSafety:
         assert sent_kwargs, "expected at least one overflow continuation"
         assert all(kwargs.get("message_thread_id") == 17585 for kwargs in sent_kwargs)
         assert sent_kwargs[0]["reply_to_message_id"] == 456
+
+
+# =========================================================================
+# _collapse_single_line_code_fences (single-line bare fence → inline code)
+# =========================================================================
+
+
+class TestCollapseSingleLineCodeFences:
+    def test_bare_single_line_fence_becomes_inline(self):
+        # The motivating example: a one-line log inside a bare fence.
+        text = (
+            "```\n"
+            "final delivery already confirmed (streamed=True ... content_delivered=True)\n"
+            "```"
+        )
+        out = _collapse_single_line_code_fences(text)
+        assert out == (
+            "`final delivery already confirmed "
+            "(streamed=True ... content_delivered=True)`"
+        )
+        assert "```" not in out
+
+    def test_labelled_single_line_fence_kept(self):
+        # A language label signals intentional code — keep the block.
+        text = "```python\nprint('hello')\n```"
+        assert _collapse_single_line_code_fences(text) == text
+
+    def test_multiline_block_kept(self):
+        # YAML/config: newlines + indentation matter — must stay fenced.
+        text = "```\ndisplay:\n  platforms:\n    telegram:\n      streaming: false\n```"
+        assert _collapse_single_line_code_fences(text) == text
+
+    def test_indented_single_line_kept(self):
+        # A single but indented line keeps its block so indentation survives.
+        text = "```\n    indented_value\n```"
+        assert _collapse_single_line_code_fences(text) == text
+
+    def test_single_line_with_backtick_kept(self):
+        # Can't safely represent an embedded backtick as inline code.
+        text = "```\necho `hostname`\n```"
+        assert _collapse_single_line_code_fences(text) == text
+
+    def test_empty_fence_kept(self):
+        text = "```\n```"
+        assert _collapse_single_line_code_fences(text) == text
+
+    def test_surrounding_blank_lines_ignored(self):
+        text = "```\n\njust one line\n\n```"
+        assert _collapse_single_line_code_fences(text) == "`just one line`"
+
+    def test_only_targeted_fence_changes_in_mixed_text(self):
+        text = (
+            "Here is a log:\n"
+            "```\none liner\n```\n"
+            "and a real block:\n"
+            "```\nline1\nline2\n```"
+        )
+        out = _collapse_single_line_code_fences(text)
+        assert "`one liner`" in out
+        assert "```\nline1\nline2\n```" in out  # multiline block untouched
+
+    def test_no_fence_is_noop(self):
+        text = "plain text with `inline` and **bold** but no fences"
+        assert _collapse_single_line_code_fences(text) == text
+
+
+# =========================================================================
+# format_message — single-line fence collapse integration
+# =========================================================================
+
+
+class TestFormatMessageCodeFenceCollapse:
+    def test_single_line_fence_renders_as_inline_code(self, adapter):
+        text = "```\nlog line here\n```"
+        result = adapter.format_message(text)
+        # Inline code, not a fenced block; content preserved and unescaped.
+        assert "`log line here`" in result
+        assert "```" not in result
+
+    def test_multiline_yaml_stays_fenced_with_indentation(self, adapter):
+        text = (
+            "```\n"
+            "display:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      streaming: false\n"
+            "```"
+        )
+        result = adapter.format_message(text)
+        # Block + indentation preserved verbatim inside the fence.
+        assert "```\ndisplay:\n  platforms:\n    telegram:\n      streaming: false\n```" in result
+
+    def test_labelled_single_line_fence_stays_block(self, adapter):
+        result = adapter.format_message("```python\nprint('hi')\n```")
+        assert "```python\nprint('hi')\n```" in result
+
 
 # =========================================================================
 # Telegram guest mention gating
