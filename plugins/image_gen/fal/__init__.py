@@ -121,6 +121,8 @@ class FalImageGenProvider(ImageGenProvider):
                 "num_images",
                 "output_format",
                 "seed",
+                "reference_images",
+                "image_style_references",
             )
             if key in kwargs and kwargs[key] is not None
         }

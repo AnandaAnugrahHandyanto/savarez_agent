@@ -222,6 +222,138 @@ class TestSupportsFilter:
         assert p["aspect_ratio"] == "16:9"
 
 
+class TestReferenceImages:
+    """Reference images are normalized safely and routed to capable models."""
+
+    def test_local_reference_file_is_encoded_as_data_url(self, image_tool, tmp_path):
+        ref = tmp_path / "ref.png"
+        ref.write_bytes(b"png-ish")
+
+        refs = image_tool._normalize_reference_images([str(ref)])
+
+        assert refs == [{"url": "data:image/png;base64,cG5nLWlzaA=="}]
+
+    def test_reference_urls_keep_krea_payload_shape(self, image_tool):
+        refs = image_tool._normalize_reference_images([
+            "https://example.com/style.png",
+            {"url": "data:image/png;base64,abc"},
+        ])
+
+        assert refs == [
+            {"url": "https://example.com/style.png"},
+            {"url": "data:image/png;base64,abc"},
+        ]
+
+    def test_references_switch_text_only_default_to_reference_capable_model(self, image_tool):
+        mid, meta = image_tool._resolve_reference_capable_model(
+            image_tool.DEFAULT_MODEL,
+            image_tool.FAL_MODELS[image_tool.DEFAULT_MODEL],
+        )
+
+        assert mid == image_tool.REFERENCE_CAPABLE_MODEL
+        assert "image_style_references" in meta["supports"]
+
+    def test_reference_payload_survives_for_reference_capable_model(self, image_tool):
+        refs = [{"url": "https://example.com/style.png"}]
+        payload = image_tool._build_fal_payload(
+            image_tool.REFERENCE_CAPABLE_MODEL,
+            "hi",
+            "landscape",
+            overrides={"image_style_references": refs},
+        )
+
+        assert payload["image_style_references"] == refs
+
+    def test_reference_edit_fallback_payload_uses_image_urls(self, image_tool):
+        refs = [{"url": "https://example.com/style.png"}]
+        payload = image_tool._build_fal_payload(
+            image_tool.REFERENCE_EDIT_FALLBACK_MODEL,
+            "hi",
+            "landscape",
+            overrides={"image_urls": [r["url"] for r in refs]},
+        )
+
+        assert payload["image_urls"] == ["https://example.com/style.png"]
+        assert payload["image_size"] == "landscape_16_9"
+        assert payload["quality"] == "low"
+
+    def test_reference_model_4xx_retries_reference_edit_model(self, image_tool, monkeypatch):
+        class FakeResponse:
+            status_code = 409
+
+        class FakeHttpError(Exception):
+            response = FakeResponse()
+
+        class FakeHandler:
+            def get(self):
+                return {"images": [{"url": "https://example.com/out.png", "width": 1, "height": 1}]}
+
+        submitted = []
+
+        def fake_submit(model, arguments):
+            submitted.append((model, arguments))
+            if len(submitted) == 1:
+                raise FakeHttpError("billing gate")
+            return FakeHandler()
+
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: object())
+        monkeypatch.setattr(image_tool, "_submit_fal_request", fake_submit)
+
+        import json
+        raw = image_tool.image_generate_tool(
+            "hi",
+            reference_images=["https://example.com/style.png"],
+        )
+        payload = json.loads(raw)
+
+        assert payload["success"] is True
+        assert payload["model"] == image_tool.REFERENCE_EDIT_FALLBACK_MODEL
+        assert payload["reference_images"] == 1
+        assert "reference_warning" not in payload
+        assert submitted[0][0] == image_tool.REFERENCE_CAPABLE_MODEL
+        assert "image_style_references" in submitted[0][1]
+        assert submitted[1][0] == image_tool.REFERENCE_EDIT_FALLBACK_MODEL
+        assert submitted[1][1]["image_urls"] == ["https://example.com/style.png"]
+
+    def test_reference_models_4xx_fall_back_to_text_only_with_warning(self, image_tool, monkeypatch):
+        class FakeResponse:
+            status_code = 409
+
+        class FakeHttpError(Exception):
+            response = FakeResponse()
+
+        class FakeHandler:
+            def get(self):
+                return {"images": [{"url": "https://example.com/out.png", "width": 1, "height": 1}]}
+
+        submitted = []
+
+        def fake_submit(model, arguments):
+            submitted.append((model, arguments))
+            if len(submitted) < 3:
+                raise FakeHttpError("billing gate")
+            return FakeHandler()
+
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: object())
+        monkeypatch.setattr(image_tool, "_submit_fal_request", fake_submit)
+
+        import json
+        raw = image_tool.image_generate_tool(
+            "hi",
+            reference_images=["https://example.com/style.png"],
+        )
+        payload = json.loads(raw)
+
+        assert payload["success"] is True
+        assert payload["model"] == image_tool.DEFAULT_MODEL
+        assert payload["reference_images"] == 0
+        assert "reference_warning" in payload
+        assert submitted[0][0] == image_tool.REFERENCE_CAPABLE_MODEL
+        assert submitted[1][0] == image_tool.REFERENCE_EDIT_FALLBACK_MODEL
+        assert submitted[2][0] == image_tool.DEFAULT_MODEL
+        assert "image_style_references" not in submitted[2][1]
+
+
 # ---------------------------------------------------------------------------
 # Default merging
 # ---------------------------------------------------------------------------
@@ -276,7 +408,11 @@ class TestGptQualityPinnedToMedium:
     def test_non_gpt_model_never_gets_quality(self, image_tool):
         """quality is only meaningful for GPT-Image models (1.5, 2) — other
         models should never have it in their payload."""
-        gpt_models = {"fal-ai/gpt-image-1.5", "fal-ai/gpt-image-2"}
+        gpt_models = {
+            "fal-ai/gpt-image-1.5",
+            "fal-ai/gpt-image-2",
+            image_tool.REFERENCE_EDIT_FALLBACK_MODEL,
+        }
         for mid in image_tool.FAL_MODELS:
             if mid in gpt_models:
                 continue
@@ -363,11 +499,11 @@ class TestAspectRatioNormalization:
 
 class TestRegistryIntegration:
 
-    def test_schema_exposes_only_prompt_and_aspect_ratio_to_agent(self, image_tool):
+    def test_schema_exposes_prompt_aspect_ratio_and_reference_images_to_agent(self, image_tool):
         """The agent-facing schema must stay tight — model selection is a
         user-level config choice, not an agent-level arg."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
-        assert set(props.keys()) == {"prompt", "aspect_ratio"}
+        assert set(props.keys()) == {"prompt", "aspect_ratio", "reference_images"}
 
     def test_aspect_ratio_enum_is_three_values(self, image_tool):
         enum = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"]["enum"]
