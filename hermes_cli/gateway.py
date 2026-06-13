@@ -2203,11 +2203,13 @@ TimeoutStopSec={restart_timeout}
 # unit crosses the pressure threshold.  For Hermes that's typically
 # the WhatsApp Node bridge (and its headless Chromium), so the bridge
 # gets ``code -9`` while the Python gateway survives — see #26997.
-# ``auto`` means "delegate to parent slice", which on default systems
-# disables systemd-oomd action for this unit.  The kernel OOM killer
-# is still the safety net under genuine memory exhaustion.
-ManagedOOMMemoryPressure=auto
-ManagedOOMSwap=auto
+# ``ManagedOOMPreference=omit`` removes this cgroup from systemd-oomd's
+# candidate selection entirely, even when an ancestor slice sets
+# ``ManagedOOMMemoryPressure=kill`` — unlike ``ManagedOOMMemoryPressure=auto``,
+# which is already the default and leaves the unit eligible for an
+# inherited kill policy.  The kernel OOM killer is still the safety net
+# under genuine memory exhaustion.
+ManagedOOMPreference=omit
 StandardOutput=journal
 StandardError=journal
 
@@ -2247,9 +2249,10 @@ TimeoutStopSec={restart_timeout}
 # scope above for the full explanation and #26997.  User services on
 # Ubuntu 24.04 ship with ``ManagedOOMMemoryPressure=kill`` in the
 # default ``user-services-policy.conf`` slice, so the user-mode unit
-# inherits the same hazard as the system one without this override.
-ManagedOOMMemoryPressure=auto
-ManagedOOMSwap=auto
+# inherits the same hazard as the system one.  ``omit`` excludes this
+# cgroup from oomd candidate selection regardless of that inherited
+# policy.
+ManagedOOMPreference=omit
 StandardOutput=journal
 StandardError=journal
 

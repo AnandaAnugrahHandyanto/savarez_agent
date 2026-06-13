@@ -405,11 +405,13 @@ class TestGeneratedSystemdUnits:
     # (and its headless Chromium), which gets ``code -9`` while the
     # Python gateway survives.  See the issue for the full trace.
     #
-    # Both unit templates must declare ``ManagedOOMMemoryPressure=auto``
-    # AND ``ManagedOOMSwap=auto`` to delegate to the parent slice
-    # (which on default systems means "don't act") instead of inheriting
-    # the kill policy.  These tests pin both pairs so a future refactor
-    # can't silently drop one.
+    # Both unit templates must declare ``ManagedOOMPreference=omit`` so the
+    # cgroup is removed from systemd-oomd's candidate selection entirely —
+    # even when an ancestor slice (e.g. Ubuntu 24.04's
+    # ``user-services-policy.conf``) sets ``ManagedOOMMemoryPressure=kill``.
+    # ``ManagedOOMMemoryPressure=auto`` is NOT enough: it's already the
+    # default and leaves the unit eligible for an inherited kill policy.
+    # These tests pin ``omit`` so a future refactor can't silently weaken it.
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -426,24 +428,23 @@ class TestGeneratedSystemdUnits:
 
     def test_user_unit_opts_out_of_systemd_oomd_pressure_kills(self, monkeypatch):
         unit = gateway_cli.generate_systemd_unit(system=False)
-        pressure = self._directive_values(unit, "ManagedOOMMemoryPressure")
-        swap = self._directive_values(unit, "ManagedOOMSwap")
-        assert pressure == ["auto"], (
-            "User unit must opt out of systemd-oomd pressure killing "
+        preference = self._directive_values(unit, "ManagedOOMPreference")
+        assert preference == ["omit"], (
+            "User unit must opt out of systemd-oomd candidate selection "
             "(see #26997 — without this the WhatsApp Node bridge gets "
-            f"SIGKILL'd while the Python gateway survives). got={pressure!r}"
+            f"SIGKILL'd while the Python gateway survives). got={preference!r}"
         )
-        assert swap == ["auto"], f"got={swap!r}"
+        # The weaker ``auto`` directive must not be relied on as the opt-out.
+        assert self._directive_values(unit, "ManagedOOMMemoryPressure") == []
 
     def test_system_unit_opts_out_of_systemd_oomd_pressure_kills(self, monkeypatch):
         unit = gateway_cli.generate_systemd_unit(system=True)
-        pressure = self._directive_values(unit, "ManagedOOMMemoryPressure")
-        swap = self._directive_values(unit, "ManagedOOMSwap")
-        assert pressure == ["auto"], (
-            "System unit must opt out of systemd-oomd pressure killing "
-            f"(see #26997). got={pressure!r}"
+        preference = self._directive_values(unit, "ManagedOOMPreference")
+        assert preference == ["omit"], (
+            "System unit must opt out of systemd-oomd candidate selection "
+            f"(see #26997). got={preference!r}"
         )
-        assert swap == ["auto"], f"got={swap!r}"
+        assert self._directive_values(unit, "ManagedOOMMemoryPressure") == []
 
     def test_oomd_overrides_live_in_service_section(self, monkeypatch):
         """systemd parses ``ManagedOOM*`` only inside the ``[Service]``
@@ -452,8 +453,7 @@ class TestGeneratedSystemdUnits:
         service_start = unit.index("[Service]")
         install_start = unit.index("[Install]")
         service_section = unit[service_start:install_start]
-        assert "ManagedOOMMemoryPressure=auto" in service_section
-        assert "ManagedOOMSwap=auto" in service_section
+        assert "ManagedOOMPreference=omit" in service_section
 
 
 class TestGatewayStopCleanup:
