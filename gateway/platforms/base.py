@@ -1601,12 +1601,92 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+def _pending_queue_items(event: MessageEvent | None) -> list[MessageEvent]:
+    """Return FIFO queue items represented by a pending event head."""
+    if event is None:
+        return []
+    tail = getattr(event, "_hermes_queue_items", []) or []
+    if not isinstance(tail, list):
+        tail = list(tail)
+    return [event, *tail]
+
+
+def _refresh_pending_queue_metadata(head: MessageEvent) -> None:
+    """Normalize visible queue item positions on a pending FIFO head."""
+    items = _pending_queue_items(head)
+    total = max(1, len(items))
+    for index, item in enumerate(items, start=1):
+        setattr(item, "_hermes_queue_item_index", index)
+        setattr(item, "_hermes_queue_item_total", total)
+        setattr(item, "_hermes_queue_count", 1)
+        if item is not head and hasattr(item, "_hermes_queue_items"):
+            delattr(item, "_hermes_queue_items")
+    setattr(head, "_hermes_queue_items", items[1:])
+    setattr(head, "_hermes_queue_count", total)
+
+
+def queued_event_count(event: MessageEvent | None) -> int:
+    """Return how many FIFO queue items are represented by a pending event."""
+    if event is None:
+        return 0
+    tail = getattr(event, "_hermes_queue_items", None)
+    if tail:
+        if not isinstance(tail, list):
+            tail = list(tail)
+        return 1 + len(tail)
+    raw = getattr(event, "_hermes_queue_count", 1)
+    try:
+        count = int(raw)
+    except (TypeError, ValueError):
+        count = 1
+    return max(1, count)
+
+
+def queued_event_position(event: MessageEvent | None) -> tuple[int, int]:
+    """Return the visible FIFO position for a queued event."""
+    if event is None:
+        return (0, 0)
+    try:
+        index = int(getattr(event, "_hermes_queue_item_index", 1) or 1)
+    except (TypeError, ValueError):
+        index = 1
+    try:
+        total = int(getattr(event, "_hermes_queue_item_total", queued_event_count(event)) or 1)
+    except (TypeError, ValueError):
+        total = queued_event_count(event)
+    index = max(1, index)
+    total = max(index, total, 1)
+    return (index, total)
+
+
+def pop_next_pending_message_event(
+    pending_messages: Dict[str, MessageEvent],
+    session_key: str,
+) -> MessageEvent | None:
+    """Pop the next FIFO item while preserving later queued items."""
+    head = pending_messages.pop(session_key, None)
+    if head is None:
+        return None
+    items = _pending_queue_items(head)
+    if not items:
+        return head
+    first, rest = items[0], items[1:]
+    if hasattr(first, "_hermes_queue_items"):
+        delattr(first, "_hermes_queue_items")
+    if rest:
+        next_head = rest[0]
+        setattr(next_head, "_hermes_queue_items", rest[1:])
+        pending_messages[session_key] = next_head
+    return first
+
+
 def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
     event: MessageEvent,
     *,
     merge_text: bool = False,
+    fifo_text: bool = False,
 ) -> None:
     """Store or merge a pending event for a session.
 
@@ -1619,8 +1699,19 @@ def merge_pending_message_event(
     follow-ups so a multi-part user thought is not silently truncated to only
     the last queued fragment.
     """
+    incoming_count = queued_event_count(event)
     existing = pending_messages.get(session_key)
     if existing:
+        existing_count = queued_event_count(existing)
+
+        def _record_merged_queue_count() -> None:
+            setattr(existing, "_hermes_queue_count", existing_count + incoming_count)
+
+        def _append_fifo_queue_item() -> None:
+            items = _pending_queue_items(existing) + _pending_queue_items(event)
+            setattr(existing, "_hermes_queue_items", items[1:])
+            _refresh_pending_queue_metadata(existing)
+
         existing_is_photo = getattr(existing, "message_type", None) == MessageType.PHOTO
         incoming_is_photo = event.message_type == MessageType.PHOTO
         existing_has_media = bool(existing.media_urls)
@@ -1653,13 +1744,28 @@ def merge_pending_message_event(
 
         if (
             merge_text
+            and fifo_text
+            and getattr(existing, "message_type", None) == MessageType.TEXT
+            and event.message_type == MessageType.TEXT
+            and not existing_has_media
+            and not incoming_has_media
+        ):
+            _append_fifo_queue_item()
+            return
+
+        if (
+            merge_text
             and getattr(existing, "message_type", None) == MessageType.TEXT
             and event.message_type == MessageType.TEXT
         ):
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            _record_merged_queue_count()
             return
 
+    if not hasattr(event, "_hermes_queue_count"):
+        setattr(event, "_hermes_queue_count", 1)
+    _refresh_pending_queue_metadata(event)
     pending_messages[session_key] = event
 
 
@@ -3307,6 +3413,25 @@ class BasePlatformAdapter(ABC):
     # Subclasses override these to react to message processing events
     # (e.g. Discord adds 👀/✅/❌ reactions).
 
+    async def _send_queue_status_message(self, event: MessageEvent, content: str) -> None:
+        """Best-effort user-visible queue lifecycle update.
+
+        These messages make mobile command-bus behavior explicit: when a queued
+        follow-up starts, the visible queue count goes down; when the queued
+        batch finishes with no new pending input, the user sees that the queue is
+        empty again. Failures are intentionally non-fatal.
+        """
+        try:
+            reply_anchor = _reply_anchor_for_event(event)
+            metadata = _thread_metadata_for_source(event.source, reply_anchor)
+            await self.send(
+                chat_id=event.source.chat_id,
+                content=content,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            logger.debug("[%s] Failed to send queue status message: %s", self.name, exc)
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
 
@@ -4244,34 +4369,8 @@ class BasePlatformAdapter(ABC):
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 
-                # Play TTS audio before text (voice-first experience)
-                _tts_caption_delivered = False
-                if _tts_path and Path(_tts_path).exists():
-                    try:
-                        telegram_tts_caption = None
-                        if (
-                            self.platform == Platform.TELEGRAM
-                            and text_content
-                            and text_content[:1024] == text_content
-                        ):
-                            telegram_tts_caption = text_content
-                        tts_result = await self.play_tts(
-                            chat_id=event.source.chat_id,
-                            audio_path=_tts_path,
-                            caption=telegram_tts_caption,
-                            metadata=_thread_metadata,
-                        )
-                        _tts_caption_delivered = bool(
-                            telegram_tts_caption and getattr(tts_result, "success", False)
-                        )
-                    finally:
-                        try:
-                            os.remove(_tts_path)
-                        except OSError:
-                            pass
-
-                # Send the text portion
-                if text_content and not _tts_caption_delivered:
+                # Send the text portion before any auto-TTS voice bubble.
+                if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
                     # Mark final response messages for notification delivery.
@@ -4308,6 +4407,22 @@ class BasePlatformAdapter(ABC):
                             message_id=result.message_id,
                             ttl_seconds=_ephemeral_ttl,
                         )
+
+                # Play auto-TTS after text. Do not caption the Telegram voice
+                # bubble with the full response; the text was already sent as a
+                # normal message immediately above.
+                if _tts_path and Path(_tts_path).exists():
+                    try:
+                        await self.play_tts(
+                            chat_id=event.source.chat_id,
+                            audio_path=_tts_path,
+                            metadata=_thread_metadata,
+                        )
+                    finally:
+                        try:
+                            os.remove(_tts_path)
+                        except OSError:
+                            pass
 
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()
@@ -4420,7 +4535,7 @@ class BasePlatformAdapter(ABC):
                 # A3 (#29346): if a non-empty response produced nothing
                 # deliverable, fail loudly rather than dropping it in silence.
                 _anything_delivered = (
-                    delivery_attempted or _tts_caption_delivered
+                    delivery_attempted
                     or images or local_files or media_files
                 )
                 if not _anything_delivered and _response_pre_extract.strip():
@@ -4446,8 +4561,17 @@ class BasePlatformAdapter(ABC):
 
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:
-                pending_event = self._pending_messages.pop(session_key)
+                pending_event = pop_next_pending_message_event(self._pending_messages, session_key)
+                if pending_event is None:
+                    return
+                pending_idx, pending_total = queued_event_position(pending_event)
+                setattr(pending_event, "_hermes_queued_turn", True)
+                setattr(pending_event, "_hermes_queue_count_at_start", pending_total)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
+                await self._send_queue_status_message(
+                    pending_event,
+                    f"✅ Current task complete. Queue item {pending_idx}/{pending_total} → processing queued turn now.",
+                )
                 # Keep the _active_sessions entry live across the turn chain
                 # and only CLEAR the interrupt Event — do NOT delete the entry.
                 # If we deleted here, a concurrent inbound message arriving
@@ -4565,7 +4689,7 @@ class BasePlatformAdapter(ABC):
             # busy-handler path.  Without this block, we would delete the
             # active-session entry and the queued message would be silently
             # dropped (user never gets a reply).
-            late_pending = self._pending_messages.pop(session_key, None)
+            late_pending = pop_next_pending_message_event(self._pending_messages, session_key)
             if late_pending is not None:
                 current_task = asyncio.current_task()
                 existing_task = self._session_tasks.get(session_key)
@@ -4587,6 +4711,13 @@ class BasePlatformAdapter(ABC):
                         "[%s] Late-arrival pending message during cleanup — spawning drain task",
                         self.name,
                     )
+                    pending_idx, pending_total = queued_event_position(late_pending)
+                    setattr(late_pending, "_hermes_queued_turn", True)
+                    setattr(late_pending, "_hermes_queue_count_at_start", pending_total)
+                    await self._send_queue_status_message(
+                        late_pending,
+                        f"✅ Current task complete. Queue item {pending_idx}/{pending_total} → processing queued turn now.",
+                    )
                     _active = self._active_sessions.get(session_key)
                     if _active is not None:
                         _active.clear()
@@ -4605,6 +4736,8 @@ class BasePlatformAdapter(ABC):
                 # Leave _active_sessions[session_key] populated — the drain
                 # task's own lifecycle will clean it up.
             else:
+                if bool(getattr(event, "_hermes_queued_turn", False)):
+                    await self._send_queue_status_message(event, "✅ Queue empty.")
                 # Clean up session tracking.  Guard-match both deletes so a
                 # reset-like command that already swapped in its own
                 # command_guard (and cancelled us) can't be accidentally

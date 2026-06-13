@@ -30,6 +30,9 @@ from gateway.platforms.base import (
     Platform,
     SessionSource,
     build_session_key,
+    pop_next_pending_message_event,
+    queued_event_count,
+    queued_event_position,
 )
 
 
@@ -51,6 +54,16 @@ def _make_event(text="hello", chat_id="123", platform_val="telegram"):
         source=source,
         message_id="msg1",
     )
+    return evt
+
+
+def _make_photo_event(text="screenshot", chat_id="123", platform_val="telegram", message_id="photo1"):
+    """Build a minimal photo MessageEvent with one cached image path."""
+    evt = _make_event(text=text, chat_id=chat_id, platform_val=platform_val)
+    evt.message_type = MessageType.PHOTO
+    evt.message_id = message_id
+    evt.media_urls = [f"/tmp/{message_id}.jpg"]
+    evt.media_types = ["image/jpeg"]
     return evt
 
 
@@ -235,35 +248,141 @@ class TestBusySessionAck:
         adapter._send_with_retry.assert_called_once()
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Queued for the next turn" in content
-        assert "respond once the current task finishes" in content
+        assert "Queue item 1/1" in content
+        assert "pick this up automatically" in content
         assert "Interrupting" not in content
 
     @pytest.mark.asyncio
-    async def test_busy_text_mode_queue_delegates_to_adapter_handle_message(self):
-        """busy_text_mode=queue lets the adapter debounce text silently."""
+    async def test_busy_text_mode_queue_sends_ack_and_queues_text(self):
+        """busy_text_mode=queue should still acknowledge active TEXT follow-ups."""
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         runner._busy_text_mode = "queue"
         adapter = _make_adapter()
 
+        event = _make_event(text="part one")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        assert sk in adapter._pending_messages
+        assert adapter._pending_messages[sk] is event
+        agent.interrupt.assert_not_called()
+        adapter._send_with_retry.assert_called_once()
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queue item 1/1" in content
+
+    @pytest.mark.asyncio
+    async def test_queue_ack_number_increments_for_queued_followups(self):
+        """Queue ack updates the visible queued depth even inside cooldown."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+
         first = _make_event(text="part one")
-        second = _make_event(text="part two")
+        second = MessageEvent(
+            text="part two",
+            message_type=MessageType.TEXT,
+            source=first.source,
+            message_id="msg2",
+        )
         sk = build_session_key(first.source)
 
         agent = MagicMock()
         runner._running_agents[sk] = agent
         runner.adapters[first.source.platform] = adapter
-        runner.adapters[second.source.platform] = adapter
 
-        result1 = await runner._handle_active_session_busy_message(first, sk)
-        result2 = await runner._handle_active_session_busy_message(second, sk)
+        await runner._handle_active_session_busy_message(first, sk)
+        await runner._handle_active_session_busy_message(second, sk)
 
-        assert result1 is False
-        assert result2 is False
+        pending = adapter._pending_messages[sk]
+        assert pending is first
+        assert queued_event_count(pending) == 1
+        assert runner._queue_depth(sk, adapter=adapter) == 2
+        assert [event.text for event in runner._queued_events[sk]] == ["part two"]
+
+        first_pending = pop_next_pending_message_event(adapter._pending_messages, sk)
+        assert first_pending is first
+        promoted = runner._promote_queued_event(sk, adapter, first_pending)
+        assert promoted is first
+        assert sk in adapter._pending_messages
+        assert adapter._pending_messages[sk] is second
+        second_pending = pop_next_pending_message_event(adapter._pending_messages, sk)
+        assert second_pending is second
         assert sk not in adapter._pending_messages
-        agent.interrupt.assert_not_called()
-        adapter._send_with_retry.assert_not_called()
+        assert adapter._send_with_retry.await_count == 2
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queue item 2/2" in content
+
+    @pytest.mark.asyncio
+    async def test_queue_mode_keeps_photo_followups_as_fifo_tasks(self):
+        """Separate busy photo/caption follow-ups must not merge into one queued turn."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+
+        first = _make_photo_event(
+            text="Nieuwe taak, verwerk via Vault-first Agent Workflow Lite:",
+            message_id="photo-task-1",
+        )
+        second = _make_photo_event(
+            text="Nieuwe taak, verwerk via Vault-first Agent Workflow Lite:",
+            message_id="photo-task-2",
+        )
+        second.source = first.source
+        sk = build_session_key(first.source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[first.source.platform] = adapter
+
+        await runner._handle_active_session_busy_message(first, sk)
+        await runner._handle_active_session_busy_message(second, sk)
+
+        assert adapter._pending_messages[sk] is first
+        assert adapter._pending_messages[sk].media_urls == ["/tmp/photo-task-1.jpg"]
+        assert runner._queued_events[sk] == [second]
+        assert runner._queue_depth(sk, adapter=adapter) == 2
+        assert adapter._send_with_retry.await_count == 2
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queue item 2/2" in content
+
+    @pytest.mark.asyncio
+    async def test_queue_mode_reports_full_queue_instead_of_success_ack(self):
+        """A dropped follow-up must be visible as queue-full, not fake queued."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        setattr(runner, "_BUSY_QUEUE_MAX_PENDING", 1)
+        adapter = _make_adapter()
+
+        first = _make_event(text="first")
+        second = MessageEvent(
+            text="second",
+            message_type=MessageType.TEXT,
+            source=first.source,
+            message_id="msg2",
+        )
+        sk = build_session_key(first.source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[first.source.platform] = adapter
+
+        await runner._handle_active_session_busy_message(first, sk)
+        await runner._handle_active_session_busy_message(second, sk)
+
+        assert adapter._pending_messages[sk] is first
+        assert sk not in runner._queued_events
+        assert runner._queue_depth(sk, adapter=adapter) == 1
+        assert adapter._send_with_retry.await_count == 2
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queue full" in content
+        assert "could not queue" in content
 
     @pytest.mark.asyncio
     async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self):
@@ -312,18 +431,17 @@ class TestBusySessionAck:
         agent.steer = MagicMock(return_value=False)  # rejected
         runner._running_agents[sk] = agent
 
-        with patch("gateway.run.merge_pending_message_event") as mock_merge:
-            await runner._handle_active_session_busy_message(event, sk)
+        await runner._handle_active_session_busy_message(event, sk)
 
         agent.steer.assert_called_once()
         agent.interrupt.assert_not_called()
-        # Fell back to queue semantics: event was merged into pending messages
-        mock_merge.assert_called_once()
+        # Fell back to FIFO queue semantics instead of interrupting.
+        assert adapter._pending_messages[sk] is event
 
         # Ack uses queue-mode wording (not steer, not interrupt)
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Queued for the next turn" in content
+        assert "Queue item 1/1" in content
         assert "Steered" not in content
 
     @pytest.mark.asyncio
@@ -340,15 +458,14 @@ class TestBusySessionAck:
         # Agent is still being set up — sentinel in place
         runner._running_agents[sk] = sentinel
 
-        with patch("gateway.run.merge_pending_message_event") as mock_merge:
-            await runner._handle_active_session_busy_message(event, sk)
+        await runner._handle_active_session_busy_message(event, sk)
 
         # Event was queued instead of steered
-        mock_merge.assert_called_once()
+        assert adapter._pending_messages[sk] is event
 
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Queued for the next turn" in content
+        assert "Queue item 1/1" in content
 
     @pytest.mark.asyncio
     async def test_debounce_suppresses_rapid_acks(self):
@@ -664,7 +781,7 @@ class TestBusySessionOnboardingHint:
             await runner._handle_active_session_busy_message(event, sk)
 
         content = adapter._send_with_retry.call_args.kwargs.get("content", "")
-        assert "Queued for the next turn" in content
+        assert "Queue item 1/1" in content
         assert "First-time tip" in content
         assert "/busy interrupt" in content
         # Must NOT tell the user to /busy queue when they're already on queue.

@@ -605,6 +605,63 @@ def detect_dangerous_command(command: str) -> tuple:
     return (False, None, None)
 
 
+def format_approval_description(command: str, description: str | None) -> str:
+    """Return the user-facing approval reason for a flagged command.
+
+    Pattern labels such as ``recursive delete`` are useful as stable approval
+    keys, but they are bad UX in gateway approval prompts: the user sees a
+    button request with little/no context about what is being approved. Keep
+    detector labels internal and expand prompt text into a concrete,
+    human-readable message that names the action, the risk, and the scope to
+    inspect before approving.
+    """
+    desc = (description or "").strip()
+    cmd = (command or "").strip()
+    lower_desc = desc.lower()
+    lower_cmd = _normalize_command_for_detection(cmd).lower() if cmd else ""
+
+    def _scope_hint() -> str:
+        if not cmd:
+            return "Inspect the command before approving."
+        if re.search(r'\brm\b.*(?:/tmp|mktemp|\.pytest_cache|node_modules|dist|build|target|__pycache__)', lower_cmd):
+            return "Scope looks like temporary/build output; approve only if this is not project, vault, or user data."
+        if re.search(r'\b(git\s+clean|git\s+reset|git\s+push\b.*(?:--force|\s-f\b))', lower_cmd):
+            return "Verify that no local work or shared history will be lost."
+        if re.search(r'(/etc/|/var/|/usr/|/home/|~|\$home|\.env|config\.yaml)', lower_cmd):
+            return "Scope may touch sensitive or broad paths; approve only if the target is exact."
+        return "Review the command and target before approving."
+
+    if not desc or lower_desc == "dangerous command":
+        return f"No specific reason was provided by the detector. {_scope_hint()}"
+    if "recursive delete" in lower_desc or re.search(r'\brm\s+[^\n]*-(?:[^\s]*r|-[^\s]*recursive)', lower_cmd):
+        return f"Recursive delete: this command can remove a directory and its contents. {_scope_hint()}"
+    if "delete in root path" in lower_desc:
+        return "Delete under an absolute/root path: this can affect files outside the current project. Review the exact target before approving."
+    if "git reset --hard" in lower_desc:
+        return "Git reset --hard: this can discard local uncommitted changes. Review git status/diff before approving."
+    if "git clean" in lower_desc:
+        return "Forced git clean: this removes untracked files. Review which files will be deleted before approving."
+    if "force push" in lower_desc:
+        return "Git force push: this rewrites remote history. Approve only if this is intentional and agreed."
+    if "shell command via" in lower_desc or "script execution" in lower_desc:
+        return f"Inline shell/script execution: the command runs code in a shell/script block. {_scope_hint()}"
+    if "pipe remote content to shell" in lower_desc or "execute remote script" in lower_desc:
+        return "Remote script execution: downloaded content is run directly as shell code. Approve only if the source and content are trusted."
+    if "system config" in lower_desc or "system file" in lower_desc:
+        return "System configuration change: this may affect host services or credentials. Review the path and rollback plan before approving."
+    if "project env/config" in lower_desc:
+        return "Project env/config change: this may overwrite secrets or runtime settings. Review the file and diff before approving."
+    if "sql" in lower_desc or "drop" in lower_desc or "truncate" in lower_desc:
+        return "Destructive database SQL: this can delete data or modify tables/databases. Review the database, table, and WHERE/scope."
+    if "kill" in lower_desc or "stop/restart" in lower_desc or "hermes" in lower_desc or "gateway" in lower_desc:
+        return "Process/service lifecycle action: this can interrupt running processes or the Hermes gateway. Review the target and timing before approving."
+    if "chmod" in lower_desc or "chown" in lower_desc:
+        return "Permission/ownership change: this can make files writable or unusable. Review the path, recursion, and intended permissions."
+
+    # Preserve rich Tirith descriptions and any future caller-supplied human text.
+    return desc
+
+
 # =========================================================================
 # Per-session approval state (thread-safe)
 # =========================================================================
@@ -1100,32 +1157,34 @@ def check_dangerous_command(command: str, env_type: str,
         return {"approved": True, "message": None}
 
     if is_gateway or env_var_enabled("HERMES_EXEC_ASK"):
+        user_description = format_approval_description(command, description)
         submit_pending(session_key, {
             "command": command,
             "pattern_key": pattern_key,
-            "description": description,
+            "description": user_description,
         })
         return {
             "approved": False,
             "pattern_key": pattern_key,
             "status": "approval_required",
             "command": command,
-            "description": description,
+            "description": user_description,
             "message": (
-                f"⚠️ This command is potentially dangerous ({description}). "
+                f"⚠️ This command needs approval. {user_description} "
                 f"Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
             ),
         }
 
-    choice = prompt_dangerous_approval(command, description,
+    user_description = format_approval_description(command, description)
+    choice = prompt_dangerous_approval(command, user_description,
                                        approval_callback=approval_callback)
 
     if choice == "deny":
         return {
             "approved": False,
-            "message": f"BLOCKED: User denied this potentially dangerous command (matched '{description}' pattern). Do NOT retry this command - the user has explicitly rejected it.",
+            "message": f"BLOCKED: User denied this command. Reason shown to user: {user_description}. Do NOT retry this command - the user has explicitly rejected it.",
             "pattern_key": pattern_key,
-            "description": description,
+            "description": user_description,
         }
 
     if choice == "session":
@@ -1404,7 +1463,10 @@ def check_all_command_guards(command: str, env_type: str,
     # --- Phase 3: Approval ---
 
     # Combine descriptions for a single approval prompt
-    combined_desc = "; ".join(desc for _, desc, _ in warnings)
+    combined_desc = "; ".join(
+        desc if is_t else format_approval_description(command, desc)
+        for _, desc, is_t in warnings
+    )
     primary_key = warnings[0][0]
     all_keys = [key for key, _, _ in warnings]
     has_tirith = any(is_t for _, _, is_t in warnings)

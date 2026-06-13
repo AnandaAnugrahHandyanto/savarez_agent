@@ -1254,6 +1254,7 @@ from gateway.platforms.base import (
     MessageType,
     _reply_anchor_for_event,
     merge_pending_message_event,
+    queued_event_count,
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -3079,8 +3080,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         queued_events = getattr(self, "_queued_events", None) or {}
         depth = len(queued_events.get(session_key, []))
         if adapter is not None and session_key in getattr(adapter, "_pending_messages", {}):
-            depth += 1
+            depth += queued_event_count(adapter._pending_messages.get(session_key))
         return depth
+
+    @staticmethod
+    def _should_merge_busy_media_queue_event(existing: MessageEvent, event: MessageEvent) -> bool:
+        """Return True for album-like media fragments in the busy queue.
+
+        Telegram adapters normally coalesce a real album/photo burst into one
+        MessageEvent before the runner sees it.  Some platforms/tests can still
+        hand us adjacent media fragments.  Keep those together only when they
+        look like the same burst: both carry media, they arrived close together,
+        and they do not both have their own caption/task text.  Separate
+        screenshot tasks sent while the agent is busy usually have a caption on
+        each message; those must stay FIFO turns.
+        """
+        existing_has_media = (
+            getattr(existing, "message_type", None) == MessageType.PHOTO
+            or bool(getattr(existing, "media_urls", None))
+        )
+        event_has_media = event.message_type == MessageType.PHOTO or bool(getattr(event, "media_urls", None))
+        if not existing_has_media or not event_has_media:
+            return False
+
+        existing_text = (getattr(existing, "text", None) or "").strip()
+        event_text = (getattr(event, "text", None) or "").strip()
+        if existing_text and event_text:
+            return False
+
+        existing_ts = getattr(existing, "timestamp", None)
+        event_ts = getattr(event, "timestamp", None)
+        try:
+            if existing_ts is not None and event_ts is not None:
+                return abs((event_ts - existing_ts).total_seconds()) <= 2.0
+        except Exception:
+            return False
+        return False
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
@@ -3611,44 +3646,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # still small enough to never threaten memory.
     _BUSY_QUEUE_MAX_PENDING = 32
 
-    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
+    def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> bool:
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
-            return
+            return False
         # #28503 — Previously this called ``merge_pending_message_event``
         # with the default ``merge_text=False``, which silently OVERWROTE
         # the single pending slot when consecutive text messages arrived
         # in ``busy_input_mode: queue``. Route through the FIFO
         # infrastructure shared with ``/queue`` so each follow-up gets
-        # its own turn in arrival order. Photo bursts still merge into
-        # the head slot via ``merge_pending_message_event`` (album
-        # semantics); everything else appends to the overflow tail.
+        # its own turn in arrival order. Telegram already coalesces photo
+        # bursts/albums into one MessageEvent before this point; once a
+        # busy-session queue item exists, later media events are distinct
+        # turns and must not be melted into the existing pending payload.
         pending_slot = getattr(adapter, "_pending_messages", None)
         existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
-        if existing is not None and (
-            getattr(existing, "message_type", None) == MessageType.PHOTO
-            or event.message_type == MessageType.PHOTO
-            or bool(getattr(existing, "media_urls", None))
-            or bool(getattr(event, "media_urls", None))
-        ):
-            # Preserve photo-burst / media-merge semantics for the head slot.
+        if existing is not None and self._should_merge_busy_media_queue_event(existing, event):
             merge_pending_message_event(
                 adapter._pending_messages,
                 session_key,
                 event,
                 merge_text=event.message_type == MessageType.TEXT,
             )
-            return
-
+            return True
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
             logger.warning(
                 "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
                 session_key,
                 self._BUSY_QUEUE_MAX_PENDING,
             )
-            return
+            return False
 
         self._enqueue_fifo(session_key, event, adapter)
+        return True
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
@@ -3676,8 +3706,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reply_anchor = self._reply_anchor_for_event(event)
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
             if self._queue_during_drain_enabled():
-                self._queue_or_replace_pending_event(session_key, event)
-                message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                queued = self._queue_or_replace_pending_event(session_key, event)
+                if queued:
+                    message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                else:
+                    message = f"⚠️ Queue full — I could not queue this while the gateway is {self._status_action_gerund()}. Please resend after it comes back."
             else:
                 message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
 
@@ -3703,13 +3736,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         running_agent = self._running_agents.get(session_key)
 
         effective_mode = self._busy_input_mode
-        busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
+        busy_text_mode = getattr(self, "_busy_text_mode", "queue")
+        # TEXT follow-ups in busy_text_mode=queue still go through the runner
+        # busy handler so the user gets an immediate "queued" acknowledgement.
+        # The adapter's debounce path only stores the next turn; it is silent.
+        # Returning False here made Telegram look unresponsive even though the
+        # follow-up was queued correctly.
         if (
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
             and effective_mode != "steer"
         ):
-            return False
+            effective_mode = "queue"
 
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet
@@ -3757,13 +3795,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # current run finishes (or is interrupted).  Skip this for a
         # successful steer — the text already landed inside the run and
         # must NOT also be replayed as a next-turn user message.
+        queued = True
         if not steered:
-            merge_pending_message_event(
-                adapter._pending_messages,
-                session_key,
-                event,
-                merge_text=event.message_type == MessageType.TEXT,
-            )
+            if effective_mode == "queue":
+                queued = self._queue_or_replace_pending_event(session_key, event)
+            else:
+                merge_pending_message_event(
+                    adapter._pending_messages,
+                    session_key,
+                    event,
+                    merge_text=event.message_type == MessageType.TEXT,
+                )
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
@@ -3785,12 +3827,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Busy ack suppressed for session %s", session_key)
             return True  # input still processed, just no ack sent
 
+        queued_pending_event = adapter._pending_messages.get(session_key) if is_queue_mode else None
+        queued_count = self._queue_depth(session_key, adapter=adapter) if is_queue_mode else 1
+        last_acked_queue_count = int(getattr(queued_pending_event, "_hermes_last_ack_queue_count", 0) or 0)
+        queue_count_increased = is_queue_mode and queued_count > last_acked_queue_count
+        if is_queue_mode and not queued:
+            queued_count = max(queued_count, self._BUSY_QUEUE_MAX_PENDING)
+            queue_count_increased = True
+
         # Debounce: only send an acknowledgment once every 30 seconds per session
-        # to avoid spamming the user when they send multiple messages quickly
+        # to avoid spamming the user when they send multiple messages quickly.
+        # Queue-mode is the exception: if another follow-up was merged into the
+        # pending turn, send the updated Queue item N/N badge even inside cooldown so
+        # mobile users can see the backlog is growing instead of wondering if the
+        # later message was swallowed.
         _BUSY_ACK_COOLDOWN = 30
         now = time.time()
         last_ack = self._busy_ack_ts.get(session_key, 0)
-        if now - last_ack < _BUSY_ACK_COOLDOWN:
+        if now - last_ack < _BUSY_ACK_COOLDOWN and not queue_count_increased:
             return True  # interrupt sent (if not queue), ack already delivered recently
 
         self._busy_ack_ts[session_key] = now
@@ -3828,6 +3882,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
+        queue_badge = "Queue item 1/1"
+        if is_queue_mode:
+            queue_badge = f"Queue item {queued_count}/{queued_count}"
         if is_steer_mode:
             message = (
                 f"⏩ Steered into current run{status_detail}. "
@@ -3838,14 +3895,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # follow-up didn't accidentally kill the subagent and
             # discovers `/stop` as the explicit escape hatch.
             message = (
-                f"⏳ Subagent working{status_detail} — your message is queued for "
-                f"when it finishes (use /stop to cancel everything)."
+                f"⏳ {queue_badge}: subagent working{status_detail}. "
+                f"I’ll pick this up when it finishes (use /stop to cancel everything)."
             )
         elif is_queue_mode:
-            message = (
-                f"⏳ Queued for the next turn{status_detail}. "
-                f"I'll respond once the current task finishes."
-            )
+            if queued:
+                message = (
+                    f"⏳ {queue_badge}{status_detail}. "
+                    f"I’ll pick this up automatically once the current task finishes."
+                )
+            else:
+                message = (
+                    f"⚠️ Queue full ({queued_count}/{self._BUSY_QUEUE_MAX_PENDING}){status_detail}. "
+                    f"I could not queue this message; please resend after the current task finishes."
+                )
         else:
             message = (
                 f"⚡ Interrupting current task{status_detail}. "
@@ -3894,6 +3957,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ),
                 metadata=thread_meta,
             )
+            if queued_pending_event is not None:
+                setattr(queued_pending_event, "_hermes_last_ack_queue_count", queued_count)
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
 
@@ -6923,7 +6988,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    merge_pending_message_event(adapter._pending_messages, _quick_key, event)
+                    if self._busy_input_mode == "queue":
+                        self._queue_or_replace_pending_event(_quick_key, event)
+                    else:
+                        merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
 
             _telegram_followup_grace = float(
@@ -6945,7 +7013,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     if self._busy_input_mode == "queue":
-                        self._enqueue_fifo(_quick_key, event, adapter)
+                        queued = self._queue_or_replace_pending_event(_quick_key, event)
+                        if not queued:
+                            return f"⚠️ Queue full ({self._queue_depth(_quick_key, adapter=adapter)}/{self._BUSY_QUEUE_MAX_PENDING}). I could not queue this message; please resend after the current task finishes."
                     else:
                         merge_pending_message_event(
                             adapter._pending_messages,
@@ -6967,16 +7037,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # agent starts.
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    merge_pending_message_event(
-                        adapter._pending_messages,
-                        _quick_key,
-                        event,
-                        merge_text=True,
-                    )
+                    if self._busy_input_mode == "queue":
+                        self._queue_or_replace_pending_event(_quick_key, event)
+                    else:
+                        merge_pending_message_event(
+                            adapter._pending_messages,
+                            _quick_key,
+                            event,
+                            merge_text=True,
+                        )
                 return None
             if self._draining:
                 if self._queue_during_drain_enabled():
-                    self._queue_or_replace_pending_event(_quick_key, event)
+                    queued = self._queue_or_replace_pending_event(_quick_key, event)
+                    if not queued:
+                        return f"⚠️ Queue full — I could not queue this while the gateway is {self._status_action_gerund()}. Please resend after it comes back."
                 return (
                     f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
                     if self._queue_during_drain_enabled()
@@ -6984,7 +7059,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             if self._busy_input_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
-                self._queue_or_replace_pending_event(_quick_key, event)
+                queued = self._queue_or_replace_pending_event(_quick_key, event)
+                if not queued:
+                    return f"⚠️ Queue full ({self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))}/{self._BUSY_QUEUE_MAX_PENDING}). I could not queue this message; please resend after the current task finishes."
                 return None
             if self._busy_input_mode == "steer":
                 # Steer mode: inject text into the running agent mid-run via
@@ -7002,7 +7079,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug("PRIORITY steer for session %s", _quick_key)
                     return None
                 logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
-                self._queue_or_replace_pending_event(_quick_key, event)
+                queued = self._queue_or_replace_pending_event(_quick_key, event)
+                if not queued:
+                    return f"⚠️ Queue full ({self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))}/{self._BUSY_QUEUE_MAX_PENDING}). I could not queue this message; please resend after the current task finishes."
                 return None
             # #30170 — Subagent protection (PRIORITY path). Same rationale
             # as ``_handle_active_session_busy_message``: an interrupt
@@ -7018,7 +7097,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "because the running agent has active subagents (#30170)",
                     _quick_key,
                 )
-                self._queue_or_replace_pending_event(_quick_key, event)
+                queued = self._queue_or_replace_pending_event(_quick_key, event)
+                if not queued:
+                    return f"⚠️ Queue full ({self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))}/{self._BUSY_QUEUE_MAX_PENDING}). I could not queue this message; please resend after the current task finishes."
                 return None
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
             running_agent.interrupt(event.text)
@@ -8900,10 +8981,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
 
-            # Auto voice reply: send TTS audio before the text response
+            # Auto voice reply: keep Telegram/user-visible ordering text → voice.
+            # If streaming already sent the text, send audio now. Otherwise append
+            # internal MEDIA tags so the adapter sends the text first and the voice
+            # bubble underneath during normal response post-processing.
             _already_sent = bool(agent_result.get("already_sent"))
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
-                await self._send_voice_reply(event, response)
+                if _already_sent:
+                    await self._send_voice_reply(event, response)
+                else:
+                    _voice_tags = await self._voice_reply_media_tags(response)
+                    if _voice_tags:
+                        response = f"{response}\n{_voice_tags}"
 
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
@@ -9819,8 +9908,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return True
 
+    async def _voice_reply_media_tags(self, text: str) -> str:
+        """Generate TTS audio and return MEDIA tags for post-text delivery.
+
+        Used when the normal adapter path will still send the text response.
+        The adapter strips these internal tags from the visible message, sends
+        the text first, and then uploads the audio underneath it.
+        """
+        try:
+            from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+
+            tts_text = _strip_markdown_for_tts(text[:4000])
+            if not tts_text:
+                return ""
+
+            result_json = await asyncio.to_thread(text_to_speech_tool, text=tts_text)
+            try:
+                result = json.loads(result_json)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(
+                    "Auto voice reply TTS returned invalid JSON for media tags: %s",
+                    result_json[:200] if result_json else result_json,
+                )
+                return ""
+
+            actual_path = result.get("file_path")
+            if not result.get("success") or not actual_path or not os.path.isfile(actual_path):
+                logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
+                return ""
+            return f"[[audio_as_voice]]\nMEDIA:{actual_path}"
+        except Exception as e:
+            logger.warning("Auto voice reply media-tag generation failed: %s", e, exc_info=True)
+            return ""
+
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
-        """Generate TTS audio and send as a voice message before the text reply."""
+        """Generate TTS audio and send as a voice message after streamed text."""
         import uuid as _uuid
         audio_path = None
         actual_path = None
@@ -11419,7 +11541,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             chat_id = data.get("chat_id")
             chat_type = data.get("chat_type")
             thread_id = data.get("thread_id")
-            message_id = data.get("message_id")
+            # New markers use reply_to_message_id; accept legacy message_id
+            # so restart notifications written before an update still thread
+            # their comeback ping correctly after the new gateway boots.
+            reply_to_message_id = data.get("reply_to_message_id") or data.get("message_id")
 
             if not platform_str or not chat_id:
                 return None
@@ -11446,7 +11571,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 chat_id,
                 thread_id,
                 chat_type=chat_type,
-                reply_to_message_id=message_id,
+                reply_to_message_id=reply_to_message_id,
                 adapter=adapter,
             )
             result = await adapter.send(
@@ -14311,7 +14436,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _status_adapter.pause_typing_for_chat(_status_chat_id)
 
                 cmd = approval_data.get("command", "")
-                desc = approval_data.get("description", "dangerous command")
+                desc = (approval_data.get("description") or "").strip() or "Geen reden meegeleverd; controleer de command en target voordat je goedkeurt."
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids
