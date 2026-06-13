@@ -33,6 +33,7 @@ const {
   SESSION_WINDOW_MIN_WIDTH
 } = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
+const { isRunnableWindowsUpdaterBinary, waitForUpdaterSpawn } = require('./updater-handoff.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPort } = require('./backend-ready.cjs')
@@ -1583,11 +1584,14 @@ let updateInFlight = false
 // apps/bootstrap-installer paths::copy_self_to_hermes_home). That binary owns
 // ALL repo mutation — running `hermes update` + rebuilding the desktop — so
 // the desktop never touches its own bits while running. Returns null when the
-// updater isn't staged (e.g. a dev/source run that never went through the
-// installer); callers degrade gracefully.
+// updater isn't staged or is not launchable on Windows (e.g. a stale/broken
+// hermes-setup.exe file); callers degrade gracefully.
 function resolveUpdaterBinary() {
   const name = IS_WINDOWS ? 'hermes-setup.exe' : 'hermes-setup'
   const candidate = path.join(HERMES_HOME, name)
+  if (IS_WINDOWS) {
+    return isRunnableWindowsUpdaterBinary(candidate) ? candidate : null
+  }
   return fileExists(candidate) ? candidate : null
 }
 
@@ -1819,6 +1823,19 @@ async function applyUpdates(opts = {}) {
       stdio: 'ignore',
       windowsHide: false
     })
+
+    if (IS_WINDOWS) {
+      try {
+        await waitForUpdaterSpawn(child)
+      } catch (err) {
+        const message = `Could not launch the staged Hermes updater: ${err.message || String(err)}`
+        rememberLog(`[updates] staged updater launch failed: ${updater} --update: ${err.message || err}`)
+
+        emitUpdateProgress({ stage: 'error', message, error: 'updater-launch-failed' })
+        return { ok: false, error: 'updater-launch-failed', message, updater }
+      }
+    }
+
     child.unref()
 
     rememberLog(`[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
