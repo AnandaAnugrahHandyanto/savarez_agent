@@ -29,6 +29,7 @@ from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.model_metadata import is_local_endpoint
+from agent.iteration_budget import is_unbounded_iteration_limit
 from agent.message_sanitization import (
     _sanitize_surrogates,
     _repair_tool_call_arguments,
@@ -1304,6 +1305,15 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
+    if is_unbounded_iteration_limit(getattr(agent, "max_iterations", 90)):
+        logger.warning(
+            "handle_max_iterations called while iteration budget is unbounded "
+            "(api_call_count=%s, max_iterations=%s); suppressing forced summary",
+            api_call_count,
+            getattr(agent, "max_iterations", None),
+        )
+        return ""
+
     print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")
 
     summary_request = (

@@ -53,6 +53,35 @@ def _agent_for_finalizer(max_iterations=0):
     return agent
 
 
+def test_unbounded_turn_finalizer_does_not_treat_missing_response_as_exhausted():
+    agent = _agent_for_finalizer(max_iterations=0)
+    messages = [
+        {"role": "user", "content": "work"},
+        {"role": "assistant", "tool_calls": [{"function": {"name": "terminal"}}]},
+        {"role": "tool", "content": "still working"},
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response=None,
+        api_call_count=999,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task-test",
+        turn_id="turn-test",
+        user_message="work",
+        original_user_message="work",
+        _should_review_memory=False,
+        _turn_exit_reason="loop_exited_without_final_response",
+    )
+
+    assert result["completed"] is False
+    assert result["final_response"] is None
+    agent._handle_max_iterations.assert_not_called()
+
+
 def test_unbounded_turn_finalizer_does_not_treat_high_api_count_as_exhausted():
     agent = _agent_for_finalizer(max_iterations=0)
     messages = [

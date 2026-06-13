@@ -10538,8 +10538,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Notify when iteration budget was hit
             if result and not result.get("completed") and not result.get("interrupted"):
                 _api_calls = result.get("api_calls", 0)
-                if _api_calls >= getattr(self.agent, "max_iterations", 90):
-                    _max_iter = getattr(self.agent, "max_iterations", 90)
+                _max_iter = getattr(self.agent, "max_iterations", 90)
+                if _max_iter and _max_iter > 0 and _api_calls >= _max_iter:
                     _cprint(
                         f"\n{_DIM}⚠ Iteration budget reached "
                         f"({_api_calls}/{_max_iter}) — "
