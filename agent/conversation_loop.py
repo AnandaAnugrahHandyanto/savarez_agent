@@ -25,7 +25,7 @@ import ssl
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
@@ -374,7 +374,7 @@ def run_conversation(
     system_message: str = None,
     conversation_history: List[Dict[str, Any]] = None,
     task_id: str = None,
-    stream_callback: Optional[callable] = None,
+    stream_callback: Optional[Callable[..., None]] = None,
     persist_user_message: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
