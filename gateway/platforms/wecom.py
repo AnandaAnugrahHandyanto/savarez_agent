@@ -1155,11 +1155,14 @@ class WeComAdapter(BasePlatformAdapter):
                 f"Refusing to serve media: unable to resolve path safely: {exc}"
             ) from exc
 
+        # Require the path to be a file *inside* an allowed root, never the
+        # root directory itself. We intentionally do NOT accept an exact match
+        # to cwd/HERMES_HOME (a directory is never a valid media file); the
+        # ``is_file()`` check below would reject it anyway, but excluding the
+        # exact-match case here keeps the boundary's intent explicit.
         local_path_str = str(local_path)
         if not (
-            local_path_str == cwd
-            or local_path_str.startswith(cwd + os.sep)
-            or local_path_str == hermes_home
+            local_path_str.startswith(cwd + os.sep)
             or local_path_str.startswith(hermes_home + os.sep)
         ):
             raise ValueError(

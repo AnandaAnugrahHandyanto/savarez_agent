@@ -421,6 +421,25 @@ class TestMediaHelpers:
             await adapter._load_outbound_media("../secret.txt")
 
     @pytest.mark.asyncio
+    async def test_load_outbound_media_rejects_allowed_root_directory(
+        self, tmp_path, monkeypatch
+    ):
+        """The allowed root directory itself is not a servable media file.
+
+        Addresses the review note on #45734: an exact match to cwd/HERMES_HOME
+        must be rejected by the boundary, not merely deferred to ``is_file()``.
+        """
+        from gateway.platforms.wecom import WeComAdapter
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        # Pass the cwd itself (an existing directory) as the media source.
+        with pytest.raises(ValueError, match="outside the allowed directory"):
+            await adapter._load_outbound_media(str(tmp_path))
+
+    @pytest.mark.asyncio
     async def test_load_outbound_media_fail_closed_on_resolve_error(
         self, tmp_path, monkeypatch
     ):
