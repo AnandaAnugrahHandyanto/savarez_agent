@@ -675,7 +675,10 @@ class S6ServiceManager:
             f': "${{HERMES_HOME:=/opt/data}}"\n'
             f'log_dir="$HERMES_HOME/logs/gateways/{prof}"\n'
             f'mkdir -p "$log_dir"\n'
-            f'chown -R hermes:hermes "$log_dir" 2>/dev/null || true\n'
+            # Chown the parent gateways/ dir too — the first profile's log
+            # service runs as root and creates gateways/ root-owned; later
+            # profiles run as the hermes user and EACCES on mkdir. (#45258)
+            f'chown -R hermes:hermes "$HERMES_HOME/logs/gateways" 2>/dev/null || true\n'
             # Skip the drop when already non-root (CAP_SETGID).
             f'[ "$(id -u)" = 0 ] || exec s6-log 1 n10 s1000000 T "$log_dir"\n'
             f'exec s6-setuidgid hermes s6-log 1 n10 s1000000 T "$log_dir"\n'
