@@ -18,7 +18,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
+import { defaultReasoningEffortLabel, displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import {
   $visibleModels,
@@ -87,6 +87,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     : null
 
   const providers = modelOptions.data?.providers
+
   const effectiveVisibleModels = useMemo(
     () => effectiveVisibleKeys(visibleModels, providers ?? []),
     [visibleModels, providers]
@@ -168,7 +169,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 const meta = isCurrent
                   ? [
                       fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
-                      reasoningEffortLabel(currentReasoningEffort) || copy.medium
+                      defaultReasoningEffortLabel(currentReasoningEffort)
                     ]
                       .filter(Boolean)
                       .join(' ')
