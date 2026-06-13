@@ -1860,7 +1860,11 @@ DEFAULT_CONFIG = {
     #
     # See `hermes curator status` for the last run summary.
     "curator": {
-        "enabled": True,
+        # "auto" (default): enabled for cloud providers, disabled for local
+        # LLMs (localhost / 127.0.0.1) where the background review fork can
+        # monopolise a single-model inference server and cause hangs.
+        # Set to true / false to override the auto-detection.
+        "enabled": "auto",
         # How long to wait between curator runs (hours).  Default: 7 days.
         "interval_hours": 24 * 7,
         # Only run when the agent has been idle at least this long (hours).
@@ -2530,7 +2534,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 29,
+    "_config_version": 30,
 }
 
 # =============================================================================
@@ -4819,9 +4823,30 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not quiet:
                 print("  ✓ Renamed write_mode → write_approval (boolean gate)")
 
+    # ── Version 29 → 30: curator.enabled True → "auto" ──
+    # The curator background review fork can monopolise single-model local
+    # inference servers (Ollama, LM Studio, vLLM on localhost) and cause
+    # hangs.  "auto" preserves the curator for cloud providers while
+    # disabling it for local LLMs.  Users who had an explicit True and
+    # want to keep it can set it back; users who never touched the key
+    # move to the safer default.
+    if current_ver < 30:
+        config = read_raw_config()
+        raw_curator = config.get("curator")
+        if isinstance(raw_curator, dict) and raw_curator.get("enabled") is True:
+            raw_curator["enabled"] = "auto"
+            config["curator"] = raw_curator
+            save_config(config)
+            results["config_added"].append("curator.enabled true→auto")
+            if not quiet:
+                print(
+                    "  ✓ curator.enabled → auto (disabled for local LLMs, "
+                    "set true to override)"
+                )
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
-    
+
     # Check for missing required env vars
     missing_env = get_missing_env_vars(required_only=True)
     

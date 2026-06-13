@@ -47,9 +47,12 @@ def _cmd_status(args) -> int:
     summary = state.get("last_run_summary") or "(none)"
     runs = state.get("run_count", 0)
 
+    cfg_value = curator._load_config().get("enabled", "auto")
+    is_auto = isinstance(cfg_value, str) and cfg_value.strip().lower() == "auto"
     status_line = (
         "ENABLED" if enabled and not paused else
         "PAUSED" if paused else
+        "AUTO-DISABLED (local LLM detected)" if is_auto else
         "DISABLED"
     )
     print(f"curator: {status_line}")
@@ -168,7 +171,14 @@ def _cmd_status(args) -> int:
 def _cmd_run(args) -> int:
     from agent import curator
     if not curator.is_enabled():
-        print("curator: disabled via config; enable with `curator.enabled: true`")
+        cfg_value = curator._load_config().get("enabled", "auto")
+        if isinstance(cfg_value, str) and cfg_value.strip().lower() == "auto":
+            print(
+                "curator: auto-disabled (local LLM detected). "
+                "Set curator.enabled: true in config.yaml to override."
+            )
+        else:
+            print("curator: disabled via config; enable with `curator.enabled: true`")
         return 1
 
     dry = bool(getattr(args, "dry_run", False))
