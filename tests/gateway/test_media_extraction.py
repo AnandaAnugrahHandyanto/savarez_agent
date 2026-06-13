@@ -259,6 +259,112 @@ caption
         )
         assert tags == []
 
+    # --- video_generate: structured (model-agnostic) auto-append ---
+    # video_generate returns {"success": true, "video": "<url-or-abs-path>"} but
+    # was historically absent from the auto-append allowlist + field map, so a
+    # generated video was only delivered if the model restated a MEDIA: tag in
+    # prose. Reading the structured "video" field makes delivery deterministic.
+
+    def test_gateway_auto_append_video_generate_json_path(self):
+        """video_generate returns a local path in JSON (no MEDIA: tag); it is
+        auto-appended so delivery doesn't depend on the model restating it."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"role": "user", "content": "Make me a clip"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_vid", "function": {"name": "video_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_vid",
+                "content": '{"success": true, "video": "/tmp/gen/clip.mp4", "modality": "text"}',
+            },
+            {"role": "assistant", "content": "Here's your clip."},
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["MEDIA:/tmp/gen/clip.mp4"]
+        assert voice is False
+
+    def test_gateway_auto_append_video_generate_failure_and_url_ignored(self):
+        """Failed generations and remote URLs are not auto-delivered."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        def _vid_msgs(content):
+            return [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"id": "c", "function": {"name": "video_generate"}}
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c", "content": content},
+            ]
+
+        # Failed generation
+        tags, _ = _collect_auto_append_media_tags(
+            _vid_msgs('{"success": false, "video": null, "error": "boom"}'),
+            history_offset=0,
+        )
+        assert tags == []
+
+        # Remote URL is not a local file path (provider returned a URL)
+        tags, _ = _collect_auto_append_media_tags(
+            _vid_msgs('{"success": true, "video": "https://provider/clip.mp4"}'),
+            history_offset=0,
+        )
+        assert tags == []
+
+    def test_gateway_auto_append_video_generate_dedupes_history(self):
+        """A generated video path already in history is not re-sent."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c", "function": {"name": "video_generate"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c",
+                "content": '{"success": true, "video": "/tmp/gen/clip.mp4"}',
+            },
+        ]
+
+        tags, _ = _collect_auto_append_media_tags(
+            messages, history_offset=0, history_media_paths={"/tmp/gen/clip.mp4"}
+        )
+        assert tags == []
+
+    def test_gateway_auto_append_video_field_only_read_from_allowlisted_tool(self):
+        """The structured 'video' field is only harvested from an allowlisted
+        producer tool — a non-producer tool returning a look-alike field must
+        not trigger delivery (allowlist is the primary false-positive guard)."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c", "function": {"name": "execute_code"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c",
+                "content": '{"success": true, "video": "/tmp/internal/clip.mp4"}',
+            },
+        ]
+
+        tags, _ = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == []
+
     def test_media_tags_not_extracted_from_history(self):
         """MEDIA tags from previous turns should NOT be extracted again."""
         # Simulate conversation history with a TTS call from a previous turn
