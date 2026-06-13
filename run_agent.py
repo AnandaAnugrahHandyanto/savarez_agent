@@ -6063,6 +6063,15 @@ class AIAgent:
             # falling through to OpenRouter defaults.
             fb_base_url_hint = (fb.get("base_url") or "").strip() or None
             fb_api_key_hint = (fb.get("api_key") or "").strip() or None
+            # Honor ``api_key_env`` so fallback entries can reference a key by
+            # env-var name instead of inlining the secret in config.yaml.  This
+            # lets strong free providers (e.g. Gemini, Groq) sit in the chain
+            # via GEMINI_API_KEY/GROQ_API_KEY without storing the raw key.
+            if not fb_api_key_hint:
+                # key_env and api_key_env are both accepted aliases.
+                _fb_key_env = (fb.get("key_env") or fb.get("api_key_env") or "").strip()
+                if _fb_key_env:
+                    fb_api_key_hint = (os.getenv(_fb_key_env) or "").strip() or None
             # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
             # when no explicit key is in the fallback config.
             if fb_base_url_hint and "ollama.com" in fb_base_url_hint.lower() and not fb_api_key_hint:
