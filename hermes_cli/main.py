@@ -1441,6 +1441,21 @@ def _tui_need_npm_install(root: Path) -> bool:
     def comparable(pkg: dict) -> dict:
         return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
 
+    # In a multi-workspace monorepo the root lockfile covers ALL
+    # workspaces (desktop, web, bootstrap-installer, …) while
+    # ``npm ci --workspace ui-tui`` only installs the TUI subset.
+    # Iterating over ``wanted`` (the full root lock) and flagging
+    # every entry missing from the hidden lock as "needs reinstall"
+    # would fire on every launch because ~hundreds of packages from
+    # other workspaces are intentionally absent.
+    #
+    # When ``ws_root != root`` we're inside a workspace — only
+    # compare packages that the hidden lockfile says are actually
+    # installed.  When ``ws_root == root`` (standalone project) the
+    # hidden lock should contain every required package, so keep the
+    # original missing-package check.
+    in_workspace = ws_root != root
+
     for name, pkg in wanted.items():
         if not name:
             continue
@@ -1449,6 +1464,11 @@ def _tui_need_npm_install(root: Path) -> bool:
             continue
 
         if name not in installed:
+            if in_workspace:
+                # Workspace: missing from hidden lock → may belong to
+                # another workspace; not a reason to reinstall.
+                continue
+            # Standalone: missing required package → reinstall.
             if pkg.get("optional") or pkg.get("peer"):
                 continue
             return True
@@ -1468,7 +1488,6 @@ _TUI_BUILD_INPUT_DIRS = (
 
 _TUI_BUILD_INPUT_FILES = (
     "package.json",
-    "package-lock.json",
     "tsconfig.json",
     "tsconfig.build.json",
     "babel.compiler.config.cjs",
@@ -4465,10 +4484,6 @@ def _web_ui_build_needed(web_dir: Path) -> bool:
         mp = web_dir / meta
         if mp.exists() and mp.stat().st_mtime > dist_mtime:
             return True
-    # Workspace root lockfile (single package-lock.json covers all workspaces).
-    root_lock = project_root / "package-lock.json"
-    if root_lock.exists() and root_lock.stat().st_mtime > dist_mtime:
-        return True
     return False
 
 
