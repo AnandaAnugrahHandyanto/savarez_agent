@@ -884,6 +884,53 @@ def _apply_main_model_assignment(
     return model_cfg
 
 
+def _dashboard_custom_provider_name(base_url: str) -> str:
+    from urllib.parse import urlparse
+
+    parsed = urlparse(base_url)
+    host = parsed.netloc or parsed.path.split("/", 1)[0] or "custom"
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "-", host).strip("-")
+    return name or "custom"
+
+
+def _register_custom_provider_assignment(
+    cfg: dict, *, base_url: str, api_key: str = "", model: str = ""
+) -> None:
+    """Mirror ``hermes model`` custom endpoint registration for the dashboard."""
+    normalized_url = (base_url or "").strip()
+    if not normalized_url:
+        return
+
+    providers = cfg.get("custom_providers")
+    if not isinstance(providers, list):
+        providers = []
+
+    target = normalized_url.rstrip("/")
+    for entry in providers:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("base_url", "") or "").strip().rstrip("/") != target:
+            continue
+        entry["base_url"] = normalized_url
+        if api_key:
+            entry["api_key"] = api_key
+        if model:
+            entry["model"] = model
+        cfg["custom_providers"] = providers
+        return
+
+    entry = {
+        "name": _dashboard_custom_provider_name(normalized_url),
+        "base_url": normalized_url,
+    }
+    if api_key:
+        entry["api_key"] = api_key
+    if model:
+        entry["model"] = model
+    providers.append(entry)
+    cfg["custom_providers"] = providers
+
+
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
 try:
     _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
@@ -3340,6 +3387,13 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
                 cfg.get("model", {}), provider, model, base_url, api_key
             )
             cfg["model"] = model_cfg
+            if provider.strip().lower().startswith("custom"):
+                _register_custom_provider_assignment(
+                    cfg,
+                    base_url=str(model_cfg.get("base_url", "") or ""),
+                    api_key=str(model_cfg.get("api_key", "") or ""),
+                    model=model,
+                )
 
             # When switching the main provider to Nous, mirror the CLI's
             # post-model-selection behaviour (hermes_cli/main.py
@@ -8257,7 +8311,8 @@ async def install_skill_hub(body: SkillInstallRequest, profile: Optional[str] = 
         raise HTTPException(status_code=400, detail="identifier is required")
     try:
         proc = _spawn_hermes_action(
-            _profile_cli_args(body.profile or profile) + ["skills", "install", identifier],
+            _profile_cli_args(body.profile or profile)
+            + ["skills", "install", identifier, "--yes"],
             "skills-install",
         )
     except HTTPException:
@@ -9032,7 +9087,7 @@ async def create_profile_endpoint(body: ProfileCreate):
             continue
         try:
             proc = _spawn_hermes_action(
-                ["-p", body.name, "skills", "install", ident],
+                ["-p", body.name, "skills", "install", ident, "--yes"],
                 "skills-install",
             )
             hub_installs.append({"identifier": ident, "pid": proc.pid})
@@ -11953,6 +12008,62 @@ app.include_router(_dashboard_auth_router)
 mount_spa(app)
 
 
+def _read_bound_port(server: "uvicorn.Server", fallback: int) -> int:
+    """Read the OS-assigned port from a live uvicorn server socket.
+
+    After ``server.startup()`` the socket is bound.  Returns the actual
+    port so ephemeral (port-0) discovery works without a pre-bind TOCTOU.
+    Falls back to *fallback* if the socket list is empty (shouldn't happen
+    but guards against uvicorn internals changing).
+    """
+    if server.servers and server.servers[0].sockets:
+        return server.servers[0].sockets[0].getsockname()[1]
+    return fallback
+
+
+def _maybe_open_browser(
+    host: str, actual_port: int, open_browser: bool, initial_profile: str
+) -> None:
+    """Open the dashboard URL in the user's browser if appropriate.
+
+    Skips on headless Linux (no ``DISPLAY`` / ``WAYLAND_DISPLAY``) to avoid
+    TUI browsers (links, lynx) that would SIGHUP the server process.
+    Maps ``0.0.0.0`` / ``::`` binds to ``127.0.0.1`` so the browser opens
+    a reachable URL.
+    """
+    if not open_browser:
+        return
+
+    import webbrowser
+
+    _has_display = (
+        sys.platform != "linux"
+        or bool(os.environ.get("DISPLAY"))
+        or bool(os.environ.get("WAYLAND_DISPLAY"))
+    )
+    if not _has_display:
+        _log.debug(
+            "Skipping browser-open: no DISPLAY or WAYLAND_DISPLAY detected "
+            "(headless Linux). Pass --no-open to suppress this detection."
+        )
+        return
+
+    _display_host = host if host not in ("0.0.0.0", "::") else "127.0.0.1"
+    _open_url = f"http://{_display_host}:{actual_port}"
+    if initial_profile:
+        from urllib.parse import quote
+        _open_url += f"/?profile={quote(initial_profile)}"
+
+    def _open():
+        try:
+            time.sleep(1.0)
+            webbrowser.open(_open_url)
+        except Exception:
+            pass
+
+    threading.Thread(target=_open, daemon=True).start()
+
+
 def start_server(
     host: str = "127.0.0.1",
     port: int = 9119,
@@ -12034,10 +12145,7 @@ def start_server(
 
     # Record the bound host so host_header_middleware can validate incoming
     # Host headers against it. Defends against DNS rebinding (GHSA-ppp5-vxwm-4cf7).
-    # bound_port is also stashed so /api/pty can build the back-WS URL the
-    # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
-    app.state.bound_port = port
 
     if open_browser:
         import webbrowser
@@ -12084,9 +12192,35 @@ def start_server(
         port=port,
         log_level="warning",
         proxy_headers=bool(app.state.auth_required),
-        # Detect half-open WS connections (reverse-proxy 524, dropped tunnels)
-        # within ~20-40s so WebSocketDisconnect fires the disconnect→reap path.
-        # 20s stays under Cloudflare Tunnel's idle timeout, keeping it warm.
+        # Detect half-open WS connections (reverse-proxy 524, dropped
+        # tunnels) within ~20-40s so WebSocketDisconnect fires the
+        # disconnect→reap path.  20s stays under Cloudflare Tunnel's idle
+        # timeout, keeping it warm.
         ws_ping_interval=20.0,
         ws_ping_timeout=20.0,
     )
+    server = uvicorn.Server(config)
+
+    async def _serve():
+        # Split startup from main_loop so we can read the bound port
+        # after the socket is live (ephemeral port discovery).
+        if not config.loaded:
+            config.load()
+        server.lifespan = config.lifespan_class(config)
+        with server.capture_signals():
+            await server.startup()
+            if server.should_exit:
+                return
+
+            actual_port = _read_bound_port(server, fallback=port)
+            app.state.bound_port = actual_port
+
+            print(f"HERMES_DASHBOARD_READY port={actual_port}", flush=True)
+            print(f"  Hermes Web UI → http://{host}:{actual_port}")
+            _maybe_open_browser(host, actual_port, open_browser, initial_profile)
+
+            await server.main_loop()
+            if server.started:
+                await server.shutdown()
+
+    asyncio.run(_serve())

@@ -210,6 +210,8 @@ export const ja = defineLocale({
       colorModeDesc: '固定モードを選ぶか、Hermes をシステム設定に合わせます。',
       toolViewTitle: 'ツール呼び出しの表示',
       toolViewDesc: 'プロダクト表示は生のツールペイロードを隠し、テクニカル表示は入出力をすべて表示します。',
+      translucencyTitle: 'ウィンドウの透過',
+      translucencyDesc: 'ウィンドウ全体を透過させてデスクトップを表示します。macOS と Windows のみ。',
       product: 'プロダクト',
       productDesc: '読みやすいツール活動と簡潔な要約を表示します。',
       technical: 'テクニカル',
@@ -771,6 +773,7 @@ export const ja = defineLocale({
     back: '戻る',
     searchPlaceholder: 'セッション、ビュー、アクションを検索',
     goTo: '移動',
+    goToSession: 'セッションへ移動',
     commandCenter: 'コマンドセンター',
     appearance: '外観',
     settings: '設定',
@@ -1346,6 +1349,8 @@ export const ja = defineLocale({
     queueSendNext: '次に送信',
     queueSend: '送信',
     queueDelete: '削除',
+    queueStuckTitle: 'キュー内のメッセージを送信できません',
+    queueStuckBody: 'キューに入れたターンの送信が繰り返し失敗しました。まだキューに残っています。もう一度送信してください。',
     previewUnavailable: 'プレビューは利用できません',
     previewLabel: label => `${label} のプレビュー`,
     couldNotPreview: label => `${label} をプレビューできませんでした`,
@@ -1792,6 +1797,7 @@ export const ja = defineLocale({
   assistant: {
     thread: {
       loadingSession: 'セッションを読み込み中',
+      showEarlier: '以前のメッセージを表示',
       loadingResponse: 'Hermes が応答を読み込み中',
       thinking: '考え中',
       today: time => `今日 ${time}`,

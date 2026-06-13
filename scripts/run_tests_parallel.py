@@ -74,17 +74,14 @@ _DEFAULT_ROOTS = ["tests"]
 #                        rebuild). The full pytest-shard runner can't
 #                        host these because the session-scoped
 #                        ``built_image`` fixture would do a 3-7min
-#                        ``docker build`` inside a 180s per-test
-#                        pytest-timeout cap (set by tests/docker/conftest.py),
+#                        ``docker build``,
 #                        so the build is guaranteed to die in fixture
 #                        setup. The dedicated job sidesteps both costs.
 _SKIP_PARTS = {"integration", "e2e", "docker"}
 
-# Per-file wall-clock cap. Generous default — pytest-timeout still
-# enforces per-test caps inside each subprocess; this is just an outer
-# safety net so a single hung file can't stall the whole suite. Override
+# Per-file wall-clock cap. Override
 # via --file-timeout or HERMES_TEST_FILE_TIMEOUT.
-_DEFAULT_FILE_TIMEOUT_SECONDS = 600.0  # 10 minutes
+_DEFAULT_FILE_TIMEOUT_SECONDS = 140.0 # set by observing the slowest file at commit time was ~100s in CI and adding some leeway
 
 # Duration cache: maps relative file paths to last-observed subprocess
 # wall-clock seconds. Used by ``--slice`` to distribute files across
@@ -256,21 +253,41 @@ def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
         pass
 
 
-def _spawn_pytest_once(
-    cmd: List[str],
+def _run_one_file(
+    file: Path,
+    pytest_args: List[str],
     repo_root: Path,
     file_timeout: float,
-    *,
-    timeout_note: str = "per-file timeout",
-) -> Tuple[int, str]:
-    """Run one ``pytest`` subprocess to completion and return ``(rc, output)``.
+) -> Tuple[Path, int, str, dict[str, int], float]:
+    """Run ``python -m pytest <file> <pytest_args>`` in a fresh subprocess.
 
-    Spawns the child in its own process group / session so a hung file and
-    its grandchildren (uvicorn servers, async runtimes, etc.) can be SIGKILL'd
-    as a tree on timeout rather than orphaning onto PID 1. Shared by the
-    primary per-file run and the exit-4 retry loop so the lifecycle/cleanup
-    logic lives in exactly one place.
+    Returns (file, returncode, captured_combined_output, summary_counts, subprocess_wall_seconds).
+
+    ``summary_counts`` is the result of ``_parse_pytest_summary(output)`` —
+
+    pytest exit codes (https://docs.pytest.org/en/stable/reference/exit-codes.html):
+        0 = all tests passed
+        1 = some tests failed
+        2 = test execution interrupted
+        3 = internal error
+        4 = pytest CLI usage error
+        5 = no tests collected
+
+    We treat exit 5 as a pass: it just means every test in the file was
+    skipped or filtered by a marker (e.g. ``-m 'not integration'`` skips
+    files where every test is marked integration). That's intentional and
+    not a failure mode.
+
+    On per-file timeout (``file_timeout`` seconds) or any other exception
+    during ``communicate()``, we kill the whole process group / process
+    tree so grandchildren (uvicorn servers, async runtimes, etc.) do not
+    orphan onto PID 1. This outer timeout exists only to
+    bound a pathologically slow or hung file as a whole.
     """
+    cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
+
+    subproc_start = time.monotonic()
+    # launch the pytest process
     proc = subprocess.Popen(
         cmd,
         cwd=repo_root,
@@ -308,7 +325,7 @@ def _spawn_pytest_once(
             output = "(file timeout exceeded; output unavailable)"
         rc = 124  # de facto convention for "killed by timeout".
         output = (
-            f"({timeout_note}: {file_timeout:.0f}s exceeded; "
+            f"({file_timeout:.0f}s exceeded; "
             f"process tree SIGKILL'd)\n{output}"
         )
     except BaseException:
@@ -737,7 +754,7 @@ def main() -> int:
         help=(
             "Per-file wall-clock cap in seconds. On timeout, the pytest "
             "subprocess and its full process tree are SIGKILL'd. "
-            "Default: 600 (10 min), env: HERMES_TEST_FILE_TIMEOUT."
+            f"Default: {_DEFAULT_FILE_TIMEOUT_SECONDS}s ({round(_DEFAULT_FILE_TIMEOUT_SECONDS/60)} min), env: HERMES_TEST_FILE_TIMEOUT."
         ),
     )
     parser.add_argument(

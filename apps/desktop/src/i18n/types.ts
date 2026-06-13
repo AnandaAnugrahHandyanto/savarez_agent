@@ -213,6 +213,8 @@ export interface Translations {
       colorModeDesc: string
       toolViewTitle: string
       toolViewDesc: string
+      translucencyTitle: string
+      translucencyDesc: string
       product: string
       productDesc: string
       technical: string
@@ -538,6 +540,7 @@ export interface Translations {
     back: string
     searchPlaceholder: string
     goTo: string
+    goToSession: string
     commandCenter: string
     appearance: string
     settings: string
@@ -923,6 +926,8 @@ export interface Translations {
     queueSendNext: string
     queueSend: string
     queueDelete: string
+    queueStuckTitle: string
+    queueStuckBody: string
     previewUnavailable: string
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string
@@ -1310,6 +1315,7 @@ export interface Translations {
   assistant: {
     thread: {
       loadingSession: string
+      showEarlier: string
       loadingResponse: string
       thinking: string
       today: (time: string) => string
@@ -1323,6 +1329,7 @@ export interface Translations {
       stopReading: string
       readAloud: string
       editMessage: string
+      scrollToBottom: string
       stop: string
       restorePrevious: string
       restoreCheckpoint: string

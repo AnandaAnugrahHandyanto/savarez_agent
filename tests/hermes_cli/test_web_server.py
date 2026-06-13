@@ -2914,7 +2914,12 @@ class TestNewEndpoints:
         assert data["hub_installs"] == [{"identifier": "someuser/some-skill", "pid": 4321}]
 
         # Hub install was scoped to the new profile.
-        assert spawned == [(["-p", "builder", "skills", "install", "someuser/some-skill"], "skills-install")]
+        assert spawned == [
+            (
+                ["-p", "builder", "skills", "install", "someuser/some-skill", "--yes"],
+                "skills-install",
+            )
+        ]
 
         # Verify the writes landed in the NEW profile's config, not the root.
         prof_dir = get_hermes_home() / "profiles" / "builder"
@@ -5125,7 +5130,7 @@ class TestPtyWebSocket:
             while time.monotonic() < deadline:
                 # receive_bytes() blocks; once the child prints its winsize and
                 # exits, the PTY closes and further reads raise. Without this
-                # guard a missed-marker run blocks until the 30s pytest-timeout
+                # guard a missed-marker run blocks until a test timeout
                 # (flaky failure) instead of failing fast on the assert below.
                 try:
                     frame = conn.receive_bytes()
