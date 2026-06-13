@@ -420,7 +420,7 @@ export function DesktopController() {
 
       const result = await listAllProfileSessions(limit, 1, 'exclude', 'recent', sessionProfile, {
         excludeSources: SIDEBAR_EXCLUDED_SOURCES
-      })
+      }, [...$pinnedSessionIds.get()])
 
       if (refreshSessionsRequestRef.current === requestId) {
         setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()))
@@ -452,7 +452,7 @@ export function DesktopController() {
 
     const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', key, {
       excludeSources: SIDEBAR_EXCLUDED_SOURCES
-    })
+    }, [...$pinnedSessionIds.get()])
 
     const keep = sessionsToKeep(key)
 
