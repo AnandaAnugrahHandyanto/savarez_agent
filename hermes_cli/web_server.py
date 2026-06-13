@@ -2603,47 +2603,70 @@ def _split_text_for_streaming(text: str) -> list[str]:
     return chunks
 
 
-async def _synthesize_chunk(text: str) -> str | None:
-    """Synthesize a single chunk and return base64 data URL or None."""
-    try:
-        from tools.tts_tool import text_to_speech_tool
+async def _synthesize_chunk(text: str, max_retries: int = 3) -> str | None:
+    """Synthesize a single chunk and return base64 data URL or None.
 
-        loop = asyncio.get_running_loop()
-        result_json = await loop.run_in_executor(None, text_to_speech_tool, text)
+    Retries with exponential backoff on transient failures (network
+    blips, Edge TTS rate limiting) so intermittent errors don't kill
+    the whole Read Aloud stream.
+    """
+    import time as _time
 
-        result = json.loads(result_json) if isinstance(result_json, str) else result_json
-        if not result.get("success"):
-            return None
-
-        file_path = result.get("file_path")
-        if not file_path or not os.path.isfile(file_path):
-            return None
-
-        ext = os.path.splitext(file_path)[1].lower()
-        mime_type = {
-            ".mp3": "audio/mpeg",
-            ".ogg": "audio/ogg",
-            ".opus": "audio/ogg",
-            ".wav": "audio/wav",
-            ".flac": "audio/flac",
-        }.get(ext, "audio/mpeg")
-
+    last_error = None
+    for attempt in range(max_retries):
         try:
-            with open(file_path, "rb") as fh:
-                audio_bytes = fh.read()
-        except OSError:
-            return None
-        finally:
-            try:
-                os.unlink(file_path)
-            except OSError:
-                pass
+            from tools.tts_tool import text_to_speech_tool
 
-        encoded = base64.b64encode(audio_bytes).decode("ascii")
-        return f"data:{mime_type};base64,{encoded}"
-    except Exception:
-        _log.exception("Streaming TTS chunk synthesis failed")
-        return None
+            loop = asyncio.get_running_loop()
+            result_json = await loop.run_in_executor(None, text_to_speech_tool, text)
+
+            result = json.loads(result_json) if isinstance(result_json, str) else result_json
+            if not result.get("success"):
+                raise RuntimeError(result.get("error", "TTS returned success=false"))
+
+            file_path = result.get("file_path")
+            if not file_path or not os.path.isfile(file_path):
+                raise RuntimeError("TTS produced no output file")
+
+            ext = os.path.splitext(file_path)[1].lower()
+            mime_type = {
+                ".mp3": "audio/mpeg",
+                ".ogg": "audio/ogg",
+                ".opus": "audio/ogg",
+                ".wav": "audio/wav",
+                ".flac": "audio/flac",
+            }.get(ext, "audio/mpeg")
+
+            try:
+                with open(file_path, "rb") as fh:
+                    audio_bytes = fh.read()
+            except OSError as exc:
+                raise RuntimeError(f"Could not read audio file: {exc}")
+            finally:
+                try:
+                    os.unlink(file_path)
+                except OSError:
+                    pass
+
+            encoded = base64.b64encode(audio_bytes).decode("ascii")
+            return f"data:{mime_type};base64,{encoded}"
+
+        except Exception as exc:
+            last_error = exc
+            if attempt < max_retries - 1:
+                delay = 2 ** attempt  # 1s, 2s, 4s
+                _log.warning(
+                    "TTS chunk attempt %d/%d failed: %s — retrying in %ds",
+                    attempt + 1, max_retries, exc, delay,
+                )
+                await asyncio.sleep(delay)
+            else:
+                _log.error(
+                    "TTS chunk failed after %d attempts: %s",
+                    max_retries, exc,
+                )
+
+    return None
 
 
 async def _stream_speech_sse(text: str):
