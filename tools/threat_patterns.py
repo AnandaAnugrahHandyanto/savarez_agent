@@ -52,7 +52,12 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (r'system\s+prompt\s+override', "sys_prompt_override", "all"),
     (r'disregard\s+(?:\w+\s+)*(your|all|any)\s+(?:\w+\s+)*(instructions|rules|guidelines)', "disregard_rules", "all"),
     (r'act\s+as\s+(if|though)\s+(?:\w+\s+)*you\s+(?:\w+\s+)*(have\s+no|don\'t\s+have)\s+(?:\w+\s+)*(restrictions|limits|rules)', "bypass_restrictions", "all"),
-    (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection", "all"),
+    # HTML-comment injection: a comment that issues an instruction, not one
+    # that merely mentions a keyword. Anchored on injection verbs so generated
+    # markers like "<!-- IDENTITY:BEGIN (edit 00-system/.../USER.md) -->" — where
+    # "system" is just part of a file path — do not quarantine the whole file.
+    (r'<!--[^>]*(?:ignore|disregard|override|bypass|reveal|leak|exfiltrate)[^>]*(?:instruction|prompt|system|rule|secret|hidden|restriction)[^>]*-->', "html_comment_injection", "all"),
+    (r'<!--[^>]*(?:system\s+prompt|previous\s+instruction|prior\s+instruction)[^>]*(?:ignore|override|disregard|reveal|leak)[^>]*-->', "html_comment_injection", "all"),
     (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none', "hidden_div", "all"),
     (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute", "all"),
     (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user', "deception_hide", "all"),
