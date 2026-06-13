@@ -614,6 +614,12 @@ def load_cli_config() -> Dict[str, Any]:
         "sandbox_dir": "TERMINAL_SANDBOX_DIR",
         # Persistent shell (non-local backends)
         "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+        # tmux backend config (profile-scoped session, agent-scoped window)
+        "tmux_session_template": "TERMINAL_TMUX_SESSION_TEMPLATE",
+        "tmux_window_template": "TERMINAL_TMUX_WINDOW_TEMPLATE",
+        "tmux_shell": "TERMINAL_TMUX_SHELL",
+        "tmux_preserve_session": "TERMINAL_TMUX_PRESERVE_SESSION",
+        "tmux_history_limit": "TERMINAL_TMUX_HISTORY_LIMIT",
         # Sudo support (works with all backends)
         "sudo_password": "SUDO_PASSWORD",
     }

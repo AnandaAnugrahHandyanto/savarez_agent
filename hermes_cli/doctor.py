@@ -1340,6 +1340,32 @@ def run_doctor(args):
             )
             # Skip to next section; Docker isn't relevant here.
             terminal_env = "local"
+
+    # tmux (if using tmux backend)
+    if terminal_env == "tmux":
+        tmux = _safe_which("tmux")
+        if tmux:
+            try:
+                result = subprocess.run([tmux, "-V"], capture_output=True, text=True, timeout=5)
+            except subprocess.TimeoutExpired:
+                result = None
+            if result is not None and result.returncode == 0:
+                check_ok("tmux", f"({result.stdout.strip()})")
+            else:
+                _fail_and_issue(
+                    "tmux probe failed",
+                    "(required for TERMINAL_ENV=tmux)",
+                    "Run tmux -V or reinstall tmux",
+                    issues,
+                )
+        else:
+            _fail_and_issue(
+                "tmux not found",
+                "(required for TERMINAL_ENV=tmux)",
+                "Install tmux or change TERMINAL_ENV",
+                issues,
+            )
+
     if terminal_env == "docker":
         if _safe_which("docker"):
             # Check if docker daemon is running

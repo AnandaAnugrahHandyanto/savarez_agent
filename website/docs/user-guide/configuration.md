@@ -102,11 +102,11 @@ Before that stash step, Hermes also restores tracked `package-lock.json` diffs l
 
 ## Terminal Backend Configuration
 
-Hermes supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Singularity/Apptainer container.
+Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a local tmux session, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Singularity/Apptainer container.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | singularity
+  backend: local    # local | tmux | docker | ssh | modal | daytona | singularity
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   timeout: 180      # Per-command timeout in seconds
   env_passthrough: []  # Env var names to forward to sandboxed execution (terminal + execute_code)
@@ -122,6 +122,7 @@ For cloud sandboxes such as Modal and Daytona, `container_persistent: true` mean
 | Backend | Where commands run | Isolation | Best for |
 |---------|-------------------|-----------|----------|
 | **local** | Your machine directly | None | Development, personal use |
+| **tmux** | Your machine, through profile-scoped tmux sessions | None; process/window persistence | Desktop sessions, attachable long-lived terminals |
 | **docker** | Single persistent Docker container (shared across session, `/new`, subagents) | Full (namespaces, cap-drop) | Safe sandboxing, CI/CD |
 | **ssh** | Remote server via SSH | Network boundary | Remote dev, powerful hardware |
 | **modal** | Modal cloud sandbox | Full (cloud VM) | Ephemeral cloud compute, evals |
@@ -140,6 +141,41 @@ terminal:
 :::warning
 The agent has the same filesystem access as your user account. Use `hermes tools` to disable tools you don't want, or switch to Docker for sandboxing.
 :::
+
+### tmux Backend
+
+Runs commands on the local host like the local backend, but sends them through tmux so the live terminal context survives Desktop/App interruptions and can be attached to manually.
+
+```yaml
+terminal:
+  backend: tmux
+  tmux_session_template: "hermes-{profile}"  # one tmux session per Hermes profile
+  tmux_window_template: "{agent}"            # one window per agent/task id
+  tmux_preserve_session: true                 # leave tmux alive after Hermes cleanup
+  tmux_history_limit: 200000                  # scrollback lines per tmux session
+  tmux_shell: ""                              # empty = Hermes' bash discovery
+```
+
+**Requirements:** `tmux` must be installed and available on `$PATH` (`brew install tmux` on macOS).
+
+**How it works:** Hermes creates/reuses the tmux session named by `tmux_session_template` and a window named by `tmux_window_template`. The default templates create one session per Hermes profile (for example, `hermes-architect`) and one window per agent/task. Commands still return deterministic stdout and exit codes to the model, while the tmux window keeps the live terminal scrollback for human inspection.
+
+**Attach manually:**
+
+```bash
+tmux attach -t hermes-architect
+```
+
+Template fields available in the two tmux name templates:
+
+| Field | Meaning |
+|---|---|
+| `{profile}` | Active Hermes profile name (`default`, `architect`, etc.) |
+| `{agent}` / `{task_id}` | Hermes task/agent id used for terminal environment isolation |
+| `{session_id}` | Gateway/Desktop/CLI session id when available |
+| `{session_key}` | Gateway session key when available |
+
+The tmux backend is not a security boundary: it has the same filesystem and account access as the local backend. Use Docker/Singularity/Modal/Daytona when isolation is required.
 
 ### Docker Backend
 
@@ -337,6 +373,7 @@ terminal:
 If terminal commands fail immediately or the terminal tool is reported as disabled:
 
 - **Local** — No special requirements. The safest default when getting started.
+- **tmux** — Run `tmux -V` to verify tmux is installed. If it fails, install tmux or `hermes config set terminal.backend local`.
 - **Docker** — Run `docker version` to verify Docker is working. If it fails, fix Docker or `hermes config set terminal.backend local`.
 - **SSH** — Both `TERMINAL_SSH_HOST` and `TERMINAL_SSH_USER` must be set. Hermes logs a clear error if either is missing.
 - **Modal** — Needs `MODAL_TOKEN_ID` env var or `~/.modal.toml`. Run `hermes doctor` to check.

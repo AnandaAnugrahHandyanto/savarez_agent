@@ -611,21 +611,22 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     Thread-safe: uses the same per-task creation locks as terminal_tool to
     prevent duplicate sandbox creation from concurrent tool calls.
 
-    Note: subagent task_ids are collapsed to "default" via
-    ``_resolve_container_task_id`` so delegate_task children share the
-    parent's container and its cached file_ops. RL/benchmark task_ids with
-    a registered env override keep their isolation.
+    Note: subagent task_ids are collapsed to "default" for container/cloud
+    backends so delegate_task children share the parent's container and its
+    cached file_ops. The tmux backend preserves task ids because its contract
+    is one visible tmux window per agent/task.
     """
     from tools.terminal_tool import (
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
         _creation_locks,
         _creation_locks_lock,
-        _resolve_container_task_id,
+        _resolve_environment_task_id,
     )
     import time
 
-    task_id = _resolve_container_task_id(task_id)
+    env_type_for_key = _get_env_config()["env_type"]
+    task_id = _resolve_environment_task_id(task_id, env_type_for_key)
 
     # Fast path: check cache -- but also verify the underlying environment
     # is still alive (it may have been killed by the cleanup thread).
@@ -705,6 +706,14 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             if env_type == "local":
                 local_config = {
                     "persistent": config.get("local_persistent", False),
+                }
+            elif env_type == "tmux":
+                local_config = {
+                    "tmux_session_template": config.get("tmux_session_template", "hermes-{profile}"),
+                    "tmux_window_template": config.get("tmux_window_template", "{agent}"),
+                    "tmux_shell": config.get("tmux_shell", ""),
+                    "tmux_preserve_session": config.get("tmux_preserve_session", True),
+                    "tmux_history_limit": config.get("tmux_history_limit", 200000),
                 }
 
             terminal_env = _create_environment(

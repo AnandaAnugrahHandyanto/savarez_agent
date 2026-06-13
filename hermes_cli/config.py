@@ -1011,6 +1011,14 @@ DEFAULT_CONFIG = {
         # Enabled by default for non-local backends (SSH); local is always opt-in
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
+        # tmux backend: local-host execution with attachable, persistent tmux
+        # sessions. Defaults create one tmux session per Hermes profile and one
+        # window per agent/task id inside that profile session.
+        "tmux_session_template": "hermes-{profile}",
+        "tmux_window_template": "{agent}",
+        "tmux_shell": "",  # empty = Hermes' bash discovery/default shell
+        "tmux_preserve_session": True,
+        "tmux_history_limit": 200000,
     },
 
     "web": {
@@ -5289,6 +5297,11 @@ TERMINAL_CONFIG_ENV_MAP = {
     "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
     "sandbox_dir": "TERMINAL_SANDBOX_DIR",
     "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+    "tmux_session_template": "TERMINAL_TMUX_SESSION_TEMPLATE",
+    "tmux_window_template": "TERMINAL_TMUX_WINDOW_TEMPLATE",
+    "tmux_shell": "TERMINAL_TMUX_SHELL",
+    "tmux_preserve_session": "TERMINAL_TMUX_PRESERVE_SESSION",
+    "tmux_history_limit": "TERMINAL_TMUX_HISTORY_LIMIT",
 }
 
 

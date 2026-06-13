@@ -2,17 +2,19 @@
 """
 Terminal Tool Module
 
-A terminal tool that executes commands in local, Docker, Modal, SSH,
+A terminal tool that executes commands in local, tmux, Docker, Modal, SSH,
 Singularity, and Daytona environments. Supports local execution,
-containerized backends, and cloud sandboxes, including managed Modal mode.
+attachable tmux sessions, containerized backends, and cloud sandboxes,
+including managed Modal mode.
 
 Supported environments:
 - "local": Execute directly on the host machine (default, fastest)
+- "tmux": Execute on the host through profile-scoped tmux sessions
 - "docker": Execute in Docker containers (isolated, requires Docker)
 - "modal": Execute in Modal cloud sandboxes (direct Modal or managed gateway)
 
 Features:
-- Multiple execution backends (local, docker, modal)
+- Multiple execution backends (local, tmux, docker, modal)
 - Background task support
 - VM/container lifecycle management
 - Automatic cleanup after inactivity
@@ -832,6 +834,8 @@ from tools.environments.managed_modal import ManagedModalEnvironment as _Managed
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 import sys
 
+_TmuxEnvironment = None  # lazy import: tests may install a minimal fake tools package
+
 
 # Tool description for LLM
 TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem, current working directory, and exported environment variables persist between calls.
@@ -1034,6 +1038,20 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     return "default"
 
 
+def _resolve_environment_task_id(task_id: Optional[str], env_type: str) -> str:
+    """Return the environment-cache key for the selected terminal backend.
+
+    Container/cloud backends intentionally collapse ordinary subagent IDs to a
+    shared ``default`` sandbox so parent and child agents see the same filesystem
+    and installed packages. tmux is different: the requested isolation unit is a
+    visible agent/task window inside the profile-scoped tmux session, so
+    preserving the raw task id is the feature, not a resource leak.
+    """
+    if (env_type or "").strip().lower() == "tmux":
+        return task_id or "default"
+    return _resolve_container_task_id(task_id)
+
+
 # Configuration from environment variables
 
 def _parse_env_var(name: str, default: str, converter: Any = int, type_label: str = "integer"):
@@ -1103,7 +1121,7 @@ def _get_env_config() -> Dict[str, Any]:
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, and everything else starts in the backend's default
     # root-like cwd.
-    if env_type == "local":
+    if env_type in {"local", "tmux"}:
         default_cwd = _safe_getcwd()
     elif env_type == "ssh":
         default_cwd = "~"
@@ -1190,6 +1208,15 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_orphan_reaper": os.getenv(
             "TERMINAL_DOCKER_ORPHAN_REAPER", "true"
         ).lower() in {"true", "1", "yes"},
+        # tmux-specific local backend config. One tmux session is created per
+        # profile by default, with one window per agent/task id inside it.
+        "tmux_session_template": os.getenv("TERMINAL_TMUX_SESSION_TEMPLATE", "hermes-{profile}"),
+        "tmux_window_template": os.getenv("TERMINAL_TMUX_WINDOW_TEMPLATE", "{agent}"),
+        "tmux_shell": os.getenv("TERMINAL_TMUX_SHELL", ""),
+        "tmux_preserve_session": os.getenv(
+            "TERMINAL_TMUX_PRESERVE_SESSION", "true"
+        ).lower() in {"true", "1", "yes"},
+        "tmux_history_limit": _parse_env_var("TERMINAL_TMUX_HISTORY_LIMIT", "200000"),
     }
 
 
@@ -1236,6 +1263,22 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
+
+    elif env_type == "tmux":
+        tc = local_config or {}
+        tmux_environment_cls = _TmuxEnvironment
+        if tmux_environment_cls is None:
+            from tools.environments.tmux import TmuxEnvironment as tmux_environment_cls
+        return tmux_environment_cls(
+            cwd=cwd,
+            timeout=timeout,
+            task_id=task_id,
+            session_template=tc.get("tmux_session_template", "hermes-{profile}"),
+            window_template=tc.get("tmux_window_template", "{agent}"),
+            shell=tc.get("tmux_shell", ""),
+            preserve_session=tc.get("tmux_preserve_session", True),
+            history_limit=tc.get("tmux_history_limit", 200000),
+        )
     
     elif env_type == "docker":
         # One-shot orphan reaper: clean up labeled containers left behind by
@@ -1348,7 +1391,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'ssh', or 'tmux'"
         )
 
 
@@ -1882,7 +1925,7 @@ def terminal_tool(
         # task_ids collapse back to "default" so the top-level agent and
         # every delegate_task child share one container; only task_ids with
         # a registered env override (RL benchmarks) get isolated sandboxes.
-        effective_task_id = _resolve_container_task_id(task_id)
+        effective_task_id = _resolve_environment_task_id(task_id, env_type)
 
         # Check per-task overrides (set by environments like TerminalBench2Env)
         # before falling back to global env var config.
@@ -2019,6 +2062,14 @@ def terminal_tool(
                         if env_type == "local":
                             local_config = {
                                 "persistent": config.get("local_persistent", False),
+                            }
+                        elif env_type == "tmux":
+                            local_config = {
+                                "tmux_session_template": config.get("tmux_session_template", "hermes-{profile}"),
+                                "tmux_window_template": config.get("tmux_window_template", "{agent}"),
+                                "tmux_shell": config.get("tmux_shell", ""),
+                                "tmux_preserve_session": config.get("tmux_preserve_session", True),
+                                "tmux_history_limit": config.get("tmux_history_limit", 200000),
                             }
 
                         new_env = _create_environment(
@@ -2462,6 +2513,14 @@ def check_terminal_requirements() -> bool:
         if env_type == "local":
             return True
 
+        elif env_type == "tmux":
+            tmux = shutil.which("tmux")
+            if not tmux:
+                logger.error("tmux executable not found; install tmux or switch TERMINAL_ENV to 'local'")
+                return False
+            result = subprocess.run([tmux, "-V"], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+            return result.returncode == 0
+
         elif env_type == "docker":
             from tools.environments.docker import find_docker
             docker = find_docker()
@@ -2554,7 +2613,7 @@ def check_terminal_requirements() -> bool:
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, ssh.",
+                "modal, daytona, ssh, tmux.",
                 env_type,
             )
             return False

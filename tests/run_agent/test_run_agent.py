@@ -54,6 +54,13 @@ def test_is_destructive_command_treats_install_as_mutating():
     assert run_agent._is_destructive_command("install template.env .env") is True
 
 
+def test_launch_cwd_for_session_treats_tmux_as_local(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TERMINAL_ENV", "tmux")
+
+    assert run_agent._launch_cwd_for_session("cli") == str(tmp_path)
+
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""

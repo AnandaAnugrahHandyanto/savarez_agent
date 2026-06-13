@@ -74,13 +74,14 @@ def _launch_cwd_for_session(source: str) -> Optional[str]:
     host cwd to restore, so they record nothing.
 
     ``TERMINAL_ENV`` is set by the CLI's config bridge (``load_cli_config``);
-    a non-"local" backend (docker/ssh/modal/...) means the host cwd is
-    irrelevant to the agent's tools, so we skip it there too.
+    remote/container backends (docker/ssh/modal/...) mean the host cwd is
+    irrelevant to the agent's tools, so we skip it there too. ``tmux`` still
+    executes on the local host, so it should preserve the launch cwd.
     """
     if source != "cli":
         return None
     backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
-    if backend and backend != "local":
+    if backend and backend not in {"local", "tmux"}:
         return None
     try:
         return os.getcwd()
