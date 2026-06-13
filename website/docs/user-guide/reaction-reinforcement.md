@@ -52,18 +52,13 @@ The defaults track the table from
 | 😡 angry        | negative | -2.0   | `angry`        |
 
 Emoji outside this table are dropped by default.  Set
-`HERMES_REACTION_INCLUDE_UNKNOWN=true` to also record them with neutral
-weight `0.0` (useful for engagement telemetry).
+`reaction_signals.include_unknown: true` in `config.yaml` to also record them
+with neutral weight `0.0` (useful for engagement telemetry).
 
 ## Enabling reaction reinforcement
 
-The feature is strictly **opt-in**.  Enable via either env or
-`config.yaml`:
-
-```bash
-# .env or your shell
-export HERMES_REACTION_SIGNALS_ENABLED=true
-```
+The feature is strictly **opt-in**.  Enable it in `config.yaml` (these are
+non-secret behavioural settings, so they live in `config.yaml`, not `.env`):
 
 ```yaml
 # config.yaml
@@ -102,16 +97,14 @@ would pollute per-user signal.
 
 ## Configuration reference
 
-Each YAML key has a matching env var (env wins).  All keys are
-documented in detail in
-[Environment Variables → Emoji Reaction Reinforcement](../reference/environment-variables.md#emoji-reaction-reinforcement).
+All settings live under the `reaction_signals:` block in `config.yaml`:
 
-| YAML key                     | Env var                            | Default | Purpose                                                                  |
-| ---------------------------- | ---------------------------------- | ------- | ------------------------------------------------------------------------ |
-| `enabled`                    | `HERMES_REACTION_SIGNALS_ENABLED`  | `false` | Master switch                                                            |
-| `min_signal_threshold`       | `HERMES_REACTION_MIN_SIGNAL`       | `0.5`   | Magnitude below which the aggregated signal is treated as noise          |
-| `decay_days`                 | `HERMES_REACTION_DECAY_DAYS`       | `30`    | Retention horizon for `ReactionStore.prune_older_than()` (no auto cron yet) |
-| `include_unknown`            | `HERMES_REACTION_INCLUDE_UNKNOWN`  | `false` | Record unrecognised emoji with neutral weight 0.0                        |
+| YAML key                     | Default | Purpose                                                                  |
+| ---------------------------- | ------- | ------------------------------------------------------------------------ |
+| `enabled`                    | `false` | Master switch                                                            |
+| `min_signal_threshold`       | `0.5`   | Magnitude below which the aggregated signal is treated as noise          |
+| `decay_days`                 | `30`    | Retention horizon for `ReactionStore.prune_older_than()` (no auto cron yet) |
+| `include_unknown`            | `false` | Record unrecognised emoji with neutral weight 0.0                        |
 
 This block is intentionally **separate** from the per-platform
 `reactions:` toggles (`telegram.reactions`, `discord.reactions`,

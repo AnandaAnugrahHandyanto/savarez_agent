@@ -213,9 +213,42 @@ class TestAggregateForMessage:
             target_message_id="msg-1",
         )
         assert summary["net_weight"] == pytest.approx(0.0)
-        # Removal isn't counted as a positive engagement.
-        assert summary["positive"] == 1
+        # A removal cancels its add across the WHOLE aggregate, not just
+        # net_weight: the polarity count and unique_users zero out too.
+        assert summary["positive"] == 0
+        assert summary["unique_users"] == 0
+        # sample_count stays a raw tap count (the add + the remove).
         assert summary["sample_count"] == 2
+
+    def test_add_then_remove_negative_clears_counts(self, store):
+        # Regression for #27451 review: add 👎 then remove it must leave
+        # negative=0 and unique_users=0 (previously left negative=1).
+        store.record(_event(emoji="\U0001F44E", added=True))   # thumbs_down
+        store.record(_event(emoji="\U0001F44E", added=False))
+        summary = store.aggregate_for_message(
+            platform="telegram",
+            channel_id="42",
+            target_message_id="msg-1",
+        )
+        assert summary["net_weight"] == pytest.approx(0.0)
+        assert summary["negative"] == 0
+        assert summary["unique_users"] == 0
+        assert summary["sample_count"] == 2
+
+    def test_swap_reaction_keeps_only_active(self, store):
+        # Same user adds 👍 then swaps to ❤️ (remove 👍, add ❤️): only the
+        # active ❤️ should count.
+        store.record(_event(emoji="\U0001F44D", added=True))    # thumbs_up +1
+        store.record(_event(emoji="\U0001F44D", added=False))   # remove 👍
+        store.record(_event(emoji="\u2764\ufe0f", added=True))  # heart +2
+        summary = store.aggregate_for_message(
+            platform="telegram",
+            channel_id="42",
+            target_message_id="msg-1",
+        )
+        assert summary["net_weight"] == pytest.approx(2.0)
+        assert summary["positive"] == 1
+        assert summary["unique_users"] == 1
 
     def test_since_filter_excludes_old_events(self, store):
         old = datetime(2026, 1, 1, tzinfo=timezone.utc)

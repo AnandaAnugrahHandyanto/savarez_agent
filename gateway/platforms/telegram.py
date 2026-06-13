@@ -1702,6 +1702,9 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
+                # Remember this outbound message so reaction signals (#27438)
+                # can be correlated to Hermes-authored messages only.
+                self.record_authored_message(chat_id, msg.message_id)
 
             # Re-trigger typing indicator after sending a message.
             # Telegram clears the typing state when a new message is delivered,

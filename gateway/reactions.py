@@ -207,13 +207,40 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _reaction_config_from_yaml() -> Dict[str, Any]:
+    """Read the ``reaction_signals:`` block from ``config.yaml``.
+
+    These are non-secret behavioural settings, so per the contribution
+    rubric ``config.yaml`` is the authoritative, user-facing surface (the
+    ``HERMES_REACTION_*`` env vars remain only as an internal override for
+    automation).  Returns an empty dict on any failure so a malformed
+    config can never wedge the gateway.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        if not config_path.exists():
+            return {}
+        import yaml
+
+        with open(config_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        block = cfg.get("reaction_signals", {})
+        return block if isinstance(block, dict) else {}
+    except Exception:
+        return {}
+
+
 @dataclass
 class ReactionConfig:
     """Runtime config for emoji-reaction reinforcement.
 
-    Loaded from env vars (highest precedence) and ``config.yaml``'s
-    ``reaction_signals:`` block in :func:`from_env`.  Defaults preserve
-    today's behaviour (no-op) so this feature is strictly opt-in.
+    Loaded from ``config.yaml``'s ``reaction_signals:`` block (the
+    authoritative user-facing surface) in :func:`from_env`, with the
+    ``HERMES_REACTION_*`` env vars retained only as an internal override.
+    Defaults preserve today's behaviour (no-op) so this feature is strictly
+    opt-in.
     """
 
     enabled: bool = False
@@ -227,15 +254,47 @@ class ReactionConfig:
         cls,
         overrides: Optional[Dict[str, ReactionSignal]] = None,
     ) -> "ReactionConfig":
-        """Build a :class:`ReactionConfig` from env vars + optional overrides."""
+        """Build a :class:`ReactionConfig` from ``config.yaml`` + optional overrides.
+
+        ``config.yaml``'s ``reaction_signals:`` block supplies the values;
+        the ``HERMES_REACTION_*`` env vars override a given field only when
+        actually set (internal escape hatch for automation), so the
+        documented configuration surface stays ``config.yaml``.
+        """
         weights = dict(DEFAULT_REACTION_WEIGHTS)
         if overrides:
             weights.update(overrides)
+
+        yaml_cfg = _reaction_config_from_yaml()
+
+        def _yaml_bool(key: str, fallback: bool) -> bool:
+            val = yaml_cfg.get(key, fallback)
+            if isinstance(val, str):
+                return val.strip().lower() in {"1", "true", "yes", "on"}
+            return bool(val)
+
+        def _yaml_num(key: str, fallback, caster):
+            try:
+                return caster(yaml_cfg.get(key, fallback))
+            except (TypeError, ValueError):
+                return fallback
+
         return cls(
-            enabled=_env_bool("HERMES_REACTION_SIGNALS_ENABLED", False),
-            min_signal_threshold=_env_float("HERMES_REACTION_MIN_SIGNAL", 0.5),
-            decay_days=_env_int("HERMES_REACTION_DECAY_DAYS", 30),
-            include_unknown=_env_bool("HERMES_REACTION_INCLUDE_UNKNOWN", False),
+            # config.yaml provides the base; env var wins only when set.
+            enabled=_env_bool(
+                "HERMES_REACTION_SIGNALS_ENABLED", _yaml_bool("enabled", False)
+            ),
+            min_signal_threshold=_env_float(
+                "HERMES_REACTION_MIN_SIGNAL",
+                _yaml_num("min_signal_threshold", 0.5, float),
+            ),
+            decay_days=_env_int(
+                "HERMES_REACTION_DECAY_DAYS", _yaml_num("decay_days", 30, int)
+            ),
+            include_unknown=_env_bool(
+                "HERMES_REACTION_INCLUDE_UNKNOWN",
+                _yaml_bool("include_unknown", False),
+            ),
             weights=weights,
         )
 

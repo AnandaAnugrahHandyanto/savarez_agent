@@ -331,6 +331,9 @@ async def test_handle_reaction_persists_when_enabled(tmp_path, monkeypatch):
     adapter.platform = Platform.TELEGRAM
     adapter.config = PlatformConfig(enabled=True, token="fake-token")
     # Don't mock handle_reaction here -- we want the default impl to run.
+    # The reaction is only persisted when it targets a Hermes-authored
+    # message, so record the outbound message first (chat 42 / message 7).
+    adapter.record_authored_message(42, 7)
 
     update = _make_reaction_update(
         new_reaction=[_reaction_type_emoji("\u2764\ufe0f")]
@@ -345,6 +348,37 @@ async def test_handle_reaction_persists_when_enabled(tmp_path, monkeypatch):
     assert len(rows) == 1
     assert rows[0]["emoji"] == "\u2764\ufe0f"
     assert rows[0]["weight"] == 2.0  # heart positive
+    reset_reaction_store_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_handle_reaction_drops_reaction_on_non_authored_message(
+    tmp_path, monkeypatch
+):
+    """A reaction on a message Hermes never sent is not reinforcement.
+
+    Regression for the #27451 review: ``handle_reaction`` must correlate
+    against the authored-message set and drop reactions on user / third-party
+    messages instead of polluting reactions.db.
+    """
+    from gateway.reaction_store import reset_reaction_store_for_tests
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_REACTION_SIGNALS_ENABLED", "true")
+    reset_reaction_store_for_tests()
+
+    from gateway.platforms.telegram import TelegramAdapter
+    adapter = object.__new__(TelegramAdapter)
+    adapter.platform = Platform.TELEGRAM
+    adapter.config = PlatformConfig(enabled=True, token="fake-token")
+    # Deliberately do NOT record message 7 as authored.
+
+    update = _make_reaction_update(
+        new_reaction=[_reaction_type_emoji("\u2764\ufe0f")]
+    )
+    await adapter._handle_message_reaction(update, context=None)
+
+    # Nothing should have been persisted.
+    assert not (tmp_path / "reactions.db").exists()
     reset_reaction_store_for_tests()
 
 

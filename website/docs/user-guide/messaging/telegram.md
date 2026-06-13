@@ -872,8 +872,7 @@ lightweight reinforcement signal.  See the dedicated
 [Reaction Reinforcement](../reaction-reinforcement.md) page for the full
 mapping table and config surface.  For Telegram specifically:
 
-- Enable with `HERMES_REACTION_SIGNALS_ENABLED=true` (or
-  `reaction_signals.enabled: true` in `config.yaml`).
+- Enable with `reaction_signals.enabled: true` in `config.yaml`.
 - The bot must be a **group admin** to receive `message_reaction`
   updates from Telegram in groups / supergroups.  DMs work without
   extra setup.

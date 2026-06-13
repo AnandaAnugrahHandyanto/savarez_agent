@@ -242,6 +242,75 @@ class TestReactionConfigFromEnv:
         assert sig.polarity is ReactionPolarity.NEUTRAL
 
 
+class TestReactionConfigFromYaml:
+    """config.yaml's reaction_signals block is the authoritative surface.
+
+    Per the contribution rubric these are non-secret behavioural settings, so
+    they live in config.yaml; the HERMES_REACTION_* env vars are only an
+    internal override (#27451 review).
+    """
+
+    @staticmethod
+    def _clear_env(monkeypatch):
+        for var in (
+            "HERMES_REACTION_SIGNALS_ENABLED",
+            "HERMES_REACTION_MIN_SIGNAL",
+            "HERMES_REACTION_DECAY_DAYS",
+            "HERMES_REACTION_INCLUDE_UNKNOWN",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+    def _write_config(self, tmp_path, block):
+        import yaml
+
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump({"reaction_signals": block}), encoding="utf-8"
+        )
+
+    def test_config_yaml_enables_feature(self, tmp_path, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_config(
+            tmp_path,
+            {
+                "enabled": True,
+                "min_signal_threshold": 1.5,
+                "decay_days": 7,
+                "include_unknown": True,
+            },
+        )
+        cfg = ReactionConfig.from_env()
+        assert cfg.enabled is True
+        assert cfg.min_signal_threshold == 1.5
+        assert cfg.decay_days == 7
+        assert cfg.include_unknown is True
+
+    def test_env_var_overrides_config_yaml(self, tmp_path, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_config(tmp_path, {"enabled": False})
+        # config.yaml says off, but the internal env override forces on.
+        monkeypatch.setenv("HERMES_REACTION_SIGNALS_ENABLED", "true")
+        assert ReactionConfig.from_env().enabled is True
+
+    def test_missing_config_yaml_keeps_defaults(self, tmp_path, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg = ReactionConfig.from_env()
+        assert cfg.enabled is False
+        assert cfg.min_signal_threshold == 0.5
+
+    def test_malformed_config_yaml_does_not_wedge(self, tmp_path, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "reaction_signals: [not, a, mapping]\n", encoding="utf-8"
+        )
+        # Must fall back to defaults rather than raise.
+        cfg = ReactionConfig.from_env()
+        assert cfg.enabled is False
+
+
 # ---------------------------------------------------------------------------
 # ReactionEvent dataclass
 # ---------------------------------------------------------------------------

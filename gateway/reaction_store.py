@@ -196,9 +196,13 @@ class ReactionStore:
     ) -> Dict[str, Any]:
         """Return summed weight and counts for one message.
 
-        ``added=0`` rows (removals) subtract a prior add of the same emoji
-        from the same user.  This matches user intent ("I changed my mind")
-        without trying to reconstruct full per-user state per emoji.
+        Removals (``added=0`` rows) cancel the matching add of the same emoji
+        from the same user across the WHOLE aggregate — ``net_weight`` AND the
+        polarity counts AND ``unique_users`` — by reconstructing the net
+        per-(user, emoji) reaction state in time order.  Without this, an
+        add-then-remove of 👎 would leave ``negative=1`` / ``unique_users=1``
+        even though the net state is empty (the bug flagged on #27451).
+        ``sample_count`` stays a raw tap count (every event, add or remove).
         """
         params: List[Any] = [platform, channel_id, target_message_id]
         clauses = "platform = ? AND channel_id = ? AND target_message_id = ?"
@@ -215,23 +219,33 @@ class ReactionStore:
                 """,
                 params,
             ).fetchall()
+        # Net per-(user, emoji) state: +1 per add, -1 per remove.  A reaction
+        # is "active" only when its net is > 0, so removals subtract from the
+        # counts and unique-user set the same way they subtract from weight.
+        net_state: Dict[tuple, int] = {}
+        emoji_meta: Dict[str, tuple] = {}  # emoji -> (polarity, signed weight)
+        for r in rows:
+            key = (r["actor_user_id"], r["emoji"])
+            emoji_meta[r["emoji"]] = (r["polarity"], r["weight"])
+            net_state[key] = net_state.get(key, 0) + (1 if r["added"] else -1)
+
         net_weight = 0.0
         positive = 0
         negative = 0
         neutral = 0
         unique_users: set[str] = set()
-        for r in rows:
-            sign = 1 if r["added"] else -1
-            net_weight += sign * r["weight"]
-            polarity = r["polarity"]
-            if r["added"]:
-                if polarity == ReactionPolarity.POSITIVE.value:
-                    positive += 1
-                elif polarity == ReactionPolarity.NEGATIVE.value:
-                    negative += 1
-                else:
-                    neutral += 1
-                unique_users.add(r["actor_user_id"])
+        for (actor_user_id, emoji), net in net_state.items():
+            if net <= 0:
+                continue  # net-removed (or never net-positive) — not active.
+            polarity, weight = emoji_meta[emoji]
+            net_weight += weight
+            if polarity == ReactionPolarity.POSITIVE.value:
+                positive += 1
+            elif polarity == ReactionPolarity.NEGATIVE.value:
+                negative += 1
+            else:
+                neutral += 1
+            unique_users.add(actor_user_id)
         return {
             "platform": platform,
             "channel_id": channel_id,

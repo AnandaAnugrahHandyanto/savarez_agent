@@ -503,19 +503,21 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 
 ## Emoji Reaction Reinforcement
 
-Captures `👍 / ❤️ / 👎 / 💩 / …` reactions on Hermes messages and persists them
-to `reactions.db` under `HERMES_HOME` so future features (memory weighting,
-skill confidence, response-style tuning) can read the signal. See
+Emoji Reaction Reinforcement is configured in `config.yaml` under the
+`reaction_signals:` block — these are non-secret behavioural settings, so
+they live in `config.yaml`, not environment variables. See
 [Reaction Reinforcement](../user-guide/reaction-reinforcement.md) for the
-user guide. Distinct from the `*_REACTIONS` lifecycle variables above which
-control the outgoing `👀/✅/❌` markers on the user's trigger message.
+user guide. (This is distinct from the `*_REACTIONS` lifecycle variables
+above, which control the outgoing `👀/✅/❌` markers on the user's trigger
+message.)
 
-| Variable | Description |
-|----------|-------------|
-| `HERMES_REACTION_SIGNALS_ENABLED` | Master switch. `true` enables capture of incoming emoji reactions on supported platforms (Telegram in v1; Discord and Slack follow). Default `false` -- the feature is strictly opt-in. |
-| `HERMES_REACTION_MIN_SIGNAL` | Aggregated weight magnitude below which a message is treated as "no clear signal". Default `0.5`. Consumers (memory weighting, skill scoring) read this to avoid acting on noise. |
-| `HERMES_REACTION_DECAY_DAYS` | How long a reaction event is retained before `ReactionStore.prune_older_than()` is eligible to delete it. Default `30`. Set higher to keep a longer history; pruning is opt-in (no automatic cron yet). |
-| `HERMES_REACTION_INCLUDE_UNKNOWN` | When `true`, emoji outside the built-in weight table are recorded with neutral weight `0.0`. Useful for telemetry / engagement counts. Default `false`. |
+```yaml
+reaction_signals:
+  enabled: false           # master switch; strictly opt-in (default false)
+  min_signal_threshold: 0.5  # aggregated weight below which a message has "no clear signal"
+  decay_days: 30           # retention before prune_older_than() is eligible
+  include_unknown: false   # record emoji outside the built-in weight table at neutral weight
+```
 
 ## Agent Behavior
 
