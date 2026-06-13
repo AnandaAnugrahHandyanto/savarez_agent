@@ -45,6 +45,9 @@ from tools.code_execution_tool import (
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
     _execute_remote,
+    _is_unbounded_resource_limit,
+    _tool_call_limit_reached,
+    _timeout_or_none,
 )
 
 
@@ -137,6 +140,25 @@ class TestHermesToolsGeneration(unittest.TestCase):
         src = generate_hermes_tools_module(["terminal"], transport="file")
         self.assertIn("_seq_lock = threading.Lock()", src)
         self.assertIn("with _seq_lock:", src)
+
+
+class TestExecuteCodeResourceLimits(unittest.TestCase):
+    def test_non_positive_limits_are_unbounded(self):
+        for value in (0, -1, "0", "-5"):
+            self.assertTrue(_is_unbounded_resource_limit(value))
+            self.assertFalse(_tool_call_limit_reached(999, value))
+            self.assertIsNone(_timeout_or_none(value, default=300))
+
+    def test_positive_limits_still_apply(self):
+        self.assertFalse(_is_unbounded_resource_limit(1))
+        self.assertFalse(_tool_call_limit_reached(0, 1))
+        self.assertTrue(_tool_call_limit_reached(1, 1))
+        self.assertEqual(_timeout_or_none(30, default=300), 30)
+
+    def test_missing_limits_use_defaults(self):
+        self.assertFalse(_is_unbounded_resource_limit(None))
+        self.assertTrue(_tool_call_limit_reached(50, None, default=50))
+        self.assertEqual(_timeout_or_none(None, default=300), 300)
 
 
 class TestExecuteCodeRemoteTempDir(unittest.TestCase):
