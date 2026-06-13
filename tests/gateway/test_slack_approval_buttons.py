@@ -111,13 +111,13 @@ class TestSlackExecApproval:
         assert "dangerous deletion" in blocks[0]["text"]["text"]
         assert blocks[1]["type"] == "actions"
         elements = blocks[1]["elements"]
-        assert len(elements) == 4
+        assert len(elements) == 3
         action_ids = [e["action_id"] for e in elements]
         assert "hermes_approve_once" in action_ids
         assert "hermes_approve_session" in action_ids
-        assert "hermes_approve_always" in action_ids
+        assert "hermes_approve_always" not in action_ids
         assert "hermes_deny" in action_ids
-        # Each button carries the session key as value
+
         for e in elements:
             assert e["value"] == "agent:main:slack:group:C1:1111"
 

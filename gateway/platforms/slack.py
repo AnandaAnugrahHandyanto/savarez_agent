@@ -2914,12 +2914,6 @@ class SlackAdapter(BasePlatformAdapter):
                         },
                         {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": "Always Allow"},
-                            "action_id": "hermes_approve_always",
-                            "value": session_key,
-                        },
-                        {
-                            "type": "button",
                             "text": {"type": "plain_text", "text": "Deny"},
                             "style": "danger",
                             "action_id": "hermes_deny",

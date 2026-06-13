@@ -3033,7 +3033,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}"),
                 ],
                 [
-                    InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"),
                     InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"),
                 ],
             ])

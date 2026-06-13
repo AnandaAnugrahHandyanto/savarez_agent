@@ -4,14 +4,6 @@ import { useStore } from '@nanostores/react'
 import { type FC, useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -38,8 +30,8 @@ import type { ToolPart } from './tool-fallback-model'
 // event payload), which is the only place that data reliably exists.
 export const APPROVAL_TOOLS = new Set(['terminal', 'execute_code'])
 
-// Canonical gateway choices (ui-tui/src/components/prompts.tsx).
-type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
+// Canonical gateway choices supported by the Desktop approval UI.
+type ApprovalChoice = 'once' | 'session' | 'deny'
 
 export const PendingToolApproval: FC<{ part: ToolPart }> = ({ part }) => {
   const request = useStore($approvalRequest)
@@ -58,17 +50,11 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
   const copy = t.assistant.approval
   const gateway = useStore($gateway)
   const [submitting, setSubmitting] = useState<ApprovalChoice | null>(null)
-  // "Always allow" persists the pattern to ~/.hermes/config.yaml permanently, so
-  // it goes through a confirm step rather than firing straight from the menu.
-  const [confirmAlways, setConfirmAlways] = useState(false)
   // The pending tool row only shows a single truncated line of the command, and
-  // a pending row can't be expanded (no result yet), so the full command was
-  // previously only reachable via the "Always allow" modal. Let the user reveal
-  // it inline instead — "expand, Run" (2 clicks) rather than the modal dance.
+  // a pending row can't be expanded (no result yet), so let the user reveal the
+  // full command inline without reintroducing permanent approval options.
   const [showCommand, setShowCommand] = useState(false)
   const busy = submitting !== null
-  // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
-  const allowPermanent = request.allowPermanent !== false
   const hasCommand = request.command.trim().length > 0
 
   const respond = useCallback(
@@ -99,17 +85,11 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
         setSubmitting(null)
       }
     },
-    [busy, gateway, request.sessionId]
+    [busy, copy.gatewayDisconnected, copy.sendFailed, gateway, request.sessionId]
   )
 
   // ⌘/Ctrl+Enter → Run, Esc → Reject.
-  // While the confirm dialog is open it owns the keyboard (Esc closes it), so
-  // the strip-level shortcuts stand down to avoid denying the whole approval.
   useEffect(() => {
-    if (confirmAlways) {
-      return
-    }
-
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
         event.preventDefault()
@@ -123,7 +103,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
     window.addEventListener('keydown', onKeyDown, true)
 
     return () => window.removeEventListener('keydown', onKeyDown, true)
-  }, [confirmAlways, respond])
+  }, [respond])
 
   return (
     <div className="mt-1 ps-5" data-slot="tool-approval-inline">
@@ -154,18 +134,6 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="min-w-44">
               <DropdownMenuItem onSelect={() => void respond('session')}>{copy.allowSession}</DropdownMenuItem>
-              {allowPermanent && (
-                <DropdownMenuItem
-                  onSelect={() => {
-                    // Defer one tick so the menu fully unmounts before the dialog
-                    // mounts — otherwise Radix's focus-return races the dialog and
-                    // dismisses it via onInteractOutside.
-                    setTimeout(() => setConfirmAlways(true), 0)
-                  }}
-                >
-                  {copy.alwaysAllowMenu}
-                </DropdownMenuItem>
-              )}
               <DropdownMenuItem onSelect={() => void respond('deny')} variant="destructive">
                 {copy.reject}
               </DropdownMenuItem>
@@ -203,37 +171,6 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
           {request.command.trim()}
         </pre>
       )}
-
-      <Dialog onOpenChange={setConfirmAlways} open={confirmAlways}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>{copy.alwaysTitle}</DialogTitle>
-            <DialogDescription>{copy.alwaysDescription(request.description)}</DialogDescription>
-          </DialogHeader>
-
-          {request.command.trim() && (
-            <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-2.5 py-1.5 font-mono text-xs leading-snug text-foreground">
-              {request.command.trim()}
-            </pre>
-          )}
-
-          <DialogFooter>
-            <Button onClick={() => setConfirmAlways(false)} size="sm" variant="ghost">
-              {t.common.cancel}
-            </Button>
-            <Button
-              onClick={() => {
-                setConfirmAlways(false)
-                void respond('always')
-              }}
-              size="sm"
-              variant="destructive"
-            >
-              {copy.alwaysAllow}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

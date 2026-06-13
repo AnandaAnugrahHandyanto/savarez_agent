@@ -122,11 +122,10 @@ class TestFeishuExecApproval:
 
         # Check buttons
         actions = card["elements"][1]["actions"]
-        assert len(actions) == 4
+        assert len(actions) == 3
         action_names = [a["value"]["hermes_action"] for a in actions]
-        assert action_names == [
-            "approve_once", "approve_session", "approve_always", "deny"
-        ]
+        assert action_names == ["approve_once", "approve_session", "deny"]
+        assert "approve_always" not in action_names
 
     @pytest.mark.asyncio
     async def test_stores_approval_state(self):

@@ -9687,8 +9687,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return "deny"
 
     def _approval_choices(self, command: str, *, allow_permanent: bool = True) -> list[str]:
-        """Return approval choices for a dangerous command prompt."""
-        choices = ["once", "session", "always", "deny"] if allow_permanent else ["once", "session", "deny"]
+        """Return approval choices for a dangerous command prompt.
+
+        Permanent approvals are intentionally hidden from prompts.  The
+        allow_permanent parameter is kept for callback API compatibility, but
+        UI prompts should only offer one-shot, session-scoped, or deny choices.
+        """
+        choices = ["once", "session", "deny"]
         if len(command) > 70:
             choices.append("view")
         return choices
@@ -9724,6 +9729,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         choices = state.get("choices")
         if not isinstance(choices, list):
             choices = []
+        original_chosen = choices[selected] if 0 <= selected < len(choices) else None
+        choices = [choice for choice in choices if choice != "always"]
+        state["choices"] = choices
+        if original_chosen in choices:
+            selected = choices.index(original_chosen)
+            state["selected"] = selected
+        elif selected >= len(choices):
+            selected = max(0, len(choices) - 1)
+            state["selected"] = selected
         if not (0 <= selected < len(choices)):
             return
 
@@ -9781,8 +9795,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         command = state["command"]
         description = state["description"]
-        choices = state["choices"]
-        selected = state.get("selected", 0)
+        choices = [choice for choice in state["choices"] if choice != "always"]
+        selected = min(state.get("selected", 0), max(0, len(choices) - 1))
         show_full = state.get("show_full", False)
 
         title = "⚠️  Dangerous Command"
