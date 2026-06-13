@@ -1822,6 +1822,11 @@ def _session_verbose(sid: str) -> bool:
     return _session_tool_progress_mode(sid) == "verbose"
 
 
+def _session_show_reasoning(sid: str) -> bool:
+    session = _sessions.get(sid)
+    return bool(session.get("show_reasoning", False)) if session else False
+
+
 def _tool_progress_enabled(sid: str) -> bool:
     return _session_tool_progress_mode(sid) != "off"
 
@@ -2642,10 +2647,14 @@ def _agent_cbs(sid: str) -> dict:
         "tool_gen_callback": lambda name: _tool_progress_enabled(sid)
         and _emit("tool.generating", sid, {"name": name}),
         "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
-        "reasoning_callback": lambda text: _emit(
-            "reasoning.delta",
-            sid,
-            {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
+        "reasoning_callback": lambda text: (
+            _emit(
+                "reasoning.delta",
+                sid,
+                {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
+            )
+            if _session_show_reasoning(sid)
+            else None
         ),
         "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
