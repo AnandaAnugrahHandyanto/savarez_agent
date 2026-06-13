@@ -88,10 +88,10 @@ class TestApprovalBridge:
         assert option_ids == [
             "allow_once",
             "allow_session",
-            "allow_always",
             "deny",
             "deny_always",
         ]
+        assert "allow_always" not in option_ids
 
     def test_tool_call_ids_are_unique(self):
         _, first_kwargs, _, _, _ = _invoke_callback(

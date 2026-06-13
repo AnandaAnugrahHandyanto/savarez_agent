@@ -50,14 +50,9 @@ def _build_permission_options(*, allow_permanent: bool) -> list[PermissionOption
             name="Allow for session",
         ),
     ]
-    if allow_permanent:
-        options.append(
-            PermissionOption(
-                option_id="allow_always",
-                kind="allow_always",
-                name="Allow always",
-            ),
-        )
+    # Permanent approvals are intentionally hidden from prompts. Keep the
+    # allow_permanent parameter for callback API compatibility, but do not
+    # offer ``allow_always`` in ACP permission requests.
     options.append(PermissionOption(option_id="deny", kind="reject_once", name="Deny"))
     if _permission_option_supports_kind("reject_always"):
         options.append(
@@ -98,6 +93,12 @@ def _map_outcome_to_hermes(outcome: object, *, allowed_option_ids: set[str]) -> 
         return "deny"
 
     option_id = outcome.option_id
+    if option_id == "allow_always":
+        # ``allow_always`` is intentionally hidden from newly-built prompts,
+        # but older clients or already-issued prompts may still return it.
+        # Preserve the established mapping while continuing to reject truly
+        # unknown option ids below.
+        return "always"
     if option_id not in allowed_option_ids:
         logger.warning("Permission request returned unknown option_id: %s", option_id)
         return "deny"

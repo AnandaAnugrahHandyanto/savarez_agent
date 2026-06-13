@@ -1905,7 +1905,6 @@ class FeishuAdapter(BasePlatformAdapter):
                         "actions": [
                             _btn("✅ Allow Once", "approve_once", "primary"),
                             _btn("✅ Session", "approve_session"),
-                            _btn("✅ Always", "approve_always"),
                             _btn("❌ Deny", "deny", "danger"),
                         ],
                     },

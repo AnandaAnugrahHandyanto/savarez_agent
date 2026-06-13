@@ -7,11 +7,12 @@ import {
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
-import { Suspense, useCallback, useMemo, useRef } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 
 import { Thread } from '@/components/assistant-ui/thread'
 import { Backdrop } from '@/components/Backdrop'
+import { ErrorBoundary, type ErrorBoundaryFallbackProps } from '@/components/error-boundary'
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -59,6 +60,82 @@ import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { threadLoadingState } from './thread-loading'
 
+const LARGE_SESSION_RENDER_LIMIT = 300
+
+export function chatRenderWindow(
+  messages: readonly ChatMessage[],
+  fullHistoryLoaded: boolean,
+  limit = LARGE_SESSION_RENDER_LIMIT
+): { cappedMessageCount: number; renderMessages: readonly ChatMessage[] } {
+  const cappedMessageCount = Math.max(0, messages.length - limit)
+  const renderMessages = !fullHistoryLoaded && cappedMessageCount > 0 ? messages.slice(cappedMessageCount) : messages
+
+  return { cappedMessageCount, renderMessages }
+}
+
+export function chatThreadInstanceKey(threadKey: string, renderMessages: number | readonly ChatMessage[]): string {
+  if (typeof renderMessages === 'number') {
+    return `${threadKey}:${renderMessages}`
+  }
+
+  const firstRenderedMessageId = renderMessages[0]?.id ?? 'empty'
+  const lastRenderedMessageId = renderMessages.at(-1)?.id ?? 'empty'
+
+  return `${threadKey}:${renderMessages.length}:${firstRenderedMessageId}:${lastRenderedMessageId}`
+}
+
+type RuntimeMessageRepositoryItem = { message: ThreadMessage; parentId: string | null }
+
+export interface RuntimeMessageRepositoryCache {
+  items: RuntimeMessageRepositoryItem[]
+}
+
+export function buildRuntimeMessageRepository(
+  renderMessages: readonly ChatMessage[],
+  runtimeMessageCache: WeakMap<ChatMessage, ThreadMessage>,
+  repositoryCache?: RuntimeMessageRepositoryCache
+): ReturnType<typeof ExportedMessageRepository.fromBranchableArray> {
+  const items: RuntimeMessageRepositoryItem[] = []
+  const cachedItems = repositoryCache?.items ?? []
+  const branchParentByGroup = new Map<string, string | null>()
+  let visibleParentId: string | null = null
+  let headId: string | null = null
+
+  for (const [index, message] of renderMessages.entries()) {
+    let parentId = visibleParentId
+
+    if (message.role === 'assistant' && message.branchGroupId) {
+      if (!branchParentByGroup.has(message.branchGroupId)) {
+        branchParentByGroup.set(message.branchGroupId, visibleParentId)
+      }
+
+      parentId = branchParentByGroup.get(message.branchGroupId) ?? null
+    }
+
+    const cachedMessage = runtimeMessageCache.get(message)
+    const runtimeMessage = cachedMessage ?? toRuntimeMessage(message)
+
+    if (!cachedMessage) {
+      runtimeMessageCache.set(message, runtimeMessage)
+    }
+
+    const cachedItem = cachedItems[index]
+    const item = cachedItem?.message === runtimeMessage && cachedItem.parentId === parentId ? cachedItem : { message: runtimeMessage, parentId }
+    items.push(item)
+
+    if (!message.hidden) {
+      visibleParentId = message.id
+      headId = message.id
+    }
+  }
+
+  if (repositoryCache) {
+    repositoryCache.items = items
+  }
+
+  return ExportedMessageRepository.fromBranchableArray(items, { headId })
+}
+
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   gateway: HermesGateway | null
   onToggleSelectedPin: () => void
@@ -84,6 +161,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>
   onRestoreToMessage?: (messageId: string) => Promise<void>
+  onRecoverCurrentTranscript?: () => Promise<void> | void
   onTranscribeAudio?: (audio: Blob) => Promise<string>
 }
 
@@ -91,14 +169,63 @@ interface ChatHeaderProps {
   activeSessionId: null | string
   isRoutedSessionView: boolean
   onDeleteSelectedSession: () => void
+  onRecoverCurrentTranscript: () => Promise<void> | void
   onToggleSelectedPin: () => void
   selectedSessionId: null | string
+}
+
+export function recoverTranscriptButtonLabel(hasStoredSession: boolean): string {
+  return hasStoredSession ? 'Recover current transcript' : 'Reload chat history'
+}
+
+export function isAssistantTapLookupError(error: Error): boolean {
+  const text = `${error.name || ''}\n${error.message || ''}\n${error.stack || ''}`
+
+  return /\bTAP\b/i.test(text) && /lookup/i.test(text)
+}
+
+function SessionRenderFailedPanel({ error, reset }: ErrorBoundaryFallbackProps) {
+  const isTapLookupError = isAssistantTapLookupError(error)
+
+  const description = isTapLookupError
+    ? 'Assistant UI failed while looking up TAP render state. The composer is still available, so you can recover without restarting the whole window.'
+    : error.message || 'The session could not be rendered.'
+
+  return (
+    <div className="absolute inset-0 z-10 grid place-items-center bg-(--ui-chat-surface-background)/95 p-6">
+      <section
+        aria-label="Session render failed"
+        className="flex w-full max-w-[32rem] flex-col gap-4 rounded-2xl border border-(--ui-stroke-secondary) bg-(--ui-card-background) p-5 text-sm shadow-xl"
+        role="alert"
+      >
+        <div className="flex items-start gap-3">
+          <Codicon className="mt-0.5 shrink-0 text-(--ui-text-tertiary)" name="warning" size="1.125rem" />
+          <div className="min-w-0 space-y-1">
+            <h2 className="text-base font-semibold text-(--ui-text-primary)">Session render failed</h2>
+            <p className="text-(--ui-text-secondary)">{description}</p>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button className="font-semibold" onClick={reset} type="button">
+            Try rendering again
+          </Button>
+          <Button onClick={() => window.location.reload()} type="button" variant="text">
+            Reload window
+          </Button>
+          <Button onClick={() => void window.hermesDesktop?.revealLogs()?.catch(() => undefined)} type="button" variant="text">
+            Open logs
+          </Button>
+        </div>
+      </section>
+    </div>
+  )
 }
 
 function ChatHeader({
   activeSessionId,
   isRoutedSessionView,
   onDeleteSelectedSession,
+  onRecoverCurrentTranscript,
   onToggleSelectedPin,
   selectedSessionId
 }: ChatHeaderProps) {
@@ -119,12 +246,8 @@ function ChatHeader({
       ? pinnedSessionIds.includes(selectedSessionId)
       : false
 
-  // A brand-new session has no session to pin/delete/rename, so the header is
-  // just a dead "New session" label + chevron. Drop it (and its border)
-  // entirely until there's a real session to act on.
-  if (!selectedSessionId && !activeSessionId && !isRoutedSessionView) {
-    return null
-  }
+  const hasStoredSession = Boolean(selectedSessionId || activeSessionId || isRoutedSessionView)
+  const recoverLabel = recoverTranscriptButtonLabel(hasStoredSession)
 
   return (
     <header className={cn(titlebarHeaderBaseClass, isRoutedSessionView && titlebarHeaderShadowClass)}>
@@ -135,25 +258,38 @@ function ChatHeader({
             'calc(100vw - var(--titlebar-content-inset,0px) - var(--titlebar-tools-right) - var(--titlebar-tools-width) - 1.5rem)'
         }}
       >
-        <SessionActionsMenu
-          align="start"
-          onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}
-          onPin={selectedSessionId ? onToggleSelectedPin : undefined}
-          pinned={selectedIsPinned}
-          sessionId={selectedSessionId || activeSessionId || ''}
-          sideOffset={8}
-          title={title}
-        >
-          <Button
-            className="pointer-events-auto flex h-6 min-w-0 max-w-full gap-1 overflow-hidden border border-transparent bg-transparent px-2 py-0 text-(--ui-text-secondary) hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground data-[state=open]:border-(--ui-stroke-tertiary) data-[state=open]:bg-(--ui-control-active-background) [-webkit-app-region:no-drag]"
-            type="button"
-            variant="ghost"
+        {hasStoredSession ? (
+          <SessionActionsMenu
+            align="start"
+            onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}
+            onPin={selectedSessionId ? onToggleSelectedPin : undefined}
+            pinned={selectedIsPinned}
+            sessionId={selectedSessionId || activeSessionId || ''}
+            sideOffset={8}
+            title={title}
           >
-            <h2 className="min-w-0 flex-1 truncate text-[0.75rem] font-medium leading-none">{title}</h2>
-            <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="chevron-down" size="0.8125rem" />
-          </Button>
-        </SessionActionsMenu>
+            <Button
+              className="pointer-events-auto flex h-6 min-w-0 max-w-full gap-1 overflow-hidden border border-transparent bg-transparent px-2 py-0 text-(--ui-text-secondary) hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground data-[state=open]:border-(--ui-stroke-tertiary) data-[state=open]:bg-(--ui-control-active-background) [-webkit-app-region:no-drag]"
+              type="button"
+              variant="ghost"
+            >
+              <h2 className="min-w-0 flex-1 truncate text-[0.75rem] font-medium leading-none">{title}</h2>
+              <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="chevron-down" size="0.8125rem" />
+            </Button>
+          </SessionActionsMenu>
+        ) : null}
       </div>
+      <Button
+        aria-label={recoverLabel}
+        className="pointer-events-auto ml-2 h-6 shrink-0 gap-1 px-2 text-[0.75rem] [-webkit-app-region:no-drag]"
+        onClick={() => void onRecoverCurrentTranscript()}
+        title={recoverLabel}
+        type="button"
+        variant="ghost"
+      >
+        <Codicon name="refresh" size="0.8125rem" />
+        <span className="hidden sm:inline">{recoverLabel}</span>
+      </Button>
     </header>
   )
 }
@@ -168,6 +304,7 @@ interface ChatRuntimeBoundaryProps {
   /** Route points at an unloaded session — render empty until resume swaps in
    *  the new transcript, so the previous session's messages don't linger. */
   suppressMessages: boolean
+  threadKey: string
 }
 
 const NO_MESSAGES: ChatMessage[] = []
@@ -189,46 +326,33 @@ function ChatRuntimeBoundary({
   onEdit,
   onReload,
   onThreadMessagesChange,
-  suppressMessages
+  suppressMessages,
+  threadKey
 }: ChatRuntimeBoundaryProps) {
   const storeMessages = useStore($messages)
   const messages = suppressMessages ? NO_MESSAGES : storeMessages
+  const [fullHistorySessionId, setFullHistorySessionId] = useState<string | null>(null)
   const runtimeMessageCacheRef = useRef(new WeakMap<ChatMessage, ThreadMessage>())
+  const runtimeMessageRepositoryCacheRef = useRef<RuntimeMessageRepositoryCache>({ items: [] })
+  const fullHistoryLoaded = Boolean(threadKey && fullHistorySessionId === threadKey)
+  const { cappedMessageCount, renderMessages } = chatRenderWindow(messages, fullHistoryLoaded)
+  const threadInstanceKey = chatThreadInstanceKey(threadKey, renderMessages)
 
-  const runtimeMessageRepository = useMemo(() => {
-    const items: { message: ThreadMessage; parentId: string | null }[] = []
-    const branchParentByGroup = new Map<string, string | null>()
-    let visibleParentId: string | null = null
-    let headId: string | null = null
+  useEffect(() => {
+    setFullHistorySessionId(null)
+    runtimeMessageCacheRef.current = new WeakMap<ChatMessage, ThreadMessage>()
+    runtimeMessageRepositoryCacheRef.current = { items: [] }
+  }, [threadKey])
 
-    for (const message of messages) {
-      let parentId = visibleParentId
-
-      if (message.role === 'assistant' && message.branchGroupId) {
-        if (!branchParentByGroup.has(message.branchGroupId)) {
-          branchParentByGroup.set(message.branchGroupId, visibleParentId)
-        }
-
-        parentId = branchParentByGroup.get(message.branchGroupId) ?? null
-      }
-
-      const cachedMessage = runtimeMessageCacheRef.current.get(message)
-      const runtimeMessage = cachedMessage ?? toRuntimeMessage(message)
-
-      if (!cachedMessage) {
-        runtimeMessageCacheRef.current.set(message, runtimeMessage)
-      }
-
-      items.push({ message: runtimeMessage, parentId })
-
-      if (!message.hidden) {
-        visibleParentId = message.id
-        headId = message.id
-      }
-    }
-
-    return ExportedMessageRepository.fromBranchableArray(items, { headId })
-  }, [messages])
+  const runtimeMessageRepository = useMemo(
+    () =>
+      buildRuntimeMessageRepository(
+        renderMessages,
+        runtimeMessageCacheRef.current,
+        runtimeMessageRepositoryCacheRef.current
+      ),
+    [renderMessages]
+  )
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: runtimeMessageRepository,
@@ -243,7 +367,25 @@ function ChatRuntimeBoundary({
     onReload
   })
 
-  return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <ErrorBoundary fallback={SessionRenderFailedPanel} key={threadInstanceKey} label="assistant-thread">
+        {cappedMessageCount > 0 && !fullHistoryLoaded && (
+          <div className="pointer-events-none absolute left-0 right-0 top-3 z-20 flex justify-center px-4">
+            <div className="pointer-events-auto flex max-w-(--composer-width) items-center gap-3 rounded-full border border-border/70 bg-background/95 px-4 py-2 text-sm text-muted-foreground shadow-lg backdrop-blur">
+              <span>
+                Showing latest {renderMessages.length.toLocaleString()} of {messages.length.toLocaleString()} messages to keep this large session responsive.
+              </span>
+              <Button onClick={() => setFullHistorySessionId(threadKey)} size="sm" variant="secondary">
+                Load full history
+              </Button>
+            </div>
+          </div>
+        )}
+        {children}
+      </ErrorBoundary>
+    </AssistantRuntimeProvider>
+  )
 }
 
 export function ChatView({
@@ -269,6 +411,7 @@ export function ChatView({
   onEdit,
   onReload,
   onRestoreToMessage,
+  onRecoverCurrentTranscript = () => window.location.reload(),
   onTranscribeAudio
 }: ChatViewProps) {
   const location = useLocation()
@@ -399,6 +542,7 @@ export function ChatView({
         activeSessionId={activeSessionId}
         isRoutedSessionView={isRoutedSessionView}
         onDeleteSelectedSession={onDeleteSelectedSession}
+        onRecoverCurrentTranscript={onRecoverCurrentTranscript}
         onToggleSelectedPin={onToggleSelectedPin}
         selectedSessionId={selectedSessionId}
       />
@@ -416,6 +560,7 @@ export function ChatView({
           onReload={onReload}
           onThreadMessagesChange={onThreadMessagesChange}
           suppressMessages={routeSessionMismatch}
+          threadKey={threadKey}
         >
           <Thread
             clampToComposer={showChatBar}

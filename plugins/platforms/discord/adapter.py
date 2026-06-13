@@ -5501,12 +5501,6 @@ def _define_discord_view_classes() -> None:
         ):
             await self._resolve(interaction, "session", discord.Color.blue(), "Approved for session")
 
-        @discord.ui.button(label="Always Allow", style=discord.ButtonStyle.blurple)
-        async def allow_always(
-            self, interaction: discord.Interaction, button: discord.ui.Button
-        ):
-            await self._resolve(interaction, "always", discord.Color.purple(), "Approved permanently")
-
         @discord.ui.button(label="Deny", style=discord.ButtonStyle.red)
         async def deny(
             self, interaction: discord.Interaction, button: discord.ui.Button

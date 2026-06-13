@@ -20,7 +20,6 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const http = require('node:http')
 const https = require('node:https')
-const net = require('node:net')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
@@ -42,6 +41,7 @@ const { buildDesktopBackendEnv } = require('./backend-env.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
+const { createRendererUnresponsiveHandler } = require('./renderer-unresponsive.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
 const {
   buildPosixCleanupScript,
@@ -136,6 +136,11 @@ function hiddenWindowsChildOptions(options = {}) {
 // switches only apply pre-launch. Override with HERMES_DESKTOP_DISABLE_GPU
 // (1/true → always disable, 0/false → keep GPU on).
 const REMOTE_DISPLAY_REASON = detectRemoteDisplay()
+// Chromium's native hang monitor raises a platform popup when the renderer
+// spends too long rendering a huge/compressed transcript. Hermes already has an
+// in-app recovery/watchdog surface, so disable the OS-level popup and keep the
+// renderer warning inside the app UI.
+app.commandLine.appendSwitch('disable-hang-monitor')
 if (REMOTE_DISPLAY_REASON) {
   app.disableHardwareAcceleration()
   // Belt-and-suspenders for X11/VNC, where the Viz compositor can still glitch
@@ -4704,6 +4709,11 @@ async function spawnPoolBackend(profile, entry) {
         ...process.env,
         HERMES_HOME,
         ...backend.env,
+        // Force Python subprocess stdio to UTF-8 on Windows. Without this,
+        // Python can default to the active ANSI code page and crash reader
+        // threads with UnicodeDecodeError when output contains non-CP1252 bytes.
+        PYTHONUTF8: '1',
+        PYTHONIOENCODING: 'utf-8:replace',
         // Pin the gateway's tool/terminal cwd to the same directory we chose for
         // the child process. Inherited TERMINAL_CWD (or a stale config bridge)
         // can still point at the install dir even when spawn cwd is home.
@@ -4924,6 +4934,11 @@ async function startHermes() {
           // can't reliably do that, so we set it inline for every spawn.
           HERMES_HOME,
           ...backend.env,
+          // Force Python subprocess stdio to UTF-8 on Windows. Without this,
+          // Python can default to the active ANSI code page and crash reader
+          // threads with UnicodeDecodeError when output contains non-CP1252 bytes.
+          PYTHONUTF8: '1',
+          PYTHONIOENCODING: 'utf-8:replace',
           TERMINAL_CWD: hermesCwd,
           HERMES_DASHBOARD_SESSION_TOKEN: token,
           // Marks this dashboard backend as desktop-spawned so it runs the cron
@@ -5231,7 +5246,10 @@ function createWindow() {
     }
   })
 
-  mainWindow.webContents.on('unresponsive', () => rememberLog('[renderer] webContents became unresponsive'))
+  mainWindow.webContents.on(
+    'unresponsive',
+    createRendererUnresponsiveHandler({ log: message => rememberLog(message) })
+  )
 
   // Electron always passes the event first. The canonical (Electron 36+) shape
   // is (event, messageDetails); the deprecated positional shape is

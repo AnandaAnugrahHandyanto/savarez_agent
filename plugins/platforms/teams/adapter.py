@@ -1054,11 +1054,6 @@ class TeamsAdapter(BasePlatformAdapter):
                     data={**btn_data_base, "hermes_action": "approve_session"},
                 ),
                 ExecuteAction(
-                    title="Always Allow",
-                    verb="hermes_approve",
-                    data={**btn_data_base, "hermes_action": "approve_always"},
-                ),
-                ExecuteAction(
                     title="Deny",
                     verb="hermes_approve",
                     data={**btn_data_base, "hermes_action": "deny"},

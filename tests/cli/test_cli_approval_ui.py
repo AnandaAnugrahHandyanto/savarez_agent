@@ -133,7 +133,9 @@ class TestCliApprovalUi:
         assert cli._approval_state is not None
         assert cli._approval_state["show_full"] is True
         assert "view" not in cli._approval_state["choices"]
-        assert cli._approval_state["selected"] == 3
+        assert "always" not in cli._approval_state["choices"]
+        assert cli._approval_state["selected"] == 2
+        assert cli._approval_state["choices"][2] == "deny"
         assert cli._approval_state["response_queue"].empty()
 
     def test_approval_display_places_title_inside_box_not_border(self):
@@ -243,7 +245,7 @@ class TestCliApprovalUi:
         # getting clipped off the bottom of the panel.
         assert "Allow once" in rendered
         assert "Allow for this session" in rendered
-        assert "Add to permanent allowlist" in rendered
+        assert "Add to permanent allowlist" not in rendered
         assert "Deny" in rendered
 
         # The bottom border must render (i.e. the panel is self-contained).
@@ -277,10 +279,10 @@ class TestCliApprovalUi:
 
         # Command visible.
         assert "rm -rf /var/log/apache2/*.log" in rendered
-        # All four choices visible.
-        for label in ("Allow once", "Allow for this session",
-                      "Add to permanent allowlist", "Deny"):
+        # Non-permanent choices visible; permanent allowlist choice hidden.
+        for label in ("Allow once", "Allow for this session", "Deny"):
             assert label in rendered, f"choice {label!r} missing"
+        assert "Add to permanent allowlist" not in rendered
 
     def test_approval_display_truncates_giant_command_in_view_mode(self):
         """If the user hits /view on a massive command, choices still render.
@@ -308,10 +310,10 @@ class TestCliApprovalUi:
 
         rendered = "".join(text for _style, text in fragments)
 
-        # All four choices visible even with a huge command.
-        for label in ("Allow once", "Allow for this session",
-                      "Add to permanent allowlist", "Deny"):
+        # Non-permanent choices visible even with a huge command; permanent allowlist choice hidden.
+        for label in ("Allow once", "Allow for this session", "Deny"):
             assert label in rendered, f"choice {label!r} missing"
+        assert "Add to permanent allowlist" not in rendered
 
         # Command got truncated with a marker.
         assert "(command truncated" in rendered

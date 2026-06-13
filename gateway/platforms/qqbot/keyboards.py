@@ -202,9 +202,9 @@ def _make_callback_button(
 
 
 def build_approval_keyboard(session_key: str) -> InlineKeyboard:
-    """Build the 3-button approval keyboard.
+    """Build the approval keyboard.
 
-    Layout: ``[✅ 允许一次] [⭐ 始终允许] [❌ 拒绝]`` — all three share
+    Layout: ``[✅ 允许一次] [❌ 拒绝]`` — both buttons share
     ``group_id='approval'`` so clicking one greys out the rest.
 
     :param session_key: Embedded into ``button_data`` so the decision
@@ -219,14 +219,6 @@ def build_approval_keyboard(session_key: str) -> InlineKeyboard:
                         label="✅ 允许一次",
                         visited_label="已允许",
                         data=f"{APPROVAL_BUTTON_PREFIX}{session_key}:allow-once",
-                        style=1,
-                        group_id="approval",
-                    ),
-                    _make_callback_button(
-                        btn_id="always",
-                        label="⭐ 始终允许",
-                        visited_label="已始终允许",
-                        data=f"{APPROVAL_BUTTON_PREFIX}{session_key}:allow-always",
                         style=1,
                         group_id="approval",
                     ),
