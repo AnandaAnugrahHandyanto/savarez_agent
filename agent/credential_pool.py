@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import random
 import threading
 import time
 import uuid
 import re
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -111,6 +114,7 @@ SUPPORTED_POOL_STRATEGIES = {
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
+CODEX_USAGE_PROBE_TIMEOUT_SECONDS = 2.0
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
 # Custom endpoints all share provider='custom' but are keyed by their
@@ -295,16 +299,6 @@ def _extract_retry_delay_seconds(message: str) -> Optional[float]:
     sec_match = re.search(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", message, re.IGNORECASE)
     if sec_match:
         return float(sec_match.group(1))
-    # "Resets in 4hr 5min" format used by OpenCode Go weekly usage limits
-    hr_min_match = re.search(r"resets?\s+in\s+(\d+)\s*hr\s+(\d+)\s*min", message, re.IGNORECASE)
-    if hr_min_match:
-        return int(hr_min_match.group(1)) * 3600 + int(hr_min_match.group(2)) * 60
-    hr_only_match = re.search(r"resets?\s+in\s+(\d+)\s*hr\b", message, re.IGNORECASE)
-    if hr_only_match:
-        return int(hr_only_match.group(1)) * 3600
-    min_only_match = re.search(r"resets?\s+in\s+(\d+)\s*min\b", message, re.IGNORECASE)
-    if min_only_match:
-        return int(min_only_match.group(1)) * 60
     return None
 
 
@@ -333,6 +327,148 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
     return normalized
 
 
+@dataclass(frozen=True)
+class _CodexUsageStatus:
+    available: bool
+    reset_at: Optional[float] = None
+    reason: Optional[str] = None
+    message: Optional[str] = None
+    allowed: Optional[bool] = None
+
+
+def _codex_usage_url_for_entry(entry: PooledCredential) -> str:
+    base_url = (entry.runtime_base_url or entry.base_url or "https://chatgpt.com/backend-api/codex").rstrip("/")
+    if base_url.endswith("/codex"):
+        base_url = base_url[: -len("/codex")]
+    if "/backend-api" in base_url:
+        return base_url + "/wham/usage"
+    return base_url + "/api/codex/usage"
+
+
+def _codex_usage_probe_timeout_seconds() -> float:
+    # Live usage checks can run from pool selection while the provider lock is
+    # held. The probe is opportunistic, so cap even env-provided values to keep
+    # slow Codex usage endpoints from stalling unrelated pool operations.
+    raw = os.getenv("HERMES_CODEX_USAGE_TIMEOUT_SECONDS", "")
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = CODEX_USAGE_PROBE_TIMEOUT_SECONDS
+    else:
+        value = CODEX_USAGE_PROBE_TIMEOUT_SECONDS
+    return max(0.1, min(value, CODEX_USAGE_PROBE_TIMEOUT_SECONDS))
+
+
+def _codex_account_id_from_token(access_token: str) -> Optional[str]:
+    claims = _decode_jwt_claims(access_token)
+    auth_claims = claims.get("https://api.openai.com/auth")
+    if isinstance(auth_claims, dict):
+        account_id = auth_claims.get("chatgpt_account_id")
+        if isinstance(account_id, str) and account_id.strip():
+            return account_id.strip()
+    return None
+
+
+def codex_account_id_for_entry(entry: Any) -> Optional[str]:
+    """Return the non-secret ChatGPT account id encoded in a Codex pool entry."""
+    return _codex_account_id_from_token(str(getattr(entry, "access_token", "") or ""))
+
+
+def _codex_quota_identity_from_token(access_token: str) -> Optional[str]:
+    """Return the stable Codex quota identity encoded in an access token.
+
+    ``chatgpt_account_id`` identifies the ChatGPT workspace/account, not always
+    the user-level usage bucket. Team/workspace members can share that account
+    id while having separate Codex usage windows, so include JWT ``sub`` when
+    available. Exact duplicates still collapse to one identity.
+    """
+    claims = _decode_jwt_claims(access_token)
+    auth_claims = claims.get("https://api.openai.com/auth")
+    account_id = None
+    if isinstance(auth_claims, dict):
+        raw_account_id = auth_claims.get("chatgpt_account_id")
+        if isinstance(raw_account_id, str) and raw_account_id.strip():
+            account_id = raw_account_id.strip()
+    raw_subject = claims.get("sub")
+    subject = raw_subject.strip() if isinstance(raw_subject, str) and raw_subject.strip() else None
+    if account_id and subject:
+        return f"{account_id}:{subject}"
+    return account_id or (f"sub:{subject}" if subject else None)
+
+
+def codex_quota_identity_for_entry(entry: Any) -> Optional[str]:
+    """Return the non-secret Codex quota identity for duplicate detection."""
+    return _codex_quota_identity_from_token(str(getattr(entry, "access_token", "") or ""))
+
+
+def _fetch_codex_entry_usage_status(entry: PooledCredential) -> Optional[_CodexUsageStatus]:
+    access_token = str(entry.access_token or "").strip()
+    if not access_token:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "User-Agent": "codex_cli_rs/0.0.0 (Hermes Agent)",
+        "originator": "codex_cli_rs",
+    }
+    account_id = _codex_account_id_from_token(access_token)
+    if account_id:
+        headers["ChatGPT-Account-ID"] = account_id
+
+    timeout = _codex_usage_probe_timeout_seconds()
+    request = urllib.request.Request(_codex_usage_url_for_entry(entry), headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8") or "{}")
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+        logger.debug("Codex usage probe failed for pool entry %s: %s", entry.label or entry.id, exc)
+        return None
+
+    rate_limit = payload.get("rate_limit") if isinstance(payload, dict) else None
+    if not isinstance(rate_limit, dict):
+        return None
+
+    primary_window = rate_limit.get("primary_window")
+    secondary_window = rate_limit.get("secondary_window")
+    reset_at = None
+    if isinstance(primary_window, dict):
+        reset_at = _parse_absolute_timestamp(primary_window.get("reset_at"))
+    if reset_at is None and isinstance(secondary_window, dict):
+        reset_at = _parse_absolute_timestamp(secondary_window.get("reset_at"))
+
+    allowed = rate_limit.get("allowed")
+    limit_reached = rate_limit.get("limit_reached")
+    if allowed is True:
+        return _CodexUsageStatus(available=True, reset_at=reset_at, allowed=True)
+    if limit_reached is True or allowed is False:
+        return _CodexUsageStatus(
+            available=False,
+            reset_at=reset_at,
+            reason="usage_limit_reached",
+            message="The usage limit has been reached",
+            allowed=False,
+        )
+
+    used_values: list[float] = []
+    for window in (primary_window, secondary_window):
+        if isinstance(window, dict):
+            used = window.get("used_percent")
+            if isinstance(used, (int, float)):
+                used_values.append(float(used))
+    if used_values and max(used_values) < 100:
+        return _CodexUsageStatus(available=True, reset_at=reset_at)
+    if used_values and max(used_values) >= 100:
+        return _CodexUsageStatus(
+            available=False,
+            reset_at=reset_at,
+            reason="usage_limit_reached",
+            message="The usage limit has been reached",
+        )
+    return None
+
+
 def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     if entry.last_status != STATUS_EXHAUSTED:
         return None
@@ -342,6 +478,63 @@ def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     if entry.last_status_at:
         return entry.last_status_at + _exhausted_ttl(entry.last_error_code)
     return None
+
+
+def _is_codex_usage_limit_error(reason: Any, message: Any = "") -> bool:
+    reason_text = str(reason or "").lower()
+    message_text = str(message or "").lower()
+    return (
+        "usage_limit_reached" in reason_text
+        or "usage limit has been reached" in message_text
+    )
+
+
+def _is_codex_token_invalidated_error(reason: Any, message: Any = "") -> bool:
+    reason_text = str(reason or "").lower()
+    message_text = str(message or "").lower()
+    return (
+        "token_invalidated" in reason_text
+        or "token has been invalidated" in message_text
+    )
+
+
+def _codex_usage_limit_hold_until(
+    entry: PooledCredential,
+    *,
+    now: Optional[float] = None,
+) -> Optional[float]:
+    if entry.last_status != STATUS_EXHAUSTED:
+        return None
+    if not _is_codex_usage_limit_error(entry.last_error_reason, entry.last_error_message):
+        return None
+    reset_at = _parse_absolute_timestamp(getattr(entry, "last_error_reset_at", None))
+    if reset_at is None:
+        return None
+    now_value = now if now is not None else time.time()
+    if now_value >= reset_at:
+        return None
+    status_at = _parse_absolute_timestamp(getattr(entry, "last_status_at", None))
+    if status_at is None:
+        return None
+    return reset_at
+
+
+def _has_authoritative_future_usage_limit(
+    entry: PooledCredential,
+    *,
+    now: Optional[float] = None,
+) -> bool:
+    """True while a Codex usage-limit reset is still authoritative.
+
+    The Codex usage probe can lag or disagree with the Responses endpoint.  If
+    the endpoint that just rejected the request gave us ``usage_limit_reached``,
+    keep that cooldown authoritative until its reset timestamp elapses.  Live
+    usage can still clear stale/no-reset exhaustion, but it should not override
+    a concrete future reset returned by the failed model request.
+    """
+    now_value = now if now is not None else time.time()
+    hold_until = _codex_usage_limit_hold_until(entry, now=now_value)
+    return hold_until is not None and now_value < hold_until
 
 
 def _normalize_custom_pool_name(name: str) -> str:
@@ -471,12 +664,65 @@ class CredentialPool:
             return None
         return next((entry for entry in self._entries if entry.id == self._current_id), None)
 
+    def _entry_by_id(self, credential_id: Optional[str]) -> Optional[PooledCredential]:
+        if not credential_id:
+            return None
+        return next((entry for entry in self._entries if entry.id == credential_id), None)
+
     def _replace_entry(self, old: PooledCredential, new: PooledCredential) -> None:
         """Swap an entry in-place by id, preserving sort order."""
         for idx, entry in enumerate(self._entries):
             if entry.id == old.id:
                 self._entries[idx] = new
                 return
+
+    def _codex_quota_identity_entries(self, identity: Optional[str]) -> List[PooledCredential]:
+        if self.provider != "openai-codex" or not identity:
+            return []
+        return [
+            entry for entry in self._entries
+            if codex_quota_identity_for_entry(entry) == identity
+        ]
+
+    def _propagate_codex_usage_limit_exhaustion(self) -> int:
+        if self.provider != "openai-codex":
+            return 0
+
+        changed = 0
+        seen_identities: Set[str] = set()
+        for entry in list(self._entries):
+            identity = codex_quota_identity_for_entry(entry)
+            if not identity or identity in seen_identities:
+                continue
+            seen_identities.add(identity)
+            account_entries = self._codex_quota_identity_entries(identity)
+            sources = [
+                candidate for candidate in account_entries
+                if (
+                    candidate.last_status == STATUS_EXHAUSTED
+                    and _is_codex_usage_limit_error(
+                        candidate.last_error_reason,
+                        candidate.last_error_message,
+                    )
+                )
+            ]
+            if not sources:
+                continue
+            source = max(sources, key=lambda candidate: candidate.last_status_at or 0)
+            for candidate in account_entries:
+                updated = replace(
+                    candidate,
+                    last_status=STATUS_EXHAUSTED,
+                    last_status_at=source.last_status_at or time.time(),
+                    last_error_code=source.last_error_code or 429,
+                    last_error_reason=source.last_error_reason,
+                    last_error_message=source.last_error_message,
+                    last_error_reset_at=source.last_error_reset_at,
+                )
+                if updated != candidate:
+                    self._replace_entry(candidate, updated)
+                    changed += 1
+        return changed
 
     def _persist(self) -> None:
         write_credential_pool(
@@ -514,6 +760,7 @@ class CredentialPool:
         error_context: Optional[Dict[str, Any]] = None,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
+        status_at = time.time()
         # Permanent OAuth failures (token_invalidated, token_revoked, etc.)
         # transition to STATUS_DEAD instead of STATUS_EXHAUSTED.  Without this,
         # a revoked credential gets a 1-hour TTL cooldown and then re-enters
@@ -528,13 +775,34 @@ class CredentialPool:
         updated = replace(
             entry,
             last_status=terminal_status,
-            last_status_at=time.time(),
+            last_status_at=status_at,
             last_error_code=status_code,
             last_error_reason=normalized_error.get("reason"),
             last_error_message=normalized_error.get("message"),
             last_error_reset_at=normalized_error.get("reset_at"),
         )
         self._replace_entry(entry, updated)
+        if (
+            self.provider == "openai-codex"
+            and _is_codex_usage_limit_error(
+                normalized_error.get("reason"),
+                normalized_error.get("message"),
+            )
+        ):
+            identity = codex_quota_identity_for_entry(updated)
+            for candidate in self._codex_quota_identity_entries(identity):
+                if candidate.id == updated.id:
+                    continue
+                duplicate = replace(
+                    candidate,
+                    last_status=STATUS_EXHAUSTED,
+                    last_status_at=status_at,
+                    last_error_code=status_code,
+                    last_error_reason=normalized_error.get("reason"),
+                    last_error_message=normalized_error.get("message"),
+                    last_error_reset_at=normalized_error.get("reset_at"),
+                )
+                self._replace_entry(candidate, duplicate)
         self._persist()
         return updated
 
@@ -1111,6 +1379,15 @@ class CredentialPool:
                     ]
                     if self._current_id == entry.id:
                         self._current_id = None
+                    if entry.source != "device_code":
+                        self._mark_exhausted(
+                            entry,
+                            401,
+                            {
+                                "reason": "token_invalidated",
+                                "message": str(exc),
+                            },
+                        )
                     self._persist()
                     return None
             # For nous: another process may have consumed the refresh token
@@ -1235,6 +1512,8 @@ class CredentialPool:
         cleared_any = False
         entries_to_prune: List[str] = []
         available: List[PooledCredential] = []
+        if self._propagate_codex_usage_limit_exhaustion():
+            cleared_any = True
         for entry in self._entries:
             # For anthropic claude_code entries, sync from the credentials file
             # before any status/refresh checks. This picks up tokens refreshed
@@ -1268,6 +1547,23 @@ class CredentialPool:
                 if synced is not entry:
                     entry = synced
                     cleared_any = True
+            if (
+                self.provider == "openai-codex"
+                and entry.last_status == STATUS_EXHAUSTED
+                and _is_codex_token_invalidated_error(
+                    entry.last_error_reason,
+                    entry.last_error_message,
+                )
+            ):
+                exhausted_until = _exhausted_until(entry)
+                if refresh and (exhausted_until is None or now >= exhausted_until):
+                    refreshed = self._refresh_entry(entry, force=False)
+                    if refreshed is None:
+                        continue
+                    entry = refreshed
+                    cleared_any = True
+                else:
+                    continue
             # For xai-oauth singleton-seeded entries, identical pattern:
             # an entry frozen as exhausted may simply be holding stale
             # tokens that another process (or a fresh `hermes model` ->
@@ -1341,6 +1637,9 @@ class CredentialPool:
 
     def _select_unlocked(self) -> Optional[PooledCredential]:
         available = self._available_entries(clear_expired=True, refresh=True)
+        if not available and self.provider == "openai-codex":
+            if self._reconcile_codex_usage_unlocked():
+                available = self._available_entries(clear_expired=True, refresh=True)
         if not available:
             self._current_id = None
             logger.info("credential pool: no available entries (all exhausted or empty)")
@@ -1384,21 +1683,26 @@ class CredentialPool:
         *,
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
+        credential_id: Optional[str] = None,
         api_key_hint: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
-            entry = None
-            if api_key_hint:
-                # Prefer the specific entry whose API key matches the one that
-                # actually failed.  When this pool was freshly loaded from disk
-                # (another process already rotated), current() is None and
-                # _select_unlocked() would return the NEXT key — the wrong one.
+            entry = self._entry_by_id(credential_id) if credential_id else None
+            if credential_id and entry is None:
+                logger.debug(
+                    "credential pool: requested exhausted mark for missing entry %s; falling back to current",
+                    credential_id,
+                )
+            if entry is None and api_key_hint:
+                # When another process already rotated the pool and this instance
+                # reloads from disk, current() can be None and _select_unlocked()
+                # would otherwise pick the NEXT key. Prefer the specific entry
+                # that actually failed when we still know its runtime API key.
                 entry = next(
                     (e for e in self._entries if e.runtime_api_key == api_key_hint),
                     None,
                 )
-            if entry is None:
-                entry = self.current() or self._select_unlocked()
+            entry = entry or self.current() or self._select_unlocked()
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
@@ -1424,6 +1728,112 @@ class CredentialPool:
                 _next_label = next_entry.label or next_entry.id[:8]
                 logger.info("credential pool: rotated to %s", _next_label)
             return next_entry
+
+    def reconcile_live_usage(self) -> int:
+        """Refresh live provider usage state for pool entries that support it."""
+        if self.provider != "openai-codex":
+            return 0
+        with self._lock:
+            return self._reconcile_codex_usage_unlocked()
+
+    def _reconcile_codex_usage_unlocked(self) -> int:
+        changed = 0
+        now = time.time()
+        changed += self._propagate_codex_usage_limit_exhaustion()
+        handled_identities: Set[str] = set()
+        handled_entry_ids: Set[str] = set()
+        for original_entry in list(self._entries):
+            entry = self._entry_by_id(original_entry.id) or original_entry
+            identity = codex_quota_identity_for_entry(entry)
+            if identity:
+                if identity in handled_identities:
+                    continue
+                handled_identities.add(identity)
+                account_entries = self._codex_quota_identity_entries(identity)
+            else:
+                if entry.id in handled_entry_ids:
+                    continue
+                account_entries = [entry]
+            handled_entry_ids.update(candidate.id for candidate in account_entries)
+            exhausted_entries = [
+                candidate for candidate in account_entries
+                if candidate.last_status == STATUS_EXHAUSTED
+            ]
+            if not exhausted_entries:
+                continue
+            entry = exhausted_entries[0]
+            if entry.last_status != STATUS_EXHAUSTED:
+                continue
+            if _is_codex_token_invalidated_error(
+                entry.last_error_reason,
+                entry.last_error_message,
+            ):
+                exhausted_until = _exhausted_until(entry)
+                if exhausted_until is not None and now < exhausted_until:
+                    continue
+            if self._entry_needs_refresh(entry):
+                refreshed = self._refresh_entry(entry, force=False)
+                if refreshed is None:
+                    continue
+                entry = refreshed
+                identity = codex_quota_identity_for_entry(entry)
+                account_entries = self._codex_quota_identity_entries(identity) if identity else [entry]
+            status = _fetch_codex_entry_usage_status(entry)
+            if status is None:
+                continue
+            if status.available:
+                held_entry = next(
+                    (
+                        candidate for candidate in exhausted_entries
+                        if _has_authoritative_future_usage_limit(candidate, now=now)
+                    ),
+                    None,
+                )
+                if held_entry is not None and status.allowed is not True:
+                    hold_until = _codex_usage_limit_hold_until(held_entry, now=now)
+                    logger.debug(
+                        "credential pool: keeping Codex usage-limit cooldown for %s until %.0f",
+                        held_entry.label or held_entry.id[:8],
+                        hold_until or 0,
+                    )
+                    continue
+                for candidate in account_entries:
+                    if candidate.last_status != STATUS_EXHAUSTED:
+                        continue
+                    updated = replace(
+                        candidate,
+                        last_status=STATUS_OK,
+                        last_status_at=None,
+                        last_error_code=None,
+                        last_error_reason=None,
+                        last_error_message=None,
+                        last_error_reset_at=None,
+                    )
+                    if updated != candidate:
+                        self._replace_entry(candidate, updated)
+                        changed += 1
+                logger.info(
+                    "credential pool: cleared stale Codex exhaustion for %s from live usage",
+                    entry.label or entry.id[:8],
+                )
+                continue
+
+            for candidate in account_entries:
+                updated = replace(
+                    candidate,
+                    last_status=STATUS_EXHAUSTED,
+                    last_status_at=candidate.last_status_at or time.time(),
+                    last_error_code=429,
+                    last_error_reason=status.reason or candidate.last_error_reason,
+                    last_error_message=status.message or candidate.last_error_message,
+                    last_error_reset_at=status.reset_at or candidate.last_error_reset_at,
+                )
+                if updated != candidate:
+                    self._replace_entry(candidate, updated)
+                    changed += 1
+        if changed:
+            self._persist()
+        return changed
 
     def acquire_lease(self, credential_id: Optional[str] = None) -> Optional[str]:
         """Acquire a soft lease on a credential.
@@ -1465,12 +1875,13 @@ class CredentialPool:
             else:
                 self._active_leases[credential_id] = count - 1
 
-    def try_refresh_current(self) -> Optional[PooledCredential]:
+    def try_refresh_current(self, credential_id: Optional[str] = None) -> Optional[PooledCredential]:
         with self._lock:
-            return self._try_refresh_current_unlocked()
+            return self._try_refresh_current_unlocked(credential_id=credential_id)
 
-    def _try_refresh_current_unlocked(self) -> Optional[PooledCredential]:
-        entry = self.current()
+    def _try_refresh_current_unlocked(self, credential_id: Optional[str] = None) -> Optional[PooledCredential]:
+        entry = self._entry_by_id(credential_id) if credential_id else None
+        entry = entry or self.current()
         if entry is None:
             return None
         refreshed = self._refresh_entry(entry, force=True)
@@ -1647,22 +2058,12 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         except ImportError:
             pass
 
-        # API-key vs OAuth is a user-visible choice at `hermes setup` ("Claude
-        # Pro/Max subscription" vs "Anthropic API key").  The signal that the
-        # user picked the API-key path is: ANTHROPIC_API_KEY set in the env,
-        # AND no OAuth env vars set — `save_anthropic_api_key()` writes the
-        # API key and zeros ANTHROPIC_TOKEN; `save_anthropic_oauth_token()`
-        # does the inverse.  When that signal is present we MUST NOT seed
-        # autodiscovered OAuth tokens (~/.claude/.credentials.json from the
-        # Claude Code CLI, hermes_pkce creds from a previous OAuth login)
-        # into the anthropic pool — otherwise rotation on a 401/429 silently
-        # flips the session onto an OAuth credential, which forces the Claude
-        # Code identity injection, `mcp_` tool-name rewrite, and claude-cli
-        # User-Agent header (`agent/anthropic_adapter.py:2128`).  Users who
-        # explicitly opted into the API-key path are explicitly opting OUT of
-        # that masquerade.  Prefer ~/.hermes/.env over os.environ for the
-        # same reason `_seed_from_env` does — that's the authoritative file
-        # that `hermes setup` writes.
+        # API-key vs OAuth is a user-visible choice at `hermes setup`.
+        # When ANTHROPIC_API_KEY is set and OAuth env vars are absent, the
+        # user explicitly chose the API-key path and opted out of Claude Code /
+        # Hermes PKCE OAuth masquerade. Do not seed autodiscovered OAuth creds
+        # into the same pool, and prune stale autodiscovered entries left from
+        # a previous OAuth setup.
         _env_file = load_env()
 
         def _env_val(key: str) -> str:
@@ -1672,14 +2073,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         anthropic_oauth_env = (
             _env_val("ANTHROPIC_TOKEN") or _env_val("CLAUDE_CODE_OAUTH_TOKEN")
         )
-        api_key_path_explicit = bool(anthropic_api_key and not anthropic_oauth_env)
-
-        if api_key_path_explicit:
-            # Prune any stale autodiscovered OAuth entries that may have been
-            # seeded into the on-disk pool during a previous OAuth session.
-            # Without this, switching OAuth -> API key at setup leaves the
-            # OAuth entries dormant in auth.json forever and rotation on a
-            # transient 401 could revive them.
+        if anthropic_api_key and not anthropic_oauth_env:
             retained = [
                 entry for entry in entries
                 if entry.source not in {"hermes_pkce", "claude_code"}

@@ -1345,8 +1345,24 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        "credential_pool_entry_id": runtime.get("credential_pool_entry_id"),
         "max_tokens": max_tokens,
     }
+
+
+def _load_credential_pool_for_provider(provider: Optional[str]):
+    """Best-effort pool restore for persisted session runtime overrides."""
+    provider_id = str(provider or "").strip()
+    if not provider_id:
+        return None
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool(provider_id)
+        return pool if pool.has_credentials() else None
+    except Exception as exc:
+        logger.debug("Failed to load credential pool for %s: %s", provider_id, exc)
+        return None
 
 
 def _try_resolve_fallback_provider() -> dict | None:
@@ -1393,6 +1409,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
                     "credential_pool": runtime.get("credential_pool"),
+                    "credential_pool_entry_id": runtime.get("credential_pool_entry_id"),
                     "model": entry.get("model"),
                 }
             except Exception as fb_exc:
@@ -2802,6 +2819,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "api_key": override.get("api_key"),
                 "base_url": override.get("base_url"),
                 "api_mode": override.get("api_mode"),
+                "credential_pool": _load_credential_pool_for_provider(override.get("provider")),
+                "credential_pool_entry_id": override.get("credential_pool_entry_id"),
                 "max_tokens": override.get("max_tokens"),
             }
             if override_runtime.get("api_key"):
@@ -2900,6 +2919,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
+            "credential_pool_entry_id": runtime_kwargs.get("credential_pool_entry_id"),
             "max_tokens": runtime_kwargs.get("max_tokens"),
         }
         route = {
