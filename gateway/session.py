@@ -36,6 +36,10 @@ def _now() -> datetime:
         return datetime.now()
 
 
+#: Public alias for use by other gateway modules.
+gateway_now = _now
+
+
 # ---------------------------------------------------------------------------
 # PII redaction helpers
 # ---------------------------------------------------------------------------
