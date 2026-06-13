@@ -1487,11 +1487,6 @@ This compaction should PRIORITISE preserving all information related to the focu
                 },
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": int(summary_budget * 1.3),
-                # Compression should not inherit ultra-high reasoning from
-                # auxiliary.compression; on Codex Responses that can burn the
-                # whole timeout before emitting useful text. Keep the task at
-                # the normal medium effort instead of disabling reasoning.
-                "extra_body": {"reasoning": {"enabled": True, "effort": "medium"}},
                 # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
             if self.summary_model:
