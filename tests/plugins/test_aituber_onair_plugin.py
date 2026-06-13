@@ -166,7 +166,7 @@ def test_prepare_falls_back_to_cjs_build_on_windows_shell_gap(monkeypatch, tmp_p
         "_codex_sdk_installed",
         lambda _repo: {"ok": True, "installed": True},
     )
-    monkeypatch.setattr(core.os, "name", "nt", raising=False)
+    monkeypatch.setattr(core, "_is_windows", lambda: True)
 
     def fake_run(cmd, cwd, timeout_seconds, env=None):
         commands.append(cmd)

@@ -336,6 +336,10 @@ def _which(exe: str) -> str | None:
     return shutil.which(exe)
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def _node_exe() -> str | None:
     cfg = _plugin_config()
     configured = _path_text(cfg.get("node_exe"))
@@ -751,7 +755,7 @@ def _build_chat_for_codex(repo: Path, npm: str, timeout_seconds: int) -> dict[st
         return primary
 
     combined = f"{primary.get('stdout') or ''}\n{primary.get('stderr') or ''}"
-    windows_shell_gap = os.name == "nt" and (
+    windows_shell_gap = _is_windows() and (
         "'rm' is not recognized" in combined or "'mv' is not recognized" in combined
     )
     if not windows_shell_gap:
