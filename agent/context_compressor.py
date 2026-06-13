@@ -1395,21 +1395,21 @@ If no outstanding task exists, write "None."]
 [User preferences, coding style, constraints, important decisions]
 
 ## Completed Actions
-[Numbered list of concrete actions taken — include tool used, target, and outcome.
-Format each as: N. ACTION target — outcome [tool: name]
+[Numbered list of concrete actions taken — target and outcome.
+Only include a tool tag like [tool: terminal] when the source turns explicitly show that exact tool was used; otherwise omit the tool tag entirely. NEVER invent tool names, file paths, commands, line numbers, test counts, commit hashes, branches, or outcomes. If a detail is not in the source, write "not specified" or leave it out.
 Example:
 1. READ config.py:45 — found `==` should be `!=` [tool: read_file]
 2. PATCH config.py:45 — changed `==` to `!=` [tool: patch]
 3. TEST `pytest tests/` — 3/50 failed: test_parse, test_validate, test_edge [tool: terminal]
-Be specific with file paths, commands, line numbers, and results.]
+Be specific only when the source provides specifics.]
 
 ## Active State
-[Current working state — include:
-- Working directory and branch (if applicable)
-- Modified/created files with brief note on each
-- Test status (X/Y passing)
-- Any running processes or servers
-- Environment details that matter]
+[Current working state — include only details present in the source:
+- Working directory and branch (if specified)
+- Modified/created files with brief note on each (if specified)
+- Test status (only exact results from source)
+- Any running processes or servers (only if source says so)
+- Environment details that matter (only if source says so)]
 
 {HISTORICAL_IN_PROGRESS_HEADING}
 [Work currently underway — what was being done when compaction fired]
