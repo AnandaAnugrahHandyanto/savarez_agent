@@ -8,14 +8,17 @@ after the agent finishes its current task — not silently dropped.
 import asyncio
 from unittest.mock import MagicMock
 
+import pytest
 
 from gateway.run import _dequeue_pending_event
+from gateway.session import SessionSource
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     PlatformConfig,
     Platform,
+    merge_pending_message_event,
 )
 
 
@@ -452,3 +455,179 @@ class TestBusyInputModeQueueFifo:
         head = adapter._pending_messages[session_key]
         assert head.message_type == MessageType.PHOTO
         assert len(head.media_urls) == 3
+
+
+class TestLimitAutoContinuation:
+    """Gateway max-turn/budget exhaustion continuation uses the FIFO queue."""
+
+    def _runner(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.adapters = {}
+        runner._queued_events = {}
+        runner._limit_auto_continue_counts = {}
+        return runner
+
+    def _source(self):
+        return SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            user_id="u1",
+            chat_type="dm",
+        )
+
+    @pytest.mark.asyncio
+    async def test_limit_exhaustion_enqueues_synthetic_continuation(self):
+        from gateway.run import GatewayRunner
+
+        runner = self._runner()
+        adapter = _StubAdapter()
+        runner.adapters[Platform.TELEGRAM] = adapter
+        source = self._source()
+        session_key = "telegram:user:123"
+
+        enqueued = await runner._post_turn_limit_continuation(
+            session_key=session_key,
+            source=source,
+            agent_result={
+                "turn_exit_reason": "max_iterations_reached(90/90)",
+                "completed": False,
+                "final_response": "I made progress but need another turn.",
+            },
+        )
+
+        assert enqueued is True
+        event = adapter._pending_messages[session_key]
+        assert GatewayRunner._is_limit_auto_continue_event(event)
+        assert event.internal is True
+        assert "Continue the prior task" in event.text
+        assert "Do not ask the user to resend" in event.text
+        assert runner._limit_auto_continue_counts[session_key] == 1
+
+    @pytest.mark.asyncio
+    async def test_limit_exhaustion_preserves_real_pending_message_priority(self):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        runner.adapters[Platform.TELEGRAM] = adapter
+        source = self._source()
+        session_key = "telegram:user:123"
+
+        adapter._pending_messages[session_key] = MessageEvent(
+            text="real user follow-up",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="m-real",
+        )
+
+        enqueued = await runner._post_turn_limit_continuation(
+            session_key=session_key,
+            source=source,
+            agent_result={"turn_exit_reason": "budget_exhausted", "completed": False},
+        )
+
+        assert enqueued is True
+        assert adapter._pending_messages[session_key].text == "real user follow-up"
+        assert len(runner._queued_events[session_key]) == 1
+        assert runner._is_limit_auto_continue_event(runner._queued_events[session_key][0])
+
+    def test_real_user_text_replaces_existing_synthetic_continuation(self):
+        """Active-session user text must not merge into an internal continuation."""
+        source = self._source()
+        session_key = "telegram:user:123"
+        pending = {
+            session_key: MessageEvent(
+                text="[Continuing prior work after a per-turn execution limit]\nContinue...",
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id=None,
+                internal=True,
+            )
+        }
+        user_event = MessageEvent(
+            text="real user follow-up",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="m-real",
+            internal=False,
+        )
+
+        merge_pending_message_event(
+            pending,
+            session_key,
+            user_event,
+            merge_text=True,
+        )
+
+        assert pending[session_key] is user_event
+        assert pending[session_key].text == "real user follow-up"
+        assert pending[session_key].internal is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "agent_result",
+        [
+            {"turn_exit_reason": "completed", "completed": True},
+            {"turn_exit_reason": "max_iterations_reached(1/1)", "failed": True},
+            {"turn_exit_reason": "max_iterations_reached(1/1)", "interrupted": True},
+            {"turn_exit_reason": "budget_exhausted", "partial": True},
+            {"turn_exit_reason": "budget_exhausted", "error": "provider failed"},
+        ],
+    )
+    async def test_limit_continuation_skips_normal_failed_interrupted_and_partial(
+        self,
+        agent_result,
+    ):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        runner.adapters[Platform.TELEGRAM] = adapter
+        source = self._source()
+        session_key = "telegram:user:123"
+
+        enqueued = await runner._post_turn_limit_continuation(
+            session_key=session_key,
+            source=source,
+            agent_result=agent_result,
+        )
+
+        assert enqueued is False
+        assert adapter._pending_messages == {}
+        assert runner._queued_events == {}
+
+    @pytest.mark.asyncio
+    async def test_limit_continuation_is_bounded_and_resets_on_non_exhaustion(self):
+        runner = self._runner()
+        adapter = _StubAdapter()
+        runner.adapters[Platform.TELEGRAM] = adapter
+        source = self._source()
+        session_key = "telegram:user:123"
+        exhaustion = {"turn_exit_reason": "budget_exhausted", "completed": False}
+
+        for _ in range(3):
+            assert await runner._post_turn_limit_continuation(
+                session_key=session_key,
+                source=source,
+                agent_result=exhaustion,
+            )
+
+        assert runner._limit_auto_continue_counts[session_key] == 3
+        assert await runner._post_turn_limit_continuation(
+            session_key=session_key,
+            source=source,
+            agent_result=exhaustion,
+        ) is False
+        assert runner._limit_auto_continue_counts[session_key] == 3
+
+        assert await runner._post_turn_limit_continuation(
+            session_key=session_key,
+            source=source,
+            agent_result={"turn_exit_reason": "completed", "completed": True},
+        ) is False
+        assert session_key not in runner._limit_auto_continue_counts
+
+        assert await runner._post_turn_limit_continuation(
+            session_key=session_key,
+            source=source,
+            agent_result=exhaustion,
+        )
+        assert runner._limit_auto_continue_counts[session_key] == 1

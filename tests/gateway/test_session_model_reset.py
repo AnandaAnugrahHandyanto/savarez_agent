@@ -57,6 +57,8 @@ def _make_runner():
     runner.session_store._generate_session_key.return_value = session_key
     runner._running_agents = {}
     runner._pending_messages = {}
+    runner._queued_events = {}
+    runner._limit_auto_continue_counts = {}
     runner._pending_approvals = {}
     runner._session_db = None
     runner._agent_cache_lock = None  # disables _evict_cached_agent lock path
@@ -139,3 +141,23 @@ async def test_new_command_only_clears_own_session():
     assert other_key in runner._session_reasoning_overrides
     assert session_key not in runner._pending_model_notes
     assert other_key in runner._pending_model_notes
+
+
+@pytest.mark.asyncio
+async def test_new_command_clears_limit_auto_continuation_state():
+    """/new must clear synthetic continuation counters for that session."""
+    runner = _make_runner()
+    session_key = build_session_key(_make_source())
+    other_key = "other_session_key"
+
+    runner._queued_events[session_key] = [MessageEvent(text="synthetic", source=_make_source())]
+    runner._queued_events[other_key] = [MessageEvent(text="other", source=_make_source())]
+    runner._limit_auto_continue_counts[session_key] = 3
+    runner._limit_auto_continue_counts[other_key] = 2
+
+    await runner._handle_reset_command(_make_event("/new"))
+
+    assert session_key not in runner._queued_events
+    assert other_key in runner._queued_events
+    assert session_key not in runner._limit_auto_continue_counts
+    assert runner._limit_auto_continue_counts[other_key] == 2
