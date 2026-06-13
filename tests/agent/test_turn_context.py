@@ -185,3 +185,43 @@ def test_no_review_when_memory_disabled():
     agent = _FakeAgent()
     ctx = _build(agent)
     assert ctx.should_review_memory is False
+
+
+def test_ensure_db_session_called_after_system_prompt_restore():
+    """_ensure_db_session must run after _restore_or_build_system_prompt so
+    the session row is created with the actual system prompt, not NULL.
+
+    Regression test for issue #45499: the API/gateway path creates a fresh
+    AIAgent with _cached_system_prompt=None.  If _ensure_db_session runs
+    first, the row is created with system_prompt=NULL, triggering a noisy
+    warning and a useless DB round-trip.
+    """
+    call_order = []
+
+    def _track_ensure_db(self):
+        call_order.append("ensure_db_session")
+
+    def _track_restore(agent, system_message, conversation_history):
+        call_order.append("restore_or_build_system_prompt")
+        agent._cached_system_prompt = "BUILT_PROMPT"
+
+    # Patch the fake agent's _ensure_db_session to track calls.
+    _FakeAgent._ensure_db_session = _track_ensure_db
+
+    agent = _FakeAgent()
+    agent._cached_system_prompt = None  # simulate fresh agent
+    _build(
+        agent,
+        system_message=None,
+        conversation_history=[{"role": "user", "content": "hi"}],
+        restore_or_build_system_prompt=_track_restore,
+    )
+
+    # restore must come before ensure_db_session
+    assert call_order == ["restore_or_build_system_prompt", "ensure_db_session"], \
+        f"Expected restore before ensure_db, got: {call_order}"
+    # The session row should be created with the built prompt, not NULL.
+    assert agent._cached_system_prompt == "BUILT_PROMPT"
+
+    # Clean up the monkeypatched class attribute.
+    del _FakeAgent._ensure_db_session
