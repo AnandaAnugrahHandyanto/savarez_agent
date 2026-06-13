@@ -209,6 +209,46 @@ def _dots_to_hyphens(model_name: str) -> str:
     return model_name.replace(".", "-")
 
 
+# Pattern: ``claude-{family}-{major}-{minor}`` where major/minor are single
+# digits.  Converts the version separator from hyphen to dot so aggregators
+# (Nous, OpenRouter) receive the canonical ``claude-sonnet-4.6`` form.
+# Handles ``anthropic/`` prefix and optional ``-YYYYMMDD`` date suffix.
+# Does NOT match single-digit versions (``claude-fable-5``) or
+# non-version hyphens (``deepseek-v4-pro``).
+_ANTHROPIC_VERSION_RE = re.compile(
+    r"(?<=claude-)"            # must follow "claude-"
+    r"(\w+-)"                  # family: sonnet-, opus-, haiku-
+    r"(\d+)"                   # major version
+    r"-(\d)"                   # hyphen + single-digit minor
+    r"(?=[-/\s]|$)"            # followed by hyphen, slash, space, or end
+)
+
+
+def _anthropic_hyphens_to_dots(model_name: str) -> str:
+    """Convert Anthropic dash-style version numbers to dot-style.
+
+    Aggregator APIs (Nous, OpenRouter) use dot-separated version numbers
+    (``anthropic/claude-sonnet-4.6``), but Anthropic's native API returns
+    dash-separated IDs (``claude-sonnet-4-6``).  This converts the version
+    separator so config values written from the Anthropic model list work
+    on aggregators without HTTP 404.
+
+    Examples::
+
+        >>> _anthropic_hyphens_to_dots("anthropic/claude-sonnet-4-6")
+        'anthropic/claude-sonnet-4.6'
+        >>> _anthropic_hyphens_to_dots("claude-opus-4-8")
+        'claude-opus-4.8'
+        >>> _anthropic_hyphens_to_dots("anthropic/claude-sonnet-4-5-20250929")
+        'anthropic/claude-sonnet-4.5-20250929'
+        >>> _anthropic_hyphens_to_dots("claude-fable-5")
+        'claude-fable-5'
+        >>> _anthropic_hyphens_to_dots("deepseek-v4-pro")
+        'deepseek-v4-pro'
+    """
+    return _ANTHROPIC_VERSION_RE.sub(r"\1\2.\3", model_name)
+
+
 def _normalize_provider_alias(provider_name: str) -> str:
     """Resolve provider aliases to Hermes' canonical ids."""
     raw = (provider_name or "").strip().lower()
@@ -390,7 +430,15 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
     # --- Aggregators: need vendor/model format ---
     if provider in _AGGREGATOR_PROVIDERS:
-        return _prepend_vendor(name)
+        result = _prepend_vendor(name)
+        # Aggregator APIs (Nous, OpenRouter) use dot-separated Anthropic
+        # version numbers (``anthropic/claude-sonnet-4.6``), but config
+        # values sourced from the Anthropic /v1/models endpoint use dashes
+        # (``anthropic/claude-sonnet-4-6``).  Convert so the aggregator
+        # doesn't 404.  See issue #45362.
+        if "claude-" in result:
+            result = _anthropic_hyphens_to_dots(result)
+        return result
 
     # --- OpenCode Zen / OpenCode Go: flat-namespace resellers.
     #     Their /v1/models API returns bare IDs only (no vendor prefix), and

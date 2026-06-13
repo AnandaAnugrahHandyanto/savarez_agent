@@ -260,3 +260,67 @@ class TestDeepseekCanonicalAndReasonerMapping:
     ])
     def test_unknown_names_fall_back_to_chat(self, model):
         assert _normalize_for_deepseek(model) == "deepseek-chat"
+
+
+# ── Regression: issue #45362 ────────────────────────────────────────────
+# Nous and OpenRouter aggregators expect dot-separated Anthropic version
+# numbers (``anthropic/claude-sonnet-4.6``) but the Anthropic /v1/models
+# API returns dash-separated IDs (``claude-sonnet-4-6``).  The model
+# picker writes the dash form to config; without normalization the
+# aggregator returns HTTP 404.
+
+from hermes_cli.model_normalize import _anthropic_hyphens_to_dots
+
+
+class TestAnthropicHyphensToDots:
+    """Unit tests for the Anthropic dash→dot version normalizer."""
+
+    @pytest.mark.parametrize("inp,expected", [
+        # Standard two-digit version
+        ("anthropic/claude-sonnet-4-6", "anthropic/claude-sonnet-4.6"),
+        ("claude-opus-4-8", "claude-opus-4.8"),
+        ("anthropic/claude-opus-4-7", "anthropic/claude-opus-4.7"),
+        # Version + date suffix
+        ("anthropic/claude-sonnet-4-5-20250929", "anthropic/claude-sonnet-4.5-20250929"),
+        ("anthropic/claude-opus-4-5-20251101", "anthropic/claude-opus-4.5-20251101"),
+        ("anthropic/claude-haiku-4-5-20251001", "anthropic/claude-haiku-4.5-20251001"),
+        # Already dot-style — no change
+        ("anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-4.6"),
+        # Single-digit version — no change
+        ("claude-fable-5", "claude-fable-5"),
+        ("anthropic/claude-opus-4-20250514", "anthropic/claude-opus-4-20250514"),
+        # Non-Claude models — no change
+        ("deepseek-v4-pro", "deepseek-v4-pro"),
+        ("gpt-5.4", "gpt-5.4"),
+    ])
+    def test_hyphens_to_dots(self, inp, expected):
+        assert _anthropic_hyphens_to_dots(inp) == expected
+
+
+class TestAggregatorAnthropicNormalization:
+    """Aggregator providers (Nous, OpenRouter) receive dot-style Claude IDs."""
+
+    @pytest.mark.parametrize("inp,provider,expected", [
+        # Nous: dash-style → dot-style
+        ("anthropic/claude-sonnet-4-6", "nous", "anthropic/claude-sonnet-4.6"),
+        ("claude-sonnet-4-6", "nous", "anthropic/claude-sonnet-4.6"),
+        ("anthropic/claude-opus-4-8", "nous", "anthropic/claude-opus-4.8"),
+        # Nous: already dot-style — no change
+        ("claude-sonnet-4.6", "nous", "anthropic/claude-sonnet-4.6"),
+        # Nous: non-Claude models — vendor prefix only
+        ("deepseek-v4-pro", "nous", "deepseek/deepseek-v4-pro"),
+        # Nous: version + date suffix
+        ("anthropic/claude-sonnet-4-5-20250929", "nous", "anthropic/claude-sonnet-4.5-20250929"),
+        # OpenRouter: same behavior
+        ("claude-sonnet-4-6", "openrouter", "anthropic/claude-sonnet-4.6"),
+    ])
+    def test_aggregator_normalizes_claude_dashes(self, inp, provider, expected):
+        assert normalize_model_for_provider(inp, provider) == expected
+
+    @pytest.mark.parametrize("inp,provider,expected", [
+        # Anthropic native: dots → hyphens (unchanged behavior)
+        ("claude-sonnet-4.6", "anthropic", "claude-sonnet-4-6"),
+        ("anthropic/claude-sonnet-4.6", "anthropic", "claude-sonnet-4-6"),
+    ])
+    def test_anthropic_native_still_uses_hyphens(self, inp, provider, expected):
+        assert normalize_model_for_provider(inp, provider) == expected
