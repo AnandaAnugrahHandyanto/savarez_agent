@@ -178,6 +178,19 @@ async def test_transient_rich_error_does_not_legacy_resend(exc):
 
 
 @pytest.mark.asyncio
+async def test_programmer_type_error_does_not_legacy_resend():
+    adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(side_effect=TypeError("bad payload shape"))
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is False
+    assert "bad payload shape" in (result.error or "")
+    adapter._bot.do_api_request.assert_awaited_once()
+    adapter._bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_transient_timeout_is_not_retryable():
     adapter = _make_adapter()
     adapter._bot.do_api_request = AsyncMock(side_effect=TimedOut("timed out"))

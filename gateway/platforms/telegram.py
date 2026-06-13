@@ -976,7 +976,7 @@ class TelegramAdapter(BasePlatformAdapter):
         rejections (BadRequest from a parser/limit issue) are NOT capability
         errors: the next message may be fine.
         """
-        if isinstance(exc, (AttributeError, TypeError, NotImplementedError)):
+        if isinstance(exc, (AttributeError, NotImplementedError)):
             return True
         if getattr(exc, "error_code", None) == 404:
             return True
