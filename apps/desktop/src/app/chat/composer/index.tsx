@@ -834,6 +834,24 @@ export function ChatBar({
         return
       }
 
+      // Space accepts the highlighted command while its name is still being
+      // typed (no arg yet). Without this, space on a no-arg command
+      // (`/hermes-agent `) falls through to text insertion, re-detects the
+      // trigger as an arg query, and dead-ends on "No matches" since there are
+      // no args to complete. Mirrors Tab/Enter: arg-taking commands expand to
+      // their options step, no-arg commands commit the directive chip.
+      if (event.key === ' ' && trigger.kind === '/' && trigger.query.length > 0 && !trigger.query.includes(' ')) {
+        const item = triggerItems[triggerActive]
+
+        if (item) {
+          event.preventDefault()
+          triggerKeyConsumedRef.current = true
+          replaceTriggerWithChip(item)
+
+          return
+        }
+      }
+
       if (event.key === 'Escape') {
         event.preventDefault()
         triggerKeyConsumedRef.current = true
