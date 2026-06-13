@@ -7052,3 +7052,133 @@ def test_reap_idle_sessions_closes_only_evictable(monkeypatch):
         assert closed == [("stale", "idle_timeout")]
     finally:
         server._sessions.clear()
+
+
+# ---------------------------------------------------------------------------
+# Exec-output redaction — secrets must never leave the TUI gateway raw.
+#
+# cli.exec, command.dispatch (quick-command exec), and shell.exec each run a
+# subprocess and return its stdout/stderr to the RPC caller. The TUI gateway
+# is reachable over the network via the dashboard WebSocket (/api/ws), so any
+# unredacted output is a secret-exfiltration path. These tests pin that every
+# exec-output payload passes through the secret redactor, fails closed, and
+# leaves non-secret output untouched.
+# ---------------------------------------------------------------------------
+
+# A secret-shaped value (sk-ant- prefix → masked) carried alongside a plain
+# control token. After redaction the sentinel disappears; the control remains.
+_EXEC_LEAK_NEEDLE = "LEAKSENTINEL"
+_EXEC_SECRET_LINE = "PUBLIC_OK OPENAI_API_KEY=sk-ant-LEAKSENTINEL0123456789abcdefghij"
+
+
+def _quick_exec_cfg(command):
+    return {"quick_commands": {"leak": {"type": "exec", "command": command}}}
+
+
+def test_command_dispatch_exec_redacts_secret_output(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_name", lambda n: n)
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: _quick_exec_cfg(f"printf '%s' '{_EXEC_SECRET_LINE}'")
+    )
+    resp = server._methods["command.dispatch"]("r1", {"name": "leak", "session_id": ""})
+    out = resp["result"]["output"]
+    assert "PUBLIC_OK" in out  # non-secret output preserved
+    assert _EXEC_LEAK_NEEDLE not in out  # secret redacted
+
+
+def test_shell_exec_redacts_secret_output():
+    resp = server._methods["shell.exec"]("r1", {"command": f"printf '%s' '{_EXEC_SECRET_LINE}'"})
+    combined = resp["result"]["stdout"] + resp["result"]["stderr"]
+    assert "PUBLIC_OK" in combined
+    assert _EXEC_LEAK_NEEDLE not in combined
+
+
+def test_cli_exec_redacts_secret_output(monkeypatch):
+    fake = subprocess.CompletedProcess(
+        args=[], returncode=0, stdout=_EXEC_SECRET_LINE, stderr=""
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: fake)
+    resp = server._methods["cli.exec"]("r1", {"argv": ["version"]})
+    out = resp["result"]["output"]
+    assert "PUBLIC_OK" in out
+    assert _EXEC_LEAK_NEEDLE not in out
+
+
+def test_exec_paths_fail_closed_when_redaction_unavailable(monkeypatch):
+    redact_module = types.ModuleType("agent.redact")
+
+    def fail_redaction(*_args, **_kwargs):
+        raise RuntimeError("redaction unavailable")
+
+    setattr(redact_module, "redact_sensitive_text", fail_redaction)
+    monkeypatch.setitem(sys.modules, "agent.redact", redact_module)
+
+    shell_resp = server._methods["shell.exec"](
+        "r1", {"command": f"printf '%s' '{_EXEC_SECRET_LINE}'"}
+    )
+    assert _EXEC_LEAK_NEEDLE not in shell_resp["result"]["stdout"]
+
+    monkeypatch.setattr(server, "_resolve_name", lambda n: n)
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: _quick_exec_cfg(f"printf '%s' '{_EXEC_SECRET_LINE}'")
+    )
+    disp_resp = server._methods["command.dispatch"]("r2", {"name": "leak", "session_id": ""})
+    payload = disp_resp.get("result", {}).get("output", "") or disp_resp.get("error", {}).get(
+        "message", ""
+    )
+    assert _EXEC_LEAK_NEEDLE not in payload
+
+    # cli.exec returns its subprocess output too; mock run() so it surfaces the
+    # secret, then confirm the redactor-failure path still fails closed.
+    fake = subprocess.CompletedProcess(args=[], returncode=0, stdout=_EXEC_SECRET_LINE, stderr="")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: fake)
+    cli_resp = server._methods["cli.exec"]("r3", {"argv": ["version"]})
+    assert _EXEC_LEAK_NEEDLE not in cli_resp["result"]["output"]
+
+
+def test_command_dispatch_exec_passes_through_non_secret_output(monkeypatch):
+    monkeypatch.setattr(server, "_resolve_name", lambda n: n)
+    monkeypatch.setattr(server, "_load_cfg", lambda: _quick_exec_cfg("printf '%s' hello"))
+    resp = server._methods["command.dispatch"]("r1", {"name": "leak", "session_id": ""})
+    assert resp["result"]["output"] == "hello"
+
+
+def test_command_dispatch_exec_blocks_dangerous_command(monkeypatch):
+    def _boom(*_a, **_k):
+        raise AssertionError("subprocess.run must not execute a blocked quick command")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+    monkeypatch.setattr(server, "_resolve_name", lambda n: n)
+    monkeypatch.setattr(server, "_load_cfg", lambda: _quick_exec_cfg("rm -rf /"))
+    resp = server._methods["command.dispatch"]("r1", {"name": "leak", "session_id": ""})
+    assert "error" in resp
+    assert "block" in resp["error"]["message"].lower()
+
+
+def test_command_dispatch_exec_blocks_dangerous_nonhardline_command(monkeypatch):
+    # Covers the non-hardline detect_dangerous_command branch ("rm -rf /" above
+    # is hardline; a git force-push is dangerous-but-not-hardline).
+    def _boom(*_a, **_k):
+        raise AssertionError("subprocess.run must not execute a blocked quick command")
+
+    monkeypatch.setattr(subprocess, "run", _boom)
+    monkeypatch.setattr(server, "_resolve_name", lambda n: n)
+    monkeypatch.setattr(server, "_load_cfg", lambda: _quick_exec_cfg("git push --force"))
+    resp = server._methods["command.dispatch"]("r1", {"name": "leak", "session_id": ""})
+    assert "error" in resp
+    assert "block" in resp["error"]["message"].lower()
+
+
+def test_command_dispatch_exec_redacts_secret_in_error_envelope(monkeypatch):
+    # A nonzero exit returns _err(...) carrying the combined output; that path
+    # must be redacted too, not just the success return.
+    monkeypatch.setattr(server, "_resolve_name", lambda n: n)
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: _quick_exec_cfg(f"printf '%s' '{_EXEC_SECRET_LINE}' >&2; exit 3"),
+    )
+    resp = server._methods["command.dispatch"]("r1", {"name": "leak", "session_id": ""})
+    assert "error" in resp
+    assert _EXEC_LEAK_NEEDLE not in resp["error"]["message"]
+    assert "PUBLIC_OK" in resp["error"]["message"]

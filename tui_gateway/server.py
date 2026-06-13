@@ -2418,6 +2418,26 @@ def _redact_tui_verbose_text(text: str) -> str:
     return _cap_tui_verbose_text(redacted)
 
 
+def _redact_exec_output(text: str) -> str:
+    """Scrub secrets from subprocess output before it leaves the gateway.
+
+    cli.exec / command.dispatch (quick-command exec) / shell.exec return raw
+    stdout/stderr to RPC callers, and the gateway is reachable over the network
+    via the dashboard WebSocket (/api/ws). ``force=True`` scrubs regardless of
+    the user's global redaction preference; on any redactor failure we fail
+    closed with a marker rather than leaking raw output. Callers slice first,
+    so the existing payload caps still bound size. Unlike
+    ``_redact_tui_verbose_text`` this does NOT add the verbose-tail label, which
+    is meant for tool-detail display, not command output.
+    """
+    try:
+        from agent.redact import redact_sensitive_text
+
+        return redact_sensitive_text(str(text), force=True)
+    except Exception:
+        return "[output withheld: redaction unavailable]"
+
+
 def _tool_args_text(args: dict) -> str:
     try:
         raw = json.dumps(args or {}, indent=2, ensure_ascii=False, default=str)
@@ -7821,7 +7841,8 @@ def _(rid, params: dict) -> dict:
         parts = [r.stdout or "", r.stderr or ""]
         out = "\n".join(p for p in parts if p).strip() or "(no output)"
         return _ok(
-            rid, {"blocked": False, "code": r.returncode, "output": out[:48_000]}
+            rid,
+            {"blocked": False, "code": r.returncode, "output": _redact_exec_output(out[:48_000])},
         )
     except subprocess.TimeoutExpired:
         return _err(rid, 5016, "cli.exec: timeout")
@@ -7871,19 +7892,49 @@ def _(rid, params: dict) -> dict:
     if name in qcmds:
         qc = qcmds[name]
         if qc.get("type") == "exec":
+            command_str = qc.get("command", "")
+            # Same safety gate shell.exec applies (see shell.exec below): quick
+            # commands are reachable over the dashboard WebSocket, so block
+            # destructive commands here too. Intentionally-dangerous commands
+            # belong on the agent path, not a one-shot quick command.
+            try:
+                from tools.approval import detect_dangerous_command, detect_hardline_command
+
+                is_hardline, hardline_desc = detect_hardline_command(command_str)
+                if is_hardline:
+                    return _err(
+                        rid,
+                        4005,
+                        f"blocked (hardline): {hardline_desc}. Use the agent for dangerous commands.",
+                    )
+                is_dangerous, _, desc = detect_dangerous_command(command_str)
+                if is_dangerous:
+                    return _err(
+                        rid,
+                        4005,
+                        f"blocked: {desc}. Use the agent for dangerous commands.",
+                    )
+            except ImportError:
+                return _err(
+                    rid, 5001, "quick command unavailable: approval safety module not importable"
+                )
             r = subprocess.run(
-                qc.get("command", ""),
+                command_str,
                 shell=True,
                 capture_output=True,
                 text=True,
                 timeout=30,
                 stdin=subprocess.DEVNULL,
             )
-            output = (
-                (r.stdout or "")
-                + ("\n" if r.stdout and r.stderr else "")
-                + (r.stderr or "")
-            ).strip()[:4000]
+            # Redact before returning — the gateway is network-reachable and
+            # must not ship raw secrets from the subprocess environment/output.
+            output = _redact_exec_output(
+                (
+                    (r.stdout or "")
+                    + ("\n" if r.stdout and r.stderr else "")
+                    + (r.stderr or "")
+                ).strip()[:4000]
+            )
             if r.returncode != 0:
                 return _err(
                     rid,
@@ -10102,8 +10153,8 @@ def _(rid, params: dict) -> dict:
         return _ok(
             rid,
             {
-                "stdout": r.stdout[-4000:],
-                "stderr": r.stderr[-2000:],
+                "stdout": _redact_exec_output(r.stdout[-4000:]),
+                "stderr": _redact_exec_output(r.stderr[-2000:]),
                 "code": r.returncode,
             },
         )
