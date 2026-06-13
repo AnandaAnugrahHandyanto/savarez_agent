@@ -15844,6 +15844,41 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     logger.info("Cron ticker stopped")
 
 
+def _start_gateway_mcp_discovery_thread() -> Optional[threading.Thread]:
+    """Start MCP discovery without blocking platform adapter startup."""
+    if os.getenv("HERMES_GATEWAY_SKIP_STARTUP_MCP_DISCOVERY", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        logger.info(
+            "Skipping startup MCP discovery "
+            "(HERMES_GATEWAY_SKIP_STARTUP_MCP_DISCOVERY=1)"
+        )
+        return None
+
+    def _discover() -> None:
+        try:
+            from tools.mcp_tool import discover_mcp_tools
+
+            discovered = discover_mcp_tools()
+            logger.info(
+                "Startup MCP discovery completed in background (%d tool(s))",
+                len(discovered or []),
+            )
+        except Exception as e:
+            logger.debug("MCP tool discovery failed: %s", e)
+
+    thread = threading.Thread(
+        target=_discover,
+        daemon=True,
+        name="gateway-mcp-discovery",
+    )
+    thread.start()
+    return thread
+
+
 async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = False, verbosity: Optional[int] = 0) -> bool:
     """
     Start the gateway and run until interrupted.
@@ -16215,18 +16250,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     _ensure_windows_gateway_venv_imports()
 
-    # MCP tool discovery — run in an executor so the asyncio event loop
-    # stays responsive even when a configured MCP server is slow or
-    # unreachable.  discover_mcp_tools() uses a blocking 120s wait
-    # internally; calling it from the loop thread would freeze platform
-    # heartbeats (Discord shard, Telegram polling) until it returned.
-    # See #16856.
-    try:
-        from tools.mcp_tool import discover_mcp_tools
-        _loop = asyncio.get_running_loop()
-        await _loop.run_in_executor(None, discover_mcp_tools)
-    except Exception as e:
-        logger.debug("MCP tool discovery failed: %s", e)
+    _start_gateway_mcp_discovery_thread()
 
     # Start the gateway
     success = await runner.start()
