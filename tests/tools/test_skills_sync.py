@@ -171,7 +171,7 @@ class TestComputeRelativeDest:
         bundled = Path("/repo/skills")
         skill_dir = Path("/repo/skills/mlops/axolotl")
         dest = _compute_relative_dest(skill_dir, bundled)
-        assert str(dest).endswith("mlops/axolotl")
+        assert dest.parts[-2:] == ("mlops", "axolotl")
 
     def test_flat_skill(self):
         bundled = Path("/repo/skills")
@@ -385,13 +385,15 @@ class TestSyncSkills:
             sync_skills(quiet=True)
 
             # Now change bundled content
-            (bundled / "old-skill" / "SKILL.md").write_text("# Old v2 — improved")
+            (bundled / "old-skill" / "SKILL.md").write_text(
+                "# Old v2 — improved", encoding="utf-8"
+            )
 
             # Second sync: should detect bundled changed + user unmodified → update
             result = sync_skills(quiet=True)
 
         assert "old-skill" in result["updated"]
-        assert (user_skill / "SKILL.md").read_text() == "# Old v2 — improved"
+        assert (user_skill / "SKILL.md").read_text(encoding="utf-8") == "# Old v2 — improved"
 
     def test_stale_manifest_entries_cleaned(self, tmp_path):
         """Skills in manifest that no longer exist in bundled dir get cleaned."""
@@ -439,13 +441,15 @@ class TestSyncSkills:
         # happens to share a name with a newly bundled skill.
         user_skill = skills_dir / "category" / "new-skill"
         user_skill.mkdir(parents=True)
-        (user_skill / "SKILL.md").write_text("# From hub — unrelated to bundled")
+        (user_skill / "SKILL.md").write_text(
+            "# From hub — unrelated to bundled", encoding="utf-8"
+        )
 
         with self._patches(bundled, skills_dir, manifest_file):
             sync_skills(quiet=True)
 
         # User file must survive (existing invariant).
-        assert (user_skill / "SKILL.md").read_text() == (
+        assert (user_skill / "SKILL.md").read_text(encoding="utf-8") == (
             "# From hub — unrelated to bundled"
         )
 
@@ -471,7 +475,9 @@ class TestSyncSkills:
 
         user_skill = skills_dir / "category" / "new-skill"
         user_skill.mkdir(parents=True)
-        (user_skill / "SKILL.md").write_text("# From hub — unrelated to bundled")
+        (user_skill / "SKILL.md").write_text(
+            "# From hub — unrelated to bundled", encoding="utf-8"
+        )
 
         with self._patches(bundled, skills_dir, manifest_file):
             sync_skills(quiet=True)  # first sync: collision path
@@ -495,7 +501,9 @@ class TestSyncSkills:
 
         user_skill = skills_dir / "category" / "new-skill"
         user_skill.mkdir(parents=True)
-        (user_skill / "SKILL.md").write_text("# From hub — unrelated to bundled")
+        (user_skill / "SKILL.md").write_text(
+            "# From hub — unrelated to bundled", encoding="utf-8"
+        )
 
         with self._patches(bundled, skills_dir, manifest_file):
             sync_skills(quiet=False)
