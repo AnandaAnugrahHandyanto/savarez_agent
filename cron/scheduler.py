@@ -615,7 +615,62 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+def _format_cron_delivery_content(
+    job: dict,
+    content: str,
+    *,
+    wrap_response: bool = True,
+    delivery_event=None,
+    use_event_renderer: bool = False,
+) -> str:
+    """Format cron delivery text.
+
+    Default preserves the legacy Cronjob Response wrapper.  The event renderer is
+    opt-in so cron Discord UX can be improved without changing existing jobs.
+    """
+
+    if use_event_renderer and delivery_event is not None:
+        try:
+            from gateway.discord_event_renderer import render_discord_event
+
+            rendered = render_discord_event(delivery_event)
+            if rendered:
+                return rendered
+        except Exception as exc:
+            logger.debug("Cron event renderer failed; falling back to legacy wrapper: %s", exc)
+
+    if wrap_response:
+        task_name = job.get("name", job["id"])
+        job_id = job.get("id", "")
+        return (
+            f"Cronjob Response: {task_name}\n"
+            f"(job_id: {job_id})\n"
+            f"-------------\n\n"
+            f"{content}\n\n"
+            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+        )
+    return content
+
+
+def _select_cron_delivery_content_for_platform(
+    platform_name: str,
+    *,
+    legacy_content: str,
+    rendered_content: str,
+    use_event_renderer: bool,
+) -> str:
+    """Select per-target cron delivery text.
+
+    The event renderer is Discord-specific in this slice; non-Discord targets
+    keep legacy formatting even when cron.discord_event_renderer is enabled.
+    """
+
+    if use_event_renderer and str(platform_name).lower() == "discord":
+        return rendered_content
+    return legacy_content
+
+
+def _deliver_result(job: dict, content: str, adapters=None, loop=None, delivery_event=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
@@ -639,31 +694,36 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     # Optionally wrap the content with a header/footer so the user knows this
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
-    # in config.yaml for clean output.
+    # in config.yaml for clean output.  cron.discord_event_renderer is opt-in and
+    # replaces the legacy wrapper with the structured ops/incident renderer.
     wrap_response = True
+    use_event_renderer = False
     try:
         user_cfg = load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
+        cron_cfg = user_cfg.get("cron", {}) if isinstance(user_cfg, dict) else {}
+        wrap_response = cron_cfg.get("wrap_response", True)
+        use_event_renderer = bool(cron_cfg.get("discord_event_renderer", False))
     except Exception:
         pass
 
-    if wrap_response:
-        task_name = job.get("name", job["id"])
-        job_id = job.get("id", "")
-        delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job_id})\n"
-            f"-------------\n\n"
-            f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
-        )
-    else:
-        delivery_content = content
+    legacy_delivery_content = _format_cron_delivery_content(
+        job,
+        content,
+        wrap_response=wrap_response,
+        delivery_event=delivery_event,
+        use_event_renderer=False,
+    )
+    rendered_delivery_content = _format_cron_delivery_content(
+        job,
+        content,
+        wrap_response=wrap_response,
+        delivery_event=delivery_event,
+        use_event_renderer=True,
+    ) if use_event_renderer else legacy_delivery_content
 
-    # Extract MEDIA: tags so attachments are forwarded as files, not raw text
+    # Extract MEDIA: tags per target so Discord-only rendering does not leak to
+    # Telegram/Matrix/etc. when cron.discord_event_renderer is enabled.
     from gateway.platforms.base import BasePlatformAdapter
-    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
     try:
         config = load_gateway_config()
@@ -710,6 +770,22 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             logger.warning("Job '%s': %s", job["id"], msg)
             delivery_errors.append(msg)
             continue
+
+        target_delivery_content = _select_cron_delivery_content_for_platform(
+            platform_name,
+            legacy_content=legacy_delivery_content,
+            rendered_content=rendered_delivery_content,
+            use_event_renderer=use_event_renderer,
+        )
+        media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(target_delivery_content)
+        media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+        if str(platform_name).lower() == "discord":
+            try:
+                from cron.discord_delivery import sanitize_cron_output_for_discord
+
+                cleaned_delivery_content = sanitize_cron_output_for_discord(cleaned_delivery_content)
+            except Exception as exc:
+                logger.warning("Job '%s': Discord cron delivery sanitization failed: %s", job["id"], exc)
 
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
@@ -1941,10 +2017,30 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+                from gateway.event_routing import (
+                    RouteAction,
+                    classify_event,
+                    create_cron_delivery_event,
+                )
+                cron_delivery_event = create_cron_delivery_event(
+                    job_id=job["id"],
+                    job_name=job.get("name"),
+                    success=success,
+                    content=deliver_content,
+                    error=error,
+                    output_file=str(output_file) if output_file else None,
+                    silent_marker=SILENT_MARKER,
+                )
+                cron_delivery_route = classify_event(cron_delivery_event)
                 # Treat whitespace-only final responses the same as empty
                 # responses: do not deliver a blank message, and let the
                 # empty-response guard below mark the run as a soft failure.
-                should_deliver = bool(deliver_content.strip())
+                should_deliver = (
+                    bool(deliver_content.strip())
+                    and cron_delivery_route.action != RouteAction.DROP
+                )
+                if success and cron_delivery_route.action == RouteAction.DROP:
+                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                 if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                     should_deliver = False
@@ -1952,7 +2048,13 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 delivery_error = None
                 if should_deliver:
                     try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                        delivery_error = _deliver_result(
+                            job,
+                            deliver_content,
+                            adapters=adapters,
+                            loop=loop,
+                            delivery_event=cron_delivery_event,
+                        )
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)

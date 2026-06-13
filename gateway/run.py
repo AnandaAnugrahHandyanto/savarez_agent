@@ -16341,6 +16341,13 @@ class GatewayRunner:
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
+        from gateway.event_routing import (
+            RouteAction,
+            classify_event,
+            create_tool_progress_event,
+            new_run_id,
+        )
+        gateway_run_id = new_run_id()
 
         # Auto-cleanup of temporary progress bubbles (Telegram + any adapter
         # that implements ``delete_message``). When enabled via
@@ -16363,6 +16370,34 @@ class GatewayRunner:
         # several tools exceed the threshold.
         long_tool_hint_fired = [False]
         _LONG_TOOL_THRESHOLD_S = 30.0
+
+        def _queue_tool_progress_event(
+            msg: str,
+            *,
+            event_type: str,
+            tool_name: str = None,
+            preview: str = None,
+        ) -> None:
+            """Route tool progress through GatewayEvent while preserving UX text."""
+            if not progress_queue:
+                return
+            event = create_tool_progress_event(
+                event_type=event_type,
+                tool_name=tool_name,
+                content=msg,
+                summary=msg,
+                preview=preview,
+                task_id=session_id,
+                run_id=gateway_run_id,
+                session_id=session_id,
+                session_key=session_key,
+                platform=platform_key,
+                chat_id=source.chat_id,
+                thread_id=source.thread_id,
+            )
+            if classify_event(event).action != RouteAction.SEND_ACTION_LOG:
+                return
+            progress_queue.put(event.content)
 
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
@@ -16444,7 +16479,12 @@ class GatewayRunner:
                     msg = f"{emoji} {tool_name}: \"{preview}\""
                 else:
                     msg = f"{emoji} {tool_name}..."
-                progress_queue.put(msg)
+                _queue_tool_progress_event(
+                    msg,
+                    event_type=event_type,
+                    tool_name=tool_name,
+                    preview=preview,
+                )
                 return
             
             # "all" / "new" modes: short preview, respects tool_preview_length
@@ -16472,7 +16512,12 @@ class GatewayRunner:
             last_progress_msg[0] = msg
             repeat_count[0] = 0
             
-            progress_queue.put(msg)
+            _queue_tool_progress_event(
+                msg,
+                event_type=event_type,
+                tool_name=tool_name,
+                preview=preview,
+            )
         
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited.
