@@ -211,6 +211,76 @@ def test_validate_calling_sidecar_contract_requires_voice_pcm_shape():
         script.validate_calling_sidecar_contract(drifted)
 
 
+def test_load_voice_stream_contract_runs_voice_binary(monkeypatch):
+    script = _load_script_module()
+    contract = {
+        "contract": "voice.webrtc_sidecar",
+        "version": 1,
+        "audio": {
+            "sample_rate": 48_000,
+            "channels": 1,
+            "frame_ms": 20,
+            "encoding": "pcm_s16le",
+            "frame_bytes": 1_920,
+        },
+    }
+    calls = []
+
+    def fake_run(command, *, timeout):
+        calls.append((command, timeout))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(contract),
+            stderr="",
+        )
+
+    monkeypatch.setattr(script, "run_command", fake_run)
+
+    result = script.load_voice_stream_contract("/usr/bin/voice", timeout=3)
+
+    assert result == contract
+    assert calls == [(["/usr/bin/voice", "stream-contract"], 3)]
+
+
+def test_compare_voice_and_sidecar_contracts_requires_exact_machine_contract():
+    script = _load_script_module()
+    contract = {
+        "contract": "voice.webrtc_sidecar",
+        "version": 1,
+        "status": "experimental",
+        "summary": "summary",
+        "audio": {
+            "sample_rate": 48_000,
+            "channels": 1,
+            "frame_ms": 20,
+            "encoding": "pcm_s16le",
+            "frame_bytes": 1_920,
+        },
+        "voice_surfaces": {"raw_outbound_pcm": {"frame_bytes": 1_920}},
+        "endpoints": {"offer": {"path": "/offer"}},
+        "payloads": {"offer_request": {"sdp": "required"}},
+    }
+
+    result = script.compare_voice_and_sidecar_contracts(
+        voice_contract=contract,
+        sidecar_contract=dict(contract),
+    )
+
+    assert result["success"] is True
+    assert result["matched_keys"] == list(script.CONTRACT_COMPARE_KEYS)
+
+    drifted = {
+        **contract,
+        "voice_surfaces": {"raw_outbound_pcm": {"frame_bytes": 960}},
+    }
+    with pytest.raises(SystemExit, match="voice_surfaces"):
+        script.compare_voice_and_sidecar_contracts(
+            voice_contract=contract,
+            sidecar_contract=drifted,
+        )
+
+
 def test_get_calling_sidecar_status_fetches_contract_and_health(monkeypatch):
     script = _load_script_module()
     calls = []

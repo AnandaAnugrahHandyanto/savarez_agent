@@ -348,10 +348,16 @@ scripts/verify_voice_live_gateway.py \
   --live-hermes-root /path/to/hermes-agent \
   --python-bin ~/.hermes/hermes-agent/venv/bin/python \
   --hermes-home ~/.hermes \
+  --voice-bin /path/to/voice \
   --calling-sidecar-url http://127.0.0.1:8787 \
   --skip-bridge-health \
   --run-tts-smoke
 ```
+
+When `--voice-bin` is passed with `--calling-sidecar-url`, the live verifier
+also compares the running sidecar `/contract` with `voice stream-contract` so
+PCM shape, endpoint paths, payload definitions, and advertised `voice`
+surfaces cannot drift silently.
 
 That live check inspects the systemd user service, verifies the running process
 environment, confirms imports resolve from the expected checkout, validates the

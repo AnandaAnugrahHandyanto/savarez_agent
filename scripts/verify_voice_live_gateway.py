@@ -8,6 +8,9 @@ resolve from that checkout, and checks the local WhatsApp bridge health.
 
 Pass ``--run-tts-smoke`` to also generate one live-config TTS reply and verify
 that Hermes returns a WhatsApp-ready Ogg/Opus voice-note file.
+
+Pass ``--voice-bin`` with ``--calling-sidecar-url`` to compare the running
+sidecar's machine-readable contract with the installed ``voice stream-contract``.
 """
 
 from __future__ import annotations
@@ -31,6 +34,16 @@ DEFAULT_SERVICE = "hermes-gateway.service"
 DEFAULT_BRIDGE_URL = "http://127.0.0.1:3000"
 DEFAULT_TTS_TEXT = "Hermes live voice gateway smoke."
 CALLING_TTS_STREAM_ENV = "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND"
+CONTRACT_COMPARE_KEYS = (
+    "contract",
+    "version",
+    "status",
+    "summary",
+    "audio",
+    "voice_surfaces",
+    "endpoints",
+    "payloads",
+)
 IMPORT_MODULES = (
     "hermes_cli.main",
     "tools.tts_tool",
@@ -278,6 +291,12 @@ def get_bridge_health(url: str, *, timeout: float) -> dict[str, Any]:
     return get_json_url(target, timeout=timeout)
 
 
+def get_calling_sidecar_contract(url: str, *, timeout: float) -> dict[str, Any]:
+    contract = get_json_url(url.rstrip("/") + "/contract", timeout=timeout)
+    validate_calling_sidecar_contract(contract)
+    return contract
+
+
 def validate_calling_sidecar_contract(contract: dict[str, Any]) -> dict[str, Any]:
     if contract.get("contract") != "voice.webrtc_sidecar":
         raise SystemExit(
@@ -313,7 +332,7 @@ def validate_calling_sidecar_contract(contract: dict[str, Any]) -> dict[str, Any
 
 def get_calling_sidecar_status(url: str, *, timeout: float) -> dict[str, Any]:
     base = url.rstrip("/")
-    contract = get_json_url(base + "/contract", timeout=timeout)
+    contract = get_calling_sidecar_contract(base, timeout=timeout)
     health = get_json_url(base + "/health", timeout=timeout)
     if health.get("ok") is not True:
         raise SystemExit(f"calling sidecar health is not ok: {health}")
@@ -324,6 +343,48 @@ def get_calling_sidecar_status(url: str, *, timeout: float) -> dict[str, Any]:
             "sessions": health.get("sessions"),
             "call_ids": health.get("call_ids"),
         },
+    }
+
+
+def load_voice_stream_contract(voice_bin: str, *, timeout: float) -> dict[str, Any]:
+    completed = run_command([voice_bin, "stream-contract"], timeout=timeout)
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise SystemExit(f"voice stream-contract failed: {detail}")
+    try:
+        parsed = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"voice stream-contract returned invalid JSON: {completed.stdout!r}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise SystemExit("voice stream-contract JSON root must be an object")
+    validate_calling_sidecar_contract(parsed)
+    return parsed
+
+
+def compare_voice_and_sidecar_contracts(
+    *,
+    voice_contract: dict[str, Any],
+    sidecar_contract: dict[str, Any],
+) -> dict[str, Any]:
+    mismatches = [
+        key
+        for key in CONTRACT_COMPARE_KEYS
+        if voice_contract.get(key) != sidecar_contract.get(key)
+    ]
+    if mismatches:
+        raise SystemExit(
+            "voice stream-contract does not match running sidecar /contract "
+            f"for: {', '.join(mismatches)}"
+        )
+    validated = validate_calling_sidecar_contract(voice_contract)
+    return {
+        "success": True,
+        "contract": validated["contract"],
+        "version": validated["version"],
+        "audio": validated["audio"],
+        "matched_keys": list(CONTRACT_COMPARE_KEYS),
     }
 
 
@@ -442,6 +503,13 @@ def parse_args() -> argparse.Namespace:
             "with this URL and validates the sidecar /contract and /health."
         ),
     )
+    parser.add_argument(
+        "--voice-bin",
+        help=(
+            "Optional voice binary. With --calling-sidecar-url, compare "
+            "`voice stream-contract` with the running sidecar /contract."
+        ),
+    )
     parser.add_argument("--ffprobe-bin", default=os.environ.get("FFPROBE_BIN", "ffprobe"))
     parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--allow-disconnected-bridge", action="store_true")
@@ -465,6 +533,11 @@ def main() -> int:
     live_root = args.live_hermes_root.expanduser().resolve()
     hermes_home = args.hermes_home.expanduser().resolve()
     python_bin = resolve_executable(args.python_bin, label="Hermes Python")
+    voice_bin = (
+        resolve_executable(args.voice_bin, label="voice binary")
+        if args.voice_bin
+        else None
+    )
     ffprobe_bin = (
         resolve_executable(args.ffprobe_bin, label="ffprobe")
         if args.run_tts_smoke
@@ -518,6 +591,19 @@ def main() -> int:
                 timeout=args.timeout,
             ),
         }
+        if voice_bin:
+            checks["voice_sidecar_contract"] = compare_voice_and_sidecar_contracts(
+                voice_contract=load_voice_stream_contract(
+                    voice_bin,
+                    timeout=args.timeout,
+                ),
+                sidecar_contract=get_calling_sidecar_contract(
+                    args.calling_sidecar_url,
+                    timeout=args.timeout,
+                ),
+            )
+    elif voice_bin:
+        raise SystemExit("--voice-bin requires --calling-sidecar-url")
 
     checks["imports"] = import_smoke(
         python_bin=python_bin,
