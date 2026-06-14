@@ -31,6 +31,28 @@ def test_non_telegram_status_is_unchanged():
     assert _prepare_gateway_status_message("local", "lifecycle", message) == message
 
 
+def test_gateway_suppresses_routine_compression_status_on_messaging_platforms():
+    """Routine compaction chrome should stay in logs, not Slack/Discord chat."""
+    messages = [
+        "📦 Preflight compression: ~247,564 tokens >= 231,200 threshold. This may take a moment.",
+        "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
+    ]
+
+    for message in messages:
+        assert _prepare_gateway_status_message(Platform.SLACK, "lifecycle", message) is None
+        assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", message) is None
+        assert _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", message) is None
+        assert _prepare_gateway_status_message("local", "lifecycle", message) == message
+
+
+def test_gateway_keeps_actionable_compression_warnings_visible_outside_telegram():
+    """Only routine start/status chrome is suppressed globally."""
+    warning = "⚠ Compression summary failed: upstream error. Inserted a fallback context marker."
+
+    assert _prepare_gateway_status_message(Platform.SLACK, "warn", warning) == warning
+    assert _prepare_gateway_status_message(Platform.DISCORD, "warn", warning) == warning
+
+
 def test_telegram_status_sanitizes_raw_provider_security_errors():
     """Provider policy/security bodies should be replaced before chat delivery."""
     raw = (
