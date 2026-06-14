@@ -44,8 +44,19 @@ logger = logging.getLogger(__name__)
 _SYNC_DRAIN_TIMEOUT_S = 5.0
 
 
-def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]]) -> bool:
-    """Return whether external memory-provider tools should be exposed."""
+def memory_provider_tools_enabled(
+    enabled_toolsets: Optional[List[str]],
+    disabled_toolsets: Optional[List[str]] = None,
+) -> bool:
+    """Return whether external memory-provider tools should be exposed.
+
+    ``disabled_toolsets`` is an explicit deny-list that takes precedence
+    over ``enabled_toolsets``.  When ``"memory"`` appears in the deny-list
+    the function returns ``False`` regardless of what ``enabled_toolsets``
+    says (issue #46171).
+    """
+    if disabled_toolsets and "memory" in disabled_toolsets:
+        return False
     if enabled_toolsets is None:
         return True
     if not enabled_toolsets:
@@ -76,7 +87,10 @@ def inject_memory_provider_tools(agent: Any) -> int:
     }
     if (
         "memory" not in existing_tool_names
-        and not memory_provider_tools_enabled(getattr(agent, "enabled_toolsets", None))
+        and not memory_provider_tools_enabled(
+            getattr(agent, "enabled_toolsets", None),
+            getattr(agent, "disabled_toolsets", None),
+        )
     ):
         return 0
 

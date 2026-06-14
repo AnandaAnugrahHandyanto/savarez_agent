@@ -1330,11 +1330,12 @@ class TestMemoryToolToolsetGate:
     """
 
     @staticmethod
-    def _run_memory_injection(enabled_toolsets, memory_manager):
+    def _run_memory_injection(enabled_toolsets, memory_manager, disabled_toolsets=None):
         """Run the shared memory-tool injection helper against a fake agent."""
         fake_agent = SimpleNamespace(
             _memory_manager=memory_manager,
             enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
             tools=[],
             valid_tool_names=set(),
         )
@@ -1402,6 +1403,44 @@ class TestMemoryToolToolsetGate:
         mgr = self._mgr_with_tools("fact_store", "memory_search", "memory_add")
         tools, names = self._run_memory_injection(None, mgr)
         assert names == {"fact_store", "memory_search", "memory_add"}
+
+    # --- disabled_toolsets gate (issue #46171) ---
+
+    def test_disabled_toolsets_blocks_injection(self):
+        """disabled_toolsets=['memory'] must suppress injection even when
+        enabled_toolsets allows memory.  (#46171)"""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(
+            ["terminal", "memory"], mgr, disabled_toolsets=["memory"],
+        )
+        assert tools == []
+        assert names == set()
+
+    def test_disabled_toolsets_blocks_when_enabled_is_none(self):
+        """disabled_toolsets=['memory'] must block even when
+        enabled_toolsets=None (backward-compat default).  (#46171)"""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(
+            None, mgr, disabled_toolsets=["memory"],
+        )
+        assert tools == []
+        assert names == set()
+
+    def test_disabled_toolsets_without_memory_allows_injection(self):
+        """disabled_toolsets that don't include 'memory' must not block."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(
+            None, mgr, disabled_toolsets=["terminal", "web"],
+        )
+        assert "fact_store" in names
+
+    def test_disabled_toolsets_none_allows_injection(self):
+        """disabled_toolsets=None (the default) must not change behavior."""
+        mgr = self._mgr_with_tools("fact_store")
+        tools, names = self._run_memory_injection(
+            ["memory"], mgr, disabled_toolsets=None,
+        )
+        assert "fact_store" in names
 
 
 class TestContextEngineToolsetGate:
