@@ -309,7 +309,11 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
         platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(
             resolved_platform
         )
-        global_disabled = _normalize_string_set(skills_cfg.get("disabled"))
+    global_disabled = _normalize_string_set(skills_cfg.get("disabled"))
+    if resolved_platform:
+        platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(
+            resolved_platform
+        )
         if platform_disabled is not None:
             return global_disabled | _normalize_string_set(platform_disabled)
     return global_disabled
