@@ -232,6 +232,7 @@ class _SlashWorker:
     def __init__(self, session_key: str, model: str):
         self._lock = threading.Lock()
         self._seq = 0
+        self.model = model or ""
         self.stderr_tail: list[str] = []
         self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
 
@@ -2047,7 +2048,13 @@ def _apply_model_switch(
             base_url=result.base_url,
             api_mode=result.api_mode,
         )
-        _restart_slash_worker(sid, session)
+        # Model switches initiated outside slash.exec (e.g. the Desktop picker)
+        # must not tear down the persistent slash-worker subprocess inline.
+        # Rapid picker changes can race an unrelated slash.exec and surface
+        # transport-level errors like "Broken pipe" / "slash worker closed pipe"
+        # even though the model switch itself succeeded. Mark the worker stale and
+        # let slash.exec recreate it lazily on the next actual slash command.
+        session["slash_worker_stale"] = True
         _persist_live_session_runtime(session)
         _emit("session.info", sid, _session_info(agent, session))
 
@@ -9173,13 +9180,26 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
 
     worker = session.get("slash_worker")
+    target_model = getattr(session.get("agent"), "model", _resolve_model()) or ""
+    worker_stale = bool(session.get("slash_worker_stale"))
+    worker_model = getattr(worker, "model", "") if worker else ""
+
+    if worker and (worker_stale or worker_model != target_model):
+        try:
+            worker.close()
+        except Exception:
+            pass
+        session["slash_worker"] = None
+        worker = None
+
     if not worker:
         try:
             worker = _SlashWorker(
                 session["session_key"],
-                getattr(session.get("agent"), "model", _resolve_model()),
+                target_model,
             )
             _attach_worker(params.get("session_id", ""), session, worker)
+            session["slash_worker_stale"] = False
         except Exception as e:
             return _err(rid, 5030, f"slash worker start failed: {e}")
 

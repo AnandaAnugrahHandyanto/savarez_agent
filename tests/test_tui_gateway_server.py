@@ -4544,6 +4544,48 @@ def test_config_set_model_allowed_when_idle(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_apply_model_switch_marks_slash_worker_stale_instead_of_restarting(monkeypatch):
+    class Agent:
+        model = "old/model"
+        provider = "old-provider"
+        base_url = ""
+        api_key = ""
+
+        def switch_model(self, **kwargs):
+            self.model = kwargs["new_model"]
+            self.provider = kwargs["new_provider"]
+
+    result = types.SimpleNamespace(
+        success=True,
+        new_model="anthropic/claude-sonnet-4.6",
+        target_provider="anthropic",
+        api_key="key",
+        base_url="https://api.anthropic.com",
+        api_mode="anthropic_messages",
+        warning_message="",
+        model_info=None,
+    )
+    restart_called = {"value": False}
+    persisted = {"value": False}
+    emitted = []
+    session = _session(agent=Agent())
+    session["slash_worker"] = types.SimpleNamespace(close=lambda: None, model="old/model")
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kwargs: result)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, s: restart_called.__setitem__("value", True))
+    monkeypatch.setattr(server, "_persist_live_session_runtime", lambda s: persisted.__setitem__("value", True))
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+    monkeypatch.setattr(server, "_session_info", lambda agent, session: {"model": agent.model, "provider": agent.provider})
+
+    out = server._apply_model_switch("sid", session, "anthropic/claude-sonnet-4.6 --provider anthropic")
+
+    assert out["value"] == "anthropic/claude-sonnet-4.6"
+    assert session["slash_worker_stale"] is True
+    assert restart_called["value"] is False
+    assert persisted["value"] is True
+    assert emitted and emitted[-1][0] == "session.info"
+
+
 def test_mirror_slash_side_effects_rejects_mutating_commands_while_running(monkeypatch):
     """Slash worker passthrough (e.g. /model, /personality, /prompt,
     /compress) must reject during an in-flight turn.  Same race as
@@ -7264,6 +7306,46 @@ def test_restart_slash_worker_stores_on_live_session(monkeypatch):
         assert isinstance(live["slash_worker"], _FakeWorker)
     finally:
         server._sessions.pop("live-restart", None)
+
+
+def test_slash_exec_recreates_stale_worker_lazily(monkeypatch):
+    class _FakeWorker:
+        def __init__(self, session_key, model):
+            self.session_key = session_key
+            self.model = model
+            self.closed = False
+            self.runs = []
+
+        def run(self, command):
+            self.runs.append(command)
+            return f"ran:{self.model}:{command}"
+
+        def close(self):
+            self.closed = True
+
+    agent = types.SimpleNamespace(model="new/model")
+    stale_worker = _FakeWorker("session-key", "old/model")
+    session = _session(agent=agent)
+    session["slash_worker"] = stale_worker
+    session["slash_worker_stale"] = True
+    server._sessions["sid"] = session
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "slash.exec",
+                "params": {"session_id": "sid", "command": "help"},
+            }
+        )
+        assert resp["result"]["output"] == "ran:new/model:help"
+        assert stale_worker.closed is True
+        assert session["slash_worker"] is not stale_worker
+        assert session["slash_worker"].model == "new/model"
+        assert session["slash_worker_stale"] is False
+    finally:
+        server._sessions.pop("sid", None)
 
 
 def test_session_close_rpc_delegates_to_close_session_by_id(monkeypatch):
