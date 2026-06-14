@@ -1318,6 +1318,17 @@ def run_conversation(
                             force=True,
                         )
                         finish_reason = "length"
+                    elif agent._should_treat_length_as_completed(
+                        finish_reason,
+                        assistant_message,
+                        response=response,
+                        api_kwargs=api_kwargs,
+                    ):
+                        agent._vprint(
+                            f"{agent.log_prefix}ℹ️  Treating suspicious local Ollama length response as complete",
+                            force=True,
+                        )
+                        finish_reason = "stop"
 
                 if finish_reason == "length":
                     if getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID:
