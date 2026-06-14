@@ -11,6 +11,7 @@ Improvements over v2:
   - Clear separator when summary merges into tail message
   - Iterative summary updates (preserves info across multiple compactions)
   - Historical knowledge checkpoints + retrieval index for durable milestones
+  - Tool-use ledger + target/fact gap tracking for better post-compaction tool choice
   - Token-budget tail protection instead of fixed message count
   - Tool output pruning before LLM summarization (cheap pre-pass)
   - Scaled summary budget (proportional to compressed content)
@@ -38,6 +39,8 @@ logger = logging.getLogger(__name__)
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 HISTORICAL_IN_PROGRESS_HEADING = "## Historical In-Progress State"
 HISTORICAL_KNOWLEDGE_CHECKPOINTS_HEADING = "## Historical Knowledge Checkpoints"
+HISTORICAL_TOOL_USE_HEADING = "## Historical Tool Use Ledger"
+HISTORICAL_TARGET_FACT_GAPS_HEADING = "## Historical Target-Fact Gaps"
 HISTORICAL_PENDING_ASKS_HEADING = "## Historical Pending User Asks"
 HISTORICAL_RETRIEVAL_INDEX_HEADING = "## Historical Retrieval Index"
 HISTORICAL_REMAINING_WORK_HEADING = "## Historical Remaining Work"
@@ -1247,6 +1250,33 @@ class ContextCompressor(ContextEngine):
         if not checkpoint_lines:
             checkpoint_lines.append("None.")
 
+        tool_use_lines: list[str] = []
+        for idx, item in enumerate(tool_actions[:8], start=1):
+            checkpoint_id = (
+                f"cp-fallback-{min(idx, len(checkpoint_source_items)):02d}"
+                if checkpoint_source_items
+                else "unknown"
+            )
+            tool_name_match = re.match(r"\[([^\]]+)\]", item)
+            tool_name = tool_name_match.group(1) if tool_name_match else "unknown"
+            tool_use_lines.append(
+                f"- checkpoint: {checkpoint_id} | tools: {tool_name} | "
+                "purpose: recovered compacted tool evidence | "
+                f"evidence: {_short(item)} | "
+                "outcome: best-effort fallback evidence preserved | "
+                "confidence: medium | next_tool_hint: verify current state before relying on it"
+            )
+        if not tool_use_lines:
+            tool_use_lines.append("None.")
+
+        gap_lines = [
+            "- target: continue the latest unfulfilled user ask | "
+            "known_fact: deterministic fallback preserved limited compacted evidence | "
+            "gap: exact current repository/session state is not fully proven by fallback summary | "
+            "next_tool_hint: inspect current files, git status, processes, or tests as needed | "
+            "stop_condition: current state/tool evidence confirms the next response or action"
+        ]
+
         retrieval_lines: list[str] = []
         if checkpoint_source_items:
             checkpoint_ids = ", ".join(
@@ -1291,6 +1321,12 @@ None recoverable from deterministic fallback.
 
 {HISTORICAL_KNOWLEDGE_CHECKPOINTS_HEADING}
 {chr(10).join(checkpoint_lines)}
+
+{HISTORICAL_TOOL_USE_HEADING}
+{chr(10).join(tool_use_lines)}
+
+{HISTORICAL_TARGET_FACT_GAPS_HEADING}
+{chr(10).join(gap_lines)}
 
 ## Resolved Questions
 None recoverable from deterministic fallback.
@@ -1492,6 +1528,21 @@ Prefer 3-10 high-signal checkpoints over a transcript-like list. Merge
 duplicates instead of adding near-identical checkpoints. Write "None." if no
 durable checkpoint exists.]
 
+{HISTORICAL_TOOL_USE_HEADING}
+[Per-checkpoint tool control record. Include only actual tools used in the
+compacted turns. Record why each tool sequence was used, what evidence it
+produced, whether the outcome is proven/changed/failed, and whether another
+tool is needed. Use this shape:
+- checkpoint: cp-N | tools: tool_a, tool_b | purpose: why tools were called | evidence: file/command/output | outcome: proven/changed/failed | confidence: low/medium/high | next_tool_hint: tool name or "none"
+Do not invent tool calls. Prefer "none" when no further tool is useful.]
+
+{HISTORICAL_TARGET_FACT_GAPS_HEADING}
+[Compare the user's target against verified facts. Use this to guide future
+tool choice, not to create stale instructions. Include only gaps that matter
+for correctness or completion. Use this shape:
+- target: desired result | known_fact: verified fact | gap: missing proof/implementation/decision | next_tool_hint: best tool to close gap | stop_condition: evidence that closes gap
+Write "None." when no meaningful target/fact gap remains.]
+
 ## Resolved Questions
 [Questions the user asked that were ALREADY answered — include the answer so it is not repeated]
 
@@ -1528,7 +1579,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Maintain "{HISTORICAL_KNOWLEDGE_CHECKPOINTS_HEADING}" as an append/update ledger: keep stable checkpoint IDs when possible, add checkpoints only for durable milestones, merge duplicate or superseded checkpoints, and keep "{HISTORICAL_RETRIEVAL_INDEX_HEADING}" aligned with the checkpoint IDs. Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Maintain "{HISTORICAL_KNOWLEDGE_CHECKPOINTS_HEADING}" as an append/update ledger: keep stable checkpoint IDs when possible, add checkpoints only for durable milestones, merge duplicate or superseded checkpoints, and keep "{HISTORICAL_RETRIEVAL_INDEX_HEADING}" aligned with the checkpoint IDs. Maintain "{HISTORICAL_TOOL_USE_HEADING}" and "{HISTORICAL_TARGET_FACT_GAPS_HEADING}" so each durable checkpoint keeps its tool evidence, confidence, remaining verification gap, next useful tool, and stop condition. Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
 
 {_template_sections}"""
         else:

@@ -7,7 +7,9 @@ from agent.context_compressor import (
     ContextCompressor,
     HISTORICAL_KNOWLEDGE_CHECKPOINTS_HEADING,
     HISTORICAL_RETRIEVAL_INDEX_HEADING,
+    HISTORICAL_TARGET_FACT_GAPS_HEADING,
     HISTORICAL_TASK_HEADING,
+    HISTORICAL_TOOL_USE_HEADING,
     SUMMARY_PREFIX,
 )
 
@@ -168,8 +170,12 @@ class TestCompress:
         assert "read_file" in combined
         assert "agent/context_compressor.py" in combined
         assert HISTORICAL_KNOWLEDGE_CHECKPOINTS_HEADING in combined
+        assert HISTORICAL_TOOL_USE_HEADING in combined
+        assert HISTORICAL_TARGET_FACT_GAPS_HEADING in combined
         assert HISTORICAL_RETRIEVAL_INDEX_HEADING in combined
         assert "cp-fallback-01" in combined
+        assert "tools: read_file" in combined
+        assert "next_tool_hint" in combined
         assert "Summary generation was unavailable" in combined
         assert "removed to free context space but could not be summarized" not in combined
         assert c._last_summary_fallback_used is True
@@ -337,9 +343,15 @@ class TestNonStringContent:
 
         prompt = mock_call.call_args.kwargs["messages"][0]["content"]
         assert HISTORICAL_KNOWLEDGE_CHECKPOINTS_HEADING in prompt
+        assert HISTORICAL_TOOL_USE_HEADING in prompt
+        assert HISTORICAL_TARGET_FACT_GAPS_HEADING in prompt
         assert HISTORICAL_RETRIEVAL_INDEX_HEADING in prompt
         assert "importance: 0.00-1.00" in prompt
         assert "condition: when this checkpoint matters" in prompt
+        assert "Per-checkpoint tool control record" in prompt
+        assert "Compare the user's target against verified facts" in prompt
+        assert "next_tool_hint" in prompt
+        assert "stop_condition" in prompt
         assert "Map compact keys to checkpoint IDs" in prompt
 
     def test_summary_call_passes_live_main_runtime(self):
