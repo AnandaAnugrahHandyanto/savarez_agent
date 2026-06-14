@@ -211,6 +211,79 @@ class TestOpenRouterToolSupportHelper:
             {"id": "x", "supported_parameters": []}
         ) is False
 
+    def test_openrouter_router_aliases_are_tool_capable(self):
+        """OpenRouter router aliases advertise supported_parameters:[] but are
+        tool-capable (they route to a tool-capable model). They must survive the
+        filter even with an empty list - otherwise the curated picker entry is
+        inert. openrouter/pareto-code ships today and hits exactly this."""
+        from hermes_cli.models import _openrouter_model_supports_tools
+        for router_id in ("openrouter/pareto-code", "openrouter/fusion"):
+            assert _openrouter_model_supports_tools(
+                {"id": router_id, "supported_parameters": []}
+            ) is True, router_id
+
+    def test_non_router_openrouter_model_without_tools_still_dropped(self):
+        """The router allowance is an explicit allowlist, not an openrouter/* glob:
+        a non-router openrouter/* model that genuinely omits tools is still dropped."""
+        from hermes_cli.models import _openrouter_model_supports_tools
+        assert _openrouter_model_supports_tools(
+            {"id": "openrouter/some-image-model", "supported_parameters": []}
+        ) is False
+
+
+class TestOpenRouterFusionCurated:
+    """openrouter/fusion is a curated, selectable OpenRouter model."""
+
+    def test_fusion_in_openrouter_models_snapshot(self):
+        from hermes_cli.models import OPENROUTER_MODELS
+        ids = [mid for mid, _ in OPENROUTER_MODELS]
+        assert "openrouter/fusion" in ids
+
+    def test_fusion_survives_live_catalog_filter(self, monkeypatch):
+        """End-to-end picker path: even when the live /api/v1/models entry for
+        openrouter/fusion advertises supported_parameters:[] (its real shape
+        today), it must still appear in the curated picker output."""
+        import hermes_cli.models as _models_mod
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"data":['
+                    b'{"id":"openrouter/fusion","pricing":{"prompt":"0","completion":"0"},'
+                    b'"supported_parameters":[]},'
+                    b'{"id":"anthropic/claude-opus-4.6","pricing":{"prompt":"0.000015","completion":"0.000075"},'
+                    b'"supported_parameters":["tools"]}'
+                    b']}'
+                )
+
+        monkeypatch.setattr(
+            _models_mod,
+            "OPENROUTER_MODELS",
+            [
+                ("anthropic/claude-opus-4.6", ""),
+                ("openrouter/fusion", "multi-model panel + judge deliberation"),
+            ],
+        )
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        # Force the in-repo fallback list (skip the remote curated manifest,
+        # which is imported lazily from hermes_cli.model_catalog inside the fn).
+        monkeypatch.setattr(
+            "hermes_cli.model_catalog.get_curated_openrouter_models",
+            lambda *a, **k: None,
+            raising=False,
+        )
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+            models = _models_mod.fetch_openrouter_models(force_refresh=True)
+
+        ids = [mid for mid, _ in models]
+        assert "openrouter/fusion" in ids
+
 
 class TestFindOpenrouterSlug:
     def test_exact_match(self):
