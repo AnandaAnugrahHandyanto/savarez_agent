@@ -3283,19 +3283,29 @@ def release_stale_claims(
                 )
             continue
 
-        termination = _terminate_reclaimed_worker(
-            row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
-        )
         with write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
-                "AND claim_expires IS NOT NULL AND claim_expires < ?",
-                (row["id"], row["claim_lock"], now),
+                "AND COALESCE(worker_pid, -1) = COALESCE(?, -1) "
+                "AND claim_expires IS NOT NULL AND claim_expires < ? "
+                "AND ((last_heartbeat_at IS NULL AND ? IS NULL) "
+                "     OR last_heartbeat_at = ?)",
+                (
+                    row["id"],
+                    row["claim_lock"],
+                    row["worker_pid"],
+                    now,
+                    row["last_heartbeat_at"],
+                    row["last_heartbeat_at"],
+                ),
             )
             if cur.rowcount != 1:
                 continue
+            termination = _terminate_reclaimed_worker(
+                row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+            )
             run_id = _end_run(
                 conn, row["id"],
                 outcome="reclaimed", status="reclaimed",

@@ -10,6 +10,7 @@ import time
 import types
 import unittest.mock
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -433,6 +434,63 @@ def test_stale_claim_reclaimed(kanban_home, monkeypatch):
         assert reclaimed == 1
         assert kb.get_task(conn, t).status == "ready"
         assert killed == [signal.SIGTERM]
+
+
+def test_release_stale_claims_rechecks_heartbeat_before_kill(
+    kanban_home, monkeypatch,
+):
+    """A heartbeat racing after stale-claim selection prevents termination."""
+    import hermes_cli.kanban_db as _kb
+
+    class HeartbeatBeforeClaimUpdateConn:
+        def __init__(self, inner, task_id):
+            self.inner = inner
+            self.task_id = task_id
+            self.injected = False
+
+        def execute(self, sql, params=()):
+            if (
+                not self.injected
+                and "UPDATE tasks SET status = 'ready'" in sql
+                and "claim_expires" in sql
+                and "last_heartbeat_at" in sql
+            ):
+                self.injected = True
+                self.inner.execute(
+                    "UPDATE tasks SET last_heartbeat_at = ? WHERE id = ?",
+                    (int(time.time()), self.task_id),
+                )
+            return self.inner.execute(sql, params)
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+    with kb.connect() as real_conn:
+        t = kb.create_task(real_conn, title="claim-race-heartbeat", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(real_conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(real_conn, t, 12345)
+        old = int(time.time()) - 3600
+        with kb.write_txn(real_conn):
+            real_conn.execute(
+                "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+                "WHERE id = ?",
+                (old, old, t),
+            )
+
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        killed = []
+        reclaimed = kb.release_stale_claims(
+            cast(sqlite3.Connection, HeartbeatBeforeClaimUpdateConn(real_conn, t)),
+            signal_fn=lambda p, s: killed.append((p, s)),
+        )
+
+        assert reclaimed == 0
+        assert killed == []
+        task = kb.get_task(real_conn, t)
+        assert task is not None
+        assert task.status == "running"
+        assert task.last_heartbeat_at is not None
 
 
 def test_stale_claim_with_live_pid_extends_instead_of_reclaiming(
