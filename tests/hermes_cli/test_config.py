@@ -1144,3 +1144,28 @@ class TestWriteApprovalMigration:
             # gate ends up off and there's no leftover write_mode key.
             assert raw["memory"].get("write_approval", False) is False
             assert "write_mode" not in raw.get("memory", {})
+
+
+class TestDashboardChatSurfaceMigration:
+    """Version 29→30 seeds display.dashboard_chat_surface on disk."""
+
+    def _write(self, tmp_path, body: str):
+        (tmp_path / "config.yaml").write_text(body)
+
+    def test_seeds_terminal_when_missing(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path, "_config_version: 29\ndisplay:\n  skin: default\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["display"]["dashboard_chat_surface"] == "terminal"
+            assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+
+    def test_preserves_existing_rich(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 29\ndisplay:\n  dashboard_chat_surface: rich\n",
+            )
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["display"]["dashboard_chat_surface"] == "rich"

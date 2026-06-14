@@ -1510,6 +1510,9 @@ DEFAULT_CONFIG = {
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
         },
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
+        # Dashboard /chat surface: "terminal" (embedded hermes --tui via PTY, default)
+        # or "rich" (gateway-native React chat). Change in Config → reload chat tab.
+        "dashboard_chat_surface": "terminal",
     },
 
     # Web dashboard settings
@@ -2530,7 +2533,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 29,
+    "_config_version": 30,
 }
 
 # =============================================================================
@@ -4818,6 +4821,33 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             save_config(config)
             if not quiet:
                 print("  ✓ Renamed write_mode → write_approval (boolean gate)")
+
+    # ── Version 29 → 30: seed display.dashboard_chat_surface ──
+    # Rich dashboard chat is opt-in; default stays the embedded PTY TUI so
+    # existing installs keep current behavior until they switch in Config.
+    # Deep-merge in load_config() already supplies the default at read time,
+    # but the Config page and manual yaml edits need the key on disk.
+    if current_ver < 30:
+        config = read_raw_config()
+        raw_display = config.get("display")
+        if not isinstance(raw_display, dict):
+            raw_display = {}
+        if "dashboard_chat_surface" not in raw_display:
+            raw_display["dashboard_chat_surface"] = (
+                DEFAULT_CONFIG.get("display", {}).get(
+                    "dashboard_chat_surface", "terminal"
+                )
+            )
+            config["display"] = raw_display
+            save_config(config)
+            results["config_added"].append(
+                "display.dashboard_chat_surface=terminal"
+            )
+            if not quiet:
+                print(
+                    "  ✓ Seeded display.dashboard_chat_surface=terminal "
+                    "(switch to rich in Config → Display)"
+                )
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
