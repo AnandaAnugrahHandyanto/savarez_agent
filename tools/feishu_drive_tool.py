@@ -43,7 +43,10 @@ def _do_request(client, method, uri, paths=None, queries=None, body=None):
     from lark_oapi.core.enum import HttpMethod
     from lark_oapi.core.model.base_request import BaseRequest
 
-    http_method = HttpMethod.GET if method == "GET" else HttpMethod.POST
+    # Map the method string to the SDK enum. GET/POST preserve the previous
+    # behaviour; PUT/DELETE/PATCH are resolved by name so the generic
+    # feishu_request tool can reach write/update endpoints too.
+    http_method = getattr(HttpMethod, str(method).upper(), HttpMethod.GET)
 
     builder = (
         BaseRequest.builder()
