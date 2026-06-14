@@ -252,7 +252,7 @@ tts:
       command: "voxcpm --ref ~/voice.wav --text-file {input_path} --out {output_path}"
       output_format: mp3
       timeout: 180
-      voice_compatible: true       # try to deliver as a Telegram voice bubble
+      voice_compatible: true       # try to deliver as a native voice note/bubble
 
     mlx-kokoro:
       type: command
@@ -312,7 +312,7 @@ Use `{{` and `}}` for literal braces.
 |--------------------|---------|------------------------------------------------------------------------------------------------------------|
 | `timeout`          | `120`   | Seconds; the process tree is killed on expiry (Unix `killpg`, Windows `taskkill /T`).                       |
 | `output_format`    | `mp3`   | One of `mp3` / `wav` / `ogg` / `flac`. Auto-inferred from the output extension if Hermes picks a path.      |
-| `voice_compatible` | `false` | When `true`, Hermes converts MP3/WAV output to Opus/OGG via ffmpeg so Telegram renders a voice bubble.      |
+| `voice_compatible` | `false` | When `true`, Hermes routes the output through native voice-message delivery. Existing Ogg/Opus output is sent directly; MP3/WAV output is converted to Ogg/Opus via ffmpeg when the platform requires it. |
 | `max_text_length`  | `5000`  | Input is truncated to this length before rendering the command.                                             |
 | `voice` / `model`  | empty   | Passed to the command as placeholder values only.                                                           |
 
@@ -320,6 +320,7 @@ Use `{{` and `}}` for literal braces.
 
 - **Built-in names always win.** A `tts.providers.openai` entry never shadows the native OpenAI provider, so no user config can silently replace a built-in.
 - **Default delivery is a document.** Command providers deliver as regular audio attachments on every platform. Opt in to voice-bubble delivery per-provider with `voice_compatible: true`.
+- **Prefer native Ogg/Opus when your engine can write it.** For WhatsApp voice notes and Telegram voice bubbles, set `output_format: ogg` and have the command produce real Opus in an Ogg container. Hermes can then skip conversion and hand the file directly to the platform adapter.
 - **Command failures surface to the agent.** Non-zero exit, empty output, or timeout all return an error with the command's stderr/stdout included so you can debug the provider from the conversation.
 - **`type: command` is the default when `command:` is set.** Writing `type: command` explicitly is good practice but not required; an entry with a non-empty `command` string is treated as a command provider.
 - **`{input_path}` / `{text_path}` are interchangeable.** Use whichever reads better in your command.

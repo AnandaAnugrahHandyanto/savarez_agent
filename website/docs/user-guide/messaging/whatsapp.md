@@ -172,7 +172,7 @@ with reconnection logic.
 Hermes supports voice on WhatsApp:
 
 - **Incoming:** Voice messages (`.ogg` opus) are automatically transcribed using the configured STT provider: local `faster-whisper`, Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`)
-- **Outgoing:** TTS responses are sent as MP3 audio file attachments
+- **Outgoing:** TTS responses can be sent as native WhatsApp voice notes when the audio is Ogg/Opus. The bridge sends `.ogg` / `.opus` files with `ptt: true`; MP3/WAV outputs are converted with ffmpeg when possible and otherwise fall back to regular audio attachments.
 - Agent responses are prefixed with "⚕ **Hermes Agent**" by default. You can customize or disable this in `config.yaml`:
 
 ```yaml
@@ -181,6 +181,24 @@ whatsapp:
   reply_prefix: ""                          # Empty string disables the header
   # reply_prefix: "🤖 *My Bot*\n──────\n"  # Custom prefix (supports \n for newlines)
 ```
+
+For a local `voice` / Kokoro setup that writes WhatsApp-ready Ogg/Opus directly, configure a command TTS provider like this:
+
+```yaml
+tts:
+  provider: kokoro
+  providers:
+    kokoro:
+      type: command
+      command: /home/you/.local/bin/voice say --format ogg-opus --input-file {input_path} --output {output_path} --voice {voice} --speed {speed}
+      output_format: ogg
+      voice_compatible: true
+      voice: af_heart
+      speed: 1.0
+      timeout: 180
+```
+
+With that shape Hermes asks `voice` for `.ogg` output up front, and the bridge sends it as a native voice note without a WAV or MP3 intermediate.
 
 ---
 
