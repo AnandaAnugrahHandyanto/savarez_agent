@@ -417,6 +417,62 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_markdown_table_routes_to_interactive_card(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "\n".join([
+            "Daily status",
+            "",
+            "| Service | State | Notes |",
+            "| --- | :---: | --- |",
+            "| api | green | p95 stable |",
+            "| worker | amber | queue draining |",
+            "",
+            "End of report.",
+        ])
+
+        msg_type, payload = adapter._build_outbound_payload(content)
+        card = json.loads(payload)
+
+        self.assertEqual(msg_type, "interactive")
+        self.assertEqual(card["config"]["wide_screen_mode"], True)
+        self.assertEqual(card["elements"][0]["tag"], "markdown")
+        self.assertIn("Daily status", card["elements"][0]["content"])
+        self.assertEqual(card["elements"][1]["tag"], "table")
+        self.assertEqual(
+            card["elements"][1]["columns"],
+            [
+                {"name": "col1", "display_name": "Service"},
+                {"name": "col2", "display_name": "State"},
+                {"name": "col3", "display_name": "Notes"},
+            ],
+        )
+        self.assertEqual(
+            card["elements"][1]["rows"],
+            [
+                {"col1": "api", "col2": "green", "col3": "p95 stable"},
+                {"col1": "worker", "col2": "amber", "col3": "queue draining"},
+            ],
+        )
+        self.assertEqual(card["elements"][2]["tag"], "markdown")
+        self.assertIn("End of report.", card["elements"][2]["content"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_malformed_markdown_table_falls_back_to_text(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "| Service | State |\n| --- | --- |\n"
+
+        msg_type, payload = adapter._build_outbound_payload(content)
+
+        self.assertEqual(msg_type, "text")
+        self.assertEqual(json.loads(payload), {"text": content})
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

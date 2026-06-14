@@ -175,6 +175,8 @@ _FEISHU_IMAGE_UPLOAD_TYPE = "message"
 _FEISHU_FILE_UPLOAD_TYPE = "stream"
 _FEISHU_OPUS_UPLOAD_EXTENSIONS = {".ogg", ".opus"}
 _FEISHU_MEDIA_UPLOAD_EXTENSIONS = {".mp4", ".mov", ".avi", ".m4v"}
+_FEISHU_CARD_MAX_TABLES = 5
+_FEISHU_CARD_MAX_TABLE_COLUMNS = 50
 _FEISHU_DOC_UPLOAD_TYPES = {
     ".pdf": "pdf",
     ".doc": "doc",
@@ -607,6 +609,110 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
 
     _flush_current()
     return rows or [[{"tag": "md", "text": content}]]
+
+
+def _split_markdown_table_row(line: str) -> List[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _is_markdown_table_separator(line: str) -> bool:
+    cells = _split_markdown_table_row(line)
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell.replace(" ", "")) for cell in cells)
+
+
+def _build_markdown_table_card(content: str) -> Optional[Dict[str, Any]]:
+    """Build a Feishu interactive card for markdown tables.
+
+    Returns None when the content is not a safe, complete markdown table shape.
+    The caller can then keep the existing plain-text fallback.
+    """
+    lines = content.replace("\r\n", "\n").split("\n")
+    elements: List[Dict[str, Any]] = []
+    pending_text: List[str] = []
+    table_count = 0
+    in_code_block = False
+    index = 0
+
+    def flush_text() -> None:
+        nonlocal pending_text
+        segment = "\n".join(pending_text).strip()
+        if segment:
+            elements.append({"tag": "markdown", "content": segment})
+        pending_text = []
+
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        is_fence = bool(
+            _MARKDOWN_FENCE_CLOSE_RE.match(stripped)
+            if in_code_block
+            else _MARKDOWN_FENCE_OPEN_RE.match(stripped)
+        )
+        if is_fence:
+            pending_text.append(line)
+            in_code_block = not in_code_block
+            index += 1
+            continue
+
+        if (
+            not in_code_block
+            and index + 1 < len(lines)
+            and line.strip().startswith("|")
+            and line.strip().endswith("|")
+            and _is_markdown_table_separator(lines[index + 1])
+        ):
+            headers = _split_markdown_table_row(line)
+            separators = _split_markdown_table_row(lines[index + 1])
+            if (
+                not headers
+                or len(headers) != len(separators)
+                or len(headers) > _FEISHU_CARD_MAX_TABLE_COLUMNS
+                or any(not header for header in headers)
+            ):
+                return None
+
+            rows: List[Dict[str, str]] = []
+            cursor = index + 2
+            while cursor < len(lines):
+                row_line = lines[cursor]
+                if not row_line.strip():
+                    break
+                if not row_line.strip().startswith("|") or not row_line.strip().endswith("|"):
+                    break
+                cells = _split_markdown_table_row(row_line)
+                if len(cells) != len(headers):
+                    return None
+                rows.append({f"col{cell_index + 1}": cell for cell_index, cell in enumerate(cells)})
+                cursor += 1
+
+            if not rows:
+                return None
+
+            table_count += 1
+            if table_count > _FEISHU_CARD_MAX_TABLES:
+                return None
+
+            flush_text()
+            elements.append(
+                {
+                    "tag": "table",
+                    "columns": [
+                        {"name": f"col{column_index + 1}", "display_name": header}
+                        for column_index, header in enumerate(headers)
+                    ],
+                    "rows": rows,
+                }
+            )
+            index = cursor
+            continue
+
+        pending_text.append(line)
+        index += 1
+
+    flush_text()
+    if not any(element.get("tag") == "table" for element in elements):
+        return None
+    return {"config": {"wide_screen_mode": True}, "elements": elements}
 
 
 def parse_feishu_post_payload(
@@ -4376,8 +4482,12 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Use interactive cards when the table shape is safe; otherwise keep
+        # the previous plain-text fallback.
         if _MARKDOWN_TABLE_RE.search(content):
+            card_payload = _build_markdown_table_card(content)
+            if card_payload is not None:
+                return "interactive", json.dumps(card_payload, ensure_ascii=False)
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):
