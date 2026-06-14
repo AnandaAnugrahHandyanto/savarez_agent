@@ -619,20 +619,20 @@ class TestIdleSinceLastTurn:
         assert HermesCLI._format_idle_since(None, turn_live=False) == ""
 
     def test_hidden_while_turn_is_live(self):
-        assert HermesCLI._format_idle_since(time.time() - 30, turn_live=True) == ""
+        assert HermesCLI._format_idle_since(time.monotonic() - 30, turn_live=True) == ""
 
     def test_shows_compact_idle_time_after_turn(self):
-        label = HermesCLI._format_idle_since(time.time() - 42, turn_live=False)
+        label = HermesCLI._format_idle_since(time.monotonic() - 42, turn_live=False)
         assert label.startswith("✓ ")
         assert label == "✓ 42s"
 
     def test_scales_to_minutes(self):
-        label = HermesCLI._format_idle_since(time.time() - 3 * 60, turn_live=False)
+        label = HermesCLI._format_idle_since(time.monotonic() - 3 * 60, turn_live=False)
         assert label == "✓ 3m"
 
     def test_snapshot_carries_idle_since(self):
         cli_obj = _make_cli()
-        cli_obj._last_turn_finished_at = time.time() - 10
+        cli_obj._last_turn_finished_at = time.monotonic() - 10
         cli_obj._prompt_start_time = None
         cli_obj._prompt_duration = 5.0
         snapshot = cli_obj._get_status_bar_snapshot()
@@ -640,8 +640,8 @@ class TestIdleSinceLastTurn:
 
     def test_snapshot_idle_empty_during_live_turn(self):
         cli_obj = _make_cli()
-        cli_obj._last_turn_finished_at = time.time() - 10
-        cli_obj._prompt_start_time = time.time()
+        cli_obj._last_turn_finished_at = time.monotonic() - 10
+        cli_obj._prompt_start_time = time.monotonic()
         cli_obj._prompt_duration = 0.0
         snapshot = cli_obj._get_status_bar_snapshot()
         assert snapshot["idle_since"] == ""
@@ -656,8 +656,26 @@ class TestIdleSinceLastTurn:
             context_tokens=12_450,
             context_length=200_000,
         )
-        cli_obj._last_turn_finished_at = time.time() - 42
+        cli_obj._last_turn_finished_at = time.monotonic() - 42
         cli_obj._prompt_start_time = None
         cli_obj._prompt_duration = 7.0
         text = cli_obj._build_status_bar_text(width=160)
         assert "✓ 42s" in text
+
+    def test_timer_uses_monotonic_clock_not_wall_clock(self):
+        """Regression: per-prompt timer must use time.monotonic() so that
+        NTP step adjustments or system suspend/resume don't cause the
+        elapsed display to jump or go backwards (issue #46177)."""
+        import time as _time
+        # _format_prompt_elapsed receives a start time from time.monotonic()
+        start = _time.monotonic()
+        # Simulate 5 seconds of elapsed time
+        elapsed_str = HermesCLI._format_prompt_elapsed(start - 5.0, 0.0, live=True)
+        assert "5s" in elapsed_str
+
+        # Verify the function uses monotonic: if we pass a monotonic base,
+        # the result should be consistent regardless of wall-clock state.
+        # time.monotonic() is always less than time.time() on most systems,
+        # so if the function accidentally used time.time(), the result would
+        # be a huge number, not 5s.
+        assert "5s" in elapsed_str
