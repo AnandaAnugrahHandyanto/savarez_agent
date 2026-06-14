@@ -14,6 +14,7 @@ Tools:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -214,6 +215,13 @@ MEET_TRANSCRIPT_SCHEMA: Dict[str, Any] = {
                 ),
                 "minimum": 1,
             },
+            "include_finished": {
+                "type": "boolean",
+                "description": (
+                    "Default false. Set true to explicitly read the most recent "
+                    "finished meeting transcript when no meeting is active."
+                ),
+            },
             "node": {"type": "string"},
         },
         "additionalProperties": False,
@@ -270,6 +278,14 @@ def _err(msg: str, **extra) -> str:
     return _json({"success": False, "error": msg, **extra})
 
 
+def _context_session_id(context: Dict[str, Any]) -> Optional[str]:
+    raw = context.get("session_id") or os.environ.get("HERMES_SESSION_ID")
+    if not raw:
+        return None
+    session_id = str(raw).strip()
+    return session_id or None
+
+
 def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
     url = (args.get("url") or "").strip()
     if not url:
@@ -294,6 +310,7 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
                 persist_after_session=bool(args.get("persist_after_session", False)),
                 headed=bool(args.get("headed", False)),
                 mode=mode,
+                session_id=_context_session_id(_kw),
             )
             return _json({"success": bool(res.get("ok")), "node": node_name, **res})
         except Exception as e:
@@ -314,6 +331,7 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
         persist_after_session=bool(args.get("persist_after_session", False)),
         auth_state=_default_auth_state() if bool(args.get("use_auth_state", False)) else None,
         mode=mode,
+        session_id=_context_session_id(_kw),
     )
     return _json({"success": bool(res.get("ok")), **res})
 
@@ -335,6 +353,7 @@ def handle_meet_status(args: Dict[str, Any], **_kw) -> str:
 
 def handle_meet_transcript(args: Dict[str, Any], **_kw) -> str:
     last = args.get("last")
+    include_finished = bool(args.get("include_finished", False))
     try:
         last_i = int(last) if last is not None else None
         if last_i is not None and last_i < 1:
@@ -347,11 +366,11 @@ def handle_meet_transcript(args: Dict[str, Any], **_kw) -> str:
         return _err(str(e))
     if client is not None:
         try:
-            res = client.transcript(last=last_i)
+            res = client.transcript(last=last_i, include_finished=include_finished)
             return _json({"success": bool(res.get("ok")), "node": node_name, **res})
         except Exception as e:
             return _err(f"remote node transcript failed: {e}", node=node_name)
-    res = pm.transcript(last=last_i)
+    res = pm.transcript(last=last_i, include_finished=include_finished)
     return _json({"success": bool(res.get("ok")), **res})
 
 

@@ -304,6 +304,7 @@ def status() -> Dict[str, Any]:
             "meetingId": active.get("meeting_id"),
             "url": active.get("url"),
             "outDir": active.get("out_dir"),
+            "sessionId": active.get("session_id"),
         }
 
     return {
@@ -316,19 +317,34 @@ def status() -> Dict[str, Any]:
         "duration": active.get("duration"),
         "persistAfterSession": bool(active.get("persist_after_session")),
         "outDir": active.get("out_dir"),
+        "sessionId": active.get("session_id"),
         **bot_status,
     }
 
 
-def transcript(last: Optional[int] = None) -> Dict[str, Any]:
-    """Read the current transcript file. Returns ok=False if none exists."""
+def transcript(last: Optional[int] = None, *, include_finished: bool = False) -> Dict[str, Any]:
+    """Read the active transcript file.
+
+    Finished meeting transcripts require an explicit ``include_finished`` opt-in
+    so a fresh session cannot accidentally receive a stale previous transcript.
+    """
     active = _read_active()
-    if not active:
+    from_last = False
+    if not active and include_finished:
         active = _read_last()
+        from_last = bool(active)
     if not active:
         return {"ok": False, "reason": "no active meeting"}
 
     tp = Path(active.get("out_dir", "")) / "transcript.txt"
+    status_path = Path(active.get("out_dir", "")) / "status.json"
+    bot_status: Dict[str, Any] = {}
+    if status_path.is_file():
+        try:
+            bot_status = json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception:
+            bot_status = {}
+    active_response = not from_last
     if not tp.is_file():
         return {
             "ok": True,
@@ -336,6 +352,11 @@ def transcript(last: Optional[int] = None) -> Dict[str, Any]:
             "lines": [],
             "total": 0,
             "path": str(tp),
+            "active": active_response,
+            "fromLast": from_last,
+            "stale": from_last,
+            "leaveReason": bot_status.get("leaveReason"),
+            "error": bot_status.get("error"),
         }
     text = tp.read_text(encoding="utf-8", errors="replace")
     all_lines = [ln for ln in text.splitlines() if ln.strip()]
@@ -346,6 +367,11 @@ def transcript(last: Optional[int] = None) -> Dict[str, Any]:
         "lines": lines,
         "total": len(all_lines),
         "path": str(tp),
+        "active": active_response,
+        "fromLast": from_last,
+        "stale": from_last,
+        "leaveReason": bot_status.get("leaveReason"),
+        "error": bot_status.get("error"),
     }
 
 

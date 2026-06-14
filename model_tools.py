@@ -1119,11 +1119,19 @@ def handle_function_call(
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
-                    return registry.dispatch(
-                        function_name, next_args,
-                        task_id=task_id,
-                        user_task=user_task,
-                    )
+                    dispatch_kwargs: Dict[str, Any] = {
+                        "task_id": task_id,
+                        "user_task": user_task,
+                    }
+                    if function_name in {
+                        "meet_join",
+                        "meet_status",
+                        "meet_transcript",
+                        "meet_leave",
+                        "meet_say",
+                    }:
+                        dispatch_kwargs["session_id"] = session_id
+                    return registry.dispatch(function_name, next_args, **dispatch_kwargs)
             from hermes_cli.middleware import run_tool_execution_middleware
 
             result = run_tool_execution_middleware(

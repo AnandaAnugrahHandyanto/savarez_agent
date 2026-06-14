@@ -14,6 +14,7 @@ Does NOT spawn a real Chromium — we mock ``subprocess.Popen`` where needed.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -815,7 +816,7 @@ def test_status_clears_stale_active_pointer_when_bot_exited(tmp_path):
     assert pm._read_active() is None
 
 
-def test_transcript_still_reads_after_status_clears_dead_active_pointer(tmp_path):
+def test_transcript_does_not_read_last_meeting_by_default_after_status_clears_dead_active_pointer(tmp_path):
     from plugins.google_meet import process_manager as pm
 
     out_dir = tmp_path / "abc-defg-hij"
@@ -843,7 +844,43 @@ def test_transcript_still_reads_after_status_clears_dead_active_pointer(tmp_path
     transcript = pm.transcript()
 
     assert status["ok"] is False
+    assert transcript["ok"] is False
+    assert "no active meeting" in transcript["reason"]
+
+
+def test_transcript_can_explicitly_read_finished_meeting_after_status_clears_dead_active_pointer(tmp_path):
+    from plugins.google_meet import process_manager as pm
+
+    out_dir = tmp_path / "abc-defg-hij"
+    out_dir.mkdir()
+    (out_dir / "status.json").write_text(json.dumps({
+        "meetingId": "abc-defg-hij",
+        "exited": True,
+        "leaveReason": "duration_expired",
+    }))
+    (out_dir / "transcript.txt").write_text(
+        "[10:00:00] Alex Rivera: one\n"
+        "[10:00:01] Morgan Lee: two\n",
+        encoding="utf-8",
+    )
+    pm._write_active({
+        "pid": 11111,
+        "meeting_id": "abc-defg-hij",
+        "out_dir": str(out_dir),
+        "url": "https://meet.google.com/abc-defg-hij",
+        "started_at": 0,
+    })
+
+    with patch.object(pm, "_pid_alive", return_value=False):
+        status = pm.status()
+    transcript = pm.transcript(include_finished=True)
+
+    assert status["ok"] is False
     assert transcript["ok"] is True
+    assert transcript["active"] is False
+    assert transcript["fromLast"] is True
+    assert transcript["stale"] is True
+    assert transcript["leaveReason"] == "duration_expired"
     assert transcript["total"] == 2
     assert transcript["lines"][-1].endswith("Morgan Lee: two")
 
@@ -995,6 +1032,42 @@ def test_on_session_end_stops_live_bot():
          patch.object(pm, "stop") as stop_mock:
         _on_session_end()
     stop_mock.assert_called_once_with(reason="session ended")
+
+
+def test_on_session_end_stops_matching_session_bot():
+    from plugins.google_meet import _on_session_end
+    from plugins.google_meet import pm
+
+    with patch.object(
+        pm,
+        "status",
+        return_value={
+            "ok": True,
+            "alive": True,
+            "sessionId": "session-a",
+            "persistAfterSession": False,
+        },
+    ), patch.object(pm, "stop") as stop_mock:
+        _on_session_end(session_id="session-a")
+    stop_mock.assert_called_once_with(reason="session ended")
+
+
+def test_on_session_end_does_not_stop_other_session_bot():
+    from plugins.google_meet import _on_session_end
+    from plugins.google_meet import pm
+
+    with patch.object(
+        pm,
+        "status",
+        return_value={
+            "ok": True,
+            "alive": True,
+            "sessionId": "session-a",
+            "persistAfterSession": False,
+        },
+    ), patch.object(pm, "stop") as stop_mock:
+        _on_session_end(session_id="session-b")
+    stop_mock.assert_not_called()
 
 
 def test_on_session_end_stops_duration_limited_bot_by_default():
@@ -1238,6 +1311,20 @@ def test_meet_join_passes_persist_after_session_only_when_requested():
     assert start_mock.call_args.kwargs["persist_after_session"] is True
 
 
+def test_meet_join_passes_session_id_from_tool_context():
+    from plugins.google_meet.tools import handle_meet_join
+
+    with patch("plugins.google_meet.tools.check_meet_requirements", return_value=True), \
+         patch("plugins.google_meet.tools.pm.start", return_value={"ok": True, "meeting_id": "x-y-z"}) as start_mock:
+        out = json.loads(handle_meet_join(
+            {"url": "https://meet.google.com/abc-defg-hij"},
+            session_id="session-a",
+        ))
+
+    assert out["success"] is True
+    assert start_mock.call_args.kwargs["session_id"] == "session-a"
+
+
 def test_meet_join_honors_explicit_duration():
     from plugins.google_meet.tools import handle_meet_join
 
@@ -1310,6 +1397,82 @@ def test_meet_say_routes_to_node():
     assert out["success"] is True
     assert out["node"] == "my-mac"
     call_mock.assert_called_once_with("hello")
+
+
+def test_node_server_say_rejects_without_active_meeting(tmp_path):
+    from plugins.google_meet.node import protocol as proto
+    from plugins.google_meet.node.server import NodeServer
+
+    server = NodeServer(token_path=tmp_path / "node_token.json")
+    server._token = "tok"
+
+    response = asyncio.run(server._handle_request(
+        proto.make_request("say", "tok", {"text": "hello"})
+    ))
+
+    assert response["type"] == "response"
+    assert response["payload"]["ok"] is False
+    assert "no active meeting" in response["payload"]["reason"]
+
+
+def test_node_server_say_rejects_transcribe_mode(tmp_path):
+    from plugins.google_meet import process_manager as pm
+    from plugins.google_meet.node import protocol as proto
+    from plugins.google_meet.node.server import NodeServer
+
+    out_dir = Path(os.environ["HERMES_HOME"]) / "workspace" / "meetings" / "abc-defg-hij"
+    out_dir.mkdir(parents=True)
+    pm._write_active({
+        "pid": 0,
+        "meeting_id": "abc-defg-hij",
+        "out_dir": str(out_dir),
+        "url": "https://meet.google.com/abc-defg-hij",
+        "started_at": 0,
+        "mode": "transcribe",
+    })
+    server = NodeServer(token_path=tmp_path / "node_token.json")
+    server._token = "tok"
+
+    response = asyncio.run(server._handle_request(
+        proto.make_request("say", "tok", {"text": "hello"})
+    ))
+
+    assert response["type"] == "response"
+    assert response["payload"]["ok"] is False
+    assert "transcribe mode" in response["payload"]["reason"]
+
+
+def test_node_server_say_uses_realtime_queue(tmp_path):
+    from plugins.google_meet import process_manager as pm
+    from plugins.google_meet.node import protocol as proto
+    from plugins.google_meet.node.server import NodeServer
+
+    out_dir = Path(os.environ["HERMES_HOME"]) / "workspace" / "meetings" / "abc-defg-hij"
+    out_dir.mkdir(parents=True)
+    pm._write_active({
+        "pid": 0,
+        "meeting_id": "abc-defg-hij",
+        "out_dir": str(out_dir),
+        "url": "https://meet.google.com/abc-defg-hij",
+        "started_at": 0,
+        "mode": "realtime",
+    })
+    server = NodeServer(token_path=tmp_path / "node_token.json")
+    server._token = "tok"
+
+    response = asyncio.run(server._handle_request(
+        proto.make_request("say", "tok", {"text": "hello"})
+    ))
+
+    assert response["type"] == "response"
+    assert response["payload"]["ok"] is True
+    assert response["payload"]["enqueued_id"]
+    queued = [
+        json.loads(line)
+        for line in (out_dir / "say_queue.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert queued == [{"id": response["payload"]["enqueued_id"], "text": "hello"}]
 
 
 def test_meet_join_auto_node_selects_sole_registered():
@@ -1687,6 +1850,20 @@ def test_classify_meet_ui_marks_return_home_denial_terminal():
     assert result["terminalDenied"] is True
 
 
+def test_classify_meet_ui_preserves_in_call_signal_with_transient_call_error():
+    from plugins.google_meet.meet_bot import _classify_meet_ui
+
+    result = _classify_meet_ui(
+        "Couldn't start the video call because of an error Meeting details",
+        leave=True,
+        in_call_control=True,
+        url="https://meet.google.com/abc-defg-hij",
+    )
+
+    assert result["callError"] is True
+    assert result["inCall"] is True
+
+
 def test_compute_meet_phase_marks_join_attempt_as_stalled(tmp_path):
     from plugins.google_meet.meet_bot import _BotState, _compute_meet_phase
 
@@ -1928,6 +2105,43 @@ def test_apply_admission_probe_tolerates_single_transient_call_error(tmp_path):
     assert state.leave_reason is None
     assert state.phase != "exited"
     assert state.call_error_strikes == 1
+
+
+def test_apply_admission_probe_keeps_call_alive_when_error_overlay_still_has_in_call_controls(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _apply_admission_probe
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+    state.set(join_attempted_at=100.0, in_call=True, joined_at=105.0)
+
+    terminal = False
+    for now in (110.0, 113.0, 116.0, 119.0):
+        admitted, terminal = _apply_admission_probe(
+            state,
+            {
+                "inCall": True,
+                "callError": True,
+                "waitingLobby": False,
+                "denied": False,
+                "preJoin": False,
+                "text": "Couldn't start the video call because of an error Meeting details",
+                "url": "https://meet.google.com/abc-defg-hij",
+            },
+            now=now,
+            lobby_deadline=400.0,
+            call_error_strike_limit=3,
+        )
+        assert admitted is True
+
+    assert terminal is False
+    assert state.in_call is True
+    assert state.joined_at == 105.0
+    assert state.leave_reason is None
+    assert state.phase != "exited"
+    assert state.call_error_strikes == 0
 
 
 def test_apply_admission_probe_resets_call_error_strikes_when_cleared(tmp_path):
@@ -2505,7 +2719,7 @@ def test_retry_caption_enable_does_not_report_captioning_without_verification(tm
 
     status = json.loads((tmp_path / "meet" / "status.json").read_text())
     assert status["captioning"] is False
-    assert status["captionsEnabledAttempted"] is False
+    assert status["captionsEnabledAttempted"] is True
 
 
 def test_retry_caption_enable_does_not_report_captioning_without_success(tmp_path):

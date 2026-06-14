@@ -1092,6 +1092,7 @@ def _retry_caption_enable(page, state: _BotState) -> bool:
 
     attempted = _enable_captions(page, allow_shortcut=state.in_call)
     if attempted:
+        state.set(captions_enabled_attempted=True)
         _wait_for_ui(page, 500)
         if _captions_are_enabled(page):
             state.set(captioning=True, captions_enabled_attempted=True)
@@ -1103,6 +1104,7 @@ def _retry_caption_enable(page, state: _BotState) -> bool:
         except Exception:
             pass
         if attempted:
+            state.set(captions_enabled_attempted=True)
             _wait_for_ui(page, 500)
     if not attempted or not _captions_are_enabled(page):
         return False
@@ -1145,10 +1147,10 @@ def _apply_admission_probe(
     # frequently transient and can flash while the call is healthy. Treating a
     # single observation as fatal kills live sessions, but treating a
     # false-positive admission as proof of health leaves status stuck at
-    # ``in_call`` on an error page. Only caption/transcript evidence proves that
-    # a persistent call-error overlay is safe to ignore.
+    # ``in_call`` on an error page. In-call controls or caption/transcript
+    # evidence prove that a persistent call-error overlay is safe to ignore.
     has_caption_evidence = bool(state.last_caption_at or state.transcript_lines > 0)
-    if not ui_probe.get("callError") or has_caption_evidence:
+    if not ui_probe.get("callError") or ui_probe.get("inCall") or has_caption_evidence:
         state.call_error_strikes = 0
     elif state.join_attempted_at:
         state.call_error_strikes += 1
@@ -1828,7 +1830,7 @@ def _classify_meet_ui(
         or re.search(r"do you want people to see and hear you", text, re.IGNORECASE)
     )
     in_call = bool(leave or caption_region or in_call_control or in_call_text)
-    in_call = in_call and not (waiting_lobby or denied or pre_join or call_error or landing)
+    in_call = in_call and not (waiting_lobby or denied or pre_join or landing)
     return {
         "inCall": in_call,
         "waitingLobby": waiting_lobby,

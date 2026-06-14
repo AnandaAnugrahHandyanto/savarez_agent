@@ -78,6 +78,7 @@ class NodeClient:
         persist_after_session: bool = False,
         headed: bool = False,
         mode: str = "transcribe",
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "url": url,
@@ -88,6 +89,8 @@ class NodeClient:
         }
         if duration is not None:
             payload["duration"] = duration
+        if session_id:
+            payload["session_id"] = session_id
         return self._rpc("start_bot", payload)
 
     def stop(self) -> Dict[str, Any]:
@@ -96,10 +99,12 @@ class NodeClient:
     def status(self) -> Dict[str, Any]:
         return self._rpc("status", {})
 
-    def transcript(self, last: Optional[int] = None) -> Dict[str, Any]:
+    def transcript(self, last: Optional[int] = None, include_finished: bool = False) -> Dict[str, Any]:
         payload: Dict[str, Any] = {}
         if last is not None:
             payload["last"] = int(last)
+        if include_finished:
+            payload["include_finished"] = True
         return self._rpc("transcript", payload)
 
     def say(self, text: str) -> Dict[str, Any]:
