@@ -419,11 +419,12 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
-        # Bot API 10.1 Rich Messages: send final replies via sendRichMessage
-        # with the raw agent markdown so tables/task lists/etc. render natively.
-        # Latched off after a capability failure on sendRichMessage /
-        # sendRichMessageDraft (e.g. older python-telegram-bot without the
-        # endpoint) so later sends skip the doomed rich attempt entirely.
+        # Bot API 10.1 Rich Messages remain opt-in for Telegram because
+        # Telegram Web still cannot render them reliably for normal replies.
+        # When explicitly enabled, final replies use sendRichMessage with the
+        # raw agent markdown so tables/task lists/etc. render natively.
+        # Capability failures still latch the rich path off for the rest of
+        # the adapter lifetime so later sends skip the doomed roundtrip.
         self._rich_send_disabled: bool = False
         self._rich_draft_disabled: bool = False
         # Buffer rapid/album photo updates so Telegram image bursts are handled
@@ -950,11 +951,16 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return inspect.iscoroutinefunction(getattr(self._bot, "do_api_request", None))
 
+    def _rich_messages_enabled(self) -> bool:
+        """Rich Telegram replies are opt-in until Web clients catch up."""
+        return self._coerce_bool_extra("rich_messages", False)
+
     def _should_attempt_rich(
         self, content: str, metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
         return bool(
-            not getattr(self, "_rich_send_disabled", False)
+            self._rich_messages_enabled()
+            and not getattr(self, "_rich_send_disabled", False)
             and not (metadata or {}).get("expect_edits")
             and content
             and content.strip()
@@ -977,9 +983,9 @@ class TelegramAdapter(BasePlatformAdapter):
         ``metadata`` is intentionally ignored: the preview was sent with
         ``expect_edits=True`` (to stay on the editable path mid-stream), but the
         FINAL answer is a brand-new message that should render rich.  Gating
-        otherwise matches :meth:`_should_attempt_rich`: rich not latched off,
-        content present and within the rich character limit, and the bot exposes
-        an async ``do_api_request``.
+        otherwise matches :meth:`_should_attempt_rich`: rich explicitly
+        enabled, not latched off, content present and within the rich
+        character limit, and the bot exposes an async ``do_api_request``.
         """
         return self._should_attempt_rich(content)
 
@@ -989,13 +995,14 @@ class TelegramAdapter(BasePlatformAdapter):
         ``sendRichMessageDraft`` isn't fragmented at the 4,096 MarkdownV2 limit.
 
         Gated on the same rich capability as the send path (minus the
-        content-length check — raising that cap is the whole point): rich not
-        latched off and the bot exposes an async ``do_api_request``.  Returns
-        ``None`` (→ legacy 4,096 limit) when rich isn't available, so non-rich
-        streams split exactly as before.
+        content-length check — raising that cap is the whole point): rich
+        explicitly enabled, not latched off, and the bot exposes an async
+        ``do_api_request``.  Returns ``None`` (→ legacy 4,096 limit) when rich
+        isn't available, so non-rich streams split exactly as before.
         """
         if (
-            not getattr(self, "_rich_send_disabled", False)
+            self._rich_messages_enabled()
+            and not getattr(self, "_rich_send_disabled", False)
             and self._bot_supports_rich()
         ):
             return self.RICH_MESSAGE_MAX_CHARS
@@ -1184,7 +1191,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _should_attempt_rich_draft(self, content: str) -> bool:
         return bool(
-            not getattr(self, "_rich_send_disabled", False)
+            self._rich_messages_enabled()
+            and not getattr(self, "_rich_send_disabled", False)
             and not getattr(self, "_rich_draft_disabled", False)
             and content
             and content.strip()
