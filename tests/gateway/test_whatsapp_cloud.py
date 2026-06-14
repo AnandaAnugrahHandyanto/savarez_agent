@@ -1481,6 +1481,58 @@ class TestCallingSidecarClient:
         assert len(dispatched_pcm) == len(speech) + len(silence)
 
     @pytest.mark.asyncio
+    async def test_calling_sidecar_audio_loop_backs_off_after_empty_drain(
+        self,
+        monkeypatch,
+    ):
+        from gateway.platforms.whatsapp_cloud import (
+            CALLING_AUDIO_CONTRACT,
+            CALLING_SIDECAR_EMPTY_DRAIN_BACKOFF_SECONDS,
+            CallingSidecarAudio,
+        )
+
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._calling_sidecar_call_ids.add("call-1")
+        adapter._dispatch_calling_sidecar_pcm = AsyncMock()
+        adapter._clear_calling_sidecar_audio = AsyncMock()
+        sleeps = []
+        responses = [
+            CallingSidecarAudio(
+                call_id="call-1",
+                pcm_s16le=b"",
+                returned_bytes=0,
+                queued_rx_bytes=0,
+                audio=dict(CALLING_AUDIO_CONTRACT),
+            )
+        ]
+
+        async def receive(_call_id):
+            if responses:
+                return responses.pop(0)
+            adapter._calling_sidecar_call_ids.discard("call-1")
+            return None
+
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+            adapter._calling_sidecar_call_ids.discard("call-1")
+
+        monkeypatch.setattr(
+            "gateway.platforms.whatsapp_cloud.asyncio.sleep",
+            fake_sleep,
+        )
+        adapter._receive_calling_sidecar_audio = receive
+
+        await adapter._run_calling_sidecar_audio_loop(
+            "call-1",
+            "13557825698",
+            "Jessica Laverdetman",
+        )
+
+        assert sleeps == [CALLING_SIDECAR_EMPTY_DRAIN_BACKOFF_SECONDS]
+        adapter._dispatch_calling_sidecar_pcm.assert_not_awaited()
+        adapter._clear_calling_sidecar_audio.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_close_calling_sidecar_session_posts_close(self):
         adapter = _make_adapter(
             calling_sidecar_url="http://127.0.0.1:8787",

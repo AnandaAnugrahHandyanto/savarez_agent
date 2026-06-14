@@ -135,6 +135,7 @@ CALLING_PCM_MIN_DISPATCH_BYTES = (
     CALLING_PCM_SAMPLE_RATE * CALLING_PCM_CHANNELS * CALLING_PCM_BYTES_PER_SAMPLE // 4
 )
 CALLING_PCM_TRAILING_SILENCE_POLLS = 2
+CALLING_SIDECAR_EMPTY_DRAIN_BACKOFF_SECONDS = 0.05
 CALLING_AUDIO_CONTRACT = {
     "sample_rate": CALLING_PCM_SAMPLE_RATE,
     "channels": CALLING_PCM_CHANNELS,
@@ -1707,6 +1708,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         buffer.clear()
                         silent_polls = 0
                         cleared_outbound_for_segment = False
+                await asyncio.sleep(CALLING_SIDECAR_EMPTY_DRAIN_BACKOFF_SECONDS)
         except asyncio.CancelledError:
             raise
         except Exception:
