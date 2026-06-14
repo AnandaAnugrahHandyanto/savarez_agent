@@ -429,6 +429,18 @@ class TestCallingSidecarClient:
                         "encoding": "pcm_s16le",
                         "frame_bytes": 1920,
                     },
+                    "payloads": {
+                        "offer_request": {
+                            "call_id": "Required call session identifier from the WhatsApp Calling webhook.",
+                            "sdp": "Required remote SDP offer from WhatsApp.",
+                        },
+                        "offer_response": {
+                            "sdp": "Local SDP answer to pass unchanged to WhatsApp pre_accept and accept actions.",
+                        },
+                        "call_state": {
+                            "queued_rx_bytes": "Inbound decoded PCM bytes queued for Hermes to drain.",
+                        },
+                    },
                 },
             )
         )
@@ -442,6 +454,9 @@ class TestCallingSidecarClient:
         assert contract["audio"]["max_drain_wait_ms"] == 5000
         assert contract["audio"]["max_outbound_queue_bytes"] == 960000
         assert contract["audio"]["max_inbound_queue_bytes"] == 960000
+        assert contract["payloads"]["offer_request"]["call_id"].startswith("Required")
+        assert "pre_accept" in contract["payloads"]["offer_response"]["sdp"]
+        assert "queued_rx_bytes" in contract["payloads"]["call_state"]
         call = adapter._http_client.get.call_args
         assert call.args[0] == "http://127.0.0.1:8787/contract"
         assert call.kwargs["timeout"] == 2.5
