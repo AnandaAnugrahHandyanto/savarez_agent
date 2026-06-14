@@ -1453,6 +1453,19 @@ def run_calling_live_sidecar_smoke(
         )
     if result.get("sidecar_ready_for_accept") is not True:
         raise SystemExit(f"calling live-sidecar smoke sidecar was not ready: {result}")
+    readiness = result.get("sidecar_readiness")
+    if not isinstance(readiness, dict):
+        raise SystemExit(
+            f"calling live-sidecar smoke did not report readiness checks: {result}"
+        )
+    failed_readiness = sorted(
+        str(key) for key, value in readiness.items() if value is not True
+    )
+    if failed_readiness:
+        raise SystemExit(
+            "calling live-sidecar smoke readiness checks failed: "
+            + ", ".join(failed_readiness)
+        )
     statuses = result.get("webhook_statuses")
     if not isinstance(statuses, dict) or statuses.get("connect") != 200 or statuses.get(
         "terminate"
@@ -1469,6 +1482,31 @@ def run_calling_live_sidecar_smoke(
         ) from exc
     if outbound_bytes <= 0 or inbound_bytes <= 0:
         raise SystemExit(f"calling live-sidecar smoke did not move audio: {result}")
+    clear_audio = result.get("clear_audio")
+    if not isinstance(clear_audio, dict):
+        raise SystemExit(
+            f"calling live-sidecar smoke did not report clear audio telemetry: {result}"
+        )
+    if clear_audio.get("skipped"):
+        raise SystemExit(
+            f"calling live-sidecar smoke skipped clear audio endpoint: {result}"
+        )
+    try:
+        queued_after_clear = int(clear_audio.get("queued_tx_bytes"))
+        dropped_tx_bytes = int(clear_audio.get("dropped_tx_bytes"))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            f"calling live-sidecar smoke returned invalid clear audio telemetry: {result}"
+        ) from exc
+    if queued_after_clear != 0 or dropped_tx_bytes < 0:
+        raise SystemExit(
+            f"calling live-sidecar smoke did not clear outbound audio: {result}"
+        )
+    close = result.get("sidecar_close")
+    if not isinstance(close, dict) or close.get("closed") is not True:
+        raise SystemExit(
+            f"calling live-sidecar smoke did not close sidecar cleanly: {result}"
+        )
     return result
 
 

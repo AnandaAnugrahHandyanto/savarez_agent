@@ -1064,6 +1064,31 @@ def test_run_calling_sidecar_offer_smoke_rejects_failed_readiness(monkeypatch):
         )
 
 
+def _successful_live_sidecar_result(**overrides):
+    result = {
+        "success": True,
+        "graph_actions": ["pre_accept", "accept"],
+        "sidecar_ready_for_accept": True,
+        "sidecar_readiness": {
+            "not_closed": True,
+            "local_sdp_answer": True,
+            "signaling_stable": True,
+            "ice_gathering_complete": True,
+            "outbound_audio_track": True,
+        },
+        "webhook_statuses": {"connect": 200, "terminate": 200},
+        "outbound_webrtc_bytes": 23040,
+        "inbound_drain_bytes": 1920,
+        "clear_audio": {
+            "dropped_tx_bytes": 1920,
+            "queued_tx_bytes": 0,
+        },
+        "sidecar_close": {"closed": True},
+    }
+    result.update(overrides)
+    return result
+
+
 def test_run_calling_live_sidecar_smoke_uses_live_root_imports(
     tmp_path: Path,
     monkeypatch,
@@ -1082,16 +1107,7 @@ def test_run_calling_live_sidecar_smoke_uses_live_root_imports(
         return subprocess.CompletedProcess(
             command,
             0,
-            stdout=json.dumps(
-                {
-                    "success": True,
-                    "graph_actions": ["pre_accept", "accept"],
-                    "sidecar_ready_for_accept": True,
-                    "webhook_statuses": {"connect": 200, "terminate": 200},
-                    "outbound_webrtc_bytes": 23040,
-                    "inbound_drain_bytes": 1920,
-                }
-            ),
+            stdout=json.dumps(_successful_live_sidecar_result()),
             stderr="",
         )
 
@@ -1133,14 +1149,7 @@ def test_run_calling_live_sidecar_smoke_rejects_missing_audio(monkeypatch, tmp_p
             command,
             0,
             stdout=json.dumps(
-                {
-                    "success": True,
-                    "graph_actions": ["pre_accept", "accept"],
-                    "sidecar_ready_for_accept": True,
-                    "webhook_statuses": {"connect": 200, "terminate": 200},
-                    "outbound_webrtc_bytes": 0,
-                    "inbound_drain_bytes": 1920,
-                }
+                _successful_live_sidecar_result(outbound_webrtc_bytes=0)
             ),
             stderr="",
         )
@@ -1148,6 +1157,96 @@ def test_run_calling_live_sidecar_smoke_rejects_missing_audio(monkeypatch, tmp_p
     monkeypatch.setattr(script.subprocess, "run", fake_run)
 
     with pytest.raises(SystemExit, match="did not move audio"):
+        script.run_calling_live_sidecar_smoke(
+            python_bin="/tmp/voice-webrtc-venv/bin/python",
+            live_root=tmp_path,
+            hermes_home=tmp_path,
+            voice_repo=tmp_path,
+            sidecar_url=None,
+            timeout=12,
+        )
+
+
+def test_run_calling_live_sidecar_smoke_rejects_missing_readiness(
+    monkeypatch,
+    tmp_path,
+):
+    script = _load_script_module()
+
+    def fake_run(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                _successful_live_sidecar_result(sidecar_readiness=None)
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(script.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit, match="did not report readiness"):
+        script.run_calling_live_sidecar_smoke(
+            python_bin="/tmp/voice-webrtc-venv/bin/python",
+            live_root=tmp_path,
+            hermes_home=tmp_path,
+            voice_repo=tmp_path,
+            sidecar_url=None,
+            timeout=12,
+        )
+
+
+def test_run_calling_live_sidecar_smoke_rejects_uncleared_audio(
+    monkeypatch,
+    tmp_path,
+):
+    script = _load_script_module()
+
+    def fake_run(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                _successful_live_sidecar_result(
+                    clear_audio={
+                        "dropped_tx_bytes": 0,
+                        "queued_tx_bytes": 1920,
+                    }
+                )
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(script.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit, match="did not clear outbound audio"):
+        script.run_calling_live_sidecar_smoke(
+            python_bin="/tmp/voice-webrtc-venv/bin/python",
+            live_root=tmp_path,
+            hermes_home=tmp_path,
+            voice_repo=tmp_path,
+            sidecar_url=None,
+            timeout=12,
+        )
+
+
+def test_run_calling_live_sidecar_smoke_rejects_missing_close(
+    monkeypatch,
+    tmp_path,
+):
+    script = _load_script_module()
+
+    def fake_run(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(_successful_live_sidecar_result(sidecar_close=None)),
+            stderr="",
+        )
+
+    monkeypatch.setattr(script.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit, match="did not close sidecar cleanly"):
         script.run_calling_live_sidecar_smoke(
             python_bin="/tmp/voice-webrtc-venv/bin/python",
             live_root=tmp_path,
@@ -1688,11 +1787,7 @@ def test_main_runs_calling_live_sidecar_smoke_when_requested(
         assert kwargs["live_root"] == live_root.resolve()
         assert kwargs["voice_repo"] == voice_repo.resolve()
         assert kwargs["sidecar_url"] is None
-        return {
-            "success": True,
-            "graph_actions": ["pre_accept", "accept"],
-            "sidecar_ready_for_accept": True,
-        }
+        return _successful_live_sidecar_result()
 
     monkeypatch.setattr(
         script,
@@ -1783,11 +1878,7 @@ def test_main_passes_calling_sidecar_url_to_live_sidecar_smoke(
 
     def fake_live_sidecar_smoke(**kwargs):
         assert kwargs["sidecar_url"] == sidecar_url
-        return {
-            "success": True,
-            "graph_actions": ["pre_accept", "accept"],
-            "sidecar_ready_for_accept": True,
-        }
+        return _successful_live_sidecar_result()
 
     monkeypatch.setattr(
         script,

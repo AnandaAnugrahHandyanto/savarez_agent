@@ -141,6 +141,7 @@ class RecordingHybridHttpClient:
         self.session = ClientSession()
         self.requests: list[dict[str, Any]] = []
         self.sidecar_offer_response: dict[str, Any] | None = None
+        self.sidecar_close_responses: list[dict[str, Any]] = []
 
     async def aclose(self) -> None:
         await self.session.close()
@@ -177,6 +178,12 @@ class RecordingHybridHttpClient:
                     body = {"raw": text}
             if method == "POST" and url == f"{self.sidecar_url}/offer":
                 self.sidecar_offer_response = body
+            if (
+                method == "POST"
+                and url.startswith(f"{self.sidecar_url}/calls/")
+                and url.endswith("/close")
+            ):
+                self.sidecar_close_responses.append(body)
             return RecordedResponse(response.status, body)
 
         return RecordedResponse(404, {"error": "not found"})
@@ -432,6 +439,37 @@ async def run_live_sidecar_smoke(args: argparse.Namespace) -> dict[str, Any]:
             timeout_s=args.timeout,
         )
 
+        clear_probe = await adapter._send_calling_sidecar_audio(  # noqa: SLF001
+            args.call_id,
+            pcm_frame(sidecar, sample=14_000),
+            sequence=1,
+        )
+        if not clear_probe.success:
+            raise RuntimeError(
+                f"sidecar clear probe audio send failed: {clear_probe}"
+            )
+        clear_result = await adapter._clear_calling_sidecar_audio(  # noqa: SLF001
+            args.call_id,
+        )
+        if not clear_result.success:
+            raise RuntimeError(f"sidecar clear audio failed: {clear_result}")
+        clear_body = clear_result.raw_response
+        if not isinstance(clear_body, dict):
+            raise RuntimeError(f"sidecar clear response was not an object: {clear_body}")
+        if clear_body.get("skipped"):
+            raise RuntimeError(f"sidecar clear endpoint was skipped: {clear_body}")
+        try:
+            queued_after_clear = int(clear_body.get("queued_tx_bytes"))
+            dropped_tx_bytes = int(clear_body.get("dropped_tx_bytes"))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"sidecar clear response missing byte telemetry: {clear_body}"
+            ) from exc
+        if queued_after_clear != 0 or dropped_tx_bytes < 0:
+            raise RuntimeError(
+                f"sidecar clear response did not drain outbound queue: {clear_body}"
+            )
+
         actions = graph_actions(http_client.requests, graph_calls_url)
         if actions[:2] != ["pre_accept", "accept"]:
             raise RuntimeError(f"expected pre_accept, accept; got {actions}")
@@ -471,6 +509,13 @@ async def run_live_sidecar_smoke(args: argparse.Namespace) -> dict[str, Any]:
         ]
         if not close_requests:
             raise RuntimeError("Hermes did not close the real sidecar call session")
+        sidecar_close = (
+            http_client.sidecar_close_responses[-1]
+            if http_client.sidecar_close_responses
+            else None
+        )
+        if not isinstance(sidecar_close, dict) or sidecar_close.get("closed") is not True:
+            raise RuntimeError(f"sidecar close did not report closed=true: {sidecar_close}")
 
         return {
             "success": True,
@@ -487,12 +532,15 @@ async def run_live_sidecar_smoke(args: argparse.Namespace) -> dict[str, Any]:
             },
             "sidecar_offer_url": f"{sidecar_url}/offer",
             "sidecar_close_url": close_requests[-1]["url"],
+            "sidecar_close": sidecar_close,
             "sidecar_ready_for_accept": sidecar_state["ready_for_accept"],
             "sidecar_readiness": sidecar_state.get("readiness"),
             "outbound_webrtc_bytes": outbound_webrtc_bytes,
             "inbound_drain_bytes": inbound_audio.returned_bytes,
             "queued_rx_ms": inbound_audio.queued_rx_ms,
             "sent_audio": outbound_result.raw_response,
+            "clear_probe": clear_probe.raw_response,
+            "clear_audio": clear_body,
             "audio": sidecar.audio_contract(),
         }
     finally:
