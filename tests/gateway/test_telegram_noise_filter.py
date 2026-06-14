@@ -31,6 +31,19 @@ def test_non_telegram_status_is_unchanged():
     assert _prepare_gateway_status_message("local", "lifecycle", message) == message
 
 
+def test_slack_suppresses_codex_gpt55_autoraise_notice():
+    """Slack should not receive per-session Codex compression config notices."""
+    notice = (
+        "ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised "
+        "to 85% (from 50%) to use more of the window before summarizing.\n"
+        "  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
+    )
+
+    assert _prepare_gateway_status_message(Platform.SLACK, "lifecycle", notice) is None
+    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", notice) == notice
+    assert _prepare_gateway_status_message("local", "lifecycle", notice) == notice
+
+
 def test_telegram_status_sanitizes_raw_provider_security_errors():
     """Provider policy/security bodies should be replaced before chat delivery."""
     raw = (

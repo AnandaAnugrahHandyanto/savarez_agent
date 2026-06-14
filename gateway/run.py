@@ -87,6 +87,13 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_SLACK_NOISY_STATUS_RE = re.compile(
+    r"codex\s+gpt-5\.5\s+caps\s+context\s+at\s+272k.*"
+    r"auto-compaction\s+was\s+raised.*"
+    r"compression\.codex_gpt55_autoraise\s+false",
+    re.IGNORECASE | re.DOTALL,
+)
+
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
     r"api\s+(?:call\s+)?failed"
@@ -363,7 +370,12 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
-    if _gateway_platform_value(platform) != "telegram":
+
+    platform_value = _gateway_platform_value(platform)
+    if platform_value == "slack" and _SLACK_NOISY_STATUS_RE.search(text):
+        return None
+
+    if platform_value != "telegram":
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
