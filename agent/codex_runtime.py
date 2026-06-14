@@ -422,6 +422,7 @@ def _consume_codex_event_stream(
     """
     collected_output_items: List[Any] = []
     collected_text_deltas: List[str] = []
+    collected_reasoning_deltas: List[str] = []
     has_tool_calls = False
     first_delta_fired = False
     terminal_status: str = "completed"
@@ -482,11 +483,13 @@ def _consume_codex_event_stream(
 
         if "reasoning" in event_type and "delta" in event_type:
             reasoning_text = _event_field(event, "delta", "")
-            if reasoning_text and on_reasoning_delta is not None:
-                try:
-                    on_reasoning_delta(reasoning_text)
-                except Exception:
-                    logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
+            if reasoning_text:
+                collected_reasoning_deltas.append(reasoning_text)
+                if on_reasoning_delta is not None:
+                    try:
+                        on_reasoning_delta(reasoning_text)
+                    except Exception:
+                        logger.debug("Codex stream on_reasoning_delta raised", exc_info=True)
             continue
 
         if event_type == "response.output_item.done":
@@ -531,6 +534,8 @@ def _consume_codex_event_stream(
     # Build the final output list.  Prefer items observed via output_item.done;
     # if none arrived but we streamed plain text deltas (no tool calls), synthesize
     # a single message item so downstream normalization has something to work with.
+    # Reasoning-only streams also need a concrete reasoning item; otherwise the
+    # normalizer sees an empty output and raises before it can continue the turn.
     if collected_output_items:
         output = list(collected_output_items)
     elif collected_text_deltas and not has_tool_calls:
@@ -541,6 +546,13 @@ def _consume_codex_event_stream(
             status="completed",
             content=[SimpleNamespace(type="output_text", text=assembled)],
         )]
+    elif collected_reasoning_deltas:
+        reasoning_text = "".join(collected_reasoning_deltas).strip()
+        output = [SimpleNamespace(
+            type="reasoning",
+            status="completed",
+            summary=[SimpleNamespace(type="summary_text", text=reasoning_text)],
+        )] if reasoning_text else []
     else:
         output = []
 
