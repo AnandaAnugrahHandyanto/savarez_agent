@@ -35,6 +35,8 @@ import { ChatSidebar } from "@/components/ChatSidebar";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
+import { GatewayClient } from "@/lib/gatewayClient";
+import { useImageAttachment } from "@/hooks/useImageAttachment";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
@@ -124,6 +126,26 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // the moment `isActive` flips back to true (display:none → display:flex
   // collapses the host's box, so ResizeObserver never fires on return).
   const syncMetricsRef = useRef<(() => void) | null>(null);
+
+  // GatewayClient for image attachment — shared with ChatSidebar so both
+  // operate on the same JSON-RPC sidecar connection.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const gwRef = useRef(new GatewayClient());
+  const [sidebarSessionId, setSidebarSessionId] = useState<string | null>(null);
+
+  // Image paste / drop support — intercepts clipboard paste and drag-and-drop
+  // on the terminal host, then calls image.attach_bytes via the sidebar's
+  // GatewayClient so the agent can see images inline (native vision).
+  const { attachedImages, clearAttached } = useImageAttachment({
+    hostRef,
+    gw: gwRef.current,
+    sessionId: sidebarSessionId,
+  });
+
+  const handleSessionInfo = useCallback(
+    (sessionId: string) => setSidebarSessionId(sessionId),
+    [],
+  );
   const [searchParams, setSearchParams] = useSearchParams();
   // Lazy-init: the missing-token check happens at construction so the effect
   // body doesn't have to setState (React 19's set-state-in-effect rule).
@@ -726,6 +748,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
   }, [channel, resumeParam, scopedProfile]);
 
+  // Clean up the GatewayClient on unmount.
+  useEffect(() => {
+    return () => {
+      gwRef.current.close();
+    };
+  }, []);
+
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
   // ResizeObserver won't fire on that kind of style-driven box change —
@@ -861,7 +890,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "border-t border-current/10",
             )}
           >
-            <ChatSidebar channel={channel} />
+            <ChatSidebar
+              channel={channel}
+              gw={gwRef.current}
+              onSessionInfo={handleSessionInfo}
+            />
           </div>
         </div>
       </>,
@@ -919,6 +952,32 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               </span>
             </span>
           </Button>
+
+          {attachedImages.length > 0 && (
+            <div
+              className={cn(
+                "absolute z-10",
+                "normal-case tracking-normal font-normal",
+                "rounded border border-current/30",
+                "bg-black/20 backdrop-blur-sm",
+                "opacity-90 hover:opacity-100",
+                "transition-opacity duration-150",
+                "bottom-2 left-2 px-2 py-1 text-xs sm:bottom-3 sm:left-3 sm:px-2.5 sm:py-1.5",
+                "lg:bottom-4 lg:left-4",
+                "cursor-pointer select-none",
+              )}
+              style={{ color: "#88cc88" }}
+              title={attachedImages.map((i) => i.name).join(", ")}
+              onClick={clearAttached}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                📎 {attachedImages.length} image
+                {attachedImages.length > 1 ? "s" : ""} attached — will be
+                sent with next message
+                <span className="opacity-60 ml-1">(click to clear)</span>
+              </span>
+            </div>
+          )}
         </div>
 
         {!narrow && (
@@ -929,7 +988,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-80"
           >
             <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatSidebar channel={channel} />
+              <ChatSidebar
+                channel={channel}
+                gw={gwRef.current}
+                onSessionInfo={handleSessionInfo}
+              />
             </div>
           </div>
         )}

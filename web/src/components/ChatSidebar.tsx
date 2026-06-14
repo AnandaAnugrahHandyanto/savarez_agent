@@ -72,16 +72,28 @@ const STATE_TONE: Record<
 interface ChatSidebarProps {
   channel: string;
   className?: string;
+  /** Pre-created GatewayClient. When omitted the sidebar creates its own. */
+  gw?: GatewayClient;
+  /** Called when the session_id changes (from session.info or session.create). */
+  onSessionInfo?: (sessionId: string) => void;
 }
 
-export function ChatSidebar({ channel, className }: ChatSidebarProps) {
+export function ChatSidebar({
+  channel,
+  className,
+  gw: externalGw,
+  onSessionInfo,
+}: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
   // counter is the dependency on purpose — it's not read in the memo body,
   // it's the signal that says "rebuild the client".
   const [version, setVersion] = useState(0);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const gw = useMemo(() => new GatewayClient(), [version]);
+  const gw = useMemo(
+    () => externalGw ?? new GatewayClient(),
+    [version, externalGw],
+  );
 
   const [state, setState] = useState<ConnectionState>("idle");
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -97,6 +109,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
     const offSessionInfo = gw.on<SessionInfo>("session.info", (ev) => {
       if (ev.session_id) {
         setSessionId(ev.session_id);
+        onSessionInfo?.(ev.session_id);
       }
 
       if (ev.payload) {
@@ -143,9 +156,13 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
       offState();
       offSessionInfo();
       offError();
-      gw.close();
+      // Only close the GatewayClient if we created it ourselves.
+      // An externally-provided client is owned by the caller.
+      if (!externalGw) {
+        gw.close();
+      }
     };
-  }, [gw]);
+  }, [gw, externalGw, onSessionInfo]);
 
   // Event subscriber WebSocket — receives the rebroadcast of every
   // dispatcher emit from the PTY child's gateway.  See /api/pub +
