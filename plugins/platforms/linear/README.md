@@ -42,6 +42,19 @@ POST /linear/agent-sessions
 
 The adapter validates `Linear-Signature` as HMAC-SHA256 over the raw request body using `LINEAR_WEBHOOK_SECRET`, uses `Linear-Delivery` for idempotency, acknowledges accepted and duplicate events with HTTP 200, and processes the agent turn in the background.
 
+For a local gateway, expose the endpoint through a durable public HTTPS URL
+such as Tailscale Funnel or a hosted reverse proxy. Configure this URL in the
+Linear Agent/OAuth app settings, not the generic workspace webhook API:
+
+```text
+https://<public-host>/linear/agent-sessions
+```
+
+The generic Linear workspace webhook API accepts resources such as issues and
+comments, but it does not accept AgentSession events. Do not rely on a fallback
+poller or replay script for normal operation; those can hide broken app
+delivery and should be treated as short-lived rescue tools only.
+
 ## Mapping
 
 Each Linear AgentSession maps to one Hermes DM session:
