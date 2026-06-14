@@ -114,6 +114,9 @@ CALLING_PCM_MAX_DRAIN_WAIT_MS = 5_000
 CALLING_PCM_MAX_OUTBOUND_QUEUE_BYTES = (
     CALLING_PCM_SAMPLE_RATE * CALLING_PCM_CHANNELS * CALLING_PCM_BYTES_PER_SAMPLE * 10
 )
+CALLING_PCM_MAX_INBOUND_QUEUE_BYTES = (
+    CALLING_PCM_SAMPLE_RATE * CALLING_PCM_CHANNELS * CALLING_PCM_BYTES_PER_SAMPLE * 10
+)
 CALLING_PCM_ENCODING = "pcm_s16le"
 CALLING_AUDIO_CONTRACT = {
     "sample_rate": CALLING_PCM_SAMPLE_RATE,
@@ -126,6 +129,7 @@ CALLING_AUDIO_CONTRACT = {
     "default_drain_bytes": CALLING_PCM_DEFAULT_DRAIN_BYTES,
     "max_drain_wait_ms": CALLING_PCM_MAX_DRAIN_WAIT_MS,
     "max_outbound_queue_bytes": CALLING_PCM_MAX_OUTBOUND_QUEUE_BYTES,
+    "max_inbound_queue_bytes": CALLING_PCM_MAX_INBOUND_QUEUE_BYTES,
 }
 GRAPH_API_BASE = "https://graph.facebook.com"
 # Meta retries failed webhooks for up to 7 days. We don't need to remember
@@ -232,6 +236,10 @@ def _normalize_calling_audio_contract(audio: Dict[str, Any]) -> Dict[str, Any]:
     normalized.setdefault(
         "max_outbound_queue_bytes",
         CALLING_PCM_MAX_OUTBOUND_QUEUE_BYTES,
+    )
+    normalized.setdefault(
+        "max_inbound_queue_bytes",
+        CALLING_PCM_MAX_INBOUND_QUEUE_BYTES,
     )
     return normalized
 

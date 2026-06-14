@@ -441,6 +441,7 @@ class TestCallingSidecarClient:
         assert contract["audio"]["default_drain_bytes"] == 96000
         assert contract["audio"]["max_drain_wait_ms"] == 5000
         assert contract["audio"]["max_outbound_queue_bytes"] == 960000
+        assert contract["audio"]["max_inbound_queue_bytes"] == 960000
         call = adapter._http_client.get.call_args
         assert call.args[0] == "http://127.0.0.1:8787/contract"
         assert call.kwargs["timeout"] == 2.5
