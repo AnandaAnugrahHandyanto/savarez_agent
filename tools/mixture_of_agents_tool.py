@@ -237,6 +237,8 @@ async def _run_aggregator_model(
         logger.warning("Aggregator returned empty content, retrying once")
         response = await _get_openrouter_client().chat.completions.create(**api_params)
         content = extract_content_or_reasoning(response)
+        if not content:
+            raise ValueError("Aggregator returned empty content after retry")
 
     logger.info("Aggregation complete (%s characters)", len(content))
     return content
