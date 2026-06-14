@@ -132,10 +132,53 @@ def _load_config() -> Dict[str, Any]:
     return cur
 
 
+def _uses_local_llm() -> bool:
+    """Return True if the curator would target a local inference server."""
+    try:
+        from hermes_cli.config import load_config
+        from urllib.parse import urlparse
+        full_cfg = load_config()
+        binding = _resolve_review_runtime(full_cfg)
+        url = binding.explicit_base_url
+        if not url:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            rp = resolve_runtime_provider(
+                requested=binding.provider,
+                target_model=binding.model,
+                explicit_api_key=binding.explicit_api_key,
+                explicit_base_url=binding.explicit_base_url,
+            )
+            url = rp.get("base_url")
+        if url:
+            host = (urlparse(url).hostname or "").lower()
+            return host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+    except Exception:
+        pass
+    return False
+
+
 def is_enabled() -> bool:
-    """Default ON when no config says otherwise."""
+    """Check whether the curator is enabled.
+
+    Accepts ``true``, ``false``, or ``"auto"`` (default).  In auto mode the
+    curator is disabled when it would target a local inference server
+    (localhost / 127.0.0.1) because the background review fork can
+    monopolise single-model servers and cause hangs.  Cloud providers are
+    unaffected.  Set ``curator.enabled: true`` to force-enable on local.
+    """
     cfg = _load_config()
-    return bool(cfg.get("enabled", True))
+    value = cfg.get("enabled", "auto")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() == "auto":
+        if _uses_local_llm():
+            logger.info(
+                "Curator auto-disabled for local LLM. "
+                "Set curator.enabled: true to override."
+            )
+            return False
+        return True
+    return bool(value)
 
 
 def get_interval_hours() -> int:

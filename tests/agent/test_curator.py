@@ -53,8 +53,23 @@ def _write_skill(skills_dir: Path, name: str):
 # Config gates
 # ---------------------------------------------------------------------------
 
-def test_curator_enabled_default_true(curator_env):
-    assert curator_env["curator"].is_enabled() is True
+def test_curator_auto_enabled_for_cloud(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_uses_local_llm", lambda: False)
+    assert c.is_enabled() is True
+
+
+def test_curator_auto_disabled_for_local_llm(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_uses_local_llm", lambda: True)
+    assert c.is_enabled() is False
+
+
+def test_curator_explicit_true_overrides_local(curator_env, monkeypatch):
+    c = curator_env["curator"]
+    monkeypatch.setattr(c, "_load_config", lambda: {"enabled": True})
+    monkeypatch.setattr(c, "_uses_local_llm", lambda: True)
+    assert c.is_enabled() is True
 
 
 def test_curator_disabled_via_config(curator_env, monkeypatch):
