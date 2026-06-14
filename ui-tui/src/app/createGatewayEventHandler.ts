@@ -17,6 +17,14 @@ import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
+import {
+  formatApprovalPreview,
+  formatChoicesPreview,
+  formatErrorPreview,
+  formatSecretPreview,
+  MacNotificationController,
+  sanitizeNotifyText
+} from './notifications.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
@@ -86,6 +94,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   let pendingThinkingStatus = ''
   let thinkingStatusTimer: null | ReturnType<typeof setTimeout> = null
   let startupPromptSubmitted = false
+
+  const notifier = new MacNotificationController({
+    bellOnComplete,
+    getSessionId: () => getUiState().sid,
+    rpc,
+    stdout
+  })
+  const notifyWaitUser = notifier.notifyWaitUser.bind(notifier)
+  const notifyCompletionUser = notifier.notifyCompletionUser.bind(notifier)
+  const notifyBlockedUser = notifier.notifyBlockedUser.bind(notifier)
 
   // Request IDs of clarify prompts we've already flushed to the transcript as
   // an abandoned-prompt record, so the tool.complete and message.complete
@@ -720,39 +738,54 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
-      case 'clarify.request':
+      case 'clarify.request': {
+        const body = formatChoicesPreview(ev.payload.question, ev.payload.choices)
+
+        notifyWaitUser('입력 필요', body)
         patchOverlayState({
           clarify: { choices: ev.payload.choices, question: ev.payload.question, requestId: ev.payload.request_id }
         })
         setStatus('waiting for input…')
 
         return
+      }
       case 'approval.request': {
         const description = String(ev.payload.description ?? 'dangerous command')
+        const command = String(ev.payload.command ?? '')
+        const body = formatApprovalPreview(description, command)
         // Only an explicit false (tirith warning) drops the permanent-allow option.
         const allowPermanent = ev.payload.allow_permanent !== false
 
+        notifyWaitUser('승인 필요', body)
         patchOverlayState({
-          approval: { allowPermanent, command: String(ev.payload.command ?? ''), description }
+          approval: { allowPermanent, command, description }
         })
         setStatus('approval needed')
 
         return
       }
 
-      case 'sudo.request':
+      case 'sudo.request': {
+        const body = 'Hermes가 sudo 비밀번호 입력을 기다리고 있습니다.'
+
+        notifyWaitUser('sudo 비밀번호 필요', body)
         patchOverlayState({ sudo: { requestId: ev.payload.request_id } })
         setStatus('sudo password needed')
 
         return
+      }
 
-      case 'secret.request':
+      case 'secret.request': {
+        const body = formatSecretPreview(ev.payload.prompt)
+
+        notifyWaitUser('비밀값 입력 필요', body)
         patchOverlayState({
           secret: { envVar: ev.payload.env_var, prompt: ev.payload.prompt, requestId: ev.payload.request_id }
         })
         setStatus('secret input needed')
 
         return
+      }
 
       case 'background.complete':
         dropBgTask(ev.payload.task_id)
@@ -884,8 +917,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]
           msgs.forEach(appendMessage)
 
-          if (bellOnComplete && stdout?.isTTY) {
-            stdout.write('\x07')
+          const completionPayload = ev.payload as { error?: unknown; status?: string }
+          if (completionPayload.status === 'error') {
+            notifyBlockedUser('오류로 중단됨', formatErrorPreview(completionPayload.error ?? finalText))
+          } else {
+            notifyCompletionUser('작업 완료', sanitizeNotifyText(finalText, 180, 'Hermes 응답이 완료되었습니다.'))
           }
         }
 
@@ -898,24 +934,26 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
-      case 'error':
+      case 'error': {
         turnController.recordError()
 
-        {
-          const message = String(ev.payload?.message || 'unknown error')
+        const message = String(ev.payload?.message || 'unknown error')
+        const body = formatErrorPreview(message)
 
-          turnController.pushActivity(message, 'error')
+        notifyBlockedUser('오류로 중단됨', body)
+        turnController.pushActivity(message, 'error')
 
-          if (NO_PROVIDER_RE.test(message)) {
-            panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
-            setStatus('setup required')
+        if (NO_PROVIDER_RE.test(message)) {
+          panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
+          setStatus('setup required')
 
-            return
-          }
-
-          sys(`error: ${message}`)
-          setStatus('ready')
+          return
         }
+
+        sys(`error: ${message}`)
+        setStatus('ready')
+        return
+      }
     }
   }
 }

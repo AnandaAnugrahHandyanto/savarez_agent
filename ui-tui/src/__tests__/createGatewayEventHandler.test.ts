@@ -1,4 +1,20 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('node:child_process', () => ({
+  spawn: vi.fn(() => ({ unref: vi.fn() }))
+}))
+vi.mock('node:fs', async () => {
+  const actual = await vi.importActual<typeof import('node:fs')>('node:fs')
+
+  return {
+    ...actual,
+    appendFileSync: vi.fn(),
+    existsSync: vi.fn(() => true)
+  }
+})
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
@@ -50,6 +66,43 @@ const buildCtx = (appended: Msg[]) =>
     }
   }) as any
 
+const originalPlatform = process.platform
+const notifyEnvKeys = [
+  'AGENT_NOTIFY_CLICK_ROUTE',
+  'HERMES_NOTIFY_CLICK_ROUTE',
+  'AGENT_NOTIFY_DISABLE_CLICK_FOCUS',
+  'HERMES_NOTIFY_DISABLE_CLICK_FOCUS',
+  'HERMES_AGENT_NOTIFY_SCRIPT',
+  'HERMES_TUI_MAC_NOTIFICATIONS'
+] as const
+
+const setProcessPlatform = (platform: NodeJS.Platform) => {
+  Object.defineProperty(process, 'platform', { configurable: true, value: platform })
+}
+
+const resetNotificationTestEnv = () => {
+  setProcessPlatform('darwin')
+  vi.mocked(spawn).mockClear()
+  vi.mocked(existsSync).mockReturnValue(true)
+  process.env.HERMES_AGENT_NOTIFY_SCRIPT = '/tmp/hermes-agent-notify-test'
+  for (const key of notifyEnvKeys) {
+    if (key !== 'HERMES_AGENT_NOTIFY_SCRIPT') {
+      delete process.env[key]
+    }
+  }
+}
+
+const restoreNotificationTestEnv = () => {
+  setProcessPlatform(originalPlatform)
+  for (const key of notifyEnvKeys) {
+    delete process.env[key]
+  }
+}
+
+const flushNotifications = async () => {
+  await vi.waitFor(() => expect(spawn).toHaveBeenCalled())
+}
+
 describe('createGatewayEventHandler', () => {
   beforeEach(() => {
     resetOverlayState()
@@ -57,6 +110,88 @@ describe('createGatewayEventHandler', () => {
     resetTurnState()
     turnController.fullReset()
     patchUiState({ showReasoning: true })
+    resetNotificationTestEnv()
+  })
+
+  afterEach(() => {
+    restoreNotificationTestEnv()
+  })
+
+  it('sends a macOS completion notification with live session context and stable click route', async () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    ctx.gateway.rpc = vi.fn(async (method: string) => {
+      if (method === 'config.get') {
+        return { config: { display: { tui_mac_notifications: true } } }
+      }
+
+      if (method === 'session.title') {
+        return { session_key: 'stored-session', title: 'tmux-cleanup #10' }
+      }
+
+      return null
+    })
+    const onEvent = createGatewayEventHandler(ctx)
+    patchUiState({ sid: 'live-sid' })
+
+    onEvent({ payload: { text: 'done' }, type: 'message.complete' } as any)
+    await flushNotifications()
+
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('session.title', { session_id: 'live-sid' })
+    expect(spawn).toHaveBeenCalledWith(
+      '/tmp/hermes-agent-notify-test',
+      expect.arrayContaining(['--app', 'Hermes', '--context', 'tmux-cleanup #10', '--category', 'done.review']),
+      expect.objectContaining({
+        detached: true,
+        env: expect.objectContaining({ AGENT_NOTIFY_CLICK_ROUTE: 'applescript-stable-id' }),
+        stdio: 'ignore'
+      })
+    )
+  })
+
+  it('sends wait-input and blocked-error notifications but obeys the config off switch', async () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    ctx.gateway.rpc = vi.fn(async (method: string) => {
+      if (method === 'config.get') {
+        return { config: { display: { tui_mac_notifications: true } } }
+      }
+
+      return null
+    })
+    const onEvent = createGatewayEventHandler(ctx)
+    patchUiState({ sid: 'live-sid' })
+
+    onEvent({ payload: { command: 'true', description: 'needs approval' }, type: 'approval.request' } as any)
+    await flushNotifications()
+    expect(spawn).toHaveBeenLastCalledWith(
+      '/tmp/hermes-agent-notify-test',
+      expect.arrayContaining(['--subtitle', '승인 필요', '--category', 'wait.input']),
+      expect.any(Object)
+    )
+
+    vi.mocked(spawn).mockClear()
+    onEvent({ payload: { message: 'blocked api_key=secret-value' }, type: 'error' } as any)
+    await flushNotifications()
+    expect(spawn).toHaveBeenLastCalledWith(
+      '/tmp/hermes-agent-notify-test',
+      expect.arrayContaining(['--subtitle', '오류로 중단됨', '--message', 'blocked api_key=[REDACTED]', '--category', 'blocked.error']),
+      expect.any(Object)
+    )
+
+    vi.mocked(spawn).mockClear()
+    ctx.gateway.rpc = vi.fn(async (method: string) => {
+      if (method === 'config.get') {
+        return { config: { display: { tui_mac_notifications: false } } }
+      }
+
+      return null
+    })
+    const disabledHandler = createGatewayEventHandler(ctx)
+    disabledHandler({ payload: { command: 'true', description: 'disabled approval' }, type: 'approval.request' } as any)
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(spawn).not.toHaveBeenCalled()
   })
 
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {

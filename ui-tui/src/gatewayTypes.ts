@@ -80,6 +80,8 @@ export interface ConfigDisplayConfig {
    */
   tui_agents_nudge?: boolean
   tui_auto_resume_recent?: boolean
+  /** Enable best-effort native macOS attention notifications from the TUI. Default true. */
+  tui_mac_notifications?: boolean
   tui_compact?: boolean
   /** Legacy alias for display.mouse_tracking. */
   tui_mouse?: boolean | null | number | string
