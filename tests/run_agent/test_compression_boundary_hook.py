@@ -68,6 +68,7 @@ class TestCompressionBoundaryHook:
             # Session_id rotated
             assert agent.session_id != original_sid, \
                 "compression should rotate session_id when session_db is set"
+            assert getattr(agent, "_pending_post_compression_refresh")["reason"] == "compression"
 
             # Hook fired with boundary_reason="compression" and old_session_id
             calls = [
