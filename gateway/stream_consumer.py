@@ -1358,8 +1358,21 @@ class GatewayStreamConsumer:
                     # finalize=True edit even when content is unchanged, so
                     # their streaming UI can transition out of the in-
                     # progress state.  Everyone else short-circuits.
+                    # Adapters that prefer a fresh rich final (e.g. Telegram,
+                    # via ``prefers_fresh_final_streaming``) must also bypass
+                    # this skip on finalize.  The streamed preview was rendered
+                    # on the downgraded edit path; an unchanged-text finalize
+                    # would otherwise short-circuit here and never reach the
+                    # fresh rich re-send below, leaving rich constructs (tables,
+                    # task lists) collapsed to their legacy fallback.  Keyed on
+                    # the FINAL content's rich-eligibility (same predicate as the
+                    # fresh-final gate below), so it fires for any rich-capable
+                    # finalize, not only tables.
                     if text == self._last_sent_text and not (
-                        finalize and self._adapter_requires_finalize
+                        finalize and (
+                            self._adapter_requires_finalize
+                            or self._adapter_prefers_fresh_final(text)
+                        )
                     ):
                         return True
                     # Fresh-final for long-lived previews: when finalizing

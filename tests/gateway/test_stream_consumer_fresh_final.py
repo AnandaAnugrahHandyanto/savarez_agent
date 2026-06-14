@@ -60,6 +60,86 @@ class TestFreshFinalForLongLivedPreviews:
         adapter.edit_message.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_unchanged_final_text_still_fresh_sends_when_adapter_prefers(self):
+        """Rich-preferring adapter must re-send the final fresh even when the
+        final text is unchanged.
+
+        Regression for the redundant-edit short-circuit pre-empting the
+        fresh-final path: the streamed preview is rendered on the downgraded
+        edit path, so an unchanged-text finalize that short-circuits to a
+        redundant-edit skip leaves rich constructs (tables, task lists)
+        collapsed.  ``prefers_fresh_final_streaming`` must override the skip on
+        finalize, independent of the time threshold.
+        """
+        adapter = _make_adapter()
+        adapter.prefers_fresh_final_streaming = MagicMock(return_value=True)
+        adapter.send.side_effect = [
+            SimpleNamespace(success=True, message_id="initial_preview"),
+            SimpleNamespace(success=True, message_id="fresh_final"),
+        ]
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            # Time-threshold path disabled — exercise the adapter-prefers path.
+            config=StreamConsumerConfig(fresh_final_after_seconds=0.0),
+        )
+        await consumer._send_or_edit("same text")
+        # Finalize with identical text must NOT short-circuit to an edit.
+        await consumer._send_or_edit("same text", finalize=True)
+        assert adapter.send.call_count == 2  # preview + fresh final
+        adapter.edit_message.assert_not_called()
+        assert consumer._message_id == "fresh_final"
+        # Fresh-final cleanup contract: stale preview deleted, turn marked final.
+        adapter.delete_message.assert_awaited_once_with("chat", "initial_preview")
+        assert consumer._final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_unchanged_text_fresh_sends_under_production_threshold(self):
+        """Under the default ``fresh_final_after_seconds=60``, a YOUNG preview
+        (time path inactive) with unchanged final text on a rich-preferring
+        adapter still fresh-sends — proving the adapter-prefers bypass, not the
+        time threshold, drives it.
+        """
+        adapter = _make_adapter()
+        adapter.prefers_fresh_final_streaming = MagicMock(return_value=True)
+        adapter.send.side_effect = [
+            SimpleNamespace(success=True, message_id="initial_preview"),
+            SimpleNamespace(success=True, message_id="fresh_final"),
+        ]
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(fresh_final_after_seconds=60.0),
+        )
+        await consumer._send_or_edit("same text")
+        # Preview is brand-new (< 60s), so the time path is inactive; only the
+        # adapter-prefers bypass can reach the fresh send here.
+        assert consumer._should_send_fresh_final() is False
+        await consumer._send_or_edit("same text", finalize=True)
+        assert adapter.send.call_count == 2
+        adapter.edit_message.assert_not_called()
+        assert consumer._message_id == "fresh_final"
+
+    @pytest.mark.asyncio
+    async def test_unchanged_text_still_edits_when_adapter_opts_out(self):
+        """Unchanged final text on an adapter that does NOT prefer a fresh final
+        (e.g. rich opted out / latched off) must still short-circuit to the
+        in-place edit — the bypass is opt-in via prefers_fresh_final_streaming.
+        """
+        adapter = _make_adapter()
+        adapter.prefers_fresh_final_streaming = MagicMock(return_value=False)
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(fresh_final_after_seconds=0.0),
+        )
+        await consumer._send_or_edit("same text")
+        await consumer._send_or_edit("same text", finalize=True)
+        # Redundant-edit skip holds: no fresh send, no edit.
+        assert adapter.send.call_count == 1
+        adapter.edit_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_short_lived_preview_edits_in_place(self):
         """Finalizing a preview younger than the threshold → normal edit."""
         adapter = _make_adapter()
