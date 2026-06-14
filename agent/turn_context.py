@@ -239,24 +239,30 @@ def build_turn_context(
     active_system_prompt = agent._cached_system_prompt
 
     # Crash-resilience: persist the inbound user turn as soon as the session row exists.
-    # Retry once on transient DB failure (e.g. SQLite lock); log structured warning if it
-    # still fails so data loss is observable.
-    for _persist_attempt in range(2):
-        try:
-            agent._persist_session(messages, conversation_history)
-            break
-        except Exception:
-            if _persist_attempt == 0:
-                try:
-                    agent._ensure_db_session()
-                except Exception:
-                    pass
-            else:
-                logger.warning(
-                    "Early turn-start session persistence failed after retry for session=%s",
-                    agent.session_id or "none",
-                    exc_info=True,
-                )
+    # _persist_session swallows DB errors internally, so retry _ensure_db_session
+    # proactively when the session row hasn't been created yet.
+    if not getattr(agent, "_session_db_created", False):
+        for _db_attempt in range(2):
+            try:
+                agent._ensure_db_session()
+                break
+            except Exception:
+                if _db_attempt == 1:
+                    logger.warning(
+                        "Early turn-start _ensure_db_session failed after retry for session=%s",
+                        agent.session_id or "none",
+                        exc_info=True,
+                    )
+    _pre_persist_cursor = agent._last_flushed_db_idx
+    agent._persist_session(messages, conversation_history)
+    if agent._last_flushed_db_idx <= _pre_persist_cursor:
+        logger.warning(
+            "Early persist did not advance flush cursor for session=%s "
+            "(cursor=%d, expected>%d); user message may not be in session DB",
+            agent.session_id or "none",
+            agent._last_flushed_db_idx,
+            _pre_persist_cursor,
+        )
 
     # ── Preflight context compression ──
     if (

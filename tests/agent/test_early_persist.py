@@ -163,56 +163,72 @@ def test_flush_cursor_reset_prevents_skip():
     assert agent._last_flushed_db_idx == len(ctx.messages) - 1
 
 
-def test_early_persist_retries_on_db_failure():
-    """Verify early persist retries _ensure_db_session on transient failure."""
+def test_ensure_db_session_retried_on_transient_failure():
+    """Verify _ensure_db_session is retried when the session row isn't created."""
     agent = _FakeAgent()
 
-    # Mock _persist_session to fail on first call, succeed on second.
+    # Line 90 calls _ensure_db_session unconditionally (call 1, succeeds but
+    # _session_db_created stays False to simulate a no-op). Our retry block
+    # detects _session_db_created==False and retries: call 2 fails transiently,
+    # call 3 succeeds and sets _session_db_created=True.
     call_count = [0]
 
-    def _persist_session_with_failure(messages, conversation_history):
+    def _ensure_with_late_success():
         call_count[0] += 1
-        agent._persist_session_calls.append({
-            "messages": list(messages),
-            "conversation_history": conversation_history,
-        })
-        if call_count[0] == 1:
-            raise RuntimeError("Transient DB failure (SQLite lock)")
+        if call_count[0] == 2:
+            raise RuntimeError("Transient SQLite lock")
+        if call_count[0] == 3:
+            agent._session_db_created = True
 
-    agent._persist_session = _persist_session_with_failure
+    agent._ensure_db_session = _ensure_with_late_success
+    agent._session_db_created = False
 
-    with patch.object(agent, "_ensure_db_session") as mock_ensure:
-        ctx = _build(agent)
+    ctx = _build(agent)
 
-        # _ensure_db_session should have been called twice: once at prologue start,
-        # once during early persist retry on first persist failure.
-        assert mock_ensure.call_count == 2
-
-    # Despite the first persist failing, the second attempt should succeed.
-    assert call_count[0] == 2
-    assert len(agent._persist_session_calls) == 2
+    assert call_count[0] == 3
+    assert agent._session_db_created is True
 
 
-def test_early_persist_logs_warning_after_retry_failure():
-    """Verify early persist logs a structured warning if persistence still fails."""
+def test_ensure_db_session_logs_warning_after_retry_failure():
+    """Verify structured warning when _ensure_db_session fails in retry block."""
     agent = _FakeAgent()
 
-    # Mock _persist_session to always fail.
-    def _persist_session_with_persistent_failure(messages, conversation_history):
-        raise RuntimeError("Persistent DB failure")
+    # Call 1 from line 90 succeeds but _session_db_created stays False.
+    # Calls 2-3 from our retry block both fail.
+    call_count = [0]
 
-    agent._persist_session = _persist_session_with_persistent_failure
+    def _ensure_always_fails_in_retry():
+        call_count[0] += 1
+        if call_count[0] >= 2:
+            raise RuntimeError("Persistent SQLite lock")
 
-    # Mock logger.warning to capture the call.
+    agent._ensure_db_session = _ensure_always_fails_in_retry
+    agent._session_db_created = False
+
     with patch("agent.turn_context.logger.warning") as mock_warning:
-        with patch.object(agent, "_ensure_db_session"):
-            ctx = _build(agent)
+        ctx = _build(agent)
 
-        # logger.warning should have been called with the retry-failed message.
-        assert mock_warning.called
-        call_args = mock_warning.call_args
-        assert "Early turn-start session persistence failed after retry" in call_args[0][0]
-        assert agent.session_id in call_args[0]
+        warning_calls = [c for c in mock_warning.call_args_list
+                         if "_ensure_db_session failed after retry" in str(c)]
+        assert len(warning_calls) == 1
+        assert agent.session_id in warning_calls[0][0]
+
+
+def test_silent_persist_failure_detected_by_cursor():
+    """Verify warning when _persist_session silently fails (cursor doesn't advance)."""
+    agent = _FakeAgent()
+
+    def _persist_noop(messages, conversation_history):
+        pass
+
+    agent._persist_session = _persist_noop
+
+    with patch("agent.turn_context.logger.warning") as mock_warning:
+        ctx = _build(agent)
+
+        cursor_warnings = [c for c in mock_warning.call_args_list
+                           if "did not advance flush cursor" in str(c)]
+        assert len(cursor_warnings) == 1
 
 
 def test_early_persist_user_message_idx_set():
