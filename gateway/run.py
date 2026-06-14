@@ -12560,6 +12560,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if release_running_state:
             self._release_running_agent_state(session_key)
 
+    def _session_transcript_len(self, session_id: Optional[str]) -> Optional[int]:
+        """Cheap on-disk message count for ``session_id``, or None.
+
+        Used as a cross-process coherence signal for the agent cache. The
+        gateway caches an ``AIAgent`` (with its in-memory replayed history)
+        per session for prompt-prefix caching. If ANOTHER process sharing the
+        same ``HERMES_HOME`` (e.g. the desktop app's ``hermes dashboard``
+        backend) appends turns to the SAME session's transcript in the shared
+        SessionDB, the gateway's cached agent would otherwise never see them —
+        it replies with stale context and the on-disk transcript and the live
+        agent's history silently diverge (split-brain).
+
+        Returns ``SessionDB.message_count(session_id)`` (an indexed COUNT) so a
+        cache-hit can detect external growth. Returns None on any error or when
+        the DB / session_id is unavailable, so callers fail SAFE — degrading to
+        the existing reuse-the-cached-agent behavior rather than crashing a turn
+        or falsely evicting on a transient DB hiccup.
+        """
+        db = getattr(self, "_session_db", None)
+        if db is None or not session_id:
+            return None
+        try:
+            return db.message_count(session_id)
+        except Exception:
+            logger.debug(
+                "session transcript len probe failed for %s",
+                session_id,
+                exc_info=True,
+            )
+            return None
+
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc).
 
@@ -14083,20 +14114,57 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
             _cache = getattr(self, "_agent_cache", None)
+            _stale_cache_entry = False
             if _cache_lock and _cache is not None:
                 with _cache_lock:
                     cached = _cache.get(session_key)
                     if cached and cached[1] == _sig:
-                        agent = cached[0]
-                        # Refresh LRU order so the cap enforcement evicts
-                        # truly-oldest entries, not the one we just used.
-                        if hasattr(_cache, "move_to_end"):
-                            try:
-                                _cache.move_to_end(session_key)
-                            except KeyError:
-                                pass
-                        self._init_cached_agent_for_turn(agent, _interrupt_depth)
-                        logger.debug("Reusing cached agent for session %s", session_key)
+                        # Cross-process coherence guard. The cached agent holds
+                        # an in-memory replay of the transcript as it existed
+                        # when the agent was built. If another process sharing
+                        # this HERMES_HOME (e.g. the desktop's `hermes dashboard`
+                        # backend) appended turns to the SAME session since then,
+                        # reusing the cached agent would reply with stale context
+                        # and diverge from the on-disk transcript. Detect growth
+                        # via a cheap indexed COUNT and rebuild from disk when it
+                        # grew. ``cached_len`` is the snapshot stored alongside
+                        # the agent; a legacy 2-tuple (or a None snapshot, or a
+                        # None live count) skips the check and reuses as before.
+                        cached_len = cached[2] if len(cached) > 2 else None
+                        live_len = self._session_transcript_len(session_id)
+                        if (
+                            cached_len is not None
+                            and live_len is not None
+                            and live_len > cached_len
+                        ):
+                            # Mark stale; evict OUTSIDE this lock (the eviction
+                            # helper acquires _agent_cache_lock itself, so calling
+                            # it here would deadlock).
+                            _stale_cache_entry = True
+                            logger.debug(
+                                "Evicting cached agent for session %s: "
+                                "transcript grew externally (%d -> %d)",
+                                session_key,
+                                cached_len,
+                                live_len,
+                            )
+                        else:
+                            agent = cached[0]
+                            # Refresh LRU order so the cap enforcement evicts
+                            # truly-oldest entries, not the one we just used.
+                            if hasattr(_cache, "move_to_end"):
+                                try:
+                                    _cache.move_to_end(session_key)
+                                except KeyError:
+                                    pass
+                            self._init_cached_agent_for_turn(agent, _interrupt_depth)
+                            logger.debug("Reusing cached agent for session %s", session_key)
+            if _stale_cache_entry:
+                # The cached agent was rejected by the coherence guard above.
+                # Evict it (releases the stale agent's client pool) so the
+                # rebuild below replaces it with one built from the current
+                # on-disk transcript.
+                self._evict_cached_agent(session_key)
 
             if agent is None:
                 # Config changed or first message — create fresh agent
@@ -14134,7 +14202,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
-                        _cache[session_key] = (agent, _sig)
+                        # Store the on-disk transcript length alongside the
+                        # agent so the next cache-hit can detect external
+                        # (cross-process) growth — see _session_transcript_len.
+                        _cache[session_key] = (
+                            agent,
+                            _sig,
+                            self._session_transcript_len(session_id),
+                        )
                         self._enforce_agent_cache_cap()
                 logger.debug("Created new agent for session %s (sig=%s)", session_key, _sig)
 

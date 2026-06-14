@@ -1546,3 +1546,132 @@ class TestAgentConfigSignatureUserId:
             user_id=None, user_id_alt=None,
         )
         assert sig_implicit == sig_explicit_none
+
+
+class TestAgentCacheCrossProcessCoherence:
+    """Cross-process cache coherence: a cached agent must be rebuilt when
+    another process appends to the SAME session's transcript on disk.
+
+    The gateway caches an AIAgent (with its in-memory replayed history) per
+    session for prompt-prefix caching. When a second process sharing the same
+    HERMES_HOME (e.g. the desktop's ``hermes dashboard`` backend) runs a turn
+    for the same session, it appends rows to the shared SessionDB. Without a
+    coherence guard the gateway reuses its stale cached agent and replies with
+    out-of-date context — the on-disk transcript and the live agent diverge
+    (split-brain). These tests pin the invariant: grew externally → rebuild;
+    unchanged → reuse (prompt cache preserved).
+    """
+
+    def _runner_with_db(self, db):
+        runner = _make_runner()
+        runner._session_db = db
+        return runner
+
+    def test_transcript_len_reads_live_count(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        db.append_message("s1", role="user", content="hi")
+        db.append_message("s1", role="assistant", content="hello")
+
+        runner = self._runner_with_db(db)
+        assert runner._session_transcript_len("s1") == 2
+
+        # An external append is visible immediately (no caching in the probe).
+        db.append_message("s1", role="user", content="still there?")
+        assert runner._session_transcript_len("s1") == 3
+
+    def test_transcript_len_fails_safe(self, tmp_path):
+        """Missing DB / session_id / probe errors return None (fail-safe)."""
+        from hermes_state import SessionDB
+
+        # No session_db at all → None (degrade to legacy reuse behavior).
+        runner_no_db = _make_runner()
+        runner_no_db._session_db = None
+        assert runner_no_db._session_transcript_len("s1") is None
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        runner = self._runner_with_db(db)
+        # Falsy session_id → None, never a crash.
+        assert runner._session_transcript_len("") is None
+        assert runner._session_transcript_len(None) is None
+
+        # A probe that raises must be swallowed → None (never crash a turn).
+        class _BoomDB:
+            def message_count(self, session_id=None):
+                raise RuntimeError("db locked")
+
+        runner._session_db = _BoomDB()
+        assert runner._session_transcript_len("s1") is None
+
+    def test_external_growth_invalidates_cache_reuse(self, tmp_path):
+        """The reuse decision flips from True to False when the transcript
+        grows externally between two gateway turns.
+
+        Mirrors the cache-hit guard in the dispatch path: reuse the cached
+        agent only when the live on-disk count has NOT grown past the snapshot
+        taken when the agent was cached.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        db.append_message("s1", role="user", content="first")
+        db.append_message("s1", role="assistant", content="reply")
+
+        runner = self._runner_with_db(db)
+
+        # Gateway turn 1: cache an agent with the snapshot taken now (len == 2).
+        snapshot = runner._session_transcript_len("s1")
+        assert snapshot == 2
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (object(), "sig", snapshot)
+
+        def _would_reuse() -> bool:
+            with runner._agent_cache_lock:
+                cached = runner._agent_cache.get("telegram:s1")
+            cached_len = cached[2] if len(cached) > 2 else None
+            live_len = runner._session_transcript_len("s1")
+            grew = (
+                cached_len is not None
+                and live_len is not None
+                and live_len > cached_len
+            )
+            return not grew
+
+        # Unchanged transcript → reuse (prompt cache preserved — sacred).
+        assert _would_reuse() is True
+
+        # Another process (e.g. the desktop dashboard backend) appends a turn
+        # to the SAME session in the shared DB.
+        db.append_message("s1", role="user", content="external turn from desktop")
+
+        # Now the cached agent is stale → must NOT be reused (rebuild from disk).
+        assert _would_reuse() is False
+
+    def test_legacy_two_tuple_entry_reuses(self, tmp_path):
+        """A pre-existing 2-tuple cache entry (no snapshot) skips the coherence
+        check and reuses — preserves in-flight caches across the rollout."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        db.append_message("s1", role="user", content="hi")
+
+        runner = self._runner_with_db(db)
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (object(), "sig")  # legacy 2-tuple
+
+        with runner._agent_cache_lock:
+            cached = runner._agent_cache.get("telegram:s1")
+        cached_len = cached[2] if len(cached) > 2 else None
+        # No snapshot → check is skipped → reuse path taken even after growth.
+        db.append_message("s1", role="assistant", content="grew")
+        live_len = runner._session_transcript_len("s1")
+        grew = (
+            cached_len is not None
+            and live_len is not None
+            and live_len > cached_len
+        )
+        assert grew is False  # legacy entries are never falsely evicted
