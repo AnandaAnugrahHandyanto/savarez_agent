@@ -419,6 +419,65 @@ class TestBuildSkillsSystemPrompt:
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
 
+    def test_excludes_platform_disabled_skills(self, monkeypatch, tmp_path):
+        """Skills disabled for the active platform must not appear (#46201)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_PLATFORM", "telegram")
+        skills_dir = tmp_path / "skills" / "tools"
+        skills_dir.mkdir(parents=True)
+
+        for name, desc in [("web-search", "Search the web"), ("xurl", "URL tool")]:
+            d = skills_dir / name
+            d.mkdir()
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {desc}\n---\n"
+            )
+
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  platform_disabled:\n    telegram: [xurl]\n"
+        )
+
+        result = build_skills_system_prompt()
+        assert "web-search" in result
+        assert "xurl" not in result
+
+    def test_global_disabled_merged_with_platform_disabled(self, monkeypatch, tmp_path):
+        """Globally disabled skills must stay hidden when platform_disabled exists (#46201).
+
+        Before the fix, platform_disabled REPLACED the global disabled set,
+        so globally disabled skills leaked back into the prompt for any
+        platform with a platform_disabled entry.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_PLATFORM", "telegram")
+        skills_dir = tmp_path / "skills" / "tools"
+        skills_dir.mkdir(parents=True)
+
+        for name, desc in [
+            ("global-bad", "Should be hidden everywhere"),
+            ("tg-bad", "Should be hidden on telegram"),
+            ("good-skill", "Always visible"),
+        ]:
+            d = skills_dir / name
+            d.mkdir()
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {desc}\n---\n"
+            )
+
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n"
+            "  disabled: [global-bad]\n"
+            "  platform_disabled:\n"
+            "    telegram: [tg-bad]\n"
+        )
+
+        result = build_skills_system_prompt()
+        assert "global-bad" not in result, (
+            "Globally disabled skill leaked through platform_disabled entry"
+        )
+        assert "tg-bad" not in result
+        assert "good-skill" in result
+
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("MISSING_API_KEY_XYZ", raising=False)
