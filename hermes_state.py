@@ -25,7 +25,7 @@ from pathlib import Path
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeAlias, TypedDict, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -652,6 +652,27 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON message
     );
 END;
 """
+
+# Typed message row shapes for /prompts surfaces.
+# Keeps public SessionDB method signatures free of `dict[str, Any]`.
+MessageContent: TypeAlias = str | bytes | int | float | bool | None | list[object] | dict[str, object]
+
+
+class RecentUserMessage(TypedDict):
+    """Row returned by SessionDB.list_recent_user_messages()."""
+    id: int
+    timestamp: str | None
+    preview: str
+
+
+class UserMessage(TypedDict):
+    """Row returned by SessionDB.get_user_message()."""
+    id: int
+    session_id: str
+    role: str
+    content: MessageContent
+    timestamp: str | None
+    active: bool
 
 
 class SessionDB:
@@ -2366,7 +2387,7 @@ class SessionDB:
         self,
         session_id: str,
         role: str,
-        content: Any = None,
+        content: MessageContent = None,
         tool_name: str = None,
         tool_calls: Any = None,
         tool_call_id: str = None,
@@ -3087,7 +3108,7 @@ class SessionDB:
         session_id: str,
         limit: int = 20,
         include_inactive: bool = False,
-    ) -> List[Dict[str, Any]]:
+    ) -> List[RecentUserMessage]:
         """Return the *limit* most-recent user messages, newest first.
 
         Each entry is a dict with keys ``id``, ``timestamp``, ``preview``.
@@ -3108,7 +3129,7 @@ class SessionDB:
             )
             rows = cursor.fetchall()
 
-        result: List[Dict[str, Any]] = []
+        result: List[RecentUserMessage] = []
         for row in rows:
             decoded = self._decode_content(row["content"])
             if isinstance(decoded, list):
@@ -3142,7 +3163,7 @@ class SessionDB:
         message_id: int,
         *,
         active_only: bool = True,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[UserMessage]:
         """Return a single active user message by id, or ``None`` if not found.
 
         Enforces session scoping (refuses rows from other sessions), role

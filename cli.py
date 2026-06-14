@@ -42,7 +42,10 @@ from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from hermes_state import RecentUserMessage
 
 logger = logging.getLogger(__name__)
 
@@ -5837,7 +5840,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print()
         return True
 
-    def _list_recent_prompts(self, limit: int = 10) -> list[dict[str, Any]]:
+    def _list_recent_prompts(self, limit: int = 10) -> list["RecentUserMessage"]:
         """Return recent user prompts for the current session, newest first."""
         if not self._session_db or not self.session_id:
             return []
@@ -5849,7 +5852,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             return []
 
-    def _show_recent_prompts(self, *, limit: int = 10) -> list[dict[str, Any]]:
+    def _show_recent_prompts(self, *, limit: int = 10) -> list["RecentUserMessage"]:
         """Render recent prompts from the current session and return them."""
         prompts = self._list_recent_prompts(limit=limit)
         if not prompts:
@@ -5887,7 +5890,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def _load_prompt_for_editing(
         self,
         index: int,
-        prompts: list[dict[str, Any]],
+        prompts: list["RecentUserMessage"],
     ) -> bool:
         """Load the indexed prompt into the composer for editing."""
         if index < 1 or index > len(prompts):

@@ -1,5 +1,4 @@
 from unittest.mock import MagicMock, patch
-from typing import Any
 
 from cli import HermesCLI
 
@@ -16,7 +15,7 @@ class _App:
         self.invalidate = MagicMock()
 
 
-def _make_cli() -> Any:
+def _make_cli() -> HermesCLI:
     cli_obj = HermesCLI.__new__(HermesCLI)
     cli_obj.session_id = "current_session"
     cli_obj.conversation_history = []
