@@ -438,6 +438,14 @@ class _PyAutoGUIProvider:
         pg = self._ensure_pg()
         pg.hotkey(*keys)
 
+    def keyDown(self, key: str) -> None:
+        pg = self._ensure_pg()
+        pg.keyDown(key)
+
+    def keyUp(self, key: str) -> None:
+        pg = self._ensure_pg()
+        pg.keyUp(key)
+
     # -- coord conversion -------------------------------------------------
 
     def logical_to_physical(
@@ -481,7 +489,7 @@ class WinComputerUseBackend(ComputerUseBackend):
         self._started = False
 
     def is_available(self) -> bool:
-        return _is_windows() and _check_pyautogui()
+        return _is_windows() and _check_pyautogui() and _check_uiautomation()
 
     # ── Capture ─────────────────────────────────────────────────────
 
@@ -560,11 +568,13 @@ class WinComputerUseBackend(ComputerUseBackend):
                                message="no target coordinates")
 
         if modifiers:
-            self._pg.hotkey(*modifiers)
-            _time.sleep(0.05)
+            for m in modifiers:
+                self._pg.keyDown(m)
+            _time.sleep(0.02)
         self._pg.click(px, py, button=button, clicks=click_count)
         if modifiers:
-            self._pg.hotkey(*modifiers)
+            for m in reversed(modifiers):
+                self._pg.keyUp(m)
         return ActionResult(ok=True, action="click",
                            message=f"clicked {button} at ({px}, {py})")
 

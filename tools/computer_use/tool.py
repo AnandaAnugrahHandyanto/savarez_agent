@@ -152,7 +152,10 @@ def _get_backend() -> ComputerUseBackend:
             if _backend is None and backend_name == "noop":  # pragma: no cover
                 _backend = _NoopBackend()
             if _backend is None:
-                _backend = _NoopBackend()
+                raise RuntimeError(
+                    f"Unknown HERMES_COMPUTER_USE_BACKEND: {backend_name!r}. "
+                    f"Valid: 'cua', 'pyautogui', 'win', 'noop', 'auto'"
+                )
             _backend.start()
         return _backend
 
@@ -830,8 +833,8 @@ def check_computer_use_requirements() -> bool:
         from tools.computer_use.cua_backend import cua_driver_binary_available
         return cua_driver_binary_available()
     if sys.platform == "win32":
-        from tools.computer_use.win_backend import _check_pyautogui
-        return _check_pyautogui()
+        from tools.computer_use.win_backend import _check_pyautogui, _check_uiautomation
+        return _check_pyautogui() and _check_uiautomation()
     return False
 
 
