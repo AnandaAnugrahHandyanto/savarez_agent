@@ -194,7 +194,7 @@ class A2AAdapter(BasePlatformAdapter):
             pass
         return protocol.build_agent_card(
             name=self.agent_name,
-            url=f"http://{self.host}:{self.port}/",
+            url=os.getenv("A2A_PUBLIC_URL", f"http://{self.host}:{self.port}/"),
             description=os.getenv(
                 "A2A_AGENT_DESCRIPTION",
                 "Hermes Agent — a general-purpose agent reachable over A2A.",
