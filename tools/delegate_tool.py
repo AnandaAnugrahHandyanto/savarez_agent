@@ -524,6 +524,7 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 # time to finish; child_timeout_seconds (default 600s) is still the hard cap.
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 15 * 30s = 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 40 * 30s = 1200s stuck on same tool → stale
+_BATCH_WAIT_PROGRESS_INTERVAL = 30.0  # seconds between parent-visible batch wait updates
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 
 
@@ -775,6 +776,17 @@ def _build_child_progress_callback(
 
         if event_type == "subagent.complete":
             _relay("subagent.complete", preview=preview, **kwargs)
+            return
+
+        if event_type == "subagent.progress":
+            text = preview or tool_name or ""
+            if spinner and text:
+                short = (text[:85] + "...") if len(text) > 85 else text
+                try:
+                    spinner.print_above(f" {prefix}├─ 🔀 {short}")
+                except Exception as e:
+                    logger.debug("Spinner print_above failed: %s", e)
+            _relay("subagent.progress", preview=text, **kwargs)
             return
 
         # Normalise legacy strings, new-style "delegate.*" strings, and
@@ -1453,6 +1465,14 @@ def _run_single_child(
                 touch(desc)
             except Exception:
                 pass
+            if child_progress_cb:
+                try:
+                    child_progress_cb(
+                        "subagent.progress",
+                        preview=desc.replace("delegate_task: ", "", 1),
+                    )
+                except Exception as e:
+                    logger.debug("Progress callback heartbeat failed: %s", e)
 
     _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
 
@@ -2117,6 +2137,36 @@ def delegate_task(
         # Batch -- run in parallel with per-task progress lines
         completed_count = 0
         spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
+        parent_progress_cb = getattr(parent_agent, "tool_progress_callback", None)
+
+        def _emit_batch_wait_update(pending_indices: List[int]) -> None:
+            if not pending_indices:
+                return
+            shown = pending_indices[:3]
+            labels = [
+                task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
+                for idx in shown
+            ]
+            more = len(pending_indices) - len(shown)
+            label_text = ", ".join(labels)
+            if more > 0:
+                label_text += f" (+{more} more)"
+            message = (
+                f"waiting for {len(pending_indices)} subagent"
+                f"{'s' if len(pending_indices) != 1 else ''}: {label_text}"
+            )
+            if spinner_ref:
+                try:
+                    spinner_ref.print_above(f"  … {message}")
+                except Exception:
+                    print(f"  … {message}")
+            else:
+                print(f"  … {message}")
+            if parent_progress_cb:
+                try:
+                    parent_progress_cb("subagent.progress", preview=f"🔀 {message}")
+                except Exception as e:
+                    logger.debug("Batch wait progress relay failed: %s", e)
 
         with ThreadPoolExecutor(max_workers=max_children) as executor:
             futures = {}
@@ -2140,6 +2190,10 @@ def delegate_task(
             _child_by_index = {i: child for (i, _, child) in children}
 
             pending = set(futures.keys())
+            last_wait_update = 0.0
+            if pending:
+                _emit_batch_wait_update(sorted(futures[f] for f in pending))
+                last_wait_update = time.monotonic()
             while pending:
                 if getattr(parent_agent, "_interrupt_requested", False) is True:
                     # Parent interrupted — collect whatever finished and
@@ -2183,6 +2237,10 @@ def delegate_task(
                 done, pending = _cf_wait(
                     pending, timeout=0.5, return_when=FIRST_COMPLETED
                 )
+                now = time.monotonic()
+                if pending and now - last_wait_update >= _BATCH_WAIT_PROGRESS_INTERVAL:
+                    _emit_batch_wait_update(sorted(futures[f] for f in pending))
+                    last_wait_update = now
                 for future in done:
                     try:
                         entry = future.result()
