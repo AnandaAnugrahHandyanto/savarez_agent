@@ -504,6 +504,15 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             path = f"/{path}"
         return f"{self._calling_sidecar_url}{path}"
 
+    def _calling_sidecar_has_endpoint(self, endpoint: str) -> bool:
+        """Return whether the loaded sidecar contract advertises an endpoint."""
+        contract = getattr(self, "_calling_sidecar_contract", None)
+        endpoints = contract.get("endpoints") if isinstance(contract, dict) else None
+        if not isinstance(endpoints, dict):
+            return False
+        spec = endpoints.get(endpoint)
+        return isinstance(spec, dict) and bool(str(spec.get("path") or "").strip())
+
     async def _ensure_calling_sidecar_contract(self) -> Optional[Dict[str, Any]]:
         """Fetch the optional sidecar contract once per adapter lifetime."""
         if getattr(self, "_calling_sidecar_contract_checked", False):
@@ -756,6 +765,66 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     )
             logger.warning(
                 "[whatsapp_cloud] calling sidecar audio rejected "
+                "(status=%d): %s",
+                resp.status_code,
+                error_msg,
+            )
+            return SendResult(
+                success=False,
+                error=error_msg,
+                raw_response=body,
+                retryable=resp.status_code == 429,
+            )
+
+        return SendResult(success=True, raw_response=body)
+
+    async def _clear_calling_sidecar_audio(self, call_id: str) -> SendResult:
+        """Drop queued outbound PCM for a sidecar call when barge-in starts."""
+        if not self._calling_sidecar_enabled():
+            return SendResult(success=False, error="Calling sidecar not configured")
+        if self._http_client is None:
+            return SendResult(success=False, error="Not connected")
+
+        normalized_call_id = str(call_id or "").strip()
+        if not normalized_call_id:
+            return SendResult(success=False, error="Missing call_id")
+
+        if not self._calling_sidecar_has_endpoint("clear_audio"):
+            return SendResult(
+                success=True,
+                raw_response={"skipped": "clear_audio endpoint not advertised"},
+            )
+
+        url = self._calling_sidecar_endpoint_url(
+            "clear_audio",
+            "/calls/{call_id}/audio/clear",
+            call_id=normalized_call_id,
+        )
+        try:
+            resp = await self._http_client.post(
+                url,
+                timeout=self._calling_sidecar_timeout,
+            )
+        except Exception as exc:
+            logger.exception(
+                "[whatsapp_cloud] calling sidecar audio clear request failed for %s",
+                normalized_call_id,
+            )
+            return SendResult(success=False, error=str(exc), retryable=True)
+
+        try:
+            body = resp.json()
+        except Exception:
+            body = {"raw": str(getattr(resp, "text", ""))[:500]}
+
+        if resp.status_code != 200:
+            error_msg = ""
+            if isinstance(body, dict):
+                error_msg = str(body.get("error") or "")
+            if not error_msg:
+                error_msg = f"calling sidecar audio clear failed with HTTP {resp.status_code}"
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio clear rejected "
                 "(status=%d): %s",
                 resp.status_code,
                 error_msg,
@@ -1397,6 +1466,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Long-poll sidecar PCM and dispatch speech-ish chunks to Hermes."""
         buffer = bytearray()
         silent_polls = 0
+        cleared_outbound_for_segment = False
 
         try:
             while call_id in self._calling_sidecar_call_ids:
@@ -1404,6 +1474,18 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if audio is not None and audio.pcm_s16le:
                     pcm = audio.pcm_s16le
                     if self._calling_sidecar_pcm_has_speech(pcm):
+                        if not buffer and not cleared_outbound_for_segment:
+                            clear_result = await self._clear_calling_sidecar_audio(
+                                call_id
+                            )
+                            if not clear_result.success:
+                                logger.debug(
+                                    "[whatsapp_cloud] sidecar audio clear failed "
+                                    "for %s: %s",
+                                    call_id,
+                                    clear_result.error,
+                                )
+                            cleared_outbound_for_segment = True
                         buffer.extend(pcm)
                         silent_polls = 0
                         if len(buffer) >= CALLING_PCM_MAX_SEGMENT_BYTES:
@@ -1430,6 +1512,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 )
                             buffer.clear()
                             silent_polls = 0
+                            cleared_outbound_for_segment = False
                     continue
 
                 if buffer:
@@ -1443,6 +1526,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         )
                         buffer.clear()
                         silent_polls = 0
+                        cleared_outbound_for_segment = False
         except asyncio.CancelledError:
             raise
         except Exception:

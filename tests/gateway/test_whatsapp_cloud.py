@@ -827,6 +827,59 @@ class TestCallingSidecarClient:
         assert result.retryable is True
 
     @pytest.mark.asyncio
+    async def test_clear_calling_sidecar_audio_posts_contract_endpoint(self):
+        contract = {
+            "contract": "voice.webrtc_sidecar",
+            "version": 1,
+            "audio": {
+                "sample_rate": 48000,
+                "channels": 1,
+                "frame_ms": 20,
+                "encoding": "pcm_s16le",
+            },
+            "endpoints": {
+                "clear_audio": {"path": "/v1/calls/{call_id}/clear-audio"},
+            },
+        }
+        adapter = _make_adapter(
+            calling_sidecar_url="http://127.0.0.1:8787",
+            calling_sidecar_timeout=2.5,
+            calling_sidecar_contract=contract,
+            calling_sidecar_contract_checked=True,
+        )
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200,
+                {"dropped_tx_bytes": 3840, "queued_tx_bytes": 0},
+            )
+        )
+
+        result = await adapter._clear_calling_sidecar_audio("call/1")
+
+        assert result.success is True
+        assert result.raw_response == {"dropped_tx_bytes": 3840, "queued_tx_bytes": 0}
+        call = adapter._http_client.post.call_args
+        assert call.args[0] == "http://127.0.0.1:8787/v1/calls/call%2F1/clear-audio"
+        assert call.kwargs["timeout"] == 2.5
+
+    @pytest.mark.asyncio
+    async def test_clear_calling_sidecar_audio_skips_without_contract_endpoint(self):
+        adapter = _make_adapter(
+            calling_sidecar_url="http://127.0.0.1:8787",
+            calling_sidecar_contract={"contract": "voice.webrtc_sidecar", "version": 1},
+            calling_sidecar_contract_checked=True,
+        )
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock()
+
+        result = await adapter._clear_calling_sidecar_audio("call-1")
+
+        assert result.success is True
+        assert result.raw_response == {"skipped": "clear_audio endpoint not advertised"}
+        adapter._http_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_play_tts_text_stream_command_posts_pcm_frames(self, monkeypatch):
         from gateway.platforms.base import SendResult
 
@@ -1178,6 +1231,7 @@ class TestCallingSidecarClient:
         adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
         adapter._calling_sidecar_call_ids.add("call-1")
         adapter._dispatch_calling_sidecar_pcm = AsyncMock()
+        adapter._clear_calling_sidecar_audio = AsyncMock()
         silence = b"\x00" * CALLING_PCM_DEFAULT_DRAIN_BYTES
         responses = [
             CallingSidecarAudio(
@@ -1211,9 +1265,11 @@ class TestCallingSidecarClient:
         )
 
         adapter._dispatch_calling_sidecar_pcm.assert_not_awaited()
+        adapter._clear_calling_sidecar_audio.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_calling_sidecar_audio_loop_flushes_speech_after_silence(self):
+        from gateway.platforms.base import SendResult
         from gateway.platforms.whatsapp_cloud import (
             CALLING_AUDIO_CONTRACT,
             CALLING_PCM_DEFAULT_DRAIN_BYTES,
@@ -1223,6 +1279,9 @@ class TestCallingSidecarClient:
         adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
         adapter._calling_sidecar_call_ids.add("call-1")
         adapter._dispatch_calling_sidecar_pcm = AsyncMock()
+        adapter._clear_calling_sidecar_audio = AsyncMock(
+            return_value=SendResult(success=True)
+        )
         speech = (
             (1000).to_bytes(2, "little", signed=True)
             * (CALLING_PCM_DEFAULT_DRAIN_BYTES // 2)
@@ -1267,6 +1326,7 @@ class TestCallingSidecarClient:
         )
 
         adapter._dispatch_calling_sidecar_pcm.assert_awaited_once()
+        adapter._clear_calling_sidecar_audio.assert_awaited_once_with("call-1")
         call = adapter._dispatch_calling_sidecar_pcm.call_args
         assert call.args[:3] == ("call-1", "13557825698", "Jessica Laverdetman")
         dispatched_pcm = call.args[3]

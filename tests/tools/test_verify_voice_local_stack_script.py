@@ -275,6 +275,7 @@ def _write_live_root(root: Path, *, include_cloud: bool = True) -> None:
                     "calling_sidecar_url",
                     "voice.webrtc_sidecar",
                     "_send_calling_sidecar_tts_stream_command",
+                    "_clear_calling_sidecar_audio",
                     "-application",
                     "voip",
                 ]

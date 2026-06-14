@@ -390,7 +390,7 @@ The Cloud API's live calling surface is a WebRTC media path, not a file-upload p
 5. The sidecar bridges WebRTC RTP audio to local 48 kHz, mono, 20 ms `pcm_s16le` frames.
 6. Hermes drains inbound PCM from the sidecar, writes utterance WAV segments for the existing STT path, and sends outbound TTS frames back to the sidecar.
 
-The sidecar contract is identified as `voice.webrtc_sidecar`. Hermes fetches `GET /contract` when available and uses its endpoint paths and audio fields; older sidecars can omit `/contract` and use the legacy `/offer`, `/calls/{call_id}/audio`, and `/calls/{call_id}/close` paths.
+The sidecar contract is identified as `voice.webrtc_sidecar`. Hermes fetches `GET /contract` when available and uses its endpoint paths and audio fields; older sidecars can omit `/contract` and use the legacy `/offer`, `/calls/{call_id}/audio`, and `/calls/{call_id}/close` paths. When a newer sidecar advertises `clear_audio`, Hermes calls that endpoint at the start of a detected inbound speech segment so barge-in can discard stale queued outbound TTS without closing the call.
 
 Minimal config:
 
