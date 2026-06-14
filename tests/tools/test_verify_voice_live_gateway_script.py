@@ -388,6 +388,63 @@ def test_check_whatsapp_cloud_verify_handshake_uses_token_without_reporting_it(
     assert verify_token not in json.dumps(result)
 
 
+def test_check_whatsapp_cloud_signed_post_uses_hmac_without_reporting_secret(
+    tmp_path: Path,
+    monkeypatch,
+):
+    script = _load_script_module()
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    app_secret = "0123456789abcdef0123456789abcdef"
+    (hermes_home / ".env").write_text(
+        "\n".join(
+            [
+                "WHATSAPP_CLOUD_PHONE_NUMBER_ID=7794189252778687",
+                "WHATSAPP_CLOUD_ACCESS_TOKEN=EAA" + ("x" * 120),
+                f"WHATSAPP_CLOUD_APP_SECRET={app_secret}",
+                "WHATSAPP_CLOUD_VERIFY_TOKEN=verify-token-value-long-enough",
+                "WHATSAPP_CLOUD_ALLOWED_USERS=15551234567",
+                "WHATSAPP_CLOUD_WEBHOOK_PORT=8091",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    readiness = script.validate_whatsapp_cloud_readiness(
+        hermes_home=hermes_home,
+        process_env={},
+    )
+
+    def fake_post_json_url(target, *, body, headers, timeout, label):
+        assert target == "http://127.0.0.1:8091/whatsapp/webhook"
+        assert label == target
+        assert app_secret.encode("utf-8") not in body
+        assert headers["Content-Type"] == "application/json"
+        signature = headers["X-Hub-Signature-256"]
+        assert signature.startswith("sha256=")
+        assert app_secret not in signature
+        payload = json.loads(body.decode("utf-8"))
+        assert payload["entry"][0]["changes"][0]["value"]["statuses"][0][
+            "status"
+        ] == "delivered"
+        return 200, ""
+
+    monkeypatch.setattr(script, "post_json_url", fake_post_json_url)
+
+    result = script.check_whatsapp_cloud_signed_post(
+        readiness=readiness,
+        webhook_url=None,
+        timeout=1.0,
+    )
+
+    assert result == {
+        "url": "http://127.0.0.1:8091/whatsapp/webhook",
+        "status": 200,
+        "payload": "status_delivery_receipt",
+        "signature_accepted": True,
+    }
+    assert app_secret not in json.dumps(result)
+
+
 def test_validate_whatsapp_cloud_readiness_rejects_missing_authorization(
     tmp_path: Path,
 ):
@@ -1417,6 +1474,11 @@ def test_main_can_require_whatsapp_cloud_readiness_without_printing_secrets(
 
     monkeypatch.setattr(script, "get_text_url", fake_get_text_url)
     monkeypatch.setattr(
+        script,
+        "post_json_url",
+        lambda *_args, **_kwargs: (200, ""),
+    )
+    monkeypatch.setattr(
         sys,
         "argv",
         [
@@ -1457,6 +1519,12 @@ def test_main_can_require_whatsapp_cloud_readiness_without_printing_secrets(
         "url": "http://127.0.0.1:8090/whatsapp/webhook",
         "status": 200,
         "challenge_echoed": True,
+    }
+    assert output["checks"]["whatsapp_cloud_signed_post"] == {
+        "url": "http://127.0.0.1:8090/whatsapp/webhook",
+        "status": 200,
+        "payload": "status_delivery_receipt",
+        "signature_accepted": True,
     }
     assert access_token not in output_text
     assert app_secret not in output_text

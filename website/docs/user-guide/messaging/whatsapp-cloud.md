@@ -453,7 +453,10 @@ restart. Use the `cloud_only` variant when this host does not run the local
 Baileys bridge. Use the `cloud_ready` variant before routing real Meta
 webhooks to the host; it checks WhatsApp Cloud credential shape and recipient
 authorization, then probes the running local Cloud `/health` endpoint and local
-Meta subscription challenge handshake without printing secret values.
+Meta subscription challenge handshake. It also sends a signed synthetic
+delivery-receipt POST to prove inbound HMAC verification accepts Meta-shaped
+webhook delivery without dispatching an agent message or printing secret
+values.
 
 The generated service files should look like this:
 

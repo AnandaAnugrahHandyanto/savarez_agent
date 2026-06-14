@@ -22,6 +22,8 @@ local WebRTC sidecar.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -33,7 +35,7 @@ import sys
 from typing import Any
 from urllib.error import URLError
 from urllib.parse import urlencode, urlparse
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from verify_voice_local_stack import audit_live_hermes_root
 
@@ -589,6 +591,24 @@ def get_text_url(target: str, *, timeout: float, label: str) -> tuple[int, str]:
     return status, body
 
 
+def post_json_url(
+    target: str,
+    *,
+    body: bytes,
+    headers: dict[str, str],
+    timeout: float,
+    label: str,
+) -> tuple[int, str]:
+    request = Request(target, data=body, headers=headers, method="POST")
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            response_body = response.read().decode("utf-8", errors="replace")
+            status = int(getattr(response, "status", 200))
+    except URLError as exc:
+        raise SystemExit(f"request failed for {label}: {exc}") from exc
+    return status, response_body
+
+
 def check_whatsapp_cloud_verify_handshake(
     *,
     readiness: dict[str, Any],
@@ -636,6 +656,92 @@ def check_whatsapp_cloud_verify_handshake(
         "url": target_base,
         "status": status,
         "challenge_echoed": True,
+    }
+
+
+def whatsapp_cloud_status_payload(*, phone_number_id: str) -> dict[str, Any]:
+    return {
+        "object": "whatsapp_business_account",
+        "entry": [
+            {
+                "id": "local-cloud-readiness",
+                "changes": [
+                    {
+                        "field": "messages",
+                        "value": {
+                            "messaging_product": "whatsapp",
+                            "metadata": {
+                                "display_phone_number": "15555550100",
+                                "phone_number_id": phone_number_id,
+                            },
+                            "statuses": [
+                                {
+                                    "id": "wamid.local-cloud-readiness",
+                                    "status": "delivered",
+                                    "timestamp": "1760000000",
+                                    "recipient_id": "15555550101",
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def check_whatsapp_cloud_signed_post(
+    *,
+    readiness: dict[str, Any],
+    webhook_url: str | None,
+    timeout: float,
+) -> dict[str, Any]:
+    private = readiness.get("_private")
+    if not isinstance(private, dict):
+        raise SystemExit("WhatsApp Cloud readiness private data missing")
+    file_env = private.get("file_env")
+    process_env = private.get("process_env")
+    phone_number_id = str(private.get("phone_number_id") or "")
+    if not isinstance(file_env, dict) or not isinstance(process_env, dict):
+        raise SystemExit("WhatsApp Cloud readiness env data missing")
+    app_secret = configured_value(
+        "WHATSAPP_CLOUD_APP_SECRET",
+        file_env={str(k): str(v) for k, v in file_env.items()},
+        process_env={str(k): str(v) for k, v in process_env.items()},
+    )[0]
+    if not app_secret:
+        raise SystemExit("WHATSAPP_CLOUD_APP_SECRET is not configured")
+    target_base = webhook_url or whatsapp_cloud_webhook_url_from_env(
+        file_env={str(k): str(v) for k, v in file_env.items()},
+        process_env={str(k): str(v) for k, v in process_env.items()},
+    )
+    body = json.dumps(
+        whatsapp_cloud_status_payload(phone_number_id=phone_number_id),
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    signature = hmac.new(
+        app_secret.encode("utf-8"),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
+    status, _body = post_json_url(
+        target_base,
+        body=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Hub-Signature-256": f"sha256={signature}",
+        },
+        timeout=timeout,
+        label=target_base,
+    )
+    if status != 200:
+        raise SystemExit(f"WhatsApp Cloud signed webhook POST returned HTTP {status}")
+    return {
+        "url": target_base,
+        "status": status,
+        "payload": "status_delivery_receipt",
+        "signature_accepted": True,
     }
 
 
@@ -1576,6 +1682,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--skip-whatsapp-cloud-signed-post",
+        action="store_true",
+        help=(
+            "With --require-whatsapp-cloud-readiness, skip the local signed "
+            "webhook POST probe."
+        ),
+    )
+    parser.add_argument(
         "--whatsapp-cloud-verify-challenge",
         default=DEFAULT_WHATSAPP_CLOUD_VERIFY_CHALLENGE,
         help=argparse.SUPPRESS,
@@ -1737,6 +1851,18 @@ def main() -> int:
                     challenge=args.whatsapp_cloud_verify_challenge,
                     timeout=args.timeout,
                 )
+            )
+        if args.skip_whatsapp_cloud_signed_post:
+            checks["whatsapp_cloud_signed_post"] = {
+                "success": True,
+                "skipped": True,
+                "reason": "--skip-whatsapp-cloud-signed-post was provided",
+            }
+        else:
+            checks["whatsapp_cloud_signed_post"] = check_whatsapp_cloud_signed_post(
+                readiness=cloud_readiness,
+                webhook_url=args.whatsapp_cloud_webhook_url,
+                timeout=args.timeout,
             )
 
     if args.calling_sidecar_url:
