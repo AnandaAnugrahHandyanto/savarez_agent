@@ -542,6 +542,31 @@ class TestCallingSidecarClient:
         assert answer is None
 
     @pytest.mark.asyncio
+    async def test_request_rejects_mismatched_answer_call_id(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200,
+                {
+                    "call_id": "other-call",
+                    "type": "answer",
+                    "sdp": "v=0\r\n",
+                    "audio": {
+                        "sample_rate": 48000,
+                        "channels": 1,
+                        "frame_ms": 20,
+                        "encoding": "pcm_s16le",
+                    },
+                },
+            )
+        )
+
+        answer = await adapter._request_calling_sidecar_answer("call-1", "v=0\r\n")
+
+        assert answer is None
+
+    @pytest.mark.asyncio
     async def test_send_call_action_posts_session_answer(self):
         adapter = _make_adapter()
         adapter._http_client = MagicMock()
@@ -790,6 +815,32 @@ class TestCallingSidecarClient:
                     "returned_bytes": 99,
                     "queued_rx_bytes": 0,
                     "pcm_s16le_base64": base64.b64encode(b"\x00\x00").decode("ascii"),
+                },
+            )
+        )
+
+        audio = await adapter._receive_calling_sidecar_audio("call-1")
+
+        assert audio is None
+
+    @pytest.mark.asyncio
+    async def test_receive_calling_sidecar_audio_rejects_mismatched_call_id(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._http_client = MagicMock()
+        adapter._http_client.get = AsyncMock(
+            return_value=_mock_httpx_response(
+                200,
+                {
+                    "call_id": "other-call",
+                    "returned_bytes": 2,
+                    "queued_rx_bytes": 0,
+                    "pcm_s16le_base64": base64.b64encode(b"\x00\x00").decode("ascii"),
+                    "audio": {
+                        "sample_rate": 48000,
+                        "channels": 1,
+                        "frame_ms": 20,
+                        "encoding": "pcm_s16le",
+                    },
                 },
             )
         )

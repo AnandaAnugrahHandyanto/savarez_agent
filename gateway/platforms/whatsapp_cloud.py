@@ -589,9 +589,17 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             )
             return None
 
-        answer_call_id = str(data.get("call_id") or "").strip() or normalized_call_id
+        answer_call_id = str(data.get("call_id") or "").strip()
+        if answer_call_id and answer_call_id != normalized_call_id:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar answer call_id mismatch "
+                "(expected=%s, got=%s)",
+                normalized_call_id,
+                answer_call_id,
+            )
+            return None
         return CallingSidecarAnswer(
-            call_id=answer_call_id,
+            call_id=normalized_call_id,
             sdp=sdp,
             audio=audio,
         )
@@ -793,9 +801,17 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             )
             return None
 
-        answer_call_id = str(data.get("call_id") or "").strip() or normalized_call_id
+        answer_call_id = str(data.get("call_id") or "").strip()
+        if answer_call_id and answer_call_id != normalized_call_id:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain call_id mismatch "
+                "(expected=%s, got=%s)",
+                normalized_call_id,
+                answer_call_id,
+            )
+            return None
         return CallingSidecarAudio(
-            call_id=answer_call_id,
+            call_id=normalized_call_id,
             pcm_s16le=pcm,
             returned_bytes=returned_bytes,
             queued_rx_bytes=queued_rx_bytes,
