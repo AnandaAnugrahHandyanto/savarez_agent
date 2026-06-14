@@ -44,7 +44,7 @@ class TestCliPromptsCommand:
         assert "second prompt" in output
         assert "first prompt" in output
         assert "/prompts 2" in output
-        assert "bare number" in output
+        assert "type a number now" in output
 
     def test_bare_prompts_arms_pending_selection(self):
         cli_obj = _make_cli()
@@ -64,7 +64,7 @@ class TestCliPromptsCommand:
 
         assert cli_obj._pending_prompt_messages is None
         printed = " ".join(str(call) for call in mock_cprint.call_args_list)
-        assert "No previous prompts" in printed
+        assert "No user prompts" in printed
 
     def test_handle_prompts_by_index_prefills_selected_prompt(self):
         cli_obj = _make_cli()
@@ -96,7 +96,7 @@ class TestCliPromptsCommand:
 
         printed = " ".join(str(call) for call in mock_cprint.call_args_list)
         assert consumed is True
-        assert "Could not load prompt #1: missing message id" in printed
+        assert "Could not load prompt #1: message id is missing" in printed
 
     def test_load_prompt_without_text_mentions_index(self):
         cli_obj = _make_cli()
@@ -112,7 +112,7 @@ class TestCliPromptsCommand:
 
         printed = " ".join(str(call) for call in mock_cprint.call_args_list)
         assert consumed is True
-        assert "Could not load prompt #1: no editable text" in printed
+        assert "Could not load prompt #1: no editable text found" in printed
 
     def test_pending_number_loads_selected_prompt_and_disarms(self):
         cli_obj = _make_cli()

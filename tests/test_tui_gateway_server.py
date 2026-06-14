@@ -7783,7 +7783,7 @@ def test_prompts_dispatch_list_returns_exec(monkeypatch, tmp_path):
         assert "Recent prompts" in output
         assert "second prompt" in output
         assert "first prompt" in output
-        assert "/prompts N" in output
+        assert "Use /prompts N to load a prompt" in output
     finally:
         server._sessions.pop(sid, None)
         test_db.close()

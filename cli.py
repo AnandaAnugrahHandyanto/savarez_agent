@@ -5870,7 +5870,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             when = _relative_time(prompt.get("timestamp"))
             print(f"  {idx:<3} {preview:<80} {when:<13} {prompt.get('id')}")
         print()
-        print("  Use /prompts <number> or type a bare number next to load a prompt for editing.")
+        print("  Use /prompts <number>, or type a number now, to load a prompt for editing.")
         print("  Example: /prompts 2")
         print()
         return prompts
@@ -5901,12 +5901,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         selected = prompts[index - 1]
         message_id = selected.get("id")
         if message_id is None:
-            _cprint(f"  Could not load prompt #{index}: missing message id.")
+            _cprint(f"  Could not load prompt #{index}: message id is missing.")
             return True
 
         text = self._prompt_text_for_message_id(message_id)
         if not text:
-            _cprint(f"  Could not load prompt #{index}: no editable text.")
+            _cprint(f"  Could not load prompt #{index}: no editable text found.")
             return True
 
         if self._prefill_input_buffer(text):
@@ -5937,7 +5937,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._pending_prompt_messages = prompts
             else:
                 self._pending_prompt_messages = None
-                _cprint("  (._.) No previous prompts in this session yet.")
+                _cprint("  (._.) No user prompts in this session yet.")
             return
 
         self._pending_prompt_messages = None
@@ -5948,7 +5948,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         prompts = self._list_recent_prompts(limit=10)
         if not prompts:
-            _cprint("  (._.) No previous prompts in this session yet.")
+            _cprint("  (._.) No user prompts in this session yet.")
             return
         self._load_prompt_for_editing(int(arg), prompts)
 
