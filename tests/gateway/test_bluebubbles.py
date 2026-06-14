@@ -6,6 +6,8 @@ import httpx
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import _thread_metadata_for_source
+from gateway.session import SessionSource
 
 
 def _make_adapter(monkeypatch, **extra):
@@ -142,6 +144,59 @@ class TestBlueBubblesHelpers:
         assert result.success is True
         assert result.message_id == "timeout-assumed-delivered"
         assert calls == [("/api/v1/chat/new", "hello")]
+
+    @pytest.mark.asyncio
+    async def test_send_uses_metadata_chat_id_alt_when_canonical_chat_id_does_not_resolve(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        raw_guid = "any;-;+15551234567"
+        sent = []
+
+        async def fake_api_post(path, payload):
+            sent.append((path, payload))
+            return {"data": {"guid": "msg-1"}}
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send(
+            "+15551234567",
+            "hello",
+            metadata={"chat_id_alt": raw_guid},
+        )
+
+        assert result.success is True
+        assert result.message_id == "msg-1"
+        assert len(sent) == 1
+        assert sent[0][0] == "/api/v1/message/text"
+        assert sent[0][1]["chatGuid"] == raw_guid
+        assert sent[0][1]["message"] == "hello"
+
+    def test_thread_metadata_carries_chat_id_alt_without_thread(self):
+        source = SessionSource(
+            platform=Platform.BLUEBUBBLES,
+            chat_id="+15551234567",
+            chat_id_alt="any;-;+15551234567",
+        )
+
+        assert _thread_metadata_for_source(source) == {
+            "chat_id_alt": "any;-;+15551234567"
+        }
+
+    def test_runner_thread_metadata_carries_chat_id_alt_without_thread(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        source = SessionSource(
+            platform=Platform.BLUEBUBBLES,
+            chat_id="+15551234567",
+            chat_id_alt="any;-;+15551234567",
+        )
+
+        assert runner._thread_metadata_for_source(source) == {
+            "chat_id_alt": "any;-;+15551234567"
+        }
 
     def test_format_message_strips_markdown(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)

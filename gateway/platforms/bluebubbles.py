@@ -598,9 +598,22 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             chunks = [text]
         else:
             chunks = self.truncate_message(text, max_length=self.MAX_MESSAGE_LENGTH)
+        chat_id_alt = None
+        if isinstance(metadata, dict):
+            raw_alt = metadata.get("chat_id_alt")
+            if isinstance(raw_alt, str):
+                raw_alt = raw_alt.strip()
+                if raw_alt and raw_alt != chat_id:
+                    chat_id_alt = raw_alt
         last = SendResult(success=True)
         for chunk in chunks:
-            guid = await self._resolve_chat_guid(chat_id)
+            guid = None
+            for target in (chat_id_alt, chat_id):
+                if not target:
+                    continue
+                guid = await self._resolve_chat_guid(target)
+                if guid:
+                    break
             if not guid:
                 # If the target looks like an address, try creating a new chat
                 if self._private_api_enabled and (
