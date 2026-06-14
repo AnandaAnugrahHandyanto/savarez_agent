@@ -953,6 +953,25 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return inspect.iscoroutinefunction(getattr(self._bot, "do_api_request", None))
 
+    def _needs_rich_rendering(self, content: str) -> bool:
+        """Return True for markdown constructs that the legacy path degrades.
+
+        Keep ordinary replies on the pre-rich MarkdownV2 path so Telegram
+        clients render a consistent font weight/spacing. The rich endpoint is
+        reserved for constructs where raw markdown materially improves output.
+        """
+        if not content:
+            return False
+        if _TABLE_SEPARATOR_RE.search(content):
+            return True
+        if re.search(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+", content):
+            return True
+        if re.search(r"(?m)^<details\b|^</details>|^<summary\b|^</summary>", content):
+            return True
+        if "$$" in content:
+            return True
+        return False
+
     def _should_attempt_rich(
         self, content: str, metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
@@ -962,6 +981,7 @@ class TelegramAdapter(BasePlatformAdapter):
             and not (metadata or {}).get("expect_edits")
             and content
             and content.strip()
+            and self._needs_rich_rendering(content)
             and self._content_fits_rich_limits(content)
             and self._bot_supports_rich()
         )

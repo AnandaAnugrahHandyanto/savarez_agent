@@ -10,6 +10,7 @@ The ``telegram`` package is mocked by ``tests/gateway/conftest.py``
 ``TelegramAdapter`` and wire a mock bot.
 """
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -142,6 +143,25 @@ async def test_rich_messages_default_is_enabled():
     assert bot is not None
     bot.do_api_request.assert_awaited_once()
     bot.send_message.assert_not_called()
+
+
+def test_plain_markdown_stays_on_legacy_path_for_consistent_rendering():
+    adapter = _make_adapter()
+
+    result = asyncio.run(adapter.send("12345", "Hello **there**\n\nA normal reply."))
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited()
+
+
+def test_prefers_fresh_final_streaming_only_for_rich_constructs():
+    adapter = _make_adapter()
+
+    assert adapter.prefers_fresh_final_streaming("Plain **markdown**") is False
+    assert adapter.prefers_fresh_final_streaming(RICH_CONTENT) is True
 
 
 @pytest.mark.asyncio
