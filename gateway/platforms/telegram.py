@@ -4402,25 +4402,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     exc_info=True,
                 )
 
-    async def stop_typing(self, chat_id: str) -> None:
-        """Cancel the typing indicator explicitly after agent turn completes.
-
-        The base adapter calls stop_typing() during cleanup (``_keep_typing``
-        finally block) and on session interruption.  Without this method the
-        Telegram typing indicator simply expires after ~5 seconds, leaving a
-        lingering "is typing…" status bar on Android clients that shifts the
-        conversation layout and can leave empty space at the bottom of the
-        chat view.
-        """
-        if self._bot:
-            try:
-                await self._bot.send_chat_action(
-                    chat_id=int(chat_id),
-                    action="cancel",
-                )
-            except Exception:
-                pass
-
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Telegram chat."""
         if not self._bot:
