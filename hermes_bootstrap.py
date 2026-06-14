@@ -50,10 +50,15 @@ against double-reconfigure.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
+from pathlib import Path
 
 _IS_WINDOWS = sys.platform == "win32"
 _bootstrap_applied = False
+_BOOTSTRAP_ROOT = Path(__file__).resolve().parent
+_PYCACHE_REVISION_MARKER = ".hermes-pycache-revision"
+_PYCACHE_SKIP_DIRS = {"venv", ".venv", "node_modules", ".git", ".worktrees"}
 
 
 def apply_windows_utf8_bootstrap() -> bool:
@@ -107,6 +112,8 @@ def apply_windows_utf8_bootstrap() -> bool:
             # non-reconfigurable.  Non-fatal.
             pass
 
+    _clear_windows_pycache_after_source_update(_BOOTSTRAP_ROOT)
+
     # stdin is reconfigured separately with errors="replace" too — input
     # from a legacy pipe shouldn't crash the process.
     stdin = getattr(sys, "stdin", None)
@@ -119,6 +126,102 @@ def apply_windows_utf8_bootstrap() -> bool:
                 pass
 
     _bootstrap_applied = True
+    return True
+
+
+def _git_dir_for(root: Path) -> Path | None:
+    git_path = root / ".git"
+    if git_path.is_dir():
+        return git_path
+    if not git_path.is_file():
+        return None
+    try:
+        text = git_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not text.startswith("gitdir:"):
+        return None
+    git_dir = Path(text.split(":", 1)[1].strip())
+    if not git_dir.is_absolute():
+        git_dir = (root / git_dir).resolve()
+    return git_dir
+
+
+def _source_revision(root: Path) -> str | None:
+    git_dir = _git_dir_for(root)
+    if git_dir is None:
+        return None
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not head:
+        return None
+    if head.startswith("ref:"):
+        ref = head.split(":", 1)[1].strip()
+        try:
+            return (git_dir / ref).read_text(encoding="utf-8").strip() or None
+        except OSError:
+            return _packed_ref_revision(git_dir, ref)
+    return head
+
+
+def _packed_ref_revision(git_dir: Path, ref: str) -> str | None:
+    try:
+        lines = (git_dir / "packed-refs").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    suffix = f" {ref}"
+    for line in lines:
+        if line.startswith("#") or line.startswith("^"):
+            continue
+        if line.endswith(suffix):
+            return line.split(" ", 1)[0].strip() or None
+    return None
+
+
+def _clear_pycache_dirs(root: Path) -> int:
+    removed = 0
+    for dirpath, dirnames, _ in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _PYCACHE_SKIP_DIRS]
+        if os.path.basename(dirpath) != "__pycache__":
+            continue
+        try:
+            shutil.rmtree(dirpath)
+            removed += 1
+        except OSError:
+            pass
+        dirnames.clear()
+    return removed
+
+
+def _clear_windows_pycache_after_source_update(root: Path) -> bool:
+    """Clear stale bytecode once per source revision on Windows startup."""
+    if not _IS_WINDOWS:
+        return False
+
+    revision = _source_revision(root)
+    if not revision:
+        return False
+
+    git_dir = _git_dir_for(root)
+    if git_dir is None:
+        return False
+
+    marker = git_dir / _PYCACHE_REVISION_MARKER
+    try:
+        if marker.read_text(encoding="utf-8").strip() == revision:
+            return False
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return False
+
+    _clear_pycache_dirs(root)
+    try:
+        marker.write_text(f"{revision}\n", encoding="utf-8")
+    except OSError:
+        return False
     return True
 
 
