@@ -141,6 +141,18 @@ def _load_web_config() -> dict:
     except (ImportError, Exception):
         return {}
 
+
+def _coerce_search_limit(raw: Any, *, default: int = 5) -> int:
+    try:
+        limit = int(raw)
+    except (TypeError, ValueError):
+        limit = default
+    return min(max(limit, 1), 100)
+
+
+def _get_search_default_limit() -> int:
+    return _coerce_search_limit(_load_web_config().get("search_default_limit"), default=5)
+
 # Recognized web backend names (config values accepted in ``web.backend`` /
 # ``web.search_backend`` / ``web.extract_backend``). Kept as a single source of
 # truth for config validation across the selection helpers.
@@ -915,7 +927,7 @@ def _register_bundled_web_providers_directly() -> None:
             )
 
 
-def web_search_tool(query: str, limit: int = 5) -> str:
+def web_search_tool(query: str, limit: Optional[int] = None) -> str:
     """
     Search the web for information using available search API backend.
 
@@ -927,7 +939,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     
     Args:
         query (str): The search query to look up
-        limit (int): Maximum number of results to return (default: 5)
+        limit (int): Maximum number of results to return (defaults to web.search_default_limit)
     
     Returns:
         str: JSON string containing search results with the following structure:
@@ -949,11 +961,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     Raises:
         Exception: If search fails or API key is not set
     """
-    try:
-        limit = int(limit)
-    except (TypeError, ValueError):
-        limit = 5
-    limit = min(max(limit, 1), 100)
+    limit = _get_search_default_limit() if limit is None else _coerce_search_limit(limit)
 
     debug_call_data = {
         "parameters": {
@@ -1506,9 +1514,11 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
 
+_WEB_SEARCH_DEFAULT_LIMIT = _get_search_default_limit()
+
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",
-    "description": "Search the web for information. Returns up to 5 results by default with titles, URLs, and descriptions. The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
+    "description": "Search the web for information. Returns the configured default number of results with titles, URLs, and descriptions. The query is passed through to the configured backend, so operators such as site:domain, filetype:pdf, intitle:word, -term, and \"exact phrase\" may work when the backend supports them.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1518,10 +1528,10 @@ WEB_SEARCH_SCHEMA = {
             },
             "limit": {
                 "type": "integer",
-                "description": "Maximum number of results to return. Defaults to 5.",
+                "description": "Maximum number of results to return. Defaults to web.search_default_limit.",
                 "minimum": 1,
                 "maximum": 100,
-                "default": 5
+                "default": _WEB_SEARCH_DEFAULT_LIMIT
             }
         },
         "required": ["query"]
@@ -1549,7 +1559,7 @@ registry.register(
     name="web_search",
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
-    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
+    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit")),
     check_fn=web_tools_registered,
     requires_env=_web_requires_env(),
     emoji="🔍",

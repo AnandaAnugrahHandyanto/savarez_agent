@@ -505,7 +505,17 @@ class TestWebSearchSchema:
             result = entry.handler({"query": "docs"})
 
         assert result == '{"success": true}'
-        mock_search.assert_called_once_with("docs", limit=5)
+        mock_search.assert_called_once_with("docs", limit=None)
+
+    def test_configured_default_limit_is_clamped(self):
+        import tools.web_tools
+
+        with patch("tools.web_tools._load_web_config", return_value={"search_default_limit": "20"}):
+            assert tools.web_tools._get_search_default_limit() == 20
+        with patch("tools.web_tools._load_web_config", return_value={"search_default_limit": 500}):
+            assert tools.web_tools._get_search_default_limit() == 100
+        with patch("tools.web_tools._load_web_config", return_value={"search_default_limit": "bad"}):
+            assert tools.web_tools._get_search_default_limit() == 5
 
     def test_web_search_clamps_limit_before_backend_call(self):
         import tools.web_tools
@@ -532,6 +542,28 @@ class TestWebSearchSchema:
 
         assert result == {"success": True, "data": {"web": []}}
         fake_search.assert_called_once_with("docs", 100)
+
+    def test_web_search_uses_configured_default_limit_when_omitted(self):
+        import tools.web_tools
+
+        fake_search = MagicMock(return_value={"success": True, "data": {"web": []}})
+        fake_provider = MagicMock(
+            name="ParallelWebSearchProvider",
+            supports_search=MagicMock(return_value=True),
+        )
+        fake_provider.search = fake_search
+        fake_provider.name = "parallel"
+
+        with patch("tools.web_tools._load_web_config", return_value={"search_default_limit": 12}), \
+             patch("tools.web_tools._get_search_backend", return_value="parallel"), \
+             patch("agent.web_search_registry.get_provider", return_value=fake_provider), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(tools.web_tools.web_search_tool("docs"))
+
+        assert result == {"success": True, "data": {"web": []}}
+        fake_search.assert_called_once_with("docs", 12)
 
 
 class TestWebSearchErrorHandling:
