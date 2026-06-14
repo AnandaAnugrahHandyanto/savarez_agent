@@ -19,9 +19,9 @@ Phase scope (this file evolves across phases):
             + wamid replay protection + dispatch via handle_message. Phase 3
             adapter is end-to-end usable for text DMs.
 - Phase 4 — media upload + send (image/video/audio/document), inbound
-            media download via the Graph media endpoint, voice-note opus
-            conversion via ffmpeg with graceful MP3 fallback when ffmpeg
-            isn't on PATH. Document text injection for readable types.
+            media download via the Graph media endpoint, voice-note Ogg/Opus
+            pass-through with ffmpeg conversion fallback when needed.
+            Document text injection for readable types.
 - Phase 5 — 24-hour conversation window + template fallback.
 
 Required env vars to enable the adapter:
@@ -179,9 +179,12 @@ _DEFAULT_MIME = {
     "sticker": "image/webp",
 }
 
+_WHATSAPP_OPUS_MIME = "audio/ogg; codecs=opus"
+_WHATSAPP_OPUS_EXTENSIONS = (".ogg", ".opus")
+
 # ffmpeg location at import time. ``shutil.which`` honours PATHEXT on
-# Windows so a user's ``ffmpeg.exe`` is picked up. None means MP3 voice
-# falls back to "audio file attachment" rendering in WhatsApp.
+# Windows so a user's ``ffmpeg.exe`` is picked up. None means non-Opus
+# voice output falls back to "audio file attachment" rendering in WhatsApp.
 _FFMPEG_PATH = shutil.which("ffmpeg")
 
 # Python's mimetypes module returns RFC-correct but real-world-uncommon
@@ -2369,9 +2372,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         WhatsApp renders ``audio/ogg; codecs=opus`` as the green
         voice-note bubble; other audio types (MP3, AAC, etc.) appear as
-        a generic audio attachment. Hermes TTS produces MP3, so we try
-        ffmpeg conversion to opus first and fall back to sending the
-        MP3 as-is when ffmpeg is unavailable.
+        a generic audio attachment. Existing Ogg/Opus files are uploaded
+        directly with the WhatsApp voice MIME; other local audio is
+        converted to Ogg/Opus with ffmpeg when available.
         """
         call_id = self._calling_sidecar_call_id_from_metadata(metadata)
         if call_id:
@@ -2380,32 +2383,33 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         source = audio_path
         mime_type: Optional[str] = None
 
-        is_local_mp3 = (
-            not audio_path.startswith(("http://", "https://"))
-            and audio_path.lower().endswith(".mp3")
-            and os.path.exists(audio_path)
-        )
-        if is_local_mp3:
+        is_remote = audio_path.startswith(("http://", "https://"))
+        is_local_existing = not is_remote and os.path.exists(audio_path)
+        lower_path = audio_path.lower()
+
+        if is_local_existing and lower_path.endswith(_WHATSAPP_OPUS_EXTENSIONS):
+            mime_type = _WHATSAPP_OPUS_MIME
+        elif is_local_existing:
             opus_path = await self._convert_to_opus(audio_path)
             if opus_path:
                 try:
                     result = await self._send_media_from_path_or_link(
                         chat_id, opus_path, "audio",
                         caption=caption, reply_to=reply_to,
-                        mime_type="audio/ogg; codecs=opus",
+                        mime_type=_WHATSAPP_OPUS_MIME,
                     )
                 finally:
-                    # The .ogg is a transient conversion artifact next to
-                    # the source MP3 — clean it up after upload so voice
-                    # sends don't leak a file per message.
+                    # The .ogg is a transient conversion artifact; clean
+                    # it up after upload so voice sends don't leak files.
                     try:
                         os.unlink(opus_path)
                     except OSError:
                         pass
                 return result
-            # Will deliver as MP3 attachment, not voice bubble.
+            # Will deliver as an audio attachment, not a voice bubble.
             # Warn-once is logged inside _convert_to_opus.
-            mime_type = "audio/mpeg"
+            if lower_path.endswith(".mp3"):
+                mime_type = "audio/mpeg"
 
         return await self._send_media_from_path_or_link(
             chat_id, source, "audio",
@@ -2430,12 +2434,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
 
     # ------------------------------------------------------------------ opus conversion
-    async def _convert_to_opus(self, mp3_path: str) -> Optional[str]:
-        """Convert an MP3 to ``audio/ogg; codecs=opus`` for voice bubbles.
+    async def _convert_to_opus(self, audio_path: str) -> Optional[str]:
+        """Convert audio to ``audio/ogg; codecs=opus`` for voice bubbles.
 
         Returns the path to the converted file, or None if ffmpeg is
         missing / conversion fails (caller falls back to sending the
-        original MP3 as an audio file).
+        original audio as an attachment).
 
         ``-application voip`` tunes the opus encoder for speech.
         ``-b:a 32k -vbr on`` matches the bitrate WhatsApp produces for
@@ -2445,10 +2449,16 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._warn_once_no_ffmpeg()
             return None
 
-        out_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+        out_file = tempfile.NamedTemporaryFile(
+            prefix="hermes_whatsapp_voice_",
+            suffix=".ogg",
+            delete=False,
+        )
+        out_path = out_file.name
+        out_file.close()
         try:
             proc = await asyncio.create_subprocess_exec(
-                _FFMPEG_PATH, "-y", "-i", mp3_path,
+                _FFMPEG_PATH, "-y", "-i", audio_path,
                 "-c:a", "libopus", "-b:a", "32k", "-vbr", "on",
                 "-application", "voip", out_path,
                 stdout=asyncio.subprocess.DEVNULL,
@@ -2462,10 +2472,18 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     proc.returncode,
                     (stderr or b"").decode("utf-8", errors="replace")[:500],
                 )
+                try:
+                    os.unlink(out_path)
+                except OSError:
+                    pass
                 return None
             return out_path
         except Exception:
             logger.exception("[whatsapp_cloud] ffmpeg subprocess raised")
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
             return None
 
     def _warn_once_no_ffmpeg(self) -> None:
@@ -2474,7 +2492,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._warned_no_ffmpeg = True
         logger.warning(
             "[whatsapp_cloud] ffmpeg not found on PATH — voice messages will "
-            "be delivered as MP3 audio attachments instead of native voice "
+            "be delivered as audio attachments instead of native voice "
             "notes (green waveform bubble). Install ffmpeg to enable: "
             "Windows `winget install Gyan.FFmpeg`, macOS `brew install ffmpeg`, "
             "Linux package manager."

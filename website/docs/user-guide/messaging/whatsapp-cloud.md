@@ -41,7 +41,7 @@ The rest of this page is the manual reference.
 1. **A Meta Business account**.  Create one at [business.facebook.com](https://business.facebook.com/).
 2. **A Meta app with WhatsApp enabled**.  See "Creating the Meta app" below.
 3. **A way to expose a local port to the public internet** with HTTPS.  Cloudflare Tunnel (`cloudflared`) is recommended — free, no port forwarding, no domain required.  ngrok, your own domain with a reverse proxy + TLS, or a VPS with the gateway directly bound to a public IP all work too.
-4. **Optional but recommended**: ffmpeg on `PATH` so outbound voice messages render as native WhatsApp voice-note bubbles (green waveform) instead of MP3 audio attachments. Hermes degrades gracefully if absent.
+4. **Optional for MP3/WAV providers**: ffmpeg on `PATH` lets Hermes convert non-Opus TTS output into native WhatsApp voice-note bubbles (green waveform). Command providers that emit Ogg/Opus directly do not need ffmpeg for outbound voice messages.
 
 ---
 
@@ -254,7 +254,7 @@ You can have **both** the Baileys (`whatsapp`) and Cloud (`whatsapp_cloud`) adap
 
 - **Text** — markdown is auto-converted to WhatsApp's flavored syntax (`**bold**` → `*bold*`, `~~strike~~` → `~strike~`, headers → bold, `[link](url)` → `link (url)`). Long messages split at 4096 chars per chunk.
 - **Images** — agent-generated images and local image files both supported, delivered as native photo attachments.
-- **Voice messages** — text-to-speech output is converted via ffmpeg into the native WhatsApp voice-note bubble (green waveform). Without ffmpeg installed, falls back to an MP3 audio attachment. See "Voice messages" below.
+- **Voice messages** — text-to-speech output can be sent directly as Ogg/Opus for native WhatsApp voice-note bubbles (green waveform). MP3/WAV output uses ffmpeg conversion when available and otherwise falls back to a regular audio attachment. See "Voice messages" below.
 - **Video / documents** — both supported, sent as native attachments.
 
 ### Interactive UX

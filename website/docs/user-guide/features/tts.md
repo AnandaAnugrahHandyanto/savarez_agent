@@ -35,7 +35,7 @@ Convert text to speech with ten providers:
 |----------|----------|--------|
 | Telegram | Voice bubble (plays inline) | Opus `.ogg` |
 | Discord | Voice bubble (Opus/OGG), falls back to file attachment | Opus/MP3 |
-| WhatsApp | Audio file attachment | MP3 |
+| WhatsApp | Native voice note with `voice_compatible`; regular attachment otherwise | Ogg/Opus preferred; MP3/WAV fallback |
 | CLI | Saved to `~/.hermes/audio_cache/` | MP3 |
 
 ### Configuration
@@ -404,7 +404,7 @@ Override these on your provider class for richer integration:
 - `list_models()` → list of `{id, display, languages, max_text_length}` dicts.
 - `get_setup_schema()` → return `{name, badge, tag, env_vars: [{key, prompt, url}]}` to power the picker row in `hermes tools` / `hermes setup`. Without this, the plugin still works but its row in the picker is minimal.
 - `stream(text, *, voice, model, format, **extra)` → iterator yielding audio bytes for streaming delivery (default raises `NotImplementedError`).
-- `voice_compatible` property → set `True` if your output is Opus-compatible and the gateway should deliver it as a voice bubble (default `False` = regular audio attachment).
+- `voice_compatible` property → set `True` when your output should use native voice-message delivery. Ogg/Opus output is sent directly; MP3/WAV output may be converted by gateways that support conversion (default `False` = regular audio attachment).
 
 See `agent/tts_provider.py` for the full ABC including docstrings.
 
