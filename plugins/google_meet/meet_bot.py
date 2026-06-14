@@ -35,6 +35,7 @@ import signal
 import sys
 import threading
 import time
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Optional
 
@@ -130,6 +131,7 @@ class _BotState:
         # Scraped captions, in order, deduped. Each entry is a dict of
         # {"ts": <epoch>, "speaker": str, "text": str}.
         self._seen: set = set()
+        self._transcript_entries: list[tuple[str, str, str]] = []
         out_dir.mkdir(parents=True, exist_ok=True)
         self.transcript_path = out_dir / "transcript.txt"
         self.caption_debug_path = out_dir / "caption_debug.jsonl"
@@ -137,6 +139,46 @@ class _BotState:
         self._flush()
 
     # -------- transcript ------------------------------------------------
+
+    @staticmethod
+    def _common_prefix_len(left: str, right: str) -> int:
+        limit = min(len(left), len(right))
+        for idx in range(limit):
+            if left[idx] != right[idx]:
+                return idx
+        return limit
+
+    @classmethod
+    def _is_caption_revision(cls, previous: str, current: str) -> bool:
+        previous_norm = re.sub(r"\s+", " ", previous or "").strip()
+        current_norm = re.sub(r"\s+", " ", current or "").strip()
+        if not previous_norm or not current_norm or previous_norm == current_norm:
+            return False
+        previous_lower = previous_norm.lower()
+        current_lower = current_norm.lower()
+        if current_lower.startswith(previous_lower):
+            return True
+        prefix_len = cls._common_prefix_len(previous_lower, current_lower)
+        if prefix_len >= min(24, max(4, len(previous_lower) // 2)):
+            return True
+        ratio = SequenceMatcher(None, previous_lower, current_lower).ratio()
+        return ratio >= 0.82 and prefix_len >= 8
+
+    def _touch_caption_progress(self) -> str:
+        self.last_caption_at = time.time()
+        self.last_progress_at = self.last_caption_at
+        self.phase = "capturing"
+        self.stalled_reason = None
+        if not self.in_call:
+            self.in_call = True
+            self.lobby_waiting = False
+            self.joined_at = self.last_caption_at
+        return time.strftime("%H:%M:%S", time.localtime(self.last_caption_at))
+
+    def _rewrite_transcript(self) -> None:
+        with self.transcript_path.open("w", encoding="utf-8") as f:
+            for ts, speaker, text in self._transcript_entries:
+                f.write(f"[{ts}] {speaker}: {text}\n")
 
     def record_caption(
         self,
@@ -170,16 +212,17 @@ class _BotState:
         if key in self._seen:
             return
         self._seen.add(key)
+        ts = self._touch_caption_progress()
+        if self._transcript_entries:
+            _, previous_speaker, previous_text = self._transcript_entries[-1]
+            if previous_speaker == speaker and self._is_caption_revision(previous_text, text):
+                self._transcript_entries[-1] = (ts, speaker, text)
+                self._rewrite_transcript()
+                self._flush()
+                return
+
         self.transcript_lines += 1
-        self.last_caption_at = time.time()
-        self.last_progress_at = self.last_caption_at
-        self.phase = "capturing"
-        self.stalled_reason = None
-        if not self.in_call:
-            self.in_call = True
-            self.lobby_waiting = False
-            self.joined_at = self.last_caption_at
-        ts = time.strftime("%H:%M:%S", time.localtime(self.last_caption_at))
+        self._transcript_entries.append((ts, speaker, text))
         line = f"[{ts}] {speaker}: {text}\n"
         # Atomic-ish append — good enough for a single-writer.
         with self.transcript_path.open("a", encoding="utf-8") as f:

@@ -101,6 +101,45 @@ def test_bot_state_dedupes_captions_and_flushes_status(tmp_path):
     assert status["transcriptPath"].endswith("transcript.txt")
 
 
+def test_bot_state_rewrites_growing_same_speaker_caption_row(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    out = tmp_path / "session"
+    state = _BotState(out_dir=out, meeting_id="abc-defg-hij",
+                      url="https://meet.google.com/abc-defg-hij")
+
+    state.record_caption("Alex Rivera", "Trips.")
+    state.record_caption("Alex Rivera", "Trips. Yellow.")
+    state.record_caption("Alex Rivera", "Trips. Yellow. There we go.")
+
+    transcript = (out / "transcript.txt").read_text().splitlines()
+    assert [line.split("] ", 1)[1] for line in transcript] == [
+        "Alex Rivera: Trips. Yellow. There we go.",
+    ]
+
+    status = json.loads((out / "status.json").read_text())
+    assert status["transcriptLines"] == 1
+
+
+def test_bot_state_rewrites_similar_same_speaker_caption_edit(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    out = tmp_path / "session"
+    state = _BotState(out_dir=out, meeting_id="abc-defg-hij",
+                      url="https://meet.google.com/abc-defg-hij")
+
+    state.record_caption("Alex Rivera", "Trips. Yellow. Yellow. oh, let me meet")
+    state.record_caption("Alex Rivera", "Trips. Yellow. Yellow. Oh, let me myself.")
+
+    transcript = (out / "transcript.txt").read_text().splitlines()
+    assert [line.split("] ", 1)[1] for line in transcript] == [
+        "Alex Rivera: Trips. Yellow. Yellow. Oh, let me myself.",
+    ]
+
+    status = json.loads((out / "status.json").read_text())
+    assert status["transcriptLines"] == 1
+
+
 def test_bot_state_flushes_local_media_state(tmp_path):
     from plugins.google_meet.meet_bot import _BotState
 
