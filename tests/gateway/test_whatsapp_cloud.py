@@ -54,6 +54,11 @@ def _make_adapter(**overrides):
     adapter._calling_sidecar_timeout = overrides.pop("calling_sidecar_timeout", 10.0)
     adapter._runner = None
     adapter._http_client = None
+    adapter._calling_sidecar_contract = overrides.pop("calling_sidecar_contract", None)
+    adapter._calling_sidecar_contract_checked = overrides.pop(
+        "calling_sidecar_contract_checked",
+        False,
+    )
     adapter._calling_sidecar_call_ids = set()
     adapter._calling_sidecar_tasks = {}
     adapter._calling_sidecar_auto_tts_chats = {}
@@ -466,6 +471,90 @@ class TestCallingSidecarClient:
         call = adapter._http_client.get.call_args
         assert call.args[0] == "http://127.0.0.1:8787/contract"
         assert call.kwargs["timeout"] == 2.5
+
+    @pytest.mark.asyncio
+    async def test_cached_contract_drives_sidecar_paths_and_audio_window(self):
+        contract = {
+            "contract": "voice.webrtc_sidecar",
+            "version": 1,
+            "audio": {
+                "sample_rate": 48000,
+                "channels": 1,
+                "frame_ms": 20,
+                "encoding": "pcm_s16le",
+                "bytes_per_sample": 2,
+                "frame_bytes": 1920,
+                "default_drain_bytes": 3840,
+                "max_drain_wait_ms": 200,
+            },
+            "endpoints": {
+                "offer": {"path": "/v1/offer"},
+                "send_audio": {"path": "/v1/calls/{call_id}/tx"},
+                "receive_audio": {"path": "/v1/calls/{call_id}/rx"},
+                "close_call": {"path": "/v1/calls/{call_id}/done"},
+            },
+        }
+        adapter = _make_adapter(
+            calling_sidecar_url="http://127.0.0.1:8787",
+            calling_sidecar_contract=contract,
+            calling_sidecar_contract_checked=True,
+        )
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(side_effect=[
+            _mock_httpx_response(
+                200,
+                {
+                    "call_id": "call/1",
+                    "type": "answer",
+                    "sdp": "v=0\r\n",
+                    "audio": contract["audio"],
+                },
+            ),
+            _mock_httpx_response(
+                200,
+                {"accepted_bytes": 2, "queued_tx_bytes": 2},
+            ),
+            _mock_httpx_response(200, {"closed": True}),
+        ])
+        adapter._http_client.get = AsyncMock(
+            return_value=_mock_httpx_response(
+                200,
+                {
+                    "call_id": "call/1",
+                    "returned_bytes": 2,
+                    "queued_rx_bytes": 0,
+                    "pcm_s16le_base64": base64.b64encode(b"\x01\x00").decode("ascii"),
+                    "audio": contract["audio"],
+                },
+            )
+        )
+
+        answer = await adapter._request_calling_sidecar_answer("call/1", "v=0\r\n")
+        sent = await adapter._send_calling_sidecar_audio("call/1", b"\x01\x00")
+        received = await adapter._receive_calling_sidecar_audio("call/1")
+        adapter._calling_sidecar_call_ids.add("call/1")
+        closed = await adapter._close_calling_sidecar_session("call/1")
+
+        assert answer is not None
+        assert sent.success is True
+        assert received is not None
+        assert closed is True
+        assert adapter._http_client.post.call_args_list[0].args[0] == (
+            "http://127.0.0.1:8787/v1/offer"
+        )
+        assert adapter._http_client.post.call_args_list[1].args[0] == (
+            "http://127.0.0.1:8787/v1/calls/call%2F1/tx"
+        )
+        assert adapter._http_client.get.call_args.args[0] == (
+            "http://127.0.0.1:8787/v1/calls/call%2F1/rx"
+        )
+        assert adapter._http_client.get.call_args.kwargs["params"] == {
+            "max_bytes": 3840,
+            "wait_ms": 200,
+        }
+        assert adapter._http_client.post.call_args_list[2].args[0] == (
+            "http://127.0.0.1:8787/v1/calls/call%2F1/done"
+        )
 
     @pytest.mark.asyncio
     async def test_request_contract_tolerates_older_sidecar_404(self):
@@ -1636,6 +1725,9 @@ class TestWebhookDispatch:
         adapter.handle_message = AsyncMock()
         adapter._start_calling_sidecar_drain = MagicMock()
         adapter._http_client = MagicMock()
+        adapter._http_client.get = AsyncMock(
+            return_value=_mock_httpx_response(404, {"error": "not found"})
+        )
         adapter._http_client.post = AsyncMock(side_effect=[
             _mock_httpx_response(
                 200,
@@ -1703,6 +1795,9 @@ class TestWebhookDispatch:
             calling_sidecar_url="http://127.0.0.1:8787",
         )
         adapter._http_client = MagicMock()
+        adapter._http_client.get = AsyncMock(
+            return_value=_mock_httpx_response(404, {"error": "not found"})
+        )
         adapter._http_client.post = AsyncMock(
             side_effect=[
                 _mock_httpx_response(503, {"error": "down"}),
@@ -1732,6 +1827,9 @@ class TestWebhookDispatch:
             calling_sidecar_url="http://127.0.0.1:8787",
         )
         adapter._http_client = MagicMock()
+        adapter._http_client.get = AsyncMock(
+            return_value=_mock_httpx_response(404, {"error": "not found"})
+        )
         adapter._http_client.post = AsyncMock(side_effect=[
             _mock_httpx_response(
                 200,
@@ -1773,6 +1871,9 @@ class TestWebhookDispatch:
             calling_sidecar_url="http://127.0.0.1:8787",
         )
         adapter._http_client = MagicMock()
+        adapter._http_client.get = AsyncMock(
+            return_value=_mock_httpx_response(404, {"error": "not found"})
+        )
         adapter._http_client.post = AsyncMock(side_effect=[
             _mock_httpx_response(
                 200,
@@ -1988,6 +2089,7 @@ class TestHealth:
         assert body["verify_token_configured"] is True
         assert body["app_secret_configured"] is True
         assert body["calling_sidecar_configured"] is False
+        assert body["calling_sidecar_contract_loaded"] is False
         assert body["accepted"] == 0
         assert body["duplicates"] == 0
         assert body["rejected_signature"] == 0

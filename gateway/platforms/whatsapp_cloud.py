@@ -419,6 +419,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Runtime
         self._runner = None
         self._http_client: Optional["httpx.AsyncClient"] = None
+        self._calling_sidecar_contract: Optional[Dict[str, Any]] = None
+        self._calling_sidecar_contract_checked: bool = False
         self._calling_sidecar_call_ids: set[str] = set()
         self._calling_sidecar_tasks: Dict[str, asyncio.Task] = {}
         self._calling_sidecar_auto_tts_chats: Dict[str, str] = {}
@@ -447,6 +449,47 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     def _calling_sidecar_enabled(self) -> bool:
         return bool(self._calling_sidecar_url)
+
+    def _calling_sidecar_audio_contract(self) -> Dict[str, Any]:
+        """Return the cached sidecar audio shape or Hermes' legacy default."""
+        contract = getattr(self, "_calling_sidecar_contract", None)
+        if isinstance(contract, dict):
+            audio = contract.get("audio")
+            if isinstance(audio, dict) and _matches_calling_audio_contract(audio):
+                return _normalize_calling_audio_contract(audio)
+        return dict(CALLING_AUDIO_CONTRACT)
+
+    def _calling_sidecar_endpoint_url(
+        self,
+        endpoint: str,
+        default_path: str,
+        *,
+        call_id: Optional[str] = None,
+    ) -> str:
+        """Build a sidecar URL from the cached contract with legacy fallback."""
+        path = default_path
+        contract = getattr(self, "_calling_sidecar_contract", None)
+        endpoints = contract.get("endpoints") if isinstance(contract, dict) else None
+        if isinstance(endpoints, dict):
+            spec = endpoints.get(endpoint)
+            if isinstance(spec, dict):
+                candidate = str(spec.get("path") or "").strip()
+                if candidate:
+                    path = candidate
+
+        if call_id is not None:
+            path = path.replace("{call_id}", quote(call_id, safe=""))
+        if not path.startswith("/"):
+            path = f"/{path}"
+        return f"{self._calling_sidecar_url}{path}"
+
+    async def _ensure_calling_sidecar_contract(self) -> Optional[Dict[str, Any]]:
+        """Fetch the optional sidecar contract once per adapter lifetime."""
+        if getattr(self, "_calling_sidecar_contract_checked", False):
+            return getattr(self, "_calling_sidecar_contract", None)
+        self._calling_sidecar_contract_checked = True
+        self._calling_sidecar_contract = await self._request_calling_sidecar_contract()
+        return self._calling_sidecar_contract
 
     async def _request_calling_sidecar_contract(self) -> Optional[Dict[str, Any]]:
         """Fetch and validate the local sidecar's optional machine contract."""
@@ -548,7 +591,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             )
             return None
 
-        url = f"{self._calling_sidecar_url}/offer"
+        url = self._calling_sidecar_endpoint_url("offer", "/offer")
         payload = {
             "call_id": normalized_call_id,
             "type": "offer",
@@ -645,13 +688,17 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 error="PCM payload must contain whole s16le samples",
             )
 
-        encoded_call_id = quote(normalized_call_id, safe="")
-        url = f"{self._calling_sidecar_url}/calls/{encoded_call_id}/audio"
+        audio = self._calling_sidecar_audio_contract()
+        url = self._calling_sidecar_endpoint_url(
+            "send_audio",
+            "/calls/{call_id}/audio",
+            call_id=normalized_call_id,
+        )
         payload: Dict[str, Any] = {
-            "sample_rate": CALLING_PCM_SAMPLE_RATE,
-            "channels": CALLING_PCM_CHANNELS,
-            "frame_ms": CALLING_PCM_FRAME_MS,
-            "encoding": CALLING_PCM_ENCODING,
+            "sample_rate": int(audio["sample_rate"]),
+            "channels": int(audio["channels"]),
+            "frame_ms": int(audio["frame_ms"]),
+            "encoding": str(audio["encoding"]),
             "pcm_s16le_base64": base64.b64encode(pcm_bytes).decode("ascii"),
         }
         if sequence is not None:
@@ -726,6 +773,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not _FFMPEG_PATH:
             return None, "ffmpeg is required to decode TTS audio for live calls"
 
+        audio = self._calling_sidecar_audio_contract()
         proc = await asyncio.create_subprocess_exec(
             _FFMPEG_PATH,
             "-v",
@@ -737,9 +785,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             "-acodec",
             "pcm_s16le",
             "-ar",
-            str(CALLING_PCM_SAMPLE_RATE),
+            str(int(audio["sample_rate"])),
             "-ac",
-            str(CALLING_PCM_CHANNELS),
+            str(int(audio["channels"])),
             "pipe:1",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -778,11 +826,14 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not pcm:
             return SendResult(success=False, error="No PCM decoded from TTS audio")
 
+        audio = self._calling_sidecar_audio_contract()
+        frame_bytes = int(audio["frame_bytes"])
+        frame_ms = int(audio["frame_ms"])
         sequence = 0
-        for offset in range(0, len(pcm), CALLING_PCM_FRAME_BYTES):
-            frame = pcm[offset : offset + CALLING_PCM_FRAME_BYTES]
-            if len(frame) < CALLING_PCM_FRAME_BYTES:
-                frame += b"\x00" * (CALLING_PCM_FRAME_BYTES - len(frame))
+        for offset in range(0, len(pcm), frame_bytes):
+            frame = pcm[offset : offset + frame_bytes]
+            if len(frame) < frame_bytes:
+                frame += b"\x00" * (frame_bytes - len(frame))
 
             result = await self._send_calling_sidecar_audio(
                 call_id,
@@ -790,7 +841,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 sequence=sequence,
             )
             if not result.success and result.retryable:
-                await asyncio.sleep(CALLING_PCM_FRAME_MS / 1_000)
+                await asyncio.sleep(frame_ms / 1_000)
                 result = await self._send_calling_sidecar_audio(
                     call_id,
                     frame,
@@ -800,8 +851,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return result
 
             sequence += 1
-            if offset + CALLING_PCM_FRAME_BYTES < len(pcm):
-                await asyncio.sleep(CALLING_PCM_FRAME_MS / 1_000)
+            if offset + frame_bytes < len(pcm):
+                await asyncio.sleep(frame_ms / 1_000)
 
         return SendResult(
             success=True,
@@ -809,7 +860,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "call_id": call_id,
                 "queued_pcm_bytes": len(pcm),
                 "frames": sequence,
-                "audio": CALLING_AUDIO_CONTRACT,
+                "audio": audio,
             },
         )
 
@@ -817,8 +868,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self,
         call_id: str,
         *,
-        max_bytes: int = CALLING_PCM_DEFAULT_DRAIN_BYTES,
-        wait_ms: int = CALLING_PCM_DRAIN_WAIT_MS,
+        max_bytes: Optional[int] = None,
+        wait_ms: Optional[int] = None,
     ) -> Optional[CallingSidecarAudio]:
         """Drain decoded inbound 48 kHz PCM from a local WebRTC sidecar call."""
         if not self._calling_sidecar_enabled():
@@ -833,6 +884,14 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         normalized_call_id = str(call_id or "").strip()
         if not normalized_call_id:
             return None
+        audio_contract = self._calling_sidecar_audio_contract()
+        if max_bytes is None:
+            max_bytes = int(audio_contract["default_drain_bytes"])
+        if wait_ms is None:
+            wait_ms = min(
+                CALLING_PCM_DRAIN_WAIT_MS,
+                int(audio_contract["max_drain_wait_ms"]),
+            )
         if not isinstance(max_bytes, int) or max_bytes <= 0:
             logger.warning(
                 "[whatsapp_cloud] invalid sidecar audio max_bytes=%r",
@@ -848,8 +907,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.warning("[whatsapp_cloud] invalid sidecar audio wait_ms=%r", wait_ms)
             return None
 
-        encoded_call_id = quote(normalized_call_id, safe="")
-        url = f"{self._calling_sidecar_url}/calls/{encoded_call_id}/audio"
+        url = self._calling_sidecar_endpoint_url(
+            "receive_audio",
+            "/calls/{call_id}/audio",
+            call_id=normalized_call_id,
+        )
         try:
             resp = await self._http_client.get(
                 url,
@@ -957,10 +1019,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"call_{safe_call_id}_{uuid.uuid4().hex[:12]}.wav"
 
+        audio = self._calling_sidecar_audio_contract()
         with wave.open(str(out_path), "wb") as wav:
-            wav.setnchannels(CALLING_PCM_CHANNELS)
-            wav.setsampwidth(CALLING_PCM_BYTES_PER_SAMPLE)
-            wav.setframerate(CALLING_PCM_SAMPLE_RATE)
+            wav.setnchannels(int(audio["channels"]))
+            wav.setsampwidth(int(audio["bytes_per_sample"]))
+            wav.setframerate(int(audio["sample_rate"]))
             wav.writeframes(pcm_s16le)
         return str(out_path)
 
@@ -1229,8 +1292,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             )
             return False
 
-        encoded_call_id = quote(normalized_call_id, safe="")
-        url = f"{self._calling_sidecar_url}/calls/{encoded_call_id}/close"
+        url = self._calling_sidecar_endpoint_url(
+            "close_call",
+            "/calls/{call_id}/close",
+            call_id=normalized_call_id,
+        )
         try:
             resp = await self._http_client.post(
                 url,
@@ -2283,6 +2349,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "verify_token_configured": bool(self._verify_token),
                 "app_secret_configured": bool(self._app_secret),
                 "calling_sidecar_configured": self._calling_sidecar_enabled(),
+                "calling_sidecar_contract_loaded": isinstance(
+                    getattr(self, "_calling_sidecar_contract", None),
+                    dict,
+                ),
                 "ffmpeg_present": _FFMPEG_PATH is not None,
                 "accepted": self._accepted_count,
                 "duplicates": self._duplicate_count,
@@ -2595,6 +2665,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             )
             return
 
+        await self._ensure_calling_sidecar_contract()
         answer = await self._request_calling_sidecar_answer(call_id, remote_sdp)
         if answer is None:
             logger.warning(
