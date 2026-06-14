@@ -1107,6 +1107,7 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
     finally:
         set_doc_client(None)
         set_drive_client(None)
+        set_request_client(None)
 
 
 # ---------------------------------------------------------------------------
