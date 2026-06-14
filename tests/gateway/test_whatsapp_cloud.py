@@ -440,6 +440,7 @@ class TestCallingSidecarClient:
         assert contract["audio"]["frame_bytes"] == 1920
         assert contract["audio"]["default_drain_bytes"] == 96000
         assert contract["audio"]["max_drain_wait_ms"] == 5000
+        assert contract["audio"]["max_outbound_queue_bytes"] == 960000
         call = adapter._http_client.get.call_args
         assert call.args[0] == "http://127.0.0.1:8787/contract"
         assert call.kwargs["timeout"] == 2.5
@@ -636,6 +637,25 @@ class TestCallingSidecarClient:
         assert result.success is False
         assert result.error == "sample_rate must be 48000"
         assert result.raw_response == {"error": "sample_rate must be 48000"}
+        assert result.retryable is False
+
+    @pytest.mark.asyncio
+    async def test_send_calling_sidecar_audio_treats_429_as_backpressure(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                429,
+                {"error": "outbound PCM queue is full"},
+            )
+        )
+
+        result = await adapter._send_calling_sidecar_audio("call-1", b"\x00\x00")
+
+        assert result.success is False
+        assert result.error == "outbound PCM queue is full"
+        assert result.raw_response == {"error": "outbound PCM queue is full"}
+        assert result.retryable is True
 
     @pytest.mark.asyncio
     async def test_receive_calling_sidecar_audio_drains_pcm_payload(self):

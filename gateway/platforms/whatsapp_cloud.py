@@ -111,6 +111,9 @@ CALLING_PCM_DEFAULT_DRAIN_BYTES = (
 )
 CALLING_PCM_DRAIN_WAIT_MS = 500
 CALLING_PCM_MAX_DRAIN_WAIT_MS = 5_000
+CALLING_PCM_MAX_OUTBOUND_QUEUE_BYTES = (
+    CALLING_PCM_SAMPLE_RATE * CALLING_PCM_CHANNELS * CALLING_PCM_BYTES_PER_SAMPLE * 10
+)
 CALLING_PCM_ENCODING = "pcm_s16le"
 CALLING_AUDIO_CONTRACT = {
     "sample_rate": CALLING_PCM_SAMPLE_RATE,
@@ -122,6 +125,7 @@ CALLING_AUDIO_CONTRACT = {
     "frame_bytes": CALLING_PCM_FRAME_BYTES,
     "default_drain_bytes": CALLING_PCM_DEFAULT_DRAIN_BYTES,
     "max_drain_wait_ms": CALLING_PCM_MAX_DRAIN_WAIT_MS,
+    "max_outbound_queue_bytes": CALLING_PCM_MAX_OUTBOUND_QUEUE_BYTES,
 }
 GRAPH_API_BASE = "https://graph.facebook.com"
 # Meta retries failed webhooks for up to 7 days. We don't need to remember
@@ -212,6 +216,24 @@ def _matches_calling_audio_contract(audio: Any) -> bool:
         and frame_ms == CALLING_PCM_FRAME_MS
         and encoding == CALLING_PCM_ENCODING
     )
+
+
+def _normalize_calling_audio_contract(audio: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill optional sidecar contract fields with Hermes' local defaults."""
+    normalized = dict(audio)
+    normalized.setdefault("bytes_per_sample", CALLING_PCM_BYTES_PER_SAMPLE)
+    normalized.setdefault(
+        "samples_per_frame",
+        CALLING_PCM_SAMPLE_RATE * CALLING_PCM_FRAME_MS // 1_000,
+    )
+    normalized.setdefault("frame_bytes", CALLING_PCM_FRAME_BYTES)
+    normalized.setdefault("default_drain_bytes", CALLING_PCM_DEFAULT_DRAIN_BYTES)
+    normalized.setdefault("max_drain_wait_ms", CALLING_PCM_MAX_DRAIN_WAIT_MS)
+    normalized.setdefault(
+        "max_outbound_queue_bytes",
+        CALLING_PCM_MAX_OUTBOUND_QUEUE_BYTES,
+    )
+    return normalized
 
 
 # Inbound media cache lives under the user's hermes dir so it survives
@@ -469,6 +491,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "Hermes PCM settings"
             )
             return None
+        data = dict(data)
+        data["audio"] = _normalize_calling_audio_contract(data["audio"])
         return data
 
     async def _request_calling_sidecar_answer(
@@ -626,14 +650,24 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if isinstance(body, dict):
                 error_msg = str(body.get("error") or "")
             if not error_msg:
-                error_msg = f"calling sidecar audio failed with HTTP {resp.status_code}"
+                if resp.status_code == 429:
+                    error_msg = "calling sidecar audio backpressure"
+                else:
+                    error_msg = (
+                        f"calling sidecar audio failed with HTTP {resp.status_code}"
+                    )
             logger.warning(
                 "[whatsapp_cloud] calling sidecar audio rejected "
                 "(status=%d): %s",
                 resp.status_code,
                 error_msg,
             )
-            return SendResult(success=False, error=error_msg, raw_response=body)
+            return SendResult(
+                success=False,
+                error=error_msg,
+                raw_response=body,
+                retryable=resp.status_code == 429,
+            )
 
         return SendResult(success=True, raw_response=body)
 
