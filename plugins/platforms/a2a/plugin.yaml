@@ -56,3 +56,7 @@ optional_env:
     description: "Task/context id used as the cron / notification delivery target for deliver=a2a. Set this to suppress the first-message home-channel onboarding prompt."
     prompt: "A2A home channel context ID (or empty)"
     password: false
+  - name: A2A_DEFAULT_USER_ID
+    description: "Fallback user_id for inbound A2A callers that omit userContext. Defaults to 'remote-agent'. Set to a real Slack user ID to give anonymous peers a fixed identity."
+    prompt: "Default A2A caller user ID (or empty for 'remote-agent')"
+    password: false

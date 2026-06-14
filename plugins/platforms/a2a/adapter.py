@@ -221,6 +221,13 @@ class A2AAdapter(BasePlatformAdapter):
         )
         task_id = protocol.new_task_id()
 
+        # Optional caller identity for OBO (On-Behalf-Of) flows.
+        # Callers pass { "userContext": { "user_id": "U123", "user_name": "alice", "email": "..." } }
+        # in params. Falls back to peer name so anonymous callers still work.
+        user_ctx = params.get("userContext") or {}
+        user_id = str(user_ctx.get("user_id") or user_ctx.get("slack_user_id") or peer)
+        user_name = str(user_ctx.get("user_name") or user_ctx.get("name") or user_ctx.get("email") or peer)
+
         if not text:
             return protocol.build_task(task_id, context_id, protocol.STATE_FAILED, "Empty task — nothing to do.")
 
@@ -245,8 +252,8 @@ class A2AAdapter(BasePlatformAdapter):
                 chat_id=context_id,
                 chat_name=f"a2a:{peer}",
                 chat_type="dm",
-                user_id=peer,
-                user_name=peer,
+                user_id=user_id,
+                user_name=user_name,
             ),
             message_id=task_id,
         )
