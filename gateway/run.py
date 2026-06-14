@@ -5289,7 +5289,7 @@ class GatewayRunner:
             logger.warning("kanban notifier: kanban_db not importable; notifier disabled")
             return
 
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "chain_stuck_alarm")
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -5742,6 +5742,11 @@ class GatewayRunner:
                 if isinstance(event_payload, dict) and event_payload.get("limit_seconds"):
                     limit = int(event_payload["limit_seconds"])
                 return f"⏱ {tag}Kanban {task_id} timed out (max_runtime={limit}s); will retry", {}
+            if kind == "chain_stuck_alarm":
+                reason = ""
+                if isinstance(event_payload, dict) and event_payload.get("reason"):
+                    reason = f": {str(event_payload['reason'])[:200]}"
+                return f"🚨 {tag}Kanban {task_id} stuck impl→review chain{reason}", {}
             return "", {}
 
         if kind == "completed":
@@ -5765,6 +5770,11 @@ class GatewayRunner:
             if isinstance(event_payload, dict) and event_payload.get("limit_seconds"):
                 limit = int(event_payload["limit_seconds"])
             return f"⏱ Задача не успела завершиться: {title}\nКарточка: {task_id}\nЛимит: {limit} сек. Я попробую перезапустить.", {}
+        if kind == "chain_stuck_alarm":
+            reason = ""
+            if isinstance(event_payload, dict) and event_payload.get("reason"):
+                reason = f"\n{str(event_payload['reason'])[:240]}"
+            return f"🚨 Застряла цепочка impl→review: {title}\nКарточка: {task_id}{reason}\nНужно решение вручную: hermes kanban show {task_id}", {}
         return "", {}
 
     def _kanban_advance(
@@ -6098,6 +6108,75 @@ class GatewayRunner:
                         max_in_progress_per_profile,
                     )
 
+        # Infra-queue feature 3 (П.3): auto-archive Done cards older than N
+        # days. Default 0 = disabled (the board keeps every Done card until
+        # an operator archives it). Opt-in via kanban.done_archive_days.
+        try:
+            done_archive_days = int(kanban_cfg.get("done_archive_days", 0) or 0)
+        except (TypeError, ValueError):
+            logger.warning(
+                "kanban dispatcher: invalid kanban.done_archive_days=%r; disabling",
+                kanban_cfg.get("done_archive_days"),
+            )
+            done_archive_days = 0
+        if done_archive_days < 0:
+            done_archive_days = 0
+        if done_archive_days:
+            logger.info(
+                "kanban dispatcher: auto-archive Done older than %d day(s)",
+                done_archive_days,
+            )
+
+        # Infra-queue feature 2 (П.2 layer 2): stuck impl→review chain
+        # detector. Default 0 = disabled. Opt-in via
+        # kanban.stuck_chain_alarm_seconds (alarm only — never auto-fixes).
+        try:
+            stuck_chain_alarm_seconds = int(
+                kanban_cfg.get("stuck_chain_alarm_seconds", 0) or 0
+            )
+        except (TypeError, ValueError):
+            logger.warning(
+                "kanban dispatcher: invalid kanban.stuck_chain_alarm_seconds=%r; disabling",
+                kanban_cfg.get("stuck_chain_alarm_seconds"),
+            )
+            stuck_chain_alarm_seconds = 0
+        if stuck_chain_alarm_seconds < 0:
+            stuck_chain_alarm_seconds = 0
+        if stuck_chain_alarm_seconds:
+            logger.info(
+                "kanban dispatcher: stuck-chain alarm after %ds",
+                stuck_chain_alarm_seconds,
+            )
+
+        # Infra-queue feature 1: auto-rework level 2. Default OFF
+        # (kanban.auto_rework.enabled). When enabled, a reviewer-blocked
+        # impl chain auto-spawns a rework card on the same branch, up to
+        # max_attempts, then escalates to a human.
+        auto_rework_cfg = kanban_cfg.get("auto_rework", {})
+        if not isinstance(auto_rework_cfg, dict):
+            auto_rework_cfg = {}
+        auto_rework_enabled = bool(auto_rework_cfg.get("enabled", False))
+        try:
+            auto_rework_max_attempts = int(auto_rework_cfg.get("max_attempts", 2) or 2)
+        except (TypeError, ValueError):
+            auto_rework_max_attempts = 2
+        if auto_rework_max_attempts < 1:
+            auto_rework_max_attempts = 1
+        auto_rework_require_draft_pr = bool(
+            auto_rework_cfg.get("require_draft_pr", True)
+        )
+        _raw_stop = auto_rework_cfg.get("stop_keywords")
+        auto_rework_stop_keywords = (
+            list(_raw_stop) if isinstance(_raw_stop, (list, tuple)) and _raw_stop
+            else None
+        )
+        if auto_rework_enabled:
+            logger.info(
+                "kanban dispatcher: auto-rework L2 enabled (max_attempts=%d, "
+                "require_draft_pr=%s)",
+                auto_rework_max_attempts, auto_rework_require_draft_pr,
+            )
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -6191,6 +6270,12 @@ class GatewayRunner:
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
+                    done_archive_days=done_archive_days,
+                    stuck_chain_alarm_seconds=stuck_chain_alarm_seconds,
+                    auto_rework_enabled=auto_rework_enabled,
+                    auto_rework_max_attempts=auto_rework_max_attempts,
+                    auto_rework_require_draft_pr=auto_rework_require_draft_pr,
+                    auto_rework_stop_keywords=auto_rework_stop_keywords,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):
