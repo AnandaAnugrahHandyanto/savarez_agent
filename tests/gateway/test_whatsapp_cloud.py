@@ -364,10 +364,10 @@ class TestCallingSidecarClient:
                     "type": "answer",
                     "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
                     "audio": {
-                        "codec": "opus",
                         "sample_rate": 48000,
                         "channels": 1,
                         "frame_ms": 20,
+                        "encoding": "pcm_s16le",
                     },
                 },
             )
@@ -378,7 +378,7 @@ class TestCallingSidecarClient:
         assert answer is not None
         assert answer.call_id == "call-1"
         assert answer.sdp.startswith("v=0")
-        assert answer.audio["codec"] == "opus"
+        assert answer.audio["encoding"] == "pcm_s16le"
         adapter._http_client.post.assert_awaited_once()
         call = adapter._http_client.post.call_args
         assert call.args[0] == "http://127.0.0.1:8787/offer"
@@ -410,6 +410,75 @@ class TestCallingSidecarClient:
         assert answer is None
 
     @pytest.mark.asyncio
+    async def test_request_fetches_machine_readable_contract(self):
+        adapter = _make_adapter(
+            calling_sidecar_url="http://127.0.0.1:8787",
+            calling_sidecar_timeout=2.5,
+        )
+        adapter._http_client = MagicMock()
+        adapter._http_client.get = AsyncMock(
+            return_value=_mock_httpx_response(
+                200,
+                {
+                    "contract": "voice.webrtc_sidecar",
+                    "version": 1,
+                    "audio": {
+                        "sample_rate": 48000,
+                        "channels": 1,
+                        "frame_ms": 20,
+                        "encoding": "pcm_s16le",
+                        "frame_bytes": 1920,
+                    },
+                },
+            )
+        )
+
+        contract = await adapter._request_calling_sidecar_contract()
+
+        assert contract is not None
+        assert contract["contract"] == "voice.webrtc_sidecar"
+        assert contract["audio"]["frame_bytes"] == 1920
+        call = adapter._http_client.get.call_args
+        assert call.args[0] == "http://127.0.0.1:8787/contract"
+        assert call.kwargs["timeout"] == 2.5
+
+    @pytest.mark.asyncio
+    async def test_request_contract_tolerates_older_sidecar_404(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._http_client = MagicMock()
+        adapter._http_client.get = AsyncMock(
+            return_value=_mock_httpx_response(404, {"error": "not found"})
+        )
+
+        contract = await adapter._request_calling_sidecar_contract()
+
+        assert contract is None
+
+    @pytest.mark.asyncio
+    async def test_request_contract_rejects_mismatched_audio_shape(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._http_client = MagicMock()
+        adapter._http_client.get = AsyncMock(
+            return_value=_mock_httpx_response(
+                200,
+                {
+                    "contract": "voice.webrtc_sidecar",
+                    "version": 1,
+                    "audio": {
+                        "sample_rate": 16000,
+                        "channels": 1,
+                        "frame_ms": 20,
+                        "encoding": "pcm_s16le",
+                    },
+                },
+            )
+        )
+
+        contract = await adapter._request_calling_sidecar_contract()
+
+        assert contract is None
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("body", [
         {"type": "offer", "sdp": "v=0"},
         {"type": "answer"},
@@ -421,6 +490,31 @@ class TestCallingSidecarClient:
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(200, body)
+        )
+
+        answer = await adapter._request_calling_sidecar_answer("call-1", "v=0\r\n")
+
+        assert answer is None
+
+    @pytest.mark.asyncio
+    async def test_request_rejects_mismatched_answer_audio_shape(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200,
+                {
+                    "call_id": "call-1",
+                    "type": "answer",
+                    "sdp": "v=0\r\n",
+                    "audio": {
+                        "sample_rate": 16000,
+                        "channels": 1,
+                        "frame_ms": 20,
+                        "encoding": "pcm_s16le",
+                    },
+                },
+            )
         )
 
         answer = await adapter._request_calling_sidecar_answer("call-1", "v=0\r\n")
@@ -1181,10 +1275,10 @@ class TestWebhookDispatch:
                     "type": "answer",
                     "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n",
                     "audio": {
-                        "codec": "opus",
                         "sample_rate": 48000,
                         "channels": 1,
                         "frame_ms": 20,
+                        "encoding": "pcm_s16le",
                     },
                 },
             ),

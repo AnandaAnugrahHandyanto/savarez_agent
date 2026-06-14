@@ -108,6 +108,12 @@ CALLING_PCM_FRAME_BYTES = (
 )
 CALLING_PCM_DRAIN_WAIT_MS = 500
 CALLING_PCM_ENCODING = "pcm_s16le"
+CALLING_AUDIO_CONTRACT = {
+    "sample_rate": CALLING_PCM_SAMPLE_RATE,
+    "channels": CALLING_PCM_CHANNELS,
+    "frame_ms": CALLING_PCM_FRAME_MS,
+    "encoding": CALLING_PCM_ENCODING,
+}
 GRAPH_API_BASE = "https://graph.facebook.com"
 # Meta retries failed webhooks for up to 7 days. We don't need to remember
 # every wamid for the full retry window — the practical risk is duplicate
@@ -178,6 +184,25 @@ def _ext_for_mime(mime: str) -> Optional[str]:
     if override:
         return override
     return mimetypes.guess_extension(primary) or None
+
+
+def _matches_calling_audio_contract(audio: Any) -> bool:
+    """Return whether a sidecar audio object matches Hermes' PCM frame shape."""
+    if not isinstance(audio, dict):
+        return False
+    try:
+        sample_rate = int(audio.get("sample_rate"))
+        channels = int(audio.get("channels"))
+        frame_ms = int(audio.get("frame_ms"))
+    except (TypeError, ValueError):
+        return False
+    encoding = str(audio.get("encoding") or "").strip().lower()
+    return (
+        sample_rate == CALLING_PCM_SAMPLE_RATE
+        and channels == CALLING_PCM_CHANNELS
+        and frame_ms == CALLING_PCM_FRAME_MS
+        and encoding == CALLING_PCM_ENCODING
+    )
 
 
 # Inbound media cache lives under the user's hermes dir so it survives
@@ -370,6 +395,73 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     def _calling_sidecar_enabled(self) -> bool:
         return bool(self._calling_sidecar_url)
 
+    async def _request_calling_sidecar_contract(self) -> Optional[Dict[str, Any]]:
+        """Fetch and validate the local sidecar's optional machine contract."""
+        if not self._calling_sidecar_enabled():
+            return None
+        if self._http_client is None:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar configured but HTTP client "
+                "is unavailable"
+            )
+            return None
+
+        url = f"{self._calling_sidecar_url}/contract"
+        try:
+            resp = await self._http_client.get(
+                url,
+                timeout=self._calling_sidecar_timeout,
+            )
+        except Exception:
+            logger.exception("[whatsapp_cloud] calling sidecar contract request failed")
+            return None
+
+        if resp.status_code == 404:
+            logger.debug(
+                "[whatsapp_cloud] calling sidecar does not expose /contract yet"
+            )
+            return None
+        if resp.status_code != 200:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar contract request failed "
+                "(status=%d): %s",
+                resp.status_code,
+                str(getattr(resp, "text", ""))[:500],
+            )
+            return None
+
+        try:
+            data = resp.json()
+        except Exception:
+            logger.warning("[whatsapp_cloud] calling sidecar contract returned invalid JSON")
+            return None
+        if not isinstance(data, dict):
+            logger.warning("[whatsapp_cloud] calling sidecar contract is not an object")
+            return None
+        if data.get("contract") != "voice.webrtc_sidecar":
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar contract id was %r",
+                data.get("contract"),
+            )
+            return None
+        try:
+            version = int(data.get("version") or 0)
+        except (TypeError, ValueError):
+            version = 0
+        if version < 1:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar contract version is invalid: %r",
+                data.get("version"),
+            )
+            return None
+        if not _matches_calling_audio_contract(data.get("audio")):
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio contract does not match "
+                "Hermes PCM settings"
+            )
+            return None
+        return data
+
     async def _request_calling_sidecar_answer(
         self,
         call_id: str,
@@ -448,11 +540,18 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return None
 
         audio = data.get("audio")
+        if not _matches_calling_audio_contract(audio):
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar answer audio contract does not "
+                "match Hermes PCM settings"
+            )
+            return None
+
         answer_call_id = str(data.get("call_id") or "").strip() or normalized_call_id
         return CallingSidecarAnswer(
             call_id=answer_call_id,
             sdp=sdp,
-            audio=audio if isinstance(audio, dict) else {},
+            audio=audio,
         )
 
     async def _send_calling_sidecar_audio(
@@ -635,13 +734,20 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return None
 
         audio = data.get("audio")
+        if not _matches_calling_audio_contract(audio):
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain contract does not "
+                "match Hermes PCM settings"
+            )
+            return None
+
         answer_call_id = str(data.get("call_id") or "").strip() or normalized_call_id
         return CallingSidecarAudio(
             call_id=answer_call_id,
             pcm_s16le=pcm,
             returned_bytes=returned_bytes,
             queued_rx_bytes=queued_rx_bytes,
-            audio=audio if isinstance(audio, dict) else {},
+            audio=audio,
         )
 
     async def _send_call_action(
