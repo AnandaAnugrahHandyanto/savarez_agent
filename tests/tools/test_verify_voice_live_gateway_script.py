@@ -794,6 +794,7 @@ def test_run_calling_live_sidecar_smoke_uses_live_root_imports(
         live_root=live_root,
         hermes_home=hermes_home,
         voice_repo=voice_repo,
+        sidecar_url="http://127.0.0.1:8787",
         timeout=12,
     )
 
@@ -803,7 +804,14 @@ def test_run_calling_live_sidecar_smoke_uses_live_root_imports(
         "/tmp/voice-webrtc-venv/bin/python",
         str(SCRIPT_PATH.parent / "verify_voice_whatsapp_calling_live_sidecar.py"),
     ]
-    assert command[-4:] == ["--voice-repo", str(voice_repo), "--timeout", "12"]
+    assert command[-6:] == [
+        "--voice-repo",
+        str(voice_repo),
+        "--timeout",
+        "12",
+        "--sidecar-url",
+        "http://127.0.0.1:8787",
+    ]
     assert kwargs["env"]["PYTHONPATH"] == str(live_root)
     assert kwargs["env"]["HERMES_HOME"] == str(hermes_home)
     assert kwargs["cwd"] == str(live_root)
@@ -836,6 +844,7 @@ def test_run_calling_live_sidecar_smoke_rejects_missing_audio(monkeypatch, tmp_p
             live_root=tmp_path,
             hermes_home=tmp_path,
             voice_repo=tmp_path,
+            sidecar_url=None,
             timeout=12,
         )
 
@@ -1234,6 +1243,7 @@ def test_main_runs_calling_live_sidecar_smoke_when_requested(
         assert kwargs["python_bin"] == "/tmp/voice-webrtc-venv/bin/python"
         assert kwargs["live_root"] == live_root.resolve()
         assert kwargs["voice_repo"] == voice_repo.resolve()
+        assert kwargs["sidecar_url"] is None
         return {
             "success": True,
             "graph_actions": ["pre_accept", "accept"],
@@ -1269,6 +1279,100 @@ def test_main_runs_calling_live_sidecar_smoke_when_requested(
         "pre_accept",
         "accept",
     ]
+
+
+def test_main_passes_calling_sidecar_url_to_live_sidecar_smoke(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    script = _load_script_module()
+    live_root = tmp_path / "hermes"
+    voice_repo = tmp_path / "voice"
+    _write_voice_native_root(live_root)
+    voice_repo.mkdir()
+    bridge_bin = live_root / "scripts" / "whatsapp-bridge" / "node_modules" / ".bin"
+    sidecar_url = "http://127.0.0.1:8787"
+
+    monkeypatch.setattr(script, "resolve_executable", lambda value, *, label: value)
+    monkeypatch.setattr(
+        script,
+        "get_service_state",
+        lambda *_args, **_kwargs: {
+            "ActiveState": "active",
+            "MainPID": "123",
+            "Environment": f"PYTHONPATH={live_root} PATH=/usr/bin:{bridge_bin}",
+            "DropInPaths": "/drop-in.conf",
+        },
+    )
+    monkeypatch.setattr(
+        script,
+        "read_process_env",
+        lambda _pid: {
+            "PYTHONPATH": str(live_root),
+            "PATH": f"/usr/bin:{bridge_bin}",
+            "WHATSAPP_CLOUD_CALLING_SIDECAR_URL": sidecar_url,
+            "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND": (
+                "voice stream --raw-output - --input-file {input_path} "
+                "--sample-rate {sample_rate} --frame-ms {frame_ms}"
+            ),
+        },
+    )
+    monkeypatch.setattr(
+        script,
+        "import_smoke",
+        lambda **_kwargs: {"tools.tts_tool": str(live_root / "tools" / "tts_tool.py")},
+    )
+    monkeypatch.setattr(
+        script,
+        "get_calling_sidecar_status",
+        lambda *_args, **_kwargs: {
+            "contract": {"contract": "voice.webrtc_sidecar"},
+            "health": {"ok": True, "sessions": 0, "call_ids": []},
+        },
+    )
+    monkeypatch.setattr(
+        script,
+        "get_bridge_health",
+        lambda *_args, **_kwargs: {"status": "connected"},
+    )
+
+    def fake_live_sidecar_smoke(**kwargs):
+        assert kwargs["sidecar_url"] == sidecar_url
+        return {
+            "success": True,
+            "graph_actions": ["pre_accept", "accept"],
+            "sidecar_ready_for_accept": True,
+        }
+
+    monkeypatch.setattr(
+        script,
+        "run_calling_live_sidecar_smoke",
+        fake_live_sidecar_smoke,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify_voice_live_gateway.py",
+            "--live-hermes-root",
+            str(live_root),
+            "--python-bin",
+            "/python",
+            "--voice-repo",
+            str(voice_repo),
+            "--webrtc-python-bin",
+            "/tmp/voice-webrtc-venv/bin/python",
+            "--calling-sidecar-url",
+            sidecar_url,
+            "--run-calling-live-sidecar-smoke",
+        ],
+    )
+
+    assert script.main() == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["checks"]["calling_sidecar"]["env"]["url"] == sidecar_url
 
 
 def test_main_validates_sidecar_service_when_requested(

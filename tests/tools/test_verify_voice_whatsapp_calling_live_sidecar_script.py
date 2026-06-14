@@ -88,3 +88,23 @@ def test_recorded_response_behaves_like_httpx_response():
     assert response.status_code == 200
     assert response.json() == {"success": True}
     assert json.loads(response.text) == {"success": True}
+
+
+def test_parse_args_accepts_existing_sidecar_url(monkeypatch):
+    script = _load_script_module()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify_voice_whatsapp_calling_live_sidecar.py",
+            "--voice-repo",
+            "/voice",
+            "--sidecar-url",
+            "http://127.0.0.1:8787/",
+        ],
+    )
+
+    args = script.parse_args()
+
+    assert args.voice_repo == Path("/voice")
+    assert args.sidecar_url == "http://127.0.0.1:8787/"

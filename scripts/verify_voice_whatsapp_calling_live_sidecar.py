@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Verify Hermes WhatsApp Calling control flow against a real local sidecar.
 
-This smoke does not contact Meta. It starts the voice repo's Python aiortc
-sidecar in-process, feeds a synthetic WhatsApp Calling ``connect`` webhook into
-Hermes, lets Hermes POST the real SDP offer to the sidecar, fakes only the
-Graph ``/calls`` actions, and verifies WebRTC audio can move both ways.
+This smoke does not contact Meta. It feeds a synthetic WhatsApp Calling
+``connect`` webhook into Hermes, lets Hermes POST the real SDP offer to a
+voice WebRTC sidecar, fakes only the Graph ``/calls`` actions, and verifies
+WebRTC audio can move both ways. By default it starts the sidecar in-process;
+pass ``--sidecar-url`` to target an already-running local sidecar service.
 
 Run it with a Python environment that has the voice sidecar extras installed.
 The local stack installer exposes that as ``--webrtc-python-bin``.
@@ -292,7 +293,13 @@ def graph_actions(requests: list[dict[str, Any]], graph_calls_url: str) -> list[
 async def run_live_sidecar_smoke(args: argparse.Namespace) -> dict[str, Any]:
     voice_repo = args.voice_repo.expanduser().resolve()
     sidecar = load_sidecar_module(voice_repo)
-    runner, sidecar_url = await start_sidecar_app(sidecar)
+    if args.sidecar_url:
+        runner = None
+        sidecar_url = args.sidecar_url.rstrip("/")
+        sidecar_mode = "running"
+    else:
+        runner, sidecar_url = await start_sidecar_app(sidecar)
+        sidecar_mode = "in_process"
     pc = sidecar.RTCPeerConnection()
     http_client: RecordingHybridHttpClient | None = None
     try:
@@ -435,6 +442,7 @@ async def run_live_sidecar_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "call_id": args.call_id,
             "caller": args.caller,
             "sidecar_url": sidecar_url,
+            "sidecar_mode": sidecar_mode,
             "graph_calls_url": graph_calls_url,
             "graph_actions": actions,
             "drain_starts": drain_starts,
@@ -452,12 +460,20 @@ async def run_live_sidecar_smoke(args: argparse.Namespace) -> dict[str, Any]:
         await pc.close()
         if http_client is not None:
             await http_client.aclose()
-        await runner.cleanup()
+        if runner is not None:
+            await runner.cleanup()
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--voice-repo", type=Path, required=True)
+    parser.add_argument(
+        "--sidecar-url",
+        help=(
+            "Existing local voice WebRTC sidecar URL. When omitted, the smoke "
+            "starts an in-process sidecar from --voice-repo."
+        ),
+    )
     parser.add_argument("--phone-number-id", default=DEFAULT_PHONE_NUMBER_ID)
     parser.add_argument("--call-id", default=DEFAULT_CALL_ID)
     parser.add_argument("--caller", default=DEFAULT_CALLER)

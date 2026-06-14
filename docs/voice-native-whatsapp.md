@@ -145,7 +145,7 @@ That aggregate verifier proves:
 - A real local sidecar can answer an `aiortc` SDP offer and report
   `ready_for_accept: true`.
 - The deployed Hermes checkout can handle a synthetic WhatsApp Calling
-  `connect` webhook, POST the offer to a real in-process sidecar, send
+  `connect` webhook, POST the offer to the configured local sidecar, send
   `pre_accept` and `accept`, move PCM in both directions, and close the
   sidecar session on `terminate`.
 - The installed `hermes-gateway.service` process imports from the expected

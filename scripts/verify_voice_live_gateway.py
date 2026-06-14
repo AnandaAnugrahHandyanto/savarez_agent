@@ -873,24 +873,28 @@ def run_calling_live_sidecar_smoke(
     live_root: Path,
     hermes_home: Path,
     voice_repo: Path,
+    sidecar_url: str | None,
     timeout: float,
 ) -> dict[str, Any]:
     """Run the Hermes connect-path smoke against imports from live_root."""
     env = os.environ.copy()
     env["PYTHONPATH"] = str(live_root)
     env["HERMES_HOME"] = str(hermes_home)
+    command = [
+        python_bin,
+        str(
+            Path(__file__).resolve().parent
+            / "verify_voice_whatsapp_calling_live_sidecar.py"
+        ),
+        "--voice-repo",
+        str(voice_repo),
+        "--timeout",
+        f"{timeout:g}",
+    ]
+    if sidecar_url:
+        command.extend(["--sidecar-url", sidecar_url])
     completed = subprocess.run(
-        [
-            python_bin,
-            str(
-                Path(__file__).resolve().parent
-                / "verify_voice_whatsapp_calling_live_sidecar.py"
-            ),
-            "--voice-repo",
-            str(voice_repo),
-            "--timeout",
-            f"{timeout:g}",
-        ],
+        command,
         capture_output=True,
         text=True,
         timeout=timeout + 15,
@@ -1297,6 +1301,7 @@ def main() -> int:
             live_root=live_root,
             hermes_home=hermes_home,
             voice_repo=voice_repo,
+            sidecar_url=args.calling_sidecar_url,
             timeout=args.timeout,
         )
 
