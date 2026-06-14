@@ -58,6 +58,7 @@ export const en: Translations = {
       backendStopped: 'Backend stopped',
       desktopBootFailed: 'Desktop boot failed',
       gatewaySignInRequired: 'Gateway sign-in required',
+      lostConnectionToGateway: 'Lost connection to Hermes gateway. Use Retry, sign in again, or switch to local gateway.',
       ipcBridgeUnavailable: 'Desktop IPC bridge is unavailable.'
     },
     failure: {

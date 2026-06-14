@@ -101,6 +101,7 @@ export function useGatewayBoot({
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
+    const RECONNECT_ESCALATION_THRESHOLD = 6
     // Surface "sign in again" once per disconnect episode, not on every backoff
     // tick — a stale OAuth ticket fails every attempt and would otherwise stack
     // identical error toasts (and their haptics). Reset on the next clean open.
@@ -179,6 +180,10 @@ export function useGatewayBoot({
     function scheduleReconnect() {
       if (cancelled || reconnecting || reconnectTimer !== null || gatewayOpen()) {
         return
+      }
+
+      if (reconnectAttempt >= RECONNECT_ESCALATION_THRESHOLD && !$desktopBoot.get().error) {
+        failDesktopBoot(translateNow('boot.errors.lostConnectionToGateway'))
       }
 
       // 1s, 2s, 4s … capped at 15s.

@@ -58,6 +58,7 @@ export const ja = defineLocale({
       backendStopped: 'バックエンドが停止しました',
       desktopBootFailed: 'デスクトップの起動に失敗しました',
       gatewaySignInRequired: 'ゲートウェイへのサインインが必要です',
+      lostConnectionToGateway: 'Hermes ゲートウェイへの接続が失われました。再試行するか、再度サインインするか、ローカルゲートウェイに切り替えてください。',
       ipcBridgeUnavailable: 'デスクトップ IPC ブリッジが利用できません。'
     },
     failure: {

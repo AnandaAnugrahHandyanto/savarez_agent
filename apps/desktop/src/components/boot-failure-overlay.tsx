@@ -80,7 +80,7 @@ export function BootFailureOverlay() {
         return
       }
 
-      if (cancelled || !isRemoteReauthFailure(config)) {
+      if (cancelled || !isRemoteReauthFailure(config, boot.error)) {
         return
       }
 
@@ -104,7 +104,7 @@ export function BootFailureOverlay() {
     return () => {
       cancelled = true
     }
-  }, [visible])
+  }, [visible, boot.error])
 
   if (!visible || suppressed) {
     return null
