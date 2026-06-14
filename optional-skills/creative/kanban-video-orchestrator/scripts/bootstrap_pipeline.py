@@ -317,6 +317,11 @@ def render_team_md(plan: dict) -> str:
         f'workspace_path="$HOME/projects/video-pipeline/{plan["slug"]}"',
         f'tenant="{plan["tenant"]}"',
         f"```",
+        "",
+        "Before the first task is fired, the workspace must pass a create/delete "
+        "write test. If source files were imported from a foreign-owned export "
+        "or Docker mount, copy them into the project workspace without preserving "
+        "ownership/modes and use the writable project path for every task.",
     ])
     return "\n".join(lines)
 
@@ -409,6 +414,9 @@ def render_soul_md(team_member: dict, plan: dict) -> str:
         "- **Read the brief and team graph** before doing anything else.\n"
         "- **Pass `workspace_kind=\"dir\"` and `workspace_path` on every "
         "`kanban_create` call.** This keeps the team in one shared workspace.\n"
+        "- **Verify the shared workspace is writable** before substantive work: "
+        "pre-create expected output directories and run a create/delete write "
+        "test. If it fails, block with the exact path and owner/mode.\n"
         f"- **Use tenant `{plan['tenant']}`** on every kanban call.\n"
         "- **Write outputs to predictable paths.** Other profiles depend on "
         "your filename conventions.\n"

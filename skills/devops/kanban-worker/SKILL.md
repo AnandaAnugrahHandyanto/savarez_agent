@@ -24,6 +24,8 @@ Your workspace kind determines how you should behave inside `$HERMES_KANBAN_WORK
 | `dir:<path>` | Shared persistent directory | Other runs will read what you write. Treat it like long-lived state. Path is guaranteed absolute (the kernel rejects relative paths). |
 | `worktree` | Git worktree at the resolved path | If `.git` doesn't exist, run `git worktree add <path> ${HERMES_KANBAN_BRANCH:-wt/$HERMES_KANBAN_TASK}` from the main repo first, then cd and work normally. Commit work here. |
 
+At startup for `dir:` or `worktree` tasks, verify the workspace is actually writable before doing substantive work: inspect `$HERMES_KANBAN_WORKSPACE`, `stat` the path, pre-create the task's expected output directories, and run a create/delete write test. If the workspace is not writable, block immediately with the exact path, owner/mode, and the output directory you need. Do not use `sudo`, do not keep retrying the same failing writes, and do not leave durable deliverables only in `/tmp`; the operator should move the task to a writable shared workspace and respawn a fresh worker.
+
 ## Tenant isolation
 
 If `$HERMES_TENANT` is set, the task belongs to a tenant namespace. When reading or writing persistent memory, prefix memory entries with the tenant so context doesn't leak across tenants:

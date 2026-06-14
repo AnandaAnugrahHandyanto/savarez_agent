@@ -1386,6 +1386,145 @@ logger = logging.getLogger(__name__)
 _AGENT_PENDING_SENTINEL = object()
 
 
+_PGA_ORDER_START_LOCATION_PROMPT = (
+    "Which location is this for: San Jose, Santa Cruz, or Soquel?"
+)
+_PGA_ORDER_LOCATION_ALIASES = {
+    "sj": "San Jose",
+    "s j": "San Jose",
+    "san jose": "San Jose",
+    "sanjose": "San Jose",
+    "sc": "Santa Cruz",
+    "s c": "Santa Cruz",
+    "santa cruz": "Santa Cruz",
+    "santacruz": "Santa Cruz",
+    "sq": "Soquel",
+    "s q": "Soquel",
+    "soquel": "Soquel",
+}
+_PGA_ORDER_START_RE = re.compile(
+    r"^(?:start(?:\s+(?:a|an))?(?:\s+new)?\s+order|new\s+order)(?:\s+(?P<rest>.*))?$"
+)
+_PGA_LOCATION_ORDER_RE = re.compile(r"^(?:start|new)\s+(?P<location>.+?)\s+order$")
+
+
+def _is_pga_gateway_profile() -> bool:
+    """Return True when this gateway is running the PGA profile."""
+    return _hermes_home.name == "pga" and _hermes_home.parent.name == "profiles"
+
+
+def _normalize_pga_order_start_text(text: str) -> str:
+    """Normalize employee start-order phrasing without interpreting item lists."""
+    normalized = (text or "").strip().lower()
+    normalized = re.sub(r"@\w+\b", " ", normalized)
+    normalized = re.sub(r"\bplease\b", " ", normalized)
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _normalize_pga_location_text(text: str) -> str:
+    normalized = (text or "").strip().lower()
+    normalized = re.sub(r"\b(?:for|at|the|please)\b", " ", normalized)
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _pga_location_from_text(text: str) -> Optional[str]:
+    return _PGA_ORDER_LOCATION_ALIASES.get(_normalize_pga_location_text(text))
+
+
+def _is_pga_telegram_text(platform: Any, message_type: Any) -> bool:
+    platform_value = getattr(platform, "value", platform)
+    message_type_value = getattr(message_type, "value", message_type)
+    return platform_value == "telegram" and message_type_value == "text"
+
+
+def _pga_order_start_confirmation(location: str) -> str:
+    return f"Starting an order for {location}. What do you need?"
+
+
+def _pga_location_prefix_present(text: str) -> bool:
+    normalized = _normalize_pga_location_text(text)
+    aliases = sorted(_PGA_ORDER_LOCATION_ALIASES, key=len, reverse=True)
+    return any(normalized.startswith(f"{alias} ") for alias in aliases)
+
+
+def _pga_order_start_fast_response(
+    text: str,
+    *,
+    platform: Any,
+    message_type: Any,
+) -> Optional[str]:
+    """Return a deterministic PGA order-start reply, or None for full agent handling."""
+    if not _is_pga_telegram_text(platform, message_type):
+        return None
+
+    normalized = _normalize_pga_order_start_text(text)
+    if not normalized:
+        return None
+
+    match = _PGA_ORDER_START_RE.match(normalized)
+    if match:
+        rest = (match.group("rest") or "").strip()
+        if not rest:
+            return _PGA_ORDER_START_LOCATION_PROMPT
+        if rest in {"for", "at"}:
+            return _PGA_ORDER_START_LOCATION_PROMPT
+        location = _pga_location_from_text(rest)
+        if location:
+            return _pga_order_start_confirmation(location)
+        # If the text starts with a known location and continues with items,
+        # keep the richer order-drafting path in charge.
+        if _pga_location_prefix_present(rest):
+            return None
+        # Short unknown location-like starts should clarify; longer text is
+        # probably an inline item list and needs the full order workflow.
+        if len(rest.split()) <= 3:
+            return _PGA_ORDER_START_LOCATION_PROMPT
+        return None
+
+    location_match = _PGA_LOCATION_ORDER_RE.match(normalized)
+    if location_match:
+        location_text = location_match.group("location")
+        location = _pga_location_from_text(location_text)
+        if location:
+            return _pga_order_start_confirmation(location)
+        if len(location_text.split()) <= 3:
+            return _PGA_ORDER_START_LOCATION_PROMPT
+
+    return None
+
+
+def _pga_order_location_followup_fast_response(
+    text: str,
+    *,
+    platform: Any,
+    message_type: Any,
+    history: Optional[List[Dict[str, Any]]],
+) -> Optional[str]:
+    """Return a deterministic reply to the location-only answer after a prompt."""
+    if not _is_pga_telegram_text(platform, message_type):
+        return None
+
+    last_assistant = ""
+    for message in reversed(history or []):
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            last_assistant = str(message.get("content") or "").strip()
+            break
+    if last_assistant != _PGA_ORDER_START_LOCATION_PROMPT:
+        return None
+
+    location = _pga_location_from_text(text)
+    if location:
+        return _pga_order_start_confirmation(location)
+
+    normalized = _normalize_pga_location_text(text)
+    if normalized and len(normalized.split()) <= 3:
+        return _PGA_ORDER_START_LOCATION_PROMPT
+
+    return None
+
+
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
@@ -8140,6 +8279,120 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
+    def _persist_pga_order_fast_turn(
+        self,
+        session_entry,
+        session_key: str,
+        user_text: str,
+        response: str,
+    ) -> None:
+        ts = datetime.now().isoformat()
+        self.session_store.append_to_transcript(
+            session_entry.session_id,
+            {"role": "user", "content": user_text, "timestamp": ts},
+        )
+        self.session_store.append_to_transcript(
+            session_entry.session_id,
+            {"role": "assistant", "content": response, "timestamp": ts},
+        )
+        if getattr(session_entry, "was_auto_reset", False):
+            session_entry.was_auto_reset = False
+            session_entry.auto_reset_reason = None
+        self.session_store.update_session(session_key, last_prompt_tokens=0)
+
+    def _maybe_handle_pga_order_start_fast_path(
+        self,
+        event: MessageEvent,
+        source: SessionSource,
+        session_entry,
+        session_key: str,
+        is_new_session: bool,
+    ) -> Optional[str]:
+        """Handle simple PGA order-start turns without invoking the agent."""
+        if not _is_pga_gateway_profile():
+            return None
+
+        response = _pga_order_start_fast_response(
+            event.text or "",
+            platform=source.platform,
+            message_type=getattr(event, "message_type", MessageType.TEXT),
+        )
+        if response is None:
+            return None
+
+        if not is_new_session:
+            reset_entry = self.session_store.reset_session(session_key)
+            if reset_entry is not None:
+                session_entry = reset_entry
+                self._evict_cached_agent(session_key)
+                self._session_model_overrides.pop(session_key, None)
+                self._set_session_reasoning_override(session_key, None)
+                if hasattr(self, "_pending_model_notes"):
+                    self._pending_model_notes.pop(session_key, None)
+
+        try:
+            # Fast-path starts still become transcript context so the next
+            # item-list turn can recover the selected location without a tool.
+            self._persist_pga_order_fast_turn(
+                session_entry,
+                session_key,
+                event.text or "",
+                response,
+            )
+        except Exception:
+            logger.warning(
+                "PGA order-start fast path failed to persist transcript",
+                exc_info=True,
+            )
+            return None
+
+        logger.info(
+            "PGA order-start fast path handled session=%s",
+            session_entry.session_id,
+        )
+        return response
+
+    def _maybe_handle_pga_order_location_followup_fast_path(
+        self,
+        event: MessageEvent,
+        source: SessionSource,
+        session_entry,
+        session_key: str,
+        history: Optional[List[Dict[str, Any]]],
+    ) -> Optional[str]:
+        """Handle the location-only reply after a PGA order-start prompt."""
+        if not _is_pga_gateway_profile():
+            return None
+
+        response = _pga_order_location_followup_fast_response(
+            event.text or "",
+            platform=source.platform,
+            message_type=getattr(event, "message_type", MessageType.TEXT),
+            history=history,
+        )
+        if response is None:
+            return None
+
+        try:
+            self._persist_pga_order_fast_turn(
+                session_entry,
+                session_key,
+                event.text or "",
+                response,
+            )
+        except Exception:
+            logger.warning(
+                "PGA order location fast path failed to persist transcript",
+                exc_info=True,
+            )
+            return None
+
+        logger.info(
+            "PGA order location fast path handled session=%s",
+            session_entry.session_id,
+        )
+        return response
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -8253,6 +8506,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "session_id": session_entry.session_id,
                 "session_key": session_key,
             })
+
+        fast_response = self._maybe_handle_pga_order_start_fast_path(
+            event=event,
+            source=source,
+            session_entry=session_entry,
+            session_key=session_key,
+            is_new_session=_is_new_session,
+        )
+        if fast_response is not None:
+            return fast_response
+
+        if _is_pga_gateway_profile():
+            fast_response = self._maybe_handle_pga_order_location_followup_fast_path(
+                event=event,
+                source=source,
+                session_entry=session_entry,
+                session_key=session_key,
+                history=self.session_store.load_transcript(session_entry.session_id),
+            )
+            if fast_response is not None:
+                return fast_response
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)

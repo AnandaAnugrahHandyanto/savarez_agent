@@ -59,7 +59,8 @@ Example: `q3-product-teaser`, `ascii-mood-loop`, `interview-cut-2026-q1`.
 
 The setup script does six things in order:
 
-1. **Create workspace tree** — all directories above
+1. **Create workspace tree** — all directories above, then verify the workspace
+   is writable by the worker process
 2. **Create profiles** — `hermes profile create <name> --clone`
 3. **Configure profiles** — patch each profile's
    `~/.hermes/profiles/<name>/config.yaml` to set toolsets, always_load skills,
@@ -69,6 +70,38 @@ The setup script does six things in order:
 6. **Fire the initial kanban task** — `hermes kanban create` assigned to the director
 
 See `assets/setup.sh.tmpl` for the skeleton.
+
+### Workspace permission preflight
+
+Before `hermes kanban create`, the project workspace must pass a simple
+host-side write test. Do this even if the directory was just created, because
+source assets are often imported from archives, Docker mounts, or exported
+folders with ownership such as `root`, `nobody`, or a container-only UID.
+
+Required pattern:
+
+```bash
+mkdir -p "$WORKSPACE"/{taste,audio,assets,scenes,checkpoints,tools,output}
+chmod -R u+rwX "$WORKSPACE"
+touch "$WORKSPACE/.kanban-write-test"
+rm -f "$WORKSPACE/.kanban-write-test"
+```
+
+If the write test fails, stop setup and move the project to a user-owned
+workspace or create a writable copy such as
+`$HOME/projects/video-pipeline/<slug>` or another approved project root. When
+copying inputs from a foreign-owned export, do not preserve ownership or modes.
+For example, on GNU/Linux:
+
+```bash
+cp --no-preserve=ownership,mode,timestamps -- "$src" "$WORKSPACE/assets/"
+chmod -R u+rwX "$WORKSPACE"
+```
+
+Do not rely on worker-side `sudo` or repeated retries. A worker that cannot
+write its shared workspace should block immediately; the operator should move
+the blocked and downstream cards to a writable workspace and dispatch a fresh
+worker.
 
 ### Profile creation pattern
 

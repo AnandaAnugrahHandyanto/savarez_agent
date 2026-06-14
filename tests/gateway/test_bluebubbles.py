@@ -1,6 +1,7 @@
 """Tests for the BlueBubbles iMessage gateway adapter."""
 import asyncio
 import json
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -104,6 +105,43 @@ class TestBlueBubblesHelpers:
         assert result.success is True
         assert sent == ["first thought", "second thought"]
 
+    @pytest.mark.asyncio
+    async def test_send_phone_target_without_existing_chat_uses_raw_phone_guid(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = False
+        sent_payloads = []
+
+        async def fake_api_post(path, payload):
+            if path == "/api/v1/chat/query":
+                return {"data": []}
+            sent_payloads.append((path, payload))
+            return {"data": {"guid": "msg-1"}}
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("+15551234567", "hello")
+
+        assert result.success is True
+        assert sent_payloads[0][0] == "/api/v1/message/text"
+        assert sent_payloads[0][1]["chatGuid"] == "any;-;+15551234567"
+        assert sent_payloads[0][1]["message"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_send_email_target_without_existing_chat_explains_private_api_requirement(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = False
+
+        async def fake_resolve_chat_guid(chat_id):
+            return None
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+
+        result = await adapter.send("vendor@example.com", "hello")
+
+        assert result.success is False
+        assert "Create the chat on the Mac first" in result.error
+        assert "Private API helper" in result.error
+
     def test_format_message_strips_markdown(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         assert adapter.format_message("**Hello** `world`") == "Hello world"
@@ -136,6 +174,47 @@ class TestBlueBubblesHelpers:
     def test_server_url_adds_scheme(self, monkeypatch):
         adapter = _make_adapter(monkeypatch, server_url="localhost:1234")
         assert adapter.server_url == "http://localhost:1234"
+
+    @pytest.mark.asyncio
+    async def test_connect_outbound_skips_webhook_listener(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        api_calls = []
+
+        class DummyClient:
+            async def aclose(self):
+                pass
+
+        async def fake_api_get(path):
+            api_calls.append(path)
+            if path == "/api/v1/server/info":
+                return {"data": {"private_api": True, "helper_connected": True}}
+            return {"status": 200}
+
+        register_webhook = AsyncMock()
+        unregister_webhook = AsyncMock()
+        write_runtime_status = MagicMock()
+
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.httpx.AsyncClient",
+            lambda *args, **kwargs: DummyClient(),
+        )
+        monkeypatch.setattr(adapter, "_api_get", fake_api_get)
+        monkeypatch.setattr(adapter, "_register_webhook", register_webhook)
+        monkeypatch.setattr(adapter, "_unregister_webhook", unregister_webhook)
+        monkeypatch.setattr("gateway.status.write_runtime_status", write_runtime_status)
+
+        assert await adapter.connect_outbound() is True
+        assert api_calls == ["/api/v1/ping", "/api/v1/server/info"]
+        assert adapter.client is not None
+        assert adapter._runner is None
+        assert adapter.is_connected is True
+        register_webhook.assert_not_awaited()
+        write_runtime_status.assert_not_called()
+
+        await adapter.disconnect_outbound()
+        assert adapter.is_connected is False
+        unregister_webhook.assert_not_awaited()
+        write_runtime_status.assert_not_called()
 
     def test_default_mention_patterns_match_hermes_variants(self, monkeypatch):
         adapter = _make_adapter(monkeypatch, require_mention=True)
@@ -416,6 +495,36 @@ class TestBlueBubblesGuidResolution:
             adapter._resolve_chat_guid("iMessage;-;user@example.com")
         )
         assert result == "iMessage;-;user@example.com"
+
+    def test_e164_phone_falls_back_to_raw_phone_guid(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        import asyncio
+
+        async def fake_api_post(path, payload):
+            assert path == "/api/v1/chat/query"
+            return {"data": []}
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._resolve_chat_guid("+15551234567")
+        )
+        assert result == "any;-;+15551234567"
+
+    def test_bare_phone_falls_back_to_e164_raw_phone_guid(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        import asyncio
+
+        async def fake_api_post(path, payload):
+            assert path == "/api/v1/chat/query"
+            return {"data": []}
+
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._resolve_chat_guid("15551234567")
+        )
+        assert result == "any;-;+15551234567"
 
     def test_empty_target_returns_none(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)

@@ -47,6 +47,15 @@ check_key() {
 echo "═══ Creating project workspace ═══"
 mkdir -p "$WORKSPACE"/{taste,audio/{voiceover,sfx},assets,scenes,checkpoints,tools,output}
 {{SCENE_DIRS}}
+chmod -R u+rwX "$WORKSPACE"
+if ! touch "$WORKSPACE/.kanban-write-test" 2>/dev/null; then
+    echo "  ✗ workspace is not writable by this user: $WORKSPACE" >&2
+    stat -c '  %A %U:%G %n' "$WORKSPACE" 2>/dev/null || stat -f '  %Sp %Su:%Sg %N' "$WORKSPACE" 2>/dev/null || true
+    echo "Move the project to a user-owned directory or create a writable copy before firing Kanban." >&2
+    exit 1
+fi
+rm -f "$WORKSPACE/.kanban-write-test"
+stat -c '  %A %U:%G %n' "$WORKSPACE" 2>/dev/null || stat -f '  %Sp %Su:%Sg %N' "$WORKSPACE" 2>/dev/null || true
 echo "  ✓ $WORKSPACE"
 
 # ─────────────────────────────────────────────────────────────────────
@@ -169,6 +178,11 @@ All child tasks MUST use:
   workspace_kind="dir"
   workspace_path="$WORKSPACE"
   tenant="$TENANT"
+
+Before creating child tasks, verify the shared workspace is writable and
+pre-create any expected output directories. If a write test fails, block with
+the exact path and owner/mode instead of retrying or writing durable artifacts
+outside the workspace.
 
 Do not execute the work yourself — route every concrete subtask to the
 appropriate profile via kanban_create.

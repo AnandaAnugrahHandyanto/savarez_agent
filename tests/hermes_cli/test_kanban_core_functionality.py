@@ -2571,6 +2571,33 @@ def test_resolve_workspace_accepts_absolute_dir_path(kanban_home, tmp_path):
         conn.close()
 
 
+def test_resolve_workspace_rejects_unwritable_dir_path(
+    kanban_home, tmp_path, monkeypatch
+):
+    """dir: workspaces must be writable before a worker is spawned."""
+    conn = kb.connect()
+    try:
+        abs_path = str(tmp_path / "blocked-workspace")
+        tid = kb.create_task(
+            conn, title="blocked", assignee="worker",
+            workspace_kind="dir",
+            workspace_path=abs_path,
+        )
+        task = kb.get_task(conn, tid)
+        real_open = Path.open
+
+        def fake_open(self, *args, **kwargs):
+            if self.name.startswith(".hermes-kanban-write-test-"):
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_open(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", fake_open)
+        with pytest.raises(ValueError, match=r"not writable"):
+            kb.resolve_workspace(task)
+    finally:
+        conn.close()
+
+
 def test_resolve_workspace_rejects_relative_worktree_path(kanban_home):
     """Worktree paths also must be absolute when explicitly set."""
     conn = kb.connect()

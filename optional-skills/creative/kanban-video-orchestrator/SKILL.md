@@ -160,7 +160,11 @@ task graphs. See **[references/examples.md](references/examples.md)**.
 3. **One workspace per project.** All profiles for a given video share the same
    `dir:` workspace. Tasks pass artifacts via shared filesystem and structured
    handoffs. **Every** `kanban_create` call passes
-   `workspace_kind="dir"` + `workspace_path="<absolute project path>"`.
+   `workspace_kind="dir"` + `workspace_path="<absolute project path>"`. Before
+   firing the board, verify the workspace is writable by worker processes with a
+   create/delete write test. If source files came from an imported/export
+   directory with foreign ownership, move or copy them into the user-owned
+   project workspace without preserving ownership/modes.
 
 4. **Tenant every project.** Use a project-specific tenant
    (`--tenant <project-slug>`). Keeps the dashboard scoped and prevents

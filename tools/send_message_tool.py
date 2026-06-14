@@ -38,7 +38,7 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # below and falls through to channel-name resolution, which has no way to
 # resolve a raw phone number. Keeping the '+' preserves the E.164 form that
 # downstream adapters (signal, etc.) expect.
-_PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp"})
+_PHONE_PLATFORMS = frozenset({"bluebubbles", "photon", "signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
 # Email addresses — a valid email like "user@domain.com" should be treated as
 # an explicit target for the email platform, not fall through to channel-name
@@ -129,7 +129,9 @@ SEND_MESSAGE_SCHEMA = {
         "Send a message to a connected messaging platform, or list available targets.\n\n"
         "IMPORTANT: When the user asks to send to a specific channel or person "
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
-        "available targets, then send to the correct one.\n"
+        "available targets, then send to the correct one. For explicit E.164 phone "
+        "targets like 'bluebubbles:+15551234567', send directly; arbitrary phone "
+        "numbers are not discoverable through the channel list.\n"
         "If the user just says a platform name like 'send to telegram', send directly "
         "to the home channel without listing first."
     ),
@@ -143,7 +145,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'bluebubbles:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'ntfy:alerts-channel' (explicit ntfy topic), 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
             },
             "message": {
                 "type": "string",
@@ -353,6 +355,23 @@ def _handle_send(args):
                 )
             else:
                 return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
+        elif platform_name == "bluebubbles":
+            server_url = os.getenv("BLUEBUBBLES_OUTBOUND_SERVER_URL", "").strip()
+            password = os.getenv("BLUEBUBBLES_OUTBOUND_PASSWORD", "").strip()
+            if server_url and password:
+                from gateway.config import PlatformConfig
+                pconfig = PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "server_url": server_url.rstrip("/"),
+                        "password": password,
+                    },
+                )
+            else:
+                return tool_error(
+                    "Platform 'bluebubbles' is not configured. Set "
+                    "BLUEBUBBLES_OUTBOUND_SERVER_URL and BLUEBUBBLES_OUTBOUND_PASSWORD."
+                )
         else:
             return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
 
@@ -509,6 +528,8 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _EMAIL_TARGET_RE.fullmatch(target_ref)
         if match:
             return target_ref.strip(), None, True
+    if platform_name == "bluebubbles" and ";" in target_ref:
+        return target_ref.strip(), None, True
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -1686,7 +1707,7 @@ async def _send_bluebubbles(extra, chat_id, message):
         from gateway.config import PlatformConfig
         pconfig = PlatformConfig(extra=extra)
         adapter = BlueBubblesAdapter(pconfig)
-        connected = await adapter.connect()
+        connected = await adapter.connect_outbound()
         if not connected:
             return _error("BlueBubbles: failed to connect to server")
         try:
@@ -1695,7 +1716,7 @@ async def _send_bluebubbles(extra, chat_id, message):
                 return _error(f"BlueBubbles send failed: {result.error}")
             return {"success": True, "platform": "bluebubbles", "chat_id": chat_id, "message_id": result.message_id}
         finally:
-            await adapter.disconnect()
+            await adapter.disconnect_outbound()
     except Exception as e:
         return _error(f"BlueBubbles send failed: {e}")
 
