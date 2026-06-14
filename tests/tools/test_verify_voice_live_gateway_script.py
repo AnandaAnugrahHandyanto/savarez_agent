@@ -470,6 +470,41 @@ def test_validate_whatsapp_cloud_readiness_rejects_missing_authorization(
         )
 
 
+def test_validate_whatsapp_cloud_readiness_reports_all_missing_fields(
+    tmp_path: Path,
+):
+    script = _load_script_module()
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text(
+        "\n".join(
+            [
+                "WHATSAPP_CLOUD_PHONE_NUMBER_ID=15551234567",
+                "WHATSAPP_CLOUD_ACCESS_TOKEN=sk-not-meta",
+                "WHATSAPP_CLOUD_APP_SECRET=too-short",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        script.validate_whatsapp_cloud_readiness(
+            hermes_home=hermes_home,
+            process_env={},
+        )
+
+    message = str(exc_info.value)
+    assert "WhatsApp Cloud readiness failed:" in message
+    assert "WHATSAPP_CLOUD_PHONE_NUMBER_ID looks like a phone number" in message
+    assert "WHATSAPP_CLOUD_ACCESS_TOKEN should start with EAA" in message
+    assert "WHATSAPP_CLOUD_APP_SECRET should be exactly 32 hex characters" in message
+    assert "WHATSAPP_CLOUD_VERIFY_TOKEN is not configured" in message
+    assert "recipient authorization is not configured" in message
+    assert "15551234567" not in message
+    assert "sk-not-meta" not in message
+    assert "too-short" not in message
+
+
 def test_path_is_under_accepts_children_and_rejects_siblings(tmp_path: Path):
     script = _load_script_module()
     root = tmp_path / "root"

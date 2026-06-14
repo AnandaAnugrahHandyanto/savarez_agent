@@ -332,52 +332,64 @@ def _looks_like_placeholder(value: str) -> bool:
     return any(token in lowered for token in ("<", ">", "paste_", "replace_"))
 
 
-def validate_whatsapp_cloud_field(key: str, value: str) -> dict[str, Any]:
+def whatsapp_cloud_field_status(
+    key: str,
+    value: str,
+) -> tuple[dict[str, Any], str | None]:
+    status: dict[str, Any] = {"present": bool(value)}
     if not value:
-        raise SystemExit(f"{key} is not configured")
+        return status, f"{key} is not configured"
     if _looks_like_placeholder(value):
-        raise SystemExit(f"{key} still looks like a placeholder")
+        return status, f"{key} still looks like a placeholder"
 
     if key == "WHATSAPP_CLOUD_PHONE_NUMBER_ID":
         if not value.isdigit():
-            raise SystemExit(f"{key} must be numeric")
+            return status, f"{key} must be numeric"
         if 10 <= len(value) <= 12:
-            raise SystemExit(
-                f"{key} looks like a phone number; use Meta's Phone Number ID"
+            return (
+                status,
+                f"{key} looks like a phone number; use Meta's Phone Number ID",
             )
         if len(value) < 13 or len(value) > 20:
-            raise SystemExit(f"{key} should be 13-20 digits")
-        return {"present": True, "source_shape": "meta_phone_number_id"}
+            return status, f"{key} should be 13-20 digits"
+        return {**status, "source_shape": "meta_phone_number_id"}, None
 
     if key == "WHATSAPP_CLOUD_ACCESS_TOKEN":
         if not value.startswith("EAA"):
-            raise SystemExit(f"{key} should start with EAA")
+            return status, f"{key} should start with EAA"
         if len(value) < 100:
-            raise SystemExit(f"{key} looks too short for a Meta access token")
-        return {"present": True, "source_shape": "meta_access_token"}
+            return status, f"{key} looks too short for a Meta access token"
+        return {**status, "source_shape": "meta_access_token"}, None
 
     if key == "WHATSAPP_CLOUD_APP_SECRET":
         if not re.fullmatch(r"[0-9a-fA-F]{32}", value):
-            raise SystemExit(f"{key} should be exactly 32 hex characters")
-        return {"present": True, "source_shape": "meta_app_secret"}
+            return status, f"{key} should be exactly 32 hex characters"
+        return {**status, "source_shape": "meta_app_secret"}, None
 
     if key == "WHATSAPP_CLOUD_VERIFY_TOKEN":
         if len(value) < 16:
-            raise SystemExit(f"{key} should be at least 16 characters")
-        return {"present": True, "source_shape": "webhook_verify_token"}
+            return status, f"{key} should be at least 16 characters"
+        return {**status, "source_shape": "webhook_verify_token"}, None
 
-    raise SystemExit(f"unsupported WhatsApp Cloud readiness field: {key}")
+    return status, f"unsupported WhatsApp Cloud readiness field: {key}"
+
+
+def validate_whatsapp_cloud_field(key: str, value: str) -> dict[str, Any]:
+    status, failure = whatsapp_cloud_field_status(key, value)
+    if failure is not None:
+        raise SystemExit(failure)
+    return status
 
 
 def truthy_env(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def validate_whatsapp_cloud_authorization(
+def whatsapp_cloud_authorization_status(
     *,
     file_env: dict[str, str],
     process_env: dict[str, str],
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], str | None]:
     allowed_users, allowed_source = configured_value(
         "WHATSAPP_CLOUD_ALLOWED_USERS",
         file_env=file_env,
@@ -390,18 +402,34 @@ def validate_whatsapp_cloud_authorization(
     )
     allow_all_enabled = truthy_env(allow_all)
     allowed_count = len([part for part in allowed_users.split(",") if part.strip()])
-    if allowed_count == 0 and not allow_all_enabled:
-        raise SystemExit(
-            "WhatsApp Cloud recipient authorization is not configured; set "
-            "WHATSAPP_CLOUD_ALLOWED_USERS or WHATSAPP_CLOUD_ALLOW_ALL_USERS"
-        )
-    return {
+    status = {
         "allowed_users_configured": allowed_count > 0,
         "allowed_users_count": allowed_count,
         "allowed_users_source": allowed_source if allowed_count > 0 else "missing",
         "allow_all_users": allow_all_enabled,
         "allow_all_users_source": allow_all_source if allow_all else "missing",
     }
+    if allowed_count == 0 and not allow_all_enabled:
+        return (
+            status,
+            "WhatsApp Cloud recipient authorization is not configured; set "
+            "WHATSAPP_CLOUD_ALLOWED_USERS or WHATSAPP_CLOUD_ALLOW_ALL_USERS",
+        )
+    return status, None
+
+
+def validate_whatsapp_cloud_authorization(
+    *,
+    file_env: dict[str, str],
+    process_env: dict[str, str],
+) -> dict[str, Any]:
+    status, failure = whatsapp_cloud_authorization_status(
+        file_env=file_env,
+        process_env=process_env,
+    )
+    if failure is not None:
+        raise SystemExit(failure)
+    return status
 
 
 def validate_whatsapp_cloud_readiness(
@@ -411,23 +439,35 @@ def validate_whatsapp_cloud_readiness(
 ) -> dict[str, Any]:
     file_env = load_hermes_env_file(hermes_home)
     fields: dict[str, Any] = {}
+    failures: list[str] = []
     for key in WHATSAPP_CLOUD_REQUIRED_ENV:
         value, source = configured_value(
             key,
             file_env=file_env,
             process_env=process_env,
         )
-        field = validate_whatsapp_cloud_field(key, value)
+        field, failure = whatsapp_cloud_field_status(key, value)
         field["source"] = source
         fields[key] = field
+        if failure is not None:
+            failures.append(failure)
+
+    authorization, auth_failure = whatsapp_cloud_authorization_status(
+        file_env=file_env,
+        process_env=process_env,
+    )
+    if auth_failure is not None:
+        failures.append(auth_failure)
+
+    if failures:
+        raise SystemExit(
+            "WhatsApp Cloud readiness failed:\n- " + "\n- ".join(failures)
+        )
 
     return {
         "env_file": str((hermes_home / ".env").resolve()),
         "required_fields": fields,
-        "authorization": validate_whatsapp_cloud_authorization(
-            file_env=file_env,
-            process_env=process_env,
-        ),
+        "authorization": authorization,
         "_private": {
             "file_env": file_env,
             "process_env": process_env,

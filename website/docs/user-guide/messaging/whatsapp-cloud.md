@@ -456,7 +456,8 @@ authorization, then probes the running local Cloud `/health` endpoint and local
 Meta subscription challenge handshake. It also sends a signed synthetic
 delivery-receipt POST to prove inbound HMAC verification accepts Meta-shaped
 webhook delivery without dispatching an agent message or printing secret
-values.
+values. If setup is incomplete, it reports every missing or malformed Cloud
+setting it can detect in one redacted failure.
 
 The generated service files should look like this:
 

@@ -140,7 +140,9 @@ Before pointing Meta webhooks at the host, run the generated
 the running local WhatsApp Cloud `/health` endpoint and local Meta subscription
 challenge handshake. It also sends a signed synthetic delivery-receipt POST to
 prove inbound HMAC verification accepts Meta-shaped webhook delivery without
-dispatching an agent message or printing secret values.
+dispatching an agent message or printing secret values. If setup is incomplete,
+the verifier reports every missing or malformed Cloud setting it can detect in
+one redacted failure.
 
 That aggregate verifier proves:
 
