@@ -1,0 +1,90 @@
+import importlib.util
+from pathlib import Path
+import sys
+
+import pytest
+
+
+SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "verify_voice_stream_tts.py"
+
+
+def _load_script_module():
+    spec = importlib.util.spec_from_file_location("verify_voice_stream_tts", SCRIPT_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_build_default_command_template_streams_raw_pcm_stdout():
+    script = _load_script_module()
+
+    template = script.build_default_command_template("/tmp/bin/voice with spaces")
+
+    assert template.startswith("'/tmp/bin/voice with spaces' stream --quiet")
+    assert "--sample-rate {sample_rate}" in template
+    assert "--frame-ms {frame_ms}" in template
+    assert "--raw-output -" in template
+    assert "--input-file {input_path}" in template
+    assert "--voice {voice}" in template
+    assert "--speed {speed}" in template
+
+
+def test_audio_contract_matches_voice_sidecar_pcm_shape():
+    script = _load_script_module()
+
+    contract = script.AudioContract()
+
+    assert contract.samples_per_frame == 960
+    assert contract.frame_bytes == 1920
+    assert contract.bytes_per_second == 96_000
+    assert contract.as_dict() == {
+        "sample_rate": 48_000,
+        "channels": 1,
+        "frame_ms": 20,
+        "encoding": "pcm_s16le",
+        "bytes_per_sample": 2,
+        "samples_per_frame": 960,
+        "frame_bytes": 1920,
+    }
+
+
+def test_validate_pcm_accepts_non_silent_whole_frames():
+    script = _load_script_module()
+    contract = script.AudioContract()
+    frame = (12_000).to_bytes(2, byteorder="little", signed=True) * 960
+
+    stats = script.validate_pcm(frame * 10, contract=contract)
+
+    assert stats == {
+        "bytes": 19_200,
+        "frames": 10,
+        "duration_ms": 200,
+        "peak": 12_000,
+    }
+
+
+def test_validate_pcm_rejects_silence():
+    script = _load_script_module()
+    contract = script.AudioContract()
+
+    with pytest.raises(SystemExit, match="PCM peak 0 is below minimum"):
+        script.validate_pcm(b"\x00" * contract.frame_bytes, contract=contract)
+
+
+def test_validate_pcm_rejects_partial_sample():
+    script = _load_script_module()
+    contract = script.AudioContract()
+
+    with pytest.raises(SystemExit, match="whole s16le samples"):
+        script.validate_pcm(b"\x00", contract=contract)
+
+
+def test_validate_pcm_rejects_partial_frame():
+    script = _load_script_module()
+    contract = script.AudioContract()
+
+    with pytest.raises(SystemExit, match="not aligned to 1920-byte frames"):
+        script.validate_pcm(b"\x01\x00" * 100, contract=contract)
