@@ -68,6 +68,15 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
+_GATEWAY_ROUTINE_COMPRESSION_STATUS_PATTERN = (
+    r"compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
+    r"|preflight\s+compression"
+)
+_GATEWAY_ROUTINE_COMPRESSION_STATUS_RE = re.compile(
+    rf"({_GATEWAY_ROUTINE_COMPRESSION_STATUS_PATTERN})",
+    re.IGNORECASE | re.DOTALL,
+)
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
@@ -76,8 +85,7 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|configured\s+compression\s+model\s+.+\s+failed"
     r"|no\s+auxiliary\s+llm\s+provider\s+configured"
     r"|auto-lowered\s+compression\s+threshold"
-    r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
-    r"|preflight\s+compression"
+    rf"|{_GATEWAY_ROUTINE_COMPRESSION_STATUS_PATTERN}"
     r"|rate\s+limited\.\s+waiting\s+\d"
     r"|retrying\s+in\s+\d"
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
@@ -363,7 +371,14 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
-    if _gateway_platform_value(platform) != "telegram":
+    platform_value = _gateway_platform_value(platform)
+    if (
+        platform_value != "local"
+        and event_type in {"lifecycle", "status"}
+        and _GATEWAY_ROUTINE_COMPRESSION_STATUS_RE.search(text)
+    ):
+        return None
+    if platform_value != "telegram":
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
