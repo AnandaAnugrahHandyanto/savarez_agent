@@ -241,10 +241,11 @@ def test_validate_whatsapp_cloud_readiness_reports_sources_without_secrets(
         encoding="utf-8",
     )
 
-    result = script.validate_whatsapp_cloud_readiness(
+    raw_result = script.validate_whatsapp_cloud_readiness(
         hermes_home=hermes_home,
         process_env={},
     )
+    result = script.remove_private_readiness_data(raw_result)
 
     assert result["required_fields"]["WHATSAPP_CLOUD_ACCESS_TOKEN"] == {
         "present": True,
@@ -256,6 +257,71 @@ def test_validate_whatsapp_cloud_readiness_reports_sources_without_secrets(
     assert access_token not in serialized
     assert app_secret not in serialized
     assert verify_token not in serialized
+
+
+def test_whatsapp_cloud_health_url_uses_loopback_for_wildcard_host():
+    script = _load_script_module()
+
+    result = script.whatsapp_cloud_health_url_from_env(
+        file_env={
+            "WHATSAPP_CLOUD_WEBHOOK_HOST": "0.0.0.0",
+            "WHATSAPP_CLOUD_WEBHOOK_PORT": "8091",
+        },
+        process_env={},
+    )
+
+    assert result == "http://127.0.0.1:8091/health"
+
+
+def test_validate_whatsapp_cloud_health_returns_redacted_summary():
+    script = _load_script_module()
+
+    result = script.validate_whatsapp_cloud_health(
+        {
+            "status": "ok",
+            "platform": "whatsapp_cloud",
+            "phone_number_id": "7794189252778687",
+            "webhook_path": "/whatsapp/webhook",
+            "verify_token_configured": True,
+            "app_secret_configured": True,
+            "calling_sidecar_configured": True,
+            "calling_sidecar_contract_loaded": True,
+            "calling_sidecar_tts_stream_configured": True,
+        },
+        expected_phone_number_id="7794189252778687",
+        expect_calling_sidecar=True,
+    )
+
+    assert result == {
+        "status": "ok",
+        "platform": "whatsapp_cloud",
+        "webhook_path": "/whatsapp/webhook",
+        "verify_token_configured": True,
+        "app_secret_configured": True,
+        "calling_sidecar_configured": True,
+        "calling_sidecar_contract_loaded": True,
+        "calling_sidecar_tts_stream_configured": True,
+    }
+    assert "phone_number_id" not in result
+
+
+def test_validate_whatsapp_cloud_health_rejects_unloaded_calling_sidecar():
+    script = _load_script_module()
+
+    with pytest.raises(SystemExit, match="calling sidecar is not configured"):
+        script.validate_whatsapp_cloud_health(
+            {
+                "status": "ok",
+                "platform": "whatsapp_cloud",
+                "phone_number_id": "7794189252778687",
+                "verify_token_configured": True,
+                "app_secret_configured": True,
+                "calling_sidecar_configured": False,
+                "calling_sidecar_tts_stream_configured": True,
+            },
+            expected_phone_number_id="7794189252778687",
+            expect_calling_sidecar=True,
+        )
 
 
 def test_validate_whatsapp_cloud_readiness_rejects_missing_authorization(
@@ -1265,6 +1331,21 @@ def test_main_can_require_whatsapp_cloud_readiness_without_printing_secrets(
         lambda *_args, **_kwargs: {"status": "connected"},
     )
     monkeypatch.setattr(
+        script,
+        "get_json_url",
+        lambda *_args, **_kwargs: {
+            "status": "ok",
+            "platform": "whatsapp_cloud",
+            "phone_number_id": "7794189252778687",
+            "webhook_path": "/whatsapp/webhook",
+            "verify_token_configured": True,
+            "app_secret_configured": True,
+            "calling_sidecar_configured": False,
+            "calling_sidecar_contract_loaded": False,
+            "calling_sidecar_tts_stream_configured": False,
+        },
+    )
+    monkeypatch.setattr(
         sys,
         "argv",
         [
@@ -1290,6 +1371,17 @@ def test_main_can_require_whatsapp_cloud_readiness_without_printing_secrets(
         "source": "env_file",
     }
     assert readiness["authorization"]["allowed_users_count"] == 1
+    assert output["checks"]["whatsapp_cloud_health"] == {
+        "url": "http://127.0.0.1:8090/health",
+        "status": "ok",
+        "platform": "whatsapp_cloud",
+        "webhook_path": "/whatsapp/webhook",
+        "verify_token_configured": True,
+        "app_secret_configured": True,
+        "calling_sidecar_configured": False,
+        "calling_sidecar_contract_loaded": False,
+        "calling_sidecar_tts_stream_configured": False,
+    }
     assert access_token not in output_text
     assert app_secret not in output_text
     assert verify_token not in output_text

@@ -452,7 +452,8 @@ command before changing the live service, then run `live_gateway` after
 restart. Use the `cloud_only` variant when this host does not run the local
 Baileys bridge. Use the `cloud_ready` variant before routing real Meta
 webhooks to the host; it checks WhatsApp Cloud credential shape and recipient
-authorization without printing secret values.
+authorization, then probes the running local Cloud `/health` endpoint without
+printing secret values.
 
 The generated service files should look like this:
 

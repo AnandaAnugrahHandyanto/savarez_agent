@@ -50,6 +50,7 @@ WHATSAPP_CLOUD_REQUIRED_ENV = (
     "WHATSAPP_CLOUD_APP_SECRET",
     "WHATSAPP_CLOUD_VERIFY_TOKEN",
 )
+DEFAULT_WHATSAPP_CLOUD_WEBHOOK_PORT = 8090
 CONTRACT_COMPARE_KEYS = (
     "contract",
     "version",
@@ -422,6 +423,136 @@ def validate_whatsapp_cloud_readiness(
         "authorization": validate_whatsapp_cloud_authorization(
             file_env=file_env,
             process_env=process_env,
+        ),
+        "_private": {
+            "file_env": file_env,
+            "process_env": process_env,
+            "phone_number_id": configured_value(
+                "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
+                file_env=file_env,
+                process_env=process_env,
+            )[0],
+        },
+    }
+
+
+def remove_private_readiness_data(readiness: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in readiness.items() if key != "_private"}
+
+
+def whatsapp_cloud_health_url_from_env(
+    *,
+    file_env: dict[str, str],
+    process_env: dict[str, str],
+) -> str:
+    raw_host = configured_value(
+        "WHATSAPP_CLOUD_WEBHOOK_HOST",
+        file_env=file_env,
+        process_env=process_env,
+    )[0]
+    host = raw_host or "127.0.0.1"
+    if host in {"0.0.0.0", "::", "[::]"}:
+        host = "127.0.0.1"
+
+    raw_port = configured_value(
+        "WHATSAPP_CLOUD_WEBHOOK_PORT",
+        file_env=file_env,
+        process_env=process_env,
+    )[0]
+    if raw_port:
+        try:
+            port = int(raw_port)
+        except ValueError as exc:
+            raise SystemExit(
+                f"WHATSAPP_CLOUD_WEBHOOK_PORT is not an integer: {raw_port!r}"
+            ) from exc
+        if port <= 0 or port > 65535:
+            raise SystemExit(
+                f"WHATSAPP_CLOUD_WEBHOOK_PORT is out of range: {raw_port!r}"
+            )
+    else:
+        port = DEFAULT_WHATSAPP_CLOUD_WEBHOOK_PORT
+
+    return f"http://{host}:{port}/health"
+
+
+def validate_whatsapp_cloud_health(
+    health: dict[str, Any],
+    *,
+    expected_phone_number_id: str,
+    expect_calling_sidecar: bool,
+) -> dict[str, Any]:
+    if health.get("status") != "ok":
+        raise SystemExit(
+            f"WhatsApp Cloud health status is not ok: {health.get('status')!r}"
+        )
+    if health.get("platform") != "whatsapp_cloud":
+        raise SystemExit(
+            "WhatsApp Cloud health endpoint reported wrong platform: "
+            f"{health.get('platform')!r}"
+        )
+    if str(health.get("phone_number_id") or "") != expected_phone_number_id:
+        raise SystemExit(
+            "WhatsApp Cloud health phone_number_id does not match configured "
+            "WHATSAPP_CLOUD_PHONE_NUMBER_ID"
+        )
+    if health.get("verify_token_configured") is not True:
+        raise SystemExit("WhatsApp Cloud health reports verify token is not configured")
+    if health.get("app_secret_configured") is not True:
+        raise SystemExit("WhatsApp Cloud health reports app secret is not configured")
+    if expect_calling_sidecar:
+        if health.get("calling_sidecar_configured") is not True:
+            raise SystemExit(
+                "WhatsApp Cloud health reports calling sidecar is not configured"
+            )
+        if health.get("calling_sidecar_tts_stream_configured") is not True:
+            raise SystemExit(
+                "WhatsApp Cloud health reports calling sidecar TTS stream is "
+                "not configured"
+            )
+
+    return {
+        "status": str(health.get("status")),
+        "platform": str(health.get("platform")),
+        "webhook_path": str(health.get("webhook_path") or ""),
+        "verify_token_configured": health.get("verify_token_configured") is True,
+        "app_secret_configured": health.get("app_secret_configured") is True,
+        "calling_sidecar_configured": health.get("calling_sidecar_configured") is True,
+        "calling_sidecar_contract_loaded": (
+            health.get("calling_sidecar_contract_loaded") is True
+        ),
+        "calling_sidecar_tts_stream_configured": (
+            health.get("calling_sidecar_tts_stream_configured") is True
+        ),
+    }
+
+
+def check_whatsapp_cloud_health(
+    *,
+    readiness: dict[str, Any],
+    health_url: str | None,
+    timeout: float,
+    expect_calling_sidecar: bool,
+) -> dict[str, Any]:
+    private = readiness.get("_private")
+    if not isinstance(private, dict):
+        raise SystemExit("WhatsApp Cloud readiness private data missing")
+    file_env = private.get("file_env")
+    process_env = private.get("process_env")
+    expected_phone_number_id = str(private.get("phone_number_id") or "")
+    if not isinstance(file_env, dict) or not isinstance(process_env, dict):
+        raise SystemExit("WhatsApp Cloud readiness env data missing")
+    target = health_url or whatsapp_cloud_health_url_from_env(
+        file_env={str(k): str(v) for k, v in file_env.items()},
+        process_env={str(k): str(v) for k, v in process_env.items()},
+    )
+    health = get_json_url(target, timeout=timeout)
+    return {
+        "url": target,
+        **validate_whatsapp_cloud_health(
+            health,
+            expected_phone_number_id=expected_phone_number_id,
+            expect_calling_sidecar=expect_calling_sidecar,
         ),
     }
 
@@ -1328,6 +1459,23 @@ def parse_args() -> argparse.Namespace:
             "environment. Secret values are never printed."
         ),
     )
+    parser.add_argument(
+        "--whatsapp-cloud-health-url",
+        help=(
+            "Override the local WhatsApp Cloud health URL used with "
+            "--require-whatsapp-cloud-readiness. Defaults to "
+            "http://127.0.0.1:8090/health, or the configured webhook port."
+        ),
+    )
+    parser.add_argument(
+        "--skip-whatsapp-cloud-health",
+        action="store_true",
+        help=(
+            "With --require-whatsapp-cloud-readiness, only validate local "
+            "configuration shape and skip the running Cloud webhook /health "
+            "probe."
+        ),
+    )
     parser.add_argument("--run-tts-smoke", action="store_true")
     parser.add_argument("--tts-platform", default="whatsapp")
     parser.add_argument("--tts-text", default=DEFAULT_TTS_TEXT)
@@ -1449,11 +1597,28 @@ def main() -> int:
             bridge_bin_dir=bridge_bin_dir,
         ),
     }
+    cloud_readiness: dict[str, Any] | None = None
     if args.require_whatsapp_cloud_readiness:
-        checks["whatsapp_cloud_readiness"] = validate_whatsapp_cloud_readiness(
+        cloud_readiness = validate_whatsapp_cloud_readiness(
             hermes_home=hermes_home,
             process_env=process_env,
         )
+        checks["whatsapp_cloud_readiness"] = remove_private_readiness_data(
+            cloud_readiness
+        )
+        if args.skip_whatsapp_cloud_health:
+            checks["whatsapp_cloud_health"] = {
+                "success": True,
+                "skipped": True,
+                "reason": "--skip-whatsapp-cloud-health was provided",
+            }
+        else:
+            checks["whatsapp_cloud_health"] = check_whatsapp_cloud_health(
+                readiness=cloud_readiness,
+                health_url=args.whatsapp_cloud_health_url,
+                timeout=args.timeout,
+                expect_calling_sidecar=bool(args.calling_sidecar_url),
+            )
 
     if args.calling_sidecar_url:
         checks["calling_sidecar"] = {
