@@ -52,6 +52,7 @@ MEET_URL_RE = re.compile(
 # Filenames the bot reads/writes in ``HERMES_MEET_OUT_DIR``.
 SAY_QUEUE_FILENAME = "say_queue.jsonl"
 SAY_PCM_FILENAME = "speaker.pcm"
+CALL_ERROR_STRIKE_LIMIT = 3
 
 
 def _is_safe_meet_url(url: str) -> bool:
@@ -546,6 +547,286 @@ def _enable_captions_js() -> str:
     """
 
 
+def _first_visible(locator):
+    """Return the first visible element in a Playwright locator-like object."""
+    try:
+        count = locator.count()
+    except Exception:
+        count = 0
+    if count <= 0:
+        return None
+
+    if hasattr(locator, "nth"):
+        for idx in range(count):
+            try:
+                candidate = locator.nth(idx)
+                if candidate.is_visible():
+                    return candidate
+            except Exception:
+                continue
+
+    try:
+        first = locator.first
+        if first.is_visible():
+            return first
+    except Exception:
+        pass
+    return None
+
+
+def _captions_are_enabled(page) -> bool:
+    """Return True when the Meet UI proves captions are currently enabled."""
+    locators = (
+        lambda: page.get_by_role(
+            "button",
+            name=re.compile(r"turn off captions", re.IGNORECASE),
+        ),
+        lambda: page.locator('button[aria-label*="Turn off captions" i]'),
+        lambda: page.locator('[role="button"][aria-label*="Turn off captions" i]'),
+        lambda: page.locator('[role="region"][aria-label*="aption" i]'),
+        lambda: page.locator('div[jsname="YSxPC"], div[jsname="tgaKEf"]'),
+    )
+    for make_locator in locators:
+        try:
+            locator = make_locator()
+            if _first_visible(locator) is not None:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _enable_captions(page, *, allow_shortcut: bool = True) -> bool:
+    """Best-effort caption toggle without clicking an already-on control."""
+    if _captions_are_enabled(page):
+        return True
+
+    locators = (
+        lambda: page.get_by_role(
+            "button",
+            name=re.compile(r"turn on captions", re.IGNORECASE),
+        ),
+        lambda: page.locator('button[aria-label*="Turn on captions" i]'),
+        lambda: page.locator('[role="button"][aria-label*="Turn on captions" i]'),
+    )
+    for make_locator in locators:
+        try:
+            btn = _first_visible(make_locator())
+            if btn is not None:
+                btn.click(timeout=3_000)
+                return True
+        except Exception:
+            continue
+
+    if not allow_shortcut:
+        return False
+
+    try:
+        page.keyboard.press("c")
+        return True
+    except Exception:
+        pass
+
+    try:
+        page.evaluate(_enable_captions_js())
+        return True
+    except Exception:
+        return False
+
+
+def _disable_local_media(page) -> int:
+    """Turn off the bot's local mic/camera if Meet left either enabled."""
+    clicked = 0
+    controls = (
+        re.compile(r"(turn off|mute)\s+(microphone|mic)", re.IGNORECASE),
+        re.compile(r"(turn off|stop|disable)\s+(camera|video)", re.IGNORECASE),
+    )
+    for label in controls:
+        try:
+            btn = _first_visible(page.get_by_role("button", name=label))
+            if btn is not None:
+                btn.click(timeout=3_000)
+                clicked += 1
+        except Exception:
+            continue
+    return clicked
+
+
+def _probe_local_media_state(page) -> dict:
+    """Infer local mic/camera state from visible Meet control labels."""
+    controls = {
+        "local_microphone_on": (
+            re.compile(r"(turn off|mute)\s+(microphone|mic)", re.IGNORECASE),
+            re.compile(r"(turn on|unmute)\s+(microphone|mic)", re.IGNORECASE),
+        ),
+        "local_camera_on": (
+            re.compile(r"(turn off|stop|disable)\s+(camera|video)", re.IGNORECASE),
+            re.compile(r"(turn on|start|enable)\s+(camera|video)", re.IGNORECASE),
+        ),
+    }
+    result = {}
+    for key, (on_pattern, off_pattern) in controls.items():
+        state = None
+        try:
+            if _first_visible(page.get_by_role("button", name=on_pattern)) is not None:
+                state = True
+            elif _first_visible(page.get_by_role("button", name=off_pattern)) is not None:
+                state = False
+        except Exception:
+            state = None
+        result[key] = state
+    return result
+
+
+def _should_retry_caption_enable(
+    state: _BotState,
+    *,
+    now: float,
+    last_caption_enable_check: float,
+) -> bool:
+    if state.last_caption_at or (now - last_caption_enable_check) <= 3.0:
+        return False
+    return bool(state.in_call or state.join_attempted_at)
+
+
+def _retry_caption_enable(page, state: _BotState) -> bool:
+    """Retry enabling captions and update status only when an attempt succeeds.
+
+    Before admission we avoid keyboard shortcuts because ``c`` can toggle
+    captions off if Meet already has them enabled but has not exposed the
+    control yet. After admission, failing to use the shortcut leaves headless
+    runs stuck with no visible "Turn on captions" button and no transcript.
+    """
+    if _captions_are_enabled(page):
+        state.set(captioning=True, captions_enabled_attempted=True)
+        return True
+
+    if not _enable_captions(page, allow_shortcut=state.in_call):
+        return False
+    try:
+        page.wait_for_timeout(500)
+    except Exception:
+        pass
+    if not _captions_are_enabled(page):
+        return False
+    state.set(captioning=True, captions_enabled_attempted=True)
+    return True
+
+
+def _should_probe_admission(
+    state: _BotState,
+    *,
+    now: float,
+    last_admission_check: float,
+) -> bool:
+    if (now - last_admission_check) <= 3.0:
+        return False
+    return bool((not state.in_call) or not state.last_caption_at)
+
+
+def _apply_admission_probe(
+    state: _BotState,
+    ui_probe: dict,
+    *,
+    now: float,
+    lobby_deadline: float,
+    call_error_strike_limit: int = 3,
+) -> tuple[bool, bool]:
+    """Apply a Meet UI probe to admission state.
+
+    Returns ``(admitted, terminal)``. ``terminal`` means the bot should exit.
+    """
+    if ui_probe.get("waitingLobby") and not state.lobby_waiting:
+        state.set(lobby_waiting=True)
+    if ui_probe.get("preJoin") and state.in_call and not state.last_caption_at:
+        state.set(
+            in_call=False,
+            joined_at=None,
+            phase="joining",
+        )
+    # Meet's "couldn't start the video call because of an error" banner is
+    # frequently transient and can flash while the call is healthy. Treating a
+    # single observation as fatal kills live sessions, but treating a
+    # false-positive admission as proof of health leaves status stuck at
+    # ``in_call`` on an error page. Only caption/transcript evidence proves that
+    # a persistent call-error overlay is safe to ignore.
+    has_caption_evidence = bool(state.last_caption_at or state.transcript_lines > 0)
+    if not ui_probe.get("callError") or has_caption_evidence:
+        state.call_error_strikes = 0
+    elif state.join_attempted_at:
+        state.call_error_strikes += 1
+        if state.call_error_strikes >= call_error_strike_limit:
+            state.set(
+                in_call=False,
+                joined_at=None,
+                error="meet call error before captions",
+                leave_reason="meet_error",
+                phase="exited",
+            )
+            return False, True
+    if ui_probe.get("landing") and state.join_attempted_at and not state.last_caption_at:
+        state.set(
+            in_call=False,
+            joined_at=None,
+            error="meet returned to landing before captions",
+            leave_reason="meet_landing",
+            phase="exited",
+        )
+        return False, True
+
+    admitted = bool(ui_probe.get("inCall"))
+    if admitted:
+        state.ever_admitted = True
+        state.set(
+            in_call=True,
+            lobby_waiting=False,
+            joined_at=state.joined_at or now,
+        )
+        return True, False
+    if now > lobby_deadline:
+        state.set(
+            error=(
+                "lobby timeout — host never admitted the bot "
+                f"within {int(lobby_deadline - state.join_attempted_at) if state.join_attempted_at else 0}s"
+            ),
+            leave_reason="lobby_timeout",
+            phase="exited",
+        )
+        return False, True
+    if bool(ui_probe.get("denied")):
+        state.set(
+            error="host denied admission",
+            leave_reason="denied",
+            phase="exited",
+        )
+        return False, True
+    return False, False
+
+
+def _compute_meet_phase(
+    state: _BotState,
+    *,
+    now: float,
+    stall_after: float,
+) -> tuple[str, Optional[str]]:
+    if state.exited:
+        return "exited", state.leave_reason or state.error
+    if state.transcript_lines > 0 or state.last_caption_at:
+        return "capturing", None
+    if state.in_call:
+        return "in_call", None
+    if state.join_attempted_at:
+        age = now - state.join_attempted_at
+        if age > stall_after:
+            return "stalled", f"no admission progress for {int(age)}s"
+        if state.lobby_waiting:
+            return "waiting_lobby", None
+        return "joining", None
+    if state.captioning:
+        return "joining", None
+    return "starting", None
+
+
 def _start_realtime_speaker(
     *,
     rt: dict,
@@ -726,6 +1007,26 @@ def _mac_audio_device_index(device_name: str) -> str:
         if m.group(2).strip().lower() == needle:
             return m.group(1)
     return "0"
+
+
+def _apply_meet_proxy_args(chrome_args: list[str]) -> None:
+    """Append a Chromium proxy arg when the runtime explicitly configures one."""
+    proxy_server = os.environ.get("HERMES_MEET_PROXY_SERVER", "").strip()
+    if proxy_server:
+        chrome_args.append(f"--proxy-server={proxy_server}")
+
+
+def _build_browser_launch_config(*, realtime_enabled: bool) -> tuple[list[str], list[str]]:
+    """Return Chromium args and browser permissions for the selected Meet mode."""
+    chrome_args = [
+        "--use-fake-device-for-media-stream",
+        "--use-fake-ui-for-media-stream",
+        "--disable-blink-features=AutomationControlled",
+    ]
+    permissions = ["microphone", "camera"]
+
+    _apply_meet_proxy_args(chrome_args)
+    return chrome_args, permissions
 
 
 def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
@@ -1036,58 +1337,170 @@ def _try_guest_name(page, guest_name: str) -> None:
         pass
 
 
-def _detect_admission(page) -> bool:
-    """True if we're clearly past the lobby and in the call itself.
+def _classify_meet_ui(
+    text: str,
+    *,
+    leave: bool = False,
+    caption_region: bool = False,
+    in_call_control: bool = False,
+    in_call_text: bool = False,
+    waiting_lobby: bool = False,
+    denied: bool = False,
+    pre_join: bool = False,
+    url: str = "",
+) -> dict:
+    """Classify a Meet page snapshot into admission-related states."""
+    text = text or ""
+    call_error = bool(
+        re.search(r"couldn['’]?t start the video call because of an error", text, re.IGNORECASE)
+        or re.search(r"could not start the video call because of an error", text, re.IGNORECASE)
+    )
+    landing = bool(
+        re.search(r"/landing(?:[?#]|$)", url, re.IGNORECASE)
+        or (
+            re.search(r"secure video conferencing for everyone", text, re.IGNORECASE)
+            and re.search(r"\bnew meeting\b", text, re.IGNORECASE)
+            and re.search(r"\bjoin\b", text, re.IGNORECASE)
+        )
+    )
+    denied = bool(
+        denied
+        or re.search(r"You can't join this video call", text, re.IGNORECASE)
+        or re.search(r"You were removed from the meeting", text, re.IGNORECASE)
+        or re.search(r"No one responded to your request to join", text, re.IGNORECASE)
+        or re.search(
+            r"No one can join a meeting unless invited or admitted by the host",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    waiting_lobby = bool(
+        waiting_lobby
+        or re.search(r"asking to be let in", text, re.IGNORECASE)
+        or re.search(r"waiting for.*let you in", text, re.IGNORECASE)
+        or re.search(r"you'll join.*when someone lets you in", text, re.IGNORECASE)
+        or re.search(r"ask to join", text, re.IGNORECASE)
+    )
+    pre_join = bool(
+        pre_join
+        or re.search(r"getting ready", text, re.IGNORECASE)
+        or re.search(r"you'll be able to join in just a moment", text, re.IGNORECASE)
+        or re.search(r"\bready to join\?", text, re.IGNORECASE)
+        or re.search(r"continue without microphone and camera", text, re.IGNORECASE)
+        or re.search(r"do you want people to see and hear you", text, re.IGNORECASE)
+    )
+    in_call = bool(leave or caption_region or in_call_control or in_call_text)
+    in_call = in_call and not (waiting_lobby or denied or pre_join or call_error or landing)
+    return {
+        "inCall": in_call,
+        "waitingLobby": waiting_lobby,
+        "denied": denied,
+        "preJoin": pre_join,
+        "callError": call_error,
+        "landing": landing,
+        "text": text[:1000],
+        "url": url,
+    }
 
-    Uses a JS-side probe because Meet's DOM structure varies by client
-    version. We check several high-signal indicators and declare admission
-    on the first hit:
 
-      1. Leave-call button is present (``aria-label`` contains "eave call").
-      2. Caption region has appeared (we installed the observer and it attached).
-      3. The participant list container is visible.
-
-    Conservative by default — returns False on any error.
-    """
+def _probe_meet_ui(page) -> dict:
+    """Return a best-effort snapshot of the current Meet UI."""
     probe = r"""
     (() => {
-      const leave = document.querySelector('button[aria-label*="eave call" i]');
-      if (leave) return true;
+      const text = document.body ? document.body.innerText || '' : '';
+      const url = location.href;
+      const has = (selector) => !!document.querySelector(selector);
+      const leave = has(
+        'button[aria-label*="eave call" i], ' +
+        'button[aria-label*="leave meeting" i], ' +
+        '[role="button"][aria-label*="eave call" i]'
+      );
+      const inCallControl = has(
+        '[aria-label*="meeting details" i], ' +
+        '[aria-label*="show everyone" i], ' +
+        '[aria-label*="people" i], ' +
+        '[aria-label*="chat with everyone" i], ' +
+        '[aria-label*="present now" i]'
+      );
+      let captionRegion = false;
       if (window.__hermesMeetInstalled) {
-        const caps = document.querySelector(
+        captionRegion = has(
           '[role="region"][aria-label*="aption" i], ' +
           'div[jsname="YSxPC"], div[jsname="tgaKEf"]'
         );
-        if (caps) return true;
       }
-      const parts = document.querySelector('[aria-label*="articipants" i]');
-      if (parts) return true;
-      return false;
+      const denied = (
+        /You can't join this video call/i.test(text) ||
+        /You were removed from the meeting/i.test(text) ||
+        /No one responded to your request to join/i.test(text) ||
+        /No one can join a meeting unless invited or admitted by the host/i.test(text)
+      );
+      const waitingLobby = (
+        /asking to be let in/i.test(text) ||
+        /waiting for.*let you in/i.test(text) ||
+        /you'll join.*when someone lets you in/i.test(text) ||
+        /ask to join/i.test(text)
+      );
+      const preJoin = (
+        /getting ready/i.test(text) ||
+        /you'll be able to join in just a moment/i.test(text) ||
+        /\bready to join\?/i.test(text) ||
+        /continue without microphone and camera/i.test(text) ||
+        /do you want people to see and hear you/i.test(text)
+      );
+      const inCallText = (
+        /you're the only one here/i.test(text) ||
+        /you are the only one here/i.test(text) ||
+        /meeting details/i.test(text) ||
+        /chat with everyone/i.test(text)
+      );
+      return {
+        leave,
+        captionRegion,
+        inCallControl,
+        inCallText,
+        waitingLobby,
+        denied,
+        preJoin,
+        text: text.slice(0, 1000),
+        url,
+      };
     })();
     """
     try:
-        return bool(page.evaluate(probe))
-    except Exception:
-        return False
+        result = page.evaluate(probe)
+        if isinstance(result, dict):
+            has_raw_signals = any(
+                key in result
+                for key in ("leave", "captionRegion", "inCallControl", "inCallText")
+            )
+            return _classify_meet_ui(
+                str(result.get("text", "")),
+                leave=bool(result.get("leave")),
+                caption_region=bool(result.get("captionRegion")),
+                in_call_control=bool(
+                    result.get("inCallControl")
+                    or (result.get("inCall") and not has_raw_signals)
+                ),
+                in_call_text=bool(result.get("inCallText")),
+                waiting_lobby=bool(result.get("waitingLobby")),
+                denied=bool(result.get("denied")),
+                pre_join=bool(result.get("preJoin")),
+                url=str(result.get("url", "")),
+            )
+        return {"inCall": bool(result), "waitingLobby": False, "denied": False}
+    except Exception as e:
+        return {"inCall": False, "waitingLobby": False, "denied": False, "error": str(e)}
+
+
+def _detect_admission(page) -> bool:
+    """True if we're clearly past the lobby and in the call itself."""
+    return bool(_probe_meet_ui(page).get("inCall"))
 
 
 def _detect_denied(page) -> bool:
     """True when Meet is showing a 'you were denied' / 'no one admitted' page."""
-    probe = r"""
-    (() => {
-      const text = document.body ? document.body.innerText || '' : '';
-      // English only — matches what shows up when the host denies or
-      // removes a guest.
-      if (/You can't join this video call/i.test(text)) return true;
-      if (/You were removed from the meeting/i.test(text)) return true;
-      if (/No one responded to your request to join/i.test(text)) return true;
-      return false;
-    })();
-    """
-    try:
-        return bool(page.evaluate(probe))
-    except Exception:
-        return False
+    return bool(_probe_meet_ui(page).get("denied"))
 
 
 def _looks_like_human_speaker(speaker: str, bot_guest_name: str) -> bool:
@@ -1110,12 +1523,24 @@ def _looks_like_human_speaker(speaker: str, bot_guest_name: str) -> bool:
     return True
 
 
-def _click_join(page, state: _BotState) -> None:
+def _click_join(page, state: _BotState) -> bool:
     """Click 'Join now' or 'Ask to join' if either button is visible.
 
     Flags ``lobby_waiting`` when we hit the "waiting for host to admit you"
     state so the agent can surface that in status.
     """
+    try:
+        continue_btn = page.get_by_role(
+            "button",
+            name="Continue without microphone and camera",
+            exact=False,
+        ).first
+        if continue_btn.count() and continue_btn.is_visible():
+            continue_btn.click(timeout=3_000)
+            page.wait_for_timeout(500)
+    except Exception:
+        pass
+
     for label in ("Join now", "Ask to join"):
         try:
             btn = page.get_by_role("button", name=label, exact=False).first
@@ -1123,9 +1548,10 @@ def _click_join(page, state: _BotState) -> None:
                 btn.click(timeout=3_000)
                 if label == "Ask to join":
                     state.set(lobby_waiting=True)
-                break
+                return True
         except Exception:
             continue
+    return False
 
 
 def _parse_duration(raw: str) -> Optional[float]:
