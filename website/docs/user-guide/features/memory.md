@@ -84,8 +84,8 @@ For information the agent needs to remember about the environment, workflows, an
 - Environment facts (OS, tools, project structure)
 - Project conventions and configuration
 - Tool quirks and workarounds discovered
-- Completed task diary entries
-- Skills and techniques that worked
+- Stable facts about completed work that will still matter later
+- Reusable lessons that are better kept as concise notes than full skills
 
 ### `user` — User Profile
 
@@ -107,7 +107,7 @@ The agent saves automatically — you don't need to ask. It saves when it learns
 - **Environment facts:** "This server runs Debian 12 with PostgreSQL 16" → save to `memory`
 - **Corrections:** "Don't use `sudo` for Docker commands, user is in docker group" → save to `memory`
 - **Conventions:** "Project uses tabs, 120-char line width, Google-style docstrings" → save to `memory`
-- **Completed work:** "Migrated database from MySQL to PostgreSQL on 2026-01-15" → save to `memory`
+- **Stable project state:** "Production database is now PostgreSQL 16 after the 2026-01-15 migration" → save to `memory`
 - **Explicit requests:** "Remember that my API key rotation happens monthly" → save to `memory`
 
 ### Skip These
@@ -116,6 +116,7 @@ The agent saves automatically — you don't need to ask. It saves when it learns
 - **Easily re-discovered facts:** "Python 3.12 supports f-string nesting" — can web search this
 - **Raw data dumps:** Large code blocks, log files, data tables — too big for memory
 - **Session-specific ephemera:** Temporary file paths, one-off debugging context
+- **Completed-work logs:** PR numbers, commit SHAs, phase updates, and "fixed bug X" notes belong in `session_search` unless they establish stable project state
 - **Information already in context files:** SOUL.md and AGENTS.md content
 
 ## Capacity Management

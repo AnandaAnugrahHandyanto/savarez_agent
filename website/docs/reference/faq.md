@@ -78,7 +78,7 @@ Important caveat: the full `.[all]` extra is not currently available on Android 
 
 ### Is my data sent anywhere?
 
-API calls go **only to the LLM provider you configure** (e.g., OpenRouter, your local Ollama instance). Hermes Agent does not collect telemetry, usage data, or analytics. Your conversations, memory, and skills are stored locally in `~/.hermes/`.
+API calls go **only to the LLM provider you configure** (e.g., OpenRouter, Nous Portal, or your local Ollama instance). Hermes Agent itself does not collect telemetry, usage data, or analytics, and your conversations, memory, and skills are stored locally in `~/.hermes/`. If you choose a hosted provider, requests are still sent to that provider and may include provider-side routing or client-identification metadata.
 
 ### Can I use it offline / with local models?
 
