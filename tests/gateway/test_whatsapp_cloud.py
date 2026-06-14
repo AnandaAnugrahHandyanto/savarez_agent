@@ -438,6 +438,8 @@ class TestCallingSidecarClient:
         assert contract is not None
         assert contract["contract"] == "voice.webrtc_sidecar"
         assert contract["audio"]["frame_bytes"] == 1920
+        assert contract["audio"]["default_drain_bytes"] == 96000
+        assert contract["audio"]["max_drain_wait_ms"] == 5000
         call = adapter._http_client.get.call_args
         assert call.args[0] == "http://127.0.0.1:8787/contract"
         assert call.kwargs["timeout"] == 2.5
@@ -679,6 +681,33 @@ class TestCallingSidecarClient:
         )
         assert call.kwargs["params"] == {"max_bytes": 4, "wait_ms": 500}
         assert call.kwargs["timeout"] == 2.5
+
+    @pytest.mark.asyncio
+    async def test_receive_calling_sidecar_audio_defaults_to_contract_window(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._http_client = MagicMock()
+        adapter._http_client.get = AsyncMock(
+            return_value=_mock_httpx_response(
+                200,
+                {
+                    "returned_bytes": 0,
+                    "queued_rx_bytes": 0,
+                    "pcm_s16le_base64": "",
+                    "audio": {
+                        "sample_rate": 48000,
+                        "channels": 1,
+                        "frame_ms": 20,
+                        "encoding": "pcm_s16le",
+                    },
+                },
+            )
+        )
+
+        audio = await adapter._receive_calling_sidecar_audio("call-1")
+
+        assert audio is not None
+        call = adapter._http_client.get.call_args
+        assert call.kwargs["params"] == {"max_bytes": 96000, "wait_ms": 500}
 
     @pytest.mark.asyncio
     async def test_receive_calling_sidecar_audio_requires_sidecar(self):

@@ -106,13 +106,22 @@ CALLING_PCM_FRAME_BYTES = (
     * CALLING_PCM_FRAME_MS
     // 1_000
 )
+CALLING_PCM_DEFAULT_DRAIN_BYTES = (
+    CALLING_PCM_SAMPLE_RATE * CALLING_PCM_CHANNELS * CALLING_PCM_BYTES_PER_SAMPLE
+)
 CALLING_PCM_DRAIN_WAIT_MS = 500
+CALLING_PCM_MAX_DRAIN_WAIT_MS = 5_000
 CALLING_PCM_ENCODING = "pcm_s16le"
 CALLING_AUDIO_CONTRACT = {
     "sample_rate": CALLING_PCM_SAMPLE_RATE,
     "channels": CALLING_PCM_CHANNELS,
     "frame_ms": CALLING_PCM_FRAME_MS,
     "encoding": CALLING_PCM_ENCODING,
+    "bytes_per_sample": CALLING_PCM_BYTES_PER_SAMPLE,
+    "samples_per_frame": CALLING_PCM_SAMPLE_RATE * CALLING_PCM_FRAME_MS // 1_000,
+    "frame_bytes": CALLING_PCM_FRAME_BYTES,
+    "default_drain_bytes": CALLING_PCM_DEFAULT_DRAIN_BYTES,
+    "max_drain_wait_ms": CALLING_PCM_MAX_DRAIN_WAIT_MS,
 }
 GRAPH_API_BASE = "https://graph.facebook.com"
 # Meta retries failed webhooks for up to 7 days. We don't need to remember
@@ -632,7 +641,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self,
         call_id: str,
         *,
-        max_bytes: int = CALLING_PCM_FRAME_BYTES,
+        max_bytes: int = CALLING_PCM_DEFAULT_DRAIN_BYTES,
         wait_ms: int = CALLING_PCM_DRAIN_WAIT_MS,
     ) -> Optional[CallingSidecarAudio]:
         """Drain decoded inbound 48 kHz PCM from a local WebRTC sidecar call."""
