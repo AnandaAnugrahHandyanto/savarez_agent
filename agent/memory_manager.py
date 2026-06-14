@@ -44,6 +44,74 @@ logger = logging.getLogger(__name__)
 _SYNC_DRAIN_TIMEOUT_S = 5.0
 
 
+def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]] = None) -> bool:
+    """Return whether external memory-provider tools should be exposed.
+
+    Gate logic (Issue #45422):
+      enabled_toolsets is None          → no filter, inject (backward compat)
+      enabled_toolsets is non-empty     → inject (platform has tools; external
+                                           memory provider works regardless of
+                                           whether the built-in memory toolset
+                                           is explicitly named)
+      enabled_toolsets is empty ([])    → skip (constrained platform, no tools)
+      "memory" in disabled_toolsets     → skip (global nuclear option — user
+                                           explicitly opted out of ALL memory)
+    """
+    if disabled_toolsets and "memory" in disabled_toolsets:
+        return False
+    if enabled_toolsets is None:
+        return True
+    if not enabled_toolsets:
+        return False
+    # Any non-empty toolset list allows external memory providers (#45422)
+    return True
+
+
+def inject_memory_provider_tools(agent: Any) -> int:
+    """Append external memory-provider tool schemas to an agent tool surface."""
+    memory_manager = getattr(agent, "_memory_manager", None)
+    tools = getattr(agent, "tools", None)
+    if not memory_manager or tools is None:
+        return 0
+
+    existing_tool_names = {
+        tool.get("function", {}).get("name")
+        for tool in tools
+        if isinstance(tool, dict)
+    }
+    if (
+        "memory" not in existing_tool_names
+        and not memory_provider_tools_enabled(
+            getattr(agent, "enabled_toolsets", None),
+            getattr(agent, "disabled_toolsets", None),
+        )
+    ):
+        return 0
+
+    get_schemas = getattr(memory_manager, "get_all_tool_schemas", None)
+    if not callable(get_schemas):
+        return 0
+
+    valid_tool_names = getattr(agent, "valid_tool_names", None)
+    if valid_tool_names is None:
+        valid_tool_names = set()
+        agent.valid_tool_names = valid_tool_names
+
+    added = 0
+    for schema in get_schemas():
+        if not isinstance(schema, dict):
+            continue
+        tool_name = schema.get("name", "")
+        if not tool_name or tool_name in existing_tool_names:
+            continue
+        tools.append({"type": "function", "function": schema})
+        valid_tool_names.add(tool_name)
+        existing_tool_names.add(tool_name)
+        added += 1
+
+    return added
+
+
 # ---------------------------------------------------------------------------
 # Context fencing helpers
 # ---------------------------------------------------------------------------
