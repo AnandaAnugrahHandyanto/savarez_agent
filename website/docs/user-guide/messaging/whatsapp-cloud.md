@@ -339,13 +339,15 @@ scripts/verify_voice_live_gateway.py \
   --live-hermes-root /path/to/hermes-agent \
   --python-bin ~/.hermes/hermes-agent/venv/bin/python \
   --hermes-home ~/.hermes \
+  --calling-sidecar-url http://127.0.0.1:8787 \
   --skip-bridge-health \
   --run-tts-smoke
 ```
 
 That live check inspects the systemd user service, verifies the running process
-environment, confirms imports resolve from the expected checkout, and can run
-one live-config TTS smoke that must produce mono 48 kHz Ogg/Opus. Omit
+environment, confirms imports resolve from the expected checkout, validates the
+configured Calling sidecar `/contract` and `/health`, and can run one
+live-config TTS smoke that must produce mono 48 kHz Ogg/Opus. Omit
 `--skip-bridge-health` when the Baileys WhatsApp bridge is also enabled and you
 want the verifier to require the local bridge `/health` endpoint to be
 connected.
@@ -381,6 +383,43 @@ For low-latency outbound speech, add a command that writes headerless `pcm_s16le
 ```bash
 WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND='voice stream --quiet --sample-rate {sample_rate} --frame-ms {frame_ms} --raw-output - --input-file {input_path}'
 WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT=180
+```
+
+For a local user-service deployment, run the sidecar on loopback and expose the
+same values to `hermes-gateway.service`:
+
+```ini
+# ~/.config/systemd/user/voice-webrtc-sidecar.service
+[Unit]
+Description=Voice WebRTC Sidecar
+After=network.target voice-daemon.service
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/voice
+Environment="VOICE_BIN=/path/to/voice"
+ExecStart=/tmp/voice-webrtc-venv/bin/python /path/to/voice/examples/webrtc-sidecar/sidecar.py --host 127.0.0.1 --port 8787 --rx-pcm %h/.hermes/voice-webrtc-sidecar/inbound.s16le --log-level INFO
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+```
+
+```ini
+# ~/.config/systemd/user/hermes-gateway.service.d/voice-stack.conf
+[Service]
+Environment="WHATSAPP_CLOUD_CALLING_SIDECAR_URL=http://127.0.0.1:8787"
+Environment="WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND=/path/to/voice stream --quiet --sample-rate {sample_rate} --frame-ms {frame_ms} --raw-output - --input-file {input_path} --voice af_heart --speed 1.0"
+Environment="WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT=180"
+```
+
+Then reload and restart:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now voice-webrtc-sidecar.service
+systemctl --user restart hermes-gateway.service
 ```
 
 Validate the installed command shape before a live call:

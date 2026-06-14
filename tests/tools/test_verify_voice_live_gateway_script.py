@@ -153,6 +153,96 @@ def test_validate_bridge_health_requires_connected_when_requested():
         script.validate_bridge_health({"status": "connecting"}, require_connected=True)
 
 
+def test_validate_calling_sidecar_env_requires_url_and_stream_command():
+    script = _load_script_module()
+    env = {
+        "WHATSAPP_CLOUD_CALLING_SIDECAR_URL": "http://127.0.0.1:8787/",
+        "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND": (
+            "voice stream --raw-output - --input-file {input_path} "
+            "--sample-rate {sample_rate} --frame-ms {frame_ms}"
+        ),
+        "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT": "180",
+    }
+
+    result = script.validate_calling_sidecar_env(env, "http://127.0.0.1:8787")
+
+    assert result["url"] == "http://127.0.0.1:8787"
+    assert result["tts_stream_timeout"] == "180"
+
+    with pytest.raises(SystemExit, match="does not match"):
+        script.validate_calling_sidecar_env(env, "http://127.0.0.1:9999")
+    with pytest.raises(SystemExit, match="missing"):
+        script.validate_calling_sidecar_env(
+            {
+                "WHATSAPP_CLOUD_CALLING_SIDECAR_URL": "http://127.0.0.1:8787",
+                "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND": "voice stream",
+            },
+            "http://127.0.0.1:8787",
+        )
+
+
+def test_validate_calling_sidecar_contract_requires_voice_pcm_shape():
+    script = _load_script_module()
+    contract = {
+        "contract": "voice.webrtc_sidecar",
+        "version": 1,
+        "audio": {
+            "sample_rate": 48_000,
+            "channels": 1,
+            "frame_ms": 20,
+            "encoding": "pcm_s16le",
+            "frame_bytes": 1_920,
+        },
+    }
+
+    result = script.validate_calling_sidecar_contract(contract)
+
+    assert result["contract"] == "voice.webrtc_sidecar"
+    assert result["audio"]["frame_bytes"] == 1_920
+
+    bad = {**contract, "contract": "other"}
+    with pytest.raises(SystemExit, match="contract id"):
+        script.validate_calling_sidecar_contract(bad)
+    drifted = {
+        **contract,
+        "audio": {**contract["audio"], "sample_rate": 16_000},
+    }
+    with pytest.raises(SystemExit, match="audio contract"):
+        script.validate_calling_sidecar_contract(drifted)
+
+
+def test_get_calling_sidecar_status_fetches_contract_and_health(monkeypatch):
+    script = _load_script_module()
+    calls = []
+
+    def fake_json_url(target, *, timeout):
+        calls.append((target, timeout))
+        if target.endswith("/contract"):
+            return {
+                "contract": "voice.webrtc_sidecar",
+                "version": 1,
+                "audio": {
+                    "sample_rate": 48_000,
+                    "channels": 1,
+                    "frame_ms": 20,
+                    "encoding": "pcm_s16le",
+                    "frame_bytes": 1_920,
+                },
+            }
+        return {"ok": True, "sessions": 0, "call_ids": []}
+
+    monkeypatch.setattr(script, "get_json_url", fake_json_url)
+
+    result = script.get_calling_sidecar_status("http://127.0.0.1:8787/", timeout=3)
+
+    assert result["contract"]["contract"] == "voice.webrtc_sidecar"
+    assert result["health"] == {"ok": True, "sessions": 0, "call_ids": []}
+    assert calls == [
+        ("http://127.0.0.1:8787/contract", 3),
+        ("http://127.0.0.1:8787/health", 3),
+    ]
+
+
 def test_parse_ffprobe_json_extracts_audio_shape():
     script = _load_script_module()
 
@@ -375,3 +465,81 @@ def test_main_can_skip_bridge_health_for_cloud_only_gateway(
         "skipped": True,
         "reason": "--skip-bridge-health was provided",
     }
+
+
+def test_main_validates_calling_sidecar_when_requested(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    script = _load_script_module()
+    live_root = tmp_path / "hermes"
+    _write_voice_native_root(live_root)
+    bridge_bin = live_root / "scripts" / "whatsapp-bridge" / "node_modules" / ".bin"
+    sidecar_url = "http://127.0.0.1:8787"
+    stream_command = (
+        "voice stream --raw-output - --input-file {input_path} "
+        "--sample-rate {sample_rate} --frame-ms {frame_ms}"
+    )
+
+    monkeypatch.setattr(script, "resolve_executable", lambda value, *, label: value)
+    monkeypatch.setattr(
+        script,
+        "get_service_state",
+        lambda *_args, **_kwargs: {
+            "ActiveState": "active",
+            "MainPID": "123",
+            "Environment": (
+                f"PYTHONPATH={live_root} PATH=/usr/bin:{bridge_bin}"
+            ),
+            "DropInPaths": "/drop-in.conf",
+        },
+    )
+    monkeypatch.setattr(
+        script,
+        "read_process_env",
+        lambda _pid: {
+            "PYTHONPATH": str(live_root),
+            "PATH": f"/usr/bin:{bridge_bin}",
+            "WHATSAPP_CLOUD_CALLING_SIDECAR_URL": sidecar_url,
+            "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND": stream_command,
+            "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT": "180",
+        },
+    )
+    monkeypatch.setattr(
+        script,
+        "import_smoke",
+        lambda **_kwargs: {"tools.tts_tool": str(live_root / "tools" / "tts_tool.py")},
+    )
+    monkeypatch.setattr(
+        script,
+        "get_bridge_health",
+        lambda *_args, **_kwargs: {"status": "connected"},
+    )
+    monkeypatch.setattr(
+        script,
+        "get_calling_sidecar_status",
+        lambda *_args, **_kwargs: {
+            "contract": {"contract": "voice.webrtc_sidecar"},
+            "health": {"ok": True, "sessions": 0, "call_ids": []},
+        },
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify_voice_live_gateway.py",
+            "--live-hermes-root",
+            str(live_root),
+            "--python-bin",
+            "/python",
+            "--calling-sidecar-url",
+            sidecar_url,
+        ],
+    )
+
+    assert script.main() == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["checks"]["calling_sidecar"]["env"]["url"] == sidecar_url
+    assert output["checks"]["calling_sidecar"]["sidecar"]["health"]["ok"] is True

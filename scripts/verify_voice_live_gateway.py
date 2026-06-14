@@ -30,6 +30,7 @@ from verify_voice_local_stack import audit_live_hermes_root
 DEFAULT_SERVICE = "hermes-gateway.service"
 DEFAULT_BRIDGE_URL = "http://127.0.0.1:3000"
 DEFAULT_TTS_TEXT = "Hermes live voice gateway smoke."
+CALLING_TTS_STREAM_ENV = "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND"
 IMPORT_MODULES = (
     "hermes_cli.main",
     "tools.tts_tool",
@@ -177,6 +178,37 @@ def validate_env_points_at_root(
     return result
 
 
+def validate_calling_sidecar_env(env: dict[str, str], expected_url: str) -> dict[str, Any]:
+    expected = expected_url.rstrip("/")
+    configured = str(env.get("WHATSAPP_CLOUD_CALLING_SIDECAR_URL") or "").rstrip("/")
+    if configured != expected:
+        raise SystemExit(
+            "running gateway process WHATSAPP_CLOUD_CALLING_SIDECAR_URL "
+            f"does not match {expected!r}: {configured!r}"
+        )
+
+    stream_command = str(env.get(CALLING_TTS_STREAM_ENV) or "")
+    missing = [
+        token
+        for token in ("--raw-output", "{input_path}", "{sample_rate}", "{frame_ms}")
+        if token not in stream_command
+    ]
+    if missing:
+        raise SystemExit(
+            f"running gateway process {CALLING_TTS_STREAM_ENV} is missing "
+            f"{', '.join(missing)}: {stream_command!r}"
+        )
+
+    return {
+        "url": configured,
+        "tts_stream_command": stream_command,
+        "tts_stream_timeout": env.get(
+            "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT",
+            "",
+        ),
+    }
+
+
 def import_smoke(
     *,
     python_bin: str,
@@ -226,20 +258,73 @@ print(json.dumps(modules, sort_keys=True))
     return {str(key): str(value) for key, value in parsed.items()}
 
 
-def get_bridge_health(url: str, *, timeout: float) -> dict[str, Any]:
-    target = url.rstrip("/") + "/health"
+def get_json_url(target: str, *, timeout: float) -> dict[str, Any]:
     try:
         with urlopen(target, timeout=timeout) as response:
             body = response.read().decode("utf-8", errors="replace")
     except URLError as exc:
-        raise SystemExit(f"bridge health request failed for {target}: {exc}") from exc
+        raise SystemExit(f"request failed for {target}: {exc}") from exc
     try:
         parsed = json.loads(body)
     except json.JSONDecodeError as exc:
-        raise SystemExit(f"bridge health returned invalid JSON: {body!r}") from exc
+        raise SystemExit(f"request returned invalid JSON for {target}: {body!r}") from exc
     if not isinstance(parsed, dict):
-        raise SystemExit("bridge health JSON root must be an object")
+        raise SystemExit(f"JSON root must be an object for {target}")
     return parsed
+
+
+def get_bridge_health(url: str, *, timeout: float) -> dict[str, Any]:
+    target = url.rstrip("/") + "/health"
+    return get_json_url(target, timeout=timeout)
+
+
+def validate_calling_sidecar_contract(contract: dict[str, Any]) -> dict[str, Any]:
+    if contract.get("contract") != "voice.webrtc_sidecar":
+        raise SystemExit(
+            "calling sidecar contract id is not voice.webrtc_sidecar: "
+            f"{contract.get('contract')!r}"
+        )
+    audio = contract.get("audio")
+    if not isinstance(audio, dict):
+        raise SystemExit("calling sidecar contract missing audio object")
+    expected_audio = {
+        "sample_rate": 48_000,
+        "channels": 1,
+        "frame_ms": 20,
+        "encoding": "pcm_s16le",
+        "frame_bytes": 1_920,
+    }
+    mismatches = {
+        key: audio.get(key)
+        for key, expected in expected_audio.items()
+        if audio.get(key) != expected
+    }
+    if mismatches:
+        raise SystemExit(
+            "calling sidecar audio contract does not match Hermes WebRTC PCM "
+            f"shape: {mismatches}"
+        )
+    return {
+        "contract": str(contract.get("contract")),
+        "version": contract.get("version"),
+        "audio": {key: audio.get(key) for key in expected_audio},
+    }
+
+
+def get_calling_sidecar_status(url: str, *, timeout: float) -> dict[str, Any]:
+    base = url.rstrip("/")
+    contract = get_json_url(base + "/contract", timeout=timeout)
+    health = get_json_url(base + "/health", timeout=timeout)
+    if health.get("ok") is not True:
+        raise SystemExit(f"calling sidecar health is not ok: {health}")
+    return {
+        "contract": validate_calling_sidecar_contract(contract),
+        "health": {
+            "ok": health.get("ok"),
+            "sessions": health.get("sessions"),
+            "call_ids": health.get("call_ids"),
+        },
+    }
 
 
 def validate_bridge_health(health: dict[str, Any], *, require_connected: bool) -> None:
@@ -349,6 +434,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hermes-home", type=Path, default=Path("~/.hermes"))
     parser.add_argument("--python-bin", default="~/.hermes/hermes-agent/venv/bin/python")
     parser.add_argument("--bridge-url", default=DEFAULT_BRIDGE_URL)
+    parser.add_argument(
+        "--calling-sidecar-url",
+        help=(
+            "Optional expected local WhatsApp Calling sidecar URL. When set, "
+            "the verifier requires the running gateway process to be configured "
+            "with this URL and validates the sidecar /contract and /health."
+        ),
+    )
     parser.add_argument("--ffprobe-bin", default=os.environ.get("FFPROBE_BIN", "ffprobe"))
     parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--allow-disconnected-bridge", action="store_true")
@@ -413,6 +506,18 @@ def main() -> int:
             bridge_bin_dir=bridge_bin_dir,
         ),
     }
+
+    if args.calling_sidecar_url:
+        checks["calling_sidecar"] = {
+            "env": validate_calling_sidecar_env(
+                process_env,
+                args.calling_sidecar_url,
+            ),
+            "sidecar": get_calling_sidecar_status(
+                args.calling_sidecar_url,
+                timeout=args.timeout,
+            ),
+        }
 
     checks["imports"] = import_smoke(
         python_bin=python_bin,
