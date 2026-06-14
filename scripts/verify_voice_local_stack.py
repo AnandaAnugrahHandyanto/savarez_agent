@@ -46,6 +46,7 @@ DEFAULT_FULL_DUPLEX_INBOUND_TEXT = "hello world"
 DEFAULT_FULL_DUPLEX_OUTBOUND_TEXT = "Hello from Hermes through the local voice sidecar."
 DEFAULT_FULL_DUPLEX_MAX_QUEUED_TX_MS = 1_000
 DEFAULT_WHATSAPP_BRIDGE_MEDIA_TIMEOUT = 15.0
+DEFAULT_WHATSAPP_CLOUD_WEBHOOK_TIMEOUT = 15.0
 DEFAULT_WHATSAPP_CLOUD_VOICE_TIMEOUT = 15.0
 
 LIVE_ROOT_REQUIREMENTS = (
@@ -419,6 +420,10 @@ def whatsapp_cloud_voice_note_command() -> list[str]:
     return [sys.executable, str(script_path("verify_voice_whatsapp_cloud_voice_note.py"))]
 
 
+def whatsapp_cloud_webhook_command() -> list[str]:
+    return [sys.executable, str(script_path("verify_voice_whatsapp_cloud_webhook.py"))]
+
+
 def calling_control_plane_command(args: argparse.Namespace) -> list[str]:
     return [
         sys.executable,
@@ -596,6 +601,11 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_WHATSAPP_CLOUD_VOICE_TIMEOUT,
     )
+    parser.add_argument(
+        "--whatsapp-cloud-webhook-timeout",
+        type=float,
+        default=DEFAULT_WHATSAPP_CLOUD_WEBHOOK_TIMEOUT,
+    )
     parser.add_argument("--node-bin", default=os.environ.get("NODE_BIN", "node"))
     parser.add_argument("--stream-text", default=DEFAULT_STREAM_TEXT)
     parser.add_argument("--stream-command-template")
@@ -675,6 +685,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--live-gateway-timeout", type=float, default=360.0)
     parser.add_argument("--skip-voice-contract", action="store_true")
     parser.add_argument("--skip-whatsapp-bridge-media", action="store_true")
+    parser.add_argument("--skip-whatsapp-cloud-webhook", action="store_true")
     parser.add_argument("--skip-whatsapp-cloud-voice", action="store_true")
     parser.add_argument("--skip-command-stt", action="store_true")
     parser.add_argument("--skip-calling-control-plane", action="store_true")
@@ -791,6 +802,19 @@ def main() -> int:
                 "WhatsApp Cloud voice-note verifier",
                 whatsapp_cloud_voice_note_command(),
                 timeout=args.whatsapp_cloud_voice_timeout,
+                env=env,
+            )
+        if args.skip_whatsapp_cloud_webhook:
+            checks["whatsapp_cloud_webhook"] = {
+                "success": True,
+                "skipped": True,
+                "reason": "--skip-whatsapp-cloud-webhook was provided",
+            }
+        else:
+            checks["whatsapp_cloud_webhook"] = run_json_step(
+                "WhatsApp Cloud webhook verifier",
+                whatsapp_cloud_webhook_command(),
+                timeout=args.whatsapp_cloud_webhook_timeout,
                 env=env,
             )
         checks["command_tts"] = run_json_step(

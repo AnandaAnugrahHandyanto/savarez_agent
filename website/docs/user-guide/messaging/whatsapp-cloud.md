@@ -448,16 +448,18 @@ live-call WAV segments.
 The JSON plan also includes `verify_commands.local_stack`,
 `verify_commands.live_gateway`, `verify_commands.live_gateway_cloud_only`, and
 `verify_commands.live_gateway_cloud_ready`. Run the emitted `local_stack`
-command before changing the live service, then run `live_gateway` after
-restart. Use the `cloud_only` variant when this host does not run the local
-Baileys bridge. Use the `cloud_ready` variant before routing real Meta
-webhooks to the host; it checks WhatsApp Cloud credential shape and recipient
-authorization, then probes the running local Cloud `/health` endpoint and local
-Meta subscription challenge handshake. It also sends a signed synthetic
-delivery-receipt POST to prove inbound HMAC verification accepts Meta-shaped
-webhook delivery without dispatching an agent message or printing secret
-values. If setup is incomplete, it reports every missing or malformed Cloud
-setting it can detect in one redacted failure.
+command before changing the live service; it includes an isolated Cloud webhook
+smoke that starts the adapter locally, checks `/health`, verifies the
+subscription challenge, and accepts a signed status-only POST without contacting
+Meta. Then run `live_gateway` after restart. Use the `cloud_only` variant when
+this host does not run the local Baileys bridge. Use the `cloud_ready` variant
+before routing real Meta webhooks to the host; it checks WhatsApp Cloud
+credential shape and recipient authorization, then probes the running local
+Cloud `/health` endpoint and local Meta subscription challenge handshake. It
+also sends a signed synthetic delivery-receipt POST to prove inbound HMAC
+verification accepts Meta-shaped webhook delivery without dispatching an agent
+message or printing secret values. If setup is incomplete, it reports every
+missing or malformed Cloud setting it can detect in one redacted failure.
 
 The generated service files should look like this:
 

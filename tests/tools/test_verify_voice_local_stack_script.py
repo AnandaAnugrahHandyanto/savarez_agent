@@ -42,12 +42,14 @@ def _args(**overrides):
         "voice_contract_text": "contract smoke",
         "voice_contract_timeout": 240.0,
         "whatsapp_bridge_media_timeout": 15.0,
+        "whatsapp_cloud_webhook_timeout": 15.0,
         "whatsapp_cloud_voice_timeout": 15.0,
         "node_bin": "node",
         "stream_text": "stream smoke",
         "stream_command_template": None,
         "skip_voice_contract": False,
         "skip_whatsapp_bridge_media": False,
+        "skip_whatsapp_cloud_webhook": False,
         "skip_whatsapp_cloud_voice": False,
         "skip_command_stt": False,
         "skip_calling_control_plane": False,
@@ -177,6 +179,17 @@ def test_whatsapp_cloud_voice_note_command_runs_json_verifier():
     assert command == [
         sys.executable,
         str(script.script_path("verify_voice_whatsapp_cloud_voice_note.py")),
+    ]
+
+
+def test_whatsapp_cloud_webhook_command_runs_json_verifier():
+    script = _load_script_module()
+
+    command = script.whatsapp_cloud_webhook_command()
+
+    assert command == [
+        sys.executable,
+        str(script.script_path("verify_voice_whatsapp_cloud_webhook.py")),
     ]
 
 
