@@ -345,6 +345,13 @@ class TestPolicyHelpers:
 
         assert adapter._is_group_allowed("group-1", "user-1") is False
 
+    def test_pairing_dm_policy_strict_auth_denies_unknown(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True, extra={"dm_policy": "pairing"}))
+        assert adapter._is_dm_allowed("user-1") is False
+        assert adapter._is_dm_intake_allowed("user-1") is True
+
 
 class TestMediaHelpers:
     def test_detect_wecom_media_type(self):
