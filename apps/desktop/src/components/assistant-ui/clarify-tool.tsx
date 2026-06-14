@@ -99,9 +99,11 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
   // Race: tool.start fires a tick before clarify.request, so request_id
-  // arrives slightly after the tool block mounts. Show the question (from
-  // args) but disable submit until we have the request id from the gateway.
+  // arrives slightly after the tool block mounts. Hold the whole panel on a
+  // spinner until the gateway request is wired — showing disabled choices or
+  // a "loading question" stub is worse than a brief wait.
   const ready = Boolean(matchingRequest?.requestId)
+  const loading = !ready && !submitting
 
   const respond = useCallback(
     async (answer: string) => {
@@ -166,6 +168,20 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
     [draft, respond]
   )
 
+  if (loading) {
+    return (
+      <div
+        aria-label={copy.loadingQuestion}
+        className="relative mb-3 mt-2 grid min-h-24 place-items-center rounded-[0.5rem] border border-border/70 bg-card/40 px-3 py-6 text-sm shadow-[inset_0_1px_0_color-mix(in_srgb,var(--foreground)_3%,transparent)]"
+        data-slot="clarify-inline"
+        role="status"
+      >
+        <span aria-hidden className="arc-border" />
+        <Loader2 aria-hidden className="size-5 animate-spin text-muted-foreground/80" />
+      </div>
+    )
+  }
+
   return (
     <div
       className="relative mb-3 mt-2 grid gap-6 rounded-[0.5rem] border border-border/70 bg-card/40 px-3 py-2.5 text-sm shadow-[inset_0_1px_0_color-mix(in_srgb,var(--foreground)_3%,transparent)]"
@@ -179,9 +195,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         >
           <HelpCircle className="size-3.5" />
         </span>
-        <span className="flex-1 whitespace-pre-wrap font-medium leading-snug text-foreground">
-          {question || <em className="font-normal text-muted-foreground/70">{copy.loadingQuestion}</em>}
-        </span>
+        <span className="flex-1 whitespace-pre-wrap font-medium leading-snug text-foreground">{question}</span>
       </div>
 
       {!typing && hasChoices && (
