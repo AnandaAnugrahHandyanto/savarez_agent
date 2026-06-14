@@ -370,6 +370,24 @@ def _do_dispatch(item: QueuedDispatch) -> None:
                 )
         # ──────────────────────────────────────────────────────────────────────
 
+        # ── P1: Write final status to state.db shadow_clone_tasks ─────────────
+        if task_info.get("shadow_clone"):
+            try:
+                from hermes_state import SessionDB
+                _sdb = SessionDB()
+                _sdb.update_shadow_clone_task(
+                    delegation_id=delegation_id,
+                    status=status,
+                    result=result,
+                    completed_at=completion_time,
+                )
+            except Exception as _sdbe:
+                logger.warning(
+                    "Shadow clone: state.db update failed for %s: %s",
+                    delegation_id, _sdbe,
+                )
+        # ──────────────────────────────────────────────────────────────────────
+
         evt = {
             "type": "async_delegation",
             "delegation_id": delegation_id,
@@ -482,6 +500,27 @@ def dispatch(
     max_children = _get_max_async_children()
     delegation_id = f"deleg_{uuid.uuid4().hex[:8]}"
     task_info_copy = dict(task_info)  # shallow copy
+
+    # ── P1: Persist dispatch record to state.db before touching any thread ────
+    # Written here (outside the capacity lock) so a crash between dispatch and
+    # thread-start still leaves a 'running' row that the next startup can find.
+    if task_info_copy.get("shadow_clone"):
+        try:
+            from hermes_state import SessionDB
+            _sdb_dispatch = SessionDB()
+            _sdb_dispatch.insert_shadow_clone_task(
+                delegation_id=delegation_id,
+                session_key=session_key,
+                goal=task_info_copy.get("goal", ""),
+                kanban_ticket_id=task_info_copy.get("kanban_ticket_id"),
+                routing_meta=task_info_copy.get("routing_meta"),
+                dispatched_at=time.time(),
+            )
+        except Exception as _p1_e:
+            logger.warning(
+                "Shadow clone: state.db insert failed for %s: %s", delegation_id, _p1_e
+            )
+    # ─────────────────────────────────────────────────────────────────────────
 
     # C1 fix: capacity check + enqueue/dispatch decision in a single atomic
     # section so no other thread can slip in between the read and the write.
