@@ -18,7 +18,6 @@ import base64
 import io
 import logging
 import os
-import re
 import sys
 import time as _time
 from typing import Any, Dict, List, Optional, Tuple
@@ -36,14 +35,6 @@ logger = logging.getLogger(__name__)
 # Helpers — availability checks
 # ---------------------------------------------------------------------------
 
-_WIN_DEP_MESSAGE = (
-    "Windows computer-use dependencies are missing. "
-    "Install with:\n"
-    '  uv pip install pyautogui uiautomation\n'
-    "Or enable the Computer Use toolset via `hermes tools`."
-)
-
-
 def _is_windows() -> bool:
     return sys.platform == "win32"
 
@@ -59,6 +50,14 @@ def _check_pyautogui() -> bool:
 def _check_uiautomation() -> bool:
     try:
         import uiautomation  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _check_pillow() -> bool:
+    try:
+        from PIL import Image, ImageDraw, ImageFont  # noqa: F401
         return True
     except ImportError:
         return False
@@ -493,7 +492,7 @@ class WinComputerUseBackend(ComputerUseBackend):
         self._started = False
 
     def is_available(self) -> bool:
-        return _is_windows() and _check_pyautogui() and _check_uiautomation()
+        return _is_windows() and _check_pyautogui() and _check_uiautomation() and _check_pillow()
 
     # ── Capture ─────────────────────────────────────────────────────
 
@@ -501,6 +500,7 @@ class WinComputerUseBackend(ComputerUseBackend):
         self, mode: str = "som", app: Optional[str] = None
     ) -> CaptureResult:
         png_b64: Optional[str] = None
+        raw_png: Optional[bytes] = None
         elements: List[UIElement] = []
 
         if mode in ("vision", "som"):
@@ -541,7 +541,7 @@ class WinComputerUseBackend(ComputerUseBackend):
                 )
 
         w, h = self._pg.screen_size
-        png_bytes_len = len(base64.b64decode(png_b64)) if png_b64 else 0
+        png_bytes_len = len(raw_png) if raw_png else 0
 
         return CaptureResult(
             mode=mode,
@@ -575,10 +575,12 @@ class WinComputerUseBackend(ComputerUseBackend):
             for m in modifiers:
                 self._pg.keyDown(m)
             _time.sleep(0.02)
-        self._pg.click(px, py, button=button, clicks=click_count)
-        if modifiers:
-            for m in reversed(modifiers):
-                self._pg.keyUp(m)
+        try:
+            self._pg.click(px, py, button=button, clicks=click_count)
+        finally:
+            if modifiers:
+                for m in reversed(modifiers):
+                    self._pg.keyUp(m)
         return ActionResult(ok=True, action="click",
                            message=f"clicked {button} at ({px}, {py})")
 
@@ -599,7 +601,16 @@ class WinComputerUseBackend(ComputerUseBackend):
                                message="missing drag target")
         if from_xy and fx is not None and fy is not None:
             self._pg.move_to(fx, fy)
-        self._pg.drag(fx, fy, tx, ty, button=button)
+        if modifiers:
+            for m in modifiers:
+                self._pg.keyDown(m)
+            _time.sleep(0.02)
+        try:
+            self._pg.drag(fx, fy, tx, ty, button=button)
+        finally:
+            if modifiers:
+                for m in reversed(modifiers):
+                    self._pg.keyUp(m)
         return ActionResult(ok=True, action="drag",
                            message=f"dragged from ({fx},{fy}) to ({tx},{ty})")
 
@@ -619,13 +630,22 @@ class WinComputerUseBackend(ComputerUseBackend):
                                message="no scroll target")
 
         clicks = amount if direction in ("up", "left") else -amount
-        if direction in ("down", "up"):
-            self._pg.scroll(clicks, px, py)
-        elif direction in ("left", "right"):
-            self._pg.hscroll(clicks, px, py)
-        else:
-            return ActionResult(ok=False, action="scroll",
-                               message=f"unknown direction: {direction}")
+        if modifiers:
+            for m in modifiers:
+                self._pg.keyDown(m)
+            _time.sleep(0.02)
+        try:
+            if direction in ("down", "up"):
+                self._pg.scroll(clicks, px, py)
+            elif direction in ("left", "right"):
+                self._pg.hscroll(clicks, px, py)
+            else:
+                return ActionResult(ok=False, action="scroll",
+                                   message=f"unknown direction: {direction}")
+        finally:
+            if modifiers:
+                for m in reversed(modifiers):
+                    self._pg.keyUp(m)
         return ActionResult(ok=True, action="scroll",
                            message=f"scrolled {direction} {amount} ticks at ({px}, {py})")
 

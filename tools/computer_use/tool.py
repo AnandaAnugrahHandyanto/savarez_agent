@@ -137,18 +137,29 @@ def _get_backend() -> ComputerUseBackend:
                 if backend_name in {"cua", "cua-driver"} or sys.platform == "darwin":
                     from tools.computer_use.cua_backend import CuaDriverBackend
                     _backend = CuaDriverBackend()
-                    if backend_name == "auto" and not _backend.is_available():
-                        _backend.stop()
-                        _backend = None
+                    if not _backend.is_available():
+                        if backend_name == "auto":
+                            _backend.stop()
+                            _backend = None
+                        else:
+                            raise RuntimeError(
+                                f"Backend '{backend_name}' is not available on this platform"
+                            )
             if _backend is None and backend_name in {"pyautogui", "win", "auto"}:
                 if backend_name in {"pyautogui", "win"} or sys.platform == "win32":
                     try:
                         from tools.computer_use.win_backend import WinComputerUseBackend
                         _backend = WinComputerUseBackend()
-                        if backend_name == "auto" and not _backend.is_available():
-                            _backend = None
+                        if not _backend.is_available():
+                            if backend_name == "auto":
+                                _backend = None
+                            else:
+                                raise RuntimeError(
+                                    f"Backend '{backend_name}' is not available on this platform"
+                                )
                     except ImportError:
-                        pass
+                        if backend_name != "auto":
+                            raise
             if _backend is None and backend_name == "noop":  # pragma: no cover
                 _backend = _NoopBackend()
             if _backend is None:
@@ -827,14 +838,14 @@ def check_computer_use_requirements() -> bool:
     """Return True iff computer_use can run on this host.
 
     macOS: cua-driver binary installed (or override via env).
-    Windows: pyautogui + uiautomation installed.
+    Windows: pyautogui + uiautomation + Pillow installed.
     """
     if sys.platform == "darwin":
         from tools.computer_use.cua_backend import cua_driver_binary_available
         return cua_driver_binary_available()
     if sys.platform == "win32":
-        from tools.computer_use.win_backend import _check_pyautogui, _check_uiautomation
-        return _check_pyautogui() and _check_uiautomation()
+        from tools.computer_use.win_backend import _check_pyautogui, _check_uiautomation, _check_pillow
+        return _check_pyautogui() and _check_uiautomation() and _check_pillow()
     return False
 
 
