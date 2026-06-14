@@ -1671,6 +1671,22 @@ def test_detect_denied_true_from_rich_probe_dict():
     assert _detect_denied(_FakePage()) is True
 
 
+def test_classify_meet_ui_marks_return_home_denial_terminal():
+    from plugins.google_meet.meet_bot import _classify_meet_ui
+
+    result = _classify_meet_ui(
+        (
+            "You can't join this video call Return to home screen "
+            "No one can join a meeting unless invited or admitted by the host "
+            "Returning to home screen 45 seconds left"
+        ),
+        url="https://meet.google.com/abc-defg-hij",
+    )
+
+    assert result["denied"] is True
+    assert result["terminalDenied"] is True
+
+
 def test_compute_meet_phase_marks_join_attempt_as_stalled(tmp_path):
     from plugins.google_meet.meet_bot import _BotState, _compute_meet_phase
 
@@ -1778,6 +1794,36 @@ def test_apply_admission_probe_ignores_denied_before_join_attempt(tmp_path):
     assert state.error is None
     assert state.leave_reason is None
     assert state.phase == "starting"
+
+
+def test_apply_admission_probe_exits_on_terminal_denial_before_join_attempt(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _apply_admission_probe
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+
+    admitted, terminal = _apply_admission_probe(
+        state,
+        {
+            "inCall": False,
+            "waitingLobby": False,
+            "denied": True,
+            "terminalDenied": True,
+            "preJoin": False,
+            "text": "You can't join this video call Returning to home screen",
+        },
+        now=105.0,
+        lobby_deadline=400.0,
+    )
+
+    assert admitted is False
+    assert terminal is True
+    assert state.error == "host denied admission"
+    assert state.leave_reason == "denied"
+    assert state.phase == "exited"
 
 
 def test_apply_admission_probe_exits_when_meet_returns_to_landing(tmp_path):

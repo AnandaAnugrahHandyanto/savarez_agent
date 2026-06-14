@@ -1190,7 +1190,7 @@ def _apply_admission_probe(
             phase="exited",
         )
         return False, True
-    if bool(ui_probe.get("denied")) and state.join_attempted_at:
+    if bool(ui_probe.get("denied")) and (state.join_attempted_at or ui_probe.get("terminalDenied")):
         state.set(
             error="host denied admission",
             leave_reason="denied",
@@ -1792,8 +1792,16 @@ def _classify_meet_ui(
             and re.search(r"\bjoin\b", text, re.IGNORECASE)
         )
     )
+    terminal_denied = bool(
+        re.search(r"You can't join this video call", text, re.IGNORECASE)
+        and (
+            re.search(r"Returning to home screen", text, re.IGNORECASE)
+            or re.search(r"Return to home screen", text, re.IGNORECASE)
+        )
+    )
     denied = bool(
         denied
+        or terminal_denied
         or re.search(r"You can't join this video call", text, re.IGNORECASE)
         or re.search(r"You were removed from the meeting", text, re.IGNORECASE)
         or re.search(r"No one responded to your request to join", text, re.IGNORECASE)
@@ -1825,6 +1833,7 @@ def _classify_meet_ui(
         "inCall": in_call,
         "waitingLobby": waiting_lobby,
         "denied": denied,
+        "terminalDenied": terminal_denied,
         "preJoin": pre_join,
         "callError": call_error,
         "landing": landing,
