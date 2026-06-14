@@ -1627,6 +1627,18 @@ def test_classify_meet_ui_blocks_landing_page_after_meet_error():
     assert result["landing"] is True
 
 
+def test_classify_meet_ui_blocks_workspace_meet_product_redirect():
+    from plugins.google_meet.meet_bot import _classify_meet_ui
+
+    result = _classify_meet_ui(
+        "Google Meet video meetings and calls for everyone",
+        url="https://workspace.google.com/products/meet/",
+    )
+
+    assert result["inCall"] is False
+    assert result["landing"] is True
+
+
 def test_classify_meet_ui_blocks_could_not_start_video_call_error():
     from plugins.google_meet.meet_bot import _classify_meet_ui
 
@@ -1787,6 +1799,38 @@ def test_apply_admission_probe_exits_when_meet_returns_to_landing(tmp_path):
             "denied": False,
             "text": "Meet Secure video conferencing for everyone New meeting Join",
             "url": "https://meet.google.com/landing",
+        },
+        now=110.0,
+        lobby_deadline=400.0,
+    )
+
+    assert admitted is False
+    assert terminal is True
+    assert state.in_call is False
+    assert state.joined_at is None
+    assert state.leave_reason == "meet_landing"
+    assert "landing" in state.error
+    assert state.phase == "exited"
+
+
+def test_apply_admission_probe_exits_when_meet_redirects_to_landing_before_join(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _apply_admission_probe
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+
+    admitted, terminal = _apply_admission_probe(
+        state,
+        {
+            "inCall": False,
+            "landing": True,
+            "waitingLobby": False,
+            "denied": False,
+            "text": "Google Meet video meetings and calls for everyone",
+            "url": "https://workspace.google.com/products/meet/",
         },
         now=110.0,
         lobby_deadline=400.0,

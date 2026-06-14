@@ -1161,7 +1161,7 @@ def _apply_admission_probe(
                 phase="exited",
             )
             return False, True
-    if ui_probe.get("landing") and state.join_attempted_at and not state.last_caption_at:
+    if ui_probe.get("landing") and not state.last_caption_at:
         state.set(
             in_call=False,
             joined_at=None,
@@ -1785,6 +1785,7 @@ def _classify_meet_ui(
     )
     landing = bool(
         re.search(r"/landing(?:[?#]|$)", url, re.IGNORECASE)
+        or re.search(r"^https://workspace\.google\.com/products/meet/?(?:[?#]|$)", url, re.IGNORECASE)
         or (
             re.search(r"secure video conferencing for everyone", text, re.IGNORECASE)
             and re.search(r"\bnew meeting\b", text, re.IGNORECASE)
