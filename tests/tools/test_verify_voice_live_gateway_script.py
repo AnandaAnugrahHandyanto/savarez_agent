@@ -307,6 +307,7 @@ def test_validate_sidecar_service_state_accepts_expected_unit(tmp_path: Path):
         {
             "ActiveState": "active",
             "MainPID": "42",
+            "After": "network.target voiced.service",
             "Environment": f"VOICE_BIN={voice_bin}",
             "WorkingDirectory": str(voice_repo),
             "ExecStart": (
@@ -327,6 +328,41 @@ def test_validate_sidecar_service_state_accepts_expected_unit(tmp_path: Path):
     assert result["sidecar_path"] == str(sidecar_path)
     assert result["sidecar_url"] == "http://127.0.0.1:8787"
     assert result["bind"] == {"host": "127.0.0.1", "port": 8787}
+    assert "voiced.service" in result["after"]
+
+
+def test_validate_sidecar_service_state_rejects_deprecated_daemon_unit():
+    script = _load_script_module()
+
+    with pytest.raises(SystemExit, match="deprecated voice-daemon.service"):
+        script.validate_sidecar_service_state(
+            {
+                "ActiveState": "active",
+                "MainPID": "42",
+                "After": "network.target voice-daemon.service",
+            },
+            service="voice-webrtc-sidecar.service",
+            voice_bin=None,
+            voice_repo=None,
+            sidecar_url=None,
+        )
+
+
+def test_validate_sidecar_service_state_requires_voiced_ordering():
+    script = _load_script_module()
+
+    with pytest.raises(SystemExit, match="does not order after voiced.service"):
+        script.validate_sidecar_service_state(
+            {
+                "ActiveState": "active",
+                "MainPID": "42",
+                "After": "network.target",
+            },
+            service="voice-webrtc-sidecar.service",
+            voice_bin=None,
+            voice_repo=None,
+            sidecar_url=None,
+        )
 
 
 def test_validate_sidecar_service_state_rejects_stale_voice_bin(tmp_path: Path):
@@ -343,6 +379,7 @@ def test_validate_sidecar_service_state_rejects_stale_voice_bin(tmp_path: Path):
             {
                 "ActiveState": "active",
                 "MainPID": "42",
+                "After": "network.target voiced.service",
                 "Environment": f"VOICE_BIN={stale_voice}",
             },
             service="voice-webrtc-sidecar.service",
@@ -366,6 +403,7 @@ def test_validate_sidecar_service_state_rejects_wrong_voice_repo(tmp_path: Path)
             {
                 "ActiveState": "active",
                 "MainPID": "42",
+                "After": "network.target voiced.service",
                 "Environment": "",
                 "WorkingDirectory": str(stale_repo),
                 "ExecStart": f"{{ argv[]={sys.executable} {sidecar_path} }}",
@@ -385,6 +423,7 @@ def test_validate_sidecar_service_state_rejects_wrong_bind_port(tmp_path: Path):
             {
                 "ActiveState": "active",
                 "MainPID": "42",
+                "After": "network.target voiced.service",
                 "Environment": "",
                 "ExecStart": "{ argv[]=/python sidecar.py --host 127.0.0.1 --port 87870 }",
             },
@@ -1011,6 +1050,7 @@ def test_main_validates_sidecar_service_when_requested(
             return {
                 "ActiveState": "active",
                 "MainPID": "456",
+                "After": "network.target voiced.service",
                 "Environment": f"VOICE_BIN={voice_bin}",
                 "WorkingDirectory": str(voice_repo),
                 "ExecStart": f"{{ argv[]=/python {sidecar_path} --port 8787 }}",

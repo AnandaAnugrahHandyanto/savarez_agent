@@ -214,6 +214,8 @@ def get_service_state(service: str, *, timeout: float) -> dict[str, str]:
             "-p",
             "MainPID",
             "-p",
+            "After",
+            "-p",
             "Environment",
             "-p",
             "DropInPaths",
@@ -357,6 +359,15 @@ def validate_sidecar_service_state(
         "service": service,
         "pid": pid,
     }
+    after_units = set(str(state.get("After") or "").split())
+    if "voice-daemon.service" in after_units:
+        raise SystemExit(
+            f"{service} still orders after deprecated voice-daemon.service; "
+            "rerun install_voice_local_stack.py so it uses voiced.service"
+        )
+    if "voiced.service" not in after_units:
+        raise SystemExit(f"{service} does not order after voiced.service")
+    result["after"] = sorted(after_units)
 
     if voice_bin is not None:
         configured_voice_bin = str(env.get("VOICE_BIN") or "")
