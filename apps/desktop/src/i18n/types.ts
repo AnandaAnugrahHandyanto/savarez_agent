@@ -213,6 +213,8 @@ export interface Translations {
       colorModeDesc: string
       toolViewTitle: string
       toolViewDesc: string
+      translucencyTitle: string
+      translucencyDesc: string
       product: string
       productDesc: string
       technical: string
@@ -223,6 +225,15 @@ export interface Translations {
       completionSoundTitle: string
       completionSoundDesc: string
       completionSoundPreview: string
+      installTitle: string
+      installDesc: string
+      installPlaceholder: string
+      installButton: string
+      installing: string
+      installError: string
+      installed: (name: string) => string
+      removeTheme: string
+      importedBadge: string
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
@@ -532,11 +543,23 @@ export interface Translations {
     back: string
     searchPlaceholder: string
     goTo: string
+    goToSession: string
     commandCenter: string
     appearance: string
     settings: string
     changeTheme: string
     changeColorMode: string
+    installTheme: {
+      title: string
+      placeholder: string
+      loading: string
+      error: string
+      empty: string
+      install: string
+      installing: string
+      installed: string
+      installs: (count: string) => string
+    }
     settingsFields: string
     mcpServers: string
     archivedChats: string
@@ -675,6 +698,9 @@ export interface Translations {
     deleting: string
     createDesc: string
     nameLabel: string
+    cloneFrom: string
+    cloneFromNone: string
+    cloneFromDesc: string
     cloneFromDefault: string
     cloneFromDefaultDesc: string
     invalidName: (hint: string) => string
@@ -835,12 +861,14 @@ export interface Translations {
       export: string
       rename: string
       archive: string
+      newWindow: string
       copyIdFailed: string
       actionsFor: (title: string) => string
       sessionActions: string
       sessionRunning: string
       needsInput: string
       waitingForAnswer: string
+      handoffOrigin: (platform: string) => string
       renamed: string
       renameFailed: string
       renameTitle: string
@@ -900,10 +928,12 @@ export interface Translations {
     attachments: (count: number) => string
     editingInComposer: string
     editingQueuedInComposer: string
-    editQueued: string
-    sendQueuedNext: string
-    sendQueuedNow: string
-    deleteQueued: string
+    queueEdit: string
+    queueSendNext: string
+    queueSend: string
+    queueDelete: string
+    queueStuckTitle: string
+    queueStuckBody: string
     previewUnavailable: string
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string
@@ -930,6 +960,17 @@ export interface Translations {
     snippets: Record<string, { label: string; description: string; text: string }>
     dropFiles: string
     dropSession: string
+  }
+
+  statusStack: {
+    agents: string
+    background: (count: number) => string
+    subagents: (count: number) => string
+    todos: (done: number, total: number) => string
+    running: string
+    stop: string
+    dismiss: string
+    exit: (code: number) => string
   }
 
   updates: {
@@ -1022,6 +1063,7 @@ export interface Translations {
     getKey: string
     replaceCurrent: string
     pasteApiKey: string
+    localApiKeyPlaceholder: string
     couldNotSave: string
     connecting: string
     update: string
@@ -1135,6 +1177,8 @@ export interface Translations {
       branch: (branch: string) => string
       closeCommandCenter: string
       openCommandCenter: string
+      showTerminal: string
+      hideTerminal: string
       gateway: string
       gatewayReady: string
       gatewayNeedsSetup: string
@@ -1173,6 +1217,9 @@ export interface Translations {
     terminal: string
     noFolderSelected: string
     changeCwdTitle: string
+    remotePickerTitle: string
+    remotePickerDescription: string
+    remotePickerSelect: string
     folderTip: (cwd: string) => string
     openFolder: string
     refreshTree: string
@@ -1190,8 +1237,7 @@ export interface Translations {
     tryAgain: string
     loadingTree: string
     loadingFiles: string
-    terminalFocus: string
-    terminalSplit: string
+    terminalHide: string
     addToChat: string
   }
 
@@ -1275,6 +1321,7 @@ export interface Translations {
   assistant: {
     thread: {
       loadingSession: string
+      showEarlier: string
       loadingResponse: string
       thinking: string
       today: (time: string) => string
@@ -1288,21 +1335,28 @@ export interface Translations {
       stopReading: string
       readAloud: string
       editMessage: string
+      scrollToBottom: string
       stop: string
-      editableCheckpoint: string
       restorePrevious: string
       restoreCheckpoint: string
+      restoreFromHere: string
+      restoreTitle: string
+      restoreBody: string
+      restoreConfirm: string
       restoreNext: string
       goForward: string
       sendEdited: string
+      attachingFile: string
     }
     approval: {
       gatewayDisconnected: string
       sendFailed: string
       run: string
+      command: string
       moreOptions: string
       allowSession: string
       alwaysAllowMenu: string
+      jumpToApproval: string
       reject: string
       alwaysTitle: string
       alwaysDescription: (pattern: string) => string
@@ -1315,7 +1369,7 @@ export interface Translations {
       loadingQuestion: string
       other: string
       placeholder: string
-      shortcut: string
+      shortcutSuffix: string
       back: string
       skip: string
       send: string
@@ -1416,6 +1470,13 @@ export interface Translations {
     noClipboardImage: string
     clipboardPasteFailed: string
     dropFiles: string
+    handoff: {
+      pickPlatform: string
+      success: (platform: string) => string
+      systemNote: (platform: string) => string
+      failed: (error: string) => string
+      timedOut: string
+    }
   }
 
   errors: {
