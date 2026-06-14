@@ -862,6 +862,110 @@ def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
     assert resolved["source"] == "custom_provider:MyCorp Proxy"
     assert resolved["model"] == "acme-large"
 
+def test_named_custom_provider_uses_api_key_env_alias_from_providers_dict(monkeypatch):
+    """providers dict entries with api_key_env (alias) should resolve API key from env var."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("MYCORP_API_KEY", "env-secret-alias")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "mycorp-proxy": {
+                    "base_url": "https://proxy.example.com/v1",
+                    "default_model": "acme-large",
+                    "api_key_env": "MYCORP_API_KEY",
+                    "name": "MyCorp Proxy",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="mycorp-proxy")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "env-secret-alias"
+    assert resolved["base_url"] == "https://proxy.example.com/v1"
+
+
+def test_named_custom_provider_key_env_takes_precedence_over_api_key_env(monkeypatch):
+    """When both key_env and api_key_env are set, key_env takes precedence."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("PRIMARY_KEY", "primary-secret")
+    monkeypatch.setenv("ALIAS_KEY", "alias-secret")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "mycorp-proxy": {
+                    "base_url": "https://proxy.example.com/v1",
+                    "key_env": "PRIMARY_KEY",
+                    "api_key_env": "ALIAS_KEY",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="mycorp-proxy")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "primary-secret"
+
+
+def test_custom_providers_list_uses_api_key_env_alias(monkeypatch):
+    """Legacy custom_providers list entries with api_key_env should resolve from env var."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("LEGACY_KEY", "legacy-secret")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "legacy-provider",
+                    "base_url": "https://legacy.example.com/v1",
+                    "api_key_env": "LEGACY_KEY",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="legacy-provider")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_key"] == "legacy-secret"
+
 
 def test_named_custom_provider_same_url_uses_matching_key_env_and_api_mode(monkeypatch):
     """Named custom providers on one gateway must keep their own credentials and protocol."""
