@@ -102,6 +102,22 @@ def _normalize_server_url(raw: str) -> str:
     return value.rstrip("/")
 
 
+def _normalize_phone_target(raw: str) -> Optional[str]:
+    value = (raw or "").strip()
+    if re.fullmatch(r"\+\d{7,15}", value):
+        return value
+    if re.fullmatch(r"\d{7,15}", value):
+        return f"+{value}"
+    return None
+
+
+def _raw_phone_chat_guid(raw: str) -> Optional[str]:
+    phone = _normalize_phone_target(raw)
+    if not phone:
+        return None
+    return f"any;-;{phone}"
+
+
 
 
 
@@ -287,6 +303,47 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         return True
 
+    async def connect_outbound(self) -> bool:
+        """Connect to the BlueBubbles REST API without starting a webhook."""
+        if not self.server_url or not self.password:
+            logger.error(
+                "[bluebubbles] BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required"
+            )
+            return False
+
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+
+        self.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
+        try:
+            await self._api_get("/api/v1/ping")
+            info = await self._api_get("/api/v1/server/info")
+            server_data = (info or {}).get("data", {})
+            self._private_api_enabled = bool(server_data.get("private_api"))
+            self._helper_connected = bool(server_data.get("helper_connected"))
+            logger.info(
+                "[bluebubbles] connected to %s (private_api=%s, helper=%s)",
+                self.server_url,
+                self._private_api_enabled,
+                self._helper_connected,
+            )
+        except Exception as exc:
+            logger.error(
+                "[bluebubbles] cannot reach server at %s: %s", self.server_url, exc
+            )
+            if self.client:
+                await self.client.aclose()
+                self.client = None
+            return False
+
+        self._running = True
+        return True
+
+    async def disconnect_outbound(self) -> None:
+        if self.client:
+            await self.client.aclose()
+            self.client = None
+        self._running = False
+
     async def disconnect(self) -> None:
         # Unregister webhook before cleaning up
         await self._unregister_webhook()
@@ -466,6 +523,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                         return guid
         except Exception:
             pass
+        raw_phone_guid = _raw_phone_chat_guid(target)
+        if raw_phone_guid:
+            self._guid_cache[target] = raw_phone_guid
+            return raw_phone_guid
         return None
 
     async def _create_chat_for_handle(
@@ -483,7 +544,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             msg_id = data.get("guid") or data.get("messageGuid") or "ok"
             return SendResult(success=True, message_id=str(msg_id), raw_response=res)
         except Exception as exc:
-            return SendResult(success=False, error=str(exc))
+            message = str(exc) or type(exc).__name__
+            return SendResult(success=False, error=message)
 
     # ------------------------------------------------------------------
     # Text sending
@@ -522,9 +584,19 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             if not guid:
                 # If the target looks like an address, try creating a new chat
                 if self._private_api_enabled and (
-                    "@" in chat_id or re.match(r"^\+\d+", chat_id)
+                    "@" in chat_id or _normalize_phone_target(chat_id)
                 ):
                     return await self._create_chat_for_handle(chat_id, chunk)
+                if "@" in chat_id or _normalize_phone_target(chat_id):
+                    return SendResult(
+                        success=False,
+                        error=(
+                            f"BlueBubbles chat not found for target: {chat_id}. "
+                            "Create the chat on the Mac first, use a raw chat GUID, "
+                            "or enable the BlueBubbles Private API helper so Hermes "
+                            "can create a new chat by address."
+                        ),
+                    )
                 return SendResult(
                     success=False,
                     error=f"BlueBubbles chat not found for target: {chat_id}",
@@ -546,7 +618,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     success=True, message_id=str(msg_id), raw_response=res
                 )
             except Exception as exc:
-                return SendResult(success=False, error=str(exc))
+                message = str(exc) or type(exc).__name__
+                return SendResult(success=False, error=message)
         return last
 
     # ------------------------------------------------------------------

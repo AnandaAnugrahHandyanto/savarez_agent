@@ -4684,6 +4684,28 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
 # Workspace resolution
 # ---------------------------------------------------------------------------
 
+def _ensure_writable_workspace(path: Path, *, task_id: str) -> None:
+    """Prove a shared workspace can accept worker artifacts."""
+    sentinel = path / (
+        f".hermes-kanban-write-test-{os.getpid()}-{secrets.token_hex(6)}"
+    )
+    try:
+        with sentinel.open("x", encoding="utf-8") as f:
+            f.write("ok\n")
+    except OSError as exc:
+        raise ValueError(
+            f"task {task_id} workspace_path {str(path)!r} is not writable: "
+            f"{exc.strerror or exc}"
+        ) from exc
+    finally:
+        try:
+            sentinel.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+
 def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     """Resolve (and create if needed) the workspace for a task.
 
@@ -4719,6 +4741,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         else:
             p = workspaces_root(board=board) / task.id
         p.mkdir(parents=True, exist_ok=True)
+        _ensure_writable_workspace(p, task_id=task.id)
         return p
     if kind == "dir":
         if not task.workspace_path:
@@ -4733,6 +4756,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
                 f"(relative paths are ambiguous against the dispatcher's CWD)"
             )
         p.mkdir(parents=True, exist_ok=True)
+        _ensure_writable_workspace(p, task_id=task.id)
         return p
     if kind == "worktree":
         if not task.workspace_path:

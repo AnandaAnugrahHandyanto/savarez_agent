@@ -151,6 +151,8 @@ Tell them what you created in plain prose, naming the actual profiles you used:
 
 ## Common patterns
 
+**Workspace permission preflight:** Before dispatching any persistent `dir:` workspace suite, verify the workspace is an absolute path and writable by the worker process. Run a host-side `stat` plus create/delete write test, and pre-create expected output folders. Avoid assigning workers directly to imported/export directories owned by `root`, `nobody`, or a container-only UID. If source assets live in a foreign-owned export, create a writable project copy under the appropriate user-owned root, copy inputs without preserving foreign ownership/modes, `chmod -R u+rwX` as needed, and use that path for every task. If a worker blocks on permissions, do not keep retrying the same path: create a writable copy, update or recreate the blocked and downstream tasks, leave a comment with old/new paths and the failed permission fix, then unblock and dispatch a fresh worker.
+
 **Fan-out + fan-in (research → synthesize):** N research-style cards with no parents, one synthesis card with all of them as parents.
 
 **Parallel implementation + validation:** one implementer card makes the change while one explorer/researcher card verifies config, docs, or source mapping. A reviewer card can depend on both. Do not make the implementer own unrelated verification just because the user mentioned both in one sentence.

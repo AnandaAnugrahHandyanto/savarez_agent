@@ -358,3 +358,8 @@ select = ["PLW1514"]
 "skills/**" = ["PLW1514"]
 "optional-skills/**" = ["PLW1514"]
 "plugins/**" = ["PLW1514"]
+
+[tool.uv]
+# Supply-chain cooling-off policy: do not resolve package versions released
+# within the last 7 days unless explicitly approved as a security exception.
+exclude-newer = "7 days"

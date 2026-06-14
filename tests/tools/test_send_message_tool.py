@@ -27,6 +27,7 @@ def _reset_signal_scheduler():
 
 from gateway.config import Platform
 from tools.send_message_tool import (
+    SEND_MESSAGE_SCHEMA,
     _is_telegram_thread_not_found,
     _parse_target_ref,
     _send_matrix_via_adapter,
@@ -163,6 +164,15 @@ def _ensure_slack_mock(monkeypatch):
 
 
 class TestSendMessageTool:
+    def test_schema_tells_models_to_send_e164_phone_targets_directly(self):
+        description = SEND_MESSAGE_SCHEMA["description"]
+        target_description = SEND_MESSAGE_SCHEMA["parameters"]["properties"]["target"]["description"]
+
+        assert "explicit E.164 phone" in description
+        assert "send directly" in description
+        assert "bluebubbles:+15551234567" in description
+        assert "bluebubbles:+155****4567" in target_description
+
     def test_ntfy_topic_target_is_explicit(self):
         chat_id, thread_id, is_explicit = _parse_target_ref("ntfy", "alerts-channel")
 
@@ -204,6 +214,44 @@ class TestSendMessageTool:
             media_files=[],
             force_document=False,
         )
+
+    def test_bluebubbles_outbound_env_config_sends_explicit_phone_target(self):
+        config, _telegram_cfg = _make_config()
+
+        with patch.dict(
+            os.environ,
+            {
+                "BLUEBUBBLES_OUTBOUND_SERVER_URL": "https://bluebubbles.example",
+                "BLUEBUBBLES_OUTBOUND_PASSWORD": "secret",
+            },
+            clear=False,
+        ), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "bluebubbles:+14085688549",
+                        "message": "PGA test order",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once()
+        platform, pconfig, chat_id, message = send_mock.await_args.args[:4]
+        assert platform == Platform.BLUEBUBBLES
+        assert pconfig.enabled is True
+        assert pconfig.extra == {
+            "server_url": "https://bluebubbles.example",
+            "password": "secret",
+        }
+        assert chat_id == "+14085688549"
+        assert message == "PGA test order"
 
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
@@ -1202,6 +1250,24 @@ class TestParseTargetRefE164:
     def test_photon_e164_is_explicit(self):
         chat_id, _, is_explicit = _parse_target_ref("photon", "+15551234567")
         assert chat_id == "+15551234567"
+        assert is_explicit is True
+
+    def test_bluebubbles_e164_is_explicit(self):
+        chat_id, _, is_explicit = _parse_target_ref("bluebubbles", "+15551234567")
+        assert chat_id == "+15551234567"
+        assert is_explicit is True
+
+    def test_bluebubbles_raw_chat_guid_is_explicit(self):
+        chat_id, _, is_explicit = _parse_target_ref(
+            "bluebubbles", "iMessage;+;+15551234567"
+        )
+        assert chat_id == "iMessage;+;+15551234567"
+        assert is_explicit is True
+
+        chat_id, _, is_explicit = _parse_target_ref(
+            "bluebubbles", "any;-;+15551234567"
+        )
+        assert chat_id == "any;-;+15551234567"
         assert is_explicit is True
 
     def test_signal_bare_digits_still_work(self):

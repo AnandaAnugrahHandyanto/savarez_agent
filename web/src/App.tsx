@@ -158,6 +158,12 @@ function ChatRouteSink() {
   return null;
 }
 
+const PERSISTENT_PLUGIN_PATHS = new Set(["/clockwork", "/codex"]);
+
+function normalizePath(path: string): string {
+  return path.replace(/\/$/, "") || "/";
+}
+
 const BUILTIN_NAV_REST: NavItem[] = [
   {
     path: "/sessions",
@@ -282,6 +288,7 @@ function partitionSidebarNav(
 function buildRoutes(
   builtinRoutes: Record<string, ComponentType>,
   manifests: PluginManifest[],
+  persistentPluginPaths: ReadonlySet<string>,
 ): Array<{
   key: string;
   path: string;
@@ -321,6 +328,14 @@ function buildRoutes(
     if (m.tab.hidden) continue;
     if (m.tab.path === "/plugins") continue;
     if (builtinRoutes[m.tab.path]) continue;
+    if (persistentPluginPaths.has(normalizePath(m.tab.path))) {
+      routes.push({
+        key: `plugin:persistent:${m.name}`,
+        path: m.tab.path,
+        element: <ChatRouteSink />,
+      });
+      continue;
+    }
     routes.push({
       key: `plugin:${m.name}`,
       path: m.tab.path,
@@ -332,6 +347,14 @@ function buildRoutes(
     if (!m.tab.hidden) continue;
     if (m.tab.path === "/plugins") continue;
     if (builtinRoutes[m.tab.path] || m.tab.override) continue;
+    if (persistentPluginPaths.has(normalizePath(m.tab.path))) {
+      routes.push({
+        key: `plugin:hidden:persistent:${m.name}`,
+        path: m.tab.path,
+        element: <ChatRouteSink />,
+      });
+      continue;
+    }
     routes.push({
       key: `plugin:hidden:${m.name}`,
       path: m.tab.path,
@@ -376,6 +399,50 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
+  const persistentPluginManifests = useMemo(
+    () =>
+      manifests.filter(
+        (m) =>
+          !m.tab.override &&
+          !m.tab.hidden &&
+          PERSISTENT_PLUGIN_PATHS.has(normalizePath(m.tab.path)),
+      ),
+    [manifests],
+  );
+  const persistentPluginRoutePaths = useMemo(
+    () =>
+      new Set(
+        persistentPluginManifests.map((m) => normalizePath(m.tab.path)),
+      ),
+    [persistentPluginManifests],
+  );
+  const isPersistentPluginRoute = persistentPluginRoutePaths.has(normalizedPath);
+  const activePersistentPluginManifest = useMemo(
+    () =>
+      persistentPluginManifests.find(
+        (m) => normalizePath(m.tab.path) === normalizedPath,
+      ) ?? null,
+    [persistentPluginManifests, normalizedPath],
+  );
+  const [mountedPersistentPluginNames, setMountedPersistentPluginNames] =
+    useState<string[]>([]);
+
+  useEffect(() => {
+    if (!activePersistentPluginManifest) return;
+    setMountedPersistentPluginNames((prev) =>
+      prev.includes(activePersistentPluginManifest.name)
+        ? prev
+        : [...prev, activePersistentPluginManifest.name],
+    );
+  }, [activePersistentPluginManifest]);
+
+  const mountedPersistentPluginManifests = useMemo(
+    () =>
+      mountedPersistentPluginNames
+        .map((name) => persistentPluginManifests.find((m) => m.name === name))
+        .filter((m): m is PluginManifest => Boolean(m)),
+    [mountedPersistentPluginNames, persistentPluginManifests],
+  );
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
   // page itself remains reachable by URL (it renders an explanation when
@@ -438,8 +505,8 @@ export default function App() {
     [builtinNav, manifests],
   );
   const routes = useMemo(
-    () => buildRoutes(builtinRoutes, manifests),
-    [builtinRoutes, manifests],
+    () => buildRoutes(builtinRoutes, manifests, persistentPluginRoutePaths),
+    [builtinRoutes, manifests, persistentPluginRoutePaths],
   );
   const pluginTabMeta = useMemo(
     () =>
@@ -722,7 +789,7 @@ export default function App() {
                 isChatRoute
                   ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
                   : "pt-2 sm:pt-4 lg:pt-6",
-                isDocsRoute && "min-h-0 flex-1",
+                (isDocsRoute || isPersistentPluginRoute) && "min-h-0 flex-1",
               )}
             >
               <PluginSlot name="pre-main" />
@@ -731,7 +798,7 @@ export default function App() {
                   "w-full min-w-0",
                   !isChatRoute &&
                     "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
-                  (isDocsRoute || isChatRoute) &&
+                  (isDocsRoute || isChatRoute || isPersistentPluginRoute) &&
                     "min-h-0 flex flex-1 flex-col",
                 )}
               >
@@ -747,6 +814,24 @@ export default function App() {
                       }
                     />
                   </Routes>
+
+                  {mountedPersistentPluginManifests.map((manifest) => {
+                    const routePath = normalizePath(manifest.tab.path);
+                    const active = normalizedPath === routePath;
+                    return (
+                      <div
+                        key={manifest.name}
+                        data-plugin-active={active ? "true" : "false"}
+                        className={cn(
+                          "min-h-0 min-w-0",
+                          active ? "flex flex-1 flex-col" : "hidden",
+                        )}
+                        aria-hidden={!active}
+                      >
+                        <PluginPage name={manifest.name} />
+                      </div>
+                    );
+                  })}
                 </ProfileKeyedRoutes>
 
                 {embeddedChat &&
