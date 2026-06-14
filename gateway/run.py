@@ -9158,7 +9158,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
                     else:
                         display_reasoning = last_reasoning.strip()
-                    response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                    # Send reasoning as a separate message BEFORE the response
+                    try:
+                        _r_adapter = self.adapters.get(source.platform)
+                        if _r_adapter:
+                            _r_msg = f"💭 **Reasoning:**\n{display_reasoning}"
+                            await _r_adapter.send(
+                                source.chat_id,
+                                _r_msg,
+                                metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                            )
+                    except Exception as _re:
+                        logger.debug("reasoning send failed: %s", _re)
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When
@@ -9464,6 +9475,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # partial output before the failure).  Without this guard,
             # users see the agent "stop responding without explanation."
             if agent_result.get("already_sent") and not agent_result.get("failed"):
+                # Streaming already delivered the body text.  Reasoning
+                # may have been sent by the stream consumer during
+                # streaming (when show_reasoning is enabled).  This
+                # trailing send is a safety net for models that return
+                # reasoning via last_reasoning but don't emit inline
+                # thinking tags.  Skip if the stream consumer already
+                # sent it (already_sent path means consumer was active).
+                if _show_reasoning_effective:
+                    _streamed_reasoning = agent_result.get("last_reasoning")
+                    if _streamed_reasoning:
+                        try:
+                            _lines = _streamed_reasoning.strip().splitlines()
+                            if len(_lines) > 15:
+                                _display_r = "\n".join(_lines[:15])
+                                _display_r += f"\n_... ({len(_lines) - 15} more lines)_"
+                            else:
+                                _display_r = _streamed_reasoning.strip()
+                            _r_msg = f"💭 **Reasoning:**\n{_display_r}"
+                            _r_adapter = self.adapters.get(source.platform)
+                            if _r_adapter:
+                                await _r_adapter.send(
+                                    source.chat_id,
+                                    _r_msg,
+                                    metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                                )
+                        except Exception as _re:
+                            logger.debug("trailing reasoning send failed: %s", _re)
+
                 if response:
                     _media_adapter = self.adapters.get(source.platform)
                     if _media_adapter:
@@ -13534,6 +13573,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else bool(_plat_streaming)
         )
 
+        # Resolve show_reasoning for passing to the stream consumer
+        try:
+            _show_reasoning_effective = resolve_display_setting(
+                user_config, platform_key, "show_reasoning",
+                getattr(self, "_show_reasoning", False),
+            )
+        except Exception:
+            _show_reasoning_effective = getattr(self, "_show_reasoning", False)
+
+        # When show_reasoning is enabled, disable streaming so reasoning
+        # appears BEFORE the response. Reasoning is only available after
+        # the agent completes (via last_reasoning), but streaming delivers
+        # the response live — mutually exclusive with reasoning-first.
+        if _streaming_enabled and _show_reasoning_effective:
+            _streaming_enabled = False
+
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
 
         if _streaming_enabled:
@@ -14637,6 +14692,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _plat_streaming is None
                 else bool(_plat_streaming)
             )
+            # Resolve show_reasoning for passing to the stream consumer
+            try:
+                _show_reasoning_effective = resolve_display_setting(
+                    user_config, platform_key, "show_reasoning",
+                    getattr(self, "_show_reasoning", False),
+                )
+            except Exception:
+                _show_reasoning_effective = getattr(self, "_show_reasoning", False)
+            # When show_reasoning is enabled, disable streaming so reasoning
+            # appears BEFORE the response (reasoning is only available after
+            # the agent completes, but streaming delivers response live).
+            if _streaming_enabled and _show_reasoning_effective:
+                _streaming_enabled = False
             _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled
             _want_interim_consumer = _want_interim_messages
