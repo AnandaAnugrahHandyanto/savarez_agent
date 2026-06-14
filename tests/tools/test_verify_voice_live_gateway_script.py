@@ -632,6 +632,55 @@ def test_run_tts_smoke_runs_from_live_root(tmp_path: Path, monkeypatch):
     assert result["probe"]["codec_name"] == "opus"
 
 
+def test_run_stt_smoke_runs_existing_config_verifier(tmp_path: Path, monkeypatch):
+    script = _load_script_module()
+    live_root = tmp_path / "live"
+    verifier = live_root / "scripts" / "verify_voice_command_stt.py"
+    verifier.parent.mkdir(parents=True)
+    verifier.write_text("", encoding="utf-8")
+
+    def fake_run(command, *, timeout):
+        assert command[:2] == ["/python", str(verifier)]
+        assert "--use-existing-config" in command
+        assert "--hermes-home" in command
+        assert str(tmp_path / "home") in command
+        assert "--voice-bin" in command
+        assert "/voice" in command
+        assert "--provider" in command
+        assert "voice" in command
+        assert "--expect-word" in command
+        assert timeout == 7.0
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "success": True,
+                    "provider": "voice",
+                    "transcript": "Hello world.",
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(script, "run_command", fake_run)
+
+    result = script.run_stt_smoke(
+        python_bin="/python",
+        live_root=live_root,
+        hermes_home=tmp_path / "home",
+        voice_bin="/voice",
+        provider="voice",
+        text="hello world",
+        expect_words=["hello"],
+        stt_timeout=3.0,
+        generate_timeout=4.0,
+        process_timeout=7.0,
+    )
+
+    assert result["transcript"] == "Hello world."
+
+
 def test_main_skips_ffprobe_when_tts_smoke_is_disabled(
     tmp_path: Path,
     monkeypatch,

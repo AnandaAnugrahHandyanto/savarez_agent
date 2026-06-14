@@ -144,6 +144,7 @@ def test_build_plan_generates_sidecar_unit_and_gateway_dropin(tmp_path: Path):
     assert "http://127.0.0.1:8787" in live_gateway
     assert "--voice-bin" in live_gateway
     assert "--run-tts-smoke" in live_gateway
+    assert "--run-stt-smoke" not in live_gateway
     assert "--sidecar-service" in live_gateway
     assert "voice-webrtc-sidecar.service" in live_gateway
     assert "--voice-repo" in live_gateway
@@ -152,6 +153,38 @@ def test_build_plan_generates_sidecar_unit_and_gateway_dropin(tmp_path: Path):
     assert plan["verify_commands"]["live_gateway_cloud_only"][-1] == (
         "--skip-bridge-health"
     )
+
+
+def test_build_plan_adds_live_stt_smoke_when_configuring_stt(tmp_path: Path):
+    script = _load_script_module()
+    args = script.parse_args(
+        [
+            "--systemd-user-dir",
+            str(tmp_path / "systemd"),
+            "--hermes-home",
+            str(tmp_path / ".hermes"),
+            "--live-hermes-root",
+            str(tmp_path / "hermes-agent"),
+            "--voice-repo",
+            str(tmp_path / "voice"),
+            "--voice-bin",
+            sys.executable,
+            "--webrtc-python-bin",
+            sys.executable,
+            "--configure-stt",
+            "--stt-provider-name",
+            "voice",
+            "--stt-timeout",
+            "123",
+        ]
+    )
+
+    plan = script.build_plan(args)
+    live_gateway = plan["verify_commands"]["live_gateway"]
+
+    assert "--run-stt-smoke" in live_gateway
+    assert live_gateway[live_gateway.index("--stt-provider") + 1] == "voice"
+    assert live_gateway[live_gateway.index("--stt-timeout") + 1] == "123"
 
 
 def test_configure_tts_provider_writes_voice_compatible_ogg_provider(tmp_path: Path):

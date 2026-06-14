@@ -9,6 +9,10 @@ resolve from that checkout, and checks the local WhatsApp bridge health.
 Pass ``--run-tts-smoke`` to also generate one live-config TTS reply and verify
 that Hermes returns a WhatsApp-ready Ogg/Opus voice-note file.
 
+Pass ``--run-stt-smoke`` with ``--voice-bin`` to also generate one WAV fixture
+and verify that the live Hermes config transcribes it through the configured
+voice command STT provider.
+
 Pass ``--voice-bin`` with ``--calling-sidecar-url`` to compare the running
 sidecar's machine-readable contract with the installed ``voice stream-contract``.
 Pass ``--sidecar-service`` to also verify the systemd user unit that runs the
@@ -37,6 +41,8 @@ from verify_voice_local_stack import audit_live_hermes_root
 DEFAULT_SERVICE = "hermes-gateway.service"
 DEFAULT_BRIDGE_URL = "http://127.0.0.1:3000"
 DEFAULT_TTS_TEXT = "Hermes live voice gateway smoke."
+DEFAULT_STT_TEXT = "hello world"
+DEFAULT_STT_EXPECT_WORDS = ("hello", "world")
 CALLING_TTS_STREAM_ENV = "WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND"
 CONTRACT_COMPARE_KEYS = (
     "contract",
@@ -133,6 +139,7 @@ REQUIRED_PAYLOAD_FIELDS = {
 IMPORT_MODULES = (
     "hermes_cli.main",
     "tools.tts_tool",
+    "tools.transcription_tools",
     "tools.tirith_security",
     "gateway.platforms.whatsapp_cloud",
     "gateway.platforms.whatsapp",
@@ -793,6 +800,61 @@ print(json.dumps(json.loads(tts_tool.text_to_speech_tool(%r)), sort_keys=True))
     }
 
 
+def run_stt_smoke(
+    *,
+    python_bin: str,
+    live_root: Path,
+    hermes_home: Path,
+    voice_bin: str,
+    provider: str,
+    text: str,
+    expect_words: list[str],
+    stt_timeout: float,
+    generate_timeout: float,
+    process_timeout: float,
+) -> dict[str, Any]:
+    script = live_root / "scripts" / "verify_voice_command_stt.py"
+    if not script.is_file():
+        raise SystemExit(f"STT smoke verifier not found in live root: {script}")
+
+    command = [
+        python_bin,
+        str(script),
+        "--use-existing-config",
+        "--hermes-home",
+        str(hermes_home),
+        "--voice-bin",
+        voice_bin,
+        "--provider",
+        provider,
+        "--timeout",
+        f"{stt_timeout:g}",
+        "--generate-timeout",
+        f"{generate_timeout:g}",
+        "--text",
+        text,
+    ]
+    for word in expect_words:
+        command.extend(["--expect-word", word])
+
+    completed = run_command(command, timeout=process_timeout)
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise SystemExit(f"STT smoke failed: {detail}")
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"STT smoke returned invalid JSON: {completed.stdout!r}") from exc
+    if result.get("success") is not True:
+        raise SystemExit(f"STT smoke reported failure: {result}")
+    if result.get("provider") != provider:
+        raise SystemExit(
+            f"STT smoke provider mismatch: expected {provider!r}, "
+            f"got {result.get('provider')!r}"
+        )
+    return result
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--service", default=DEFAULT_SERVICE)
@@ -839,7 +901,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-tts-smoke", action="store_true")
     parser.add_argument("--tts-platform", default="whatsapp")
     parser.add_argument("--tts-text", default=DEFAULT_TTS_TEXT)
-    return parser.parse_args()
+    parser.add_argument("--run-stt-smoke", action="store_true")
+    parser.add_argument("--stt-provider", default="voice")
+    parser.add_argument("--stt-text", default=DEFAULT_STT_TEXT)
+    parser.add_argument("--stt-timeout", type=float, default=300.0)
+    parser.add_argument("--stt-generate-timeout", type=float, default=180.0)
+    parser.add_argument(
+        "--stt-expect-word",
+        action="append",
+        default=None,
+        help="word expected in the live STT smoke transcript; repeatable",
+    )
+    args = parser.parse_args()
+    if args.stt_expect_word is None:
+        args.stt_expect_word = list(DEFAULT_STT_EXPECT_WORDS)
+    return args
 
 
 def main() -> int:
@@ -858,6 +934,8 @@ def main() -> int:
         if args.run_tts_smoke
         else ""
     )
+    if args.run_stt_smoke and not voice_bin:
+        raise SystemExit("--run-stt-smoke requires --voice-bin")
     bridge_bin_dir = live_root / "scripts" / "whatsapp-bridge" / "node_modules" / ".bin"
 
     checks: dict[str, Any] = {}
@@ -959,6 +1037,19 @@ def main() -> int:
             text=args.tts_text,
             ffprobe_bin=ffprobe_bin,
             timeout=args.timeout,
+        )
+    if args.run_stt_smoke:
+        checks["stt_smoke"] = run_stt_smoke(
+            python_bin=python_bin,
+            live_root=live_root,
+            hermes_home=hermes_home,
+            voice_bin=str(voice_bin),
+            provider=args.stt_provider,
+            text=args.stt_text,
+            expect_words=args.stt_expect_word,
+            stt_timeout=args.stt_timeout,
+            generate_timeout=args.stt_generate_timeout,
+            process_timeout=args.stt_timeout + args.stt_generate_timeout + 30,
         )
 
     print(

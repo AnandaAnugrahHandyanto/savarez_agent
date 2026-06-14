@@ -244,6 +244,9 @@ def build_verify_commands(
     webrtc_python_bin: str,
     sidecar_url: str,
     sidecar_service: str | None,
+    run_stt_smoke: bool,
+    stt_provider_name: str,
+    stt_timeout: int,
 ) -> dict[str, list[str]]:
     live_gateway_command = [
         verifier_python_bin,
@@ -260,6 +263,16 @@ def build_verify_commands(
         voice_bin,
         "--run-tts-smoke",
     ]
+    if run_stt_smoke:
+        live_gateway_command.extend(
+            [
+                "--run-stt-smoke",
+                "--stt-provider",
+                stt_provider_name,
+                "--stt-timeout",
+                str(stt_timeout),
+            ]
+        )
     if sidecar_service:
         live_gateway_command.extend(
             [
@@ -556,6 +569,9 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
             webrtc_python_bin=webrtc_python_bin,
             sidecar_url=args.sidecar_url.rstrip("/"),
             sidecar_service=None if args.skip_sidecar_service else args.sidecar_service,
+            run_stt_smoke=args.configure_stt,
+            stt_provider_name=args.stt_provider_name,
+            stt_timeout=args.stt_timeout,
         ),
     }
 
