@@ -182,6 +182,47 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
 
+    def test_emits_fallback_switch_status_immediately(self):
+        agent = _make_agent(
+            fallback_model={"provider": "openai", "model": "gpt-4o"}
+        )
+        statuses = []
+        agent.status_callback = lambda kind, message: statuses.append((kind, message))
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert statuses == [
+            (
+                "lifecycle",
+                "🔄 Primary model failed — switching to fallback: gpt-4o via openai",
+            )
+        ]
+
+    def test_emits_original_rate_limit_fallback_status(self):
+        agent = _make_agent(
+            fallback_model={"provider": "openai", "model": "gpt-4o"}
+        )
+        statuses = []
+        agent.status_callback = lambda kind, message: statuses.append((kind, message))
+        agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert statuses == [
+            (
+                "lifecycle",
+                "⚠️ Rate limited — switching to fallback provider...",
+            )
+        ]
+
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
 

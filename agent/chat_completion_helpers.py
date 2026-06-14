@@ -1287,6 +1287,19 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 api_mode=agent.api_mode,
             )
 
+        _status_message = None
+        try:
+            for kind, msg in reversed(getattr(agent, "_retry_status_buffer", []) or []):
+                if kind == "status" and "fallback" in msg.lower():
+                    _status_message = msg
+                    break
+        except Exception:
+            _status_message = None
+        _status_message = _status_message or (
+            f"🔄 Primary model failed — switching to fallback: "
+            f"{fb_model} via {fb_provider}"
+        )
+        agent._emit_status(_status_message)
         agent._buffer_status(
             f"🔄 Primary model failed — switching to fallback: "
             f"{fb_model} via {fb_provider}"
