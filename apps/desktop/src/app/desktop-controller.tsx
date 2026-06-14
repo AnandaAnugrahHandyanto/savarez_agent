@@ -530,7 +530,7 @@ export function DesktopController() {
     requestGateway
   })
 
-  const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({
+  const { fileBrowserHoverReveal, refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({
     activeSessionIdRef,
     refreshProjectBranch
   })
@@ -1023,7 +1023,7 @@ export function DesktopController() {
       defaultOpen={false}
       disabled={!chatOpen}
       forceCollapsed={narrowViewport}
-      hoverReveal
+      hoverReveal={fileBrowserHoverReveal}
       id="file-browser"
       key="file-browser"
       maxWidth={FILE_BROWSER_MAX_WIDTH}

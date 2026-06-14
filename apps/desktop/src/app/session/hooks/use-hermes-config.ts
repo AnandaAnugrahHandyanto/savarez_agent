@@ -14,10 +14,15 @@ import {
 } from '@/store/session'
 
 const DEFAULT_VOICE_SECONDS = 120
+export const DEFAULT_FILE_BROWSER_HOVER_REVEAL = true
 const FAST_TIERS = new Set(['fast', 'priority', 'on'])
 
 function recordingLimit(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : DEFAULT_VOICE_SECONDS
+}
+
+export function isFileBrowserHoverRevealEnabled(config: { display?: { hover_reveal_file_browser?: boolean } }) {
+  return config.display?.hover_reveal_file_browser !== false
 }
 
 interface HermesConfigOptions {
@@ -26,6 +31,7 @@ interface HermesConfigOptions {
 }
 
 export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: HermesConfigOptions) {
+  const [fileBrowserHoverReveal, setFileBrowserHoverReveal] = useState(DEFAULT_FILE_BROWSER_HOVER_REVEAL)
   const [voiceMaxRecordingSeconds, setVoiceMaxRecordingSeconds] = useState(DEFAULT_VOICE_SECONDS)
   const [sttEnabled, setSttEnabled] = useState(true)
 
@@ -63,6 +69,7 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
       setCurrentServiceTier(prev => (activeSessionIdRef.current ? prev : tier))
       setCurrentFastMode(prev => (activeSessionIdRef.current ? prev : FAST_TIERS.has(tier.toLowerCase())))
 
+      setFileBrowserHoverReveal(isFileBrowserHoverRevealEnabled(config))
       setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
       setSttEnabled(config.stt?.enabled !== false)
     } catch {
@@ -70,5 +77,5 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
     }
   }, [activeSessionIdRef, refreshProjectBranch])
 
-  return { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds }
+  return { fileBrowserHoverReveal, refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds }
 }
