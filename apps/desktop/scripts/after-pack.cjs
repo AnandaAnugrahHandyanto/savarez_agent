@@ -21,9 +21,22 @@
 
 const path = require('node:path')
 
+const { stageMacPermissionBroker } = require('./stage-mac-permission-broker.cjs')
 const { stampExeIdentity } = require('./set-exe-identity.cjs')
 
 exports.default = async function afterPack(context) {
+  if (context.electronPlatformName === 'darwin') {
+    try {
+      const result = await stageMacPermissionBroker(context)
+      if (result?.installed) {
+        console.log(`[after-pack] staged HermesMacBroker at ${result.installed}`)
+      }
+    } catch (err) {
+      throw new Error(`macOS permission broker staging failed: ${err.message}`)
+    }
+    return
+  }
+
   if (context.electronPlatformName !== 'win32') {
     return
   }
