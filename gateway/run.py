@@ -852,6 +852,18 @@ if _config_path.exists():
             _redact = _security_cfg.get("redact_secrets")
             if _redact is not None:
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
+        # Gateway media config — bridge gateway.media_allow_dirs to
+        # HERMES_MEDIA_ALLOW_DIRS env var so validate_media_delivery_path()
+        # in gateway/platforms/base.py picks up user-configured paths.
+        # Without this, only hardcoded cache dirs (~/.hermes/image_cache,
+        # ~/.hermes/audio_cache, etc.) are accepted for MEDIA delivery.
+        _gateway_cfg = _cfg.get("gateway", {})
+        if _gateway_cfg and isinstance(_gateway_cfg, dict):
+            _media_dirs = _gateway_cfg.get("media_allow_dirs")
+            if _media_dirs and isinstance(_media_dirs, list):
+                os.environ["HERMES_MEDIA_ALLOW_DIRS"] = ":".join(
+                    os.path.expanduser(str(d)) for d in _media_dirs
+                )
     except Exception as _bridge_err:
         # Previously this was silent (`except Exception: pass`), which
         # hid partial bridge failures and let .env defaults shadow

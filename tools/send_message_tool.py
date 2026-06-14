@@ -123,7 +123,18 @@ SEND_MESSAGE_SCHEMA = {
         "(not just a bare platform name), call send_message(action='list') FIRST to see "
         "available targets, then send to the correct one.\n"
         "If the user just says a platform name like 'send to telegram', send directly "
-        "to the home channel without listing first."
+        "to the home channel without listing first.\n\n"
+        "For Telegram, you can optionally pass 'rich_message' to send a structured Rich Message "
+        "(Bot API 10.1+). Rich Messages support headings, tables, blockquotes, code blocks with "
+        "syntax highlighting, collapsible details, checklists, mathematical formulas, inline "
+        "media, collages, slideshows, maps, footnotes, and deeply nested formatting. "
+        "Pass an object with either 'html' (HTML tags like <b>, <h1>, <table>, <blockquote>, "
+        "<details>, <pre><code>, <tg-spoiler>, <tg-math>, <tg-map>, <tg-collage>, <tg-slideshow>, "
+        "<footer>, <hr/>, <sub>, <sup>, <mark>) or 'markdown' (GFM-style: ## headings, | tables |, "
+        "> quotes, ``` code, - [x] checklists, ==marked text==, $$ math, <details>, "
+        "<tg-collage>, <tg-slideshow>, <tg-map>, <tg-math-block>, $inline$). "
+        "When rich_message is provided, the 'message' field is optional — the rich content "
+        "replaces the plain text."
     ),
     "parameters": {
         "type": "object",
@@ -139,7 +150,21 @@ SEND_MESSAGE_SCHEMA = {
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> for a file under a Hermes media cache or HERMES_MEDIA_ALLOW_DIRS — the platform will deliver it as a native media attachment."
+                "description": "The message text to send. Can be omitted when rich_message is provided. To send an image or file, include MEDIA:<local_path> for a file under a Hermes media cache or HERMES_MEDIA_ALLOW_DIRS — the platform will deliver it as a native media attachment."
+            },
+            "rich_message": {
+                "type": "object",
+                "description": "Optional. Telegram Bot API 10.1+ Rich Message. Overrides 'message' when set. Pass an object with exactly one of 'html' (Rich HTML with tags like <b>, <h1>, <table>, <blockquote>, <details>, <pre><code>, <tg-spoiler>, <tg-math>) or 'markdown' (GFM-style Rich Markdown with ## headings, | tables |, > quotes, ``` code, - [x] checklists, ==marked text==, ||spoiler||, $$ math, $inline$). Only supported on Telegram currently.",
+                "properties": {
+                    "html": {
+                        "type": "string",
+                        "description": "Rich HTML content (Bot API 10.1+). Supports headings <h1>-<h6>, tables <table>, blockquotes <blockquote>, collapsible <details>, code <pre><code>, spoiler <tg-spoiler>, math <tg-math>, list items, images, video, audio, maps <tg-map>, collages <tg-collage>, slideshows <tg-slideshow>, footnotes <footer>, dividers <hr/>, pull quotes <aside>, and nested inline formatting (<b>, <i>, <u>, <s>, <sub>, <sup>, <mark>, <code>, <tg-spoiler>, <a>). Exactly one of html or markdown must be provided."
+                    },
+                    "markdown": {
+                        "type": "string",
+                        "description": "Rich Markdown content (Bot API 10.1+). GFM-compatible with extensions: **bold**, __bold__, *italic*, _italic_, ~~strikethrough~~, `code`, ==marked==, ||spoiler||, ## headings, | tables |, > quotes, ``` code blocks, - [x] checklists, $$math$$, $inline$, <details>, <tg-collage>, <tg-slideshow>, <tg-map>. Exactly one of html or markdown must be provided."
+                    }
+                }
             }
         },
         "required": []
@@ -170,8 +195,9 @@ def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
-    if not target or not message:
-        return tool_error("Both 'target' and 'message' are required when action='send'")
+    rich_message = args.get("rich_message")
+    if not target or (not message and not rich_message):
+        return tool_error("Both 'target' and one of 'message' or 'rich_message' are required when action='send'")
 
     parts = target.split(":", 1)
     platform_name = parts[0].strip().lower()
@@ -252,7 +278,13 @@ def _handle_send(args):
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
-    mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
+
+    # When rich_message is provided without message text, create a mirror placeholder
+    if rich_message and not cleaned_message.strip():
+        content_type = "html" if rich_message.get("html") else "markdown"
+        mirror_text = f"[Sent rich {content_type} message]"
+    else:
+        mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
     if not chat_id:
@@ -309,6 +341,7 @@ def _handle_send(args):
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document_attachments,
+                rich_message=rich_message,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -555,12 +588,16 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, rich_message=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
     using the same smart-splitting algorithm as the gateway adapters
     (preserves code-block boundaries, adds part indicators).
+
+    If rich_message is provided (dict with 'html' or 'markdown' key), the
+    message is sent as a Telegram Rich Message (Bot API 10.1+) instead of
+    a regular text message.
     """
     from gateway.config import Platform
     from gateway.platforms.base import BasePlatformAdapter, utf16_len
@@ -622,6 +659,16 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if platform == Platform.TELEGRAM:
         last_result = None
         disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
+
+        # Rich Message (Bot API 10.1+) — bypass regular sendMessage entirely
+        if rich_message:
+            return await _send_telegram_rich(
+                pconfig.token,
+                chat_id,
+                rich_message,
+                thread_id=thread_id,
+            )
+
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
             result = await _send_telegram(
@@ -810,6 +857,69 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     the standalone ``_send_telegram`` path (issue #27012).
     """
     return "thread not found" in str(error).lower()
+
+
+async def _send_telegram_rich(token, chat_id, rich_message, thread_id=None):
+    """Send a Rich Message via Telegram Bot API 10.1+ (sendRichMessage).
+
+    Args:
+        token: Telegram bot token.
+        chat_id: Target chat ID.
+        rich_message: Dict with 'html' or 'markdown' key containing the rich content.
+        thread_id: Optional topic thread ID.
+
+    Returns:
+        Dict with success/error info.
+    """
+    if not isinstance(rich_message, dict):
+        return {"error": "rich_message must be a dict with 'html' or 'markdown' key"}
+    if "html" not in rich_message and "markdown" not in rich_message:
+        return {"error": "rich_message must contain exactly one of 'html' or 'markdown'"}
+    if "html" in rich_message and "markdown" in rich_message:
+        return {"error": "rich_message must contain exactly one of 'html' or 'markdown', not both"}
+
+    try:
+        import httpx
+
+        payload = {
+            "chat_id": int(chat_id),
+            "rich_message": rich_message,
+        }
+
+        # Resolve proxy
+        try:
+            from gateway.platforms.base import resolve_proxy_url
+            _tg_proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
+        except Exception:
+            _tg_proxy = None
+
+        # Build URL
+        url = f"https://api.telegram.org/bot{token}/sendRichMessage"
+
+        client_kwargs = {}
+        if _tg_proxy:
+            client_kwargs["proxy"] = _tg_proxy
+
+        async with httpx.AsyncClient(**client_kwargs, timeout=30.0) as client:
+            response = await client.post(url, json=payload)
+            result = response.json()
+
+        if not result.get("ok"):
+            desc = result.get("description", "Unknown error")
+            return {"error": f"Telegram Rich Message API error: {desc}"}
+
+        message_id = result["result"]["message_id"]
+        return {
+            "success": True,
+            "platform": "telegram",
+            "chat_id": str(chat_id),
+            "message_id": str(message_id),
+            "rich_message": True,
+        }
+    except ImportError:
+        return {"error": "httpx not installed. Run: pip install httpx"}
+    except Exception as e:
+        return _error(f"Telegram Rich Message send failed: {e}")
 
 
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):

@@ -60,7 +60,12 @@ class StreamConsumerConfig:
     # responses (e.g. reasoning models that stream slowly).  Ported from
     # openclaw/openclaw#72038.  Default 0 = always edit in place (legacy
     # behavior).  The gateway enables this selectively per-platform.
-    fresh_final_after_seconds: float = 0.0
+    # When > 0 and the preview has been visible for at least this duration,
+    # the final answer is sent as a fresh message (best-effort delete of the
+    # old preview).  This lets Rich-capable platforms (Telegram Bot API 10.1+)
+    # deliver the final body as a native Rich Message instead of a streaming
+    # edit that destroys tables, headings, and code blocks.
+    fresh_final_after_seconds: float = 0.1
     # Streaming transport selection:
     #   "auto"  — prefer native draft streaming (e.g. Telegram sendMessageDraft)
     #             when the adapter + chat supports it; fall back to edit.

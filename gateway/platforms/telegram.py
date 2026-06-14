@@ -319,6 +319,23 @@ def _wrap_markdown_tables(text: str) -> str:
     return '\n'.join(out)
 
 
+class _RichMessageProxy:
+    """Duck-typed proxy for a Telegram Message returned by sendRichMessage.
+
+    Matches the minimal interface that the adapter's send() methods expect
+    (message_id attribute as int/str), so existing caller code like
+    ``message_ids.append(str(msg.message_id))`` works without changes.
+    """
+
+    def __init__(self, data: dict):
+        self._data = data
+        self.message_id = data.get("message_id")
+
+    def __getattr__(self, name):
+        # Pass through any other attribute access to the raw dict
+        return self._data.get(name)
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -332,6 +349,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
+    MAX_RICH_MESSAGE_LENGTH = 32768  # Bot API 10.1+ Rich Messages
     # Threshold for detecting Telegram client-side message splits.
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
@@ -1673,6 +1691,120 @@ class TelegramAdapter(BasePlatformAdapter):
         else:  # "first" (default)
             return chunk_index == 0
 
+    async def _edit_with_rich_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        content: str,
+    ):
+        """Edit a message with Rich formatting via Bot API 10.1+
+        (editMessageText + rich_message parameter).
+
+        Uses httpx directly since python-telegram-bot doesn't natively
+        support the rich_message parameter on editMessageText yet.
+        """
+        import httpx
+
+        payload: Dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "rich_message": {"markdown": content},
+        }
+
+        # Resolve proxy
+        try:
+            from gateway.platforms.base import resolve_proxy_url
+            _tg_proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
+        except Exception:
+            _tg_proxy = None
+
+        url = f"https://api.telegram.org/bot{self.config.token}/editMessageText"
+        client_kwargs = {}
+        if _tg_proxy:
+            client_kwargs["proxy"] = _tg_proxy
+
+        async with httpx.AsyncClient(**client_kwargs, timeout=30.0) as client:
+            response = await client.post(url, json=payload)
+            result = response.json()
+
+        if not result.get("ok"):
+            desc = result.get("description", "Unknown error")
+            # "message is not modified" is fine — treat as success
+            if "not modified" in desc.lower():
+                return
+            raise RuntimeError(f"Telegram editMessageText Rich API error: {desc}")
+
+        logger.info(
+            "[%s] _edit_with_rich_text OK: chat=%s msg_id=%s content_preview=%s",
+            self.name, chat_id, message_id, content[:80].replace("\n", "\\n"),
+        )
+
+    async def _send_rich_text(
+        self,
+        chat_id: int,
+        content: str,
+        reply_to_message_id: Optional[int] = None,
+        thread_kwargs: Optional[Dict[str, Any]] = None,
+    ):
+        """Send a Rich Message via Bot API 10.1+ (sendRichMessage).
+
+        Uses httpx to call the Telegram API directly since python-telegram-bot
+        doesn't natively support sendRichMessage yet. Falls back to regular
+        sendMessage exception handling in the caller.
+
+        Returns the Message object (duck-typed to match python-telegram-bot's
+        return type) so the caller's retry/fallback logic works unchanged.
+        """
+        import httpx
+
+        payload: Dict[str, Any] = {
+            "chat_id": chat_id,
+            "rich_message": {"markdown": content},
+        }
+        if reply_to_message_id is not None:
+            payload["reply_to_message_id"] = reply_to_message_id
+
+        if thread_kwargs:
+            mtid = thread_kwargs.get("message_thread_id")
+            if mtid is not None:
+                payload["message_thread_id"] = mtid
+
+        # Resolve proxy for the API call
+        try:
+            from gateway.platforms.base import resolve_proxy_url
+            _tg_proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
+        except Exception:
+            _tg_proxy = None
+
+        url = f"https://api.telegram.org/bot{self.config.token}/sendRichMessage"
+        client_kwargs = {}
+        if _tg_proxy:
+            client_kwargs["proxy"] = _tg_proxy
+
+        logger.info(
+            "[%s] _send_rich_text calling API: chat=%s payload_len=%d has_reply=%s has_thread=%s",
+            self.name, chat_id, len(content),
+            reply_to_message_id is not None,
+            bool(thread_kwargs),
+        )
+
+        async with httpx.AsyncClient(**client_kwargs, timeout=30.0) as client:
+            response = await client.post(url, json=payload)
+            result = response.json()
+
+        if not result.get("ok"):
+            desc = result.get("description", "Unknown error")
+            raise RuntimeError(f"Telegram Rich Message API error: {desc}")
+
+        # Return a duck-typed message object so the caller's existing
+        # message_ids.append(str(msg.message_id)) logic works unchanged.
+        msg_data = result["result"]
+        logger.info(
+            "[%s] _send_rich_text OK: chat=%s msg_id=%s mode=markdown content_preview=%s",
+            self.name, chat_id, msg_data.get("message_id"), content[:80].replace("\n", "\\n"),
+        )
+        return _RichMessageProxy(msg_data)
+
     async def send(
         self,
         chat_id: str,
@@ -1689,18 +1821,26 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         
         try:
-            # Format and split message if needed
+            # For Rich Messages: use raw content (no MarkdownV2 conversion)
+            # Hermes internal markdown is Rich Markdown compatible (GFM + extensions)
+            rich_chunks = self.truncate_message(
+                content, self.MAX_RICH_MESSAGE_LENGTH, len_fn=utf16_len,
+            )
+            if len(rich_chunks) > 1:
+                rich_chunks = [
+                    re.sub(r" \\((\\d+)/(\\d+)\\)$", r" \\\\(\\1/\\2\\\\)", chunk)
+                    for chunk in rich_chunks
+                ]
+
+            # Legacy format for MarkdownV2 fallback (only used if Rich API fails)
             formatted = self.format_message(content)
-            chunks = self.truncate_message(
+            legacy_chunks = self.truncate_message(
                 formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
             )
-            if len(chunks) > 1:
-                # truncate_message appends a raw " (1/2)" suffix. Escape the
-                # MarkdownV2-special parentheses so Telegram doesn't reject the
-                # chunk and fall back to plain text.
-                chunks = [
-                    re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
-                    for chunk in chunks
+            if len(legacy_chunks) > 1:
+                legacy_chunks = [
+                    re.sub(r" \\((\\d+)/(\\d+)\\)$", r" \\\\(\\1/\\2\\\\)", chunk)
+                    for chunk in legacy_chunks
                 ]
             
             message_ids = []
@@ -1723,7 +1863,7 @@ class TelegramAdapter(BasePlatformAdapter):
             except (ImportError, AttributeError):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
-            for i, chunk in enumerate(chunks):
+            for i, chunk in enumerate(rich_chunks):
                 retried_thread_not_found = False
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
                 reply_to_source = reply_to or (
@@ -1753,26 +1893,29 @@ class TelegramAdapter(BasePlatformAdapter):
                 msg = None
                 for _send_attempt in range(3):
                     try:
-                        # Try Markdown first, fall back to plain text if it fails
+                        # Try Rich Message first, fall back to MarkdownV2 if it fails
                         try:
-                            msg = await self._bot.send_message(
+                            msg = await self._send_rich_text(
                                 chat_id=int(chat_id),
-                                text=chunk,
-                                parse_mode=ParseMode.MARKDOWN_V2,
+                                content=chunk,
                                 reply_to_message_id=reply_to_id,
-                                **thread_kwargs,
-                                **self._link_preview_kwargs(),
-                                **self._notification_kwargs(metadata),
+                                thread_kwargs=thread_kwargs,
                             )
-                        except Exception as md_error:
-                            # Markdown parsing failed, try plain text
-                            if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
-                                logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
-                                plain_chunk = _strip_mdv2(chunk)
+                        except Exception as rich_err:
+                            err_str = str(rich_err).lower()
+                            # Rich Markdown parse failure → fall back to MarkdownV2
+                            # Also fall back if the API doesn't support Rich Messages yet
+                            if any(x in err_str for x in ["parse", "markdown", "rich message", "not found", "bad request"]):
+                                logger.warning(
+                                    "[%s] Rich Message send failed, falling back to MarkdownV2: %s",
+                                    self.name, rich_err,
+                                )
+                                chunk_idx = i
+                                legacy_chunk = legacy_chunks[chunk_idx] if chunk_idx < len(legacy_chunks) else chunk
                                 msg = await self._bot.send_message(
                                     chat_id=int(chat_id),
-                                    text=plain_chunk,
-                                    parse_mode=None,
+                                    text=legacy_chunk,
+                                    parse_mode=ParseMode.MARKDOWN_V2,
                                     reply_to_message_id=reply_to_id,
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
@@ -1984,6 +2127,22 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 return SendResult(success=True, message_id=message_id)
 
+            # Finalize: edit in-place with Rich formatting (preserves tables,
+            # headers, code blocks, etc.) — no duplicate messages.
+            try:
+                await self._edit_with_rich_text(
+                    chat_id=int(chat_id),
+                    message_id=int(message_id),
+                    content=content,
+                )
+                return SendResult(success=True, message_id=message_id)
+            except Exception as rich_err:
+                logger.debug(
+                    "[%s] edit_message Rich finalize failed (%s), falling back to MarkdownV2",
+                    self.name, rich_err,
+                )
+
+            # Fallback: edit with MarkdownV2 formatting
             formatted = self.format_message(content)
             try:
                 await self._bot.edit_message_text(
@@ -2286,8 +2445,12 @@ class TelegramAdapter(BasePlatformAdapter):
         (added to python-telegram-bot in 22.6); older PTB installs gracefully
         fall back to the edit path even on DMs.
         """
-        if not self._bot or not hasattr(self._bot, "send_message_draft"):
+        if not self._bot:
             return False
+        if not hasattr(self._bot, "send_message_draft"):
+            # Fallback check: if python-telegram-bot doesn't have the draft
+            # method, we use sendRichMessageDraft via HTTP API directly
+            pass
         return (chat_type or "").lower() in {"dm", "private"}
 
     async def send_draft(
@@ -2297,47 +2460,58 @@ class TelegramAdapter(BasePlatformAdapter):
         content: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Stream a partial message via Telegram's native sendMessageDraft.
+        """Stream a partial message via Telegram's native sendRichMessageDraft.
 
-        The Bot API animates the preview when the same ``draft_id`` is reused
+        The Bot API animates the preview when the same draft_id is reused
         across consecutive calls in the same chat.  When the response
-        finishes, the caller sends the final text via the normal ``send``
+        finishes, the caller sends the final text via the normal send
         path; the draft preview clears naturally on the client (Telegram has
-        no Bot API to "promote" a draft to a real message — the final
-        ``sendMessage`` is what the user receives in their history).
+        no Bot API to promote a draft to a real message the final
+        send / sendRichMessage is what the user receives in their history).
         """
         if not self._bot:
             return SendResult(success=False, error="not_connected")
-        if not hasattr(self._bot, "send_message_draft"):
-            return SendResult(success=False, error="api_unavailable")
 
-        # Trim to the same UTF-16 budget the platform enforces on regular
-        # sends.  Drafts have the same length contract as messages.
-        text = content if len(content) <= self.MAX_MESSAGE_LENGTH else \
-            self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)[0]
+        # Trim to the same UTF-16 budget Rich Messages enforce.
+        text = content if len(content) <= self.MAX_RICH_MESSAGE_LENGTH else \
+            self.truncate_message(content, self.MAX_RICH_MESSAGE_LENGTH, len_fn=utf16_len)[0]
 
-        kwargs: Dict[str, Any] = {
+        import httpx
+
+        payload: Dict[str, Any] = {
             "chat_id": int(chat_id),
             "draft_id": int(draft_id),
-            "text": text,
+            "rich_message": {"markdown": text},
         }
         thread_id = self._metadata_thread_id(metadata)
         if thread_id is not None:
-            kwargs["message_thread_id"] = thread_id
+            payload["message_thread_id"] = thread_id
+
+        # Resolve proxy for the API call
+        try:
+            from gateway.platforms.base import resolve_proxy_url
+            _tg_proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
+        except Exception:
+            _tg_proxy = None
+
+        url = f"https://api.telegram.org/bot{self.config.token}/sendRichMessageDraft"
+        client_kwargs = {}
+        if _tg_proxy:
+            client_kwargs["proxy"] = _tg_proxy
 
         try:
-            ok = await self._bot.send_message_draft(**kwargs)
-            if ok:
+            async with httpx.AsyncClient(**client_kwargs, timeout=15.0) as client:
+                response = await client.post(url, json=payload)
+                result = response.json()
+            if result.get("ok"):
                 # Drafts have no message_id; we report success without one
                 # so the caller knows the animation frame landed.
                 return SendResult(success=True, message_id=None)
-            return SendResult(success=False, error="draft_rejected")
+            desc = result.get("description", "Unknown error")
+            return SendResult(success=False, error=f"rich_draft_rejected: {desc}")
         except Exception as e:
-            # Most likely: BadRequest because this bot/chat doesn't allow
-            # drafts, or a transient server hiccup.  The caller treats any
-            # failure as "fall back to edit-based for this response".
             logger.debug(
-                "[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s",
+                "[%s] sendRichMessageDraft failed (chat=%s draft_id=%s): %s",
                 self.name, chat_id, draft_id, e,
             )
             return SendResult(success=False, error=str(e))
