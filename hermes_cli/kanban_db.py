@@ -3208,7 +3208,8 @@ def release_stale_claims(
     reclaimed = 0
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at "
+        "SELECT id, current_run_id, claim_lock, worker_pid, claim_expires, "
+        "last_heartbeat_at "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?",
@@ -3262,17 +3263,17 @@ def release_stale_claims(
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
-                "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
-                "AND COALESCE(worker_pid, -1) = COALESCE(?, -1) "
-                "AND claim_expires IS NOT NULL AND claim_expires < ? "
-                "AND ((last_heartbeat_at IS NULL AND ? IS NULL) "
-                "     OR last_heartbeat_at = ?)",
+                "WHERE id = ? AND status = 'running' "
+                "AND current_run_id IS ? AND claim_lock IS ? "
+                "AND worker_pid IS ? AND claim_expires IS ? "
+                "AND claim_expires < ? AND last_heartbeat_at IS ?",
                 (
                     row["id"],
+                    row["current_run_id"],
                     row["claim_lock"],
                     row["worker_pid"],
+                    row["claim_expires"],
                     now,
-                    row["last_heartbeat_at"],
                     row["last_heartbeat_at"],
                 ),
             )

@@ -493,6 +493,53 @@ def test_release_stale_claims_rechecks_heartbeat_before_kill(
         assert task.last_heartbeat_at is not None
 
 
+def test_release_stale_claims_does_not_commit_ready_state_before_kill(kanban_home, monkeypatch):
+    """TTL reclaim must not expose a ready task before the stale run is closed."""
+    import hermes_cli.kanban_db as _kb
+
+    state = {"signal_seen": False}
+
+    class AssertSignalBeforeCommitConn:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def execute(self, sql, params=()):
+            if sql == "COMMIT":
+                assert state["signal_seen"], (
+                    "release_stale_claims committed status='ready' before "
+                    "terminating/closing the stale run"
+                )
+            return self.inner.execute(sql, params)
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+    with kb.connect() as real_conn:
+        t = kb.create_task(real_conn, title="ttl-commit-order", assignee="worker")
+        kb.claim_task(real_conn, t)
+        kb._set_worker_pid(real_conn, t, os.getpid())
+
+        now = int(time.time())
+        old = now - 3600
+        with kb.write_txn(real_conn):
+            real_conn.execute(
+                "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
+                "WHERE id = ?",
+                (now - 1, old, t),
+            )
+
+        monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+        reclaimed = kb.release_stale_claims(
+            cast(sqlite3.Connection, AssertSignalBeforeCommitConn(real_conn)),
+            signal_fn=lambda p, s: state.__setitem__("signal_seen", True),
+        )
+
+        assert reclaimed == 1
+        task = kb.get_task(real_conn, t)
+        assert task is not None
+        assert task.status == "ready"
+
+
 def test_stale_claim_with_live_pid_extends_instead_of_reclaiming(
     kanban_home, monkeypatch,
 ):
