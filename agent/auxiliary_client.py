@@ -3423,6 +3423,7 @@ def resolve_provider_client(
     # main_model also empty), the branches still hit their own
     # missing-credentials returns and ``_resolve_auto`` falls through to
     # the Step-2 chain as before.
+    explicit_model_arg = bool(model)
     if not model:
         model = _get_aux_model_for_provider(provider) or _read_main_model() or model
 
@@ -3489,7 +3490,7 @@ def resolve_provider_client(
                 "Dropping OpenRouter-format model %r for non-OpenRouter "
                 "auxiliary provider (using %r instead)", model, resolved)
             model = None
-        final_model = model or resolved
+        final_model = (model if explicit_model_arg else None) or resolved
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 

@@ -613,6 +613,31 @@ class TestResolveProviderClientUniversalModelFallback:
         assert model == "gpt-5.4"
         assert mock_build.call_args.args[0] == "gpt-5.4"
 
+    def test_auto_uses_resolved_fallback_model_over_stale_main_model(self):
+        """auto must not send the configured main model to a different resolved backend."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        resolved_client = MagicMock()
+
+        with (
+            patch(
+                "agent.auxiliary_client._read_main_model",
+                return_value="qwen3.6:35b-a3b-q8_0",
+            ),
+            patch(
+                "agent.auxiliary_client._get_aux_model_for_provider",
+                return_value="",
+            ),
+            patch(
+                "agent.auxiliary_client._resolve_auto",
+                return_value=(resolved_client, "gemma4:31b"),
+            ),
+        ):
+            client, model = resolve_provider_client("auto", "")
+
+        assert client is resolved_client
+        assert model == "gemma4:31b"
+
     def test_empty_model_for_catalog_provider_uses_catalog_default(self):
         """anthropic / nous / openrouter / etc.: catalog default wins
         over main model when no explicit model is passed.
