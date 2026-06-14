@@ -418,7 +418,8 @@ scripts/install_voice_local_stack.py \
   --voice-repo /path/to/voice \
   --voice-bin /path/to/voice/target/release/voice \
   --webrtc-python-bin /tmp/voice-webrtc-venv/bin/python \
-  --configure-tts
+  --configure-tts \
+  --configure-stt
 ```
 
 When the JSON plan looks right, apply it and restart the gateway:
@@ -427,6 +428,7 @@ When the JSON plan looks right, apply it and restart the gateway:
 scripts/install_voice_local_stack.py \
   --apply \
   --configure-tts \
+  --configure-stt \
   --restart-hermes \
   --live-hermes-root /path/to/hermes-agent \
   --voice-repo /path/to/voice \
@@ -438,7 +440,10 @@ That writes `~/.config/systemd/user/voice-webrtc-sidecar.service`, writes
 `~/.config/systemd/user/hermes-gateway.service.d/voice-stack.conf`, updates
 `~/.hermes/config.yaml` so the Kokoro command provider emits Ogg/Opus through
 `voice say --format ogg-opus`, reloads systemd, starts the sidecar, and restarts
-`hermes-gateway.service`.
+`hermes-gateway.service`. With `--configure-stt`, it also sets
+`stt.provider: voice` with a command provider that runs
+`voice stream-transcribe --quiet {input_path}` for inbound voice messages and
+live-call WAV segments.
 
 The JSON plan also includes `verify_commands.local_stack`,
 `verify_commands.live_gateway`, and `verify_commands.live_gateway_cloud_only`.

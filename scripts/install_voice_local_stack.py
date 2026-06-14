@@ -10,6 +10,9 @@ misconfigure by hand:
 
 By default the script is a dry run and prints the files it would write. Pass
 ``--apply`` to write them, reload systemd, and optionally restart Hermes.
+Pass ``--configure-tts`` / ``--configure-stt`` to point Hermes at the local
+``voice`` binary for WhatsApp-ready speech output and voice-native
+``stream-transcribe`` input.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ DEFAULT_PORT = 8787
 DEFAULT_HERMES_SERVICE = "hermes-gateway.service"
 DEFAULT_SIDECAR_SERVICE = "voice-webrtc-sidecar.service"
 DEFAULT_STREAM_TIMEOUT = 180.0
+DEFAULT_STT_TIMEOUT = 300
 
 
 def repo_root() -> Path:
@@ -217,6 +221,19 @@ def build_tts_provider(
     }
 
 
+def build_stt_provider(
+    *,
+    voice_bin: str,
+    timeout: int,
+) -> dict[str, Any]:
+    return {
+        "type": "command",
+        "command": f"{voice_bin} stream-transcribe --quiet {{input_path}}",
+        "format": "txt",
+        "timeout": timeout,
+    }
+
+
 def build_verify_commands(
     *,
     verifier_python_bin: str,
@@ -337,6 +354,73 @@ def configure_tts_provider(
     }
 
 
+def configure_stt_provider(
+    *,
+    config_path: Path,
+    provider_name: str,
+    provider: dict[str, Any],
+) -> dict[str, Any]:
+    if config_path.exists():
+        text = config_path.read_text(encoding="utf-8")
+    else:
+        text = ""
+
+    try:
+        from ruamel.yaml import YAML
+    except ModuleNotFoundError:
+        try:
+            import yaml
+        except ModuleNotFoundError as exc:
+            raise SystemExit(
+                "updating Hermes config requires PyYAML or ruamel.yaml; "
+                "rerun without --configure-stt or install one of those packages"
+            ) from exc
+
+        data = yaml.safe_load(text) if text.strip() else {}
+
+        def dump_yaml(value: dict[str, Any], handle: Any) -> None:
+            yaml.safe_dump(
+                value,
+                handle,
+                default_flow_style=False,
+                sort_keys=False,
+            )
+    else:
+        yaml = YAML()
+        yaml.default_flow_style = False
+        data = yaml.load(text) if text.strip() else {}
+
+        def dump_yaml(value: dict[str, Any], handle: Any) -> None:
+            yaml.dump(value, handle)
+
+    data = data or {}
+
+    if not isinstance(data, dict):
+        raise SystemExit(f"Hermes config root must be a mapping: {config_path}")
+
+    stt = data.setdefault("stt", {})
+    if not isinstance(stt, dict):
+        raise SystemExit(f"Hermes config stt section must be a mapping: {config_path}")
+    providers = stt.setdefault("providers", {})
+    if not isinstance(providers, dict):
+        raise SystemExit(
+            f"Hermes config stt.providers section must be a mapping: {config_path}"
+        )
+
+    stt["enabled"] = True
+    stt["provider"] = provider_name
+    providers[provider_name] = provider
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with config_path.open("w", encoding="utf-8") as handle:
+        dump_yaml(data, handle)
+
+    return {
+        "path": str(config_path),
+        "provider": provider_name,
+        "format": provider["format"],
+    }
+
+
 def run_systemctl(command: list[str], *, timeout: float) -> None:
     completed = subprocess.run(
         ["systemctl", "--user", *command],
@@ -402,6 +486,10 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         timeout=args.tts_timeout,
         max_text_length=args.max_text_length,
     )
+    stt_provider = build_stt_provider(
+        voice_bin=voice_bin,
+        timeout=args.stt_timeout,
+    )
 
     files: list[dict[str, str]] = []
     if not args.skip_sidecar_service:
@@ -440,6 +528,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "apply": args.apply,
         "configure_tts": args.configure_tts,
+        "configure_stt": args.configure_stt,
         "hermes_home": str(hermes_home),
         "live_hermes_root": str(live_hermes_root),
         "voice_repo": str(voice_repo),
@@ -457,6 +546,7 @@ def build_plan(args: argparse.Namespace) -> dict[str, Any]:
         },
         "files": files,
         "tts_provider": tts_provider,
+        "stt_provider": stt_provider,
         "verify_commands": build_verify_commands(
             verifier_python_bin=sys.executable,
             live_hermes_root=live_hermes_root,
@@ -480,11 +570,18 @@ def apply_plan(plan: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]
 
     Path(plan["paths"]["rx_pcm"]).parent.mkdir(parents=True, exist_ok=True)
     config_result = None
+    stt_config_result = None
     if plan["configure_tts"]:
         config_result = configure_tts_provider(
             config_path=Path(plan["paths"]["config"]),
             provider_name=args.provider_name,
             provider=plan["tts_provider"],
+        )
+    if plan["configure_stt"]:
+        stt_config_result = configure_stt_provider(
+            config_path=Path(plan["paths"]["config"]),
+            provider_name=args.stt_provider_name,
+            provider=plan["stt_provider"],
         )
 
     systemctl_actions: list[str] = []
@@ -507,6 +604,7 @@ def apply_plan(plan: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]
     return {
         "written": written,
         "configured_tts": config_result,
+        "configured_stt": stt_config_result,
         "systemctl": systemctl_actions,
     }
 
@@ -518,6 +616,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--configure-tts",
         action="store_true",
         help="update config.yaml to use voice say --format ogg-opus",
+    )
+    parser.add_argument(
+        "--configure-stt",
+        action="store_true",
+        help="update config.yaml to use voice stream-transcribe for STT",
     )
     parser.add_argument(
         "--restart-hermes",
@@ -575,10 +678,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=str(Path.home() / ".hermes" / "config.yaml"),
     )
     parser.add_argument("--provider-name", default="kokoro")
+    parser.add_argument("--stt-provider-name", default="voice")
     parser.add_argument("--voice", default="af_heart")
     parser.add_argument("--speed", default="1.0")
     parser.add_argument("--stream-timeout", type=float, default=DEFAULT_STREAM_TIMEOUT)
     parser.add_argument("--tts-timeout", type=int, default=180)
+    parser.add_argument("--stt-timeout", type=int, default=DEFAULT_STT_TIMEOUT)
     parser.add_argument("--max-text-length", type=int, default=2000)
     parser.add_argument("--systemctl-timeout", type=float, default=15.0)
     return parser.parse_args(argv)

@@ -119,6 +119,10 @@ def test_build_plan_generates_sidecar_unit_and_gateway_dropin(tmp_path: Path):
     ]
     assert plan["tts_provider"]["output_format"] == "ogg"
     assert plan["tts_provider"]["voice_compatible"] is True
+    assert plan["stt_provider"]["command"] == (
+        f"{sys.executable} stream-transcribe --quiet {{input_path}}"
+    )
+    assert plan["stt_provider"]["format"] == "txt"
     local_stack = plan["verify_commands"]["local_stack"]
     assert local_stack[:2] == [
         sys.executable,
@@ -185,6 +189,44 @@ def test_configure_tts_provider_writes_voice_compatible_ogg_provider(tmp_path: P
     assert configured["voice_compatible"] is True
 
 
+def test_configure_stt_provider_writes_voice_stream_transcribe_provider(
+    tmp_path: Path,
+):
+    script = _load_script_module()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "gateway:\n  enabled: true\nstt:\n  enabled: true\n  provider: local\n",
+        encoding="utf-8",
+    )
+    provider = script.build_stt_provider(
+        voice_bin="/home/user/.local/bin/voice",
+        timeout=300,
+    )
+
+    result = script.configure_stt_provider(
+        config_path=config_path,
+        provider_name="voice",
+        provider=provider,
+    )
+
+    parsed = YAML().load(config_path.read_text(encoding="utf-8"))
+    configured = parsed["stt"]["providers"]["voice"]
+    assert result == {
+        "path": str(config_path),
+        "provider": "voice",
+        "format": "txt",
+    }
+    assert parsed["gateway"]["enabled"] is True
+    assert parsed["stt"]["enabled"] is True
+    assert parsed["stt"]["provider"] == "voice"
+    assert configured["type"] == "command"
+    assert configured["command"] == (
+        "/home/user/.local/bin/voice stream-transcribe --quiet {input_path}"
+    )
+    assert configured["format"] == "txt"
+    assert configured["timeout"] == 300
+
+
 def test_configure_tts_provider_falls_back_to_pyyaml(
     tmp_path: Path,
     monkeypatch,
@@ -238,6 +280,7 @@ def test_apply_without_systemctl_writes_files_and_config(
             "--no-systemctl",
             "--no-start",
             "--configure-tts",
+            "--configure-stt",
             "--systemd-user-dir",
             str(systemd_dir),
             "--hermes-home",
@@ -269,3 +312,8 @@ def test_apply_without_systemctl_writes_files_and_config(
     parsed = YAML().load(config_path.read_text(encoding="utf-8"))
     assert parsed["tts"]["providers"]["kokoro"]["output_format"] == "ogg"
     assert parsed["tts"]["providers"]["kokoro"]["voice_compatible"] is True
+    assert parsed["stt"]["provider"] == "voice"
+    assert parsed["stt"]["providers"]["voice"]["command"] == (
+        f"{sys.executable} stream-transcribe --quiet {{input_path}}"
+    )
+    assert parsed["stt"]["providers"]["voice"]["format"] == "txt"
