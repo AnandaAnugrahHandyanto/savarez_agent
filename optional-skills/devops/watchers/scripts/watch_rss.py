@@ -57,11 +57,10 @@ def _parse_feed(xml_bytes: bytes):
             file=sys.stderr,
         )
         sys.exit(2)
-    head = xml_bytes[:2048].lstrip()
     for needle in _FORBIDDEN_XML_CONSTRUCTS:
-        if needle in head:
+        if needle in xml_bytes:
             print(
-                f"watch_rss: feed rejected: prologue contains {needle!r}",
+                f"watch_rss: feed rejected: contains {needle!r}",
                 file=sys.stderr,
             )
             sys.exit(2)
