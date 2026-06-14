@@ -204,6 +204,7 @@ def _run_caption_observer_js(
     caption_text: str,
     speaking_label: str,
     caption_label_rows: list[tuple[str, str]] | None = None,
+    caption_label_updates: list[list[tuple[str, str]]] | None = None,
 ):
     node = shutil.which("node")
     if not node:
@@ -213,9 +214,10 @@ def _run_caption_observer_js(
 
     script = f"""
 const intervals = [];
+const observers = [];
 global.setInterval = (fn) => {{ intervals.push(fn); return intervals.length; }};
 global.MutationObserver = class {{
-  constructor(fn) {{ this.fn = fn; }}
+  constructor(fn) {{ this.fn = fn; observers.push(this); }}
   observe() {{}}
 }};
 
@@ -223,6 +225,7 @@ const bodyText = {json.dumps(body_text)};
 const captionText = {json.dumps(caption_text)};
 const speakingLabel = {json.dumps(speaking_label)};
 const captionLabelRows = {json.dumps(caption_label_rows or [])};
+const captionLabelUpdates = {json.dumps(caption_label_updates or [])};
 
 function makeNode(attrs, innerText = '') {{
   const node = {{
@@ -242,6 +245,10 @@ function makeCaptionLabelRow(speaker, text) {{
   const labelDiv = makeNode({{}}, speaker);
   const labelSpan = makeNode({{}}, speaker);
   const textDiv = makeNode({{}}, text);
+  const setText = (nextText) => {{
+    textDiv.innerText = nextText;
+    row.innerText = `${{speaker}}\\n${{nextText}}`;
+  }};
   labelSpan.parentElement = labelDiv;
   labelDiv.parentElement = row;
   textDiv.parentElement = row;
@@ -261,6 +268,7 @@ function makeCaptionLabelRow(speaker, text) {{
     labelSpan,
     labelDiv,
     textDiv,
+    setText,
   }};
 }}
 
@@ -318,7 +326,16 @@ global.document = {{
 {_CAPTION_OBSERVER_JS}
 
 for (const fn of intervals) fn();
-process.stdout.write(JSON.stringify(window.__hermesMeetDrain()));
+const drained = [];
+drained.push(...window.__hermesMeetDrain());
+for (const update of captionLabelUpdates) {{
+  update.forEach(([speaker, text], index) => {{
+    if (labelRows[index]) labelRows[index].setText(text);
+  }});
+  for (const observer of observers) observer.fn();
+  drained.push(...window.__hermesMeetDrain());
+}}
+process.stdout.write(JSON.stringify(drained));
 """
     proc = subprocess.run(
         [node],
@@ -450,6 +467,27 @@ def test_caption_observer_scans_live_visible_speaker_labels_without_old_row_clas
     assert simplified == [
         ("Alex Rivera", "Testing the first caption."),
         ("Jordan Lee", "Testing the second caption."),
+    ]
+    assert all(entry["speakerSource"] == "captionRow" for entry in entries)
+
+
+def test_caption_observer_emits_only_new_suffix_for_growing_visible_caption_row():
+    entries = _run_caption_observer_js(
+        body_text="",
+        caption_text="",
+        speaking_label="",
+        caption_label_rows=[
+            ("Alex Rivera", "Testing the first caption."),
+        ],
+        caption_label_updates=[
+            [("Alex Rivera", "Testing the first caption. New words from the same row.")],
+        ],
+    )
+
+    simplified = [(entry["speaker"], entry["text"]) for entry in entries]
+    assert simplified == [
+        ("Alex Rivera", "Testing the first caption."),
+        ("Alex Rivera", "New words from the same row."),
     ]
     assert all(entry["speakerSource"] == "captionRow" for entry in entries)
 

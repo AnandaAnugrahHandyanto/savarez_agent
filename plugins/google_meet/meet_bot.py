@@ -272,6 +272,7 @@ _CAPTION_OBSERVER_JS = r"""
   window.__hermesMeetLastSpeakerAt = 0;
   window.__hermesMeetLastFallbackText = '';
   window.__hermesMeetKnownSpeakers = [];
+  window.__hermesMeetLastTextBySpeaker = {};
 
   const captionSelector = '[role="region"][aria-label*="aption" i], ' +
                           'div[jsname="YSxPC"], ' +  // legacy
@@ -513,6 +514,27 @@ _CAPTION_OBSERVER_JS = r"""
     return trimCaptionChrome(text);
   }
 
+  function trimSeenCaptionPrefix(speaker, rawText) {
+    const text = trimCaptionChrome(rawText);
+    if (!text) return '';
+    const key = cleanSpeakerName(speaker) || '__unknown__';
+    const previous = window.__hermesMeetLastTextBySpeaker[key] || '';
+    window.__hermesMeetLastTextBySpeaker[key] = text;
+    if (!previous) return text;
+    if (text === previous) return '';
+    if (text.startsWith(previous)) {
+      return text.slice(previous.length).replace(/^[\s,.;:!?-]+/, '').trim();
+    }
+
+    const limit = Math.min(previous.length, text.length);
+    for (let len = limit; len >= 16; len -= 1) {
+      if (previous.endsWith(text.slice(0, len))) {
+        return text.slice(len).replace(/^[\s,.;:!?-]+/, '').trim();
+      }
+    }
+    return text;
+  }
+
   function scanVisibleSpeakerLabels(root) {
     const labels = Array.from(root.querySelectorAll('span.NWpY1d, .NWpY1d')).slice(0, 40);
     let emitted = false;
@@ -541,12 +563,14 @@ _CAPTION_OBSERVER_JS = r"""
     const inferred = rowSpeaker
       ? { speaker: rowSpeaker, source: 'captionRow', candidates: [] }
       : inferActiveSpeaker();
+    const captionText = trimSeenCaptionPrefix(inferred.speaker, text);
+    if (!captionText) return;
     window.__hermesMeetQueue.push({
       ts: Date.now(),
       speaker: inferred.speaker,
       speakerSource: inferred.source,
       speakerDebug: { candidates: inferred.candidates },
-      text: text.trim(),
+      text: captionText,
     });
   }
 
