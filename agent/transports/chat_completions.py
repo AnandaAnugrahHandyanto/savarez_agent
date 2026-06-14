@@ -36,6 +36,15 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     if not normalized_model.startswith("gemini"):
         return None
 
+    # The unversioned Gemini 3 preview models (e.g. gemini-3-flash-preview) on
+    # the v1beta endpoint reject thinking_config *entirely* with HTTP 400
+    # "Unknown name 'thinking_config': Cannot find field" — every form fails,
+    # including the bare {"includeThoughts": False}. Only versioned 3.x models
+    # (gemini-3.1-*, gemini-3.5-*, …) support the field, so never inject it for
+    # an unversioned gemini-3 model regardless of reasoning config. (#25123)
+    if normalized_model.startswith("gemini-3") and not normalized_model.startswith("gemini-3."):
+        return None
+
     if reasoning_config.get("enabled") is False:
         # Gemini can hide thought parts even when internal thinking still
         # happens; omit thinkingLevel to avoid model-specific validation quirks.

@@ -328,28 +328,39 @@ class TestChatCompletionsBuildKwargs:
             "thinking_level": "high",
         }
 
-    def test_gemini_preview_unversioned_does_not_receive_thinking_level(self, transport):
+    def test_gemini_preview_unversioned_omits_thinking_config_entirely(self, transport):
         # gemini-3-flash-preview rejects thinking_config entirely with HTTP 400
-        # "Unknown name 'thinking_config': Cannot find field" — only versioned
-        # gemini-3.X models (gemini-3.5-flash, gemini-3.1-pro-preview, …)
-        # support thinkingLevel. (#25123)
+        # "Unknown name 'thinking_config': Cannot find field" — every form fails,
+        # including the bare {"includeThoughts": ...}. Only versioned gemini-3.X
+        # models (gemini-3.5-flash, gemini-3.1-pro-preview, …) support it, so the
+        # field must be omitted altogether for the preview, regardless of the
+        # reasoning config (enabled, disabled, or any effort). (#25123)
         msgs = [{"role": "user", "content": "Hi"}]
+        reasoning_variants = [
+            {"enabled": True, "effort": "high"},
+            {"enabled": True, "effort": "minimal"},
+            {"enabled": False},
+        ]
         for base_url in [
             "https://generativelanguage.googleapis.com/v1beta",
             "https://generativelanguage.googleapis.com/v1beta/openai",
         ]:
-            kw = transport.build_kwargs(
-                model="gemini-3-flash-preview",
-                messages=msgs,
-                provider_name="gemini",
-                base_url=base_url,
-                reasoning_config={"enabled": True, "effort": "high"},
-            )
-            tc = (kw.get("extra_body") or {})
-            nested = ((tc.get("extra_body") or {}).get("google") or {}).get("thinking_config") or {}
-            top = tc.get("thinking_config") or {}
-            assert "thinkingLevel" not in top, f"thinkingLevel must not be set for preview model (native, base={base_url})"
-            assert "thinking_level" not in nested, f"thinking_level must not be set for preview model (compat, base={base_url})"
+            for reasoning_config in reasoning_variants:
+                kw = transport.build_kwargs(
+                    model="gemini-3-flash-preview",
+                    messages=msgs,
+                    provider_name="gemini",
+                    base_url=base_url,
+                    reasoning_config=reasoning_config,
+                )
+                extra_body = kw.get("extra_body") or {}
+                nested = ((extra_body.get("extra_body") or {}).get("google") or {})
+                assert "thinking_config" not in extra_body, (
+                    f"thinking_config must be omitted for preview (native, base={base_url}, rc={reasoning_config})"
+                )
+                assert "thinking_config" not in nested, (
+                    f"thinking_config must be omitted for preview (compat, base={base_url}, rc={reasoning_config})"
+                )
 
     def test_gemini_native_25_reasoning_only_enables_visible_thoughts(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
@@ -381,7 +392,7 @@ class TestChatCompletionsBuildKwargs:
     def test_gemini_native_disabled_reasoning_hides_thoughts(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
-            model="gemini-3-flash-preview",
+            model="gemini-3.5-flash",
             messages=msgs,
             provider_name="gemini",
             base_url="https://generativelanguage.googleapis.com/v1beta",
