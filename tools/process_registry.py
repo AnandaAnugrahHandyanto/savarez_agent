@@ -129,7 +129,6 @@ class ProcessSession:
     _watch_cooldown_until: float = field(default=0.0, repr=False)
     _watch_strike_candidate: bool = field(default=False, repr=False)
     _watch_consecutive_strikes: int = field(default=0, repr=False)
-    _completion_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
@@ -871,7 +870,6 @@ class ProcessRegistry:
         with self._lock:
             was_running = self._running.pop(session.id, None) is not None
             self._finished[session.id] = session
-        session._completion_event.set()
         self._write_checkpoint()
 
         # Only enqueue completion notification on the FIRST move.  Without
@@ -1095,8 +1093,6 @@ class ProcessRegistry:
 
         while time.monotonic() < deadline:
             session = self._refresh_detached_session(session)
-            if session is None:
-                return {"status": "not_found", "error": f"No process with ID {session_id}"}
             # Reconcile against real child state — guards against orphaned-
             # pipe reader hangs where the reader is blocked but the direct
             # child has already exited (issue #17327).
@@ -1122,10 +1118,7 @@ class ProcessRegistry:
                     result["timeout_note"] = timeout_note
                 return result
 
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            session._completion_event.wait(timeout=min(1.0, remaining))
+            time.sleep(1)
 
         result = {
             "status": "timeout",
@@ -1284,6 +1277,7 @@ class ProcessRegistry:
             all_sessions = list(self._running.values()) + list(self._finished.values())
 
         all_sessions = [self._refresh_detached_session(s) for s in all_sessions]
+        all_sessions = [s for s in all_sessions if s is not None]
 
         if task_id:
             all_sessions = [s for s in all_sessions if s.task_id == task_id]
@@ -1299,6 +1293,13 @@ class ProcessRegistry:
                 "uptime_seconds": int(time.time() - s.started_at),
                 "status": "exited" if s.exited else "running",
                 "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
+                # Non-secret lifecycle metadata used by observability surfaces.
+                # Do not expose raw session_key here; callers that need identity
+                # should use the boolean linkage signal only or derive their own
+                # redacted/hash value from in-memory state they already own.
+                "task_id": s.task_id,
+                "has_session_key": bool(s.session_key),
+                "pid_scope": s.pid_scope,
             }
             if s.exited:
                 entry["exit_code"] = s.exit_code
