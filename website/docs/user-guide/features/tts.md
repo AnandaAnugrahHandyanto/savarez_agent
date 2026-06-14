@@ -325,6 +325,21 @@ Use `{{` and `}}` for literal braces.
 - **`type: command` is the default when `command:` is set.** Writing `type: command` explicitly is good practice but not required; an entry with a non-empty `command` string is treated as a command provider.
 - **`{input_path}` / `{text_path}` are interchangeable.** Use whichever reads better in your command.
 
+#### Local Ogg/Opus validation
+
+When using [`voice`](https://github.com/rgbkrk/voice) as a command provider,
+validate the integration before restarting a live gateway:
+
+```bash
+VOICE_BIN=/path/to/voice scripts/verify_voice_command_tts.py
+```
+
+The script creates a temporary `HERMES_HOME`, writes a Kokoro command-provider
+config that calls `voice say --format ogg-opus`, runs Hermes'
+`text_to_speech_tool`, and checks the generated file with `ffprobe`. A passing
+run proves Hermes receives a `voice_compatible` media tag and that the audio is
+real Opus in an Ogg container, mono, at 48 kHz.
+
 #### Security
 
 Command-type providers run whatever shell command you configure, with your user's permissions. Hermes quotes placeholder values and enforces the configured timeout, but the command template itself is trusted local input — treat it the same way you would a shell script on your PATH.
