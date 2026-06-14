@@ -69,6 +69,20 @@ from gateway.platforms.base import (
 from tools.url_safety import is_safe_url
 
 
+def _log_async_task_exception(task: asyncio.Task) -> None:
+    with suppress(asyncio.CancelledError, Exception):
+        exc = task.exception()
+        if exc:
+            logger.debug("live voice frame callback failed: %s", exc)
+
+
+def _log_future_exception(future: Any) -> None:
+    with suppress(Exception):
+        exc = future.exception()
+        if exc:
+            logger.debug("live voice frame callback failed: %s", exc)
+
+
 async def _wait_for_ready_or_bot_exit(
     ready_event: asyncio.Event,
     bot_task: asyncio.Task,
@@ -222,9 +236,13 @@ class VoiceReceiver:
     SAMPLE_RATE = 48000        # Discord native rate
     CHANNELS = 2               # Discord sends stereo
 
-    def __init__(self, voice_client, allowed_user_ids: set = None):
+    def __init__(self, voice_client, allowed_user_ids: Optional[set] = None,
+                 frame_callback: Optional[Callable] = None,
+                 loop: Optional[asyncio.AbstractEventLoop] = None):
         self._vc = voice_client
         self._allowed_user_ids = allowed_user_ids or set()
+        self._frame_callback = frame_callback
+        self._loop = loop
         self._running = False
 
         # Decryption
@@ -284,6 +302,38 @@ class VoiceReceiver:
 
     def resume(self):
         self._paused = False
+
+    def _emit_pcm_frame(self, ssrc: int, pcm: bytes) -> None:
+        """Forward decoded PCM frames to the live voice-session backend."""
+        callback = self._frame_callback
+        loop = self._loop
+        if callback is None or loop is None or loop.is_closed():
+            return
+        with self._lock:
+            user_id = self._ssrc_to_user.get(ssrc, 0)
+        if not user_id:
+            user_id = self._infer_user_for_ssrc(ssrc)
+        if not user_id:
+            return
+        try:
+            coro = callback(
+                int(getattr(self._vc.guild, "id", 0) or self._vc.channel.guild.id),
+                int(user_id),
+                pcm,
+                time.monotonic(),
+            )
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+            if running_loop is loop:
+                task = loop.create_task(coro)
+                task.add_done_callback(_log_async_task_exception)
+            else:
+                fut = asyncio.run_coroutine_threadsafe(coro, loop)
+                fut.add_done_callback(_log_future_exception)
+        except Exception:
+            logger.debug("failed to schedule live voice frame", exc_info=True)
 
     # ------------------------------------------------------------------
     # SSRC -> user_id mapping via SPEAKING opcode hook
@@ -457,6 +507,7 @@ class VoiceReceiver:
             if ssrc not in self._decoders:
                 self._decoders[ssrc] = discord.opus.Decoder()
             pcm = self._decoders[ssrc].decode(decrypted)
+            self._emit_pcm_frame(ssrc, pcm)
             with self._lock:
                 self._buffers[ssrc].extend(pcm)
                 self._last_packet_time[ssrc] = time.monotonic()
@@ -639,6 +690,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
+        self._voice_frame_callback: Optional[Callable] = None  # set by run.py for live sessions
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
         # Resolves the current voice-reply mode ("off"|"voice_only"|"all") for a
         # linked text-channel id; set by run.py. Lets the inactivity timer leave
@@ -2248,7 +2300,12 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Start voice receiver (Phase 2: listen to users)
             try:
-                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
+                receiver = VoiceReceiver(
+                    vc,
+                    allowed_user_ids=self._allowed_user_ids,
+                    frame_callback=self._voice_frame_callback,
+                    loop=asyncio.get_running_loop(),
+                )
                 receiver.start()
                 self._voice_receivers[guild_id] = receiver
                 self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
@@ -2299,6 +2356,20 @@ class DiscordAdapter(BasePlatformAdapter):
 
     # Maximum seconds to wait for voice playback before giving up
     PLAYBACK_TIMEOUT = 120
+
+    async def stop_voice_playback(self, guild_id: int, stream_id: Optional[str] = None) -> None:
+        """Stop current Discord voice playback for interruption/cancel."""
+        mixer = getattr(self, "_voice_mixers", {}).get(guild_id) if getattr(self, "_voice_mixers", None) else None
+        if mixer is not None:
+            mixer.stop_speech()
+        vc = self._voice_clients.get(guild_id)
+        if vc and vc.is_connected():
+            try:
+                if vc.is_playing() and mixer is None:
+                    vc.stop()
+            except Exception:
+                pass
+        self._reset_voice_timeout(guild_id)
 
     async def play_in_voice_channel(self, guild_id: int, audio_path: str) -> bool:
         """Play an audio file in the connected voice channel.

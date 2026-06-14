@@ -1767,7 +1767,7 @@ class GatewaySlashCommandsMixin:
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
-        """Handle /voice [on|off|tts|channel|leave|status] command."""
+        """Handle /voice [on|off|tts|channel|join|live|leave|status] command."""
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
         platform = event.source.platform
@@ -1795,6 +1795,8 @@ class GatewaySlashCommandsMixin:
             return t("gateway.voice.tts_enabled")
         elif args in {"channel", "join"}:
             return await self._handle_voice_channel_join(event)
+        elif args == "live":
+            return await self._handle_voice_channel_join(event, live=True)
         elif args == "leave":
             return await self._handle_voice_channel_leave(event)
         elif args == "status":

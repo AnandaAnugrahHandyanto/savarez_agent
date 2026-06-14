@@ -56,6 +56,15 @@ from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.voice_sessions import (
+    VoiceSessionConfig,
+    VoiceSessionConflict,
+    VoiceSessionLimitExceeded,
+    VoiceSessionManager,
+    VoiceSessionRequest,
+    VoiceSessionState,
+    VoiceSessionUnauthorized,
+)
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -2115,6 +2124,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
+
+        self._voice_session_manager = VoiceSessionManager(
+            auth_checker=self._is_voice_session_request_authorized,
+            playback_stopper=self._stop_voice_session_playback,
+        )
 
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
@@ -9641,7 +9655,68 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return None
 
 
-    async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
+    @staticmethod
+    def _voice_session_scope(platform: Platform, guild_id: int | str) -> str:
+        return f"{platform.value if hasattr(platform, 'value') else platform}:{guild_id}"
+
+    @staticmethod
+    def _load_voice_session_config() -> VoiceSessionConfig:
+        try:
+            from hermes_cli.config import load_config as _load_full_config
+            cfg = _load_full_config()
+            voice_cfg = cfg_get(cfg, "voice", "live", default={}) or {}
+            if not isinstance(voice_cfg, dict):
+                voice_cfg = {}
+        except Exception:
+            voice_cfg = {}
+        return VoiceSessionConfig.from_dict(voice_cfg)
+
+    def _is_voice_session_request_authorized(self, request: VoiceSessionRequest) -> bool:
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id=str(request.text_channel_id),
+            user_id=str(request.user_id),
+            user_name=request.user_name or str(request.user_id),
+            chat_type="channel",
+        )
+        return self._is_user_authorized(source)
+
+    async def _stop_voice_session_playback(self, guild_id: str, stream_id: Optional[str] = None) -> None:
+        adapter = self.adapters.get(Platform.DISCORD)
+        stop_playback = getattr(adapter, "stop_voice_playback", None) if adapter else None
+        if stop_playback is not None:
+            await stop_playback(int(guild_id), stream_id=stream_id)
+
+    async def _handle_voice_session_audio(
+        self,
+        guild_id: int,
+        user_id: int,
+        pcm_48k_stereo: bytes,
+        timestamp: Optional[float] = None,
+    ) -> None:
+        manager = getattr(self, "_voice_session_manager", None)
+        if manager is None:
+            return
+        try:
+            await manager.receive_audio(
+                self._voice_session_scope(Platform.DISCORD, guild_id),
+                str(user_id),
+                pcm_48k_stereo,
+                timestamp=timestamp,
+            )
+        except VoiceSessionLimitExceeded as exc:
+            logger.warning("Closing live voice session after guardrail hit: %s", exc)
+            await manager.close_session(
+                self._voice_session_scope(Platform.DISCORD, guild_id),
+                reason=str(exc),
+            )
+            adapter = self.adapters.get(Platform.DISCORD)
+            leave_voice = getattr(adapter, "leave_voice_channel", None) if adapter else None
+            if leave_voice is not None:
+                await leave_voice(guild_id)
+
+
+    async def _handle_voice_channel_join(self, event: MessageEvent, live: bool = False) -> str:
         """Join the user's current Discord voice channel."""
         adapter = self.adapters.get(event.source.platform)
         if not hasattr(adapter, "join_voice_channel"):
@@ -9661,6 +9736,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # after connection is not lost.
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = self._handle_voice_channel_input
+        if hasattr(adapter, "_voice_frame_callback"):
+            setattr(adapter, "_voice_frame_callback", self._handle_voice_session_audio if live else None)
         if hasattr(adapter, "_on_voice_disconnect"):
             adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
         # Let the adapter's inactivity timer see the live voice-reply mode so it
@@ -9687,9 +9764,49 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
             if hasattr(adapter, "_voice_sources"):
                 adapter._voice_sources[guild_id] = event.source.to_dict()
+            live_session = None
+            if live:
+                try:
+                    live_session = await self._voice_session_manager.create_session(
+                        VoiceSessionRequest(
+                            platform="discord",
+                            guild_id=str(guild_id),
+                            channel_id=str(getattr(voice_channel, "id", "")),
+                            text_channel_id=str(event.source.chat_id),
+                            user_id=str(event.source.user_id),
+                            user_name=str(event.source.user_name or event.source.user_id),
+                            metadata={"channel_name": getattr(voice_channel, "name", "voice")},
+                        ),
+                        self._load_voice_session_config(),
+                    )
+                except VoiceSessionConflict:
+                    leave_voice = getattr(adapter, "leave_voice_channel", None)
+                    if leave_voice is not None:
+                        await leave_voice(guild_id)
+                    return "A live voice session is already active here. Use /voice status or /voice leave first."
+                except VoiceSessionUnauthorized:
+                    leave_voice = getattr(adapter, "leave_voice_channel", None)
+                    if leave_voice is not None:
+                        await leave_voice(guild_id)
+                    return "You are not authorized to start a live voice session."
+                except Exception as exc:
+                    logger.warning("Failed to start live voice session: %s", exc, exc_info=True)
+                    leave_voice = getattr(adapter, "leave_voice_channel", None)
+                    if leave_voice is not None:
+                        await leave_voice(guild_id)
+                    return f"Joined voice, but live session startup failed: {exc}"
             self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
             self._save_voice_modes()
             self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
+            if live and live_session is not None:
+                degraded = f"\nDegraded: {live_session.degraded_reason}" if live_session.degraded_reason else ""
+                return (
+                    f"Joined live voice in **{voice_channel.name}**.\n"
+                    f"Session: `{live_session.session_id}`. Mode: {live_session.config.mode}. "
+                    f"Transcripts: {live_session.config.transcript_mode}.\n"
+                    f"Use /voice leave to disconnect; interruptions stop current speech."
+                    f"{degraded}"
+                )
             return (
                 f"Joined voice channel **{voice_channel.name}**.\n"
                 f"I'll speak my replies and listen to you. Use /voice leave to disconnect."
@@ -9710,6 +9827,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "Not in a voice channel."
 
         try:
+            manager = getattr(self, "_voice_session_manager", None)
+            if manager is not None:
+                await manager.close_session(
+                    self._voice_session_scope(event.source.platform, guild_id),
+                    reason="user_leave",
+                )
             await adapter.leave_voice_channel(guild_id)
         except Exception as e:
             logger.warning("Error leaving voice channel: %s", e)
@@ -9730,6 +9853,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._save_voice_modes()
         adapter = self.adapters.get(Platform.DISCORD)
         self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
+        manager = getattr(self, "_voice_session_manager", None)
+        if manager is not None:
+            try:
+                guild_id = next(
+                    (
+                        gid for gid, text_id in getattr(adapter, "_voice_text_channels", {}).items()
+                        if str(text_id) == str(chat_id)
+                    ),
+                    None,
+                )
+                if guild_id is not None:
+                    asyncio.create_task(
+                        manager.close_session(
+                            self._voice_session_scope(Platform.DISCORD, guild_id),
+                            reason="voice_timeout_or_disconnect",
+                        )
+                    )
+            except Exception:
+                logger.debug("voice session timeout cleanup skipped", exc_info=True)
 
     def _is_duplicate_voice_transcript(self, guild_id: int, user_id: int, transcript: str) -> bool:
         """Suppress repeated STT outputs for the same recent utterance.
@@ -9938,7 +10080,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     and hasattr(adapter, "play_in_voice_channel")
                     and hasattr(adapter, "is_in_voice_channel")
                     and adapter.is_in_voice_channel(guild_id)):
-                await adapter.play_in_voice_channel(guild_id, actual_path)
+                play_voice = getattr(adapter, "play_in_voice_channel", None)
+                manager = getattr(self, "_voice_session_manager", None)
+                live_session = manager.get(self._voice_session_scope(event.source.platform, guild_id)) if manager else None
+                if live_session is not None:
+                    await live_session.begin_assistant_speech()
+                try:
+                    if play_voice is not None:
+                        await play_voice(guild_id, actual_path)
+                finally:
+                    if live_session is not None and live_session.state != VoiceSessionState.ENDED:
+                        live_session.set_state(VoiceSessionState.LISTENING)
             elif adapter and hasattr(adapter, "send_voice"):
                 reply_anchor = self._reply_anchor_for_event(event)
                 thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)

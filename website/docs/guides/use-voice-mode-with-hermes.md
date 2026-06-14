@@ -369,9 +369,12 @@ In a Discord text channel where the bot is present:
 
 ```text
 /voice join
+/voice live
 /voice leave
 /voice status
 ```
+
+Use `/voice join` for the classic Discord VC path. Use `/voice live` for the MVP realtime voice-chat session: Hermes still runs the normal STT → agent → TTS pipeline, but the gateway also tracks live-session state, stops current playback when you barge in, and enforces duration/audio/event budgets.
 
 ### What happens when joined
 
@@ -380,12 +383,33 @@ In a Discord text channel where the bot is present:
 - transcripts are posted in the associated text channel
 - Hermes responds in text and audio
 - the text channel is the one where `/voice join` was issued
+- in `/voice live`, `/voice leave` also closes the live session and releases its server-scoped session slot
 
 ### Best practices for Discord VC use
 
 - keep `DISCORD_ALLOWED_USERS` tight
 - use a dedicated bot/testing channel at first
 - verify STT and TTS work in ordinary text-chat voice mode before trying VC mode
+- start with `voice.live.provider: "pipeline"`; `openai_realtime` intentionally degrades to the pipeline provider until the websocket adapter is enabled
+- leave the default `voice.live.*` limits in place unless logs show a legitimate long session is hitting the MVP guardrails
+
+### Live voice session config
+
+Add only the values you want to change; these are the MVP defaults:
+
+```yaml
+voice:
+  live:
+    provider: "pipeline"
+    mode: "open_mic"
+    transcript_mode: "visible_summary"
+    max_duration_seconds: 600
+    max_input_bytes_per_minute: 11520000
+    max_events_per_minute: 600
+    allow_raw_audio_persistence: false
+```
+
+Required secrets are the same as the regular gateway voice path: `DISCORD_BOT_TOKEN`, an authorization path for your user (`DISCORD_ALLOWED_USERS`, pairing, or allow-all in trusted test environments), and whatever STT/TTS provider credentials you choose. Local STT plus Edge TTS can run with no speech API keys; OpenAI realtime testing needs `OPENAI_API_KEY` or `VOICE_TOOLS_OPENAI_KEY` but still runs degraded in the MVP.
 
 ## Voice quality recommendations
 
@@ -424,6 +448,10 @@ Check:
 - TTS provider config
 - API key / quota for ElevenLabs or OpenAI
 - `ffmpeg` install for Edge conversion paths
+
+### "`/voice live` closes by itself"
+
+Check `~/.hermes/logs/gateway.log`. The MVP closes live sessions when duration, decoded-audio bytes, or audio-frame event rates exceed `voice.live.*` limits. Treat that as a safety signal first; only raise limits after confirming the bot is not hearing itself or receiving a runaway stream.
 
 ### "Whisper outputs garbage"
 

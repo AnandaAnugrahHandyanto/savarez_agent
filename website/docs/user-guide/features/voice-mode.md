@@ -33,6 +33,7 @@ A paid [Nous Portal](/user-guide/features/tool-gateway) subscription supplies th
 | **Interactive Voice** | CLI | Press Ctrl+B to record, agent auto-detects silence and responds |
 | **Auto Voice Reply** | Telegram, Discord | Agent sends spoken audio alongside text responses |
 | **Voice Channel** | Discord | Bot joins VC, listens to users speaking, speaks replies back |
+| **Live Voice Session** | Discord | Real-time VC session lifecycle with interruption, guardrails, and provider fallback |
 
 ## Requirements
 
@@ -338,6 +339,7 @@ Use these in the Discord text channel where the bot is present:
 ```
 /voice join      Bot joins your current voice channel
 /voice channel   Alias for /voice join
+/voice live      Bot joins and starts a live, interruptible voice session
 /voice leave     Bot disconnects from voice channel
 /voice status    Show voice mode and connected channel
 ```
@@ -368,6 +370,32 @@ When the bot is in a voice channel:
 
 The bot automatically pauses its audio listener while playing TTS replies, preventing it from hearing and re-processing its own output.
 
+### Live Voice Sessions (MVP)
+
+`/voice live` starts the realtime voice-chat MVP on top of the Discord voice-channel flow. The bot joins the voice channel you are currently in, creates one live session for the Discord server, listens to Discord PCM frames, and keeps the normal Hermes STT → text agent → TTS pipeline active while adding live-session state, interruption, and safety budgets.
+
+Use it when you want a more conversational VC loop than `/voice join`:
+
+```text
+/voice live
+```
+
+Expected behavior:
+
+1. The bot joins your current voice channel and replies with a session id.
+2. Your speech is transcribed and posted in the text channel where you ran `/voice live`.
+3. Hermes responds in text and speaks the answer in the VC.
+4. If you speak while Hermes is speaking, the current playback is stopped and the session records an interruption.
+5. `/voice leave` closes the live session and disconnects the bot.
+
+Live-session guardrails are intentionally conservative for the MVP:
+
+- one live session per Discord server/profile scope
+- only authorized users can start or use the session (`DISCORD_ALLOWED_USERS`, pairing, or the normal gateway allow rules)
+- raw audio is not persisted by default
+- excessive duration, input bytes, or frame/event rates close the session automatically
+- `openai_realtime` is a readiness gate today: it checks credentials, then degrades to the pipeline provider until the websocket event adapter is enabled
+
 ### Access Control
 
 Only users listed in `DISCORD_ALLOWED_USERS` can interact via voice. Other users' audio is silently ignored.
@@ -392,6 +420,14 @@ voice:
   beep_enabled: true               # Play record start/stop beeps
   silence_threshold: 200           # RMS level (0-32767) below which counts as silence
   silence_duration: 3.0            # Seconds of silence before auto-stop
+  live:
+    provider: "pipeline"           # "pipeline" (default) | "openai_realtime" (degraded MVP gate)
+    mode: "open_mic"               # MVP mode; push-to-talk is not implemented yet
+    transcript_mode: "visible_summary"
+    max_duration_seconds: 600       # Hard cap for one live Discord voice session
+    max_input_bytes_per_minute: 11520000  # 48kHz stereo 16-bit PCM for one minute
+    max_events_per_minute: 600      # Rate-limit decoded Discord audio frame events
+    allow_raw_audio_persistence: false
 
 # Speech-to-Text
 stt:
@@ -514,6 +550,28 @@ The bot requires an @mention by default in server channels. Make sure you:
 - TTS provider may be failing — check API key and quota
 - Edge TTS (free, no key) is the default fallback
 - Check logs for TTS errors
+
+### `/voice live` says the session is degraded
+
+This is expected if `voice.live.provider` is `openai_realtime` in the MVP. Hermes verifies that `OPENAI_API_KEY` or `VOICE_TOOLS_OPENAI_KEY` is available, then falls back to the normal STT → agent → TTS pipeline until the OpenAI realtime websocket adapter is enabled.
+
+Use the default provider unless you are testing the realtime adapter seam:
+
+```yaml
+voice:
+  live:
+    provider: "pipeline"
+```
+
+### Live session closes unexpectedly
+
+Check the gateway log for a guardrail reason:
+
+```bash
+tail -f ~/.hermes/logs/gateway.log
+```
+
+Common causes are the session duration cap, excessive decoded audio bytes, or too many audio frame events per minute. Tune the `voice.live.*` limits in `config.yaml` only after confirming the bot is not stuck in an audio loop.
 
 ### Whisper returns garbage text
 
