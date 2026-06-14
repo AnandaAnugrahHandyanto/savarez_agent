@@ -442,11 +442,22 @@ _CAPTION_OBSERVER_JS = r"""
       if (text) pushEntry('', text);
       return;
     }
+    if (!pushSpeakerSegments(tail, names)) {
+      const text = trimCaptionChrome(tail);
+      if (text) pushEntry('', text);
+    }
+  }
+
+  function pushSpeakerSegments(rawText, names) {
+    const text = trimCaptionChrome(rawText);
+    if (!text) return false;
+    const knownNames = names && names.length ? names : inferParticipantNames();
+    if (!knownNames.length) return false;
     const matches = [];
-    for (const name of names) {
+    for (const name of knownNames) {
       const re = new RegExp(`(?:^|\\s)(${escapeRegExp(name)})(?=\\s)`, 'g');
       let match;
-      while ((match = re.exec(tail)) !== null) {
+      while ((match = re.exec(text)) !== null) {
         matches.push({
           index: match.index + match[0].indexOf(match[1]),
           end: match.index + match[0].indexOf(match[1]) + match[1].length,
@@ -454,6 +465,7 @@ _CAPTION_OBSERVER_JS = r"""
         });
       }
     }
+    if (!matches.length) return false;
     matches.sort((a, b) => a.index - b.index || b.end - a.end);
     const deduped = [];
     for (const match of matches) {
@@ -461,12 +473,17 @@ _CAPTION_OBSERVER_JS = r"""
       if (prev && prev.index === match.index) continue;
       deduped.push(match);
     }
+    let emitted = false;
     for (let i = 0; i < deduped.length; i += 1) {
       const current = deduped[i];
       const next = deduped[i + 1];
-      const text = trimCaptionChrome(tail.slice(current.end, next ? next.index : undefined));
-      if (text) pushEntry(current.speaker, text);
+      const segment = trimCaptionChrome(text.slice(current.end, next ? next.index : undefined));
+      if (segment) {
+        pushEntry(current.speaker, segment);
+        emitted = true;
+      }
     }
+    return emitted;
   }
 
   function pushEntry(speaker, text) {
@@ -491,7 +508,7 @@ _CAPTION_OBSERVER_JS = r"""
     const rows = root.querySelectorAll('div[jsname="dsyhDe"], div.CNusmb, div.TBMuR');
     if (rows.length) {
       rows.forEach((row) => {
-        const spkEl = row.querySelector('div.KcIKyf, div.zs7s8d, span[jsname="YSxPC"]');
+        const spkEl = row.querySelector('div.KcIKyf, span.NWpY1d, div.zs7s8d, span[jsname="YSxPC"]');
         const txtEl = row.querySelector('div.bh44bd, span[jsname="tgaKEf"], div.iTTPOb');
         const speaker = spkEl ? spkEl.innerText : '';
         const text = txtEl ? txtEl.innerText : row.innerText;
@@ -499,7 +516,9 @@ _CAPTION_OBSERVER_JS = r"""
       });
       return;
     }
-    // Fallback: treat the whole region's innerText as one anonymous line.
+    // Fallback: split participant-prefixed live caption history before
+    // treating the whole region's innerText as one anonymous line.
+    if (pushSpeakerSegments(root.innerText || '')) return;
     const text = (root.innerText || '').split('\n').filter(Boolean).pop();
     pushEntry('', text);
   }
@@ -596,6 +615,13 @@ def _captions_are_enabled(page) -> bool:
     return False
 
 
+def _wait_for_ui(page, ms: int = 500) -> None:
+    try:
+        page.wait_for_timeout(ms)
+    except Exception:
+        pass
+
+
 def _enable_captions(page, *, allow_shortcut: bool = True) -> bool:
     """Best-effort caption toggle without clicking an already-on control."""
     if _captions_are_enabled(page):
@@ -637,19 +663,83 @@ def _enable_captions(page, *, allow_shortcut: bool = True) -> bool:
 def _disable_local_media(page) -> int:
     """Turn off the bot's local mic/camera if Meet left either enabled."""
     clicked = 0
+    current = _probe_local_media_state(page)
     controls = (
-        re.compile(r"(turn off|mute)\s+(microphone|mic)", re.IGNORECASE),
-        re.compile(r"(turn off|stop|disable)\s+(camera|video)", re.IGNORECASE),
+        (
+            "local_microphone_on",
+            re.compile(r"(turn off|mute)\s+(microphone|mic)", re.IGNORECASE),
+            "microphone",
+            "Control+D",
+        ),
+        (
+            "local_camera_on",
+            re.compile(r"(turn off|stop|disable)\s+(camera|video)", re.IGNORECASE),
+            "camera",
+            "Control+E",
+        ),
     )
-    for label in controls:
+    for state_key, label, kind, shortcut in controls:
+        if current.get(state_key) is False:
+            continue
+        toggled = False
         try:
             btn = _first_visible(page.get_by_role("button", name=label))
             if btn is not None:
                 btn.click(timeout=3_000)
-                clicked += 1
+                toggled = True
         except Exception:
-            continue
+            pass
+        if not toggled and _click_local_media_control_js(page, kind):
+            toggled = True
+        if not toggled and current.get(state_key) is True:
+            try:
+                page.keyboard.press(shortcut)
+                toggled = True
+            except Exception:
+                pass
+        if toggled:
+            clicked += 1
+            _wait_for_ui(page, 250)
     return clicked
+
+
+def _click_local_media_control_js(page, kind: str) -> bool:
+    """Click a local Meet media-off control when role locators miss it."""
+    if kind == "microphone":
+        labels = ("turn off microphone", "mute microphone", "turn off mic", "mute mic")
+    else:
+        labels = ("turn off camera", "stop camera", "disable camera", "turn off video", "stop video")
+    label_js = "|".join(re.escape(label) for label in labels)
+    script = rf"""
+    (() => {{
+      const wanted = new RegExp({json.dumps(label_js)}, 'i');
+      const reject = /you can't|someone else|more options for|pin .* to your main screen/i;
+      const isVisible = (el) => {{
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style && style.visibility !== 'hidden' && style.display !== 'none' &&
+          rect.width > 0 && rect.height > 0;
+      }};
+      const nodes = Array.from(document.querySelectorAll('button, [role="button"]'));
+      for (const node of nodes) {{
+        const label = [
+          node.getAttribute('aria-label') || '',
+          node.getAttribute('title') || '',
+          node.innerText || '',
+          node.textContent || '',
+        ].join(' ');
+        if (wanted.test(label) && !reject.test(label) && isVisible(node)) {{
+          node.click();
+          return true;
+        }}
+      }}
+      return false;
+    }})();
+    """
+    try:
+        return bool(page.evaluate(script))
+    except Exception:
+        return False
 
 
 def _probe_local_media_state(page) -> dict:
@@ -675,7 +765,64 @@ def _probe_local_media_state(page) -> dict:
         except Exception:
             state = None
         result[key] = state
+    js_result = _probe_local_media_state_js(page)
+    for key, value in js_result.items():
+        if result.get(key) is None and value is not None:
+            result[key] = value
     return result
+
+
+def _probe_local_media_state_js(page) -> dict:
+    script = r"""
+    (() => {
+      const text = document.body ? document.body.innerText || '' : '';
+      const reject = /you can't|someone else|more options for|pin .* to your main screen/i;
+      const isVisible = (el) => {
+        const style = window.getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style && style.visibility !== 'hidden' && style.display !== 'none' &&
+          rect.width > 0 && rect.height > 0;
+      };
+      const buttonText = Array.from(document.querySelectorAll('button, [role="button"]'))
+        .filter((node) => isVisible(node))
+        .map((node) => [
+          node.getAttribute('aria-label') || '',
+          node.getAttribute('title') || '',
+          node.innerText || '',
+          node.textContent || '',
+        ].join(' '))
+        .filter((label) => !reject.test(label))
+        .join('\n');
+      const infer = (onPatterns, offPatterns) => {
+        for (const pattern of offPatterns) {
+          if (pattern.test(text) || pattern.test(buttonText)) return false;
+        }
+        for (const pattern of onPatterns) {
+          if (pattern.test(text) || pattern.test(buttonText)) return true;
+        }
+        return null;
+      };
+      const localMicrophoneOn = infer(
+        [/your microphone is turned on/i, /\bturn off microphone\b/i, /\bmute microphone\b/i],
+        [/your microphone is turned off/i, /\bturn on microphone\b/i, /\bunmute microphone\b/i]
+      );
+      const localCameraOn = infer(
+        [/your camera is turned on/i, /\bturn off camera\b/i, /\bstop camera\b/i, /\bturn off video\b/i],
+        [/your camera is turned off/i, /\bturn on camera\b/i, /\bstart camera\b/i, /\bturn on video\b/i]
+      );
+      return {localMicrophoneOn, localCameraOn};
+    })();
+    """
+    try:
+        result = page.evaluate(script)
+    except Exception:
+        return {}
+    if not isinstance(result, dict):
+        return {}
+    return {
+        "local_microphone_on": result.get("localMicrophoneOn"),
+        "local_camera_on": result.get("localCameraOn"),
+    }
 
 
 def _should_retry_caption_enable(
@@ -701,13 +848,21 @@ def _retry_caption_enable(page, state: _BotState) -> bool:
         state.set(captioning=True, captions_enabled_attempted=True)
         return True
 
-    if not _enable_captions(page, allow_shortcut=state.in_call):
-        return False
-    try:
-        page.wait_for_timeout(500)
-    except Exception:
-        pass
-    if not _captions_are_enabled(page):
+    attempted = _enable_captions(page, allow_shortcut=state.in_call)
+    if attempted:
+        _wait_for_ui(page, 500)
+        if _captions_are_enabled(page):
+            state.set(captioning=True, captions_enabled_attempted=True)
+            return True
+    if state.in_call:
+        try:
+            page.evaluate(_enable_captions_js())
+            attempted = True
+        except Exception:
+            pass
+        if attempted:
+            _wait_for_ui(page, 500)
+    if not attempted or not _captions_are_enabled(page):
         return False
     state.set(captioning=True, captions_enabled_attempted=True)
     return True
