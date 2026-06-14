@@ -7666,10 +7666,26 @@ def _(rid, params: dict) -> dict:
 
 @method("process.stop")
 def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
     try:
         from tools.process_registry import process_registry
 
-        return _ok(rid, {"killed": process_registry.kill_all()})
+        session_key = str(session.get("session_key") or "")
+        killed = 0
+        for entry in process_registry.list_sessions():
+            proc = process_registry.get(entry["session_id"])
+            if (
+                proc is None
+                or str(getattr(proc, "session_key", "") or "") != session_key
+                or bool(getattr(proc, "exited", False))
+            ):
+                continue
+            result = process_registry.kill_process(entry["session_id"])
+            if result.get("status") in {"killed", "already_exited"}:
+                killed += 1
+        return _ok(rid, {"killed": killed})
     except Exception as e:
         return _err(rid, 5010, str(e))
 
