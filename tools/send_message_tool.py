@@ -6,6 +6,7 @@ human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -1044,7 +1045,6 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         _rich_ok = False
         if not _has_html and message.strip() and len(message) <= 32768:
             try:
-                import inspect
                 if inspect.iscoroutinefunction(getattr(bot, "do_api_request", None)):
                     rich_payload: dict = {
                         "chat_id": int_chat_id,
