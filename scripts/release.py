@@ -76,6 +76,7 @@ AUTHOR_MAP = {
     "152110621+jiangkoumo@users.noreply.github.com": "jiangkoumo",
     "834740219@qq.com": "ViewWay",
     "matt@vestigial.dev": "m4dni5",
+    "magnus919@pm.me": "magnus919",  # PR #27741 feat/fabric-tool
     "harjoth.khara@gmail.com": "harjothkhara",
     "129007007+HeLLGURD@users.noreply.github.com": "HeLLGURD",
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
