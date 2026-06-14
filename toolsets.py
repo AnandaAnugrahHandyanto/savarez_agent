@@ -30,13 +30,13 @@ from typing import List, Dict, Any, Set, Optional
 # Edit this once to update all platforms simultaneously.
 _HERMES_CORE_TOOLS = [
     # Web
-    "web_search", "web_extract",
+    "web_search", "web_extract", "perplexity_ask",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
-    # Vision + image generation
-    "vision_analyze", "image_generate",
+    # Vision + image/video generation
+    "vision_analyze", "image_generate", "video_generate",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation

@@ -1,0 +1,7 @@
+name: replicate
+version: 1.0.0
+description: "Replicate video generation backend. Default model: google/veo-3.1 (SOTA, native audio, text-to-video + image-to-video). Override via REPLICATE_VIDEO_MODEL or video_gen.replicate.model."
+author: Hermes user
+kind: backend
+requires_env:
+  - REPLICATE_API_TOKEN

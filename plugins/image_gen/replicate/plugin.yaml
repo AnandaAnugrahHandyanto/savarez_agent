@@ -1,0 +1,7 @@
+name: replicate
+version: 1.0.0
+description: "Replicate image generation backend. Default model: black-forest-labs/flux-1.1-pro-ultra (flagship FLUX, up to 4MP). Override via REPLICATE_IMAGE_MODEL or image_gen.replicate.model."
+author: Hermes user
+kind: backend
+requires_env:
+  - REPLICATE_API_TOKEN
