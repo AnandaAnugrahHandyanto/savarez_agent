@@ -93,12 +93,31 @@ class _BotState:
         self.captioning = False
         self.captions_enabled_attempted = False
         self.lobby_waiting = False
+        # Consecutive observations of Meet's transient "couldn't start the
+        # video call" banner. Reset whenever a probe no longer reports it; the
+        # bot only exits once it persists past the strike limit.
+        self.call_error_strikes = 0
+        # Sticky: set once the UI looks admitted. It is useful progress, but is
+        # not by itself enough to prove a healthy call because Meet can briefly
+        # expose roster text while returning to an error/landing page.
+        self.ever_admitted = False
         self.join_attempted_at: Optional[float] = None
         self.joined_at: Optional[float] = None
         self.last_caption_at: Optional[float] = None
         self.transcript_lines = 0
         self.error: Optional[str] = None
         self.exited = False
+        now = time.time()
+        self.phase = "starting"
+        self.last_heartbeat_at = now
+        self.last_progress_at = now
+        self.stalled_reason: Optional[str] = None
+        self.last_ui_text: Optional[str] = None
+        self.last_url: Optional[str] = None
+        self.last_speaker_source: Optional[str] = None
+        self.last_speaker_candidates: list = []
+        self.local_microphone_on: Optional[bool] = None
+        self.local_camera_on: Optional[bool] = None
         # v2 realtime fields.
         self.realtime = False
         self.realtime_ready = False
@@ -112,23 +131,53 @@ class _BotState:
         self._seen: set = set()
         out_dir.mkdir(parents=True, exist_ok=True)
         self.transcript_path = out_dir / "transcript.txt"
+        self.caption_debug_path = out_dir / "caption_debug.jsonl"
         self.status_path = out_dir / "status.json"
         self._flush()
 
     # -------- transcript ------------------------------------------------
 
-    def record_caption(self, speaker: str, text: str) -> None:
+    def record_caption(
+        self,
+        speaker: str,
+        text: str,
+        *,
+        speaker_source: Optional[str] = None,
+        speaker_debug: Optional[dict] = None,
+    ) -> None:
         """Append a caption line if we haven't seen this exact (speaker, text)."""
         speaker = (speaker or "").strip() or "Unknown"
         text = (text or "").strip()
         if not text:
             return
+        if speaker_source:
+            self.last_speaker_source = speaker_source
+        if isinstance(speaker_debug, dict):
+            candidates = speaker_debug.get("candidates")
+            if isinstance(candidates, list):
+                self.last_speaker_candidates = candidates[:20]
+            if speaker == "Unknown":
+                debug_line = {
+                    "ts": time.time(),
+                    "text": text[:300],
+                    "speakerSource": speaker_source,
+                    "speakerDebug": speaker_debug,
+                }
+                with self.caption_debug_path.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(debug_line, ensure_ascii=True) + "\n")
         key = f"{speaker}|{text}"
         if key in self._seen:
             return
         self._seen.add(key)
         self.transcript_lines += 1
         self.last_caption_at = time.time()
+        self.last_progress_at = self.last_caption_at
+        self.phase = "capturing"
+        self.stalled_reason = None
+        if not self.in_call:
+            self.in_call = True
+            self.lobby_waiting = False
+            self.joined_at = self.last_caption_at
         ts = time.strftime("%H:%M:%S", time.localtime(self.last_caption_at))
         line = f"[{ts}] {speaker}: {text}\n"
         # Atomic-ish append — good enough for a single-writer.
@@ -154,6 +203,17 @@ class _BotState:
             "error": self.error,
             "exited": self.exited,
             "pid": os.getpid(),
+            "phase": self.phase,
+            "lastHeartbeatAt": self.last_heartbeat_at,
+            "lastProgressAt": self.last_progress_at,
+            "stalledReason": self.stalled_reason,
+            "lastUiText": self.last_ui_text,
+            "lastUrl": self.last_url,
+            "lastSpeakerSource": self.last_speaker_source,
+            "lastSpeakerCandidates": self.last_speaker_candidates,
+            "captionDebugPath": str(self.caption_debug_path),
+            "localMicrophoneOn": self.local_microphone_on,
+            "localCameraOn": self.local_camera_on,
             # v2 realtime telemetry.
             "realtime": self.realtime,
             "realtimeReady": self.realtime_ready,
@@ -170,6 +230,27 @@ class _BotState:
     def set(self, **kwargs) -> None:
         for k, v in kwargs.items():
             setattr(self, k, v)
+        if any(k in kwargs for k in ("join_attempted_at", "joined_at", "last_caption_at")):
+            self.last_progress_at = time.time()
+        self._flush()
+
+    def heartbeat(
+        self,
+        *,
+        phase: Optional[str] = None,
+        stalled_reason: Optional[str] = None,
+        last_ui_text: Optional[str] = None,
+        last_url: Optional[str] = None,
+    ) -> None:
+        if phase:
+            self.phase = phase
+        self.stalled_reason = stalled_reason
+        if last_ui_text is not None:
+            text = " ".join(str(last_ui_text).split())
+            self.last_ui_text = text[:1000]
+        if last_url is not None:
+            self.last_url = str(last_url)
+        self.last_heartbeat_at = time.time()
         self._flush()
 
 
@@ -186,16 +267,218 @@ _CAPTION_OBSERVER_JS = r"""
   if (window.__hermesMeetInstalled) return;
   window.__hermesMeetInstalled = true;
   window.__hermesMeetQueue = [];
+  window.__hermesMeetLastSpeaker = '';
+  window.__hermesMeetLastSpeakerAt = 0;
+  window.__hermesMeetLastFallbackText = '';
 
   const captionSelector = '[role="region"][aria-label*="aption" i], ' +
                           'div[jsname="YSxPC"], ' +  // legacy
                           'div[jsname="tgaKEf"]';    // current (Apr 2026)
 
+  function cleanSpeakerName(raw) {
+    let value = (raw || '').replace(/\s+/g, ' ').trim();
+    if (!value) return '';
+    const lower = value.toLowerCase();
+    if (
+      lower.includes('switch account') ||
+      lower.includes('getting ready') ||
+      lower.includes("you'll be able to join in just a moment") ||
+      lower.includes('meet.google.com') ||
+      lower.includes('@') ||
+      lower === 'you' ||
+      lower === 'unknown'
+    ) {
+      return '';
+    }
+    const patterns = [
+      /^(.+?)(?:,|\s+)(?:is\s+)?speaking\b/i,
+      /^(.+?)\s+\((?:speaking|is speaking)\)$/i,
+      /^(.+?)\s+(?:is\s+)?presenting\b/i,
+    ];
+    for (const pattern of patterns) {
+      const match = value.match(pattern);
+      if (match && match[1]) {
+        value = match[1].replace(/\s+/g, ' ').trim();
+        break;
+      }
+    }
+    value = value.replace(/\b(?:is\s+)?speaking\b/ig, '').trim();
+    value = value.replace(/\b(?:microphone|camera)\s+(?:is\s+)?(?:off|muted)\b/ig, '').trim();
+    value = value.replace(/[,.:\-]+$/g, '').trim();
+    if (!value || value.length > 80) return '';
+    return value;
+  }
+
+  function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function inferParticipantNames() {
+    const text = document.body ? document.body.innerText || '' : '';
+    const names = new Set();
+    const patterns = [
+      /Pin\s+(.+?)\s+to your main screen/g,
+      /More options for\s+(.+?)(?:\n|$)/g,
+    ];
+    for (const pattern of patterns) {
+      let match;
+      while ((match = pattern.exec(text)) !== null) {
+        const speaker = cleanSpeakerName(match[1]);
+        if (speaker) names.add(speaker);
+      }
+    }
+    return Array.from(names).sort((a, b) => b.length - a.length);
+  }
+
+  function trimCaptionChrome(text) {
+    let value = (text || '').replace(/\s+/g, ' ').trim();
+    const markers = [
+      'keyboard_arrow_up Audio settings',
+      'Audio settings mic_off',
+      'Audio settings videocam',
+      'Turn on microphone',
+      'Turn off microphone',
+      'Video settings',
+      'Share screen',
+      'Send a reaction',
+      'Turn off captions',
+      'Turn on captions',
+      'Raise hand',
+      'Leave call',
+      'Chat with everyone',
+      'Meeting tools',
+      'Camera not found',
+      'Make sure that your camera is plugged in',
+    ];
+    let end = value.length;
+    for (const marker of markers) {
+      const idx = value.indexOf(marker);
+      if (idx >= 0) end = Math.min(end, idx);
+    }
+    return value.slice(0, end).trim();
+  }
+
+  function collectSpeakerCandidates() {
+    const selectors = [
+      { selector: '[aria-label*="speaking" i]', attrs: ['aria-label', 'innerText'] },
+      { selector: '[aria-label*="is speaking" i]', attrs: ['aria-label', 'innerText'] },
+      { selector: '[data-participant-name]', attrs: ['data-participant-name', 'aria-label', 'innerText'] },
+      { selector: '[data-self-name]', attrs: ['data-self-name', 'aria-label', 'innerText'] },
+      { selector: '[aria-label]', attrs: ['aria-label'], diagnosticOnly: true },
+    ];
+    const candidates = [];
+    for (const spec of selectors) {
+      const nodes = Array.from(document.querySelectorAll(spec.selector)).slice(0, 80);
+      for (const node of nodes) {
+        for (const attr of spec.attrs) {
+          const raw = attr === 'innerText' ? node.innerText : node.getAttribute(attr);
+          const clean = cleanSpeakerName(raw);
+          candidates.push({
+            selector: spec.selector,
+            attr,
+            raw: (raw || '').replace(/\s+/g, ' ').trim().slice(0, 200),
+            clean,
+            diagnosticOnly: !!spec.diagnosticOnly,
+          });
+        }
+      }
+    }
+    return candidates;
+  }
+
+  function inferActiveSpeaker() {
+    const candidates = collectSpeakerCandidates();
+    for (const candidate of candidates) {
+      if (candidate.clean && !candidate.diagnosticOnly) {
+        window.__hermesMeetLastSpeaker = candidate.clean;
+        window.__hermesMeetLastSpeakerAt = Date.now();
+        return {
+          speaker: candidate.clean,
+          source: candidate.selector,
+          candidates,
+        };
+      }
+    }
+    if (
+      window.__hermesMeetLastSpeaker &&
+      (Date.now() - window.__hermesMeetLastSpeakerAt) < 8000
+    ) {
+      return {
+        speaker: window.__hermesMeetLastSpeaker,
+        source: 'lastSpeaker',
+        candidates,
+      };
+    }
+    return {
+      speaker: '',
+      source: 'unresolved',
+      candidates,
+    };
+  }
+
+  function scanDocumentFallback() {
+    const bodyText = document.body ? document.body.innerText || '' : '';
+    if (!bodyText) return;
+    const markers = [
+      'Open caption settings',
+      'Caption settings',
+      'Font colour settings',
+      'Font color settings',
+    ];
+    let start = -1;
+    for (const marker of markers) {
+      const idx = bodyText.lastIndexOf(marker);
+      if (idx >= 0) start = Math.max(start, idx + marker.length);
+    }
+    if (start < 0) return;
+    const tail = bodyText.slice(start).replace(/\s+/g, ' ').trim();
+    if (!tail || tail === window.__hermesMeetLastFallbackText) return;
+    window.__hermesMeetLastFallbackText = tail;
+
+    const names = inferParticipantNames();
+    if (!names.length) {
+      const text = trimCaptionChrome(tail);
+      if (text) pushEntry('', text);
+      return;
+    }
+    const matches = [];
+    for (const name of names) {
+      const re = new RegExp(`(?:^|\\s)(${escapeRegExp(name)})(?=\\s)`, 'g');
+      let match;
+      while ((match = re.exec(tail)) !== null) {
+        matches.push({
+          index: match.index + match[0].indexOf(match[1]),
+          end: match.index + match[0].indexOf(match[1]) + match[1].length,
+          speaker: name,
+        });
+      }
+    }
+    matches.sort((a, b) => a.index - b.index || b.end - a.end);
+    const deduped = [];
+    for (const match of matches) {
+      const prev = deduped[deduped.length - 1];
+      if (prev && prev.index === match.index) continue;
+      deduped.push(match);
+    }
+    for (let i = 0; i < deduped.length; i += 1) {
+      const current = deduped[i];
+      const next = deduped[i + 1];
+      const text = trimCaptionChrome(tail.slice(current.end, next ? next.index : undefined));
+      if (text) pushEntry(current.speaker, text);
+    }
+  }
+
   function pushEntry(speaker, text) {
     if (!text || !text.trim()) return;
+    const rowSpeaker = cleanSpeakerName(speaker);
+    const inferred = rowSpeaker
+      ? { speaker: rowSpeaker, source: 'captionRow', candidates: [] }
+      : inferActiveSpeaker();
     window.__hermesMeetQueue.push({
       ts: Date.now(),
-      speaker: (speaker || '').trim(),
+      speaker: inferred.speaker,
+      speakerSource: inferred.source,
+      speakerDebug: { candidates: inferred.candidates },
       text: text.trim(),
     });
   }
@@ -234,6 +517,7 @@ _CAPTION_OBSERVER_JS = r"""
   if (!attach()) {
     const iv = setInterval(() => { if (attach()) clearInterval(iv); }, 1500);
   }
+  setInterval(() => scanDocumentFallback(), 1500);
 
   window.__hermesMeetDrain = () => {
     const out = window.__hermesMeetQueue.slice();
@@ -659,7 +943,14 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                                 continue
                             speaker = str(entry.get("speaker", ""))
                             text = str(entry.get("text", ""))
-                            state.record_caption(speaker=speaker, text=text)
+                            speaker_source = str(entry.get("speakerSource", ""))
+                            speaker_debug = entry.get("speakerDebug")
+                            state.record_caption(
+                                speaker=speaker,
+                                text=text,
+                                speaker_source=speaker_source,
+                                speaker_debug=speaker_debug if isinstance(speaker_debug, dict) else None,
+                            )
                             # Barge-in: if the bot is currently generating
                             # audio AND a real human just spoke, cancel the
                             # in-flight response so we don't talk over them.

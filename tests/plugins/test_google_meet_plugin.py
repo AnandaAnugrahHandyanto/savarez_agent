@@ -116,6 +116,231 @@ def test_bot_state_ignores_blank_text(tmp_path):
     assert "Unknown: text but no speaker" in (tmp_path / "s" / "transcript.txt").read_text()
 
 
+def test_bot_state_writes_caption_debug_for_unknown_speaker(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    state = _BotState(out_dir=tmp_path / "s", meeting_id="x-y-z",
+                      url="https://meet.google.com/x-y-z")
+    speaker_debug = {
+        "candidates": [
+            {"selector": "[aria-label]", "raw": "Switch account", "clean": ""},
+            {"selector": "[aria-label*='speaking']", "raw": "", "clean": ""},
+        ]
+    }
+
+    state.record_caption(
+        "",
+        "text but no speaker",
+        speaker_source="unresolved",
+        speaker_debug=speaker_debug,
+    )
+
+    status = json.loads((tmp_path / "s" / "status.json").read_text())
+    assert status["lastSpeakerSource"] == "unresolved"
+    assert status["lastSpeakerCandidates"] == speaker_debug["candidates"]
+    assert status["captionDebugPath"].endswith("caption_debug.jsonl")
+
+    debug_lines = (tmp_path / "s" / "caption_debug.jsonl").read_text().splitlines()
+    assert len(debug_lines) == 1
+    debug = json.loads(debug_lines[0])
+    assert debug["speakerSource"] == "unresolved"
+    assert debug["speakerDebug"] == speaker_debug
+
+
+def test_caption_observer_uses_active_speaker_fallback():
+    from plugins.google_meet.meet_bot import _CAPTION_OBSERVER_JS
+
+    assert "function inferActiveSpeaker" in _CAPTION_OBSERVER_JS
+    assert "__hermesMeetLastSpeaker" in _CAPTION_OBSERVER_JS
+    assert '[aria-label*="speaking" i]' in _CAPTION_OBSERVER_JS
+    assert "inferActiveSpeaker()" in _CAPTION_OBSERVER_JS
+
+
+def test_caption_observer_filters_account_chrome_from_speaker_fallback():
+    from plugins.google_meet.meet_bot import _CAPTION_OBSERVER_JS
+
+    assert "switch account" in _CAPTION_OBSERVER_JS.lower()
+    assert "getting ready" in _CAPTION_OBSERVER_JS.lower()
+    assert "you'll be able to join in just a moment" in _CAPTION_OBSERVER_JS.lower()
+    assert "speakerDebug" in _CAPTION_OBSERVER_JS
+
+
+def test_caption_observer_has_visible_body_caption_fallback():
+    from plugins.google_meet.meet_bot import _CAPTION_OBSERVER_JS
+
+    assert "function inferParticipantNames" in _CAPTION_OBSERVER_JS
+    assert "function scanDocumentFallback" in _CAPTION_OBSERVER_JS
+    assert "Open caption settings" in _CAPTION_OBSERVER_JS
+    assert r"Pin\s+(.+?)\s+to your main screen" in _CAPTION_OBSERVER_JS
+    assert "scanDocumentFallback()" in _CAPTION_OBSERVER_JS
+
+
+def test_caption_observer_strips_meet_controls_from_body_fallback():
+    from plugins.google_meet.meet_bot import _CAPTION_OBSERVER_JS
+
+    assert "function trimCaptionChrome" in _CAPTION_OBSERVER_JS
+    assert "keyboard_arrow_up Audio settings" in _CAPTION_OBSERVER_JS
+    assert "Turn on microphone" in _CAPTION_OBSERVER_JS
+    assert "Meeting tools" in _CAPTION_OBSERVER_JS
+    assert "trimCaptionChrome(text)" in _CAPTION_OBSERVER_JS
+
+
+def _run_caption_observer_js(*, body_text: str, caption_text: str, speaking_label: str):
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node is required to execute caption observer JavaScript")
+
+    from plugins.google_meet.meet_bot import _CAPTION_OBSERVER_JS
+
+    script = f"""
+const intervals = [];
+global.setInterval = (fn) => {{ intervals.push(fn); return intervals.length; }};
+global.MutationObserver = class {{
+  constructor(fn) {{ this.fn = fn; }}
+  observe() {{}}
+}};
+
+const bodyText = {json.dumps(body_text)};
+const captionText = {json.dumps(caption_text)};
+const speakingLabel = {json.dumps(speaking_label)};
+
+function makeNode(attrs, innerText = '') {{
+  return {{
+    innerText,
+    getAttribute: (name) => attrs[name] || '',
+    querySelectorAll: () => [],
+    querySelector: () => null,
+  }};
+}}
+
+const captionRoot = captionText
+  ? {{
+      innerText: captionText,
+      querySelectorAll: () => [],
+      querySelector: () => null,
+    }}
+  : null;
+
+global.window = {{}};
+global.document = {{
+  body: {{ innerText: bodyText }},
+  querySelector: (selector) => {{
+    if (
+      captionRoot &&
+      (selector.includes('[role="region"]') ||
+       selector.includes('jsname="YSxPC"') ||
+       selector.includes('jsname="tgaKEf"'))
+    ) {{
+      return captionRoot;
+    }}
+    return null;
+  }},
+  querySelectorAll: (selector) => {{
+    if (selector.includes('speaking') && speakingLabel) {{
+      return [makeNode({{ 'aria-label': speakingLabel }})];
+    }}
+    if (selector === '[aria-label]' && speakingLabel) {{
+      return [makeNode({{ 'aria-label': speakingLabel }})];
+    }}
+    return [];
+  }},
+}};
+
+{_CAPTION_OBSERVER_JS}
+
+for (const fn of intervals) fn();
+process.stdout.write(JSON.stringify(window.__hermesMeetDrain()));
+"""
+    proc = subprocess.run(
+        [node],
+        input=script,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
+
+
+def test_caption_observer_region_fallback_uses_inferred_speaker_without_throwing():
+    entries = _run_caption_observer_js(
+        body_text="Alex Rivera is speaking",
+        caption_text="like that, but whatever.",
+        speaking_label="Alex Rivera is speaking",
+    )
+
+    assert entries == [
+        {
+            "ts": entries[0]["ts"],
+            "speaker": "Alex Rivera",
+            "speakerSource": '[aria-label*="speaking" i]',
+            "speakerDebug": {
+                "candidates": [
+                    {
+                        "selector": '[aria-label*="speaking" i]',
+                        "attr": "aria-label",
+                        "raw": "Alex Rivera is speaking",
+                        "clean": "Alex Rivera",
+                        "diagnosticOnly": False,
+                    },
+                    {
+                        "selector": '[aria-label*="speaking" i]',
+                        "attr": "innerText",
+                        "raw": "",
+                        "clean": "",
+                        "diagnosticOnly": False,
+                    },
+                    {
+                        "selector": '[aria-label*="is speaking" i]',
+                        "attr": "aria-label",
+                        "raw": "Alex Rivera is speaking",
+                        "clean": "Alex Rivera",
+                        "diagnosticOnly": False,
+                    },
+                    {
+                        "selector": '[aria-label*="is speaking" i]',
+                        "attr": "innerText",
+                        "raw": "",
+                        "clean": "",
+                        "diagnosticOnly": False,
+                    },
+                    {
+                        "selector": "[aria-label]",
+                        "attr": "aria-label",
+                        "raw": "Alex Rivera is speaking",
+                        "clean": "Alex Rivera",
+                        "diagnosticOnly": True,
+                    },
+                ]
+            },
+            "text": "like that, but whatever.",
+        }
+    ]
+
+
+def test_caption_observer_body_fallback_splits_live_caption_shape():
+    entries = _run_caption_observer_js(
+        body_text=(
+            "Pin Alex Rivera to your main screen\n"
+            "More options for Alex Rivera\n"
+            "Open caption settings Alex Rivera like that, but whatever. "
+            "keyboard_arrow_up Audio settings mic_off Turn on microphone"
+        ),
+        caption_text="",
+        speaking_label="",
+    )
+
+    assert entries == [
+        {
+            "ts": entries[0]["ts"],
+            "speaker": "Alex Rivera",
+            "speakerSource": "captionRow",
+            "speakerDebug": {"candidates": []},
+            "text": "like that, but whatever.",
+        }
+    ]
+
+
 def test_parse_duration():
     from plugins.google_meet.meet_bot import _parse_duration
 
@@ -792,11 +1017,14 @@ def test_bot_state_exposes_v2_telemetry_fields(tmp_path):
         "realtime", "realtimeReady", "realtimeDevice",
         "audioBytesOut", "lastAudioOutAt", "lastBargeInAt",
         "joinAttemptedAt", "leaveReason",
+        "phase", "lastHeartbeatAt", "lastProgressAt",
+        "stalledReason", "lastUiText", "lastUrl",
     ):
         assert key in status, f"missing v2 telemetry key: {key}"
     assert status["realtime"] is False
     assert status["realtimeReady"] is False
     assert status["audioBytesOut"] == 0
+    assert status["phase"] == "starting"
 
     # Setting them flushes them.
     state.set(realtime=True, realtime_ready=True, audio_bytes_out=1024,
@@ -806,6 +1034,28 @@ def test_bot_state_exposes_v2_telemetry_fields(tmp_path):
     assert status["realtimeReady"] is True
     assert status["audioBytesOut"] == 1024
     assert status["leaveReason"] == "lobby_timeout"
+
+
+def test_bot_state_heartbeat_flushes_phase_and_diagnostics(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    state = _BotState(out_dir=tmp_path / "s", meeting_id="x-y-z",
+                      url="https://meet.google.com/x-y-z")
+    before = json.loads((tmp_path / "s" / "status.json").read_text())["lastHeartbeatAt"]
+
+    state.heartbeat(
+        phase="stalled",
+        stalled_reason="no admission progress",
+        last_ui_text="Waiting for someone to let you in",
+        last_url="https://meet.google.com/x-y-z",
+    )
+
+    status = json.loads((tmp_path / "s" / "status.json").read_text())
+    assert status["phase"] == "stalled"
+    assert status["stalledReason"] == "no admission progress"
+    assert status["lastUiText"] == "Waiting for someone to let you in"
+    assert status["lastUrl"] == "https://meet.google.com/x-y-z"
+    assert status["lastHeartbeatAt"] >= before
 
 
 # ---------------------------------------------------------------------------
