@@ -25,7 +25,7 @@ The target shape is:
 | `scripts/install_voice_local_stack.py` | Produces or applies the local systemd/config wiring. |
 | `scripts/verify_voice_local_stack.py` | Proves the isolated and optional live local voice stack. |
 | `scripts/verify_voice_live_gateway.py` | Proves the installed gateway process and sidecar are in sync. |
-| `scripts/verify_voice_whatsapp_cloud_webhook.py` | Proves local Cloud webhook health, verify-token, and signed POST handling without live Meta calls. |
+| `scripts/verify_voice_whatsapp_cloud_webhook.py` | Proves local Cloud webhook health, verify-token, signed POST handling, and inbound voice-note media caching without live Meta calls. |
 
 ## Install Plan
 
@@ -157,8 +157,9 @@ That aggregate verifier proves:
 - The WhatsApp Cloud adapter uploads `.ogg`/Opus with
   `audio/ogg; codecs=opus`.
 - The WhatsApp Cloud webhook path answers local health and verify-token
-  handshakes, and accepts signed status-only POST payloads without dispatching
-  agent messages.
+  handshakes, accepts signed status-only POST payloads without dispatching
+  agent messages, and accepts a signed synthetic audio webhook that caches an
+  Opus/Ogg voice note for downstream STT dispatch.
 - The synthetic WhatsApp Calling control plane gates accept on sidecar
   readiness.
 - A real local sidecar can answer an `aiortc` SDP offer and report

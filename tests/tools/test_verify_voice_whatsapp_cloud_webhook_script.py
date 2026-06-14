@@ -41,3 +41,10 @@ def test_verify_cloud_webhook_http_smoke():
         "signature_accepted": True,
         "dispatched_messages": 0,
     }
+    assert result["checks"]["voice_note"] == {
+        "status": 200,
+        "media_type": "audio/ogg; codecs=opus",
+        "cached_extension": ".ogg",
+        "cached_bytes": len(script.VOICE_BYTES),
+        "dispatched_messages": 1,
+    }
