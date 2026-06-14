@@ -886,6 +886,8 @@ class TestCallingSidecarClient:
         frame = b"\x01\x00" * 960
         chunks = [frame + frame[:100], frame[100:], b""]
         commands = []
+        sleeps = []
+        original_sleep = asyncio.sleep
 
         class FakeStream:
             def __init__(self, values):
@@ -915,9 +917,17 @@ class TestCallingSidecarClient:
             commands.append(command)
             return FakeProc()
 
+        async def fake_sleep(delay):
+            sleeps.append(delay)
+            await original_sleep(0)
+
         monkeypatch.setattr(
             "gateway.platforms.whatsapp_cloud.asyncio.create_subprocess_shell",
             fake_create_subprocess_shell,
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.whatsapp_cloud.asyncio.sleep",
+            fake_sleep,
         )
         adapter = _make_adapter(
             calling_sidecar_url="http://127.0.0.1:8787",
@@ -950,6 +960,8 @@ class TestCallingSidecarClient:
         assert first.kwargs["sequence"] == 0
         assert second.args == ("call-1", frame)
         assert second.kwargs["sequence"] == 1
+        assert len(sleeps) == 1
+        assert 0 < sleeps[0] <= 0.021
 
     @pytest.mark.asyncio
     async def test_play_tts_text_without_stream_command_falls_back(self, monkeypatch):

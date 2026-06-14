@@ -1083,6 +1083,21 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             pending = bytearray()
             sequence = 0
             accepted_bytes = 0
+            next_frame_at: Optional[float] = None
+
+            async def pace_frame() -> None:
+                """Keep sidecar outbound audio close to WebRTC playback time."""
+                nonlocal next_frame_at
+                loop = asyncio.get_running_loop()
+                now = loop.time()
+                frame_interval = frame_ms / 1_000
+                if next_frame_at is None:
+                    next_frame_at = now + frame_interval
+                    return
+                if now < next_frame_at:
+                    await asyncio.sleep(next_frame_at - now)
+                    now = loop.time()
+                next_frame_at = max(next_frame_at, now) + frame_interval
 
             try:
                 while True:
@@ -1096,6 +1111,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     while len(pending) >= frame_bytes:
                         frame = bytes(pending[:frame_bytes])
                         del pending[:frame_bytes]
+                        await pace_frame()
                         result = await send_frame(frame, sequence)
                         if not result.success:
                             await terminate_process(proc)
@@ -1107,6 +1123,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if pending:
                     frame = bytes(pending)
                     frame += b"\x00" * (frame_bytes - len(frame))
+                    await pace_frame()
                     result = await send_frame(frame, sequence)
                     if not result.success:
                         await terminate_process(proc)
