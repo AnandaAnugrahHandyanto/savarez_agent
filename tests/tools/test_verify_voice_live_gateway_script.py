@@ -780,6 +780,7 @@ def test_run_calling_live_sidecar_smoke_uses_live_root_imports(
                     "success": True,
                     "graph_actions": ["pre_accept", "accept"],
                     "sidecar_ready_for_accept": True,
+                    "webhook_statuses": {"connect": 200, "terminate": 200},
                     "outbound_webrtc_bytes": 23040,
                     "inbound_drain_bytes": 1920,
                 }
@@ -829,6 +830,7 @@ def test_run_calling_live_sidecar_smoke_rejects_missing_audio(monkeypatch, tmp_p
                     "success": True,
                     "graph_actions": ["pre_accept", "accept"],
                     "sidecar_ready_for_accept": True,
+                    "webhook_statuses": {"connect": 200, "terminate": 200},
                     "outbound_webrtc_bytes": 0,
                     "inbound_drain_bytes": 1920,
                 }

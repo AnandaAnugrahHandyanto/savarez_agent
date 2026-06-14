@@ -923,6 +923,13 @@ def run_calling_live_sidecar_smoke(
         )
     if result.get("sidecar_ready_for_accept") is not True:
         raise SystemExit(f"calling live-sidecar smoke sidecar was not ready: {result}")
+    statuses = result.get("webhook_statuses")
+    if not isinstance(statuses, dict) or statuses.get("connect") != 200 or statuses.get(
+        "terminate"
+    ) != 200:
+        raise SystemExit(
+            f"calling live-sidecar smoke did not use signed webhooks cleanly: {result}"
+        )
     try:
         outbound_bytes = int(result.get("outbound_webrtc_bytes") or 0)
         inbound_bytes = int(result.get("inbound_drain_bytes") or 0)

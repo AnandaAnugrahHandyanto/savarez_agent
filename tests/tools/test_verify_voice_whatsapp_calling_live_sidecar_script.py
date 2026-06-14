@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 import sys
 
+import pytest
+
 
 SCRIPT_PATH = (
     Path(__file__).resolve().parents[2]
@@ -90,6 +92,24 @@ def test_recorded_response_behaves_like_httpx_response():
     assert json.loads(response.text) == {"success": True}
 
 
+@pytest.mark.asyncio
+async def test_signed_webhook_request_carries_valid_hmac_signature():
+    script = _load_script_module()
+    payload = {"object": "whatsapp_business_account", "entry": []}
+
+    request = script.signed_webhook_request(payload, app_secret="secret")
+    raw = await request.read()
+
+    assert json.loads(raw.decode("utf-8")) == payload
+    adapter = script.WhatsAppCloudAdapter(
+        script.PlatformConfig(enabled=True, extra={"app_secret": "secret"})
+    )
+    assert adapter._verify_signature(  # noqa: SLF001
+        raw,
+        request.headers["X-Hub-Signature-256"],
+    )
+
+
 def test_parse_args_accepts_existing_sidecar_url(monkeypatch):
     script = _load_script_module()
     monkeypatch.setattr(
@@ -101,6 +121,8 @@ def test_parse_args_accepts_existing_sidecar_url(monkeypatch):
             "/voice",
             "--sidecar-url",
             "http://127.0.0.1:8787/",
+            "--app-secret",
+            "secret",
         ],
     )
 
@@ -108,3 +130,4 @@ def test_parse_args_accepts_existing_sidecar_url(monkeypatch):
 
     assert args.voice_repo == Path("/voice")
     assert args.sidecar_url == "http://127.0.0.1:8787/"
+    assert args.app_secret == "secret"

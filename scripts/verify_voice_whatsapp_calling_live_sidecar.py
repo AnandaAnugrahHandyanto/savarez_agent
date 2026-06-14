@@ -17,6 +17,8 @@ import argparse
 import asyncio
 import base64
 from dataclasses import dataclass
+import hashlib
+import hmac
 import importlib.util
 import json
 from pathlib import Path
@@ -34,6 +36,7 @@ DEFAULT_CALLER = "13557825698"
 DEFAULT_CALLEE = "15551797781"
 DEFAULT_CONTACT_NAME = "Hermes Voice Smoke"
 DEFAULT_PHONE_NUMBER_ID = "7794189252778687"
+DEFAULT_APP_SECRET = "synthetic-whatsapp-calling-secret"
 DEFAULT_TIMEOUT = 12.0
 
 
@@ -48,6 +51,23 @@ class RecordedResponse:
 
     def json(self) -> dict[str, Any]:
         return self.body
+
+
+class SignedWebhookRequest:
+    """Small aiohttp.web.Request stand-in for the Cloud webhook handler."""
+
+    def __init__(self, raw: bytes, signature: str) -> None:
+        self._raw = raw
+        self.headers = {"X-Hub-Signature-256": signature}
+
+    async def read(self) -> bytes:
+        return self._raw
+
+
+def signed_webhook_request(payload: dict[str, Any], *, app_secret: str) -> SignedWebhookRequest:
+    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    digest = hmac.new(app_secret.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+    return SignedWebhookRequest(raw, f"sha256={digest}")
 
 
 def load_sidecar_module(voice_repo: Path):
@@ -321,6 +341,7 @@ async def run_live_sidecar_smoke(args: argparse.Namespace) -> dict[str, Any]:
             extra={
                 "phone_number_id": args.phone_number_id,
                 "access_token": "synthetic-token",
+                "app_secret": args.app_secret,
                 "calling_sidecar_url": sidecar_url,
                 "calling_sidecar_timeout": args.timeout,
             },
@@ -351,15 +372,22 @@ async def run_live_sidecar_smoke(args: argparse.Namespace) -> dict[str, Any]:
         adapter.handle_message = capture_message
         adapter._start_calling_sidecar_drain = capture_drain  # type: ignore[method-assign]  # noqa: SLF001
 
-        await adapter._dispatch_payload(  # noqa: SLF001
-            call_connect_payload(
-                call_id=args.call_id,
-                caller=args.caller,
-                callee=args.callee,
-                contact_name=args.contact_name,
-                remote_sdp=pc.localDescription.sdp,
+        connect_response = await adapter._handle_webhook(  # noqa: SLF001
+            signed_webhook_request(
+                call_connect_payload(
+                    call_id=args.call_id,
+                    caller=args.caller,
+                    callee=args.callee,
+                    contact_name=args.contact_name,
+                    remote_sdp=pc.localDescription.sdp,
+                ),
+                app_secret=args.app_secret,
             )
         )
+        if connect_response.status != 200:
+            raise RuntimeError(
+                f"signed connect webhook returned HTTP {connect_response.status}"
+            )
 
         if dispatched_messages:
             raise RuntimeError("calling connect dispatched an unexpected MessageEvent")
@@ -416,13 +444,20 @@ async def run_live_sidecar_smoke(args: argparse.Namespace) -> dict[str, Any]:
         ]:
             raise RuntimeError(f"unexpected drain starts: {drain_starts}")
 
-        await adapter._dispatch_payload(  # noqa: SLF001
-            call_terminate_payload(
-                call_id=args.call_id,
-                caller=args.caller,
-                callee=args.callee,
+        terminate_response = await adapter._handle_webhook(  # noqa: SLF001
+            signed_webhook_request(
+                call_terminate_payload(
+                    call_id=args.call_id,
+                    caller=args.caller,
+                    callee=args.callee,
+                ),
+                app_secret=args.app_secret,
             )
         )
+        if terminate_response.status != 200:
+            raise RuntimeError(
+                f"signed terminate webhook returned HTTP {terminate_response.status}"
+            )
         if adapter._calling_sidecar_call_ids:  # noqa: SLF001
             raise RuntimeError(
                 f"call ids should be empty after terminate: {adapter._calling_sidecar_call_ids}"  # noqa: SLF001
@@ -446,6 +481,10 @@ async def run_live_sidecar_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "graph_calls_url": graph_calls_url,
             "graph_actions": actions,
             "drain_starts": drain_starts,
+            "webhook_statuses": {
+                "connect": connect_response.status,
+                "terminate": terminate_response.status,
+            },
             "sidecar_offer_url": f"{sidecar_url}/offer",
             "sidecar_close_url": close_requests[-1]["url"],
             "sidecar_ready_for_accept": sidecar_state["ready_for_accept"],
@@ -479,6 +518,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--caller", default=DEFAULT_CALLER)
     parser.add_argument("--callee", default=DEFAULT_CALLEE)
     parser.add_argument("--contact-name", default=DEFAULT_CONTACT_NAME)
+    parser.add_argument("--app-secret", default=DEFAULT_APP_SECRET)
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     return parser.parse_args()
 
