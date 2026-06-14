@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Validate the local Hermes + voice stack without touching the live gateway.
+"""Validate the local Hermes + voice stack.
 
-This aggregate preflight runs the existing focused verifiers in a safe order:
+By default this aggregate preflight runs the existing focused verifiers without
+touching the live gateway:
 
 1. The local Hermes CLI entrypoint starts with an isolated HERMES_HOME.
 2. The voice checkout's own WhatsApp contract verifier proves the installed
@@ -19,6 +20,8 @@ By default the script creates a temporary Hermes home and removes it after a
 passing or failing run. Pass --keep-home to inspect the generated config.
 Pass --live-hermes-root to also prove the checkout used by a local gateway has
 the voice-native WhatsApp and sidecar surfaces from this branch.
+Pass --run-live-gateway to also inspect the running local gateway and require
+the live WebRTC sidecar to answer a real SDP offer with ready_for_accept=true.
 """
 
 from __future__ import annotations
@@ -487,6 +490,56 @@ def full_duplex_command(
     return command
 
 
+def live_gateway_command(
+    args: argparse.Namespace,
+    *,
+    voice_bin: str,
+    voice_repo: Path | None,
+) -> list[str]:
+    if args.live_hermes_root is None:
+        raise SystemExit("--run-live-gateway requires --live-hermes-root")
+    if not args.calling_sidecar_url:
+        raise SystemExit("--run-live-gateway requires --calling-sidecar-url")
+    if not args.webrtc_python_bin:
+        raise SystemExit("--run-live-gateway requires --webrtc-python-bin")
+
+    command = [
+        sys.executable,
+        str(script_path("verify_voice_live_gateway.py")),
+        "--live-hermes-root",
+        str(args.live_hermes_root.expanduser().resolve()),
+        "--python-bin",
+        args.live_gateway_python_bin,
+        "--hermes-home",
+        str(args.live_gateway_hermes_home.expanduser()),
+        "--calling-sidecar-url",
+        args.calling_sidecar_url,
+        "--voice-bin",
+        voice_bin,
+        "--run-tts-smoke",
+        "--run-sidecar-offer-smoke",
+        "--webrtc-python-bin",
+        args.webrtc_python_bin,
+    ]
+    if args.run_live_gateway_stt_smoke:
+        command.extend(
+            [
+                "--run-stt-smoke",
+                "--stt-provider",
+                args.stt_provider,
+                "--stt-timeout",
+                f"{args.stt_timeout:g}",
+            ]
+        )
+    if args.live_gateway_sidecar_service:
+        command.extend(["--sidecar-service", args.live_gateway_sidecar_service])
+        if voice_repo is not None:
+            command.extend(["--voice-repo", str(voice_repo)])
+    if args.skip_live_gateway_bridge_health:
+        command.append("--skip-bridge-health")
+    return command
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--voice-bin", default=os.environ.get("VOICE_BIN", "voice"))
@@ -541,6 +594,45 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--voice-repo", type=Path, default=default_voice_repo())
     parser.add_argument("--webrtc-python-bin", default=os.environ.get("VOICE_WEBRTC_PYTHON"))
+    parser.add_argument(
+        "--run-live-gateway",
+        action="store_true",
+        help=(
+            "Also run verify_voice_live_gateway.py against the installed local "
+            "gateway and sidecar."
+        ),
+    )
+    parser.add_argument(
+        "--live-gateway-python-bin",
+        default="~/.hermes/hermes-agent/venv/bin/python",
+        help="Python interpreter used by the running Hermes gateway checkout.",
+    )
+    parser.add_argument(
+        "--live-gateway-hermes-home",
+        type=Path,
+        default=Path("~/.hermes"),
+        help="Hermes home used by the running local gateway.",
+    )
+    parser.add_argument(
+        "--calling-sidecar-url",
+        help="Expected base URL for the running local WebRTC sidecar.",
+    )
+    parser.add_argument(
+        "--live-gateway-sidecar-service",
+        default="voice-webrtc-sidecar.service",
+        help="systemd user service name for the running WebRTC sidecar.",
+    )
+    parser.add_argument(
+        "--skip-live-gateway-bridge-health",
+        action="store_true",
+        help="Pass --skip-bridge-health to the live gateway verifier.",
+    )
+    parser.add_argument(
+        "--run-live-gateway-stt-smoke",
+        action="store_true",
+        help="Also run the live gateway command-STT smoke.",
+    )
+    parser.add_argument("--live-gateway-timeout", type=float, default=360.0)
     parser.add_argument("--skip-voice-contract", action="store_true")
     parser.add_argument("--skip-whatsapp-bridge-media", action="store_true")
     parser.add_argument("--skip-whatsapp-cloud-voice", action="store_true")
@@ -733,6 +825,17 @@ def main() -> int:
                 "full-duplex sidecar verifier",
                 full_duplex_command(args, voice_bin=voice_bin, voice_repo=voice_repo),
                 timeout=args.full_duplex_timeout + 15,
+                env=env,
+            )
+        if args.run_live_gateway:
+            checks["live_gateway"] = run_json_step(
+                "live gateway verifier",
+                live_gateway_command(
+                    args,
+                    voice_bin=voice_bin,
+                    voice_repo=voice_repo,
+                ),
+                timeout=args.live_gateway_timeout,
                 env=env,
             )
 

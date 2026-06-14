@@ -55,6 +55,14 @@ def _args(**overrides):
         "skip_full_duplex": False,
         "voice_repo": Path("/voice"),
         "webrtc_python_bin": None,
+        "run_live_gateway": False,
+        "live_gateway_python_bin": "/home/user/.hermes/hermes-agent/venv/bin/python",
+        "live_gateway_hermes_home": Path("/home/user/.hermes"),
+        "calling_sidecar_url": None,
+        "live_gateway_sidecar_service": "voice-webrtc-sidecar.service",
+        "skip_live_gateway_bridge_health": False,
+        "run_live_gateway_stt_smoke": False,
+        "live_gateway_timeout": 360.0,
         "full_duplex_inbound_text": "hello world",
         "full_duplex_outbound_text": "hello back",
         "stt_expect_word": ["hello", "world"],
@@ -260,6 +268,89 @@ def test_calling_live_sidecar_command_uses_webrtc_python_and_voice_repo():
         "--timeout",
         "9.5",
     ]
+
+
+def test_live_gateway_command_runs_offer_readiness_smoke():
+    script = _load_script_module()
+
+    command = script.live_gateway_command(
+        _args(
+            live_hermes_root=Path("/checkout/hermes-agent"),
+            live_gateway_python_bin="/home/user/.hermes/hermes-agent/venv/bin/python",
+            live_gateway_hermes_home=Path("/home/user/.hermes"),
+            calling_sidecar_url="http://127.0.0.1:8787",
+            webrtc_python_bin="/tmp/voice-webrtc-venv/bin/python",
+            run_live_gateway_stt_smoke=True,
+            skip_live_gateway_bridge_health=True,
+        ),
+        voice_bin="/home/user/.local/bin/voice",
+        voice_repo=Path("/voice"),
+    )
+
+    assert command[:2] == [
+        sys.executable,
+        str(script.script_path("verify_voice_live_gateway.py")),
+    ]
+    assert command[command.index("--live-hermes-root") + 1] == (
+        str(Path("/checkout/hermes-agent").resolve())
+    )
+    assert command[command.index("--python-bin") + 1] == (
+        "/home/user/.hermes/hermes-agent/venv/bin/python"
+    )
+    assert command[command.index("--hermes-home") + 1] == "/home/user/.hermes"
+    assert command[command.index("--calling-sidecar-url") + 1] == (
+        "http://127.0.0.1:8787"
+    )
+    assert command[command.index("--voice-bin") + 1] == (
+        "/home/user/.local/bin/voice"
+    )
+    assert "--run-tts-smoke" in command
+    assert "--run-sidecar-offer-smoke" in command
+    assert command[command.index("--webrtc-python-bin") + 1] == (
+        "/tmp/voice-webrtc-venv/bin/python"
+    )
+    assert "--run-stt-smoke" in command
+    assert command[command.index("--stt-provider") + 1] == "voice"
+    assert command[command.index("--sidecar-service") + 1] == (
+        "voice-webrtc-sidecar.service"
+    )
+    assert command[command.index("--voice-repo") + 1] == "/voice"
+    assert "--skip-bridge-health" in command
+
+
+def test_live_gateway_command_requires_live_inputs():
+    script = _load_script_module()
+
+    with pytest.raises(SystemExit, match="requires --live-hermes-root"):
+        script.live_gateway_command(
+            _args(
+                live_hermes_root=None,
+                calling_sidecar_url="http://127.0.0.1:8787",
+                webrtc_python_bin="/tmp/voice-webrtc-venv/bin/python",
+            ),
+            voice_bin="/tmp/voice",
+            voice_repo=Path("/voice"),
+        )
+    with pytest.raises(SystemExit, match="requires --calling-sidecar-url"):
+        script.live_gateway_command(
+            _args(
+                live_hermes_root=Path("/checkout/hermes-agent"),
+                calling_sidecar_url=None,
+                webrtc_python_bin="/tmp/voice-webrtc-venv/bin/python",
+            ),
+            voice_bin="/tmp/voice",
+            voice_repo=Path("/voice"),
+        )
+    with pytest.raises(SystemExit, match="requires --webrtc-python-bin"):
+        script.live_gateway_command(
+            _args(
+                live_hermes_root=Path("/checkout/hermes-agent"),
+                calling_sidecar_url="http://127.0.0.1:8787",
+                webrtc_python_bin=None,
+            ),
+            voice_bin="/tmp/voice",
+            voice_repo=Path("/voice"),
+        )
 
 
 def test_resolve_voice_repo_requires_full_duplex_checkout(tmp_path: Path):
