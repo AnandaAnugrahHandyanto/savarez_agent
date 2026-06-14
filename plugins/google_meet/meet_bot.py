@@ -277,6 +277,7 @@ _CAPTION_OBSERVER_JS = r"""
   const captionSelector = '[role="region"][aria-label*="aption" i], ' +
                           'div[jsname="YSxPC"], ' +  // legacy
                           'div[jsname="tgaKEf"]';    // current (Apr 2026)
+  const maxCaptionTextLength = 500;
 
   function cleanSpeakerName(raw) {
     let value = (raw || '').replace(/\s+/g, ' ').trim();
@@ -520,6 +521,7 @@ _CAPTION_OBSERVER_JS = r"""
     const key = cleanSpeakerName(speaker) || '__unknown__';
     const previous = window.__hermesMeetLastTextBySpeaker[key] || '';
     window.__hermesMeetLastTextBySpeaker[key] = text;
+    if (!previous && text.length > maxCaptionTextLength) return '';
     if (!previous) return text;
     if (text === previous) return '';
     if (text.startsWith(previous)) {
@@ -535,12 +537,41 @@ _CAPTION_OBSERVER_JS = r"""
     return text;
   }
 
+  function containsNode(root, target) {
+    for (let node = target; node; node = node.parentElement) {
+      if (node === root) return true;
+    }
+    return false;
+  }
+
+  function nearbyCaptionText(label, speaker) {
+    for (let node = label.parentElement; node; node = node.parentElement) {
+      const children = Array.from(node.children || []);
+      if (children.length >= 2 && children.some((child) => containsNode(child, label))) {
+        const text = children
+          .filter((child) => !containsNode(child, label))
+          .map((child) => child.innerText || '')
+          .join(' ');
+        const caption = trimCaptionChrome(text);
+        if (caption && caption !== speaker) return caption;
+      }
+    }
+    return '';
+  }
+
   function scanVisibleSpeakerLabels(root) {
     const labels = Array.from(root.querySelectorAll('span.NWpY1d, .NWpY1d')).slice(0, 40);
     let emitted = false;
     for (const label of labels) {
       const speaker = cleanSpeakerName(label.innerText);
       if (!speaker) continue;
+
+      const nearbyText = nearbyCaptionText(label, speaker);
+      if (nearbyText) {
+        pushEntry(speaker, nearbyText);
+        emitted = true;
+        continue;
+      }
 
       let node = label;
       for (let depth = 0; node && depth < 7; depth += 1) {

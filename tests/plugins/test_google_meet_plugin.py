@@ -492,6 +492,27 @@ def test_caption_observer_emits_only_new_suffix_for_growing_visible_caption_row(
     assert all(entry["speakerSource"] == "captionRow" for entry in entries)
 
 
+def test_caption_observer_suppresses_initial_large_visible_caption_history():
+    old_history = " ".join(f"old{i}" for i in range(220))
+    entries = _run_caption_observer_js(
+        body_text="",
+        caption_text="",
+        speaking_label="",
+        caption_label_rows=[
+            ("Alex Rivera", old_history),
+        ],
+        caption_label_updates=[
+            [("Alex Rivera", f"{old_history} Fresh words after reset.")],
+        ],
+    )
+
+    simplified = [(entry["speaker"], entry["text"]) for entry in entries]
+    assert simplified == [
+        ("Alex Rivera", "Fresh words after reset."),
+    ]
+    assert all(entry["speakerSource"] == "captionRow" for entry in entries)
+
+
 def test_parse_duration():
     from plugins.google_meet.meet_bot import _parse_duration
 
