@@ -509,7 +509,9 @@ one `voice stream` utterance through a local WebRTC peer into the sidecar,
 drains the decoded PCM through `voice stream-transcribe`, and simultaneously
 queues outbound `voice stream` PCM back to the same peer. A passing run proves
 the sidecar, PCM contract, inbound STT bridge, and outbound TTS bridge agree
-before a real WhatsApp call is attempted.
+before a real WhatsApp call is attempted. It also enforces a default one-second
+outbound sidecar queue budget; adjust it with `--max-queued-tx-ms` on the
+wrapper or `--full-duplex-max-queued-tx-ms` on the aggregate verifier.
 
 To validate just the Cloud Calling control plane without sidecar media
 dependencies, run:

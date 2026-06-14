@@ -33,6 +33,7 @@ def _args(**overrides):
         "stream_timeout": 180.0,
         "calling_control_plane_timeout": 10.0,
         "full_duplex_timeout": 90.0,
+        "full_duplex_max_queued_tx_ms": 1000,
         "command_text": "command smoke",
         "voice_contract_text": "contract smoke",
         "voice_contract_timeout": 240.0,
@@ -175,7 +176,11 @@ def test_full_duplex_command_passes_voice_repo_and_python():
     script = _load_script_module()
 
     command = script.full_duplex_command(
-        _args(webrtc_python_bin="/tmp/venv/bin/python", expect_word=["testing"]),
+        _args(
+            webrtc_python_bin="/tmp/venv/bin/python",
+            expect_word=["testing"],
+            full_duplex_max_queued_tx_ms=250,
+        ),
         voice_bin="/tmp/voice",
         voice_repo=Path("/voice"),
     )
@@ -188,6 +193,8 @@ def test_full_duplex_command_passes_voice_repo_and_python():
     assert "/voice" in command
     assert "--python-bin" in command
     assert "/tmp/venv/bin/python" in command
+    assert "--max-queued-tx-ms" in command
+    assert "250" in command
     assert command[-2:] == ["--expect-word", "testing"]
 
 

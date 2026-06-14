@@ -38,6 +38,7 @@ DEFAULT_VOICE_CONTRACT_TEXT = "Hermes voice contract preflight."
 DEFAULT_STREAM_TEXT = "Hermes local voice stream preflight."
 DEFAULT_FULL_DUPLEX_INBOUND_TEXT = "hello world"
 DEFAULT_FULL_DUPLEX_OUTBOUND_TEXT = "Hello from Hermes through the local voice sidecar."
+DEFAULT_FULL_DUPLEX_MAX_QUEUED_TX_MS = 1_000
 DEFAULT_WHATSAPP_BRIDGE_MEDIA_TIMEOUT = 15.0
 DEFAULT_WHATSAPP_CLOUD_VOICE_TIMEOUT = 15.0
 
@@ -412,6 +413,8 @@ def full_duplex_command(
         args.speed,
         "--timeout",
         f"{args.full_duplex_timeout:g}",
+        "--max-queued-tx-ms",
+        str(args.full_duplex_max_queued_tx_ms),
         "--inbound-text",
         args.full_duplex_inbound_text,
         "--outbound-text",
@@ -437,6 +440,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stream-timeout", type=float, default=180.0)
     parser.add_argument("--calling-control-plane-timeout", type=float, default=10.0)
     parser.add_argument("--full-duplex-timeout", type=float, default=90.0)
+    parser.add_argument(
+        "--full-duplex-max-queued-tx-ms",
+        type=int,
+        default=DEFAULT_FULL_DUPLEX_MAX_QUEUED_TX_MS,
+        help=(
+            "Maximum outbound sidecar queue depth allowed at the end of the "
+            "full-duplex smoke."
+        ),
+    )
     parser.add_argument("--cli-timeout", type=float, default=10.0)
     parser.add_argument("--command-text", default=DEFAULT_COMMAND_TEXT)
     parser.add_argument("--voice-contract-text", default=DEFAULT_VOICE_CONTRACT_TEXT)
@@ -485,6 +497,8 @@ def parse_args() -> argparse.Namespace:
         help="word expected in the inbound full-duplex transcript; repeatable",
     )
     args = parser.parse_args()
+    if args.full_duplex_max_queued_tx_ms < 0:
+        parser.error("--full-duplex-max-queued-tx-ms must be non-negative")
     if args.expect_word is None:
         args.expect_word = ["hello", "world"]
     return args

@@ -38,7 +38,10 @@ def _valid_result():
             "channels": 1,
             "frame_ms": 20,
             "encoding": "pcm_s16le",
+            "bytes_per_sample": 2,
         },
+        "queued_tx_bytes": 1_920,
+        "queued_tx_ms": 20,
         "stt": {"text": "Hello World"},
     }
 
@@ -57,6 +60,7 @@ def test_build_smoke_command_points_at_voice_full_duplex_smoke():
         speed="1.0",
         timeout=90.0,
         expect_words=["hello", "world"],
+        max_queued_tx_ms=1_000,
     )
 
     assert command[:4] == [
@@ -67,6 +71,8 @@ def test_build_smoke_command_points_at_voice_full_duplex_smoke():
     ]
     assert "--inbound-text" in command
     assert "--outbound-text" in command
+    assert "--max-queued-tx-ms" in command
+    assert "1000" in command
     assert command[-4:] == ["--expect-word", "hello", "--expect-word", "world"]
 
 
@@ -122,7 +128,7 @@ def test_format_child_error_preserves_tail():
 def test_validate_smoke_result_accepts_voice_contract_shape():
     script = _load_script_module()
 
-    script.validate_smoke_result(_valid_result())
+    script.validate_smoke_result(_valid_result(), max_queued_tx_ms=1_000)
 
 
 def test_validate_smoke_result_rejects_silent_outbound():
@@ -131,7 +137,26 @@ def test_validate_smoke_result_rejects_silent_outbound():
     result["outbound_webrtc_bytes"] = 0
 
     with pytest.raises(SystemExit, match="outbound_webrtc_bytes"):
-        script.validate_smoke_result(result)
+        script.validate_smoke_result(result, max_queued_tx_ms=1_000)
+
+
+def test_validate_smoke_result_rejects_excessive_queued_tx():
+    script = _load_script_module()
+    result = _valid_result()
+    result["queued_tx_ms"] = 2_000
+
+    with pytest.raises(SystemExit, match="queued_tx_ms"):
+        script.validate_smoke_result(result, max_queued_tx_ms=1_000)
+
+
+def test_validate_smoke_result_calculates_queued_tx_ms_when_missing():
+    script = _load_script_module()
+    result = _valid_result()
+    result.pop("queued_tx_ms")
+    result["queued_tx_bytes"] = 192_000
+
+    with pytest.raises(SystemExit, match="queued_tx_ms"):
+        script.validate_smoke_result(result, max_queued_tx_ms=1_000)
 
 
 def test_parse_args_uses_default_expected_words(monkeypatch):
@@ -146,6 +171,7 @@ def test_parse_args_uses_default_expected_words(monkeypatch):
 
     assert args.voice_repo == Path("/voice")
     assert args.expect_word == ["hello", "world"]
+    assert args.max_queued_tx_ms == script.DEFAULT_MAX_QUEUED_TX_MS
 
 
 def test_parse_args_replaces_default_expected_words(monkeypatch):
@@ -165,3 +191,22 @@ def test_parse_args_replaces_default_expected_words(monkeypatch):
     args = script.parse_args()
 
     assert args.expect_word == ["testing"]
+
+
+def test_parse_args_rejects_negative_queue_budget(monkeypatch):
+    script = _load_script_module()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify_voice_full_duplex_sidecar.py",
+            "--voice-repo",
+            "/voice",
+            "--max-queued-tx-ms",
+            "-1",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        script.parse_args()
+    assert exc.value.code == 2
