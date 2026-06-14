@@ -112,13 +112,44 @@ def _voice_sidecar_contract() -> dict:
         "payloads": {
             "offer_request": {"sdp": "required"},
             "offer_response": {"sdp": "answer"},
-            "call_state": {"queued_tx_bytes": "bytes"},
+            "call_state": {
+                "queued_tx_bytes": "bytes",
+                "queued_tx_ms": "ms",
+                "max_tx_queue_bytes": "bytes",
+                "max_tx_queue_ms": "ms",
+                "queued_rx_bytes": "bytes",
+                "queued_rx_ms": "ms",
+                "max_rx_queue_bytes": "bytes",
+                "max_rx_queue_ms": "ms",
+            },
             "call_status_response": "call_state",
             "close_call_response": {"closed": True},
             "send_audio_request": {"pcm_s16le_base64": "required"},
-            "send_audio_response": {"accepted_bytes": "bytes"},
-            "clear_audio_response": {"dropped_tx_bytes": "bytes"},
-            "receive_audio_response": {"pcm_s16le_base64": "data"},
+            "send_audio_response": {
+                "accepted_bytes": "bytes",
+                "accepted_ms": "ms",
+                "queued_tx_bytes": "bytes",
+                "queued_tx_ms": "ms",
+                "max_tx_queue_bytes": "bytes",
+                "max_tx_queue_ms": "ms",
+            },
+            "clear_audio_response": {
+                "dropped_tx_bytes": "bytes",
+                "dropped_tx_ms": "ms",
+                "queued_tx_bytes": "bytes",
+                "queued_tx_ms": "ms",
+                "max_tx_queue_bytes": "bytes",
+                "max_tx_queue_ms": "ms",
+            },
+            "receive_audio_response": {
+                "returned_bytes": "bytes",
+                "returned_ms": "ms",
+                "queued_rx_bytes": "bytes",
+                "queued_rx_ms": "ms",
+                "max_rx_queue_bytes": "bytes",
+                "max_rx_queue_ms": "ms",
+                "pcm_s16le_base64": "data",
+            },
             "audio_shape": {"sample_rate": "audio.sample_rate"},
             "error_response": {"error": "message"},
         },
@@ -415,6 +446,20 @@ def test_validate_calling_sidecar_contract_requires_named_surfaces_and_endpoints
     }
     with pytest.raises(SystemExit, match="payloads missing keys"):
         script.validate_calling_sidecar_contract(missing_clear_payload)
+
+    missing_queue_ms = {
+        **contract,
+        "payloads": {
+            **contract["payloads"],
+            "call_state": {
+                key: value
+                for key, value in contract["payloads"]["call_state"].items()
+                if key != "queued_tx_ms"
+            },
+        },
+    }
+    with pytest.raises(SystemExit, match="payloads.call_state missing fields"):
+        script.validate_calling_sidecar_contract(missing_queue_ms)
 
 
 def test_load_voice_stream_contract_runs_voice_binary(monkeypatch):

@@ -511,7 +511,10 @@ queues outbound `voice stream` PCM back to the same peer. A passing run proves
 the sidecar, PCM contract, inbound STT bridge, and outbound TTS bridge agree
 before a real WhatsApp call is attempted. It also enforces a default one-second
 outbound sidecar queue budget; adjust it with `--max-queued-tx-ms` on the
-wrapper or `--full-duplex-max-queued-tx-ms` on the aggregate verifier.
+wrapper or `--full-duplex-max-queued-tx-ms` on the aggregate verifier. Current
+sidecars report queue depth as both bytes and whole milliseconds
+(`queued_tx_bytes`/`queued_tx_ms`, `queued_rx_bytes`/`queued_rx_ms`) so Hermes
+can enforce latency budgets without duplicating PCM duration math.
 
 To validate just the Cloud Calling control plane without sidecar media
 dependencies, run:

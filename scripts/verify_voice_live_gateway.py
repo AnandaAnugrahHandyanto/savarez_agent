@@ -93,6 +93,43 @@ REQUIRED_PAYLOADS = (
     "audio_shape",
     "error_response",
 )
+REQUIRED_PAYLOAD_FIELDS = {
+    "call_state": (
+        "queued_tx_bytes",
+        "queued_tx_ms",
+        "max_tx_queue_bytes",
+        "max_tx_queue_ms",
+        "queued_rx_bytes",
+        "queued_rx_ms",
+        "max_rx_queue_bytes",
+        "max_rx_queue_ms",
+    ),
+    "send_audio_response": (
+        "accepted_bytes",
+        "accepted_ms",
+        "queued_tx_bytes",
+        "queued_tx_ms",
+        "max_tx_queue_bytes",
+        "max_tx_queue_ms",
+    ),
+    "clear_audio_response": (
+        "dropped_tx_bytes",
+        "dropped_tx_ms",
+        "queued_tx_bytes",
+        "queued_tx_ms",
+        "max_tx_queue_bytes",
+        "max_tx_queue_ms",
+    ),
+    "receive_audio_response": (
+        "returned_bytes",
+        "returned_ms",
+        "queued_rx_bytes",
+        "queued_rx_ms",
+        "max_rx_queue_bytes",
+        "max_rx_queue_ms",
+        "pcm_s16le_base64",
+    ),
+}
 IMPORT_MODULES = (
     "hermes_cli.main",
     "tools.tts_tool",
@@ -510,12 +547,29 @@ def validate_required_contract_sections(
             "calling sidecar contract payloads missing keys: "
             + ", ".join(missing_payloads)
         )
+    validate_payload_contracts(payloads)
 
     return {
         "voice_surfaces": list(REQUIRED_VOICE_SURFACES),
         "endpoints": list(REQUIRED_ENDPOINTS),
         "payloads": list(REQUIRED_PAYLOADS),
     }
+
+
+def validate_payload_contracts(payloads: dict[str, Any]) -> None:
+    for payload_name, required_fields in REQUIRED_PAYLOAD_FIELDS.items():
+        payload = payloads.get(payload_name)
+        if not isinstance(payload, dict):
+            raise SystemExit(
+                f"calling sidecar contract payloads.{payload_name} must be an object"
+            )
+        missing_fields = [field for field in required_fields if field not in payload]
+        if missing_fields:
+            raise SystemExit(
+                "calling sidecar contract payloads."
+                f"{payload_name} missing fields: "
+                + ", ".join(missing_fields)
+            )
 
 
 def validate_voice_surface_contracts(
