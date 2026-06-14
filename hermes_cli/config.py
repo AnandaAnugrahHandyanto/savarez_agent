@@ -1421,6 +1421,9 @@ DEFAULT_CONFIG = {
         "tui_agents_nudge": True,
         "bell_on_complete": False,
         "show_reasoning": False,
+        # Desktop file-browser pane: reveal the collapsed pane when the cursor
+        # approaches the window edge. Set false to require manual open/close.
+        "hover_reveal_file_browser": True,
         "streaming": False,
         "timestamps": False,      # Show [HH:MM] on user and assistant labels
         "final_response_markdown": "strip",  # render | strip | raw

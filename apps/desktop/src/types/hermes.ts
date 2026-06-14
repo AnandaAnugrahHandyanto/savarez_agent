@@ -172,6 +172,7 @@ export interface HermesConfig {
     service_tier?: string
   }
   display?: {
+    hover_reveal_file_browser?: boolean
     personality?: string
     skin?: string
   }

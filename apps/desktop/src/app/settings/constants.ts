@@ -13,8 +13,8 @@ import {
 } from '@/lib/icons'
 import type { ThemeMode } from '@/themes/context'
 
-import type { DesktopConfigSection } from './types'
 import { defineFieldCopy } from './field-copy'
+import type { DesktopConfigSection } from './types'
 
 // Provider group definitions used to fold raw env-var names like
 // ``XAI_API_KEY`` into a single "xAI" card with a friendly label, short
@@ -281,6 +281,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   toolsets: 'Enabled Toolsets',
   timezone: 'Timezone',
   display: {
+    hoverRevealFileBrowser: 'File Browser Hover Reveal',
     personality: 'Personality',
     showReasoning: 'Reasoning Blocks'
   },
@@ -432,6 +433,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   modelContextLength: "Leave at 0 to use the selected model's detected context window.",
   fallbackProviders: 'Backup provider:model entries to try if the default model fails.',
   display: {
+    hoverRevealFileBrowser: 'Open the file browser as an edge overlay when the cursor nears the collapsed pane.',
     personality: 'Default assistant style for new sessions.',
     showReasoning: 'Show reasoning sections when the backend provides them.'
   },
@@ -524,6 +526,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     keys: [
       'terminal.cwd',
       'code_execution.mode',
+      'display.hover_reveal_file_browser',
       'terminal.persistent_shell',
       'terminal.env_passthrough',
       'file_read_max_chars'
