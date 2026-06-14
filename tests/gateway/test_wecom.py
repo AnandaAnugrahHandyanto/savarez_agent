@@ -598,7 +598,12 @@ class TestInboundMessages:
     async def test_on_message_builds_event(self):
         from gateway.platforms.wecom import WeComAdapter
 
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"group_policy": "allowlist", "group_allow_from": ["group-1"]},
+            )
+        )
         adapter._text_batch_delay_seconds = 0  # disable batching for tests
         adapter.handle_message = AsyncMock()
         adapter._extract_media = AsyncMock(return_value=(["/tmp/test.png"], ["image/png"]))
@@ -630,7 +635,12 @@ class TestInboundMessages:
     async def test_on_message_preserves_quote_context(self):
         from gateway.platforms.wecom import WeComAdapter
 
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"group_policy": "allowlist", "group_allow_from": ["group-1"]},
+            )
+        )
         adapter._text_batch_delay_seconds = 0  # disable batching for tests
         adapter.handle_message = AsyncMock()
         adapter._extract_media = AsyncMock(return_value=([], []))
@@ -758,7 +768,12 @@ class TestWeComZombieSessionFix:
     async def test_on_message_caches_last_req_id_per_chat(self):
         from gateway.platforms.wecom import WeComAdapter
 
-        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter = WeComAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"group_policy": "allowlist", "group_allow_from": ["group-1"]},
+            )
+        )
         adapter._text_batch_delay_seconds = 0
         adapter.handle_message = AsyncMock()
         adapter._extract_media = AsyncMock(return_value=([], []))
