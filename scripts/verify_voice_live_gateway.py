@@ -352,6 +352,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ffprobe-bin", default=os.environ.get("FFPROBE_BIN", "ffprobe"))
     parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--allow-disconnected-bridge", action="store_true")
+    parser.add_argument(
+        "--skip-bridge-health",
+        action="store_true",
+        help=(
+            "Skip the local Baileys bridge /health check. Use this for "
+            "Cloud-API-only gateway deployments that do not run the Node "
+            "WhatsApp bridge."
+        ),
+    )
     parser.add_argument("--run-tts-smoke", action="store_true")
     parser.add_argument("--tts-platform", default="whatsapp")
     parser.add_argument("--tts-text", default=DEFAULT_TTS_TEXT)
@@ -412,12 +421,19 @@ def main() -> int:
         timeout=args.timeout,
     )
 
-    bridge_health = get_bridge_health(args.bridge_url, timeout=args.timeout)
-    validate_bridge_health(
-        bridge_health,
-        require_connected=not args.allow_disconnected_bridge,
-    )
-    checks["bridge_health"] = bridge_health
+    if args.skip_bridge_health:
+        checks["bridge_health"] = {
+            "success": True,
+            "skipped": True,
+            "reason": "--skip-bridge-health was provided",
+        }
+    else:
+        bridge_health = get_bridge_health(args.bridge_url, timeout=args.timeout)
+        validate_bridge_health(
+            bridge_health,
+            require_connected=not args.allow_disconnected_bridge,
+        )
+        checks["bridge_health"] = bridge_health
 
     if args.run_tts_smoke:
         checks["tts_smoke"] = run_tts_smoke(

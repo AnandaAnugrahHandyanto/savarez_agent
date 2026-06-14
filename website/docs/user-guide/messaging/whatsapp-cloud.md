@@ -327,6 +327,25 @@ Ogg/Opus output, verifies the raw `voice stream` PCM contract, and then runs
 the full-duplex sidecar smoke from the `voice` checkout. Pass
 `--skip-full-duplex` when the WebRTC sidecar dependencies are not installed yet.
 
+After installing a local gateway service, verify the running process is using
+the expected voice-native checkout:
+
+```bash
+scripts/verify_voice_live_gateway.py \
+  --live-hermes-root /path/to/hermes-agent \
+  --python-bin ~/.hermes/hermes-agent/venv/bin/python \
+  --hermes-home ~/.hermes \
+  --skip-bridge-health \
+  --run-tts-smoke
+```
+
+That live check inspects the systemd user service, verifies the running process
+environment, confirms imports resolve from the expected checkout, and can run
+one live-config TTS smoke that must produce mono 48 kHz Ogg/Opus. Omit
+`--skip-bridge-health` when the Baileys WhatsApp bridge is also enabled and you
+want the verifier to require the local bridge `/health` endpoint to be
+connected.
+
 You can check whether the gateway found ffmpeg via the health endpoint:
 
 ```bash

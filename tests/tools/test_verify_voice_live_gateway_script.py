@@ -314,3 +314,64 @@ def test_main_skips_ffprobe_when_tts_smoke_is_disabled(
     output = json.loads(capsys.readouterr().out)
     assert output["success"] is True
     assert labels == ["Hermes Python"]
+
+
+def test_main_can_skip_bridge_health_for_cloud_only_gateway(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+):
+    script = _load_script_module()
+    live_root = tmp_path / "hermes"
+    _write_voice_native_root(live_root)
+    bridge_bin = live_root / "scripts" / "whatsapp-bridge" / "node_modules" / ".bin"
+
+    monkeypatch.setattr(script, "resolve_executable", lambda value, *, label: value)
+    monkeypatch.setattr(
+        script,
+        "get_service_state",
+        lambda *_args, **_kwargs: {
+            "ActiveState": "active",
+            "MainPID": "123",
+            "Environment": (
+                f"PYTHONPATH={live_root} PATH=/usr/bin:{bridge_bin}"
+            ),
+            "DropInPaths": "/drop-in.conf",
+        },
+    )
+    monkeypatch.setattr(
+        script,
+        "read_process_env",
+        lambda _pid: {"PYTHONPATH": str(live_root), "PATH": f"/usr/bin:{bridge_bin}"},
+    )
+    monkeypatch.setattr(
+        script,
+        "import_smoke",
+        lambda **_kwargs: {"tools.tts_tool": str(live_root / "tools" / "tts_tool.py")},
+    )
+
+    def fail_bridge_health(*_args, **_kwargs):
+        raise AssertionError("bridge health should be skipped")
+
+    monkeypatch.setattr(script, "get_bridge_health", fail_bridge_health)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify_voice_live_gateway.py",
+            "--live-hermes-root",
+            str(live_root),
+            "--python-bin",
+            "/python",
+            "--skip-bridge-health",
+        ],
+    )
+
+    assert script.main() == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["checks"]["bridge_health"] == {
+        "success": True,
+        "skipped": True,
+        "reason": "--skip-bridge-health was provided",
+    }

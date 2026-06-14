@@ -200,6 +200,41 @@ tts:
 
 With that shape Hermes asks `voice` for `.ogg` output up front, and the bridge sends it as a native voice note without a WAV or MP3 intermediate.
 
+After installing a local gateway service, verify the running process is using
+the expected voice-native checkout before relying on WhatsApp delivery:
+
+```bash
+scripts/verify_voice_live_gateway.py \
+  --live-hermes-root /path/to/hermes-agent \
+  --python-bin ~/.hermes/hermes-agent/venv/bin/python \
+  --hermes-home ~/.hermes \
+  --run-tts-smoke
+```
+
+The live verifier checks the systemd user service, confirms `PYTHONPATH` points
+at the expected checkout, confirms imports resolve from that checkout, checks
+the local bridge `/health` endpoint, and optionally generates one real
+WhatsApp-ready Ogg/Opus TTS file from the live config.
+
+For a temporary checkout-based deployment, add a systemd user-service drop-in
+that points the gateway at that checkout, then restart:
+
+```ini
+# ~/.config/systemd/user/hermes-gateway.service.d/voice-stack.conf
+[Service]
+Environment="PYTHONPATH=/path/to/hermes-agent"
+Environment="PATH=/path/to/hermes-agent/scripts/whatsapp-bridge/node_modules/.bin:/usr/bin:/home/you/.local/bin:/home/you/.cargo/bin:/usr/local/bin:/bin"
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user restart hermes-gateway.service
+```
+
+Rollback is removing that drop-in, reloading systemd, and restarting the
+gateway. Run `verify_voice_live_gateway.py` after either deploy or rollback so
+you know which checkout the live process imported.
+
 ---
 
 ## Message Formatting & Delivery
