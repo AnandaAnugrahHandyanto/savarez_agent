@@ -10,6 +10,7 @@ Improvements over v2:
   - Historical (reference-only) section headings replace "Next Steps"/"Remaining Work" to avoid reading as active instructions
   - Clear separator when summary merges into tail message
   - Iterative summary updates (preserves info across multiple compactions)
+  - Historical knowledge checkpoints + retrieval index for durable milestones
   - Token-budget tail protection instead of fixed message count
   - Tool output pruning before LLM summarization (cheap pre-pass)
   - Scaled summary budget (proportional to compressed content)
@@ -36,7 +37,9 @@ logger = logging.getLogger(__name__)
 
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 HISTORICAL_IN_PROGRESS_HEADING = "## Historical In-Progress State"
+HISTORICAL_KNOWLEDGE_CHECKPOINTS_HEADING = "## Historical Knowledge Checkpoints"
 HISTORICAL_PENDING_ASKS_HEADING = "## Historical Pending User Asks"
+HISTORICAL_RETRIEVAL_INDEX_HEADING = "## Historical Retrieval Index"
 HISTORICAL_REMAINING_WORK_HEADING = "## Historical Remaining Work"
 
 
@@ -1210,6 +1213,10 @@ class ContextCompressor(ContextEngine):
                     break
             return "\n".join(f"- {item}" for item in unique) if unique else "None."
 
+        def _short(value: str, limit: int = 220) -> str:
+            value = " ".join((value or "").split())
+            return value if len(value) <= limit else value[: limit - 3].rstrip() + "..."
+
         completed: list[str] = []
         for idx, item in enumerate((assistant_actions + tool_actions)[:12], start=1):
             completed.append(f"{idx}. {item}")
@@ -1225,6 +1232,35 @@ class ContextCompressor(ContextEngine):
                 "\n\nPrevious compaction summary was present and should still be treated as "
                 "background continuity context, but the latest LLM summary update failed."
             )
+
+        checkpoint_source_items = completed[:5]
+        checkpoint_files = ", ".join(relevant_files[:4]) if relevant_files else "None."
+        checkpoint_lines: list[str] = []
+        for idx, item in enumerate(checkpoint_source_items, start=1):
+            checkpoint_lines.append(
+                f"- id: cp-fallback-{idx:02d} | importance: 0.50 | "
+                "condition: relevant when recovering this compacted window | "
+                f"evidence: {_short(item)} | "
+                "result: captured by deterministic fallback; verify exact state from protected tail/current files | "
+                f"files: {checkpoint_files} | tags: fallback, compression"
+            )
+        if not checkpoint_lines:
+            checkpoint_lines.append("None.")
+
+        retrieval_lines: list[str] = []
+        if checkpoint_source_items:
+            checkpoint_ids = ", ".join(
+                f"cp-fallback-{idx:02d}"
+                for idx in range(1, len(checkpoint_source_items) + 1)
+            )
+            retrieval_lines.append(f"- fallback,compression -> {checkpoint_ids}")
+            if relevant_files:
+                retrieval_lines.extend(
+                    f"- {path} -> cp-fallback-01"
+                    for path in relevant_files[:5]
+                )
+        if not retrieval_lines:
+            retrieval_lines.append("None.")
 
         reason_text = f" Summary failure reason: {reason}." if reason else ""
         body = f"""{HISTORICAL_TASK_HEADING}
@@ -1253,6 +1289,9 @@ Unknown from deterministic fallback. Inspect current repository/session state if
 ## Key Decisions
 None recoverable from deterministic fallback.
 
+{HISTORICAL_KNOWLEDGE_CHECKPOINTS_HEADING}
+{chr(10).join(checkpoint_lines)}
+
 ## Resolved Questions
 None recoverable from deterministic fallback.
 
@@ -1261,6 +1300,9 @@ None recoverable from deterministic fallback.
 
 ## Relevant Files
 {_bullets(relevant_files, limit=12)}
+
+{HISTORICAL_RETRIEVAL_INDEX_HEADING}
+{chr(10).join(retrieval_lines)}
 
 {HISTORICAL_REMAINING_WORK_HEADING}
 Continue from the most recent unfulfilled user ask and protected tail messages. Verify state with tools before making claims.
@@ -1440,6 +1482,16 @@ Be specific with file paths, commands, line numbers, and results.]
 ## Key Decisions
 [Important technical decisions and WHY they were made]
 
+{HISTORICAL_KNOWLEDGE_CHECKPOINTS_HEADING}
+[Chronological milestone ledger for durable process/results. Include only
+checkpoints that are useful later because they record a decision, completed
+step, verified result, blocker, artifact, or important observation. Use this
+record shape:
+- id: cp-N | importance: 0.00-1.00 | condition: when this checkpoint matters | evidence: concrete source/tool/file/output | result: what changed or was learned | files: path1, path2 | tags: tag1, tag2
+Prefer 3-10 high-signal checkpoints over a transcript-like list. Merge
+duplicates instead of adding near-identical checkpoints. Write "None." if no
+durable checkpoint exists.]
+
 ## Resolved Questions
 [Questions the user asked that were ALREADY answered — include the answer so it is not repeated]
 
@@ -1448,6 +1500,11 @@ Be specific with file paths, commands, line numbers, and results.]
 
 ## Relevant Files
 [Files read, modified, or created — with brief note on each]
+
+{HISTORICAL_RETRIEVAL_INDEX_HEADING}
+[Lookup hints for future retrieval. Map compact keys to checkpoint IDs:
+- tag/file/question/decision-key -> cp-N, cp-M
+Use only keys grounded in the summarized turns. Keep this short and practical.]
 
 {HISTORICAL_REMAINING_WORK_HEADING}
 [What remains to be done — framed as STALE context for reference only. The agent must NOT resume this work unless the latest user message explicitly asks for it.]
@@ -1471,7 +1528,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Maintain "{HISTORICAL_KNOWLEDGE_CHECKPOINTS_HEADING}" as an append/update ledger: keep stable checkpoint IDs when possible, add checkpoints only for durable milestones, merge duplicate or superseded checkpoints, and keep "{HISTORICAL_RETRIEVAL_INDEX_HEADING}" aligned with the checkpoint IDs. Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
 
 {_template_sections}"""
         else:
