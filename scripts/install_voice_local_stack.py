@@ -147,7 +147,7 @@ def render_sidecar_unit(
         [
             "[Unit]",
             "Description=Voice WebRTC Sidecar",
-            "After=network.target voice-daemon.service",
+            "After=network.target voiced.service",
             "",
             "[Service]",
             "Type=simple",

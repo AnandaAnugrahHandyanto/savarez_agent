@@ -42,6 +42,8 @@ def test_render_sidecar_unit_points_at_voice_repo_and_pcm_sink(tmp_path: Path):
     )
 
     assert "Description=Voice WebRTC Sidecar" in unit
+    assert "After=network.target voiced.service" in unit
+    assert "voice-daemon.service" not in unit
     assert f"WorkingDirectory={voice_repo}" in unit
     assert 'Environment="VOICE_BIN=/home/user/.local/bin/voice"' in unit
     assert "/tmp/voice-webrtc-venv/bin/python" in unit
