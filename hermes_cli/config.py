@@ -1810,6 +1810,10 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Skill frontmatter descriptions shown in the prompt skill index.
+        # Set description_max_length to 0 to disable truncation.
+        "description_max_length": 60,
+        "description_truncation_suffix": "...",
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled
