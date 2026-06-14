@@ -14,9 +14,14 @@ Tools:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Dict, Optional
 
+from hermes_constants import get_hermes_home
 from plugins.google_meet import process_manager as pm
+
+
+DEFAULT_MEET_JOIN_DURATION = "120m"
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +48,24 @@ def check_meet_requirements() -> bool:
     except ImportError:
         return False
     return True
+
+
+def _default_auth_state() -> Optional[str]:
+    """Return the saved local Meet auth state path when one is available."""
+    path = Path(get_hermes_home()) / "workspace" / "meetings" / "auth.json"
+    return str(path) if path.is_file() else None
+
+
+def _resolve_duration(raw: Any) -> Optional[str]:
+    """Resolve the bot's auto-leave duration.
+
+    An explicit value always wins. Otherwise fall back to a bounded default so
+    a "join and take notes" bot persists beyond normal session-end cleanup
+    instead of being treated as a durationless background process.
+    """
+    if raw:
+        return str(raw)
+    return DEFAULT_MEET_JOIN_DURATION
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +276,7 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
             res = client.start_bot(
                 url=url,
                 guest_name=str(args.get("guest_name") or "Hermes Agent"),
-                duration=str(args.get("duration")) if args.get("duration") else None,
+                duration=_resolve_duration(args.get("duration")),
                 headed=bool(args.get("headed", False)),
                 mode=mode,
             )
@@ -272,7 +295,8 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
         url=url,
         headed=bool(args.get("headed", False)),
         guest_name=str(args.get("guest_name") or "Hermes Agent"),
-        duration=str(args.get("duration")) if args.get("duration") else None,
+        duration=_resolve_duration(args.get("duration")),
+        auth_state=_default_auth_state(),
         mode=mode,
     )
     return _json({"success": bool(res.get("ok")), **res})

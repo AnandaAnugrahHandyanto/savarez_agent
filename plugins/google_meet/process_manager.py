@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -33,7 +34,7 @@ from hermes_constants import get_hermes_home
 # .active.json holds:
 #   {"pid": 12345, "meeting_id": "abc-defg-hij", "out_dir": "...",
 #    "url": "https://meet.google.com/...", "started_at": 1714159200.0,
-#    "session_id": "optional"}
+#    "duration": "30m", "session_id": "optional"}
 
 
 def _root() -> Path:
@@ -75,6 +76,60 @@ def _pid_alive(pid: int) -> bool:
     # Use the cross-platform existence check.
     from gateway.status import _pid_exists
     return _pid_exists(pid)
+
+
+def _record_stop_reason(active: Dict[str, Any], reason: str) -> None:
+    out_dir = active.get("out_dir")
+    if not out_dir:
+        return
+    status_path = Path(out_dir) / "status.json"
+    status: Dict[str, Any] = {}
+    if status_path.is_file():
+        try:
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+        except Exception:
+            status = {}
+    status.update({
+        "meetingId": active.get("meeting_id"),
+        "url": active.get("url"),
+        "exited": True,
+        "leaveReason": (reason or "requested").strip() or "requested",
+    })
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = status_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(status, indent=2), encoding="utf-8")
+    tmp.replace(status_path)
+
+
+def _headed_launch_prefix() -> tuple[list[str], bool, Optional[str]]:
+    """Return an argv prefix for headed browser runs in service contexts."""
+    policy = os.environ.get("HERMES_MEET_XVFB", "auto").strip().lower()
+    display = os.environ.get("DISPLAY", "").strip()
+    disabled = {"0", "false", "no", "off", "disable", "disabled"}
+    forced = {"1", "true", "yes", "on", "force", "forced"}
+
+    if policy in disabled:
+        if display:
+            return [], False, None
+        return [], False, (
+            "headed Meet launch requested, but DISPLAY is unset and "
+            "HERMES_MEET_XVFB disables xvfb-run"
+        )
+
+    if display and policy not in forced:
+        return [], False, None
+
+    xvfb_run = shutil.which("xvfb-run")
+    if xvfb_run:
+        return [xvfb_run, "-a"], True, None
+
+    if display:
+        return [], False, None
+
+    return [], False, (
+        "headed Meet launch requested, but DISPLAY is unset and xvfb-run "
+        "is unavailable; set headed=false or install xvfb-run"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -155,13 +210,21 @@ def start(
     if realtime_api_key:
         env["HERMES_MEET_REALTIME_KEY"] = realtime_api_key
 
+    xvfb = False
+    cmd = [sys.executable, "-m", "plugins.google_meet.meet_bot"]
+    if headed:
+        prefix, xvfb, error = _headed_launch_prefix()
+        if error:
+            return {"ok": False, "error": error}
+        cmd = [*prefix, *cmd]
+
     log_path = out / "bot.log"
     # Detach: stdin=devnull, stdout/stderr → log file, new session so parent
     # signals don't propagate.
     log_fh = open(log_path, "ab", buffering=0)
     try:
         proc = subprocess.Popen(
-            [sys.executable, "-m", "plugins.google_meet.meet_bot"],
+            cmd,
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
             stderr=subprocess.STDOUT,
@@ -179,9 +242,12 @@ def start(
         "out_dir": str(out),
         "url": url,
         "started_at": time.time(),
+        "duration": duration,
         "session_id": session_id,
         "log_path": str(log_path),
         "mode": mode,
+        "headed": bool(headed),
+        "xvfb": bool(xvfb),
     }
     _write_active(record)
     return {"ok": True, **record}
@@ -204,6 +270,17 @@ def status() -> Dict[str, Any]:
         except Exception:
             pass
 
+    if pid and not alive:
+        _clear_active()
+        return {
+            "ok": False,
+            "reason": "no active meeting",
+            "lastStatus": bot_status,
+            "meetingId": active.get("meeting_id"),
+            "url": active.get("url"),
+            "outDir": active.get("out_dir"),
+        }
+
     return {
         "ok": True,
         "alive": alive,
@@ -211,6 +288,7 @@ def status() -> Dict[str, Any]:
         "meetingId": active.get("meeting_id"),
         "url": active.get("url"),
         "startedAt": active.get("started_at"),
+        "duration": active.get("duration"),
         "outDir": active.get("out_dir"),
         **bot_status,
     }
@@ -314,6 +392,7 @@ def stop(*, reason: str = "requested") -> Dict[str, Any]:
             except ProcessLookupError:
                 pass
 
+    _record_stop_reason(active, reason)
     _clear_active()
     return {
         "ok": True,
