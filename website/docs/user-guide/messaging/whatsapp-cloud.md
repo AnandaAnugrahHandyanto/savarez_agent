@@ -313,6 +313,20 @@ A passing run proves the configured provider returns a `[[audio_as_voice]]`
 media tag and real mono 48 kHz Ogg/Opus audio suitable for WhatsApp voice-note
 delivery.
 
+For a single local preflight that uses an isolated Hermes home and leaves the
+live gateway untouched, run:
+
+```bash
+scripts/verify_voice_local_stack.py \
+  --voice-bin /path/to/voice \
+  --voice-repo /path/to/voice
+```
+
+That aggregate check starts the local Hermes CLI, verifies command-provider
+Ogg/Opus output, verifies the raw `voice stream` PCM contract, and then runs
+the full-duplex sidecar smoke from the `voice` checkout. Pass
+`--skip-full-duplex` when the WebRTC sidecar dependencies are not installed yet.
+
 You can check whether the gateway found ffmpeg via the health endpoint:
 
 ```bash
