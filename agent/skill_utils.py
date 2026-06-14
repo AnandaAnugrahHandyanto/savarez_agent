@@ -614,16 +614,102 @@ def resolve_skill_config_values(
 
 # ── Description extraction ────────────────────────────────────────────────
 
+DEFAULT_SKILL_DESCRIPTION_MAX_LENGTH = 60
+DEFAULT_SKILL_DESCRIPTION_TRUNCATION_SUFFIX = "..."
+
+# (path, mtime_ns, size) -> (max_length, suffix)
+_SKILL_DESCRIPTION_CONFIG_CACHE: Dict[Tuple[str, int, int], Tuple[Optional[int], str]] = {}
+
+
+def _skill_description_config_cache_clear() -> None:
+    """Test hook — drop the in-process description truncation cache."""
+    _SKILL_DESCRIPTION_CONFIG_CACHE.clear()
+
+
+def _coerce_description_max_length(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return DEFAULT_SKILL_DESCRIPTION_MAX_LENGTH
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_SKILL_DESCRIPTION_MAX_LENGTH
+    # Non-positive means "do not truncate", useful for local/private installs
+    # that prefer richer routing descriptions over a strict prompt budget.
+    return limit if limit > 0 else None
+
+
+def _load_skill_description_truncation_config() -> Tuple[Optional[int], str]:
+    config_path = get_config_path()
+    if not config_path.exists():
+        return DEFAULT_SKILL_DESCRIPTION_MAX_LENGTH, DEFAULT_SKILL_DESCRIPTION_TRUNCATION_SUFFIX
+
+    try:
+        stat = config_path.stat()
+        cache_key: Tuple[str, int, int] = (
+            str(config_path),
+            stat.st_mtime_ns,
+            stat.st_size,
+        )
+    except OSError:
+        cache_key = None  # type: ignore[assignment]
+
+    if cache_key is not None:
+        cached = _SKILL_DESCRIPTION_CONFIG_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        result = (
+            DEFAULT_SKILL_DESCRIPTION_MAX_LENGTH,
+            DEFAULT_SKILL_DESCRIPTION_TRUNCATION_SUFFIX,
+        )
+    else:
+        skills_cfg = parsed.get("skills") if isinstance(parsed, dict) else None
+        if not isinstance(skills_cfg, dict):
+            result = (
+                DEFAULT_SKILL_DESCRIPTION_MAX_LENGTH,
+                DEFAULT_SKILL_DESCRIPTION_TRUNCATION_SUFFIX,
+            )
+        else:
+            result = (
+                _coerce_description_max_length(
+                    skills_cfg.get(
+                        "description_max_length",
+                        DEFAULT_SKILL_DESCRIPTION_MAX_LENGTH,
+                    )
+                ),
+                str(
+                    skills_cfg.get(
+                        "description_truncation_suffix",
+                        DEFAULT_SKILL_DESCRIPTION_TRUNCATION_SUFFIX,
+                    )
+                    or ""
+                ),
+            )
+
+    if cache_key is not None:
+        _SKILL_DESCRIPTION_CONFIG_CACHE[cache_key] = result
+    return result
+
+
+def _truncate_skill_description(desc: str, max_length: Optional[int], suffix: str) -> str:
+    if max_length is None or len(desc) <= max_length:
+        return desc
+    if not suffix or len(suffix) >= max_length:
+        return desc[:max_length]
+    return desc[: max_length - len(suffix)] + suffix
+
 
 def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
-    """Extract a truncated description from parsed frontmatter."""
+    """Extract a configured-length description from parsed frontmatter."""
     raw_desc = frontmatter.get("description", "")
     if not raw_desc:
         return ""
     desc = str(raw_desc).strip().strip("'\"")
-    if len(desc) > 60:
-        return desc[:57] + "..."
-    return desc
+    max_length, suffix = _load_skill_description_truncation_config()
+    return _truncate_skill_description(desc, max_length, suffix)
 
 
 # ── File iteration ────────────────────────────────────────────────────────

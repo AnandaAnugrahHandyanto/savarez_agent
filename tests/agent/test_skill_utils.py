@@ -4,6 +4,8 @@ from unittest.mock import patch
 
 from agent.skill_utils import (
     extract_skill_conditions,
+    extract_skill_description,
+    _skill_description_config_cache_clear,
     iter_skill_index_files,
     skill_matches_platform,
 )
@@ -100,6 +102,60 @@ def test_iter_skill_index_files_prunes_dependency_dirs(tmp_path):
     found = list(iter_skill_index_files(tmp_path, "SKILL.md"))
 
     assert found == [real / "SKILL.md"]
+
+
+def test_extract_skill_description_uses_default_limit(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _skill_description_config_cache_clear()
+    desc = "x" * 80
+
+    assert extract_skill_description({"description": desc}) == ("x" * 57) + "..."
+
+    _skill_description_config_cache_clear()
+
+
+def test_extract_skill_description_uses_configured_limit(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "skills:\n"
+        "  description_max_length: 20\n",
+        encoding="utf-8",
+    )
+    _skill_description_config_cache_clear()
+
+    assert extract_skill_description({"description": "abcdefghij" * 4}) == "abcdefghijabcdefg..."
+
+    _skill_description_config_cache_clear()
+
+
+def test_extract_skill_description_uses_configured_suffix(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "skills:\n"
+        "  description_max_length: 12\n"
+        "  description_truncation_suffix: \" [more]\"\n",
+        encoding="utf-8",
+    )
+    _skill_description_config_cache_clear()
+
+    assert extract_skill_description({"description": "abcdefghijklmnop"}) == "abcde [more]"
+
+    _skill_description_config_cache_clear()
+
+
+def test_extract_skill_description_allows_unlimited_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "skills:\n"
+        "  description_max_length: 0\n",
+        encoding="utf-8",
+    )
+    _skill_description_config_cache_clear()
+    desc = "x" * 200
+
+    assert extract_skill_description({"description": desc}) == desc
+
+    _skill_description_config_cache_clear()
 
 
 # ── skill_matches_platform on Termux ──────────────────────────────────────
