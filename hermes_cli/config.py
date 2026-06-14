@@ -1982,6 +1982,9 @@ DEFAULT_CONFIG = {
         "reactions": False,            # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-chat/topic ephemeral system prompts (topics inherit from parent group)
         "allowed_chats": "",           # If set, bot ONLY responds in these group/supergroup chat IDs (whitelist)
+        "extra": {
+            "rich_messages": False,     # Bot API 10.1 rich messages (opt-in: blank on clients that can't render them, e.g. AyuGram)
+        },
     },
 
     # Mattermost platform settings (gateway mode)

@@ -421,6 +421,14 @@ class TelegramAdapter(BasePlatformAdapter):
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
         # Bot API 10.1 Rich Messages: send final replies via sendRichMessage
         # with the raw agent markdown so tables/task lists/etc. render natively.
+        # Opt-in (default off): clients without Bot API 10.1 rich rendering
+        # (e.g. the Telegram macOS desktop app, AyuGram) accept the message
+        # but display a BLANK bubble or "not supported" error. sendRichMessage
+        # carries no plaintext fallback and the Bot API exposes no
+        # recipient-client signal, so forcing it on silently breaks delivery.
+        # Enable per bot when every client is known to render rich content:
+        # platforms.telegram.extra.rich_messages: true
+        self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
         # Latched off after a capability failure on sendRichMessage /
         # sendRichMessageDraft (e.g. older python-telegram-bot without the
         # endpoint) so later sends skip the doomed rich attempt entirely.
@@ -954,7 +962,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self, content: str, metadata: Optional[Dict[str, Any]] = None
     ) -> bool:
         return bool(
-            not getattr(self, "_rich_send_disabled", False)
+            self._rich_messages_enabled
+            and not getattr(self, "_rich_send_disabled", False)
             and not (metadata or {}).get("expect_edits")
             and content
             and content.strip()
@@ -995,7 +1004,8 @@ class TelegramAdapter(BasePlatformAdapter):
         streams split exactly as before.
         """
         if (
-            not getattr(self, "_rich_send_disabled", False)
+            self._rich_messages_enabled
+            and not getattr(self, "_rich_send_disabled", False)
             and self._bot_supports_rich()
         ):
             return self.RICH_MESSAGE_MAX_CHARS
@@ -1184,7 +1194,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _should_attempt_rich_draft(self, content: str) -> bool:
         return bool(
-            not getattr(self, "_rich_send_disabled", False)
+            self._rich_messages_enabled
+            and not getattr(self, "_rich_send_disabled", False)
             and not getattr(self, "_rich_draft_disabled", False)
             and content
             and content.strip()
