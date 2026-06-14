@@ -985,7 +985,30 @@ class TestCallingSidecarClient:
         )
         adapter._calling_sidecar_call_ids.add("call-1")
         adapter._send_calling_sidecar_audio = AsyncMock(
-            return_value=SendResult(success=True)
+            side_effect=[
+                SendResult(
+                    success=True,
+                    raw_response={
+                        "accepted_bytes": 1920,
+                        "accepted_ms": 20,
+                        "queued_tx_bytes": 1920,
+                        "queued_tx_ms": 20,
+                        "max_tx_queue_bytes": 960000,
+                        "max_tx_queue_ms": 10000,
+                    },
+                ),
+                SendResult(
+                    success=True,
+                    raw_response={
+                        "accepted_bytes": 1920,
+                        "accepted_ms": 20,
+                        "queued_tx_bytes": 3840,
+                        "queued_tx_ms": 40,
+                        "max_tx_queue_bytes": 960000,
+                        "max_tx_queue_ms": 10000,
+                    },
+                ),
+            ]
         )
 
         result = await adapter.play_tts_text(
@@ -997,6 +1020,11 @@ class TestCallingSidecarClient:
         assert result.success is True
         assert result.raw_response["frames"] == 2
         assert result.raw_response["queued_pcm_bytes"] == len(frame) * 2
+        assert result.raw_response["queued_tx_bytes"] == 3840
+        assert result.raw_response["queued_tx_ms"] == 40
+        assert result.raw_response["max_tx_queue_bytes"] == 960000
+        assert result.raw_response["max_tx_queue_ms"] == 10000
+        assert result.raw_response["last_sidecar_response"]["accepted_ms"] == 20
         assert commands
         assert "--sample-rate 48000" in commands[0]
         assert "--frame-ms 20" in commands[0]
@@ -2887,7 +2915,11 @@ class TestSendVoice:
                 {
                     "call_id": "wacid.call/1",
                     "accepted_bytes": 1920,
+                    "accepted_ms": 20,
                     "queued_tx_bytes": 1920,
+                    "queued_tx_ms": 20,
+                    "max_tx_queue_bytes": 960000,
+                    "max_tx_queue_ms": 10000,
                     "audio": {
                         "sample_rate": 48000,
                         "channels": 1,
@@ -2924,6 +2956,9 @@ class TestSendVoice:
         assert pcm.startswith(b"\x01\x00\xff\xff")
         assert len(pcm) == 1920
         assert result.raw_response["queued_pcm_bytes"] == 4
+        assert result.raw_response["queued_tx_bytes"] == 1920
+        assert result.raw_response["queued_tx_ms"] == 20
+        assert result.raw_response["last_sidecar_response"]["accepted_ms"] == 20
 
     @pytest.mark.asyncio
     async def test_warn_once_no_ffmpeg_actually_only_warns_once(self):

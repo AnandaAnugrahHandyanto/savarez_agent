@@ -148,6 +148,12 @@ CALLING_AUDIO_CONTRACT = {
     "max_outbound_queue_bytes": CALLING_PCM_MAX_OUTBOUND_QUEUE_BYTES,
     "max_inbound_queue_bytes": CALLING_PCM_MAX_INBOUND_QUEUE_BYTES,
 }
+CALLING_SIDECAR_TX_QUEUE_FIELDS = (
+    "queued_tx_bytes",
+    "queued_tx_ms",
+    "max_tx_queue_bytes",
+    "max_tx_queue_ms",
+)
 GRAPH_API_BASE = "https://graph.facebook.com"
 # Meta retries failed webhooks for up to 7 days. We don't need to remember
 # every wamid for the full retry window — the practical risk is duplicate
@@ -552,6 +558,19 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if value is not None:
                 normalized[field] = value
         return normalized, None
+
+    @staticmethod
+    def _attach_calling_sidecar_tx_summary(
+        summary: Dict[str, Any],
+        raw_response: Any,
+    ) -> Dict[str, Any]:
+        if not isinstance(raw_response, dict):
+            return summary
+        summary["last_sidecar_response"] = raw_response
+        for field in CALLING_SIDECAR_TX_QUEUE_FIELDS:
+            if field in raw_response:
+                summary[field] = raw_response[field]
+        return summary
 
     async def _ensure_calling_sidecar_contract(self) -> Optional[Dict[str, Any]]:
         """Fetch the optional sidecar contract once per adapter lifetime."""
@@ -999,6 +1018,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         frame_bytes = int(audio["frame_bytes"])
         frame_ms = int(audio["frame_ms"])
         sequence = 0
+        last_sidecar_response: Any = None
         for offset in range(0, len(pcm), frame_bytes):
             frame = pcm[offset : offset + frame_bytes]
             if len(frame) < frame_bytes:
@@ -1019,18 +1039,23 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if not result.success:
                 return result
 
+            last_sidecar_response = result.raw_response
             sequence += 1
             if offset + frame_bytes < len(pcm):
                 await asyncio.sleep(frame_ms / 1_000)
 
-        return SendResult(
-            success=True,
-            raw_response={
+        raw_response = self._attach_calling_sidecar_tx_summary(
+            {
                 "call_id": call_id,
                 "queued_pcm_bytes": len(pcm),
                 "frames": sequence,
                 "audio": audio,
             },
+            last_sidecar_response,
+        )
+        return SendResult(
+            success=True,
+            raw_response=raw_response,
         )
 
     async def _send_calling_sidecar_tts_stream_command(
@@ -1163,6 +1188,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             sequence = 0
             accepted_bytes = 0
             next_frame_at: Optional[float] = None
+            last_sidecar_response: Any = None
 
             async def pace_frame() -> None:
                 """Keep sidecar outbound audio close to WebRTC playback time."""
@@ -1196,6 +1222,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             await terminate_process(proc)
                             await cancel_stderr_task()
                             return result
+                        last_sidecar_response = result.raw_response
                         sequence += 1
                         accepted_bytes += len(frame)
 
@@ -1208,6 +1235,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         await terminate_process(proc)
                         await cancel_stderr_task()
                         return result
+                    last_sidecar_response = result.raw_response
                     sequence += 1
                     accepted_bytes += len(pending)
 
@@ -1243,14 +1271,18 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     error="TTS stream command produced no PCM frames",
                 )
 
-        return SendResult(
-            success=True,
-            raw_response={
+        raw_response = self._attach_calling_sidecar_tx_summary(
+            {
                 "call_id": normalized_call_id,
                 "queued_pcm_bytes": accepted_bytes,
                 "frames": sequence,
                 "audio": audio,
             },
+            last_sidecar_response,
+        )
+        return SendResult(
+            success=True,
+            raw_response=raw_response,
         )
 
     async def play_tts_text(
