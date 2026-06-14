@@ -1995,6 +1995,7 @@ class TestPromptsCommand:
 
     def test_prompts_is_cli_only(self):
         cmd = resolve_command("prompts")
+        assert cmd is not None
         assert cmd.cli_only is True
 
     def test_prompts_not_in_gateway_known_commands(self):
