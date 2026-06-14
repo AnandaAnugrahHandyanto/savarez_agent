@@ -1,9 +1,9 @@
 """Tests for Bot API 10.1 Rich Messages (sendRichMessage) on Telegram.
 
-Final / new-message replies opportunistically use ``sendRichMessage`` with the
-RAW agent markdown so tables, task lists, etc. render natively. The legacy
-MarkdownV2 ``send_message`` path stays as the fallback for unsupported /
-oversized content and for transports that lack the endpoint.
+When explicitly enabled, final / new-message replies use ``sendRichMessage``
+with the RAW agent markdown so tables, task lists, etc. render natively. The
+legacy MarkdownV2 ``send_message`` path stays as the fallback for disabled,
+unsupported, or oversized content and for transports that lack the endpoint.
 
 The ``telegram`` package is mocked by ``tests/gateway/conftest.py``
 (:func:`_ensure_telegram_mock`), so these tests construct a real
@@ -42,7 +42,8 @@ PTB_INVALID_TOKEN_404 = InvalidToken(
 
 def _make_adapter(extra=None):
     """Build a TelegramAdapter with a mock bot wired for the rich path."""
-    config = PlatformConfig(enabled=True, token="fake-token", extra=extra or {})
+    config_extra = {"rich_messages": True} if extra is None else extra
+    config = PlatformConfig(enabled=True, token="fake-token", extra=config_extra)
     adapter = TelegramAdapter(config)
     bot = MagicMock()
     # do_api_request as an AsyncMock makes inspect.iscoroutinefunction(...) True,
@@ -106,16 +107,25 @@ async def test_rich_happy_path_sends_raw_markdown():
 
 
 @pytest.mark.asyncio
-async def test_legacy_rich_messages_config_is_ignored():
+async def test_rich_messages_default_to_legacy_send():
+    adapter = _make_adapter(extra={})
+
+    result = await adapter.send("12345", RICH_CONTENT)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_explicit_rich_messages_false_uses_legacy_send():
     adapter = _make_adapter(extra={"rich_messages": False})
 
     result = await adapter.send("12345", RICH_CONTENT)
 
     assert result.success is True
-    # The legacy toggle was removed; stale config entries must not disable the
-    # rich path.
-    adapter._bot.do_api_request.assert_awaited_once()
-    adapter._bot.send_message.assert_not_called()
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -238,7 +248,7 @@ async def test_real_ptb_endpoint_missing_falls_back_and_latches_off(exc):
 
 @pytest.mark.asyncio
 async def test_rich_payload_preserves_link_preview_disable():
-    adapter = _make_adapter(extra={"disable_link_previews": True})
+    adapter = _make_adapter(extra={"rich_messages": True, "disable_link_previews": True})
 
     result = await adapter.send("12345", "See https://example.com")
 
@@ -430,6 +440,17 @@ async def test_rich_draft_oversized_uses_legacy():
     adapter._bot.send_message_draft.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_rich_draft_disabled_uses_legacy():
+    adapter = _make_adapter(extra={"rich_messages": False})
+
+    result = await adapter.send_draft("12345", draft_id=7, content=RICH_CONTENT)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message_draft.assert_awaited_once()
+
+
 # ----------------------------------------------------------------------
 # prefers_fresh_final_streaming: the stream consumer asks the adapter whether
 # to finalize a streamed reply by sending a fresh (rich) message + deleting the
@@ -441,9 +462,9 @@ def test_prefers_fresh_final_streaming_when_rich_enabled():
     assert adapter.prefers_fresh_final_streaming(RICH_CONTENT) is True
 
 
-def test_prefers_fresh_final_streaming_ignores_legacy_toggle():
+def test_prefers_fresh_final_streaming_disabled_when_rich_opt_out():
     adapter = _make_adapter(extra={"rich_messages": False})
-    assert adapter.prefers_fresh_final_streaming(RICH_CONTENT) is True
+    assert adapter.prefers_fresh_final_streaming(RICH_CONTENT) is False
 
 
 # ----------------------------------------------------------------------
@@ -456,9 +477,9 @@ def test_streaming_overflow_limit_is_rich_cap_when_enabled():
     assert adapter.streaming_overflow_limit() == TelegramAdapter.RICH_MESSAGE_MAX_CHARS
 
 
-def test_streaming_overflow_limit_ignores_legacy_toggle():
+def test_streaming_overflow_limit_none_when_rich_opt_out():
     adapter = _make_adapter(extra={"rich_messages": False})
-    assert adapter.streaming_overflow_limit() == TelegramAdapter.RICH_MESSAGE_MAX_CHARS
+    assert adapter.streaming_overflow_limit() is None
 
 
 def test_streaming_overflow_limit_none_when_rich_latched_off():
