@@ -82,9 +82,11 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
 
       try {
         if (activeSessionId) {
-          await requestGateway('slash.exec', {
+          await requestGateway('config.set', {
+            confirm_expensive_model: true,
+            key: 'model',
             session_id: activeSessionId,
-            command: `/model ${selection.model} --provider ${selection.provider}${selection.persistGlobal ? ' --global' : ''}`
+            value: `${selection.model} --provider ${selection.provider}${selection.persistGlobal ? ' --global' : ''}`
           })
 
           if (selection.persistGlobal) {
