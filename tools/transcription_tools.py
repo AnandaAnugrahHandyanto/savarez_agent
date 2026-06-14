@@ -170,9 +170,23 @@ def _get_local_command_template() -> Optional[str]:
         quoted_binary = shlex.quote(whisper_binary)
         return (
             f"{quoted_binary} {{input_path}} --model {{model}} --output_format txt "
-            "--output_dir {output_dir} --language {language}"
+            "--output_dir {output_dir}{language_arg}"
         )
     return None
+
+
+def _configured_local_stt_language() -> Optional[str]:
+    """Return the configured local STT language, or None for auto-detect.
+
+    A blank config/env value is intentional: local Whisper backends should
+    auto-detect the spoken language so mixed-language voice notes are not
+    silently forced through English.
+    """
+    configured = _load_stt_config().get("local", {}).get("language")
+    if configured is None:
+        configured = os.getenv(LOCAL_STT_LANGUAGE_ENV)
+    configured = str(configured or "").strip()
+    return configured or None
 
 
 def _has_local_command() -> bool:
@@ -1128,14 +1142,10 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             _local_model_name = model_name
 
         # Language: config.yaml (stt.local.language) > env var > auto-detect.
-        _forced_lang = (
-            _load_stt_config().get("local", {}).get("language")
-            or os.getenv(LOCAL_STT_LANGUAGE_ENV)
-            or None
-        )
+        forced_lang = _configured_local_stt_language()
         transcribe_kwargs = {"beam_size": 5}
-        if _forced_lang:
-            transcribe_kwargs["language"] = _forced_lang
+        if forced_lang:
+            transcribe_kwargs["language"] = forced_lang
 
         try:
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)
@@ -1210,12 +1220,12 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             ),
         }
 
-    # Language: config.yaml (stt.local.language) > env var > "en" default.
-    language = (
-        _load_stt_config().get("local", {}).get("language")
-        or os.getenv(LOCAL_STT_LANGUAGE_ENV)
-        or DEFAULT_LOCAL_STT_LANGUAGE
-    )
+    # Language: config.yaml (stt.local.language) > env var > auto-detect.
+    configured_language = _configured_local_stt_language()
+    # Keep legacy custom-template behavior: templates that explicitly include
+    # {language} still receive a concrete token even when no language is set.
+    language = configured_language or DEFAULT_LOCAL_STT_LANGUAGE
+    language_arg = f" --language {shlex.quote(configured_language)}" if configured_language else ""
     normalized_model = _normalize_local_command_model(model_name)
 
     try:
@@ -1228,6 +1238,7 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
                 input_path=shlex.quote(prepared_input),
                 output_dir=shlex.quote(output_dir),
                 language=shlex.quote(language),
+                language_arg=language_arg,
                 model=shlex.quote(normalized_model),
             )
             # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.

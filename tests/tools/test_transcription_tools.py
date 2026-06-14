@@ -425,6 +425,169 @@ class TestTranscribeLocalCommand:
         assert result["transcript"] == "hello from local command"
         assert result["provider"] == "local_command"
 
+    def test_auto_detected_command_omits_language_when_blank(self, monkeypatch, sample_ogg, tmp_path):
+        out_dir = tmp_path / "local-out"
+        out_dir.mkdir()
+        captured_commands = []
+
+        monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
+        monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+        monkeypatch.setattr("tools.transcription_tools._load_stt_config", lambda: {"local": {"language": ""}})
+        monkeypatch.setattr("tools.transcription_tools._find_whisper_binary", lambda: "/usr/bin/whisper")
+        monkeypatch.setattr("tools.transcription_tools._find_ffmpeg_binary", lambda: "/usr/bin/ffmpeg")
+
+        def fake_tempdir(prefix=None):
+            class _TempDir:
+                def __enter__(self_inner):
+                    return str(out_dir)
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    return False
+
+            return _TempDir()
+
+        def fake_run(cmd, *args, **kwargs):
+            captured_commands.append(cmd)
+            if isinstance(cmd, list) and cmd[0] == "/usr/bin/ffmpeg":
+                with open(cmd[-1], "wb") as handle:
+                    handle.write(b"RIFF....WAVEfmt ")
+            else:
+                (out_dir / "test.txt").write_text("tere hello\n", encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir)
+        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+
+        from tools.transcription_tools import _transcribe_local_command
+
+        result = _transcribe_local_command(sample_ogg, "base")
+
+        assert result["success"] is True
+        whisper_cmd = captured_commands[-1]
+        assert whisper_cmd[0] == "/usr/bin/whisper"
+        assert "--language" not in whisper_cmd
+
+    def test_auto_detected_command_includes_explicit_language(self, monkeypatch, sample_ogg, tmp_path):
+        out_dir = tmp_path / "local-out"
+        out_dir.mkdir()
+        captured_commands = []
+
+        monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
+        monkeypatch.setenv("HERMES_LOCAL_STT_LANGUAGE", "et")
+        monkeypatch.setattr("tools.transcription_tools._load_stt_config", lambda: {})
+        monkeypatch.setattr("tools.transcription_tools._find_whisper_binary", lambda: "/usr/bin/whisper")
+        monkeypatch.setattr("tools.transcription_tools._find_ffmpeg_binary", lambda: "/usr/bin/ffmpeg")
+
+        def fake_tempdir(prefix=None):
+            class _TempDir:
+                def __enter__(self_inner):
+                    return str(out_dir)
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    return False
+
+            return _TempDir()
+
+        def fake_run(cmd, *args, **kwargs):
+            captured_commands.append(cmd)
+            if isinstance(cmd, list) and cmd[0] == "/usr/bin/ffmpeg":
+                with open(cmd[-1], "wb") as handle:
+                    handle.write(b"RIFF....WAVEfmt ")
+            else:
+                (out_dir / "test.txt").write_text("tere\n", encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir)
+        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+
+        from tools.transcription_tools import _transcribe_local_command
+
+        result = _transcribe_local_command(sample_ogg, "base")
+
+        assert result["success"] is True
+        whisper_cmd = captured_commands[-1]
+        assert "--language" in whisper_cmd
+        assert "et" in whisper_cmd
+
+    def test_custom_command_template_keeps_default_language_token(self, monkeypatch, sample_ogg, tmp_path):
+        out_dir = tmp_path / "local-out"
+        out_dir.mkdir()
+        captured_commands = []
+
+        monkeypatch.setenv(
+            "HERMES_LOCAL_STT_COMMAND",
+            "whisper {input_path} --output_dir {output_dir} --language {language}",
+        )
+        monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+        monkeypatch.setattr("tools.transcription_tools._load_stt_config", lambda: {"local": {"language": ""}})
+        monkeypatch.setattr("tools.transcription_tools._find_ffmpeg_binary", lambda: "/usr/bin/ffmpeg")
+
+        def fake_tempdir(prefix=None):
+            class _TempDir:
+                def __enter__(self_inner):
+                    return str(out_dir)
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    return False
+
+            return _TempDir()
+
+        def fake_run(cmd, *args, **kwargs):
+            captured_commands.append(cmd)
+            if isinstance(cmd, list):
+                with open(cmd[-1], "wb") as handle:
+                    handle.write(b"RIFF....WAVEfmt ")
+            else:
+                (out_dir / "test.txt").write_text("hello\n", encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir)
+        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+
+        from tools.transcription_tools import _transcribe_local_command
+
+        result = _transcribe_local_command(sample_ogg, "base")
+
+        assert result["success"] is True
+        assert captured_commands[-1].endswith("--language en")
+
+
+class TestTranscribeLocalLanguageSelection:
+    def test_blank_language_uses_faster_whisper_auto_detect(self, monkeypatch, sample_ogg):
+        segment = MagicMock()
+        segment.text = "tere hello"
+        info = MagicMock(language="et", duration=1.0)
+        model = MagicMock()
+        model.transcribe.return_value = ([segment], info)
+
+        monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={"local": {"language": ""}}), \
+             patch("tools.transcription_tools._local_model", model), \
+             patch("tools.transcription_tools._local_model_name", "base"):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(sample_ogg, "base")
+
+        assert result["success"] is True
+        model.transcribe.assert_called_once_with(sample_ogg, beam_size=5)
+
+    def test_explicit_language_is_passed_to_faster_whisper(self, sample_ogg):
+        segment = MagicMock()
+        segment.text = "tere"
+        info = MagicMock(language="et", duration=1.0)
+        model = MagicMock()
+        model.transcribe.return_value = ([segment], info)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={"local": {"language": "et"}}), \
+             patch("tools.transcription_tools._local_model", model), \
+             patch("tools.transcription_tools._local_model_name", "base"):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(sample_ogg, "base")
+
+        assert result["success"] is True
+        model.transcribe.assert_called_once_with(sample_ogg, beam_size=5, language="et")
+
 
 # ============================================================================
 # _transcribe_local — additional tests
@@ -1557,6 +1720,7 @@ class TestShellSafety:
             input_path=shlex.quote("/tmp/test.wav"),
             output_dir=shlex.quote("/tmp/out"),
             language=shlex.quote("en"),
+            language_arg=" --language en",
             model=shlex.quote("base"),
         )
         parts = shlex.split(cmd)
