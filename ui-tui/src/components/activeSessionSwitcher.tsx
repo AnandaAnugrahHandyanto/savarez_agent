@@ -83,9 +83,14 @@ export const relativeSessionAge = (ts?: number) => {
   return `${Math.floor(days)}d ago`
 }
 
-/** Drop already-live sessions from the resumable history list (dedupe by id). */
+/** Drop already-live sessions from the resumable history list (dedupe by id / session_key). */
 export const resumableHistory = (history: readonly SessionListItem[], live: readonly SessionActiveItem[]) => {
-  const liveIds = new Set(live.map(s => s.id))
+  const liveIds = new Set<string>()
+  for (const s of live) {
+    liveIds.add(s.id)
+    const key = (s.session_key ?? '').trim()
+    if (key) liveIds.add(key)
+  }
 
   return history.filter(h => !liveIds.has(h.id))
 }

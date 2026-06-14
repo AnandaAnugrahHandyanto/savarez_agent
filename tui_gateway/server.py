@@ -2195,8 +2195,8 @@ def _sync_session_key_after_compress(
             if the caller manages the worker lifecycle separately.
     """
     agent = session.get("agent")
-    new_session_id = getattr(agent, "session_id", None) or ""
-    old_key = session.get("session_key", "") or ""
+    new_session_id = str(getattr(agent, "session_id", None) or "").strip()
+    old_key = str(session.get("session_key", "") or "").strip()
     if not new_session_id or new_session_id == old_key:
         return
 
@@ -2463,6 +2463,11 @@ def _session_info(agent, session: dict | None = None) -> dict:
     warn = _probe_credentials(agent)
     if warn:
         info["credential_warning"] = warn
+    session_key = str((session or {}).get("session_key") or "").strip()
+    if session_key:
+        info["title"] = _session_live_title(session or {}, session_key)
+    else:
+        info["title"] = ""
     return info
 
 
@@ -5987,12 +5992,27 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 try:
                     from agent.title_generator import maybe_auto_title
 
+                    def _title_updated(_title: str) -> None:
+                        _emit("session.info", sid, _session_info(agent, session))
+
+                    _main_runtime = None
+                    if agent is not None:
+                        _main_runtime = {
+                            "model": getattr(agent, "model", None),
+                            "provider": getattr(agent, "provider", None),
+                            "base_url": getattr(agent, "base_url", None),
+                            "api_key": getattr(agent, "api_key", None),
+                            "api_mode": getattr(agent, "api_mode", None),
+                        }
+
                     maybe_auto_title(
                         _get_db(),
                         session.get("session_key") or sid,
                         text,
                         raw,
                         session.get("history", []),
+                        title_callback=_title_updated,
+                        main_runtime=_main_runtime,
                     )
                 except Exception:
                     pass
