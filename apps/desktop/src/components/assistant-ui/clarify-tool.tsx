@@ -36,14 +36,14 @@ function readClarifyArgs(args: unknown): ClarifyArgs {
 }
 
 // Choice and "Other" rows share a layout; only color/hover differs.
-const OPTION_ROW_CLASS = 'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors'
+const OPTION_ROW_CLASS = 'flex w-full items-start gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors'
 
 function RadioDot({ selected }: { selected: boolean }) {
   return (
     <span
       aria-hidden
       className={cn(
-        'grid size-3.5 shrink-0 place-items-center rounded-full border transition-colors',
+        'mt-0.5 grid size-3.5 shrink-0 place-items-center rounded-full border transition-colors',
         selected ? 'border-primary' : 'border-muted-foreground/40'
       )}
     >
@@ -138,7 +138,11 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
   const handleTextareaKey = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
-      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      if (event.nativeEvent.isComposing) {
+        return
+      }
+
+      if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault()
         const trimmed = draft.trim()
 
@@ -200,7 +204,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
             >
               <RadioDot selected={selectedChoice === choice} />
               <span className="flex-1 wrap-anywhere">{choice}</span>
-              {selectedChoice === choice && <Check aria-hidden className="size-4 shrink-0 text-primary" />}
+              {selectedChoice === choice && <Check aria-hidden className="mt-0.5 size-4 shrink-0 text-primary" />}
             </button>
           ))}
           <button
@@ -231,8 +235,9 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
           />
           <div className="flex items-center justify-between gap-2">
             <span className="inline-flex items-center gap-1 text-[0.6875rem] text-muted-foreground/85">
-              <KbdCombo combo="mod+enter" size="sm" />
-              {copy.shortcutSuffix}
+              <KbdCombo combo="enter" size="sm" />
+              <KbdCombo combo="shift+enter" size="sm" />
+              {t.composer.hotkeyDescs['composer.sendNewline']}
             </span>
             <div className="flex items-center gap-1.5">
               {hasChoices && (
