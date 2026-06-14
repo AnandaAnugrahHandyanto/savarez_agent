@@ -44,6 +44,7 @@ Optional / Phase-3+:
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import logging
@@ -93,6 +94,10 @@ DEFAULT_WEBHOOK_HOST = "0.0.0.0"
 DEFAULT_WEBHOOK_PORT = 8090
 DEFAULT_WEBHOOK_PATH = "/whatsapp/webhook"
 DEFAULT_CALLING_SIDECAR_TIMEOUT = 10.0
+CALLING_PCM_SAMPLE_RATE = 48_000
+CALLING_PCM_CHANNELS = 1
+CALLING_PCM_FRAME_MS = 20
+CALLING_PCM_ENCODING = "pcm_s16le"
 GRAPH_API_BASE = "https://graph.facebook.com"
 # Meta retries failed webhooks for up to 7 days. We don't need to remember
 # every wamid for the full retry window — the practical risk is duplicate
@@ -428,6 +433,80 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             sdp=sdp,
             audio=audio if isinstance(audio, dict) else {},
         )
+
+    async def _send_calling_sidecar_audio(
+        self,
+        call_id: str,
+        pcm_s16le: bytes,
+        *,
+        sequence: Optional[int] = None,
+    ) -> SendResult:
+        """Queue outbound 48 kHz 20 ms PCM for a local WebRTC sidecar call."""
+        if not self._calling_sidecar_enabled():
+            return SendResult(success=False, error="Calling sidecar not configured")
+        if self._http_client is None:
+            return SendResult(success=False, error="Not connected")
+
+        normalized_call_id = str(call_id or "").strip()
+        if not normalized_call_id:
+            return SendResult(success=False, error="Missing call_id")
+        if not isinstance(pcm_s16le, (bytes, bytearray, memoryview)):
+            return SendResult(success=False, error="PCM payload must be bytes")
+
+        pcm_bytes = bytes(pcm_s16le)
+        if not pcm_bytes:
+            return SendResult(success=False, error="PCM payload is empty")
+        if len(pcm_bytes) % 2:
+            return SendResult(
+                success=False,
+                error="PCM payload must contain whole s16le samples",
+            )
+
+        encoded_call_id = quote(normalized_call_id, safe="")
+        url = f"{self._calling_sidecar_url}/calls/{encoded_call_id}/audio"
+        payload: Dict[str, Any] = {
+            "sample_rate": CALLING_PCM_SAMPLE_RATE,
+            "channels": CALLING_PCM_CHANNELS,
+            "frame_ms": CALLING_PCM_FRAME_MS,
+            "encoding": CALLING_PCM_ENCODING,
+            "pcm_s16le_base64": base64.b64encode(pcm_bytes).decode("ascii"),
+        }
+        if sequence is not None:
+            payload["sequence"] = sequence
+
+        try:
+            resp = await self._http_client.post(
+                url,
+                json=payload,
+                timeout=self._calling_sidecar_timeout,
+            )
+        except Exception as exc:
+            logger.exception(
+                "[whatsapp_cloud] calling sidecar audio request failed for %s",
+                normalized_call_id,
+            )
+            return SendResult(success=False, error=str(exc), retryable=True)
+
+        try:
+            body = resp.json()
+        except Exception:
+            body = {"raw": str(getattr(resp, "text", ""))[:500]}
+
+        if resp.status_code != 200:
+            error_msg = ""
+            if isinstance(body, dict):
+                error_msg = str(body.get("error") or "")
+            if not error_msg:
+                error_msg = f"calling sidecar audio failed with HTTP {resp.status_code}"
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio rejected "
+                "(status=%d): %s",
+                resp.status_code,
+                error_msg,
+            )
+            return SendResult(success=False, error=error_msg, raw_response=body)
+
+        return SendResult(success=True, raw_response=body)
 
     async def _send_call_action(
         self,

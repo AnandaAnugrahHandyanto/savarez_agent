@@ -12,6 +12,7 @@ exercised with synthetic ``Request`` objects.
 
 from __future__ import annotations
 
+import base64
 import json
 from unittest.mock import AsyncMock, MagicMock
 
@@ -474,6 +475,71 @@ class TestCallingSidecarClient:
 
         assert result.success is False
         assert "graph error 100" in result.error
+
+    @pytest.mark.asyncio
+    async def test_send_calling_sidecar_audio_posts_pcm_payload(self):
+        adapter = _make_adapter(
+            calling_sidecar_url="http://127.0.0.1:8787",
+            calling_sidecar_timeout=2.5,
+        )
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200,
+                {"accepted_bytes": 4, "queued_tx_bytes": 4},
+            )
+        )
+
+        result = await adapter._send_calling_sidecar_audio(
+            "wacid.call/with/slash",
+            b"\x01\x00\xff\xff",
+            sequence=17,
+        )
+
+        assert result.success is True
+        assert result.raw_response == {"accepted_bytes": 4, "queued_tx_bytes": 4}
+        call = adapter._http_client.post.call_args
+        assert call.args[0] == (
+            "http://127.0.0.1:8787/calls/wacid.call%2Fwith%2Fslash/audio"
+        )
+        assert call.kwargs["timeout"] == 2.5
+        assert call.kwargs["json"] == {
+            "sequence": 17,
+            "sample_rate": 48000,
+            "channels": 1,
+            "frame_ms": 20,
+            "encoding": "pcm_s16le",
+            "pcm_s16le_base64": base64.b64encode(b"\x01\x00\xff\xff").decode("ascii"),
+        }
+
+    @pytest.mark.asyncio
+    async def test_send_calling_sidecar_audio_requires_sidecar(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock()
+
+        result = await adapter._send_calling_sidecar_audio("call-1", b"\x00\x00")
+
+        assert result.success is False
+        assert result.error == "Calling sidecar not configured"
+        adapter._http_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_calling_sidecar_audio_returns_sidecar_error(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                400,
+                {"error": "sample_rate must be 48000"},
+            )
+        )
+
+        result = await adapter._send_calling_sidecar_audio("call-1", b"\x00\x00")
+
+        assert result.success is False
+        assert result.error == "sample_rate must be 48000"
+        assert result.raw_response == {"error": "sample_rate must be 48000"}
 
     @pytest.mark.asyncio
     async def test_close_calling_sidecar_session_posts_close(self):
