@@ -132,6 +132,8 @@ That aggregate verifier proves:
   `ready_for_accept: true`.
 - The installed `hermes-gateway.service` process imports from the expected
   checkout and points at the expected sidecar URL.
+- The installed `voiced.service` daemon is active and runs the expected
+  `voice daemon start` command for live-call stream TTS.
 - The installed `voice-webrtc-sidecar.service` runs the expected `voice` binary
   and `voice` checkout.
 

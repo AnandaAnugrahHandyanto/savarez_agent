@@ -433,6 +433,34 @@ def validate_sidecar_service_state(
     return result
 
 
+def validate_voice_daemon_service_state(
+    state: dict[str, str],
+    *,
+    service: str,
+    voice_bin: str | None,
+) -> dict[str, Any]:
+    pid = validate_service_state(state, label=service)
+    result: dict[str, Any] = {
+        "service": service,
+        "pid": pid,
+    }
+
+    exec_start = str(state.get("ExecStart") or "")
+    exec_argv = parse_exec_start_argv(exec_start)
+    if "daemon" not in exec_argv or "start" not in exec_argv:
+        raise SystemExit(f"{service} ExecStart is not a voice daemon start command")
+    if voice_bin is not None and (
+        not exec_argv
+        or normalized_path_text(exec_argv[0]) != normalized_path_text(voice_bin)
+    ):
+        raise SystemExit(
+            f"{service} ExecStart does not reference expected voice binary "
+            f"{voice_bin!r}: {exec_start!r}"
+        )
+    result["exec_start"] = exec_start
+    return result
+
+
 def import_smoke(
     *,
     python_bin: str,
@@ -1002,6 +1030,14 @@ def parse_args() -> argparse.Namespace:
             "--voice-repo."
         ),
     )
+    parser.add_argument(
+        "--voice-daemon-service",
+        default="voiced.service",
+        help=(
+            "systemd user service name for the voice daemon required by "
+            "live-call voice stream commands; pass an empty string to skip."
+        ),
+    )
     parser.add_argument("--live-hermes-root", type=Path, required=True)
     parser.add_argument("--voice-repo", type=Path)
     parser.add_argument("--hermes-home", type=Path, default=Path("~/.hermes"))
@@ -1169,6 +1205,12 @@ def main() -> int:
         raise SystemExit("--voice-bin requires --calling-sidecar-url or --sidecar-service")
 
     if args.sidecar_service:
+        if args.voice_daemon_service:
+            checks["voice_daemon_service"] = validate_voice_daemon_service_state(
+                get_service_state(args.voice_daemon_service, timeout=args.timeout),
+                service=args.voice_daemon_service,
+                voice_bin=voice_bin,
+            )
         checks["sidecar_service"] = validate_sidecar_service_state(
             get_service_state(args.sidecar_service, timeout=args.timeout),
             service=args.sidecar_service,

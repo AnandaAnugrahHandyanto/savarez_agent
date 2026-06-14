@@ -434,6 +434,63 @@ def test_validate_sidecar_service_state_rejects_wrong_bind_port(tmp_path: Path):
         )
 
 
+def test_validate_voice_daemon_service_state_accepts_expected_unit(tmp_path: Path):
+    script = _load_script_module()
+    voice_bin = tmp_path / "bin" / "voice"
+    voice_bin.parent.mkdir()
+    voice_bin.write_text("", encoding="utf-8")
+
+    result = script.validate_voice_daemon_service_state(
+        {
+            "ActiveState": "active",
+            "MainPID": "24",
+            "ExecStart": f"{{ argv[]={voice_bin} daemon start --tts-only }}",
+        },
+        service="voiced.service",
+        voice_bin=str(voice_bin),
+    )
+
+    assert result["service"] == "voiced.service"
+    assert result["pid"] == 24
+    assert "daemon start" in result["exec_start"]
+
+
+def test_validate_voice_daemon_service_state_rejects_wrong_voice_bin(tmp_path: Path):
+    script = _load_script_module()
+    expected_voice = tmp_path / "expected" / "voice"
+    stale_voice = tmp_path / "stale" / "voice"
+    expected_voice.parent.mkdir()
+    stale_voice.parent.mkdir()
+    expected_voice.write_text("", encoding="utf-8")
+    stale_voice.write_text("", encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="expected voice binary"):
+        script.validate_voice_daemon_service_state(
+            {
+                "ActiveState": "active",
+                "MainPID": "24",
+                "ExecStart": f"{{ argv[]={stale_voice} daemon start --tts-only }}",
+            },
+            service="voiced.service",
+            voice_bin=str(expected_voice),
+        )
+
+
+def test_validate_voice_daemon_service_state_rejects_non_daemon_command():
+    script = _load_script_module()
+
+    with pytest.raises(SystemExit, match="not a voice daemon start command"):
+        script.validate_voice_daemon_service_state(
+            {
+                "ActiveState": "active",
+                "MainPID": "24",
+                "ExecStart": "{ argv[]=/usr/bin/voice say hello }",
+            },
+            service="voiced.service",
+            voice_bin="/usr/bin/voice",
+        )
+
+
 def test_validate_calling_sidecar_contract_requires_voice_pcm_shape():
     script = _load_script_module()
     contract = _voice_sidecar_contract()
@@ -1046,6 +1103,12 @@ def test_main_validates_sidecar_service_when_requested(
     monkeypatch.setattr(script, "resolve_executable", lambda value, *, label: value)
 
     def fake_service_state(service, *, timeout):
+        if service == "voiced.service":
+            return {
+                "ActiveState": "active",
+                "MainPID": "789",
+                "ExecStart": f"{{ argv[]={voice_bin} daemon start --tts-only }}",
+            }
         if service == "voice-webrtc-sidecar.service":
             return {
                 "ActiveState": "active",
@@ -1100,5 +1163,6 @@ def test_main_validates_sidecar_service_when_requested(
 
     output = json.loads(capsys.readouterr().out)
     assert output["checks"]["sidecar_service"]["pid"] == 456
+    assert output["checks"]["voice_daemon_service"]["pid"] == 789
     assert output["checks"]["sidecar_service"]["voice_bin"] == str(voice_bin)
     assert output["checks"]["sidecar_service"]["working_directory"] == str(voice_repo)
