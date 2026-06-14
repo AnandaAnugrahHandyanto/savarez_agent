@@ -118,3 +118,123 @@ def test_gateway_runtime_loaders_expand_env_var_templates(
     loader = getattr(gateway_run.GatewayRunner, loader_name)
 
     assert loader() == expected
+
+
+def test_ephemeral_system_prompt_uses_display_personality_fallback(gateway_home):
+    _write_config(
+        gateway_home,
+        "display:\n"
+        "  personality: orchestrator\n"
+        "agent:\n"
+        "  personalities:\n"
+        "    orchestrator:\n"
+        "      system_prompt: You are the orchestrator.\n"
+        "      tone: concise\n"
+        "      style: delegation-first\n",
+    )
+
+    assert gateway_run.GatewayRunner._load_ephemeral_system_prompt() == (
+        "You are the orchestrator.\nTone: concise\nStyle: delegation-first"
+    )
+
+
+def test_ephemeral_system_prompt_preserves_exact_personality_key_case(gateway_home):
+    _write_config(
+        gateway_home,
+        "display:\n"
+        "  personality: MixedCase\n"
+        "agent:\n"
+        "  personalities:\n"
+        "    MixedCase: exact case prompt\n"
+        "    mixedcase: lowercase prompt\n",
+    )
+
+    assert gateway_run.GatewayRunner._load_ephemeral_system_prompt() == "exact case prompt"
+
+
+def test_ephemeral_system_prompt_falls_back_to_lowercase_personality_key(gateway_home):
+    _write_config(
+        gateway_home,
+        "display:\n"
+        "  personality: MixedCase\n"
+        "agent:\n"
+        "  personalities:\n"
+        "    mixedcase: lowercase prompt\n",
+    )
+
+    assert gateway_run.GatewayRunner._load_ephemeral_system_prompt() == "lowercase prompt"
+
+
+def test_ephemeral_system_prompt_expands_env_inside_personality_prompt(monkeypatch, gateway_home):
+    _write_config(
+        gateway_home,
+        "display:\n"
+        "  personality: orchestrator\n"
+        "agent:\n"
+        "  personalities:\n"
+        "    orchestrator: ${PERSONALITY_PROMPT}\n",
+    )
+    monkeypatch.setenv("PERSONALITY_PROMPT", "expanded personality prompt")
+
+    assert gateway_run.GatewayRunner._load_ephemeral_system_prompt() == "expanded personality prompt"
+
+
+def test_ephemeral_system_prompt_prefers_agent_system_prompt_over_display_personality(
+    gateway_home,
+):
+    _write_config(
+        gateway_home,
+        "display:\n"
+        "  personality: orchestrator\n"
+        "agent:\n"
+        "  system_prompt: explicit prompt\n"
+        "  personalities:\n"
+        "    orchestrator: personality prompt\n",
+    )
+
+    assert gateway_run.GatewayRunner._load_ephemeral_system_prompt() == "explicit prompt"
+
+
+def test_ephemeral_system_prompt_prefers_env_over_config(monkeypatch, gateway_home):
+    _write_config(
+        gateway_home,
+        "display:\n"
+        "  personality: orchestrator\n"
+        "agent:\n"
+        "  system_prompt: explicit prompt\n"
+        "  personalities:\n"
+        "    orchestrator: personality prompt\n",
+    )
+    monkeypatch.setenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "env prompt")
+
+    assert gateway_run.GatewayRunner._load_ephemeral_system_prompt() == "env prompt"
+
+
+def test_agent_cache_signature_includes_prompt_policy_config_keys():
+    keys = set(gateway_run.GatewayRunner._CACHE_BUSTING_CONFIG_KEYS)
+
+    assert ("agent", "system_prompt") in keys
+    assert ("agent", "personalities") in keys
+    assert ("agent", "tool_use_enforcement") in keys
+    assert ("agent", "task_completion_guidance") in keys
+    assert ("display", "personality") in keys
+
+
+def test_extract_cache_busting_config_captures_prompt_policy_values():
+    extracted = gateway_run.GatewayRunner._extract_cache_busting_config(
+        {
+            "agent": {
+                "system_prompt": "prompt",
+                "personalities": {"delegator": "delegate first"},
+                "tool_use_enforcement": "strict",
+                "task_completion_guidance": "verify",
+            },
+            "display": {"personality": "delegator"},
+        }
+    )
+
+    assert extracted["agent.system_prompt"] == "prompt"
+    assert extracted["agent.personalities"] == {"delegator": "delegate first"}
+    assert extracted["agent.tool_use_enforcement"] == "strict"
+    assert extracted["agent.task_completion_guidance"] == "verify"
+    assert extracted["display.personality"] == "delegator"

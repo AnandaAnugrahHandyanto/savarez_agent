@@ -326,6 +326,10 @@ class TestAdapterInit:
             "gateway.run.GatewayRunner._load_reasoning_config",
             staticmethod(lambda: {"enabled": True, "effort": "xhigh"}),
         )
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_ephemeral_system_prompt",
+            staticmethod(lambda: "delegation policy"),
+        )
         monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
         monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
 
@@ -336,6 +340,31 @@ class TestAdapterInit:
 
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+        assert captured["ephemeral_system_prompt"] == "delegation policy"
+
+    def test_create_agent_combines_config_prompt_before_request_instructions(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs", lambda: {})
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.5")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda: None))
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_ephemeral_system_prompt", staticmethod(lambda: "delegation policy"))
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(ephemeral_system_prompt="request instructions")
+
+        assert isinstance(agent, FakeAgent)
+        assert captured["ephemeral_system_prompt"] == "delegation policy\n\nrequest instructions"
 
 
 # ---------------------------------------------------------------------------
