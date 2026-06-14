@@ -51,75 +51,67 @@ export function PageHeaderProvider({
   return (
     <PageHeaderContext.Provider value={value}>
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
-        <header
-          className={cn(
-            "z-1 w-full shrink-0",
-            "box-border border-b border-current/20",
-            "bg-background-base/40 backdrop-blur-sm",
-            // Mobile stacks title + toolbar — fixed h-14 clips content; desktop stays one row.
-            "min-h-0 overflow-x-hidden overflow-y-visible py-3 sm:h-14 sm:min-h-[3.5rem] sm:overflow-hidden sm:py-0",
-          )}
-          role="banner"
-        >
-          <div
+        {!isChatRoute && (
+          <header
             className={cn(
-              "flex w-full min-w-0 flex-1 gap-3 px-3 sm:h-full sm:gap-3 sm:px-6",
-              isChatRoute
-                ? "flex-row items-center"
-                : "flex-col justify-center sm:flex-row sm:items-center",
+              "z-1 w-full shrink-0",
+              "box-border border-b border-current/20",
+              "bg-background-base/40 backdrop-blur-sm",
+              // Mobile stacks title + toolbar — fixed h-14 clips content; desktop stays one row.
+              "min-h-0 overflow-x-hidden overflow-y-visible py-3 sm:h-14 sm:min-h-[3.5rem] sm:overflow-hidden sm:py-0",
             )}
+            role="banner"
           >
             <div
               className={cn(
-                "flex min-w-0 flex-1 gap-2 sm:gap-3",
-                afterTitle && isEnvRoute
-                  ? "flex-col items-start sm:flex-row sm:items-center"
-                  : afterTitle
-                    ? "flex-row flex-wrap items-center"
-                    : "flex-row items-center",
+                "flex w-full min-w-0 flex-1 flex-col justify-center gap-3 px-3 sm:h-full sm:flex-row sm:items-center sm:gap-3 sm:px-6",
               )}
             >
-              <h1
+              <div
                 className={cn(
-                  "font-expanded min-w-0 text-sm font-bold tracking-[0.08em] text-midground",
+                  "flex min-w-0 flex-1 gap-2 sm:gap-3",
                   afterTitle && isEnvRoute
-                    ? "max-w-full sm:min-w-0 sm:shrink sm:truncate"
+                    ? "flex-col items-start sm:flex-row sm:items-center"
                     : afterTitle
-                      ? "shrink truncate"
-                      : "truncate",
+                      ? "flex-row flex-wrap items-center"
+                      : "flex-row items-center",
                 )}
-                style={{ mixBlendMode: "plus-lighter" }}
               >
-                {displayTitle}
-              </h1>
-              {afterTitle ? (
-                <div
+                <h1
                   className={cn(
-                    "min-w-0 scrollbar-none",
-                    isEnvRoute
-                      ? "w-full overflow-x-auto sm:flex-1 sm:overflow-x-auto"
-                      : "shrink-0 overflow-visible",
+                    "font-expanded min-w-0 text-sm font-bold tracking-[0.08em] text-midground",
+                    afterTitle && isEnvRoute
+                      ? "max-w-full sm:min-w-0 sm:shrink sm:truncate"
+                      : afterTitle
+                        ? "shrink truncate"
+                        : "truncate",
                   )}
+                  style={{ mixBlendMode: "plus-lighter" }}
                 >
-                  {afterTitle}
+                  {displayTitle}
+                </h1>
+                {afterTitle ? (
+                  <div
+                    className={cn(
+                      "min-w-0 scrollbar-none",
+                      isEnvRoute
+                        ? "w-full overflow-x-auto sm:flex-1 sm:overflow-x-auto"
+                        : "shrink-0 overflow-visible",
+                    )}
+                  >
+                    {afterTitle}
+                  </div>
+                ) : null}
+              </div>
+
+              {end ? (
+                <div className="flex min-w-0 w-full justify-start sm:max-w-md sm:flex-1 sm:justify-end">
+                  {end}
                 </div>
               ) : null}
             </div>
-
-            {end ? (
-              <div
-                className={cn(
-                  "flex min-w-0 sm:max-w-md sm:flex-1",
-                  isChatRoute
-                    ? "w-auto shrink-0 justify-end"
-                    : "w-full justify-start sm:justify-end",
-                )}
-              >
-                {end}
-              </div>
-            ) : null}
-          </div>
-        </header>
+          </header>
+        )}
 
         <main
           className={cn(

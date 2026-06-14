@@ -168,6 +168,31 @@ export const ko: Translations = {
     },
   },
 
+  chatSession: {
+    newChat: "새 채팅",
+    sessions: "세션",
+    searchSessions: "세션 검색",
+    searchPlaceholder: "메시지 내용 검색...",
+    renameSession: "세션 이름 변경",
+    deleteSession: "세션 삭제",
+    untitledSession: "제목 없는 세션",
+    openSessions: "열림",
+    recentSessions: "최근",
+    noSessions: "아직 세션이 없습니다",
+    noMatch: "일치하는 세션이 없습니다",
+    startConversation:
+      "대화를 시작하세요 — 메시지가 여기에 실시간으로 표시됩니다.",
+    showSessions: "세션 표시",
+    hideSessions: "세션 숨기기",
+    allSessions: "모든 세션",
+    backToNav: "Back to navigation",
+    copyMessage: "Copy",
+    copied: "Copied",
+    forkMessage: "Fork to new chat",
+    branched: "Branched to new chat",
+    branchFailed: "Branch failed",
+  },
+
   analytics: {
     period: "기간:",
     totalTokens: "총 토큰",

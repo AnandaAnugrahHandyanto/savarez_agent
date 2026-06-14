@@ -55,6 +55,7 @@ import type {
   PortalStatus,
   DebugShareResponse,
 } from "@/lib/api";
+import { PageShell } from "@/components/PageShell";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -508,7 +509,8 @@ export default function SystemPage() {
     : HOOK_EVENTS_FALLBACK;
 
   return (
-    <div className="flex flex-col gap-8">
+    <PageShell title="System">
+      <div className="flex flex-col gap-6">
       <Toast toast={toast} />
 
       <ConfirmDialog
@@ -1272,6 +1274,7 @@ export default function SystemPage() {
           </Card>
         ))}
       </section>
-    </div>
+      </div>
+    </PageShell>
   );
 }

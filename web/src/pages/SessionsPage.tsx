@@ -65,6 +65,7 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
+import { PageShell } from "@/components/PageShell";
 
 const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
   {
@@ -1217,7 +1218,8 @@ export default function SessionsPage() {
   }
 
   return (
-    <div className="flex min-w-0 w-full max-w-full flex-col gap-4">
+    <PageShell title={t.sessions.title}>
+      <div className="flex min-w-0 w-full max-w-full flex-col gap-6">
       <PluginSlot name="sessions:top" />
       <Toast toast={toast} />
 
@@ -1683,7 +1685,8 @@ export default function SessionsPage() {
       )}
 
       <PluginSlot name="sessions:bottom" />
-    </div>
+      </div>
+    </PageShell>
   );
 }
 

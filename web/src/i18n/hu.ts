@@ -168,6 +168,31 @@ export const hu: Translations = {
     },
   },
 
+  chatSession: {
+    newChat: "Új csevegés",
+    sessions: "Munkamenetek",
+    searchSessions: "Munkamenetek keresése",
+    searchPlaceholder: "Keresés üzenettartalomban...",
+    renameSession: "Munkamenet átnevezése",
+    deleteSession: "Munkamenet törlése",
+    untitledSession: "Névtelen munkamenet",
+    openSessions: "Nyitott",
+    recentSessions: "Legutóbbi",
+    noSessions: "Még nincsenek munkamenetek",
+    noMatch: "Nincs egyező munkamenet",
+    startConversation:
+      "Indítson beszélgetést — az üzenetek itt valós időben jelennek meg.",
+    showSessions: "Munkamenetek megjelenítése",
+    hideSessions: "Munkamenetek elrejtése",
+    allSessions: "Összes munkamenet",
+    backToNav: "Back to navigation",
+    copyMessage: "Copy",
+    copied: "Copied",
+    forkMessage: "Fork to new chat",
+    branched: "Branched to new chat",
+    branchFailed: "Branch failed",
+  },
+
   analytics: {
     period: "Időszak:",
     totalTokens: "Összes token",
