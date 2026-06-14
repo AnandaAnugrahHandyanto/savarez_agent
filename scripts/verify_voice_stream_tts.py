@@ -43,6 +43,7 @@ class AudioContract:
     raw_outbound_pcm_command: str = ""
     raw_inbound_pcm_command: str = ""
     completed_voice_note_command: str = ""
+    streamed_voice_note_command: str = ""
 
     @property
     def samples_per_frame(self) -> int:
@@ -157,6 +158,7 @@ def audio_contract_from_voice(
         raw_outbound_pcm_command=surface_commands.get("raw_outbound_pcm", ""),
         raw_inbound_pcm_command=surface_commands.get("raw_inbound_pcm", ""),
         completed_voice_note_command=surface_commands.get("completed_voice_note", ""),
+        streamed_voice_note_command=surface_commands.get("streamed_voice_note", ""),
     )
 
 
@@ -185,6 +187,19 @@ def validate_voice_surfaces(
         ["voice say", "--format ogg-opus", "--output"],
     )
     commands["completed_voice_note"] = completed_command
+
+    streamed = surface_object(surfaces, "streamed_voice_note")
+    if streamed.get("output") != "audio/ogg; codecs=opus":
+        raise SystemExit("streamed_voice_note output must be audio/ogg; codecs=opus")
+    if streamed.get("transport") != "daemon_stream_encoded_file":
+        raise SystemExit("streamed_voice_note transport must be daemon_stream_encoded_file")
+    streamed_command = surface_command(streamed, "streamed_voice_note")
+    require_command_parts(
+        streamed_command,
+        "streamed_voice_note",
+        ["voice stream", "--output", "--format ogg-opus"],
+    )
+    commands["streamed_voice_note"] = streamed_command
 
     outbound = surface_object(surfaces, "raw_outbound_pcm")
     if outbound.get("output") != encoding:
@@ -338,6 +353,107 @@ def run_stream_command(command: str, *, timeout: float) -> subprocess.CompletedP
     )
 
 
+def build_streamed_ogg_command(
+    *,
+    voice_bin: str,
+    input_path: Path,
+    output_path: Path,
+    contract: AudioContract,
+    voice: str,
+    speed: str,
+) -> list[str]:
+    return [
+        voice_bin,
+        "stream",
+        "--quiet",
+        "--sample-rate",
+        str(contract.sample_rate),
+        "--frame-ms",
+        str(contract.frame_ms),
+        "--output",
+        str(output_path),
+        "--format",
+        "ogg-opus",
+        "--input-file",
+        str(input_path),
+        "--voice",
+        voice,
+        "--speed",
+        speed,
+    ]
+
+
+def run_streamed_ogg_command(
+    command: list[str],
+    *,
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def parse_ffprobe(output: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in output.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            values[key] = value
+    return values
+
+
+def probe_audio(path: Path, *, ffprobe_bin: str) -> dict[str, str]:
+    completed = subprocess.run(
+        [
+            ffprobe_bin,
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_name,sample_rate,channels",
+            "-of",
+            "default=noprint_wrappers=1",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return parse_ffprobe(completed.stdout)
+
+
+def validate_streamed_ogg(path: Path, *, probe: dict[str, str]) -> dict[str, Any]:
+    failures: list[str] = []
+
+    if path.suffix.lower() not in {".ogg", ".opus"}:
+        failures.append(f"expected .ogg or .opus output, got {path}")
+    if not path.is_file() or path.stat().st_size == 0:
+        failures.append(f"expected non-empty streamed Ogg/Opus output at {path}")
+    if probe.get("codec_name") != "opus":
+        failures.append(f"expected codec_name=opus, got {probe.get('codec_name')!r}")
+    if probe.get("sample_rate") != "48000":
+        failures.append(f"expected sample_rate=48000, got {probe.get('sample_rate')!r}")
+    if probe.get("channels") != "1":
+        failures.append(f"expected channels=1, got {probe.get('channels')!r}")
+
+    if failures:
+        raise SystemExit("streamed Ogg/Opus validation failed:\n- " + "\n- ".join(failures))
+
+    return {
+        "bytes": path.stat().st_size,
+        "codec_name": probe.get("codec_name"),
+        "sample_rate": probe.get("sample_rate"),
+        "channels": probe.get("channels"),
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -346,6 +462,7 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--voice-bin", default=os.environ.get("VOICE_BIN", "voice"))
+    parser.add_argument("--ffprobe-bin", default=os.environ.get("FFPROBE_BIN", "ffprobe"))
     parser.add_argument("--command-template")
     parser.add_argument("--voice", default="af_heart")
     parser.add_argument("--speed", default="1.0")
@@ -357,12 +474,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-peak", type=int, default=DEFAULT_MIN_PEAK)
     parser.add_argument("--min-duration-ms", type=int, default=DEFAULT_MIN_DURATION_MS)
     parser.add_argument("--keep-input", action="store_true")
+    parser.add_argument(
+        "--skip-streamed-ogg",
+        action="store_true",
+        help="validate the advertised streamed_voice_note surface without running it",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     voice_bin = resolve_executable(args.voice_bin, label="voice binary")
+    ffprobe_bin = (
+        None
+        if args.skip_streamed_ogg
+        else resolve_executable(args.ffprobe_bin, label="ffprobe")
+    )
     fallback_contract = AudioContract(
         sample_rate=args.sample_rate,
         channels=args.channels,
@@ -398,6 +525,40 @@ def main() -> int:
             min_peak=args.min_peak,
             min_duration_ms=args.min_duration_ms,
         )
+
+        streamed_ogg: dict[str, Any]
+        if args.skip_streamed_ogg:
+            streamed_ogg = {
+                "success": True,
+                "skipped": True,
+                "reason": "--skip-streamed-ogg was provided",
+            }
+        else:
+            ogg_path = tmpdir / "streamed.ogg"
+            ogg_command = build_streamed_ogg_command(
+                voice_bin=voice_bin,
+                input_path=input_path,
+                output_path=ogg_path,
+                contract=contract,
+                voice=args.voice,
+                speed=args.speed,
+            )
+            ogg_completed = run_streamed_ogg_command(ogg_command, timeout=args.timeout)
+            if ogg_completed.returncode != 0:
+                detail = ogg_completed.stderr.strip() or ogg_completed.stdout.strip()
+                raise SystemExit(
+                    f"streamed Ogg/Opus command exited with code {ogg_completed.returncode}"
+                    + (f": {detail[:1000]}" if detail else "")
+                )
+            probe = probe_audio(ogg_path, ffprobe_bin=ffprobe_bin or "ffprobe")
+            ogg_stats = validate_streamed_ogg(ogg_path, probe=probe)
+            streamed_ogg = {
+                "success": True,
+                "path": str(ogg_path) if args.keep_input else "<temporary>",
+                "command": " ".join(shlex.quote(part) for part in ogg_command),
+                **ogg_stats,
+            }
+
         retained = bool(args.keep_input)
         print(
             json.dumps(
@@ -411,8 +572,10 @@ def main() -> int:
                         "raw_outbound_pcm_command": contract.raw_outbound_pcm_command,
                         "raw_inbound_pcm_command": contract.raw_inbound_pcm_command,
                         "completed_voice_note_command": contract.completed_voice_note_command,
+                        "streamed_voice_note_command": contract.streamed_voice_note_command,
                     },
                     "pcm": stats,
+                    "streamed_ogg": streamed_ogg,
                 },
                 indent=2,
                 ensure_ascii=False,

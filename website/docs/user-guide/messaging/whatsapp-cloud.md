@@ -367,9 +367,12 @@ scripts/verify_voice_stream_tts.py --voice-bin /path/to/voice
 ```
 
 The verifier reads `/path/to/voice stream-contract`, validates the advertised
-`raw_outbound_pcm` / `raw_inbound_pcm` `voice_surfaces`, then runs the rendered
-stream command and checks stdout for non-silent 48 kHz mono 20 ms `pcm_s16le`
-frames.
+`streamed_voice_note`, `raw_outbound_pcm`, and `raw_inbound_pcm`
+`voice_surfaces`, then runs the rendered stream command and checks stdout for
+non-silent 48 kHz mono 20 ms `pcm_s16le` frames. It also runs
+`voice stream --output ... --format ogg-opus` and verifies the streamed file is
+real mono 48 kHz Ogg/Opus, so the low-latency daemon frame path and completed
+voice-note path are both covered without a WAV intermediate.
 
 Then validate the local WebRTC media bridge from a `voice` checkout before
 involving Meta's Graph API:

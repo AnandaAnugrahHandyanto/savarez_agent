@@ -74,6 +74,11 @@ def stream_contract_json(**surface_overrides):
                 "output": "audio/ogg; codecs=opus",
                 "transport": "completed_file",
             },
+            "streamed_voice_note": {
+                "command": 'voice stream --output reply.ogg --format ogg-opus "hello"',
+                "output": "audio/ogg; codecs=opus",
+                "transport": "daemon_stream_encoded_file",
+            },
             "raw_outbound_pcm": raw_outbound,
             "raw_inbound_pcm": {
                 "command": "voice stream-transcribe --raw-input - --sample-rate 48000 --frame-ms 20",
@@ -103,6 +108,7 @@ def test_audio_contract_from_voice_reads_stream_contract(monkeypatch):
     assert "voice stream" in contract.raw_outbound_pcm_command
     assert "--raw-input" in contract.raw_inbound_pcm_command
     assert "--format ogg-opus" in contract.completed_voice_note_command
+    assert "voice stream" in contract.streamed_voice_note_command
 
 
 def test_audio_contract_from_voice_rejects_surface_frame_drift(monkeypatch):
@@ -154,3 +160,45 @@ def test_validate_pcm_rejects_partial_frame():
 
     with pytest.raises(SystemExit, match="not aligned to 1920-byte frames"):
         script.validate_pcm(b"\x01\x00" * 100, contract=contract)
+
+
+def test_build_streamed_ogg_command_uses_daemon_stream_output(tmp_path: Path):
+    script = _load_script_module()
+    contract = script.AudioContract()
+
+    command = script.build_streamed_ogg_command(
+        voice_bin="/tmp/voice",
+        input_path=tmp_path / "input.txt",
+        output_path=tmp_path / "reply.ogg",
+        contract=contract,
+        voice="af_heart",
+        speed="1.0",
+    )
+
+    assert command[:3] == ["/tmp/voice", "stream", "--quiet"]
+    assert "--output" in command
+    assert str(tmp_path / "reply.ogg") in command
+    assert "--format" in command
+    assert "ogg-opus" in command
+    assert "--sample-rate" in command
+    assert "48000" in command
+
+
+def test_validate_streamed_ogg_requires_real_opus_file(tmp_path: Path):
+    script = _load_script_module()
+    output = tmp_path / "reply.ogg"
+    output.write_bytes(b"OggS")
+
+    stats = script.validate_streamed_ogg(
+        output,
+        probe={"codec_name": "opus", "sample_rate": "48000", "channels": "1"},
+    )
+
+    assert stats["bytes"] == 4
+    assert stats["codec_name"] == "opus"
+
+    with pytest.raises(SystemExit, match="codec_name=opus"):
+        script.validate_streamed_ogg(
+            output,
+            probe={"codec_name": "vorbis", "sample_rate": "48000", "channels": "1"},
+        )
