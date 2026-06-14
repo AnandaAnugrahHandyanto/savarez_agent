@@ -10,6 +10,7 @@ interface ActivityTimerTextProps {
 export function ActivityTimerText({ seconds, className }: ActivityTimerTextProps) {
   return (
     <span
+      aria-hidden="true"
       className={cn(
         // Tinted with --dt-midground (very low alpha) so the timer reads
         // as part of the same "live signal" cluster as the dither block /

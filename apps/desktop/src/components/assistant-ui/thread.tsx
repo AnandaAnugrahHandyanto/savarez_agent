@@ -402,13 +402,13 @@ const StreamStallIndicator: FC = () => {
   const active = stalled || compacting
   const elapsed = useElapsedSeconds(active)
 
-  if (!active) {
-    return null
-  }
-
+  // Keep the StatusRow mounted (but visually + aria-hidden) when inactive so
+  // that re-activation does not create a "new" aria-live region.  Screen
+  // readers re-announce on mount; toggling visibility avoids the repeat.
   return (
     <StatusRow
-      className="mt-1.5"
+      aria-hidden={active ? undefined : 'true'}
+      className={cn('mt-1.5', !active && 'invisible h-0 overflow-hidden')}
       data-slot="aui_stream-stall"
       label={compacting ? COMPACTION_LABEL : 'Hermes is thinking'}
     >
