@@ -166,6 +166,22 @@ class TestStripBlockedTools(unittest.TestCase):
 
 
 class TestDelegateTask(unittest.TestCase):
+    def setUp(self):
+        # delegate_task builds child agents before calling _run_single_child so
+        # tests that mock the runner do not initialize a real OpenAI client.
+        self._build_child_agent_patcher = patch("tools.delegate_tool._build_child_agent")
+        self.mock_build_child_agent = self._build_child_agent_patcher.start()
+
+        def _dummy_child(*_args, **kwargs):
+            child = MagicMock()
+            child._delegate_role = kwargs.get("role") or "leaf"
+            return child
+
+        self.mock_build_child_agent.side_effect = _dummy_child
+
+    def tearDown(self):
+        self._build_child_agent_patcher.stop()
+
     def test_no_parent_agent(self):
         result = json.loads(delegate_task(goal="test"))
         self.assertIn("error", result)
@@ -393,6 +409,7 @@ class TestDelegateTask(unittest.TestCase):
 
     def test_depth_increments(self):
         """Verify child gets parent's depth + 1."""
+        self._build_child_agent_patcher.stop()
         parent = _make_mock_parent(depth=0)
 
         with patch("run_agent.AIAgent") as MockAgent:
@@ -420,6 +437,7 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(len(parent._active_children), 0)
 
     def test_child_inherits_runtime_credentials(self):
+        self._build_child_agent_patcher.stop()
         parent = _make_mock_parent(depth=0)
         parent.base_url = "https://chatgpt.com/backend-api/codex"
         parent.api_key="***"
