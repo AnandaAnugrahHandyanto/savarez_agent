@@ -2444,6 +2444,100 @@ def test_click_join_falls_back_to_visible_text_for_ask_to_join(tmp_path):
     assert state.lobby_waiting is True
 
 
+def test_try_guest_name_falls_back_to_placeholder_name_input():
+    from plugins.google_meet.meet_bot import _try_guest_name
+
+    filled = []
+
+    class _EmptyLocator:
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 0
+
+        def is_visible(self):
+            return False
+
+    class _InputLocator:
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1
+
+        def is_visible(self):
+            return True
+
+        def fill(self, value, **_kwargs):
+            filled.append(value)
+
+    class _Page:
+        def locator(self, selector):
+            if selector == 'input[placeholder*="name" i]':
+                return _InputLocator()
+            return _EmptyLocator()
+
+    _try_guest_name(_Page(), "Catchline Assistant")
+
+    assert filled == ["Catchline Assistant"]
+
+
+def test_click_join_falls_back_to_exact_text_control_for_join_now(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState, _click_join
+
+    clicked = []
+
+    class _EmptyLocator:
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 0
+
+        def is_visible(self):
+            return False
+
+    class _TextLocator:
+        @property
+        def first(self):
+            return self
+
+        def count(self):
+            return 1
+
+        def is_visible(self):
+            return True
+
+        def click(self, **_kwargs):
+            clicked.append("Join now")
+
+    class _Page:
+        def get_by_role(self, *_args, **_kwargs):
+            return _EmptyLocator()
+
+        def locator(self, _selector):
+            return _EmptyLocator()
+
+        def get_by_text(self, text, **_kwargs):
+            if text == "Join now":
+                return _TextLocator()
+            return _EmptyLocator()
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+
+    assert _click_join(_Page(), state) is True
+    assert clicked == ["Join now"]
+    assert state.lobby_waiting is False
+
+
 def test_click_join_handles_continue_without_media_gate_before_join_now(tmp_path):
     from plugins.google_meet.meet_bot import _BotState, _click_join
 

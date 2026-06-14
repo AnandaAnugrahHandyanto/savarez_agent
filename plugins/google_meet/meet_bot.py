@@ -1603,8 +1603,10 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                     last_admission_check=last_admission_check,
                 ):
                     last_admission_check = now
-                    if not state.join_attempted_at and _click_join(page, state):
-                        state.set(join_attempted_at=now)
+                    if not state.join_attempted_at:
+                        _try_guest_name(page, guest_name)
+                        if _click_join(page, state):
+                            state.set(join_attempted_at=now)
                     ui_probe = _probe_meet_ui(page)
                     _, terminal = _apply_admission_probe(
                         state,
@@ -1735,13 +1737,21 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
 
 def _try_guest_name(page, guest_name: str) -> None:
     """If Meet is showing a guest-name input, type *guest_name* into it."""
-    try:
-        # Meet's guest name input has placeholder "Your name".
-        locator = page.locator('input[aria-label*="name" i]').first
-        if locator.count() and locator.is_visible():
-            locator.fill(guest_name, timeout=2_000)
-    except Exception:
-        pass
+    selectors = (
+        'input[aria-label*="name" i]',
+        'input[placeholder*="name" i]',
+        'input[name*="name" i]',
+        'textarea[aria-label*="name" i]',
+        '[contenteditable="true"][aria-label*="name" i]',
+    )
+    for selector in selectors:
+        try:
+            locator = _first_visible(page.locator(selector))
+            if locator is not None:
+                locator.fill(guest_name, timeout=2_000)
+                return
+        except Exception:
+            continue
 
 
 def _classify_meet_ui(
@@ -1959,6 +1969,8 @@ def _click_join(page, state: _BotState) -> bool:
                         f"button:has-text('{label}'), [role='button']:has-text('{label}')"
                     )
                 )
+            if btn is None and hasattr(page, "get_by_text"):
+                btn = _first_visible(page.get_by_text(label, exact=True))
             if btn is not None:
                 btn.click(timeout=3_000)
                 if label == "Ask to join":
