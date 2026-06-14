@@ -393,6 +393,25 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hermes-a2a": {
+        "description": "Agent-to-Agent (A2A) server — coding/research tools for non-interactive task delegation by other agents (no messaging, audio, or clarify UI)",
+        "tools": [
+            "web_search", "web_extract",
+            "terminal", "process",
+            "read_file", "write_file", "patch", "search_files",
+            "vision_analyze",
+            "skills_list", "skill_view", "skill_manage",
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_get_images",
+            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+            "todo", "memory",
+            "session_search",
+            "execute_code", "delegate_task",
+        ],
+        "includes": []
+    },
+
     "hermes-api-server": {
         "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify or send_message)",
         "tools": [

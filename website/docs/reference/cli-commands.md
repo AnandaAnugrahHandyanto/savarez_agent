@@ -72,6 +72,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes curator` | Background skill maintenance — status, run, pause, pin. See [Curator](../user-guide/features/curator.md). |
 | `hermes memory` | Configure external memory provider. Plugin-specific subcommands (e.g. `hermes honcho`) register automatically when their provider is active. |
 | `hermes acp` | Run Hermes as an ACP server for editor integration. |
+| `hermes a2a` | Run Hermes as an A2A (Agent2Agent) server for agent-to-agent integration. |
 | `hermes mcp` | Manage MCP server configurations and run Hermes as an MCP server. |
 | `hermes plugins` | Manage Hermes Agent plugins (install, enable, disable, remove). |
 | `hermes portal` | Nous Portal status, subscription link, and Tool Gateway routing. See [Tool Gateway](../user-guide/features/tool-gateway.md). |
@@ -1183,6 +1184,32 @@ pip install -e '.[acp]'
 ```
 
 See [ACP Editor Integration](../user-guide/features/acp.md) and [ACP Internals](../developer-guide/acp-internals.md).
+
+## `hermes a2a`
+
+```bash
+hermes a2a
+```
+
+Starts Hermes as an A2A (Agent2Agent) server so other agents can discover it
+(via the Agent Card at `/.well-known/agent-card.json`) and delegate tasks over
+JSON-RPC + SSE. Binds `127.0.0.1:9100` by default (`--host` / `--port` /
+`--public-url`).
+
+Related entrypoints:
+
+```bash
+hermes-a2a
+python -m a2a_adapter
+```
+
+Install support first:
+
+```bash
+pip install -e '.[a2a]'
+```
+
+See [A2A Server](../user-guide/features/a2a.md) and [A2A Internals](../developer-guide/a2a-internals.md).
 
 ## `hermes mcp`
 
