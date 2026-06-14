@@ -336,6 +336,12 @@ WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND='voice stream --quiet --sample
 WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT=180
 ```
 
+Validate the installed command shape before a live call:
+
+```bash
+scripts/verify_voice_stream_tts.py --voice-bin /path/to/voice
+```
+
 Supported stream-command placeholders:
 
 | Placeholder | Meaning |
