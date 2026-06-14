@@ -703,6 +703,11 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Controls whether the skill index is embedded in the system prompt.
+        #   "list" (default) — include full skill index with descriptions (~15K chars)
+        #   "none"           — omit descriptions; only a minimal placeholder is sent.
+        #                      All skills remain loadable via skill_view(name) and skills_list().
+        "listing_mode": "list",
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.

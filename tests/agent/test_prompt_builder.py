@@ -429,6 +429,35 @@ class TestBuildSkillsSystemPrompt:
         assert "backend-skill" in result
 
 
+    def test_listing_mode_none_returns_minimal_placeholder(self, monkeypatch, tmp_path):
+        """When skills.listing_mode=none, only minimal placeholder is returned."""
+        import agent.prompt_builder as _pb
+
+        # Patch load_config in hermes_cli.config (where it's actually defined)
+        def mock_load_config():
+            return {"skills": {"listing_mode": "none"}}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", mock_load_config)
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "tools" / "web-search"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: web-search\ndescription: Search the web\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        # Should contain the minimal placeholder
+        assert "listing disabled" in result
+        assert "skill_view(name)" in result
+        assert "available_skills" in result
+
+        # Should NOT contain skill descriptions (the main token savings)
+        assert "Search the web" not in result
+        assert "web-search" not in result
+
+
 class TestBuildNousSubscriptionPrompt:
     def test_includes_active_subscription_features(self, monkeypatch):
         monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)

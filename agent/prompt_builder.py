@@ -620,6 +620,15 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+
+    # Read listing_mode from config (default "list")
+    listing_mode = "list"
+    try:
+        from hermes_cli.config import load_config
+        listing_mode = (load_config().get("skills") or {}).get("listing_mode", "list")
+    except Exception:
+        pass
+
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -627,7 +636,46 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        listing_mode,
     )
+
+    # Fast path: if listing_mode is "none", return minimal placeholder immediately
+    if listing_mode == "none":
+        minimal_result = (
+            "## Skills (mandatory)\n"
+            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
+            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
+            "Err on the side of loading — it is always better to have context you don't need "
+            "than to miss critical steps, pitfalls, or established workflows. "
+            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
+            "and proven workflows that outperform general-purpose approaches. Load the skill "
+            "even if you think you could handle the task with basic tools like web_search or terminal. "
+            "Skills also encode the user's preferred approach, conventions, and quality standards "
+            "for tasks like code review, planning, and testing — load them even for tasks you "
+            "already know how to do, because the skill defines how it should be done here.\n"
+            "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
+            "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
+            "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
+            "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
+            "`hermes setup`) so you don't have to guess or invent workarounds.\n"
+            "If a skill has issues, fix it with skill_manage(action='patch').\n"
+            "After difficult/iterative tasks, offer to save as a skill. "
+            "If a skill you loaded was missing steps, had wrong commands, or needed "
+            "pitfalls you discovered, update it before finishing.\n"
+            "\n"
+            "<available_skills>\n"
+            "  (listing disabled -- use skill_view(name) to load)\n"
+            "</available_skills>\n"
+            "\n"
+            "Only proceed without loading a skill if genuinely none are relevant to the task."
+        )
+        with _SKILLS_PROMPT_CACHE_LOCK:
+            _SKILLS_PROMPT_CACHE[cache_key] = minimal_result
+            _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
+            while len(_SKILLS_PROMPT_CACHE) > _SKILLS_PROMPT_CACHE_MAX:
+                _SKILLS_PROMPT_CACHE.popitem(last=False)
+        return minimal_result
+
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
         if cached is not None:
