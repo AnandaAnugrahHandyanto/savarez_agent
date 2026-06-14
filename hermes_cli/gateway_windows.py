@@ -221,17 +221,21 @@ def _launch_elevated_install(
     *,
     start_now: bool | None = None,
     start_on_login: bool | None = None,
+    backend: str | None = None,
 ) -> bool:
     """Launch an elevated gateway install via UAC and return True on handoff."""
     old_start_now = os.environ.get("HERMES_GATEWAY_INSTALL_START_NOW")
     old_start_on_login = os.environ.get("HERMES_GATEWAY_INSTALL_START_ON_LOGIN")
     old_handoff = os.environ.get("HERMES_GATEWAY_ELEVATED_HANDOFF")
+    old_backend = os.environ.get("HERMES_GATEWAY_INSTALL_BACKEND")
     try:
         if start_now is not None:
             os.environ["HERMES_GATEWAY_INSTALL_START_NOW"] = "1" if start_now else "0"
         if start_on_login is not None:
             os.environ["HERMES_GATEWAY_INSTALL_START_ON_LOGIN"] = "1" if start_on_login else "0"
         os.environ["HERMES_GATEWAY_ELEVATED_HANDOFF"] = "1"
+        if backend:
+            os.environ["HERMES_GATEWAY_INSTALL_BACKEND"] = backend
         extra_args = ["--elevated-handoff"]
         if force:
             extra_args.append("--force")
@@ -239,12 +243,15 @@ def _launch_elevated_install(
             extra_args.append("--start-now" if start_now else "--no-start-now")
         if start_on_login is not None:
             extra_args.append("--start-on-login" if start_on_login else "--no-start-on-login")
+        if backend:
+            extra_args.extend(["--service-type", backend])
         return _launch_elevated_gateway_command("install", extra_args)
     finally:
         for key, old in (
             ("HERMES_GATEWAY_INSTALL_START_NOW", old_start_now),
             ("HERMES_GATEWAY_INSTALL_START_ON_LOGIN", old_start_on_login),
             ("HERMES_GATEWAY_ELEVATED_HANDOFF", old_handoff),
+            ("HERMES_GATEWAY_INSTALL_BACKEND", old_backend),
         ):
             if old is None:
                 os.environ.pop(key, None)
@@ -828,7 +835,7 @@ def _install_windows_service_backend(
         print("↻ Windows Service install requires administrator privileges.")
         print("  The Service Control Manager (SCM) registration is a privileged operation.")
         if prompt_yes_no("  Open the UAC prompt now?", False):
-            if _launch_elevated_install(force=False, start_now=start_now if start_now is not None else True, start_on_login=False):
+            if _launch_elevated_install(force=False, start_now=start_now if start_now is not None else True, start_on_login=False, backend="service"):
                 print("✓ Launched elevated Hermes gateway install via Windows Service.")
                 if start_now:
                     print("  Approve the Windows UAC prompt; the elevated install will register and start the service.")
