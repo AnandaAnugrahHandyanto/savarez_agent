@@ -108,6 +108,17 @@ def test_parse_smoke_json_rejects_missing_json():
         script.parse_smoke_json("not json")
 
 
+def test_format_child_error_preserves_tail():
+    script = _load_script_module()
+    stderr = "Traceback header\n" + ("x" * 1200) + "\nRuntimeError: useful tail"
+
+    formatted = script.format_child_error(stderr, max_chars=80)
+
+    assert "omitted" in formatted
+    assert "Traceback header" not in formatted
+    assert "RuntimeError: useful tail" in formatted
+
+
 def test_validate_smoke_result_accepts_voice_contract_shape():
     script = _load_script_module()
 

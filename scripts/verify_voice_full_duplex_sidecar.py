@@ -26,6 +26,7 @@ DEFAULT_INBOUND_TEXT = "hello world"
 DEFAULT_OUTBOUND_TEXT = "Hello from Hermes through the voice WebRTC sidecar."
 DEFAULT_EXPECT_WORDS = ("hello", "world")
 DEFAULT_TIMEOUT = 90.0
+MAX_CHILD_ERROR_CHARS = 4000
 
 
 def resolve_executable(value: str, *, label: str) -> str:
@@ -118,6 +119,14 @@ def run_smoke_command(
         timeout=timeout,
         check=False,
     )
+
+
+def format_child_error(text: str, *, max_chars: int = MAX_CHILD_ERROR_CHARS) -> str:
+    stripped = text.strip()
+    if len(stripped) <= max_chars:
+        return stripped
+    omitted = len(stripped) - max_chars
+    return f"... omitted {omitted} chars from child stderr ...\n{stripped[-max_chars:]}"
 
 
 def parse_smoke_json(stdout: str) -> dict[str, Any]:
@@ -221,10 +230,10 @@ def main() -> int:
 
     completed = run_smoke_command(command, timeout=args.timeout + 5)
     if completed.returncode != 0:
-        stderr = completed.stderr.strip()
+        stderr = format_child_error(completed.stderr)
         raise SystemExit(
             f"full-duplex smoke exited with code {completed.returncode}"
-            + (f": {stderr[:1000]}" if stderr else "")
+            + (f": {stderr}" if stderr else "")
         )
 
     try:
