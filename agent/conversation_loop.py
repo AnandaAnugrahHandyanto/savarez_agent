@@ -397,6 +397,33 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
         )
 
 
+def _refresh_api_system_prompt_for_active_runtime(
+    agent,
+    api_messages: List[Dict[str, Any]],
+    system_message: Optional[str],
+) -> Optional[str]:
+    """Rebuild the per-call system prompt after an in-turn runtime switch."""
+    agent._invalidate_system_prompt()
+    agent._cached_system_prompt = agent._build_system_prompt(system_message)
+    active_system_prompt = agent._cached_system_prompt
+
+    effective_system = active_system_prompt or ""
+    if agent.ephemeral_system_prompt:
+        effective_system = (
+            effective_system + "\n\n" + agent.ephemeral_system_prompt
+        ).strip()
+
+    if api_messages and api_messages[0].get("role") == "system":
+        if effective_system:
+            api_messages[0]["content"] = effective_system
+        else:
+            api_messages.pop(0)
+    elif effective_system:
+        api_messages.insert(0, {"role": "system", "content": effective_system})
+
+    return active_system_prompt
+
+
 # Shared recovery hint appended to every content-policy refusal message. Both
 # the HTTP-200 refusal path (``finish_reason=content_filter``) and the
 # exception path (a provider moderation error classified as
@@ -902,7 +929,10 @@ def run_conversation(
                             f"⏳ {_nous_msg} Trying fallback..."
                         )
                         agent._buffer_status(f"⏳ {_nous_msg}")
-                        if agent._try_activate_fallback():
+                        if agent._try_activate_fallback(reason=FailoverReason.rate_limit):
+                            active_system_prompt = _refresh_api_system_prompt_for_active_runtime(
+                                agent, api_messages, system_message
+                            )
                             retry_count = 0
                             compression_attempts = 0
                             _retry.primary_recovery_attempted = False
@@ -1228,6 +1258,9 @@ def run_conversation(
                     if agent._fallback_index < len(agent._fallback_chain):
                         agent._buffer_status("⚠️ Empty/malformed response — switching to fallback...")
                     if agent._try_activate_fallback():
+                        active_system_prompt = _refresh_api_system_prompt_for_active_runtime(
+                            agent, api_messages, system_message
+                        )
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
@@ -1299,6 +1332,9 @@ def run_conversation(
                         if agent._has_pending_fallback():
                             agent._buffer_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
                         if agent._try_activate_fallback():
+                            active_system_prompt = _refresh_api_system_prompt_for_active_runtime(
+                                agent, api_messages, system_message
+                            )
                             retry_count = 0
                             compression_attempts = 0
                             _retry.primary_recovery_attempted = False
@@ -1441,7 +1477,10 @@ def run_conversation(
                         agent._buffer_status(
                             "⚠️ Model declined to respond (safety refusal) — trying fallback..."
                         )
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(reason=FailoverReason.content_policy_blocked):
+                        active_system_prompt = _refresh_api_system_prompt_for_active_runtime(
+                            agent, api_messages, system_message
+                        )
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
@@ -2746,6 +2785,9 @@ def run_conversation(
                         else:
                             agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")
                         if agent._try_activate_fallback(reason=classified.reason):
+                            active_system_prompt = _refresh_api_system_prompt_for_active_runtime(
+                                agent, api_messages, system_message
+                            )
                             retry_count = 0
                             compression_attempts = 0
                             _retry.primary_recovery_attempted = False
@@ -3148,7 +3190,10 @@ def run_conversation(
                             agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
                         else:
                             agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(reason=classified.reason):
+                        active_system_prompt = _refresh_api_system_prompt_for_active_runtime(
+                            agent, api_messages, system_message
+                        )
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
@@ -3289,7 +3334,10 @@ def run_conversation(
                     # Try fallback before giving up entirely
                     if agent._has_pending_fallback():
                         agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if agent._try_activate_fallback(reason=classified.reason):
+                        active_system_prompt = _refresh_api_system_prompt_for_active_runtime(
+                            agent, api_messages, system_message
+                        )
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
@@ -4214,6 +4262,9 @@ def run_conversation(
                             "switching to fallback provider..."
                         )
                         if agent._try_activate_fallback():
+                            active_system_prompt = _refresh_api_system_prompt_for_active_runtime(
+                                agent, api_messages, system_message
+                            )
                             agent._empty_content_retries = 0
                             agent._buffer_status(
                                 f"↻ Switched to fallback: {agent.model} "

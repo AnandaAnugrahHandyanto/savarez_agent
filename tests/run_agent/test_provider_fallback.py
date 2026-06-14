@@ -7,6 +7,7 @@ advancement through multiple providers.
 
 from unittest.mock import MagicMock, patch
 
+from agent.conversation_loop import _refresh_api_system_prompt_for_active_runtime
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
@@ -181,6 +182,55 @@ class TestFallbackChainAdvancement:
         ):
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
+
+    def test_emits_fallback_switch_status_immediately(self):
+        agent = _make_agent(
+            fallback_model={"provider": "openai", "model": "gpt-4o"}
+        )
+        statuses = []
+        agent.status_callback = lambda kind, message: statuses.append((kind, message))
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert statuses == [
+            (
+                "lifecycle",
+                "🔄 Primary model failed — switching to fallback: gpt-4o via openai",
+            )
+        ]
+        assert getattr(agent, "_retry_status_buffer", []) == []
+
+    def test_refreshes_system_prompt_after_fallback_switch(self):
+        agent = _make_agent(
+            fallback_model={"provider": "openai", "model": "gpt-4o"}
+        )
+        agent.model = "qwen3.6:35b-a3b-q8_0"
+        agent.provider = "custom"
+        primary_prompt = agent._build_system_prompt(None)
+        agent._cached_system_prompt = primary_prompt
+        api_messages = [
+            {"role": "system", "content": primary_prompt},
+            {"role": "user", "content": "Which model are you?"},
+        ]
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        active_prompt = _refresh_api_system_prompt_for_active_runtime(
+            agent, api_messages, None
+        )
+
+        assert "Model: gpt-4o" in active_prompt
+        assert "Provider: openai" in active_prompt
+        assert "qwen3.6:35b-a3b-q8_0" not in api_messages[0]["content"]
+        assert "Model: gpt-4o" in api_messages[0]["content"]
 
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────
