@@ -520,7 +520,7 @@ def test_release_stale_claims_does_not_commit_ready_state_before_kill(kanban_hom
         kb._set_worker_pid(real_conn, t, os.getpid())
 
         now = int(time.time())
-        old = now - 3600
+        old = now - (_kb.DEFAULT_STALE_HEARTBEAT_GAP_SECONDS + 60)
         with kb.write_txn(real_conn):
             real_conn.execute(
                 "UPDATE tasks SET claim_expires = ?, last_heartbeat_at = ? "
