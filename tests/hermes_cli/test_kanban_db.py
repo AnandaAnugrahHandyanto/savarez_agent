@@ -3444,6 +3444,157 @@ def test_dispatch_review_does_not_claim_ready_tasks(
         claimed = kb.claim_review_task(conn, t)
     assert claimed is None
 
+
+
+def test_reclaim_termination_signals_worker_process_group(monkeypatch):
+    """Stale/timeout reclaim should signal the worker process group on POSIX.
+
+    Dispatcher workers use ``start_new_session=True``; their MCP servers and
+    other helper children normally stay in that process group. Signaling only
+    the parent PID can leave orphan helpers behind after the task is requeued.
+    """
+    host = kb._claimer_id().split(":", 1)[0]
+    calls = []
+
+    monkeypatch.setattr(kb, "_IS_WINDOWS", False)
+    monkeypatch.setattr(kb.os, "getpgid", lambda _pid: 4242)
+    monkeypatch.setattr(kb.os, "getpgrp", lambda: 31337)
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(kb, "_process_group_alive", lambda _pgid: False)
+
+    info = kb._terminate_reclaimed_worker(
+        4242,
+        f"{host}:claim",
+        signal_fn=lambda target, sig: calls.append((target, sig)),
+    )
+
+    assert calls and calls[0][0] == -4242
+    assert info["signaled_process_group"] is True
+    assert info["process_group"] == 4242
+    assert info["terminated"] is True
+
+
+def test_reclaim_termination_avoids_recycled_pid_foreign_group(monkeypatch):
+    """If pid was recycled into another pgrp, do not signal that group."""
+    host = kb._claimer_id().split(":", 1)[0]
+    calls = []
+
+    monkeypatch.setattr(kb, "_IS_WINDOWS", False)
+    monkeypatch.setattr(kb.os, "getpgid", lambda _pid: 9999)
+    monkeypatch.setattr(kb.os, "getpgrp", lambda: 31337)
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+
+    info = kb._terminate_reclaimed_worker(
+        4242,
+        f"{host}:claim",
+        signal_fn=lambda target, sig: calls.append((target, sig)),
+    )
+
+    assert calls and calls[0][0] == 4242
+    assert "signaled_process_group" not in info
+    assert info["terminated"] is True
+
+
+def test_reclaim_termination_signals_orphaned_group_without_leader(monkeypatch):
+    """If the session leader was reaped, kill the still-live worker group."""
+    import signal
+
+    host = kb._claimer_id().split(":", 1)[0]
+    calls = []
+    killed = {"value": False}
+
+    monkeypatch.setattr(kb, "_IS_WINDOWS", False)
+    monkeypatch.setattr(
+        kb.os, "getpgid",
+        lambda _pid: (_ for _ in ()).throw(ProcessLookupError()),
+    )
+    monkeypatch.setattr(kb.os, "getpgrp", lambda: 31337)
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(
+        kb, "_process_group_alive",
+        lambda _pgid: not killed["value"],
+    )
+    monkeypatch.setattr(kb.time, "sleep", lambda _seconds: None)
+
+    def _signal(target, sig):
+        calls.append((target, sig))
+        if sig == getattr(signal, "SIGKILL", signal.SIGTERM):
+            killed["value"] = True
+
+    info = kb._terminate_reclaimed_worker(
+        4242,
+        f"{host}:claim",
+        signal_fn=_signal,
+    )
+
+    assert calls[0][0] == -4242
+    assert any(
+        target == -4242 and sig == getattr(signal, "SIGKILL", signal.SIGTERM)
+        for target, sig in calls
+    )
+    assert info["process_group_without_leader"] is True
+    assert info["terminated"] is True
+
+
+def test_reclaim_termination_escalates_when_group_survives(monkeypatch):
+    """If helpers remain after parent dies, escalate SIGKILL to the group."""
+    import signal
+
+    host = kb._claimer_id().split(":", 1)[0]
+    calls = []
+    killed = {"value": False}
+
+    monkeypatch.setattr(kb, "_IS_WINDOWS", False)
+    monkeypatch.setattr(kb.os, "getpgid", lambda _pid: 4242)
+    monkeypatch.setattr(kb.os, "getpgrp", lambda: 31337)
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(
+        kb, "_process_group_alive",
+        lambda _pgid: not killed["value"],
+    )
+    monkeypatch.setattr(kb.time, "sleep", lambda _seconds: None)
+
+    def _signal(target, sig):
+        calls.append((target, sig))
+        if sig == getattr(signal, "SIGKILL", signal.SIGTERM):
+            killed["value"] = True
+
+    info = kb._terminate_reclaimed_worker(
+        4242,
+        f"{host}:claim",
+        signal_fn=_signal,
+    )
+
+    assert calls[0][0] == -4242
+    assert any(
+        target == -4242 and sig == getattr(signal, "SIGKILL", signal.SIGTERM)
+        for target, sig in calls
+    )
+    assert info["sigkill"] is True
+    assert info["terminated"] is True
+
+
+def test_reclaim_termination_avoids_current_process_group(monkeypatch):
+    """Defensive guard: never signal our own process group by accident."""
+    host = kb._claimer_id().split(":", 1)[0]
+    calls = []
+
+    monkeypatch.setattr(kb, "_IS_WINDOWS", False)
+    monkeypatch.setattr(kb.os, "getpgid", lambda _pid: 31337)
+    monkeypatch.setattr(kb.os, "getpgrp", lambda: 31337)
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+
+    info = kb._terminate_reclaimed_worker(
+        4242,
+        f"{host}:claim",
+        signal_fn=lambda target, sig: calls.append((target, sig)),
+    )
+
+    assert calls and calls[0][0] == 4242
+    assert "signaled_process_group" not in info
+    assert info["terminated"] is True
+
+
 # Stale detection — detect_stale_running
 # ---------------------------------------------------------------------------
 

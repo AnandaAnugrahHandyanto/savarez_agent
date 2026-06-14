@@ -5080,6 +5080,29 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
+def _process_group_alive(pgid: Optional[int]) -> bool:
+    """Return True when a POSIX process group still has live members."""
+    if _IS_WINDOWS or not pgid or pgid <= 0 or not hasattr(os, "kill"):
+        return False
+    try:
+        os.kill(-int(pgid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # The group exists but belongs to another uid. We should not normally
+        # hit this for host-local worker children, but treat it as alive so the
+        # caller does not report a false-positive clean termination.
+        return True
+    except OSError:
+        return False
+    except Exception:
+        # Test harnesses and hardened runtimes may wrap os.kill with guards
+        # that raise non-OSError exceptions for out-of-scope PIDs. Treat that
+        # as "not safely known alive" and fall back to the bare-pid path.
+        return False
+    return True
+
+
 def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
@@ -5110,29 +5133,70 @@ def _terminate_reclaimed_worker(
     if kill is None:
         return info
 
+    target = int(pid)
+    if not _IS_WINDOWS:
+        current_pgrp = os.getpgrp() if hasattr(os, "getpgrp") else None
+        try:
+            pgid = os.getpgid(int(pid))
+        except OSError:
+            pgid = None
+        if pgid and pgid > 0 and pgid == int(pid) and pgid != current_pgrp:
+            # Worker subprocesses are launched with start_new_session=True, so
+            # the expected safe shape is pid == process-group id. Only signal
+            # the group in that shape; if the PID was recycled into some other
+            # group, fall back to the bare PID rather than risking a foreign
+            # process group.
+            target = -int(pgid)
+            info["process_group"] = int(pgid)
+            info["signaled_process_group"] = True
+        elif pgid is None and int(pid) != current_pgrp and _process_group_alive(int(pid)):
+            # The worker/session leader may have exited and been reaped while
+            # helper children remain in its process group. In that POSIX shape
+            # os.getpgid(pid) fails, but kill(-pid, 0) still proves the worker's
+            # original group exists; signal it so reclaim does not strand MCP or
+            # shell helper processes.
+            target = -int(pid)
+            info["process_group"] = int(pid)
+            info["signaled_process_group"] = True
+            info["process_group_without_leader"] = True
+
     info["termination_attempted"] = True
     try:
-        kill(int(pid), signal.SIGTERM)
+        kill(target, signal.SIGTERM)
     except (ProcessLookupError, OSError):
         return info
 
+    group_pgid = info.get("process_group") if info.get("signaled_process_group") else None
     for _ in range(10):
-        if not _pid_alive(pid):
+        pid_dead = not _pid_alive(pid)
+        group_dead = (
+            not _process_group_alive(int(group_pgid))
+            if group_pgid is not None else True
+        )
+        if pid_dead and group_dead:
             info["terminated"] = True
             return info
         time.sleep(0.5)
 
-    if _pid_alive(pid):
+    if _pid_alive(pid) or (
+        group_pgid is not None and _process_group_alive(int(group_pgid))
+    ):
         try:
             # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
             # (which maps to TerminateProcess via the stdlib shim).
             _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-            kill(int(pid), _sigkill)
+            kill(target, _sigkill)
             info["sigkill"] = True
         except (ProcessLookupError, OSError):
             return info
 
-    info["terminated"] = not _pid_alive(pid)
+    info["terminated"] = (
+        not _pid_alive(pid)
+        and (
+            not _process_group_alive(int(group_pgid))
+            if group_pgid is not None else True
+        )
+    )
     return info
 
 
@@ -5204,7 +5268,6 @@ def enforce_max_runtime(
     (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a
     test hook; defaults to ``os.kill`` on POSIX.
     """
-    import signal
     timed_out: list[str] = []
     now = int(time.time())
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -5232,31 +5295,10 @@ def enforce_max_runtime(
 
         pid = int(row["worker_pid"])
         tid = row["id"]
-        # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
-        # want a cleaner shutdown can install their own SIGTERM handler
-        # before the grace expires.
-        killed = False
-        kill = signal_fn if signal_fn is not None else (
-            os.kill if hasattr(os, "kill") else None
+        termination = _terminate_reclaimed_worker(
+            pid, row["claim_lock"], signal_fn=signal_fn,
         )
-        if kill is not None:
-            try:
-                kill(pid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass
-            # Short polling wait — no time.sleep on the write txn.
-            for _ in range(10):
-                if not _pid_alive(pid):
-                    break
-                time.sleep(0.5)
-            if _pid_alive(pid):
-                try:
-                    # signal.SIGKILL doesn't exist on Windows.
-                    _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-                    kill(pid, _sigkill)
-                    killed = True
-                except (ProcessLookupError, OSError):
-                    pass
+        killed = bool(termination.get("sigkill"))
 
         with write_txn(conn):
             cur = conn.execute(
@@ -5273,6 +5315,7 @@ def enforce_max_runtime(
                     "limit_seconds": int(row["max_runtime_seconds"]),
                     "sigkill": killed,
                 }
+                payload.update(termination)
                 run_id = _end_run(
                     conn, tid,
                     outcome="timed_out", status="timed_out",
