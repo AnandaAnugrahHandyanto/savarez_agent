@@ -238,6 +238,7 @@ export const coreCommands: SlashCommand[] = [
           ctx.guarded<SessionTitleResponse>(r => {
             const next = (r?.title ?? title).trim()
             const suffix = r?.pending ? ' (queued while session initializes)' : ''
+            patchUiState({ info: ctx.ui.info ? { ...ctx.ui.info, title: next } : ctx.ui.info })
             ctx.transcript.sys(`session title set: ${next}${suffix}`)
           })
         )

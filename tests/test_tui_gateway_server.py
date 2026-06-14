@@ -7395,3 +7395,22 @@ def test_reap_idle_sessions_closes_only_evictable(monkeypatch):
         assert closed == [("stale", "idle_timeout")]
     finally:
         server._sessions.clear()
+
+
+def test_statusbar_session_title_paths_are_best_effort(monkeypatch):
+    """Statusbar identity payload must not 500 when title lookup fails."""
+    monkeypatch.setattr(
+        server,
+        "_session_live_title",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    monkeypatch.setattr(server, "_load_reasoning_config", lambda: {"enabled": True, "effort": "high"})
+    session = {"session_key": "broken-title", "pending_title": "Fallback title"}
+
+    info = server._fallback_session_info(session)
+    assert info["title"] == "Fallback title"
+    assert info["reasoning_effort"] == "high"
+    assert "status_label" in info
+
+    item = server._session_live_item("sid", session)
+    assert item["title"] == "Fallback title"

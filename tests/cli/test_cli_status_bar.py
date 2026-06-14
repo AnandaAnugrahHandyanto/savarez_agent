@@ -82,6 +82,62 @@ class TestCLIStatusBar:
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
 
+
+    def test_identity_status_label_and_reasoning_render_in_wide_text(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.5"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.config = {"display": {"status_label": "맥북"}, "agent": {"reasoning_effort": "high"}}
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "⚕ 맥북 │ gpt-5.5 high" in text
+
+    def test_identity_includes_live_session_title(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.5"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.config = {"display": {"status_label": "맥북"}, "agent": {"reasoning_effort": "high"}}
+        cli_obj._pending_title = "상태바 세션명"
+
+        text = cli_obj._build_status_bar_text(width=140)
+
+        assert "⚕ 맥북 │ 상태바 세션명 │ gpt-5.5 high" in text
+
+    def test_fragment_trim_preserves_statusbar_semantic_styles(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="gpt-5.5"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.config = {"display": {"status_label": "맥북"}, "agent": {"reasoning_effort": "high"}}
+        cli_obj._status_bar_visible = True
+
+        with patch.object(HermesCLI, "_get_tui_terminal_width", return_value=62):
+            frags = cli_obj._get_status_bar_fragments()
+
+        total_text = "".join(text for _, text in frags)
+        assert cli_obj._status_bar_display_width(total_text) <= 62
+        styles = {style for style, _ in frags}
+        assert "class:status-bar-strong" in styles
+        assert "class:status-bar-warn" in styles
+
     def test_post_compression_sentinel_does_not_render_negative(self):
         """Right after a compression, last_prompt_tokens is parked at the -1
         sentinel until the next API call reports real usage. The status bar

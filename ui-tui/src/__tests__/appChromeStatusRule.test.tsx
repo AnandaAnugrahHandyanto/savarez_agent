@@ -163,6 +163,43 @@ describe('StatusRule session count click target', () => {
   })
 })
 
+
+describe('StatusRule identity contract', () => {
+  it('renders host label, session title, model, and high reasoning effort', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 140,
+      model: 'gpt-5.5',
+      modelReasoningEffort: 'high',
+      sessionTitle: '상태바 세션명',
+      statusLabel: '맥북'
+    })
+
+    const rendered = textContent(element)
+
+    expect(rendered).toContain('맥북')
+    expect(rendered).toContain('상태바 세션명')
+    expect(rendered).toContain('gpt 5.5 high')
+  })
+
+  it('keeps host label visible while busy', () => {
+    const element = StatusRule({
+      ...baseProps,
+      busy: true,
+      cols: 120,
+      model: 'gpt-5.5',
+      modelReasoningEffort: 'high',
+      statusLabel: '맥북',
+      turnStartedAt: Date.now()
+    })
+
+    const rendered = textContent(element)
+
+    expect(rendered).toContain('맥북')
+    expect(rendered).toContain('gpt 5.5 high')
+  })
+})
+
 describe('StatusRule credits notice render priority', () => {
   it('replaces the idle status with the notice text and keeps model + context', () => {
     const element = StatusRule({
@@ -241,7 +278,9 @@ describe('StatusRule credits notice render priority', () => {
         if (Array.isArray(node)) {
           for (const c of node) {
             const f = findShrinkBoxContaining(c)
-            if (f) return f
+            if (f) {
+              return f
+            }
           }
         }
         return null

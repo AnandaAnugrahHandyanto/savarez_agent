@@ -3889,10 +3889,63 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
+        runtime_config = getattr(self, "config", {}) or {}
+        status_label = (
+            os.getenv("HERMES_STATUS_LABEL")
+            or os.getenv("HERMES_STATUS_HOST_LABEL")
+            or str(runtime_config.get("display", {}).get("status_label") or "").strip()
+        )
+
+        reasoning_effort = ""
+        reasoning_config = getattr(agent, "reasoning_config", None) or getattr(self, "reasoning_config", None)
+        if isinstance(reasoning_config, dict):
+            if reasoning_config.get("enabled") is False:
+                reasoning_effort = "off"
+            else:
+                reasoning_effort = str(
+                    reasoning_config.get("effort")
+                    or reasoning_config.get("reasoning_effort")
+                    or reasoning_config.get("level")
+                    or ""
+                ).strip()
+        if not reasoning_effort:
+            reasoning_effort = str(
+                getattr(agent, "reasoning_effort", None)
+                or runtime_config.get("agent", {}).get("reasoning_effort")
+                or ""
+            ).strip()
+        if reasoning_effort.lower() in {"none", "false", "disabled"}:
+            reasoning_effort = "off"
+        if reasoning_effort:
+            reasoning_effort = reasoning_effort.lower()
+
+        session_title = str(getattr(self, "_pending_title", "") or "").strip()
+        if not session_title:
+            session_db = getattr(self, "_session_db", None)
+            session_id = getattr(self, "session_id", None)
+            if session_db and session_id:
+                try:
+                    if hasattr(session_db, "get_session_title"):
+                        session_title = str(session_db.get_session_title(session_id) or "").strip()
+                    else:
+                        session = session_db.get_session(session_id) if hasattr(session_db, "get_session") else None
+                        if session:
+                            session_title = str(session.get("title") or "").strip()
+                except Exception:
+                    session_title = ""
+        if len(session_title) > 28:
+            session_title = f"{session_title[:25]}..."
+
+        model_status_label = f"{model_short} {reasoning_effort}".strip()
+
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "reasoning_effort": reasoning_effort,
+            "model_status_label": model_status_label,
+            "status_label": status_label,
+            "session_title": session_title,
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
@@ -4013,6 +4066,77 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             out.append(ch)
             width += ch_width
         return "".join(out).rstrip() + ellipsis
+
+    @classmethod
+    def _trim_status_bar_fragments(cls, fragments, max_width: int):
+        """Trim prompt_toolkit fragments while preserving each fragment style."""
+        if max_width <= 0:
+            return []
+        total_width = sum(cls._status_bar_display_width(text) for _, text in fragments)
+        if total_width <= max_width:
+            return fragments
+        ellipsis = "..."
+        ellipsis_width = cls._status_bar_display_width(ellipsis)
+        if max_width <= ellipsis_width:
+            return [(fragments[0][0] if fragments else "class:status-bar", ellipsis[:max_width])]
+        try:
+            from prompt_toolkit.utils import get_cwidth
+        except Exception:
+            get_cwidth = None
+        out = []
+        width = 0
+        last_style = fragments[0][0] if fragments else "class:status-bar"
+        for style, text in fragments:
+            if not text:
+                continue
+            buf = []
+            for ch in text:
+                ch_width = get_cwidth(ch) if get_cwidth else len(ch)
+                if width + ch_width + ellipsis_width > max_width:
+                    if buf:
+                        out.append((style, "".join(buf).rstrip()))
+                    out.append((style, ellipsis))
+                    return [(s, t) for s, t in out if t]
+                buf.append(ch)
+                width += ch_width
+            if buf:
+                out.append((style, "".join(buf)))
+                last_style = style
+        out.append((last_style, ellipsis))
+        return [(s, t) for s, t in out if t]
+
+    @staticmethod
+    def _status_bar_identity_text(snapshot: Dict[str, Any]) -> str:
+        parts = [
+            str(snapshot.get("status_label") or "").strip(),
+            str(snapshot.get("session_title") or "").strip(),
+            str(snapshot.get("model_status_label") or snapshot.get("model_short") or "Hermes").strip(),
+        ]
+        return "⚕ " + " │ ".join(part for part in parts if part)
+
+    def _status_bar_identity_fragments(self, snapshot: Dict[str, Any]):
+        frags = [("class:status-bar", " ⚕ ")]
+        first = True
+        status_label = str(snapshot.get("status_label") or "").strip()
+        session_title = str(snapshot.get("session_title") or "").strip()
+        model_short = str(snapshot.get("model_short") or "Hermes").strip()
+        reasoning_effort = str(snapshot.get("reasoning_effort") or "").strip()
+        if status_label:
+            frags.append(("class:status-bar-strong", status_label))
+            first = False
+        if session_title:
+            if not first:
+                frags.append(("class:status-bar-dim", " │ "))
+            frags.append(("class:status-bar-dim", session_title))
+            first = False
+        if not first:
+            frags.append(("class:status-bar-dim", " │ "))
+        frags.append(("class:status-bar-strong", model_short))
+        if reasoning_effort:
+            effort_style = "class:status-bar-warn" if reasoning_effort in {"high", "xhigh"} else "class:status-bar-dim" if reasoning_effort == "off" else "class:status-bar-strong"
+            frags.append(("class:status-bar-dim", " "))
+            frags.append((effort_style, reasoning_effort))
+        return frags
 
     @staticmethod
     def _get_tui_terminal_width(default: tuple[int, int] = (80, 24)) -> int:
@@ -4172,13 +4296,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             duration_label = snapshot["duration"]
 
             yolo_active = self._is_session_yolo_active()
+            identity = self._status_bar_identity_text(snapshot)
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"{identity} · {duration_label}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [identity, percent_label]
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -4201,7 +4326,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [identity, context_label, percent_label]
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -4238,9 +4363,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             yolo_active = self._is_session_yolo_active()
 
             if width < 52:
-                frags = [
-                    ("class:status-bar", " ⚕ "),
-                    ("class:status-bar-strong", snapshot["model_short"]),
+                frags = self._status_bar_identity_fragments(snapshot) + [
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
                 ]
@@ -4255,9 +4378,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     compressions = snapshot.get("compressions", 0)
                     bg_count = snapshot.get("active_background_tasks", 0)
                     bg_proc_count = snapshot.get("active_background_processes", 0)
-                    frags = [
-                        ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                    frags = self._status_bar_identity_fragments(snapshot) + [
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
@@ -4290,9 +4411,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     compressions = snapshot.get("compressions", 0)
                     bg_count = snapshot.get("active_background_tasks", 0)
                     bg_proc_count = snapshot.get("active_background_processes", 0)
-                    frags = [
-                        ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                    frags = self._status_bar_identity_fragments(snapshot) + [
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),
@@ -4330,9 +4449,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
-                plain_text = "".join(text for _, text in frags)
-                trimmed = self._trim_status_bar_text(plain_text, width)
-                return [("class:status-bar", trimmed)]
+                return self._trim_status_bar_fragments(frags, width)
             return frags
         except Exception:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]
