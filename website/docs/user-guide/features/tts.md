@@ -165,18 +165,18 @@ tts:
 
 Only positive integers are honored. Zero, negative, non-numeric, or boolean values fall through to the provider default, so a broken config can't accidentally disable truncation.
 
-### Telegram Voice Bubbles & ffmpeg
+### Voice Bubbles / Notes & ffmpeg
 
-Telegram voice bubbles require Opus/OGG audio format:
+Telegram voice bubbles and WhatsApp voice notes require Opus/OGG audio format:
 
 - **OpenAI, ElevenLabs, and Mistral** produce Opus natively — no extra setup
-- **Edge TTS** (default) outputs MP3 and needs **ffmpeg** to convert:
-- **MiniMax TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
-- **Google Gemini TTS** outputs raw PCM and uses **ffmpeg** to encode Opus directly for Telegram voice bubbles
-- **xAI TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
-- **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
-- **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
-- **Piper** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
+- **Edge TTS** (default) outputs MP3 and needs **ffmpeg** to convert.
+- **MiniMax TTS** outputs MP3 and needs **ffmpeg** to convert for native voice delivery
+- **Google Gemini TTS** outputs raw PCM and uses **ffmpeg** to encode Opus directly for native voice delivery
+- **xAI TTS** outputs MP3 and needs **ffmpeg** to convert for native voice delivery
+- **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for native voice delivery
+- **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for native voice delivery
+- **Piper** outputs WAV and also needs **ffmpeg** to convert for native voice delivery
 
 ```bash
 # Ubuntu/Debian
@@ -189,10 +189,10 @@ brew install ffmpeg
 sudo dnf install ffmpeg
 ```
 
-Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
+Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are sent as regular audio files (playable, but shown as a rectangular player instead of a native voice bubble/note).
 
 :::tip
-If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
+If you want native voice delivery without installing ffmpeg, switch to the OpenAI, ElevenLabs, Mistral, or an Ogg/Opus command provider such as `voice`.
 :::
 
 ### xAI Custom Voices (voice cloning)
