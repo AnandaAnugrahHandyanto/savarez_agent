@@ -3136,6 +3136,41 @@ class SessionDB:
             )
         return result
 
+    def get_user_message(
+        self,
+        session_id: str,
+        message_id: int,
+        *,
+        active_only: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        """Return a single active user message by id, or ``None`` if not found.
+
+        Enforces session scoping (refuses rows from other sessions), role
+        filtering (user only), and active status. Used by /prompts selection
+        in both classic CLI and TUI to load the full text of a numbered prompt.
+        """
+        active_clause = " AND active = 1" if active_only else ""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT id, session_id, role, content, timestamp, active FROM messages "
+                "WHERE session_id = ? AND id = ? AND role = 'user'"
+                f"{active_clause}",
+                (session_id, int(message_id)),
+            )
+            row = cursor.fetchone()
+
+        if row is None:
+            return None
+
+        return {
+            "id": row["id"],
+            "session_id": row["session_id"],
+            "role": row["role"],
+            "content": self._decode_content(row["content"]),
+            "timestamp": row["timestamp"],
+            "active": bool(row["active"]),
+        }
+
     # =========================================================================
     # Search
     # =========================================================================
