@@ -68,8 +68,11 @@ const {
 } = require('./connection-config.cjs')
 const {
   brokerExecutableFromProcess,
+  brokerServiceStatus,
   brokerStatus,
-  openBrokerSettings
+  openBrokerSettings,
+  registerBrokerLoginItem,
+  unregisterBrokerLoginItem
 } = require('./mac-permission-broker-runtime.cjs')
 const {
   DATA_URL_READ_MAX_BYTES,
@@ -5443,6 +5446,24 @@ ipcMain.handle('hermes:mac-broker:status', async () => {
   const executable = brokerExecutableFromProcess()
   const status = brokerStatus(executable)
   return { ...status, executable }
+})
+
+ipcMain.handle('hermes:mac-broker:service-status', async () => {
+  const executable = brokerExecutableFromProcess()
+  const status = brokerServiceStatus(executable)
+  return { ...status, executable }
+})
+
+ipcMain.handle('hermes:mac-broker:register', async () => {
+  const executable = brokerExecutableFromProcess()
+  const result = registerBrokerLoginItem(executable)
+  return { ...result, executable }
+})
+
+ipcMain.handle('hermes:mac-broker:unregister', async () => {
+  const executable = brokerExecutableFromProcess()
+  const result = unregisterBrokerLoginItem(executable)
+  return { ...result, executable }
 })
 
 ipcMain.handle('hermes:mac-broker:open-settings', async (_event, pane) => {
