@@ -73,6 +73,18 @@ def _as_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _as_optional_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return parsed
+
+
 def _as_int(value: Any, default: int = 0) -> int:
     if value is None or value == "":
         return default
@@ -102,6 +114,7 @@ def _cost_summary(attempts: Sequence[EvalAttempt], known_total: float | None = N
         "actual_attempts": sum(1 for attempt in attempts if attempt.cost_status == "actual"),
         "estimated_attempts": sum(1 for attempt in attempts if attempt.cost_status == "estimated"),
         "included_attempts": sum(1 for attempt in attempts if attempt.cost_status == "included"),
+        "no_usage_attempts": sum(1 for attempt in attempts if attempt.cost_status == "no_usage"),
     }
 
 
@@ -141,11 +154,22 @@ def _extract_base_url(record: Mapping[str, Any]) -> str:
 def _extract_cost(record: Mapping[str, Any]) -> CostTelemetry:
     usage = _usage_block(record)
     for source in (usage, record):
-        for key in ("cost_usd", "actual_cost_usd", "estimated_cost_usd"):
+        for key, status in (
+            ("cost_usd", "actual"),
+            ("actual_cost_usd", "actual"),
+            ("estimated_cost_usd", "estimated"),
+        ):
             if key in source:
+                amount = _as_optional_float(source.get(key))
+                if amount is None:
+                    return CostTelemetry(
+                        amount_usd=None,
+                        status="unknown",
+                        source="fixture",
+                    )
                 return CostTelemetry(
-                    amount_usd=_as_float(source.get(key)),
-                    status="actual",
+                    amount_usd=_round_float(amount, 6),
+                    status=status,
                     source="fixture",
                 )
 
@@ -255,7 +279,7 @@ def _attempt_from_record(record: Mapping[str, Any]) -> EvalAttempt:
         cost_status=cost.status,
         cost_source=cost.source,
         latency_ms=_extract_latency_ms(record),
-        api_calls=_as_int(record.get("api_calls", record.get("request_count", 0))),
+        api_calls=_extract_token_count(record, "api_calls", "request_count"),
         model=_extract_model(record),
         input_tokens=_extract_token_count(record, "input_tokens", "prompt_tokens"),
         output_tokens=_extract_token_count(record, "output_tokens", "completion_tokens"),
@@ -400,7 +424,8 @@ def score_eval_suite(tasks: Sequence[EvalTask], *, k: int = 1) -> dict[str, Any]
     - pass@1: first attempt success rate per task.
     - pass^k: deterministic fixture success rate if any of the first k attempts
       passed for each task.
-    - cost_usd: sum of fixture cost telemetry across attempts.
+    - cost_usd: backwards-compatible known cost total across attempts.
+    - cost: known/unknown cost telemetry counts and known cost total.
     - latency_ms: mean/p95/total latency across attempts.
     - Vera precision/recall: exact finding-id matching for expected vs reported.
     """

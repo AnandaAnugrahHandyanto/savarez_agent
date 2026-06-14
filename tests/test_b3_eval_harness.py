@@ -63,6 +63,7 @@ def test_scores_pass_metrics_cost_latency_and_vera_precision_recall():
         "actual_attempts": 5,
         "estimated_attempts": 0,
         "included_attempts": 0,
+        "no_usage_attempts": 0,
     }
     assert summary["overall"]["latency_ms"]["mean"] == 1120
     assert summary["agents"]["bob"]["pass@1"] == 1.0
@@ -279,7 +280,87 @@ def test_remote_pricing_routes_do_not_fetch_metadata_and_stay_unknown(tmp_path, 
         "actual_attempts": 0,
         "estimated_attempts": 0,
         "included_attempts": 0,
+        "no_usage_attempts": 0,
     }
+
+
+@pytest.mark.parametrize("bad_cost", [None, "", "not-a-number"])
+def test_invalid_explicit_fixture_cost_is_unknown_not_actual_zero(tmp_path, bad_cost):
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "task_id": "bad-explicit-cost",
+                "agent": "steve",
+                "attempts": [
+                    {
+                        "passed": True,
+                        "cost_usd": bad_cost,
+                        "metadata": {"model": "anthropic/claude-sonnet-4-20250514"},
+                        "usage": {"input_tokens": 1000, "output_tokens": 200},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tasks = load_fixture(fixture)
+    summary = score_eval_suite(tasks)
+
+    assert tasks[0].attempts[0].cost_usd is None
+    assert tasks[0].attempts[0].cost_status == "unknown"
+    assert tasks[0].attempts[0].cost_source == "fixture"
+    assert summary["overall"]["cost_usd"] == 0.0
+    assert summary["overall"]["cost"]["known_attempts"] == 0
+    assert summary["overall"]["cost"]["unknown_attempts"] == 1
+
+
+def test_explicit_zero_fixture_cost_is_known_actual_zero(tmp_path):
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "task_id": "explicit-zero-cost",
+                "agent": "steve",
+                "attempts": [{"passed": True, "cost_usd": 0.0}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tasks = load_fixture(fixture)
+    summary = score_eval_suite(tasks)
+
+    assert tasks[0].attempts[0].cost_usd == 0.0
+    assert tasks[0].attempts[0].cost_status == "actual"
+    assert summary["overall"]["cost"]["known_attempts"] == 1
+    assert summary["overall"]["cost"]["actual_attempts"] == 1
+    assert summary["overall"]["cost"]["unknown_attempts"] == 0
+
+
+def test_fixture_estimated_cost_is_known_but_not_actual(tmp_path):
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "task_id": "fixture-estimated-cost",
+                "agent": "steve",
+                "attempts": [{"passed": True, "estimated_cost_usd": 0.12}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tasks = load_fixture(fixture)
+    summary = score_eval_suite(tasks)
+
+    assert tasks[0].attempts[0].cost_usd == 0.12
+    assert tasks[0].attempts[0].cost_status == "estimated"
+    assert tasks[0].attempts[0].cost_source == "fixture"
+    assert summary["overall"]["cost"]["known_attempts"] == 1
+    assert summary["overall"]["cost"]["actual_attempts"] == 0
+    assert summary["overall"]["cost"]["estimated_attempts"] == 1
 
 
 def test_metadata_model_and_provider_are_accepted(tmp_path, monkeypatch):
@@ -404,6 +485,7 @@ def test_missing_model_or_zero_usage_is_not_reported_as_exact_free(tmp_path, att
     assert tasks[0].attempts[0].cost_status == expected_status
     assert summary["overall"]["cost_usd"] == 0.0
     assert summary["overall"]["cost"]["unknown_attempts"] == 1
+    assert summary["overall"]["cost"]["no_usage_attempts"] == (1 if expected_status == "no_usage" else 0)
 
 
 def test_cache_read_and_write_token_fields_are_passed_to_static_estimator(tmp_path, monkeypatch):
@@ -446,6 +528,32 @@ def test_cache_read_and_write_token_fields_are_passed_to_static_estimator(tmp_pa
     assert seen["usage"].cache_read_tokens == 30
     assert seen["usage"].cache_write_tokens == 40
     assert seen["usage"].request_count == 2
+
+
+def test_usage_request_count_is_counted_as_attempt_api_calls(tmp_path):
+    fixture = tmp_path / "fixture.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "task_id": "usage-request-count",
+                "agent": "steve",
+                "attempts": [
+                    {
+                        "passed": True,
+                        "cost_usd": 0.01,
+                        "usage": {"request_count": 3},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tasks = load_fixture(fixture)
+    summary = score_eval_suite(tasks)
+
+    assert tasks[0].attempts[0].api_calls == 3
+    assert summary["overall"]["api_calls"] == 3
 
 
 def test_load_fixture_estimates_cost_from_static_pricing_when_cost_missing(tmp_path):
