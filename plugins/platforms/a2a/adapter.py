@@ -283,9 +283,9 @@ class A2AAdapter(BasePlatformAdapter):
         """
         with self._pending_lock:
             fut = self._pending_replies.get(chat_id)
-        if fut is not None and not fut.done():
-            fut.set_result(content or "")
-            return SendResult(success=True, message_id=str(int(time.time() * 1000)))
+            if fut is not None and not fut.done():
+                fut.set_result(content or "")
+                return SendResult(success=True, message_id=str(int(time.time() * 1000)))
         # No waiter (e.g. a late streamed chunk or out-of-band send) — drop it.
         logger.debug("A2A: send() for context %s had no pending waiter", chat_id)
         return SendResult(success=True, message_id=str(int(time.time() * 1000)))
