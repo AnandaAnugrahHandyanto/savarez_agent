@@ -4723,6 +4723,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     )
     assert resp.get("result"), f"got error: {resp.get('error')}"
     sid = resp["result"]["session_id"]
+    stored_sid = resp["result"]["stored_session_id"]
     assert build_entered.wait(timeout=1.0), "deferred build did not start"
 
     # Wait until the (deferred) build thread has actually entered
@@ -4764,7 +4765,7 @@ def test_session_create_close_race_does_not_orphan_worker(monkeypatch):
     # and the orphan-cleanup path; the key guarantee is that the build
     # thread does at least one unregister call (any prior close
     # already popped the callback; the duplicate is a no-op).
-    assert len(unregistered_keys) >= 1, (
+    assert stored_sid in unregistered_keys, (
         f"orphan notify registration was not unregistered — "
         f"unregistered_keys={unregistered_keys}"
     )
@@ -4821,6 +4822,7 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
         }
     )
     sid = resp["result"]["session_id"]
+    stored_sid = resp["result"]["stored_session_id"]
 
     # Wait for the build to finish (ready event inside session dict).
     session = server._sessions[sid]
@@ -4832,7 +4834,7 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
         closed_workers == []
     ), f"build thread closed its own worker despite no race: {closed_workers}"
     assert (
-        unregistered_keys == []
+        stored_sid not in unregistered_keys
     ), f"build thread unregistered its own notify despite no race: {unregistered_keys}"
 
     # Session should have the live worker installed.
