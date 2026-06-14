@@ -926,8 +926,14 @@ def _convert_to_opus(audio_path: str) -> Optional[str]:
         ogg_path = str(source.with_name(f"{source.stem}.opus.ogg"))
     try:
         result = subprocess.run(
-            ["ffmpeg", "-i", audio_path, "-acodec", "libopus",
-             "-ac", "1", "-b:a", "64k", "-vbr", "off", ogg_path, "-y"],
+            [
+                "ffmpeg", "-i", audio_path,
+                "-acodec", "libopus",
+                "-ac", "1", "-ar", "48000",
+                "-b:a", "64k", "-vbr", "off",
+                "-application", "voip",
+                ogg_path, "-y",
+            ],
             capture_output=True, timeout=30,
             stdin=subprocess.DEVNULL,
         )

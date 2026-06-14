@@ -1265,6 +1265,52 @@ class TestSendVoice:
         adapter._warn_once_no_ffmpeg()
         assert adapter._warned_no_ffmpeg is True
 
+    @pytest.mark.asyncio
+    async def test_convert_to_opus_forces_whatsapp_voice_note_shape(self):
+        from pathlib import Path
+
+        from gateway.platforms import whatsapp_cloud as wac
+
+        class _Proc:
+            returncode = 0
+
+            async def communicate(self):
+                return b"", b""
+
+        adapter = _make_adapter()
+        source_path = _tmpfile(".wav", content=b"RIFF....WAVE")
+        captured_args = None
+
+        async def fake_create_subprocess_exec(*args, **_kwargs):
+            nonlocal captured_args
+            captured_args = args
+            Path(str(args[-1])).write_bytes(b"OggS")
+            return _Proc()
+
+        try:
+            with _patch.object(wac, "_FFMPEG_PATH", "ffmpeg"), _patch(
+                "gateway.platforms.whatsapp_cloud.asyncio.create_subprocess_exec",
+                new=fake_create_subprocess_exec,
+            ):
+                opus_path = await adapter._convert_to_opus(source_path)
+
+            assert opus_path is not None
+            args = captured_args
+            assert args is not None
+            assert args[0] == "ffmpeg"
+            assert args[3] == source_path
+            assert args[args.index("-ac") + 1] == "1"
+            assert args[args.index("-ar") + 1] == "48000"
+            assert args[args.index("-c:a") + 1] == "libopus"
+            assert args[args.index("-b:a") + 1] == "32k"
+            assert args[args.index("-vbr") + 1] == "on"
+            assert args[args.index("-application") + 1] == "voip"
+            assert args[-1] == opus_path
+        finally:
+            _os.unlink(source_path)
+            if "opus_path" in locals() and opus_path and _os.path.exists(opus_path):
+                _os.unlink(opus_path)
+
 
 # ---------------------------------------------------------------------------
 # Inbound media — Graph two-step download (Phase 4)

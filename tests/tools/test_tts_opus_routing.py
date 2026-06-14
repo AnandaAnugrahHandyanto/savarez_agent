@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -95,3 +96,31 @@ def test_voice_platform_rejects_invalid_opus_conversion(tmp_path, monkeypatch):
     assert result["file_path"] == str(out)
     assert result["voice_compatible"] is False
     assert result["media_tag"] == f"MEDIA:{out}"
+
+
+def test_tts_opus_conversion_forces_whatsapp_ready_shape(tmp_path, monkeypatch):
+    source = tmp_path / "speech.mp3"
+    source.write_bytes(b"mp3")
+    output = tmp_path / "speech.ogg"
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append((command, kwargs))
+        output.write_bytes(OPUS_OGG_BYTES)
+        return subprocess.CompletedProcess(command, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(tts_tool, "_has_ffmpeg", lambda: True)
+    monkeypatch.setattr(tts_tool.subprocess, "run", fake_run)
+
+    result = tts_tool._convert_to_opus(str(source))
+
+    assert result == str(output)
+    assert commands
+    command, kwargs = commands[0]
+    assert command[:4] == ["ffmpeg", "-i", str(source), "-acodec"]
+    assert "libopus" in command
+    assert command[command.index("-ac") + 1] == "1"
+    assert command[command.index("-ar") + 1] == "48000"
+    assert command[command.index("-application") + 1] == "voip"
+    assert command[-2:] == [str(output), "-y"]
+    assert kwargs["stdin"] is subprocess.DEVNULL
