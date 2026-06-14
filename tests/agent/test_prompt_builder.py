@@ -417,6 +417,7 @@ class TestBuildSkillsSystemPrompt:
         )
 
         second = build_skills_system_prompt()
+        assert "cached-skill" not in second
 
 
     def test_includes_setup_needed_skills(self, monkeypatch, tmp_path):
