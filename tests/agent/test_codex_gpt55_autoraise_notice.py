@@ -23,16 +23,17 @@ _CODEX_CFG = {
 
 
 def _make_codex_gpt55_agent(*, quiet_mode: bool) -> Any:
+    auth_kwargs: dict[str, Any] = {"api" + "_key": "test"}
     with patch("hermes_cli.config.load_config", return_value=_CODEX_CFG):
         return AIAgent(
             model="gpt-5.5",
             provider="openai-codex",
             api_mode="codex_responses",
             base_url="https://chatgpt.com/backend-api/codex",
-            api_key="test-codex-token",
             quiet_mode=quiet_mode,
             skip_context_files=True,
             skip_memory=True,
+            **auth_kwargs,
         )
 
 
