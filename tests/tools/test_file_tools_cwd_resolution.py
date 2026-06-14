@@ -292,3 +292,107 @@ def test_patch_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
     # And the decoy copy is untouched.
     assert (decoy / "target.py").read_text() == "DECOY_ORIGINAL\n"
 
+
+# ── Fix C: Windows MSYS / cygdrive / WSL absolute-path translation ───────────
+#
+# Bug: on Windows, Path("/c/dev/x") is drive-less rooted (is_absolute() ==
+# False), so the resolver joined it onto the active drive and produced the
+# literal C:\c\dev\x. _normalize_windows_msys_path translates the cygdrive /
+# /mnt / /cygdrive conventions to native drive form, but ONLY on Windows with
+# the LOCAL terminal backend. These tests run on any OS by forcing os.name and
+# the backend via monkeypatch so behaviour is pinned cross-platform.
+
+
+@pytest.fixture
+def _force_windows_local(monkeypatch):
+    """Force os.name == 'nt' and a LOCAL terminal backend for normalization."""
+    monkeypatch.setattr(ft.os, "name", "nt")
+    monkeypatch.setattr(ft, "_terminal_backend_is_local", lambda task_id="default": True)
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("/c/dev/x.ts", "C:/dev/x.ts"),
+        ("/mnt/c/dev/x.ts", "C:/dev/x.ts"),
+        ("/cygdrive/c/dev/x.ts", "C:/dev/x.ts"),
+        ("/d/projects/a", "D:/projects/a"),
+        ("/c", "C:/"),
+        ("/mnt/c", "C:/"),
+        ("/cygdrive/c", "C:/"),
+    ],
+)
+def test_msys_paths_translate_on_windows_local(_force_windows_local, raw, expected):
+    assert ft._normalize_windows_msys_path(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "/tmp/x",          # multi-letter POSIX root — not a drive
+        "/home/x",         # multi-letter POSIX root
+        "/root/x",         # multi-letter POSIX root
+        "/usr/lib/x",
+        "/var/log/x",
+        "C:\\dev\\x",      # real Windows path
+        "C:/dev/x",        # real Windows path (forward slashes)
+        "src/x.ts",        # genuine relative path
+        "./x",             # genuine relative path
+        "x",               # bare relative
+        "~",               # home, left for expanduser
+        "~/foo",
+        "",                # empty
+    ],
+)
+def test_non_msys_paths_unchanged_on_windows_local(_force_windows_local, raw):
+    assert ft._normalize_windows_msys_path(raw) == raw
+
+
+def test_msys_translation_noop_when_not_windows(monkeypatch):
+    """On a non-Windows OS, /c/dev/x must pass through untouched."""
+    monkeypatch.setattr(ft.os, "name", "posix")
+    monkeypatch.setattr(ft, "_terminal_backend_is_local", lambda task_id="default": True)
+    assert ft._normalize_windows_msys_path("/c/dev/x.ts") == "/c/dev/x.ts"
+
+
+def test_msys_translation_noop_when_backend_not_local(monkeypatch):
+    """On Windows but a Docker/non-local backend, /c/... must NOT be rewritten.
+
+    In a container, /c/... or /root/... can be a real path; rewriting it to
+    C:/... would corrupt the target.
+    """
+    monkeypatch.setattr(ft.os, "name", "nt")
+    monkeypatch.setattr(ft, "_terminal_backend_is_local", lambda task_id="default": False)
+    assert ft._normalize_windows_msys_path("/c/dev/x.ts") == "/c/dev/x.ts"
+    assert ft._normalize_windows_msys_path("/root/x") == "/root/x"
+
+
+def test_backend_local_detection_reads_env_config(monkeypatch):
+    """_terminal_backend_is_local reflects _get_env_config()['env_type']."""
+    import tools.terminal_tool as tt
+
+    monkeypatch.setattr(tt, "_get_env_config", lambda: {"env_type": "local"})
+    assert ft._terminal_backend_is_local() is True
+    monkeypatch.setattr(tt, "_get_env_config", lambda: {"env_type": "docker"})
+    assert ft._terminal_backend_is_local() is False
+
+
+def test_resolve_path_for_task_translates_msys_absolute(monkeypatch, tmp_path):
+    """End-to-end: /c/... absolute input resolves to a real C: path, not C:\\c\\...
+
+    Gated to Windows: the drive-less-rooted bug only exists on nt, and
+    Path semantics differ on POSIX. On non-Windows we assert the no-op
+    instead (the function returns the path unchanged before Path()).
+    """
+    monkeypatch.setattr(ft, "_terminal_backend_is_local", lambda task_id="default": True)
+    if os.name == "nt":
+        monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": None)
+        resolved = ft._resolve_path_for_task("/c/dev/_unit_probe.ts", task_id="default")
+        # Must be C:\dev\_unit_probe.ts — NOT the literal C:\c\dev\...
+        assert resolved == Path("C:/dev/_unit_probe.ts")
+        assert "\\c\\dev" not in str(resolved).lower().replace("c:", "", 1)
+    else:
+        # Non-Windows: normalization is a no-op, path stays POSIX-absolute.
+        monkeypatch.setattr(ft.os, "name", "posix")
+        assert ft._normalize_windows_msys_path("/c/dev/x") == "/c/dev/x"
+
