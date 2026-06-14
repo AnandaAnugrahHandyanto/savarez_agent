@@ -21,12 +21,14 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 from typing import Any
 from urllib.error import URLError
+from urllib.parse import urlparse
 from urllib.request import urlopen
 
 from verify_voice_local_stack import audit_live_hermes_root
@@ -87,6 +89,24 @@ def parse_systemctl_show(output: str) -> dict[str, str]:
         key, value = line.split("=", 1)
         data[key] = value
     return data
+
+
+def parse_exec_start_argv(exec_start: str) -> list[str]:
+    match = re.search(r"argv\[\]=(.*?)(?:\s;\s|\s\})", exec_start)
+    if match:
+        return shlex.split(match.group(1))
+    return shlex.split(exec_start)
+
+
+def option_values(argv: list[str], option: str) -> list[str]:
+    values: list[str] = []
+    prefix = f"{option}="
+    for index, arg in enumerate(argv):
+        if arg == option and index + 1 < len(argv):
+            values.append(argv[index + 1])
+        elif arg.startswith(prefix):
+            values.append(arg.removeprefix(prefix))
+    return values
 
 
 def get_service_state(service: str, *, timeout: float) -> dict[str, str]:
@@ -238,6 +258,7 @@ def validate_sidecar_service_state(
     service: str,
     voice_bin: str | None,
     voice_repo: Path | None,
+    sidecar_url: str | None,
 ) -> dict[str, Any]:
     pid = validate_service_state(state, label=service)
     env = parse_systemd_environment(state.get("Environment", ""))
@@ -257,6 +278,36 @@ def validate_sidecar_service_state(
             )
         result["voice_bin"] = configured_voice_bin
 
+    exec_start = str(state.get("ExecStart") or "")
+    exec_argv = parse_exec_start_argv(exec_start)
+
+    if sidecar_url:
+        parsed_url = urlparse(sidecar_url)
+        expected_host = parsed_url.hostname
+        expected_port = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
+        if not expected_host:
+            raise SystemExit(f"sidecar URL has no host: {sidecar_url!r}")
+        host_candidates = {expected_host}
+        if expected_host == "localhost":
+            host_candidates.add("127.0.0.1")
+        elif expected_host == "127.0.0.1":
+            host_candidates.add("localhost")
+
+        host_values = set(option_values(exec_argv, "--host"))
+        port_values = set(option_values(exec_argv, "--port"))
+        has_host = bool(host_candidates & host_values)
+        has_port = str(expected_port) in port_values
+        if not has_host or not has_port:
+            raise SystemExit(
+                f"{service} ExecStart does not bind expected sidecar URL "
+                f"{sidecar_url}: {exec_start!r}"
+            )
+        result["sidecar_url"] = sidecar_url.rstrip("/")
+        result["bind"] = {
+            "host": expected_host,
+            "port": expected_port,
+        }
+
     if voice_repo is not None:
         expected_root = voice_repo.expanduser().resolve()
         working_directory = str(state.get("WorkingDirectory") or "")
@@ -269,7 +320,6 @@ def validate_sidecar_service_state(
             )
 
         sidecar_path = expected_root / "examples" / "webrtc-sidecar" / "sidecar.py"
-        exec_start = str(state.get("ExecStart") or "")
         if str(sidecar_path) not in exec_start:
             raise SystemExit(
                 f"{service} ExecStart does not reference expected sidecar "
@@ -680,6 +730,7 @@ def main() -> int:
             service=args.sidecar_service,
             voice_bin=voice_bin,
             voice_repo=voice_repo,
+            sidecar_url=args.calling_sidecar_url,
         )
 
     checks["imports"] = import_smoke(

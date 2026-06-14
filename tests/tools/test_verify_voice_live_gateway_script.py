@@ -197,11 +197,15 @@ def test_validate_sidecar_service_state_accepts_expected_unit(tmp_path: Path):
             "MainPID": "42",
             "Environment": f"VOICE_BIN={voice_bin}",
             "WorkingDirectory": str(voice_repo),
-            "ExecStart": f"{{ argv[]={sys.executable} {sidecar_path} --port 8787 }}",
+            "ExecStart": (
+                f"{{ argv[]={sys.executable} {sidecar_path} "
+                "--host 127.0.0.1 --port 8787 }}"
+            ),
         },
         service="voice-webrtc-sidecar.service",
         voice_bin=str(voice_bin),
         voice_repo=voice_repo,
+        sidecar_url="http://127.0.0.1:8787",
     )
 
     assert result["service"] == "voice-webrtc-sidecar.service"
@@ -209,6 +213,8 @@ def test_validate_sidecar_service_state_accepts_expected_unit(tmp_path: Path):
     assert result["voice_bin"] == str(voice_bin)
     assert result["working_directory"] == str(voice_repo)
     assert result["sidecar_path"] == str(sidecar_path)
+    assert result["sidecar_url"] == "http://127.0.0.1:8787"
+    assert result["bind"] == {"host": "127.0.0.1", "port": 8787}
 
 
 def test_validate_sidecar_service_state_rejects_stale_voice_bin(tmp_path: Path):
@@ -230,6 +236,7 @@ def test_validate_sidecar_service_state_rejects_stale_voice_bin(tmp_path: Path):
             service="voice-webrtc-sidecar.service",
             voice_bin=str(expected_voice),
             voice_repo=None,
+            sidecar_url=None,
         )
 
 
@@ -254,6 +261,25 @@ def test_validate_sidecar_service_state_rejects_wrong_voice_repo(tmp_path: Path)
             service="voice-webrtc-sidecar.service",
             voice_bin=None,
             voice_repo=voice_repo,
+            sidecar_url=None,
+        )
+
+
+def test_validate_sidecar_service_state_rejects_wrong_bind_port(tmp_path: Path):
+    script = _load_script_module()
+
+    with pytest.raises(SystemExit, match="expected sidecar URL"):
+        script.validate_sidecar_service_state(
+            {
+                "ActiveState": "active",
+                "MainPID": "42",
+                "Environment": "",
+                "ExecStart": "{ argv[]=/python sidecar.py --host 127.0.0.1 --port 87870 }",
+            },
+            service="voice-webrtc-sidecar.service",
+            voice_bin=None,
+            voice_repo=None,
+            sidecar_url="http://127.0.0.1:8787",
         )
 
 

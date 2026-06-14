@@ -361,7 +361,8 @@ also compares the running sidecar `/contract` with `voice stream-contract` so
 PCM shape, endpoint paths, payload definitions, and advertised `voice`
 surfaces cannot drift silently. When `--sidecar-service` is included, it also
 checks the sidecar systemd user unit is active and points at the expected
-`VOICE_BIN`, `WorkingDirectory`, and `examples/webrtc-sidecar/sidecar.py`.
+`VOICE_BIN`, `WorkingDirectory`, `examples/webrtc-sidecar/sidecar.py`, and
+sidecar URL host/port.
 
 That live check inspects the systemd user service, verifies the running process
 environment, confirms imports resolve from the expected checkout, validates the
