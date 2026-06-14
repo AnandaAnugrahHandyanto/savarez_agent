@@ -20,7 +20,6 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const http = require('node:http')
 const https = require('node:https')
-const net = require('node:net')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
@@ -67,6 +66,11 @@ const {
   resolveTestWsUrl,
   tokenPreview
 } = require('./connection-config.cjs')
+const {
+  brokerExecutableFromProcess,
+  brokerStatus,
+  openBrokerSettings
+} = require('./mac-permission-broker-runtime.cjs')
 const {
   DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
@@ -5433,6 +5437,19 @@ ipcMain.handle('hermes:profile:set', async (_event, name) => {
 
 ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
   previewShortcutActive = Boolean(active)
+})
+
+ipcMain.handle('hermes:mac-broker:status', async () => {
+  const executable = brokerExecutableFromProcess()
+  const status = brokerStatus(executable)
+  return { ...status, executable }
+})
+
+ipcMain.handle('hermes:mac-broker:open-settings', async (_event, pane) => {
+  const executable = brokerExecutableFromProcess()
+  const safePane = typeof pane === 'string' && pane.trim() ? pane.trim() : 'accessibility'
+  const result = openBrokerSettings(executable, safePane)
+  return { ...result, executable, pane: safePane }
 })
 
 ipcMain.handle('hermes:requestMicrophoneAccess', async () => {
