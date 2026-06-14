@@ -288,9 +288,21 @@ class TestSaveEnvValueSecure:
             return
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-            save_env_value("TENOR_API_KEY", "sk-test-secret")
+            save_env_value("TENOR_API_KEY", "***")
             env_mode = (tmp_path / ".env").stat().st_mode & 0o777
             assert env_mode == 0o600
+
+    def test_save_env_value_preserves_existing_permissions_on_posix(self, tmp_path):
+        if os.name == "nt":
+            return
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("EXISTING_KEY=old_value\n")
+        os.chmod(str(env_path), 0o640)
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("NEW_KEY", "new_value")
+            env_mode = env_path.stat().st_mode & 0o777
+            assert env_mode == 0o640, f"Expected 0o640 (Docker volume mount), got {oct(env_mode)}"
 
 
 class TestRemoveEnvValue:
@@ -304,6 +316,18 @@ class TestRemoveEnvValue:
             assert "KEY_B" not in content
             assert "KEY_A=value_a" in content
             assert "KEY_C=value_c" in content
+
+    def test_removes_key_preserves_existing_permissions_on_posix(self, tmp_path):
+        if os.name == "nt":
+            return
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("KEY_A=value_a\nKEY_B=value_b\n")
+        os.chmod(str(env_path), 0o640)
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "KEY_B": "value_b"}):
+            remove_env_value("KEY_B")
+            env_mode = env_path.stat().st_mode & 0o777
+            assert env_mode == 0o640, f"Expected 0o640 (Docker volume mount), got {oct(env_mode)}"
 
     def test_clears_os_environ(self, tmp_path):
         env_path = tmp_path / ".env"
