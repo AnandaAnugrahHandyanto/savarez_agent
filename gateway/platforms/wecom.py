@@ -877,6 +877,8 @@ class WeComAdapter(BasePlatformAdapter):
         sender_allow = _coerce_list(group_cfg.get("allow_from") or group_cfg.get("allowFrom"))
         if sender_allow:
             return _entry_matches(sender_allow, sender_id)
+        if self._group_policy == "pairing":
+            return False
         return True
 
     def _resolve_group_cfg(self, chat_id: str) -> Dict[str, Any]:

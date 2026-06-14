@@ -1426,6 +1426,8 @@ class WeixinAdapter(BasePlatformAdapter):
                 return
             if self._group_policy == "allowlist" and effective_chat_id not in self._group_allow_from:
                 return
+            if self._group_policy == "pairing":
+                return
         elif not self._is_dm_allowed(sender_id):
             return
 

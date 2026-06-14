@@ -66,13 +66,13 @@ def _dm_message(body="hello", **overrides):
 # --- Existing tests (unchanged logic, updated helper) ---
 
 def test_group_messages_can_be_opened_via_config():
-    adapter = _make_adapter(require_mention=False)
+    adapter = _make_adapter(require_mention=False, group_policy="open")
 
     assert adapter._should_process_message(_group_message("hello everyone")) is True
 
 
 def test_group_messages_can_require_direct_trigger_via_config():
-    adapter = _make_adapter(require_mention=True)
+    adapter = _make_adapter(require_mention=True, group_policy="open")
 
     assert adapter._should_process_message(_group_message("hello everyone")) is False
     assert adapter._should_process_message(
@@ -91,7 +91,7 @@ def test_group_messages_can_require_direct_trigger_via_config():
 
 
 def test_regex_mention_patterns_allow_custom_wake_words():
-    adapter = _make_adapter(require_mention=True, mention_patterns=[r"^\s*chompy\b"])
+    adapter = _make_adapter(require_mention=True, group_policy="open", mention_patterns=[r"^\s*chompy\b"])
 
     assert adapter._should_process_message(_group_message("chompy status")) is True
     assert adapter._should_process_message(_group_message("   chompy help")) is True
@@ -99,7 +99,7 @@ def test_regex_mention_patterns_allow_custom_wake_words():
 
 
 def test_invalid_regex_patterns_are_ignored():
-    adapter = _make_adapter(require_mention=True, mention_patterns=[r"(", r"^\s*chompy\b"])
+    adapter = _make_adapter(require_mention=True, group_policy="open", mention_patterns=[r"(", r"^\s*chompy\b"])
 
     assert adapter._should_process_message(_group_message("chompy status")) is True
     assert adapter._should_process_message(_group_message("hello everyone")) is False
@@ -132,6 +132,7 @@ def test_config_bridges_whatsapp_group_settings(monkeypatch, tmp_path):
 def test_free_response_chats_bypass_mention_gating():
     adapter = _make_adapter(
         require_mention=True,
+        group_policy="open",
         free_response_chats=["120363001234567890@g.us"],
     )
 
@@ -141,6 +142,7 @@ def test_free_response_chats_bypass_mention_gating():
 def test_free_response_chats_does_not_bypass_other_groups():
     adapter = _make_adapter(
         require_mention=True,
+        group_policy="open",
         free_response_chats=["999999999999@g.us"],
     )
 
@@ -180,7 +182,7 @@ def test_dm_policy_disabled_blocks_all_dms():
 
 
 def test_dm_policy_disabled_still_allows_groups():
-    adapter = _make_adapter(dm_policy="disabled", require_mention=False)
+    adapter = _make_adapter(dm_policy="disabled", group_policy="open", require_mention=False)
 
     assert adapter._should_process_message(_group_message("hello")) is True
 
@@ -242,6 +244,14 @@ def test_group_policy_open_allows_all_groups():
     # Open policy — all groups pass the gate (mention still needed)
     assert adapter._should_process_message(_group_message("hello")) is False
     assert adapter._should_process_message(_group_message("/status")) is True
+
+
+def test_group_policy_pairing_blocks_unlisted_groups():
+    adapter = _make_adapter(require_mention=False)
+
+    assert adapter._group_policy == "pairing"
+    assert adapter._is_group_allowed("120363001234567890@g.us") is False
+    assert adapter._should_process_message(_group_message("hello")) is False
 
 
 # --- Config bridging tests ---

@@ -3154,6 +3154,8 @@ class QQAdapter(BasePlatformAdapter):
             return False
         if self._group_policy == "allowlist":
             return self._entry_matches(self._group_allow_from, group_id)
+        if self._group_policy == "pairing":
+            return False
         return True
 
     @staticmethod
