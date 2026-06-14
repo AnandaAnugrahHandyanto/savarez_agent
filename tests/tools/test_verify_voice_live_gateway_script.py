@@ -117,6 +117,8 @@ def _voice_sidecar_contract() -> dict:
             "offer_request": {"sdp": "required"},
             "offer_response": {"sdp": "answer"},
             "call_state": {
+                "ready_for_accept": "ready",
+                "readiness": "checks",
                 "queued_tx_bytes": "bytes",
                 "queued_tx_ms": "ms",
                 "max_tx_queue_bytes": "bytes",
@@ -465,6 +467,20 @@ def test_validate_calling_sidecar_contract_requires_named_surfaces_and_endpoints
     with pytest.raises(SystemExit, match="payloads.call_state missing fields"):
         script.validate_calling_sidecar_contract(missing_queue_ms)
 
+    missing_readiness = {
+        **contract,
+        "payloads": {
+            **contract["payloads"],
+            "call_state": {
+                key: value
+                for key, value in contract["payloads"]["call_state"].items()
+                if key != "ready_for_accept"
+            },
+        },
+    }
+    with pytest.raises(SystemExit, match="payloads.call_state missing fields"):
+        script.validate_calling_sidecar_contract(missing_readiness)
+
 
 def test_load_voice_stream_contract_runs_voice_binary(monkeypatch):
     script = _load_script_module()
@@ -532,6 +548,92 @@ def test_get_calling_sidecar_status_fetches_contract_and_health(monkeypatch):
         ("http://127.0.0.1:8787/contract", 3),
         ("http://127.0.0.1:8787/health", 3),
     ]
+
+
+def test_run_calling_sidecar_offer_smoke_requires_ready_answer(monkeypatch):
+    script = _load_script_module()
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "status": 200,
+                    "body": {
+                        "state": {
+                            "ready_for_accept": True,
+                            "readiness": {
+                                "not_closed": True,
+                                "local_sdp_answer": True,
+                                "signaling_stable": True,
+                                "ice_gathering_complete": True,
+                                "outbound_audio_track": True,
+                            },
+                        }
+                    },
+                    "close": {"call_id": "call-1", "closed": True},
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(script.subprocess, "run", fake_run)
+
+    result = script.run_calling_sidecar_offer_smoke(
+        python_bin="/tmp/webrtc-python",
+        sidecar_url="http://127.0.0.1:8787/",
+        call_id="call-1",
+        timeout=3,
+    )
+
+    assert result["success"] is True
+    assert result["ready_for_accept"] is True
+    assert result["readiness"]["outbound_audio_track"] is True
+    assert calls[0][0][0] == "/tmp/webrtc-python"
+    assert calls[0][0][1] == "-c"
+    assert calls[0][0][-3:] == ["http://127.0.0.1:8787/", "call-1", "3"]
+
+
+def test_run_calling_sidecar_offer_smoke_rejects_failed_readiness(monkeypatch):
+    script = _load_script_module()
+
+    def fake_run(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "status": 200,
+                    "body": {
+                        "state": {
+                            "ready_for_accept": False,
+                            "readiness": {
+                                "not_closed": True,
+                                "local_sdp_answer": True,
+                                "signaling_stable": True,
+                                "ice_gathering_complete": False,
+                                "outbound_audio_track": True,
+                            },
+                        }
+                    },
+                    "close": {"call_id": "call-1", "closed": True},
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(script.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit, match="ice_gathering_complete"):
+        script.run_calling_sidecar_offer_smoke(
+            python_bin="/tmp/webrtc-python",
+            sidecar_url="http://127.0.0.1:8787",
+            call_id="call-1",
+            timeout=3,
+        )
 
 
 def test_parse_ffprobe_json_extracts_audio_shape():

@@ -101,6 +101,8 @@ REQUIRED_PAYLOADS = (
 )
 REQUIRED_PAYLOAD_FIELDS = {
     "call_state": (
+        "ready_for_accept",
+        "readiness",
         "queued_tx_bytes",
         "queued_tx_ms",
         "max_tx_queue_bytes",
@@ -700,6 +702,129 @@ def compare_voice_and_sidecar_contracts(
     }
 
 
+def run_calling_sidecar_offer_smoke(
+    *,
+    python_bin: str,
+    sidecar_url: str,
+    call_id: str,
+    timeout: float,
+) -> dict[str, Any]:
+    """POST a real local SDP offer to a running sidecar and require readiness."""
+    code = r"""
+import asyncio
+import json
+import sys
+
+from aiohttp import ClientSession
+from aiortc import RTCPeerConnection, RTCSessionDescription
+
+
+async def wait_for_ice_complete(pc, timeout):
+    if pc.iceGatheringState == "complete":
+        return
+    done = asyncio.Event()
+
+    @pc.on("icegatheringstatechange")
+    def on_icegatheringstatechange():
+        if pc.iceGatheringState == "complete":
+            done.set()
+
+    await asyncio.wait_for(done.wait(), timeout=timeout)
+
+
+async def main():
+    sidecar_url = sys.argv[1].rstrip("/")
+    call_id = sys.argv[2]
+    timeout = float(sys.argv[3])
+    pc = RTCPeerConnection()
+    close_body = None
+    try:
+        pc.addTransceiver("audio", direction="recvonly")
+        offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+        await wait_for_ice_complete(pc, timeout)
+        async with ClientSession() as session:
+            response = await session.post(
+                f"{sidecar_url}/offer",
+                json={
+                    "call_id": call_id,
+                    "type": pc.localDescription.type,
+                    "sdp": pc.localDescription.sdp,
+                },
+                timeout=timeout,
+            )
+            body = await response.json()
+            if response.status == 200:
+                await pc.setRemoteDescription(
+                    RTCSessionDescription(sdp=body["sdp"], type=body["type"])
+                )
+                close = await session.post(
+                    f"{sidecar_url}/calls/{call_id}/close",
+                    timeout=timeout,
+                )
+                close_body = await close.json()
+            print(json.dumps({
+                "status": response.status,
+                "body": body,
+                "close": close_body,
+            }, sort_keys=True))
+    finally:
+        await pc.close()
+
+
+asyncio.run(main())
+"""
+    completed = subprocess.run(
+        [python_bin, "-c", code, sidecar_url, call_id, f"{timeout:g}"],
+        capture_output=True,
+        text=True,
+        timeout=timeout + 10,
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise SystemExit(f"calling sidecar offer smoke failed: {detail}")
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            f"calling sidecar offer smoke returned invalid JSON: {completed.stdout!r}"
+        ) from exc
+    if not isinstance(result, dict):
+        raise SystemExit("calling sidecar offer smoke JSON root must be an object")
+    if result.get("status") != 200:
+        raise SystemExit(f"calling sidecar offer smoke returned non-200: {result}")
+
+    body = result.get("body")
+    if not isinstance(body, dict):
+        raise SystemExit(f"calling sidecar offer smoke body is not an object: {result}")
+    state = body.get("state")
+    if not isinstance(state, dict):
+        raise SystemExit(f"calling sidecar offer response missing state: {body}")
+    readiness = state.get("readiness")
+    if not isinstance(readiness, dict):
+        raise SystemExit(f"calling sidecar readiness checks missing: {state}")
+    failed = sorted(str(key) for key, value in readiness.items() if value is not True)
+    if failed:
+        raise SystemExit(
+            "calling sidecar readiness checks failed: " + ", ".join(failed)
+        )
+    if state.get("ready_for_accept") is not True:
+        raise SystemExit(f"calling sidecar was not ready for accept: {state}")
+
+    close = result.get("close")
+    if not isinstance(close, dict) or close.get("closed") is not True:
+        raise SystemExit(f"calling sidecar offer smoke did not close cleanly: {result}")
+    return {
+        "success": True,
+        "call_id": call_id,
+        "ready_for_accept": state["ready_for_accept"],
+        "readiness": readiness,
+        "close": close,
+    }
+
+
 def validate_bridge_health(health: dict[str, Any], *, require_connected: bool) -> None:
     if require_connected and health.get("status") != "connected":
         raise SystemExit(f"bridge is not connected: {health}")
@@ -907,6 +1032,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stt-timeout", type=float, default=300.0)
     parser.add_argument("--stt-generate-timeout", type=float, default=180.0)
     parser.add_argument(
+        "--run-sidecar-offer-smoke",
+        action="store_true",
+        help=(
+            "POST a real aiortc SDP offer to --calling-sidecar-url and require "
+            "state.ready_for_accept before closing the smoke call."
+        ),
+    )
+    parser.add_argument(
+        "--webrtc-python-bin",
+        help="Python with aiortc/aiohttp installed for --run-sidecar-offer-smoke",
+    )
+    parser.add_argument(
+        "--sidecar-offer-call-id",
+        default="live-gateway-readiness-smoke",
+        help="call_id to use for --run-sidecar-offer-smoke",
+    )
+    parser.add_argument(
         "--stt-expect-word",
         action="append",
         default=None,
@@ -929,6 +1071,11 @@ def main() -> int:
         else None
     )
     voice_repo = args.voice_repo.expanduser().resolve() if args.voice_repo else None
+    webrtc_python_bin = (
+        resolve_executable(args.webrtc_python_bin, label="WebRTC Python")
+        if args.webrtc_python_bin
+        else None
+    )
     ffprobe_bin = (
         resolve_executable(args.ffprobe_bin, label="ffprobe")
         if args.run_tts_smoke
@@ -936,6 +1083,11 @@ def main() -> int:
     )
     if args.run_stt_smoke and not voice_bin:
         raise SystemExit("--run-stt-smoke requires --voice-bin")
+    if args.run_sidecar_offer_smoke:
+        if not args.calling_sidecar_url:
+            raise SystemExit("--run-sidecar-offer-smoke requires --calling-sidecar-url")
+        if not webrtc_python_bin:
+            raise SystemExit("--run-sidecar-offer-smoke requires --webrtc-python-bin")
     bridge_bin_dir = live_root / "scripts" / "whatsapp-bridge" / "node_modules" / ".bin"
 
     checks: dict[str, Any] = {}
@@ -994,6 +1146,13 @@ def main() -> int:
                     args.calling_sidecar_url,
                     timeout=args.timeout,
                 ),
+            )
+        if args.run_sidecar_offer_smoke:
+            checks["calling_sidecar_offer_smoke"] = run_calling_sidecar_offer_smoke(
+                python_bin=str(webrtc_python_bin),
+                sidecar_url=args.calling_sidecar_url,
+                call_id=args.sidecar_offer_call_id,
+                timeout=args.timeout,
             )
     elif voice_bin and not args.sidecar_service:
         raise SystemExit("--voice-bin requires --calling-sidecar-url or --sidecar-service")
