@@ -654,7 +654,7 @@ END;
 """
 
 # Typed message row shapes for /prompts surfaces.
-# Keeps public SessionDB method signatures free of `dict[str, Any]`.
+# Keeps public SessionDB method signatures tied to explicit row shapes.
 MessageContent: TypeAlias = str | bytes | int | float | bool | None | list[object] | dict[str, object]
 
 
@@ -3113,7 +3113,7 @@ class SessionDB:
 
         Each entry is a dict with keys ``id``, ``timestamp``, ``preview``.
         ``preview`` is the first 80 characters of the message content
-        (with line breaks collapsed to spaces). Used by the /rewind
+        (with line breaks collapsed to spaces). Used by the /prompts
         slash command picker.
 
         By default only active messages are returned.

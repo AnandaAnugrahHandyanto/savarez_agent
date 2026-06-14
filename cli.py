@@ -5901,12 +5901,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         selected = prompts[index - 1]
         message_id = selected.get("id")
         if message_id is None:
-            _cprint("  Could not load that prompt: missing message id.")
+            _cprint(f"  Could not load prompt #{index}: missing message id.")
             return True
 
         text = self._prompt_text_for_message_id(message_id)
         if not text:
-            _cprint("  Could not load that prompt: message text is unavailable.")
+            _cprint(f"  Could not load prompt #{index}: no editable text.")
             return True
 
         if self._prefill_input_buffer(text):

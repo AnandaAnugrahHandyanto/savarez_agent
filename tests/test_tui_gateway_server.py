@@ -7783,7 +7783,7 @@ def test_prompts_dispatch_list_returns_exec(monkeypatch, tmp_path):
         assert "Recent prompts" in output
         assert "second prompt" in output
         assert "first prompt" in output
-        assert "/prompts <number>" in output
+        assert "/prompts N" in output
     finally:
         server._sessions.pop(sid, None)
         test_db.close()
@@ -7846,6 +7846,7 @@ def test_prompts_dispatch_select_returns_prefill(monkeypatch, tmp_path):
         assert result["type"] == "prefill"
         assert result["message"] == "first prompt"
         assert "Loaded prompt #2" in result["notice"]
+        assert result["notice"].startswith("↺ ")
     finally:
         server._sessions.pop(sid, None)
         test_db.close()
@@ -7901,7 +7902,8 @@ def test_prompts_dispatch_invalid_arg_returns_error(monkeypatch, tmp_path):
             "r1", {"name": "prompts", "arg": "abc", "session_id": sid}
         )
         assert resp["error"]["code"] == 4004
-        assert "usage" in resp["error"]["message"]
+        assert "invalid index" in resp["error"]["message"]
+        assert "/prompts N" in resp["error"]["message"]
     finally:
         server._sessions.pop(sid, None)
         test_db.close()
@@ -7928,6 +7930,8 @@ def test_prompts_dispatch_out_of_range_returns_error(monkeypatch, tmp_path):
             "r1", {"name": "prompts", "arg": "5", "session_id": sid}
         )
         assert resp["error"]["code"] == 4004
+        assert "out of range" in resp["error"]["message"]
+        assert "/prompts" in resp["error"]["message"]
     finally:
         server._sessions.pop(sid, None)
         test_db.close()

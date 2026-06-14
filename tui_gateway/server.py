@@ -8453,17 +8453,17 @@ def _(rid, params: dict) -> dict:
         # /prompts [N]: list recent user prompts or prefill the composer
         # with a selected one. Mirrors classic CLI /prompts behavior.
         if not session:
-            return _err(rid, 4001, "no active session")
+            return _err(rid, 4001, "no active session for /prompts")
         db = _get_db()
         if db is None:
             return _db_unavailable_error(rid, code=5008)
         session_key = session.get("session_key", "")
         if not session_key:
-            return _err(rid, 4001, "no session key")
+            return _err(rid, 4001, "no session key for /prompts")
         try:
             recents = db.list_recent_user_messages(session_key, limit=10)
         except Exception as e:
-            return _err(rid, 5008, f"prompts: failed to load history: {e}")
+            return _err(rid, 5008, f"prompts: failed to load recent prompts: {e}")
         if not recents:
             return _err(rid, 4018, "no user prompts in this session")
         # Numeric arg: select one-based index and prefill the composer.
@@ -8472,9 +8472,17 @@ def _(rid, params: dict) -> dict:
             try:
                 idx = int(arg_str.split()[0])
             except (ValueError, IndexError):
-                return _err(rid, 4004, f"usage: /prompts [number]")
+                return _err(
+                    rid,
+                    4004,
+                    f"prompts: invalid index {arg_str!r} — use /prompts or /prompts N",
+                )
             if idx < 1 or idx > len(recents):
-                return _err(rid, 4004, f"usage: /prompts [1-{len(recents)}]")
+                return _err(
+                    rid,
+                    4004,
+                    f"prompt index {idx} is out of range — use /prompts to list recent prompts",
+                )
             selected = recents[idx - 1]
             msg_id = selected["id"]
             # Fetch the full message text for the selected prompt.
@@ -8495,7 +8503,7 @@ def _(rid, params: dict) -> dict:
             if not text:
                 return _err(rid, 4018, f"prompt #{idx} has no editable text")
             notice = (
-                f"Loaded prompt #{idx} into the composer. "
+                f"↺ Loaded prompt #{idx} into the composer. "
                 "Edit and press Enter to send."
             )
             return _ok(rid, {"type": "prefill", "message": text, "notice": notice})
@@ -8505,7 +8513,7 @@ def _(rid, params: dict) -> dict:
             preview = r.get("preview", "")
             lines.append(f"{i}. {preview}")
         lines.append("")
-        lines.append("Use /prompts <number> to load one into the composer.")
+        lines.append("Use /prompts N to load one into the composer.")
         return _ok(rid, {"type": "exec", "output": "\n".join(lines)})
 
     if name == "undo":

@@ -88,6 +88,32 @@ class TestCliPromptsCommand:
         assert "Loaded prompt #2" in printed
         assert cli_obj._pending_prompt_messages is None
 
+    def test_load_prompt_missing_message_id_mentions_index(self):
+        cli_obj = _make_cli()
+
+        with patch("cli._cprint") as mock_cprint:
+            consumed = cli_obj._load_prompt_for_editing(1, [{"timestamp": None, "preview": "prompt"}])
+
+        printed = " ".join(str(call) for call in mock_cprint.call_args_list)
+        assert consumed is True
+        assert "Could not load prompt #1: missing message id" in printed
+
+    def test_load_prompt_without_text_mentions_index(self):
+        cli_obj = _make_cli()
+        session_db = MagicMock()
+        session_db.get_user_message.return_value = {"id": 22, "role": "user", "content": None}
+        cli_obj._session_db = session_db
+
+        with patch("cli._cprint") as mock_cprint:
+            consumed = cli_obj._load_prompt_for_editing(
+                1,
+                [{"id": 22, "timestamp": None, "preview": "prompt"}],
+            )
+
+        printed = " ".join(str(call) for call in mock_cprint.call_args_list)
+        assert consumed is True
+        assert "Could not load prompt #1: no editable text" in printed
+
     def test_pending_number_loads_selected_prompt_and_disarms(self):
         cli_obj = _make_cli()
         app = _App()
