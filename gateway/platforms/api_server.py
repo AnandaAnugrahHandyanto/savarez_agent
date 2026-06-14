@@ -323,18 +323,6 @@ else:
     cors_middleware = None  # type: ignore[assignment]
 
 
-def _openai_error(message: str, err_type: str = "invalid_request_error", param: str = None, code: str = None) -> Dict[str, Any]:
-    """OpenAI-style error envelope."""
-    return {
-        "error": {
-            "message": message,
-            "type": err_type,
-            "param": param,
-            "code": code,
-        }
-    }
-
-
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
