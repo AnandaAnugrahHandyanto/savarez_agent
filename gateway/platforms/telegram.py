@@ -2227,9 +2227,16 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 from hermes_cli.commands import telegram_menu_commands
                 # Telegram allows up to 100 commands but has an undocumented
-                # payload size limit (~4KB total).  Limit to 30 core commands
-                # to stay well under the threshold while covering all categories.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
+                # payload size limit (~4KB total). Keep the menu compact, but
+                # reserve the top slots for user-defined quick_commands so
+                # local /q... commands are discoverable in Telegram's slash UI.
+                quick_menu_commands = self._telegram_quick_menu_commands()
+                core_limit = max(0, MAX_COMMANDS_PER_SCOPE - len(quick_menu_commands))
+                menu_commands, hidden_count = telegram_menu_commands(max_commands=core_limit)
+                seen_commands = {name for name, _ in quick_menu_commands}
+                menu_commands = quick_menu_commands + [
+                    (name, desc) for name, desc in menu_commands if name not in seen_commands
+                ]
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 # Register for all scopes independently — Telegram picks the
                 # narrowest matching scope per chat type (forum topics fall
@@ -5925,6 +5932,50 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         return self._message_matches_mention_patterns(message)
 
+    def _telegram_quick_menu_commands(self) -> list[tuple[str, str]]:
+        """Return gateway quick_commands for Telegram's slash-command menu.
+
+        Quick commands are user/profile-local commands from config.yaml. They
+        are executable by the gateway already, but COMMAND_REGISTRY does not
+        know about them, so they would otherwise never appear in Telegram's
+        native command suggestions.
+        """
+        if isinstance(self.config, dict):
+            quick_commands = self.config.get("quick_commands", {}) or {}
+        else:
+            quick_commands = getattr(self.config, "quick_commands", {}) or {}
+        if not isinstance(quick_commands, dict):
+            return []
+
+        defaults = {
+            "qstatus": "Quill status",
+            "qlogs": "Recent Quill logs",
+            "qrestart": "Restart Hermes gateway",
+            "qcost": "Quill cost/status",
+            "qimg": "Generate image",
+            "qvec": "Generate vector/SVG",
+            "qcodex": "Codex account status",
+            "qclaude": "Claude CLI status",
+            "qguard": "Model routing guard status",
+        }
+        commands: list[tuple[str, str]] = []
+        for name, qcmd in sorted(quick_commands.items()):
+            command = str(name or "").strip().lower().lstrip("/")
+            # Telegram BotCommand names: 1-32 chars, lowercase latin letters,
+            # digits and underscores only. Skip invalid local aliases rather
+            # than failing the entire menu registration.
+            if not command or len(command) > 32:
+                continue
+            if any(ch not in "abcdefghijklmnopqrstuvwxyz0123456789_" for ch in command):
+                continue
+            desc = ""
+            if isinstance(qcmd, dict):
+                desc = str(qcmd.get("description") or "").strip()
+            if not desc:
+                desc = defaults.get(command) or "Quick command"
+            commands.append((command, desc[:256]))
+        return commands[:MAX_COMMANDS_PER_SCOPE]
+
     async def _ensure_forum_commands(self, message) -> None:
         """Lazy-register bot commands for forum supergroups.
 
@@ -5942,7 +5993,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
                 from telegram import BotCommand, BotCommandScopeChat
                 from hermes_cli.commands import telegram_menu_commands
-                menu_commands, _ = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
+                quick_menu_commands = self._telegram_quick_menu_commands()
+                core_limit = max(0, MAX_COMMANDS_PER_SCOPE - len(quick_menu_commands))
+                menu_commands, _ = telegram_menu_commands(max_commands=core_limit)
+                seen_commands = {name for name, _ in quick_menu_commands}
+                menu_commands = quick_menu_commands + [
+                    (name, desc) for name, desc in menu_commands if name not in seen_commands
+                ]
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
                 self._forum_command_registered.add(chat_id)
