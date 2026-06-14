@@ -53,6 +53,7 @@ import mimetypes
 import os
 import re
 import shutil
+import wave
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -85,6 +86,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
 )
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway.session import SessionSource
 from hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
@@ -409,6 +411,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._runner = None
         self._http_client: Optional["httpx.AsyncClient"] = None
         self._calling_sidecar_call_ids: set[str] = set()
+        self._calling_sidecar_tasks: Dict[str, asyncio.Task] = {}
+        self._calling_sidecar_auto_tts_chats: Dict[str, str] = {}
 
     # ------------------------------------------------------------------ helpers
     @staticmethod
@@ -930,6 +934,173 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             audio=audio,
         )
 
+    def _write_calling_sidecar_pcm_wav(self, call_id: str, pcm_s16le: bytes) -> str:
+        """Persist decoded sidecar PCM as a WAV file for Hermes STT."""
+        if not pcm_s16le:
+            raise ValueError("pcm_s16le must not be empty")
+        if len(pcm_s16le) % CALLING_PCM_BYTES_PER_SAMPLE:
+            raise ValueError("pcm_s16le must contain whole s16le samples")
+
+        safe_call_id = re.sub(r"[^A-Za-z0-9._-]+", "_", call_id).strip("_")
+        if not safe_call_id:
+            safe_call_id = "call"
+        out_dir = _INBOUND_MEDIA_CACHE / "calls"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"call_{safe_call_id}_{uuid.uuid4().hex[:12]}.wav"
+
+        with wave.open(str(out_path), "wb") as wav:
+            wav.setnchannels(CALLING_PCM_CHANNELS)
+            wav.setsampwidth(CALLING_PCM_BYTES_PER_SAMPLE)
+            wav.setframerate(CALLING_PCM_SAMPLE_RATE)
+            wav.writeframes(pcm_s16le)
+        return str(out_path)
+
+    async def _dispatch_calling_sidecar_pcm(
+        self,
+        call_id: str,
+        chat_id: str,
+        sender_name: str,
+        pcm_s16le: bytes,
+    ) -> None:
+        """Dispatch one decoded call-audio segment through Hermes STT."""
+        normalized_call_id = str(call_id or "").strip()
+        normalized_chat_id = str(chat_id or "").strip()
+        if not normalized_call_id or not normalized_chat_id or not pcm_s16le:
+            return
+
+        try:
+            wav_path = self._write_calling_sidecar_pcm_wav(
+                normalized_call_id,
+                pcm_s16le,
+            )
+        except Exception:
+            logger.exception(
+                "[whatsapp_cloud] failed to write call audio segment for %s",
+                normalized_call_id,
+            )
+            return
+
+        source = SessionSource(
+            platform=self.platform,
+            chat_id=normalized_chat_id,
+            user_id=normalized_chat_id,
+            user_name=sender_name or normalized_chat_id,
+            chat_type="dm",
+            thread_id=normalized_call_id,
+        )
+        event = MessageEvent(
+            source=source,
+            text="(The user sent a message with no text content)",
+            message_type=MessageType.VOICE,
+            raw_message={
+                "type": "whatsapp_call_audio",
+                "call_id": normalized_call_id,
+            },
+            message_id=f"{normalized_call_id}:{uuid.uuid4().hex[:12]}",
+            media_urls=[wav_path],
+            media_types=["audio/wav"],
+        )
+        await self.handle_message(event)
+
+    def _enable_calling_sidecar_auto_tts(self, call_id: str, chat_id: str) -> None:
+        """Temporarily force voice replies while a live call is active."""
+        if not chat_id:
+            return
+        enabled = getattr(self, "_auto_tts_enabled_chats", None)
+        if not isinstance(enabled, set):
+            return
+        if chat_id not in enabled:
+            enabled.add(chat_id)
+            self._calling_sidecar_auto_tts_chats[call_id] = chat_id
+
+    def _disable_calling_sidecar_auto_tts(self, call_id: str) -> None:
+        chat_id = self._calling_sidecar_auto_tts_chats.pop(call_id, None)
+        if not chat_id:
+            return
+        enabled = getattr(self, "_auto_tts_enabled_chats", None)
+        if isinstance(enabled, set):
+            enabled.discard(chat_id)
+
+    def _start_calling_sidecar_drain(
+        self,
+        call_id: str,
+        chat_id: str,
+        sender_name: str = "",
+    ) -> None:
+        """Start draining decoded inbound sidecar PCM into Hermes turns."""
+        normalized_call_id = str(call_id or "").strip()
+        normalized_chat_id = str(chat_id or "").strip()
+        if not normalized_call_id or not normalized_chat_id:
+            return
+        if self._message_handler is None:
+            return
+
+        self._enable_calling_sidecar_auto_tts(normalized_call_id, normalized_chat_id)
+        existing = self._calling_sidecar_tasks.get(normalized_call_id)
+        if existing is not None and not existing.done():
+            existing.cancel()
+
+        task = asyncio.create_task(
+            self._run_calling_sidecar_audio_loop(
+                normalized_call_id,
+                normalized_chat_id,
+                sender_name,
+            )
+        )
+        self._calling_sidecar_tasks[normalized_call_id] = task
+        task.add_done_callback(
+            lambda _task, _call_id=normalized_call_id: self._calling_sidecar_tasks.pop(
+                _call_id,
+                None,
+            )
+        )
+
+    async def _run_calling_sidecar_audio_loop(
+        self,
+        call_id: str,
+        chat_id: str,
+        sender_name: str,
+    ) -> None:
+        """Long-poll sidecar PCM and dispatch speech-ish chunks to Hermes."""
+        buffer = bytearray()
+        silent_polls = 0
+        segment_limit = CALLING_PCM_SAMPLE_RATE * CALLING_PCM_BYTES_PER_SAMPLE * 5
+
+        try:
+            while call_id in self._calling_sidecar_call_ids:
+                audio = await self._receive_calling_sidecar_audio(call_id)
+                if audio is not None and audio.pcm_s16le:
+                    buffer.extend(audio.pcm_s16le)
+                    silent_polls = 0
+                    if len(buffer) >= segment_limit:
+                        await self._dispatch_calling_sidecar_pcm(
+                            call_id,
+                            chat_id,
+                            sender_name,
+                            bytes(buffer),
+                        )
+                        buffer.clear()
+                    continue
+
+                if buffer:
+                    silent_polls += 1
+                    if silent_polls >= 2:
+                        await self._dispatch_calling_sidecar_pcm(
+                            call_id,
+                            chat_id,
+                            sender_name,
+                            bytes(buffer),
+                        )
+                        buffer.clear()
+                        silent_polls = 0
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "[whatsapp_cloud] calling sidecar audio loop failed for %s",
+                call_id,
+            )
+
     async def _send_call_action(
         self,
         call_id: str,
@@ -993,6 +1164,16 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _close_calling_sidecar_session(self, call_id: str) -> bool:
         """Best-effort close for a local WebRTC sidecar call session."""
+        normalized_call_id = str(call_id or "").strip()
+        if not normalized_call_id:
+            return False
+
+        task = self._calling_sidecar_tasks.pop(normalized_call_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+        self._disable_calling_sidecar_auto_tts(normalized_call_id)
+        self._calling_sidecar_call_ids.discard(normalized_call_id)
+
         if not self._calling_sidecar_enabled():
             return False
         if self._http_client is None:
@@ -1000,10 +1181,6 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "[whatsapp_cloud] calling sidecar configured but HTTP client "
                 "is unavailable"
             )
-            return False
-
-        normalized_call_id = str(call_id or "").strip()
-        if not normalized_call_id:
             return False
 
         encoded_call_id = quote(normalized_call_id, safe="")
@@ -2306,13 +2483,23 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _dispatch_call_events(self, value: Dict[str, Any]) -> None:
         """Handle WhatsApp Calling webhook events from a verified payload."""
+        contacts_by_waid: Dict[str, str] = {}
+        for contact in value.get("contacts") or []:
+            if not isinstance(contact, dict):
+                continue
+            wa_id = str(contact.get("wa_id") or "").strip()
+            profile = contact.get("profile") or {}
+            name = str(profile.get("name") or "").strip()
+            if wa_id:
+                contacts_by_waid[wa_id] = name
+
         for raw_call in value.get("calls") or []:
             if not isinstance(raw_call, dict):
                 continue
             event = str(raw_call.get("event") or "").strip().lower()
             call_id = str(raw_call.get("id") or "").strip()
             if event == "connect":
-                await self._handle_call_connect(raw_call)
+                await self._handle_call_connect(raw_call, contacts_by_waid)
             elif event == "terminate":
                 if call_id:
                     await self._close_calling_sidecar_session(call_id)
@@ -2328,7 +2515,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     call_id,
                 )
 
-    async def _handle_call_connect(self, raw_call: Dict[str, Any]) -> None:
+    async def _handle_call_connect(
+        self,
+        raw_call: Dict[str, Any],
+        contacts_by_waid: Optional[Dict[str, str]] = None,
+    ) -> None:
         """Handle an inbound WhatsApp Calling connect offer."""
         call_id = str(raw_call.get("id") or "").strip()
         session = raw_call.get("session") or {}
@@ -2400,6 +2591,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return
 
         logger.info("[whatsapp_cloud] accepted call %s via calling sidecar", call_id)
+        chat_id = str(raw_call.get("from") or "").strip()
+        sender_name = (contacts_by_waid or {}).get(chat_id, "")
+        self._start_calling_sidecar_drain(call_id, chat_id, sender_name)
 
     async def _dispatch_interactive_reply(
         self,

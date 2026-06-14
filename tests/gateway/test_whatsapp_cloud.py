@@ -13,6 +13,7 @@ exercised with synthetic ``Request`` objects.
 from __future__ import annotations
 
 import base64
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
 
@@ -54,6 +55,8 @@ def _make_adapter(**overrides):
     adapter._runner = None
     adapter._http_client = None
     adapter._calling_sidecar_call_ids = set()
+    adapter._calling_sidecar_tasks = {}
+    adapter._calling_sidecar_auto_tts_chats = {}
 
     # Behavior-mixin contract
     adapter._reply_prefix = None
@@ -91,6 +94,8 @@ def _make_adapter(**overrides):
     adapter._active_sessions = {}
     adapter._pending_messages = {}
     adapter._background_tasks = set()
+    adapter._auto_tts_default = False
+    adapter._auto_tts_enabled_chats = set()
     adapter._auto_tts_disabled_chats = set()
 
     # Apply any leftover overrides directly
@@ -865,6 +870,45 @@ class TestCallingSidecarClient:
         assert adapter._calling_sidecar_call_id_from_metadata(None) is None
 
     @pytest.mark.asyncio
+    async def test_dispatch_calling_sidecar_pcm_creates_voice_event(self):
+        from gateway.platforms.base import MessageType
+        import wave as _wave
+
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter.handle_message = AsyncMock()
+        pcm = b"\x01\x00" * 960
+
+        await adapter._dispatch_calling_sidecar_pcm(
+            "wacid.call/1",
+            "13557825698",
+            "Jessica Laverdetman",
+            pcm,
+        )
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.call_args.args[0]
+        try:
+            assert event.message_type == MessageType.VOICE
+            assert event.source.platform == Platform.WHATSAPP_CLOUD
+            assert event.source.chat_id == "13557825698"
+            assert event.source.user_id == "13557825698"
+            assert event.source.user_name == "Jessica Laverdetman"
+            assert event.source.thread_id == "wacid.call/1"
+            assert event.media_types == ["audio/wav"]
+            assert event.media_urls and _os.path.exists(event.media_urls[0])
+            with _wave.open(event.media_urls[0], "rb") as wav:
+                assert wav.getframerate() == 48000
+                assert wav.getnchannels() == 1
+                assert wav.getsampwidth() == 2
+                assert wav.readframes(960) == pcm
+        finally:
+            for path in event.media_urls:
+                try:
+                    _os.unlink(path)
+                except OSError:
+                    pass
+
+    @pytest.mark.asyncio
     async def test_close_calling_sidecar_session_posts_close(self):
         adapter = _make_adapter(
             calling_sidecar_url="http://127.0.0.1:8787",
@@ -899,6 +943,56 @@ class TestCallingSidecarClient:
 
         assert closed is True
         assert adapter._calling_sidecar_call_ids == set()
+
+    @pytest.mark.asyncio
+    async def test_close_calling_sidecar_session_cancels_drain_task(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._calling_sidecar_call_ids.add("wacid.call-1")
+        adapter._auto_tts_enabled_chats.add("13557825698")
+        adapter._calling_sidecar_auto_tts_chats["wacid.call-1"] = "13557825698"
+        task = asyncio.create_task(asyncio.sleep(60))
+        adapter._calling_sidecar_tasks["wacid.call-1"] = task
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, {"closed": True})
+        )
+
+        try:
+            closed = await adapter._close_calling_sidecar_session("wacid.call-1")
+            await asyncio.sleep(0)
+        finally:
+            if not task.done():
+                task.cancel()
+
+        assert closed is True
+        assert task.cancelled()
+        assert adapter._calling_sidecar_tasks == {}
+        assert adapter._calling_sidecar_auto_tts_chats == {}
+        assert adapter._auto_tts_enabled_chats == set()
+
+    @pytest.mark.asyncio
+    async def test_close_calling_sidecar_session_cleans_local_state_without_http(self):
+        adapter = _make_adapter(calling_sidecar_url="http://127.0.0.1:8787")
+        adapter._calling_sidecar_call_ids.add("wacid.call-1")
+        adapter._auto_tts_enabled_chats.add("13557825698")
+        adapter._calling_sidecar_auto_tts_chats["wacid.call-1"] = "13557825698"
+        task = asyncio.create_task(asyncio.sleep(60))
+        adapter._calling_sidecar_tasks["wacid.call-1"] = task
+        adapter._http_client = None
+
+        try:
+            closed = await adapter._close_calling_sidecar_session("wacid.call-1")
+            await asyncio.sleep(0)
+        finally:
+            if not task.done():
+                task.cancel()
+
+        assert closed is False
+        assert task.cancelled()
+        assert adapter._calling_sidecar_call_ids == set()
+        assert adapter._calling_sidecar_tasks == {}
+        assert adapter._calling_sidecar_auto_tts_chats == {}
+        assert adapter._auto_tts_enabled_chats == set()
 
     @pytest.mark.asyncio
     async def test_disconnect_closes_tracked_sidecar_sessions_before_http_close(self):
@@ -1424,6 +1518,7 @@ class TestWebhookDispatch:
             calling_sidecar_url="http://127.0.0.1:8787",
         )
         adapter.handle_message = AsyncMock()
+        adapter._start_calling_sidecar_drain = MagicMock()
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(side_effect=[
             _mock_httpx_response(
@@ -1479,6 +1574,11 @@ class TestWebhookDispatch:
         assert adapter._calling_sidecar_call_ids == {
             "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh"
         }
+        adapter._start_calling_sidecar_drain.assert_called_once_with(
+            "wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh",
+            "13557825698",
+            "Jessica Laverdetman",
+        )
 
     @pytest.mark.asyncio
     async def test_call_connect_sidecar_failure_rejects_graph_call(self):
