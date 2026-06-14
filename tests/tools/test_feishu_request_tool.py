@@ -130,21 +130,35 @@ class TestHandler(unittest.TestCase):
 
 
 class TestToolsetWiring(unittest.TestCase):
-    """feishu_request must be reachable via the toolsets agents actually load.
+    """feishu_request must be reachable exactly where the lark client is injected.
 
     resolve_toolset() reads the explicit ``tools`` list for statically-defined
-    toolsets (it does NOT merge registry toolset membership), so registering
-    with toolset="feishu_drive" is not enough — the name must also appear in
-    toolsets.py. These guard against the tool being registered-but-unreachable.
+    toolsets (it does NOT merge registry toolset membership), so the name must
+    appear in toolsets.py to be reachable at all.
+
+    The client is only injected on the comment-agent path (feishu_comment.py),
+    which enables ["feishu_doc", "feishu_drive"]. So the tool belongs in
+    feishu_drive — but NOT in the general hermes-feishu platform set, where no
+    client is injected and the tool would only ever return "client not
+    available". This test locks that placement so the tool is never exposed
+    without a client behind it.
     """
 
     def test_resolves_via_feishu_drive(self):
         from toolsets import resolve_toolset
         self.assertIn("feishu_request", resolve_toolset("feishu_drive"))
 
-    def test_resolves_via_hermes_feishu_platform(self):
+    def test_reachable_by_comment_agent_toolsets(self):
+        from toolsets import resolve_multiple_toolsets
+        self.assertIn(
+            "feishu_request",
+            resolve_multiple_toolsets(["feishu_doc", "feishu_drive"]),
+        )
+
+    def test_not_exposed_on_general_feishu_platform(self):
+        # hermes-feishu has no client injection — must not surface feishu_request.
         from toolsets import resolve_toolset
-        self.assertIn("feishu_request", resolve_toolset("hermes-feishu"))
+        self.assertNotIn("feishu_request", resolve_toolset("hermes-feishu"))
 
 
 class TestRegistration(unittest.TestCase):

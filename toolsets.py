@@ -521,7 +521,6 @@ TOOLSETS = {
             "feishu_drive_list_comment_replies",
             "feishu_drive_reply_comment",
             "feishu_drive_add_comment",
-            "feishu_request",
         ],
         "includes": []
     },
