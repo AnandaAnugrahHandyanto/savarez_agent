@@ -1,6 +1,8 @@
+import { useStore } from '@nanostores/react'
 import type { ChangeEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { $activeGatewayProfile } from '@/store/profile'
 
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -199,6 +201,7 @@ export function ConfigSettings({
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
   const saveVersionRef = useRef(0)
   const [saveVersion, setSaveVersion] = useState(0)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
 
   useEffect(() => {
     let cancelled = false
@@ -215,7 +218,7 @@ export function ConfigSettings({
       .catch(err => notifyError(err, c.failedLoad))
 
     return () => void (cancelled = true)
-  }, [])
+  }, [activeGatewayProfile])
 
   useEffect(() => {
     let cancelled = false
