@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
-import { writeClipboardText } from '@/components/ui/copy-button'
+import { copyTextWithFeedback } from '@/components/ui/copy-button'
 import {
   Dialog,
   DialogContent,
@@ -63,10 +63,12 @@ function useSessionActions({ sessionId, title, pinned = false, profile, onPin, o
       disabled: !sessionId,
       icon: 'copy',
       label: r.copyId,
-      onSelect: event => {
-        event.preventDefault()
-        triggerHaptic('selection')
-        void writeClipboardText(sessionId).catch(err => notifyError(err, r.copyIdFailed))
+      onSelect: () => {
+        void copyTextWithFeedback(sessionId, {
+          errorMessage: r.copyIdFailed,
+          successMessage: t.common.copied,
+          successTitle: r.copyId
+        }).catch(() => undefined)
       }
     },
     ...(canOpenSessionWindow()
