@@ -263,7 +263,7 @@ function shouldAutoOpenPreview(target: PreviewTarget): boolean {
     if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
       const host = parsed.hostname.toLowerCase()
 
-      return host === 'localhost' || host === '127.0.0.1' || host === '::1'
+      return host === 'localhost' || host === '127.0.0.1' || (host === '::1' || host === '[::1]')
     }
 
     // Everything else -- data:, blob:, javascript:, about: -- can autoplay or run
