@@ -578,6 +578,13 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     if not custom_providers:
         return None
 
+    # Track a base_url fallback match: when exact name matching fails,
+    # try matching against the base_url hostname.  This handles the case
+    # where a custom_providers entry's `name` differs from the canonical
+    # provider key used by detect_provider_for_model() (e.g. name="xiaomi_mimo"
+    # but the canonical key is "xiaomi").
+    base_url_fallback = None
+
     for entry in custom_providers:
         if not isinstance(entry, dict):
             continue
@@ -590,8 +597,40 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         provider_key = str(entry.get("provider_key", "") or "").strip()
         provider_key_norm = _normalize_custom_provider_name(provider_key) if provider_key else ""
         provider_menu_key = f"custom:{provider_key_norm}" if provider_key_norm else ""
-        if requested_norm not in {name_norm, menu_key, provider_key_norm, provider_menu_key}:
-            continue
+        if requested_norm in {name_norm, menu_key, provider_key_norm, provider_menu_key}:
+            result = {
+                "name": name.strip(),
+                "base_url": base_url.strip(),
+                "api_key": str(entry.get("api_key", "") or "").strip(),
+            }
+            key_env = str(entry.get("key_env", "") or "").strip()
+            if key_env:
+                result["key_env"] = key_env
+            if provider_key:
+                result["provider_key"] = provider_key
+            extra_body = entry.get("extra_body")
+            if isinstance(extra_body, dict):
+                result["extra_body"] = dict(extra_body)
+            api_mode = _parse_api_mode(entry.get("api_mode"))
+            if api_mode:
+                result["api_mode"] = api_mode
+            model_name = str(entry.get("model", "") or "").strip()
+            if model_name:
+                result["model"] = model_name
+            return result
+
+        # base_url fallback: if the requested provider name wasn't found via
+        # exact name matching, check if any custom_providers entry's base_url
+        # hostname contains the requested name as a substring.
+        if base_url_fallback is None and requested_norm not in {name_norm, menu_key}:
+            base_url_host = base_url.strip().lower()
+            if requested_norm in base_url_host:
+                base_url_fallback = entry
+
+    if base_url_fallback is not None:
+        entry = base_url_fallback
+        name = entry.get("name", "")
+        base_url = entry.get("base_url", "")
         result = {
             "name": name.strip(),
             "base_url": base_url.strip(),
@@ -600,6 +639,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         key_env = str(entry.get("key_env", "") or "").strip()
         if key_env:
             result["key_env"] = key_env
+        provider_key = str(entry.get("provider_key", "") or "").strip()
         if provider_key:
             result["provider_key"] = provider_key
         extra_body = entry.get("extra_body")
