@@ -241,6 +241,17 @@ class TestRegisterToolPreview:
         assert result is None
         assert any("_pytest_bad" in rec.getMessage() for rec in caplog.records)
 
+    def test_attribute_access_template_falls_back_without_crashing(self, caplog):
+        # ``{value.foo}`` makes ``str.format_map`` do attribute access on the
+        # arg, which raises AttributeError — a different exception family than
+        # the numeric ``{value:d}`` ValueError above. The fallback must catch
+        # it too so a malformed plugin template never escapes to the spinner.
+        register_tool_preview("_pytest_attr", templates="{value.foo}")
+        with caplog.at_level("WARNING"):
+            result = build_tool_preview("_pytest_attr", {"value": "abc"})
+        assert result is None
+        assert any("_pytest_attr" in rec.getMessage() for rec in caplog.records)
+
     def test_re_registration_overwrites_previous_schema(self):
         register_tool_preview("_pytest_lastwins", templates="v1: {x}")
         register_tool_preview("_pytest_lastwins", templates="v2: {x}")

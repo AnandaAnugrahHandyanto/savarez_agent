@@ -306,7 +306,7 @@ def _render_registered_preview(tool_name: str, args: dict) -> tuple[str | None, 
     safe_args = _SafePreviewArgs.from_args(args if isinstance(args, dict) else {})
     try:
         rendered = template.format_map(safe_args).strip()
-    except (IndexError, ValueError, KeyError) as exc:
+    except (IndexError, ValueError, KeyError, AttributeError, TypeError) as exc:
         # A bad template should never crash the agent spinner — log it
         # once at warning and let the caller fall through to the legacy
         # path so the bug is obvious in logs but the user gets *some*
