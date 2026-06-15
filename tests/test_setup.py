@@ -12,6 +12,8 @@ import pytest
 def _import_setup():
     """Import the setup module with setup() patched out so module-level
     code doesn't attempt a real setuptools.setup() call."""
+    import sys
+    sys.modules.pop("setup", None)
     with patch("setuptools.setup") as mock_setup:
         import setup  # noqa: F811
     return setup, mock_setup
@@ -179,7 +181,10 @@ class TestModuleLevelBehavior:
         mod, _ = _import_setup()
         sig = inspect.signature(mod._data_file_tree)
         assert "root_name" in sig.parameters
-        assert sig.parameters["root_name"].annotation is str
+        ann = sig.parameters["root_name"].annotation
+        # setup.py uses ``from __future__ import annotations``, so
+        # the annotation is the *string* ``"str"``, not the type.
+        assert ann is str or ann == "str"
 
     def test_data_file_tree_returns_correct_type(self, tmp_path: Path) -> None:
         """_data_file_tree returns list[tuple[str, list[str]]]."""
