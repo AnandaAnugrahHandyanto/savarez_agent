@@ -129,13 +129,12 @@ class TestJsonlFallback:
 def test_profile_isolation():
     """HERMES_PROFILE=myprof → fallback in profiles/myprof/sessions/."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        from hermes_state import SessionDB
-        db_path = Path(tmpdir) / "test.db"
-        db = SessionDB(db_path=db_path)
+        db = MagicMock()
+        # Make append_message fail so _session_db_failed stays set after flush
+        db.append_message.side_effect = RuntimeError("locked")
 
         agent = _make_agent(db, "test-sid")
         agent._ensure_db_session()
-        agent._session_db_failed = True
         agent._last_flushed_db_idx = 0
 
         messages = [_make_message("user", "x")]
