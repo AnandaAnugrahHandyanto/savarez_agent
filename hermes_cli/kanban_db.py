@@ -1135,6 +1135,28 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+
+-- Board-level event subscriptions.  Unlike kanban_notify_subs (which is
+-- keyed per-task), this table allows a subscriber to receive events for an
+-- entire board filtered by event scope (e.g. all task completions on the
+-- default board).
+--
+-- target_kind / target_payload follow the same shape as
+-- gateway/kanban_watchers.py ``_kanban_notifier_watcher`` delivery targets.
+CREATE TABLE IF NOT EXISTS kanban_board_subs (
+    board         TEXT NOT NULL DEFAULT '__default__',
+    scope         TEXT NOT NULL DEFAULT 'task_done',
+    target_kind   TEXT NOT NULL DEFAULT 'platform_chat',
+    target_payload TEXT NOT NULL DEFAULT '{}',
+    user_id       TEXT,
+    notifier_profile TEXT,
+    created_at    INTEGER NOT NULL,
+    last_event_id INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (board, scope, target_kind, target_payload)
+);
+
+CREATE INDEX IF NOT EXISTS idx_board_subs_board       ON kanban_board_subs(board);
+CREATE INDEX IF NOT EXISTS idx_board_subs_cursor      ON kanban_board_subs(board, last_event_id);
 """
 
 
@@ -1733,6 +1755,29 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
+
+    # Board-level subscriptions (added alongside task-level subscriptions).
+    # The table is created in SCHEMA_SQL so new DBs get it automatically.
+    # This migration only runs on legacy DBs that lack it.
+    board_subs_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='kanban_board_subs'"
+    ).fetchone() is not None
+    if not board_subs_exists:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS kanban_board_subs (
+                board         TEXT NOT NULL DEFAULT '__default__',
+                scope         TEXT NOT NULL DEFAULT 'task_done',
+                target_kind   TEXT NOT NULL DEFAULT 'platform_chat',
+                target_payload TEXT NOT NULL DEFAULT '{}',
+                user_id       TEXT,
+                notifier_profile TEXT,
+                created_at    INTEGER NOT NULL,
+                last_event_id INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (board, scope, target_kind, target_payload)
+            );
+            CREATE INDEX IF NOT EXISTS idx_board_subs_board  ON kanban_board_subs(board);
+            CREATE INDEX IF NOT EXISTS idx_board_subs_cursor ON kanban_board_subs(board, last_event_id);
+        """)
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
@@ -7435,8 +7480,162 @@ def rewind_notify_cursor(
 
 
 # ---------------------------------------------------------------------------
-# Retention + garbage collection
+# Board-level event subscriptions
 # ---------------------------------------------------------------------------
+
+# Scopes that a board subscriber can filter on.  ``'*'`` receives everything.
+BOARD_SUB_SCOPES = ("task_done", "task_blocked", "task_failed", "task_crashed",
+                    "task_timed_out", "epoch_end", "*")
+
+
+def add_board_sub(
+    conn: sqlite3.Connection,
+    *,
+    board: str = "__default__",
+    scope: str = "task_done",
+    target_kind: str = "platform_chat",
+    target_payload: str = "{}",
+    user_id: Optional[str] = None,
+    notifier_profile: Optional[str] = None,
+) -> None:
+    """Register a board-level event subscription.  Idempotent on the PK."""
+    if scope not in BOARD_SUB_SCOPES:
+        raise ValueError(f"Invalid board sub scope: {scope!r}. "
+                         f"Must be one of {BOARD_SUB_SCOPES}")
+    now = int(time.time())
+    with write_txn(conn):
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO kanban_board_subs
+                (board, scope, target_kind, target_payload,
+                 user_id, notifier_profile, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (board, scope, target_kind, target_payload,
+             user_id, notifier_profile, now),
+        )
+
+
+def remove_board_sub(
+    conn: sqlite3.Connection,
+    *,
+    board: str = "__default__",
+    scope: str = "task_done",
+    target_kind: str = "platform_chat",
+    target_payload: str = "{}",
+) -> bool:
+    with write_txn(conn):
+        cur = conn.execute(
+            "DELETE FROM kanban_board_subs "
+            "WHERE board = ? AND scope = ? AND target_kind = ? AND target_payload = ?",
+            (board, scope, target_kind, target_payload),
+        )
+    return cur.rowcount > 0
+
+
+def list_board_subs(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str] = None,
+    scope: Optional[str] = None,
+) -> list[dict]:
+    q = "SELECT * FROM kanban_board_subs WHERE 1=1"
+    params: list[Any] = []
+    if board is not None:
+        q += " AND board = ?"
+        params.append(board)
+    if scope is not None:
+        q += " AND scope = ?"
+        params.append(scope)
+    return [dict(r) for r in conn.execute(q, params).fetchall()]
+
+
+def claim_unseen_board_events(
+    conn: sqlite3.Connection,
+    *,
+    board: str = "__default__",
+    scope: str = "task_done",
+    target_kind: str = "platform_chat",
+    target_payload: str = "{}",
+    kinds: Optional[Iterable[str]] = None,
+) -> tuple[int, int, list[Event]]:
+    """Atomically claim unseen board-level events for one subscription.
+
+    Returns ``(old_cursor, new_cursor, events)``.  Board events are read
+    from ``task_events``.  The connection must be board-scoped (each board
+    has its own SQLite file, so ``t.board`` is not needed — the connection
+    itself is the board boundary).
+
+    The scope filter maps task event kinds to board subscription scopes:
+
+    - ``task_done``      → ``completed``
+    - ``task_blocked``   → ``blocked``
+    - ``task_failed``    → ``blocked``  (auto-blocked after failures)
+    - ``task_crashed``   → ``crashed``
+    - ``task_gave_up``   → ``gave_up``
+    - ``task_timed_out`` → ``timed_out``
+    - ``epoch_end``      → never matched per-task (see dispatcher hook)
+    - ``task_all`` or ``*`` → all of the above
+    """
+    _SCOPE_KIND_MAP = {
+        "task_done": ("completed",),
+        "task_blocked": ("blocked",),
+        "task_failed": ("blocked",),
+        "task_crashed": ("crashed",),
+        "task_gave_up": ("gave_up",),
+        "task_timed_out": ("timed_out",),
+        "epoch_end": (),
+        "task_all": ("completed", "blocked", "crashed", "gave_up", "timed_out"),
+        "*": ("completed", "blocked", "crashed", "gave_up", "timed_out"),
+    }
+    event_kinds = list(kinds) if kinds else list(_SCOPE_KIND_MAP.get(scope, ()))
+    if not event_kinds:
+        return 0, 0, []
+
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT last_event_id FROM kanban_board_subs "
+            "WHERE board = ? AND scope = ? AND target_kind = ? AND target_payload = ?",
+            (board, scope, target_kind, target_payload),
+        ).fetchone()
+        if row is None:
+            return 0, 0, []
+        old_cursor = int(row["last_event_id"])
+
+        params: list[Any] = event_kinds + [old_cursor]
+        rows = conn.execute(
+            f"""
+            SELECT * FROM task_events
+            WHERE kind IN ({",".join("?" * len(event_kinds))})
+              AND id > ?
+            ORDER BY id ASC
+            """,
+            params,
+        ).fetchall()
+
+        new_cursor = old_cursor
+        events: list[Event] = []
+        for r in rows:
+            try:
+                payload = json.loads(r["payload"]) if r["payload"] else None
+            except Exception:
+                payload = None
+            events.append(Event(
+                id=r["id"], task_id=r["task_id"], kind=r["kind"],
+                payload=payload, created_at=r["created_at"],
+                run_id=(int(r["run_id"]) if "run_id" in r.keys()
+                        and r["run_id"] is not None else None),
+            ))
+            new_cursor = max(new_cursor, int(r["id"]))
+
+        if events:
+            conn.execute(
+                "UPDATE kanban_board_subs SET last_event_id = ? "
+                "WHERE board = ? AND scope = ? AND target_kind = ? AND target_payload = ? "
+                "AND last_event_id = ?",
+                (new_cursor, board, scope, target_kind, target_payload, old_cursor),
+            )
+        return old_cursor, new_cursor, events
 
 def gc_events(
     conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3600,

@@ -38,6 +38,15 @@ from tools.registry import registry, tool_error
 logger = logging.getLogger(__name__)
 
 
+# Module-level dict: records the last (platform, chat_id) that invoked
+# each kanban board. Written by kanban tool handlers via _connect(),
+# read by gateway epoch callback to route notifications.
+# Key = board slug, Value = (platform_str, chat_id).
+# Gateway sets the current source before each _handle_message.
+_kanban_board_sources: dict[str, tuple[str, str]] = {}
+_kanban_current_source: tuple[str, str] | None = None
+
+
 # ---------------------------------------------------------------------------
 # Gating
 # ---------------------------------------------------------------------------
@@ -161,7 +170,7 @@ def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
     return None
 
 
-def _connect(board: Optional[str] = None):
+def _connect(board: Optional[str] = None, *, update_source: bool = False):
     """Import + connect lazily so the module imports cleanly in non-kanban
     contexts (e.g. test rigs that import every tool module).
 
@@ -171,9 +180,22 @@ def _connect(board: Optional[str] = None):
     (``HERMES_KANBAN_DB`` → ``HERMES_KANBAN_BOARD`` env → current symlink
     → ``default``). Per-tool ``board`` lets a Telegram-side agent override
     the env-pinned active board without restarting Hermes.
+
+    ``update_source=True`` records this (platform, chat_id) as the board's
+    epoch push target. Only set this for write operations (create, complete,
+    block, etc.) — read-only ops (list, show) must NOT hijack the channel.
     """
     from hermes_cli import kanban_db as kb
-    return kb, kb.connect(board=board)
+    conn = kb.connect(board=board)
+    if update_source:
+        try:
+            resolved = kb.get_current_board() if not board else board
+            import tools.kanban_tools as _kt
+            if _kt._kanban_current_source and resolved:
+                _kt._kanban_board_sources[resolved] = _kt._kanban_current_source
+        except Exception:
+            pass
+    return kb, conn
 
 
 # ---------------------------------------------------------------------------
@@ -551,7 +573,7 @@ def _handle_complete(args: dict, **kw) -> str:
     metadata = _stamp_worker_session_metadata(tid, metadata)
     board = args.get("board")
     try:
-        kb, conn = _connect(board=board)
+        kb, conn = _connect(board=board, update_source=True)
         try:
             try:
                 ok = kb.complete_task(
@@ -610,7 +632,7 @@ def _handle_block(args: dict, **kw) -> str:
         return tool_error("reason is required — explain what input you need")
     board = args.get("board")
     try:
-        kb, conn = _connect(board=board)
+        kb, conn = _connect(board=board, update_source=True)
         try:
             ok = kb.block_task(
                 conn, tid,
@@ -707,7 +729,7 @@ def _handle_comment(args: dict, **kw) -> str:
     author = os.environ.get("HERMES_PROFILE") or "worker"
     board = args.get("board")
     try:
-        kb, conn = _connect(board=board)
+        kb, conn = _connect(board=board, update_source=True)
         try:
             cid = kb.add_comment(conn, tid, author=author, body=str(body))
             return _ok(task_id=tid, comment_id=cid)
@@ -781,7 +803,7 @@ def _handle_create(args: dict, **kw) -> str:
         )
     board = args.get("board")
     try:
-        kb, conn = _connect(board=board)
+        kb, conn = _connect(board=board, update_source=True)
         try:
             # Inherit the spawning worker's own task workspace when the
             # caller didn't specify one (see resolution note above).
@@ -844,7 +866,7 @@ def _handle_unblock(args: dict, **kw) -> str:
         return ownership_err
     board = args.get("board")
     try:
-        kb, conn = _connect(board=board)
+        kb, conn = _connect(board=board, update_source=True)
         try:
             ok = kb.unblock_task(conn, str(tid))
             if not ok:
@@ -867,7 +889,7 @@ def _handle_link(args: dict, **kw) -> str:
         return tool_error("both parent_id and child_id are required")
     board = args.get("board")
     try:
-        kb, conn = _connect(board=board)
+        kb, conn = _connect(board=board, update_source=True)
         try:
             kb.link_tasks(conn, parent_id=parent_id, child_id=child_id)
             return _ok(parent_id=parent_id, child_id=child_id)

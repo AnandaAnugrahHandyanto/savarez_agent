@@ -6374,6 +6374,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         source = event.source
 
+        # Set the current source so kanban tool handlers can record
+        # which session operated which board (for epoch callback routing).
+        if not bool(getattr(event, "internal", False)):
+            try:
+                _plat = getattr(source, "platform", None)
+                _plat_s = (_plat.value if hasattr(_plat, "value") else str(_plat or "")).lower()
+                _chat_s = str(getattr(source, "chat_id", "") or "")
+                if _plat_s and _chat_s and _plat_s not in ("webhook", "api_server", "system"):
+                    import tools.kanban_tools as _kt
+                    _kt._kanban_current_source = (_plat_s, _chat_s)
+                    self._kanban_last_user_source = _kt._kanban_board_sources
+            except Exception:
+                pass
+
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
