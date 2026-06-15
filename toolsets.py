@@ -73,6 +73,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Config editor — whitelisted config set with audit log (#28024, #42727)
+    "hermes_config_set",
 ]
 
 # Webhook events may originate from untrusted third-party content (for example,
@@ -191,6 +193,17 @@ TOOLSETS = {
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
         "tools": ["send_message"],
+        "includes": []
+    },
+
+    "config": {
+        "description": (
+            "Whitelisted agent-accessible config editor. Lets the agent modify "
+            "safe config keys (mcp_servers, stt, tts, display, compression, "
+            "auxiliary, etc.) with blacklist/credential guards and audit logging. "
+            "Always available via check_fn."
+        ),
+        "tools": ["hermes_config_set"],
         "includes": []
     },
 
