@@ -168,6 +168,31 @@ export const ja: Translations = {
     },
   },
 
+  chatSession: {
+    newChat: "新しいチャット",
+    sessions: "セッション",
+    searchSessions: "セッションを検索",
+    searchPlaceholder: "メッセージ内容を検索...",
+    renameSession: "セッションの名前を変更",
+    deleteSession: "セッションを削除",
+    untitledSession: "無題のセッション",
+    openSessions: "開いている",
+    recentSessions: "最近",
+    noSessions: "まだセッションがありません",
+    noMatch: "一致するセッションがありません",
+    startConversation:
+      "会話を開始してください — メッセージはここにリアルタイムで表示されます。",
+    showSessions: "セッションを表示",
+    hideSessions: "セッションを非表示",
+    allSessions: "すべてのセッション",
+    backToNav: "Back to navigation",
+    copyMessage: "Copy",
+    copied: "Copied",
+    forkMessage: "Fork to new chat",
+    branched: "Branched to new chat",
+    branchFailed: "Branch failed",
+  },
+
   analytics: {
     period: "期間:",
     totalTokens: "合計トークン数",

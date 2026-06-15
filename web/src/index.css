@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@plugin '@tailwindcss/typography';
 /* `fonts.css` must come BEFORE `globals.css`: as of @nous-research/ui 0.14.x,
    `globals.css` only declares the `--font-*` CSS variables (Collapse, Rules
    Compressed/Expanded, Mondwest). The `@font-face` registrations live in
@@ -144,6 +145,15 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
     max-height: none;
     overflow-x: hidden;
     overflow-y: auto;
+  }
+
+  /* Rich chat: only the transcript scrolls — not the app header or composer. */
+  html:has([data-chat-active="true"]),
+  body:has([data-chat-active="true"]),
+  #root:has([data-chat-active="true"]) {
+    height: 100dvh;
+    max-height: 100dvh;
+    overflow: hidden;
   }
 }
 

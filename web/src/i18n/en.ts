@@ -175,6 +175,31 @@ export const en: Translations = {
     },
   },
 
+  chatSession: {
+    newChat: "New chat",
+    sessions: "Sessions",
+    searchSessions: "Search sessions",
+    searchPlaceholder: "Search message content…",
+    renameSession: "Rename session",
+    deleteSession: "Delete session",
+    untitledSession: "Untitled session",
+    openSessions: "Open",
+    recentSessions: "Recent",
+    noSessions: "No sessions yet",
+    noMatch: "No matching sessions",
+    startConversation:
+      "Start a conversation — messages stream here in real time.",
+    showSessions: "Show sessions",
+    hideSessions: "Hide sessions",
+    allSessions: "All sessions",
+    backToNav: "Back to navigation",
+    copyMessage: "Copy",
+    copied: "Copied",
+    forkMessage: "Fork to new chat",
+    branched: "Branched to new chat",
+    branchFailed: "Branch failed",
+  },
+
   analytics: {
     period: "Period:",
     totalTokens: "Total Tokens",

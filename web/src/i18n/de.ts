@@ -168,6 +168,31 @@ export const de: Translations = {
     },
   },
 
+  chatSession: {
+    newChat: "Neuer Chat",
+    sessions: "Sitzungen",
+    searchSessions: "Sitzungen suchen",
+    searchPlaceholder: "Nachrichteninhalt suchen...",
+    renameSession: "Sitzung umbenennen",
+    deleteSession: "Sitzung löschen",
+    untitledSession: "Sitzung ohne Titel",
+    openSessions: "Offen",
+    recentSessions: "Zuletzt",
+    noSessions: "Noch keine Sitzungen",
+    noMatch: "Keine passenden Sitzungen",
+    startConversation:
+      "Starte eine Unterhaltung — Nachrichten werden hier in Echtzeit gestreamt.",
+    showSessions: "Sitzungen anzeigen",
+    hideSessions: "Sitzungen ausblenden",
+    allSessions: "Alle Sitzungen",
+    backToNav: "Back to navigation",
+    copyMessage: "Copy",
+    copied: "Copied",
+    forkMessage: "Fork to new chat",
+    branched: "Branched to new chat",
+    branchFailed: "Branch failed",
+  },
+
   analytics: {
     period: "Zeitraum:",
     totalTokens: "Tokens gesamt",

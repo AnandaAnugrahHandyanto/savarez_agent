@@ -350,9 +350,12 @@ export const api = {
     fetchJSON<SessionMessagesResponse>(
       appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),
     ),
-  getSessionLatestDescendant: (id: string) =>
+  getSessionLatestDescendant: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionLatestDescendantResponse>(
-      `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
+      appendProfileParam(
+        `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
+        profile,
+      ),
     ),
   deleteSession: (id: string, profile = getManagementProfile()) =>
     fetchJSON<{ ok: boolean }>(
@@ -1958,6 +1961,7 @@ export interface ToolsetEnvResult {
 export interface SessionSearchResult {
   session_id: string;
   snippet: string;
+  title?: string | null;
   role: string | null;
   source: string | null;
   model: string | null;

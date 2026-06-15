@@ -20,6 +20,7 @@ class _FakeSessionDB:
         return [
             {
                 "id": "20260603_090200_exact",
+                "title": "Exact ID session",
                 "preview": "ID match preview",
                 "source": "cli",
                 "model": "claude",
@@ -33,6 +34,7 @@ class _FakeSessionDB:
             {
                 "session_id": "20260603_090200_exact",
                 "snippet": "duplicate content hit should not replace ID hit",
+                "title": "Content session title",
                 "role": "user",
                 "source": "cli",
                 "model": "claude",
@@ -41,6 +43,7 @@ class _FakeSessionDB:
             {
                 "session_id": "content_session",
                 "snippet": "content hit",
+                "title": "Other chat",
                 "role": "assistant",
                 "source": "desktop",
                 "model": "gpt",
@@ -72,6 +75,7 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
                 "session_id": "20260603_090200_exact",
                 "lineage_root": "20260603_090200_exact",
                 "snippet": "ID match preview",
+                "title": "Exact ID session",
                 "role": None,
                 "source": "cli",
                 "model": "claude",
@@ -81,6 +85,7 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
                 "session_id": "content_session",
                 "lineage_root": "content_session",
                 "snippet": "content hit",
+                "title": "Other chat",
                 "role": "assistant",
                 "source": "desktop",
                 "model": "gpt",

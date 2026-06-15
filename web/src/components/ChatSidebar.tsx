@@ -70,11 +70,21 @@ const STATE_TONE: Record<
 };
 
 interface ChatSidebarProps {
-  channel: string;
+  channel?: string;
   className?: string;
 }
 
-export function ChatSidebar({ channel, className }: ChatSidebarProps) {
+export function ChatSidebar({ channel = "", className }: ChatSidebarProps) {
+  return <TerminalChatSidebar channel={channel} className={className} />;
+}
+
+function TerminalChatSidebar({
+  channel,
+  className,
+}: {
+  channel: string;
+  className?: string;
+}) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
   // counter is the dependency on purpose — it's not read in the memo body,

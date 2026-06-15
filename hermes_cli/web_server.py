@@ -474,6 +474,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Input behavior while agent is running",
         "options": ["interrupt", "queue", "steer"],
     },
+    "display.dashboard_chat_surface": {
+        "type": "select",
+        "description": "Dashboard chat surface — reload the Chat tab after changing",
+        "options": ["terminal", "rich"],
+    },
     "memory.provider": {
         "type": "select",
         "description": "Memory provider plugin",
@@ -2874,6 +2879,7 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
                     sid,
                     {
                         "snippet": snippet,
+                        "title": row.get("title"),
                         "role": None,
                         "source": row.get("source"),
                         "model": row.get("model"),
@@ -2904,6 +2910,7 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
                     m["session_id"],
                     {
                         "snippet": m.get("snippet", ""),
+                        "title": m.get("title"),
                         "role": m.get("role"),
                         "source": m.get("source"),
                         "model": m.get("model"),
@@ -6266,14 +6273,12 @@ async def cancel_oauth_session(session_id: str, request: Request):
 
 
 
-def _session_latest_descendant(session_id: str):
+def _session_latest_descendant(session_id: str, profile: Optional[str] = None):
     """Resolve a session id to the newest child leaf session.
 
     /model may create child sessions. Dashboard refresh should continue the
     newest child instead of reopening the old parent.
     """
-    from hermes_state import SessionDB
-
     def row_get(row, key, index):
         if isinstance(row, dict):
             return row.get(key)
@@ -6285,7 +6290,7 @@ def _session_latest_descendant(session_id: str):
             except Exception:
                 return None
 
-    db = SessionDB()
+    db = _open_session_db_for_profile(profile)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid or not db.get_session(sid):
@@ -6514,8 +6519,10 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
 
 
 @app.get("/api/sessions/{session_id}/latest-descendant")
-async def get_session_latest_descendant(session_id: str):
-    latest, path = _session_latest_descendant(session_id)
+async def get_session_latest_descendant(
+    session_id: str, profile: Optional[str] = None
+):
+    latest, path = _session_latest_descendant(session_id, profile=profile)
     if not latest:
         raise HTTPException(status_code=404, detail="Session not found")
     return {
@@ -10182,6 +10189,7 @@ def _resolve_chat_argv(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
     profile: Optional[str] = None,
+    resume_exact: bool = False,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY.
 
@@ -10239,10 +10247,11 @@ def _resolve_chat_argv(
     if profile_dir is not None:
         env["HERMES_HOME"] = str(profile_dir)
 
-    if resume:
+    if resume and not resume_exact:
         latest_resume, _latest_path = _session_latest_descendant(resume)
         if latest_resume:
             resume = latest_resume
+    if resume:
         env["HERMES_TUI_RESUME"] = resume
 
     if sidecar_url:
@@ -10418,12 +10427,20 @@ async def pty_ws(ws: WebSocket) -> None:
     # --- spawn PTY ------------------------------------------------------
     resume = ws.query_params.get("resume") or None
     profile = ws.query_params.get("profile") or None
+    resume_exact = (ws.query_params.get("resume_exact") or "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
 
     try:
         argv, cwd, env = _resolve_chat_argv(
-            resume=resume, sidecar_url=sidecar_url, profile=profile
+            resume=resume,
+            sidecar_url=sidecar_url,
+            profile=profile,
+            resume_exact=resume_exact,
         )
     except HTTPException as exc:
         # Unknown/invalid profile from _resolve_profile_dir.

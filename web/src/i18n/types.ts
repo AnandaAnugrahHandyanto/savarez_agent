@@ -191,6 +191,31 @@ export interface Translations {
     };
   };
 
+  // ── Chat session chrome (drawer / header / palette) ──
+  chatSession: {
+    newChat: string;
+    sessions: string;
+    searchSessions: string;
+    searchPlaceholder: string;
+    renameSession: string;
+    deleteSession: string;
+    untitledSession: string;
+    openSessions: string;
+    recentSessions: string;
+    noSessions: string;
+    noMatch: string;
+    startConversation: string;
+    showSessions: string;
+    hideSessions: string;
+    allSessions: string;
+    backToNav: string;
+    copyMessage: string;
+    copied: string;
+    forkMessage: string;
+    branched: string;
+    branchFailed: string;
+  };
+
   // ── Analytics page ──
   analytics: {
     period: string;

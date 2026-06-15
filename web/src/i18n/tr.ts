@@ -168,6 +168,31 @@ export const tr: Translations = {
     },
   },
 
+  chatSession: {
+    newChat: "Yeni sohbet",
+    sessions: "Oturumlar",
+    searchSessions: "Oturum ara",
+    searchPlaceholder: "Mesaj içeriğinde ara...",
+    renameSession: "Oturumu yeniden adlandır",
+    deleteSession: "Oturumu sil",
+    untitledSession: "Başlıksız oturum",
+    openSessions: "Açık",
+    recentSessions: "Son",
+    noSessions: "Henüz oturum yok",
+    noMatch: "Eşleşen oturum yok",
+    startConversation:
+      "Bir konuşma başlatın — mesajlar burada gerçek zamanlı olarak akar.",
+    showSessions: "Oturumları göster",
+    hideSessions: "Oturumları gizle",
+    allSessions: "Tüm oturumlar",
+    backToNav: "Back to navigation",
+    copyMessage: "Copy",
+    copied: "Copied",
+    forkMessage: "Fork to new chat",
+    branched: "Branched to new chat",
+    branchFailed: "Branch failed",
+  },
+
   analytics: {
     period: "Dönem:",
     totalTokens: "Toplam Token",

@@ -35,6 +35,8 @@ interface Props {
   input: string;
   gw: GatewayClient | null;
   onApply(nextInput: string): void;
+  /** When set, Enter applies the selected completion then runs this with the new text. */
+  onSubmit?(text: string): void | Promise<void>;
 }
 
 interface CompletionResponse {
@@ -45,7 +47,7 @@ interface CompletionResponse {
 const DEBOUNCE_MS = 60;
 
 export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
-  function SlashPopover({ input, gw, onApply }, ref) {
+  function SlashPopover({ input, gw, onApply, onSubmit }, ref) {
     const [items, setItems] = useState<CompletionItem[]>([]);
     const [selected, setSelected] = useState(0);
     const [replaceFrom, setReplaceFrom] = useState(1);
@@ -116,6 +118,19 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
               return true;
             }
 
+            case "Enter": {
+              e.preventDefault();
+              const item = items[selected];
+              if (item) {
+                const next = input.slice(0, replaceFrom) + item.text;
+                onApply(next);
+                if (onSubmit && next.startsWith("/")) {
+                  void onSubmit(next);
+                }
+              }
+              return true;
+            }
+
             case "Escape":
               e.preventDefault();
               setItems([]);
@@ -126,7 +141,7 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
           }
         },
       }),
-      [visible, items, selected, apply],
+      [visible, items, selected, apply, input, replaceFrom, onApply, onSubmit],
     );
 
     if (!visible) return null;

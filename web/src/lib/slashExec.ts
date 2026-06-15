@@ -35,6 +35,12 @@ export interface SlashExecCallbacks {
   sys(text: string): void;
   /** Submit a user message to the agent (prompt.submit). */
   send(message: string): Promise<void> | void;
+  /**
+   * Fork the visible transcript into a new live session (`session.create`).
+   * Used by `/branch` and `/fork` — avoids the slash worker, works while the
+   * parent turn is still running.
+   */
+  branch?: (opts: { name: string }) => Promise<void>;
 }
 
 export interface SlashExecOptions {
@@ -48,6 +54,77 @@ export interface SlashExecOptions {
 
 export type SlashExecResult = "done" | "sent" | "error";
 
+interface ReloadMcpResponse {
+  status?: "confirm_required" | "reloaded";
+  message?: string;
+}
+
+/**
+ * Native slash commands that bypass slash.exec / command.dispatch.
+ * Mirrors ui-tui client handlers (ops.ts, session.ts).
+ */
+async function executeNativeSlash(
+  name: string,
+  arg: string,
+  sessionId: string,
+  gw: GatewayClient,
+  callbacks: SlashExecCallbacks,
+): Promise<SlashExecResult | null> {
+  const { sys, branch } = callbacks;
+
+  if (name === "branch" || name === "fork") {
+    if (!branch) {
+      sys("branch unavailable");
+      return "error";
+    }
+    try {
+      await branch({ name: arg });
+      return "done";
+    } catch (err) {
+      sys(`error: ${err instanceof Error ? err.message : String(err)}`);
+      return "error";
+    }
+  }
+
+  if (name !== "reload-mcp" && name !== "reload_mcp") {
+    return null;
+  }
+
+  const a = arg.trim().toLowerCase();
+  const params: {
+    session_id: string;
+    confirm?: boolean;
+    always?: boolean;
+  } = { session_id: sessionId };
+  if (a === "now" || a === "approve" || a === "once" || a === "yes") {
+    params.confirm = true;
+  } else if (a === "always") {
+    params.confirm = true;
+    params.always = true;
+  }
+
+  try {
+    const r = await gw.request<ReloadMcpResponse>("reload.mcp", params);
+    if (r?.status === "confirm_required") {
+      sys(r.message ?? "/reload-mcp requires confirmation");
+      return "done";
+    }
+    if (r?.status === "reloaded") {
+      sys(
+        params.always
+          ? "MCP servers reloaded · future /reload-mcp will run without confirmation"
+          : "MCP servers reloaded",
+      );
+      return "done";
+    }
+    sys("reload complete");
+    return "done";
+  } catch (err) {
+    sys(`error: ${err instanceof Error ? err.message : String(err)}`);
+    return "error";
+  }
+}
+
 /**
  * Run a slash command. Returns the terminal state so callers can decide
  * whether to clear the composer, queue retries, etc.
@@ -56,13 +133,19 @@ export async function executeSlash({
   command,
   sessionId,
   gw,
-  callbacks: { sys, send },
+  callbacks,
 }: SlashExecOptions): Promise<SlashExecResult> {
   const { name, arg } = parseSlash(command);
+  const { sys, send } = callbacks;
 
   if (!name) {
     sys("empty slash command");
     return "error";
+  }
+
+  const native = await executeNativeSlash(name, arg, sessionId, gw, callbacks);
+  if (native !== null) {
+    return native;
   }
 
   // Primary dispatcher.
@@ -103,7 +186,7 @@ export async function executeSlash({
           command: `/${d.target}${arg ? ` ${arg}` : ""}`,
           sessionId,
           gw,
-          callbacks: { sys, send },
+          callbacks,
         });
 
       case "skill":
