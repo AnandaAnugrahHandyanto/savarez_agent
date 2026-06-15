@@ -254,6 +254,10 @@ RETAIN_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "Optional per-call tags to merge with configured default retain tags.",
             },
+            "bank_id": {
+                "type": "string",
+                "description": "Optional bank ID to write to. Defaults to the configured bank."
+            },
         },
         "required": ["content"],
     },
@@ -263,12 +267,17 @@ RECALL_SCHEMA = {
     "name": "hindsight_recall",
     "description": (
         "Search long-term memory. Returns memories ranked by relevance using "
-        "semantic search, keyword matching, entity graph traversal, and reranking."
+        "semantic search, keyword matching, entity graph traversal, and reranking. "
+        "Use bank_id='*' to search across all available banks."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "What to search for."},
+            "bank_id": {
+                "type": "string",
+                "description": "Optional bank ID to target. Use '*' to search all banks. Defaults to the configured bank."
+            },
         },
         "required": ["query"],
     },
@@ -278,12 +287,17 @@ REFLECT_SCHEMA = {
     "name": "hindsight_reflect",
     "description": (
         "Synthesize a reasoned answer from long-term memories. Unlike recall, "
-        "this reasons across all stored memories to produce a coherent response."
+        "this reasons across all stored memories to produce a coherent response. "
+        "Use bank_id='*' to reflect across all available banks."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "The question to reflect on."},
+            "bank_id": {
+                "type": "string",
+                "description": "Optional bank ID to target. Use '*' to search all banks. Defaults to the configured bank."
+            },
         },
         "required": ["query"],
     },
@@ -1295,14 +1309,16 @@ class HindsightMemoryProvider(MemoryProvider):
                 f"# Hindsight Memory\n"
                 f"Active (tools mode). Bank: {self._bank_id}, budget: {self._budget}.\n"
                 f"Use hindsight_recall to search, hindsight_reflect for synthesis, "
-                f"hindsight_retain to store facts."
+                f"hindsight_retain to store facts. "
+                f"Pass bank_id='*' to query all banks, or a specific bank ID."
             )
         return (
             f"# Hindsight Memory\n"
             f"Active. Bank: {self._bank_id}, budget: {self._budget}.\n"
             f"Relevant memories are automatically injected into context. "
             f"Use hindsight_recall to search, hindsight_reflect for synthesis, "
-            f"hindsight_retain to store facts."
+            f"hindsight_retain to store facts. "
+            f"Pass bank_id='*' to query all banks, or a specific bank ID."
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
@@ -1540,11 +1556,38 @@ class HindsightMemoryProvider(MemoryProvider):
             return []
         return [RETAIN_SCHEMA, RECALL_SCHEMA, REFLECT_SCHEMA]
 
+    def _resolve_target_banks(self, requested_bank_id: str | None) -> list[str]:
+        """Resolve bank_id(s) from user request.
+
+        - None or '' → use the configured default bank.
+        - '*'         → list all available banks from the API.
+        - 'bank-id'   → use that specific bank.
+        """
+        if not requested_bank_id:
+            return [self._bank_id]
+        if requested_bank_id != "*":
+            return [requested_bank_id]
+        # Wildcard: discover all banks
+        try:
+            banks_resp = self._run_hindsight_operation(
+                lambda client: client.banks.list_banks()
+            )
+            bank_ids = [b.bank_id for b in (banks_resp.banks or []) if getattr(b, "bank_id", None)]
+            if not bank_ids:
+                logger.warning("hindsight: '*' requested but no banks found; falling back to default")
+                return [self._bank_id]
+            logger.debug("hindsight: '*' resolved to %d banks: %s", len(bank_ids), bank_ids)
+            return bank_ids
+        except Exception as e:
+            logger.warning("hindsight: failed to list banks for '*': %s; falling back to default", e)
+            return [self._bank_id]
+
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if tool_name == "hindsight_retain":
             content = args.get("content", "")
             if not content:
                 return tool_error("Missing required parameter: content")
+            target_bank = args.get("bank_id") or self._bank_id
             context = args.get("context")
             try:
                 retain_kwargs = self._build_retain_kwargs(
@@ -1552,11 +1595,12 @@ class HindsightMemoryProvider(MemoryProvider):
                     context=context,
                     tags=args.get("tags"),
                 )
+                retain_kwargs["bank_id"] = target_bank
                 logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
-                             self._bank_id, len(content), context)
+                             target_bank, len(content), context)
                 self._run_hindsight_operation(lambda client: client.aretain(**retain_kwargs))
                 logger.debug("Tool hindsight_retain: success")
-                return json.dumps({"result": "Memory stored successfully."})
+                return json.dumps({"result": f"Memory stored successfully in bank '{target_bank}'."})
             except Exception as e:
                 logger.warning("hindsight_retain failed: %s", e, exc_info=True)
                 return tool_error(f"Failed to store memory: {e}")
@@ -1565,25 +1609,38 @@ class HindsightMemoryProvider(MemoryProvider):
             query = args.get("query", "")
             if not query:
                 return tool_error("Missing required parameter: query")
+            target_banks = self._resolve_target_banks(args.get("bank_id"))
             try:
-                recall_kwargs: dict = {
-                    "bank_id": self._bank_id, "query": query, "budget": self._budget,
-                    "max_tokens": self._recall_max_tokens,
-                }
-                if self._recall_tags:
-                    recall_kwargs["tags"] = self._recall_tags
-                    recall_kwargs["tags_match"] = self._recall_tags_match
-                if self._recall_types:
-                    recall_kwargs["types"] = self._recall_types
-                logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
-                             self._bank_id, len(query), self._budget)
-                resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
-                num_results = len(resp.results) if resp.results else 0
-                logger.debug("Tool hindsight_recall: %d results", num_results)
-                if not resp.results:
+                all_lines: list[str] = []
+                for bank_id in target_banks:
+                    recall_kwargs: dict = {
+                        "bank_id": bank_id, "query": query, "budget": self._budget,
+                        "max_tokens": self._recall_max_tokens,
+                    }
+                    if self._recall_tags:
+                        recall_kwargs["tags"] = self._recall_tags
+                        recall_kwargs["tags_match"] = self._recall_tags_match
+                    if self._recall_types:
+                        recall_kwargs["types"] = self._recall_types
+                    logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",
+                                 bank_id, len(query), self._budget)
+                    resp = self._run_hindsight_operation(
+                        lambda client, kw=recall_kwargs: client.arecall(**kw)
+                    )
+                    if resp.results:
+                        prefix = f"[{bank_id}] " if len(target_banks) > 1 else ""
+                        for r in resp.results:
+                            all_lines.append(f"{prefix}{r.text}")
+                if not all_lines:
                     return json.dumps({"result": "No relevant memories found."})
-                lines = [f"{i}. {r.text}" for i, r in enumerate(resp.results, 1)]
-                return json.dumps({"result": "\n".join(lines)})
+                # Deduplicate and number
+                seen = set()
+                numbered = []
+                for line in all_lines:
+                    if line not in seen:
+                        seen.add(line)
+                        numbered.append(f"{len(numbered) + 1}. {line}")
+                return json.dumps({"result": "\n".join(numbered)})
             except Exception as e:
                 logger.warning("hindsight_recall failed: %s", e, exc_info=True)
                 return tool_error(f"Failed to search memory: {e}")
@@ -1592,16 +1649,27 @@ class HindsightMemoryProvider(MemoryProvider):
             query = args.get("query", "")
             if not query:
                 return tool_error("Missing required parameter: query")
+            target_banks = self._resolve_target_banks(args.get("bank_id"))
             try:
-                logger.debug("Tool hindsight_reflect: bank=%s, query_len=%d, budget=%s",
-                             self._bank_id, len(query), self._budget)
-                resp = self._run_hindsight_operation(
-                    lambda client: client.areflect(
-                        bank_id=self._bank_id, query=query, budget=self._budget
+                all_answers: list[str] = []
+                for bank_id in target_banks:
+                    logger.debug("Tool hindsight_reflect: bank=%s, query_len=%d, budget=%s",
+                                 bank_id, len(query), self._budget)
+                    resp = self._run_hindsight_operation(
+                        lambda client, bid=bank_id: client.areflect(
+                            bank_id=bid, query=query, budget=self._budget
+                        )
                     )
-                )
-                logger.debug("Tool hindsight_reflect: response_len=%d", len(resp.text or ""))
-                return json.dumps({"result": resp.text or "No relevant memories found."})
+                    text = (resp.text or "").strip()
+                    if text:
+                        prefix = f"## Bank: {bank_id}\n\n" if len(target_banks) > 1 else ""
+                        all_answers.append(f"{prefix}{text}")
+                if not all_answers:
+                    return json.dumps({"result": "No relevant memories found."})
+                result = "\n\n---\n\n".join(all_answers)
+                logger.debug("Tool hindsight_reflect: response_len=%d, banks=%d",
+                             len(result), len(target_banks))
+                return json.dumps({"result": result})
             except Exception as e:
                 logger.warning("hindsight_reflect failed: %s", e, exc_info=True)
                 return tool_error(f"Failed to reflect: {e}")
