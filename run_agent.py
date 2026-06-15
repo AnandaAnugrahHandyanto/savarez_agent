@@ -1688,7 +1688,8 @@ class AIAgent:
                     )
                     flushed_ids.add(msg_id)
                     last_successful_idx = idx + 1
-                except Exception:
+                except Exception as e:
+                    logger.warning("append_message failed (pending fallback): %s", e)
                     self._write_pending_fallback(messages, last_successful_idx)
                     break
             self._last_flushed_db_idx = last_successful_idx
