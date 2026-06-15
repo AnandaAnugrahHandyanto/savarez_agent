@@ -452,33 +452,71 @@ def test_bot_state_ignores_blank_text(tmp_path):
                       url="https://meet.google.com/x-y-z")
     state.record_caption("Alice", "")
     state.record_caption("Alice", "   ")
-    state.record_caption("", "text but no speaker")
 
     status = json.loads((tmp_path / "s" / "status.json").read_text())
     assert status["transcriptLines"] == 0
-    assert status["unresolvedCaptionDrops"] == 1
     transcript_path = tmp_path / "s" / "transcript.txt"
     assert not transcript_path.exists() or "Unknown:" not in transcript_path.read_text()
 
 
-def test_bot_state_drops_unknown_speaker_caption_rows(tmp_path):
+def test_bot_state_preserves_unresolved_speaker_caption_rows_without_unknown_label(tmp_path):
     from plugins.google_meet.meet_bot import _BotState
 
     out = tmp_path / "s"
     state = _BotState(out_dir=out, meeting_id="x-y-z",
                       url="https://meet.google.com/x-y-z")
 
+    state.record_caption("", "text but no speaker")
     state.record_caption("Unknown", "text but no resolved speaker")
     state.record_caption("unknown", "text but still unresolved")
     state.record_caption("Alice", "resolved text")
 
     transcript = (out / "transcript.txt").read_text()
     assert "Unknown:" not in transcript
+    assert "Unresolved speaker: text but no speaker" in transcript
+    assert "Unresolved speaker: text but no resolved speaker" in transcript
+    assert "Unresolved speaker: text but still unresolved" in transcript
     assert "Alice: resolved text" in transcript
 
     status = json.loads((out / "status.json").read_text())
-    assert status["transcriptLines"] == 1
+    assert status["transcriptLines"] == 4
+    assert status["unresolvedCaptionLines"] == 3
+    assert status["unresolvedCaptionDrops"] == 0
+
+
+def test_bot_state_drops_unresolved_caption_rows_that_are_only_ui_chrome(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    out = tmp_path / "s"
+    state = _BotState(out_dir=out, meeting_id="x-y-z",
+                      url="https://meet.google.com/x-y-z")
+
+    state.record_caption("", "Open caption settings")
+    state.record_caption("Unknown", "Audio settings")
+
+    status = json.loads((out / "status.json").read_text())
+    assert status["transcriptLines"] == 0
     assert status["unresolvedCaptionDrops"] == 2
+    transcript_path = out / "transcript.txt"
+    assert not transcript_path.exists()
+
+
+def test_bot_state_revises_unresolved_caption_rows_when_caption_id_is_stable(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    out = tmp_path / "s"
+    state = _BotState(out_dir=out, meeting_id="x-y-z",
+                      url="https://meet.google.com/x-y-z")
+
+    state.record_caption("", "we should star", caption_id="row-unresolved")
+    state.record_caption("", "we should start now", caption_id="row-unresolved")
+
+    transcript = (out / "transcript.txt").read_text().splitlines()
+    assert len(transcript) == 1
+    assert transcript[0].endswith("Unresolved speaker: we should start now")
+    status = json.loads((out / "status.json").read_text())
+    assert status["transcriptLines"] == 1
+    assert status["unresolvedCaptionLines"] == 2
 
 
 def test_bot_state_writes_caption_debug_for_unknown_speaker_when_debug_enabled(tmp_path, monkeypatch):
@@ -505,8 +543,9 @@ def test_bot_state_writes_caption_debug_for_unknown_speaker_when_debug_enabled(t
     assert status["lastSpeakerSource"] == "unresolved"
     assert status["lastSpeakerCandidates"] == speaker_debug["candidates"]
     assert status["captionDebugPath"].endswith("caption_debug.jsonl")
-    assert status["transcriptLines"] == 0
-    assert status["unresolvedCaptionDrops"] == 1
+    assert status["transcriptLines"] == 1
+    assert status["unresolvedCaptionLines"] == 1
+    assert status["unresolvedCaptionDrops"] == 0
 
     debug_lines = (tmp_path / "s" / "caption_debug.jsonl").read_text().splitlines()
     assert len(debug_lines) == 1
@@ -1736,6 +1775,7 @@ def test_enqueue_say_rejects_dead_realtime_bot(tmp_path):
         "realtime": True,
         "realtimeReady": True,
         "realtimeAudioPumpStatus": "ready",
+        "localMicrophoneOn": True,
     }))
     pm._write_active({
         "pid": 12345, "meeting_id": "abc-defg-hij",
@@ -1803,6 +1843,34 @@ def test_enqueue_say_rejects_realtime_when_audio_pump_is_not_ready(tmp_path):
     assert not (out_dir / "say_queue.jsonl").exists()
 
 
+def test_enqueue_say_rejects_realtime_when_meet_microphone_is_off(tmp_path):
+    from plugins.google_meet import process_manager as pm
+
+    out_dir = Path(os.environ["HERMES_HOME"]) / "workspace" / "meetings" / "abc-defg-hij"
+    out_dir.mkdir(parents=True)
+    (out_dir / "status.json").write_text(json.dumps({
+        "inCall": True,
+        "realtime": True,
+        "realtimeReady": True,
+        "realtimeAudioPumpStatus": "ready",
+        "localMicrophoneOn": False,
+        "error": None,
+        "exited": False,
+    }))
+    pm._write_active({
+        "pid": 12345, "meeting_id": "abc-defg-hij",
+        "out_dir": str(out_dir), "url": "https://meet.google.com/abc-defg-hij",
+        "started_at": 0, "mode": "realtime",
+    })
+
+    with patch.object(pm, "_pid_alive", return_value=True):
+        res = pm.enqueue_say("hello everyone")
+
+    assert res["ok"] is False
+    assert "microphone is not enabled" in res["reason"]
+    assert not (out_dir / "say_queue.jsonl").exists()
+
+
 def test_enqueue_say_writes_jsonl_in_realtime_mode():
     from plugins.google_meet import process_manager as pm
 
@@ -1813,6 +1881,7 @@ def test_enqueue_say_writes_jsonl_in_realtime_mode():
         "realtime": True,
         "realtimeReady": True,
         "realtimeAudioPumpStatus": "ready",
+        "localMicrophoneOn": True,
         "error": None,
         "exited": False,
     }))
@@ -1846,6 +1915,7 @@ def test_realtime_queue_preserves_append_during_consumer_rewrite(tmp_path):
         "realtime": True,
         "realtimeReady": True,
         "realtimeAudioPumpStatus": "ready",
+        "localMicrophoneOn": True,
     }))
     pm._write_active({
         "pid": 12345, "meeting_id": "abc-defg-hij",
@@ -2084,6 +2154,23 @@ def test_meet_join_routes_to_registered_node():
     assert call_mock.call_args.kwargs["mode"] == "realtime"
 
 
+def test_meet_join_rejects_auth_state_for_remote_node():
+    from plugins.google_meet.tools import handle_meet_join
+    from plugins.google_meet.node.registry import NodeRegistry
+
+    reg = NodeRegistry()
+    reg.add("my-mac", "ws://1.2.3.4:18789", "tok")
+
+    out = json.loads(handle_meet_join({
+        "url": "https://meet.google.com/abc-defg-hij",
+        "node": "my-mac",
+        "use_auth_state": True,
+    }))
+
+    assert out["success"] is False
+    assert "use_auth_state is local-only" in out["error"]
+
+
 def test_meet_say_routes_to_node():
     from plugins.google_meet.tools import handle_meet_say
     from plugins.google_meet.node.registry import NodeRegistry
@@ -2154,6 +2241,7 @@ def test_node_server_say_uses_realtime_queue(tmp_path):
         "realtime": True,
         "realtimeReady": True,
         "realtimeAudioPumpStatus": "ready",
+        "localMicrophoneOn": True,
     }))
     pm._write_active({
         "pid": 12345,
@@ -2306,6 +2394,28 @@ def test_cli_join_reuses_saved_auth_state_only_when_explicitly_requested(tmp_pat
     assert rc == 0
     assert start_mock.call_args.kwargs["auth_state"] == str(auth_path)
     assert start_mock.call_args.kwargs["persist_after_session"] is True
+
+
+def test_cli_join_rejects_auth_state_for_remote_node(capsys):
+    from plugins.google_meet.cli import _cmd_join
+    from plugins.google_meet.node.registry import NodeRegistry
+
+    reg = NodeRegistry()
+    reg.add("my-mac", "ws://1.2.3.4:18789", "tok")
+
+    rc = _cmd_join(
+        "https://meet.google.com/abc-defg-hij",
+        guest_name="Hermes Agent",
+        duration=None,
+        headed=False,
+        mode="transcribe",
+        node="my-mac",
+        use_auth_state=True,
+        persist_after_session=False,
+    )
+
+    assert rc == 1
+    assert "use_auth_state is local-only" in capsys.readouterr().out
 
 
 def test_cli_say_subcommand_exists():
@@ -3338,6 +3448,29 @@ def test_run_bot_tears_down_realtime_resources_on_navigation_failure(tmp_path, m
 
     assert run_bot() == 4
     assert closed == {"context": True, "browser": True, "bridge": True}
+
+
+def test_run_bot_tears_down_partial_realtime_bridge_on_setup_failure(tmp_path, monkeypatch):
+    from plugins.google_meet import audio_bridge
+    from plugins.google_meet.meet_bot import run_bot
+
+    closed = {"bridge": False}
+
+    class _FakeBridge:
+        def setup(self):
+            raise RuntimeError("virtual device missing")
+
+        def teardown(self):
+            closed["bridge"] = True
+
+    monkeypatch.setattr(audio_bridge, "AudioBridge", _FakeBridge)
+    monkeypatch.setenv("HERMES_MEET_URL", "https://meet.google.com/abc-defg-hij")
+    monkeypatch.setenv("HERMES_MEET_OUT_DIR", str(tmp_path))
+    monkeypatch.setenv("HERMES_MEET_MODE", "realtime")
+    monkeypatch.setenv("HERMES_MEET_REALTIME_KEY", "sk-test")
+
+    assert run_bot() == 6
+    assert closed["bridge"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -4377,12 +4510,49 @@ def test_ensure_local_media_before_join_allows_realtime_mic_but_requires_camera_
         lambda page: {"local_microphone_on": True, "local_camera_on": False},
     )
 
-    assert _ensure_local_media_before_join(object(), state, realtime_enabled=True, attempts=1) is True
+    assert _ensure_local_media_before_join(
+        object(),
+        state,
+        realtime_enabled=True,
+        realtime_route_ready=True,
+        attempts=1,
+    ) is True
 
     status = json.loads((tmp_path / "meet" / "status.json").read_text())
     assert status["localMicrophoneOn"] is True
     assert status["localCameraOn"] is False
     assert status["error"] is None
+
+
+def test_ensure_local_media_before_join_realtime_requires_route_ready_before_mic_on(tmp_path, monkeypatch):
+    from plugins.google_meet import meet_bot
+    from plugins.google_meet.meet_bot import _BotState, _ensure_local_media_before_join
+
+    state = _BotState(
+        out_dir=tmp_path / "meet",
+        meeting_id="abc-defg-hij",
+        url="https://meet.google.com/abc-defg-hij",
+    )
+
+    monkeypatch.setattr(meet_bot, "_disable_local_media", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(meet_bot, "_enable_local_microphone", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(
+        meet_bot,
+        "_probe_local_media_state",
+        lambda page: {"local_microphone_on": True, "local_camera_on": False},
+    )
+
+    assert _ensure_local_media_before_join(
+        object(),
+        state,
+        realtime_enabled=True,
+        realtime_route_ready=False,
+        attempts=1,
+    ) is False
+
+    status = json.loads((tmp_path / "meet" / "status.json").read_text())
+    assert status["phase"] == "exited"
+    assert status["leaveReason"] == "unsafe_media_state"
 
 
 def test_disable_local_media_uses_keyboard_shortcuts_when_controls_are_hidden():

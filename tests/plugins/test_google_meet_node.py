@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -482,8 +484,20 @@ def _install_fake_ws(monkeypatch, reply_builder):
         fake_ws_holder["kwargs"] = kwargs
         return ws
 
-    # Patch the concrete import site inside client._rpc
-    import websockets.sync.client as wsc  # type: ignore
+    # Patch the concrete import site inside client._rpc. The package is optional
+    # at runtime, so tests install a fake module tree when it is not present.
+    try:
+        import websockets.sync.client as wsc  # type: ignore
+    except ModuleNotFoundError:
+        websockets_mod = types.ModuleType("websockets")
+        sync_mod = types.ModuleType("websockets.sync")
+        wsc = types.ModuleType("websockets.sync.client")
+        wsc.connect = None
+        sync_mod.client = wsc
+        websockets_mod.sync = sync_mod
+        monkeypatch.setitem(sys.modules, "websockets", websockets_mod)
+        monkeypatch.setitem(sys.modules, "websockets.sync", sync_mod)
+        monkeypatch.setitem(sys.modules, "websockets.sync.client", wsc)
     monkeypatch.setattr(wsc, "connect", _connect)
     return fake_ws_holder
 

@@ -395,6 +395,12 @@ def _cmd_join(
         print(f"refusing: not a meet.google.com URL: {url}")
         return 2
     if node:
+        if use_auth_state:
+            print(
+                "use_auth_state is local-only for remote Meet nodes; "
+                "authenticate on the node host or omit --node"
+            )
+            return 1
         # Remote: go through NodeClient.
         try:
             from plugins.google_meet.node.registry import NodeRegistry

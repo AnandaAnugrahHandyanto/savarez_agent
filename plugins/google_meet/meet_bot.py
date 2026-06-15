@@ -28,6 +28,7 @@ No meet.google.com URL → exits non-zero. Any URL that doesn't start with
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -146,6 +147,7 @@ class _BotState:
         self.last_barge_in_at: Optional[float] = None
         self.leave_reason: Optional[str] = None
         self.unresolved_caption_drops = 0
+        self.unresolved_caption_lines = 0
         self.last_unresolved_caption_at: Optional[float] = None
         # Scraped captions, in order, deduped. Each entry is a dict of
         # {"ts": <epoch>, "speaker": str, "text": str}.
@@ -443,13 +445,22 @@ class _BotState:
                     f.write(json.dumps(debug_line, ensure_ascii=True) + "\n")
         if unresolved_speaker:
             now = time.time()
-            self.unresolved_caption_drops += 1
             self.last_unresolved_caption_at = now
-            self._flush()
-            return
+            if _caption_text_is_ui_noise(text):
+                self.unresolved_caption_drops += 1
+                self._flush()
+                return
+            self.unresolved_caption_lines += 1
+            speaker = "Unresolved speaker"
 
         caption_id = (caption_id or "").strip()
-        caption_key = f"row:{caption_id}" if caption_id else f"speaker:{speaker}"
+        if caption_id:
+            caption_key = f"row:{caption_id}"
+        elif unresolved_speaker:
+            digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+            caption_key = f"unresolved:{digest}"
+        else:
+            caption_key = f"speaker:{speaker}"
         key = f"{caption_key}|{speaker}|{text}"
         if key in self._seen:
             return
@@ -502,6 +513,7 @@ class _BotState:
             "lastBargeInAt": self.last_barge_in_at,
             "leaveReason": self.leave_reason,
             "unresolvedCaptionDrops": self.unresolved_caption_drops,
+            "unresolvedCaptionLines": self.unresolved_caption_lines,
             "lastUnresolvedCaptionAt": self.last_unresolved_caption_at,
         }
         tmp = self.status_path.with_suffix(".json.tmp")
@@ -541,6 +553,34 @@ class _BotState:
 # ---------------------------------------------------------------------------
 # Playwright bot entry point
 # ---------------------------------------------------------------------------
+
+_CAPTION_UI_NOISE_PATTERNS = (
+    "audio settings",
+    "caption settings",
+    "chat with everyone",
+    "getting ready",
+    "join now",
+    "jump to bottom",
+    "jump to most recent captions",
+    "leave call",
+    "meeting tools",
+    "more options",
+    "open caption settings",
+    "present now",
+    "return home",
+    "turn off camera",
+    "turn off microphone",
+    "turn on camera",
+    "turn on microphone",
+)
+
+
+def _caption_text_is_ui_noise(text: str) -> bool:
+    normalized = " ".join((text or "").split()).strip().lower()
+    if not normalized:
+        return True
+    return normalized in _CAPTION_UI_NOISE_PATTERNS
+
 
 # JavaScript injected into the Meet tab to observe captions. Captures
 # {speaker, text} tuples via a MutationObserver on the caption container,
@@ -1137,10 +1177,38 @@ def _disable_local_media(
     return clicked
 
 
+def _enable_local_microphone(page) -> int:
+    """Turn on the local Meet microphone only when an explicit off control is visible."""
+    current = _probe_local_media_state(page)
+    if current.get("local_microphone_on") is True:
+        return 0
+    toggled = False
+    try:
+        btn = _first_visible(
+            page.get_by_role(
+                "button",
+                name=re.compile(r"(turn on|unmute)\s+(microphone|mic)", re.IGNORECASE),
+            )
+        )
+        if btn is not None:
+            btn.click(timeout=3_000)
+            toggled = True
+    except Exception:
+        pass
+    if not toggled and _click_local_media_control_js(page, "microphone_on"):
+        toggled = True
+    if toggled:
+        _wait_for_ui(page, 250)
+        return 1
+    return 0
+
+
 def _click_local_media_control_js(page, kind: str) -> bool:
     """Click a local Meet media-off control when role locators miss it."""
     if kind == "microphone":
         labels = ("turn off microphone", "mute microphone", "turn off mic", "mute mic")
+    elif kind == "microphone_on":
+        labels = ("turn on microphone", "unmute microphone", "turn on mic", "unmute mic")
     else:
         labels = ("turn off camera", "stop camera", "disable camera", "turn off video", "stop video")
     label_js = "|".join(re.escape(label) for label in labels)
@@ -1206,11 +1274,20 @@ def _probe_local_media_state(page) -> dict:
     return result
 
 
-def _local_media_state_is_safe(media_state: dict, *, realtime_enabled: bool) -> bool:
+def _local_media_state_is_safe(
+    media_state: dict,
+    *,
+    realtime_enabled: bool,
+    realtime_route_ready: bool = False,
+) -> bool:
     """Return True when local media state satisfies the selected privacy mode."""
     camera_off = media_state.get("local_camera_on") is False
     if realtime_enabled:
-        return camera_off
+        return (
+            realtime_route_ready
+            and camera_off
+            and media_state.get("local_microphone_on") is True
+        )
     return camera_off and media_state.get("local_microphone_on") is False
 
 
@@ -1219,18 +1296,28 @@ def _ensure_local_media_before_join(
     state: _BotState,
     *,
     realtime_enabled: bool,
+    realtime_route_ready: bool = False,
     attempts: int = 3,
 ) -> bool:
     """Disable local media and fail closed if the state cannot be proven safe."""
     for _idx in range(max(1, attempts)):
-        _disable_local_media(
-            page,
-            disable_microphone=not realtime_enabled,
-            disable_camera=True,
-        )
+        if realtime_enabled and not realtime_route_ready:
+            _disable_local_media(page, disable_microphone=True, disable_camera=True)
+        else:
+            _disable_local_media(
+                page,
+                disable_microphone=not realtime_enabled,
+                disable_camera=True,
+            )
+            if realtime_enabled:
+                _enable_local_microphone(page)
         media_state = _probe_local_media_state(page)
         state.set(**media_state)
-        if _local_media_state_is_safe(media_state, realtime_enabled=realtime_enabled):
+        if _local_media_state_is_safe(
+            media_state,
+            realtime_enabled=realtime_enabled,
+            realtime_route_ready=realtime_route_ready,
+        ):
             return True
         _wait_for_ui(page, 250)
 
@@ -1817,6 +1904,33 @@ def _mac_audio_device_index(device_name: str) -> Optional[str]:
     return None
 
 
+def _realtime_route_ready(state: _BotState) -> bool:
+    return bool(
+        state.realtime
+        and state.realtime_ready
+        and state.realtime_audio_pump_status == "ready"
+    )
+
+
+def _wait_for_realtime_route_ready(state: _BotState, *, timeout_s: float = 15.0) -> bool:
+    deadline = time.time() + max(0.1, timeout_s)
+    terminal_statuses = {"exited", "missing_tool"}
+    while time.time() < deadline:
+        if _realtime_route_ready(state):
+            return True
+        if state.error or state.realtime_audio_pump_status in terminal_statuses:
+            break
+        time.sleep(0.05)
+    state.set(
+        realtime_ready=False,
+        error=state.error or "realtime audio route not ready before join",
+        leave_reason="realtime_not_ready",
+        exited=True,
+        phase="exited",
+    )
+    return False
+
+
 def _apply_meet_proxy_args(chrome_args: list[str]) -> None:
     """Append deterministic Chromium proxy/media args when a Meet proxy is set."""
     proxy_server = os.environ.get("HERMES_MEET_PROXY_SERVER", "").strip()
@@ -1884,9 +1998,8 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     signal.signal(signal.SIGINT, _on_signal)
 
     # v2 realtime: provision virtual audio device + start speaker thread.
-    # We track these in a dict so the finally block can tear them down
-    # regardless of how we exit. If anything in the realtime setup fails we
-    # fall back to transcribe mode with a status flag.
+    # We track these in a dict so teardown runs regardless of how we exit. If
+    # realtime setup cannot be proven ready, fail closed before joining.
     rt = {
         "enabled": mode == "realtime",
         "bridge": None,            # AudioBridge | None
@@ -1897,9 +2010,15 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     }
     if rt["enabled"]:
         if not realtime_api_key:
-            state.set(error="realtime mode requested but no API key in HERMES_MEET_REALTIME_KEY/OPENAI_API_KEY — falling back to transcribe")
-            rt["enabled"] = False
+            state.set(
+                error="realtime mode requested but no API key in HERMES_MEET_REALTIME_KEY/OPENAI_API_KEY",
+                leave_reason="realtime_not_ready",
+                exited=True,
+                phase="exited",
+            )
+            return 6
         else:
+            bridge = None
             try:
                 from plugins.google_meet.audio_bridge import AudioBridge
                 bridge = AudioBridge()
@@ -1907,8 +2026,18 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                 rt["bridge"] = bridge
                 state.set(realtime=True, realtime_device=rt["bridge_info"].get("device_name"))
             except Exception as e:
-                state.set(error=f"audio bridge setup failed: {e} — falling back to transcribe")
-                rt["enabled"] = False
+                if bridge is not None:
+                    try:
+                        bridge.teardown()
+                    except Exception:
+                        pass
+                state.set(
+                    error=f"audio bridge setup failed: {e}",
+                    leave_reason="realtime_not_ready",
+                    exited=True,
+                    phase="exited",
+                )
+                return 6
 
     try:
         from playwright.sync_api import sync_playwright
@@ -1962,12 +2091,31 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                 state.set(error=f"navigate failed: {e}", exited=True)
                 return 4
 
+            if rt["enabled"]:
+                _disable_local_media(page, disable_microphone=True, disable_camera=True)
+                state.set(**_probe_local_media_state(page))
+                _start_realtime_speaker(
+                    rt=rt,
+                    out_dir=out_dir,
+                    bridge_info=rt["bridge_info"],
+                    api_key=realtime_api_key,
+                    model=realtime_model,
+                    voice=realtime_voice,
+                    instructions=realtime_instructions,
+                    stop_flag=stop_flag,
+                    state=state,
+                )
+                timeout_s = float(os.environ.get("HERMES_MEET_REALTIME_READY_TIMEOUT", "15"))
+                if not _wait_for_realtime_route_ready(state, timeout_s=timeout_s):
+                    return 6
+
             # Guest-mode: Meet shows a name field before "Ask to join". When
             # we're authed, we instead see "Join now".
             if not _ensure_local_media_before_join(
                 page,
                 state,
                 realtime_enabled=rt["enabled"],
+                realtime_route_ready=_realtime_route_ready(state),
             ):
                 return 5
             _try_guest_name(page, guest_name)
@@ -1985,23 +2133,6 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             # made it past the lobby).
             if join_clicked:
                 state.set(join_attempted_at=time.time())
-
-            # v2 realtime: start the speaker thread reading from the
-            # plugin-side say queue. The thread reads JSONL lines written by
-            # meet_say, calls OpenAI Realtime, and streams the audio PCM to
-            # the virtual sink that Chrome's fake-mic is pointed at.
-            if rt["enabled"]:
-                _start_realtime_speaker(
-                    rt=rt,
-                    out_dir=out_dir,
-                    bridge_info=rt["bridge_info"],
-                    api_key=realtime_api_key,
-                    model=realtime_model,
-                    voice=realtime_voice,
-                    instructions=realtime_instructions,
-                    stop_flag=stop_flag,
-                    state=state,
-                )
 
             # Admission + drain loop. Runs until SIGTERM, duration expiry,
             # or the page detects "You were removed / you left the
@@ -2041,6 +2172,7 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                             page,
                             state,
                             realtime_enabled=rt["enabled"],
+                            realtime_route_ready=_realtime_route_ready(state),
                         ):
                             return 5
                         _try_guest_name(page, guest_name)
@@ -2059,8 +2191,18 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
 
                 if state.in_call and (now - last_media_disable_check) > 3.0:
                     last_media_disable_check = now
-                    _disable_local_media(page, disable_microphone=not rt["enabled"])
-                    state.set(**_probe_local_media_state(page))
+                    if rt["enabled"]:
+                        if not _ensure_local_media_before_join(
+                            page,
+                            state,
+                            realtime_enabled=True,
+                            realtime_route_ready=_realtime_route_ready(state),
+                            attempts=1,
+                        ):
+                            return 5
+                    else:
+                        _disable_local_media(page, disable_microphone=True)
+                        state.set(**_probe_local_media_state(page))
 
                 if _should_retry_caption_enable(state, now=now, last_caption_enable_check=last_caption_enable_check):
                     last_caption_enable_check = now

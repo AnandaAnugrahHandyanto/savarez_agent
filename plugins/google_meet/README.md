@@ -116,6 +116,10 @@ hermes meet node ping my-mac
 # now any meet_* tool call accepts node='my-mac' (or 'auto')
 ```
 
+`--use-auth-state` / `use_auth_state=true` is local-only on the gateway. Remote
+nodes must manage Google auth on the node host; the gateway will reject
+`use_auth_state` when `node` is set instead of silently starting as guest.
+
 ## Safety
 
 - URL gate: only `https://meet.google.com/abc-defg-hij`, `/new`, `/lookup/<id>`.
@@ -129,7 +133,8 @@ hermes meet node ping my-mac
   duration set. Use `--persist-after-session` / `persist_after_session=true`
   only when the user explicitly wants a detached bot.
 - One active meeting per (gateway, node) pair. A second `meet_join` leaves the first.
-- `meet_say` refuses unless the active meeting was started with `mode='realtime'`.
+- `meet_say` refuses unless the active meeting was started with `mode='realtime'`
+  and the bot is in-call with the realtime audio pump and Meet microphone ready.
 
 ## Out of scope
 

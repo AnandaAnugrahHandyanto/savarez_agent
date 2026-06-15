@@ -101,6 +101,8 @@ Run `hermes meet setup` to preflight local prereqs.
 | `meet_say` | `text`, `node?` | Speak in realtime meeting |
 
 `node?` on all tools: pass a registered node name (or `"auto"` for the sole node) to operate a remote bot instead of a local one. Omit for local.
+`use_auth_state=true` is local-only; with `node?` it is rejected because auth
+state must be managed on the node host.
 
 ## Important limits
 
@@ -109,8 +111,8 @@ Run `hermes meet setup` to preflight local prereqs.
 - **Lobby timeout**: if the host doesn't admit the bot within 5 minutes (configurable via `HERMES_MEET_LOBBY_TIMEOUT` env), the bot leaves and `meet_status` reports `leaveReason: "lobby_timeout"`.
 - **One active meeting per install per location.** A second `meet_join` leaves the first.
 - **Windows not supported.**
-- Realtime mode needs a virtual audio device. If the audio bridge setup fails, the bot falls back to transcribe mode and flags it in `meet_status().error`.
-- `meet_say` requires `mode='realtime'` on the originating `meet_join`. Calling it against a transcribe-mode meeting returns a clear error.
+- Realtime mode needs a virtual audio device. If the audio bridge or pump cannot be verified before join, the bot fails closed instead of joining with an unsafe mic route.
+- `meet_say` requires `mode='realtime'` on the originating `meet_join`, an active in-call bot, a ready realtime audio pump, and Meet microphone enabled. Otherwise it returns a clear error.
 - **Barge-in is best-effort.** When a caption arrives attributed to a real participant while the bot is generating audio, the bot sends `response.cancel` to OpenAI Realtime. Captions take ~500ms to show up, so the bot will talk over the first second or so of a human interruption.
 
 ## Status dict reference

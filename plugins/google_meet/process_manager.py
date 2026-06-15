@@ -460,6 +460,8 @@ def enqueue_say(text: str) -> Dict[str, Any]:
         return {"ok": False, "reason": "realtime is not ready"}
     if bot_status.get("realtimeAudioPumpStatus") != "ready":
         return {"ok": False, "reason": "realtime audio pump is not ready"}
+    if bot_status.get("localMicrophoneOn") is not True:
+        return {"ok": False, "reason": "realtime microphone is not enabled"}
 
     queue_path = out_dir / "say_queue.jsonl"
     entry = {"id": uuid.uuid4().hex[:12], "text": text}

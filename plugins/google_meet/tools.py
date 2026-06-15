@@ -296,6 +296,11 @@ def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
         return _err(f"mode must be 'transcribe' or 'realtime' (got {mode!r})")
 
     node = args.get("node")
+    if node and bool(args.get("use_auth_state", False)):
+        return _err(
+            "use_auth_state is local-only for meet_join with this PR; "
+            "remote nodes must manage Google auth state on the node host"
+        )
     try:
         client, node_name = _resolve_node_client(node)
     except RuntimeError as e:
