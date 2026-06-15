@@ -1,9 +1,12 @@
 """Entry point for the `computer_use` tool.
 
-Universal (any-model) macOS desktop control via cua-driver's background
-computer-use primitive. Replaces #4562's Anthropic-native `computer_20251124`
-approach — the schema here is standard OpenAI function-calling so every
-tool-capable model can drive it.
+Universal (any-model) desktop control across macOS + Windows via
+cua-driver's background computer-use primitive. Replaces #4562's
+Anthropic-native `computer_20251124` approach — the schema here is standard
+OpenAI function-calling so every tool-capable model can drive it.
+
+Linux support exists in cua-driver-rs (alpha — PARITY rows are mostly
+OPEN today, not VERIFIED) and is gated off here until it flips upstream.
 
 Return contract
 ---------------
@@ -87,9 +90,19 @@ _BLOCKED_KEY_COMBOS = {
     frozenset({"cmd", "ctrl", "q"}),             # lock screen
     frozenset({"cmd", "shift", "q"}),            # log out
     frozenset({"cmd", "option", "shift", "q"}),  # force log out
+    # Windows secure/session shortcuts. The Windows driver accepts Win-key
+    # combos, and Alt is canonicalized to option below, so block the
+    # destructive variants before any backend sees them.
+    frozenset({"win", "l"}),
+    frozenset({"ctrl", "option", "delete"}),
+    frozenset({"ctrl", "option", "del"}),
+    frozenset({"option", "f4"}),
 }
 
-_KEY_ALIASES = {"command": "cmd", "control": "ctrl", "alt": "option", "⌘": "cmd", "⌥": "option"}
+_KEY_ALIASES = {
+    "command": "cmd", "control": "ctrl", "alt": "option", "⌘": "cmd", "⌥": "option",
+    "windows": "win", "super": "win", "meta": "win",
+}
 
 
 def _canon_key_combo(keys: str) -> frozenset:
@@ -140,7 +153,15 @@ def _get_backend() -> ComputerUseBackend:
                 _backend = _NoopBackend()
             else:
                 raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
-            _backend.start()
+            try:
+                _backend.start()
+            except Exception:
+                # Don't cache a backend whose start() failed (e.g. a lazy
+                # dependency install was declined / failed). The next call
+                # retries cleanly instead of returning a half-initialised
+                # backend.
+                _backend = None
+                raise
         return _backend
 
 
@@ -253,7 +274,8 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     except Exception as e:
         return json.dumps({
             "error": f"computer_use backend unavailable: {e}",
-            "hint": "Run `hermes tools` and enable Computer Use to install cua-driver.",
+            "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
+                    "If a Python dependency is missing, the error above shows the exact install command.",
         })
 
     try:
@@ -562,10 +584,37 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             routed = _route_capture_through_aux_vision(cap, summary)
             if routed is not None:
                 return routed
-            # Aux routing was requested but failed (no vision client, aux
-            # call raised, etc.). Fall through to the multimodal envelope —
-            # better to surface a tool-result error from the main model
-            # than to silently drop the screenshot entirely.
+            # Aux routing was requested but failed (vision node down, aux call
+            # raised, empty analysis, etc.). Routing being requested means the
+            # main model may not be able to consume images; falling through to
+            # the multimodal envelope can break the capture with a provider
+            # error. Degrade to the AX/SOM text payload instead so element
+            # indices remain usable while vision is unavailable.
+            summary_lines.append(
+                "  (vision unavailable: the auxiliary vision model could not "
+                "be reached; screenshot omitted. Element-index actions still "
+                "work — drive via the element list above.)"
+            )
+            if truncated_elements:
+                summary_lines.append(
+                    f"  (response truncated to {len(visible_elements)} of "
+                    f"{total_elements} elements; raise max_elements or pass "
+                    "app= to narrow)"
+                )
+            payload = {
+                "mode": cap.mode,
+                "width": response_width,
+                "height": response_height,
+                "app": cap.app,
+                "window_title": cap.window_title,
+                "elements": [_element_to_dict(e) for e in visible_elements],
+                "total_elements": total_elements,
+                "summary": "\n".join(summary_lines),
+                "vision_unavailable": True,
+            }
+            if truncated_elements:
+                payload["truncated_elements"] = truncated_elements
+            return json.dumps(payload)
 
         # Detect actual image format from base64 magic bytes so the MIME type
         # matches what the data contains (cua-driver may return JPEG or PNG).
@@ -612,6 +661,33 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
 # ---------------------------------------------------------------------------
 # auxiliary.vision routing for captured screenshots (#24015)
 # ---------------------------------------------------------------------------
+
+# Longest image side handed to the aux vision model. Full-resolution desktop
+# captures tokenize heavily and can overflow small local-model context windows;
+# ~1456px keeps SOM badges legible while cutting per-capture vision latency.
+_MAX_VISION_DIM = 1456
+
+
+def _shrink_capture_for_vision(raw: bytes, ext: str,
+                               max_dim: int = _MAX_VISION_DIM) -> bytes:
+    """Downscale encoded image bytes so the longest side is <= max_dim.
+
+    Returns the original bytes unchanged when the image already fits or when
+    Pillow is unavailable/fails — no worse than the pre-shrink behavior.
+    """
+    try:
+        from io import BytesIO
+        from PIL import Image
+        img = Image.open(BytesIO(raw))
+        if max(img.size) <= max_dim:
+            return raw
+        img.thumbnail((max_dim, max_dim))
+        out = BytesIO()
+        img.save(out, format="JPEG" if ext == ".jpg" else "PNG")
+        return out.getvalue()
+    except Exception as exc:
+        logger.debug("computer_use: vision downscale skipped: %s", exc)
+        return raw
 
 def _should_route_through_aux_vision() -> bool:
     """Return True when ``_capture_response`` should hand the PNG to aux vision.
@@ -690,10 +766,11 @@ def _route_capture_through_aux_vision(
         cache_dir = get_hermes_dir("cache/vision", "temp_vision_images")
         cache_dir.mkdir(parents=True, exist_ok=True)
         temp_image_path = cache_dir / f"computer_use_{_uuid.uuid4().hex}{ext}"
+        raw = _shrink_capture_for_vision(raw, ext)
         temp_image_path.write_bytes(raw)
 
         prompt = (
-            "Describe what is visible in this macOS application screenshot in "
+            "Describe what is visible in this desktop application screenshot in "
             "concise but specific terms. Mention the app name and window "
             "title if visible, the overall layout, any labelled buttons, "
             "menus or text fields, and any prominent text content the user "
@@ -708,7 +785,7 @@ def _route_capture_through_aux_vision(
     except Exception as exc:
         logger.warning(
             "computer_use: auxiliary.vision pre-analysis failed (%s); "
-            "falling back to native multimodal envelope",
+            "returning to caller without aux analysis",
             exc,
         )
         return None
@@ -810,9 +887,13 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
 def check_computer_use_requirements() -> bool:
     """Return True iff computer_use can run on this host.
 
-    Conditions: macOS + cua-driver binary installed (or override via env).
+    Conditions: macOS or Windows + cua-driver binary installed (or override
+    via env). cua-driver-rs (the cross-platform Rust port) has every action
+    tool marked VERIFIED on Windows in its PARITY matrix. Linux is alpha
+    today — Linux rows in PARITY are mostly OPEN — so it's gated off until
+    that flips to VERIFIED upstream.
     """
-    if sys.platform != "darwin":
+    if sys.platform not in ("darwin", "win32"):
         return False
     from tools.computer_use.cua_backend import cua_driver_binary_available
     return cua_driver_binary_available()
