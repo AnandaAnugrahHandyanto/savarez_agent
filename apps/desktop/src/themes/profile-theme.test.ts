@@ -39,3 +39,13 @@ describe.each(cases)('per-profile $name', ({ pref, fallback, a, b, junk }) => {
     expect(pref.resolve('work')).toBe(fallback)
   })
 })
+
+describe('Catppuccin skin normalization', () => {
+  beforeEach(() => window.localStorage.clear())
+
+  it('maps the retired Catppuccin Mocha desktop skin to the adaptive Catppuccin skin', () => {
+    skinPref.assign('default', 'catppuccin-mocha')
+
+    expect(skinPref.resolve('default')).toBe('catppuccin')
+  })
+})

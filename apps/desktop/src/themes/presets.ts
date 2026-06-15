@@ -1,5 +1,7 @@
 /**
- * Built-in desktop themes. Names match the CLI skins / dashboard presets.
+ * Built-in desktop themes. Names usually match CLI skins / dashboard presets,
+ * but adaptive desktop skins may use a broader family name (for example
+ * Catppuccin maps Latte/Mocha through the light/dark mode setting).
  * Add new themes here — no code changes needed elsewhere.
  */
 
@@ -278,13 +280,150 @@ export const slateTheme: DesktopTheme = {
   }
 }
 
+const catppuccinLatteColors = {
+  background: '#EFF1F5',
+  foreground: '#4C4F69',
+  card: '#E6E9EF',
+  cardForeground: '#4C4F69',
+  muted: '#DCE0E8',
+  mutedForeground: '#6C6F85',
+  popover: '#E6E9EF',
+  popoverForeground: '#4C4F69',
+  primary: '#8839EF',
+  primaryForeground: '#EFF1F5',
+  secondary: '#DCE0E8',
+  secondaryForeground: '#4C4F69',
+  accent: '#CCD0DA',
+  accentForeground: '#4C4F69',
+  border: '#BCC0CC',
+  input: '#ACB0BE',
+  ring: '#1E66F5',
+  midground: '#7287FD',
+  midgroundForeground: '#EFF1F5',
+  composerRing: '#1E66F5',
+  destructive: '#D20F39',
+  destructiveForeground: '#EFF1F5',
+  chatBackground: '#EFF1F5',
+  chatBackdropOpacity: '0',
+  sidebarBackground: '#E6E9EF',
+  sidebarBorder: '#BCC0CC',
+  fileIcon: '#1E66F5',
+  folderIcon: '#DF8E1D',
+  folderOpenIcon: '#8839EF',
+  navNewSessionIcon: '#40A02B',
+  navSkillsIcon: '#FE640B',
+  navMessagingIcon: '#209FB5',
+  navArtifactsIcon: '#EA76CB',
+  searchIcon: '#7287FD',
+  userBubble: '#E6E9EF',
+  userBubbleBorder: '#BCC0CC'
+}
+
+const catppuccinMochaColors = {
+  background: '#1E1E2E',
+  foreground: '#CDD6F4',
+  card: '#1E1E2E',
+  cardForeground: '#CDD6F4',
+  muted: '#313244',
+  mutedForeground: '#A6ADC8',
+  popover: '#313244',
+  popoverForeground: '#CDD6F4',
+  primary: '#CBA6F7',
+  primaryForeground: '#1E1E2E',
+  secondary: '#313244',
+  secondaryForeground: '#CDD6F4',
+  accent: '#45475A',
+  accentForeground: '#CDD6F4',
+  border: '#313244',
+  input: '#45475A',
+  ring: '#89B4FA',
+  midground: '#B4BEFE',
+  midgroundForeground: '#1E1E2E',
+  composerRing: '#89B4FA',
+  destructive: '#F38BA8',
+  destructiveForeground: '#1E1E2E',
+  chatBackground: '#1E1E2E',
+  chatBackdropOpacity: '0',
+  sidebarBackground: '#11111B',
+  sidebarBorder: '#313244',
+  fileIcon: '#89B4FA',
+  folderIcon: '#F9E2AF',
+  folderOpenIcon: '#CBA6F7',
+  navNewSessionIcon: '#A6E3A1',
+  navSkillsIcon: '#FAB387',
+  navMessagingIcon: '#74C7EC',
+  navArtifactsIcon: '#F5C2E7',
+  searchIcon: '#B4BEFE',
+  userBubble: '#313244',
+  userBubbleBorder: '#585B70'
+}
+
+const catppuccinLatteTerminal = {
+  foreground: '#4C4F69',
+  cursor: '#DC8A78',
+  selectionBackground: '#ACB0BE80',
+  black: '#5C5F77',
+  red: '#D20F39',
+  green: '#40A02B',
+  yellow: '#DF8E1D',
+  blue: '#1E66F5',
+  magenta: '#8839EF',
+  cyan: '#179299',
+  white: '#ACB0BE',
+  brightBlack: '#6C6F85',
+  brightRed: '#D20F39',
+  brightGreen: '#40A02B',
+  brightYellow: '#DF8E1D',
+  brightBlue: '#1E66F5',
+  brightMagenta: '#EA76CB',
+  brightCyan: '#04A5E5',
+  brightWhite: '#4C4F69'
+}
+
+const catppuccinMochaTerminal = {
+  foreground: '#CDD6F4',
+  cursor: '#F5E0DC',
+  selectionBackground: '#585B7080',
+  black: '#45475A',
+  red: '#F38BA8',
+  green: '#A6E3A1',
+  yellow: '#F9E2AF',
+  blue: '#89B4FA',
+  magenta: '#CBA6F7',
+  cyan: '#94E2D5',
+  white: '#BAC2DE',
+  brightBlack: '#585B70',
+  brightRed: '#F38BA8',
+  brightGreen: '#A6E3A1',
+  brightYellow: '#F9E2AF',
+  brightBlue: '#89B4FA',
+  brightMagenta: '#F5C2E7',
+  brightCyan: '#89DCEB',
+  brightWhite: '#CDD6F4'
+}
+
+/** Catppuccin Latte in light mode and Mocha in dark mode. */
+export const catppuccinTheme: DesktopTheme = {
+  name: 'catppuccin',
+  label: 'Catppuccin',
+  description: 'Catppuccin Latte in light mode and Mocha in dark mode',
+  colors: catppuccinLatteColors,
+  darkColors: catppuccinMochaColors,
+  terminal: catppuccinLatteTerminal,
+  darkTerminal: catppuccinMochaTerminal,
+  typography: {
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`
+  }
+}
+
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   nous: nousTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
-  slate: slateTheme
+  slate: slateTheme,
+  catppuccin: catppuccinTheme
 }
 
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)

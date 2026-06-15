@@ -2151,7 +2151,15 @@ function resolveWebDist() {
 }
 
 function resolveRendererIndex() {
-  const candidates = [path.join(APP_ROOT, 'dist', 'index.html'), path.join(resolveWebDist(), 'index.html')]
+  // Prefer the real unpacked renderer directory over the asar-internal path.
+  // `dist/**` is marked asarUnpack, so loading `app.asar/dist/index.html`
+  // still depends on the static ASAR header. If a local theme/dev build syncs a
+  // new Vite bundle into app.asar.unpacked/dist with newly hashed asset names,
+  // the stale header cannot see those files and Electron loads a themed blank
+  // frame with missing JS. Loading the real filesystem path avoids that split.
+  const candidates = [path.join(resolveWebDist(), 'index.html'), path.join(APP_ROOT, 'dist', 'index.html')].filter(
+    (candidate, index, all) => all.indexOf(candidate) === index
+  )
   const found = candidates.find(fileExists)
   if (found) return found
   // Nothing on disk. A packaged build with no renderer bundle blank-pages with

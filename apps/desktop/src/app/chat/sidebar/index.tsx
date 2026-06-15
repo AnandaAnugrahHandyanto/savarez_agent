@@ -134,6 +134,13 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
   { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
 ]
 
+const SIDEBAR_NAV_ICON_COLORS: Partial<Record<SidebarNavItem['id'], string>> = {
+  artifacts: 'text-(--ui-nav-artifacts-icon-color)',
+  messaging: 'text-(--ui-nav-messaging-icon-color)',
+  'new-session': 'text-(--ui-nav-new-session-icon-color)',
+  skills: 'text-(--ui-nav-skills-icon-color)'
+}
+
 const WORKSPACE_PAGE = 5
 // ALL-profiles view: show only the latest N per profile up front to keep the
 // unified list scannable, then reveal/fetch more in N-sized steps on demand.
@@ -852,7 +859,12 @@ export function ChatSidebar({
                       tooltip={s.nav[item.id] ?? item.label}
                       type="button"
                     >
-                      <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
+                      <item.icon
+                        className={cn(
+                          'size-4 shrink-0 transition-colors',
+                          SIDEBAR_NAV_ICON_COLORS[item.id] ?? 'text-[color-mix(in_srgb,currentColor_72%,transparent)]'
+                        )}
+                      />
                       {contentVisible && (
                         <>
                           <span className="min-w-0 flex-1 truncate">{s.nav[item.id] ?? item.label}</span>

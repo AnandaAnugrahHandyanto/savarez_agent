@@ -299,10 +299,182 @@ export const defaultLargeTheme: DashboardTheme = {
   },
 };
 
+export const catppuccinMochaTheme: DashboardTheme = {
+  name: "catppuccin-mocha",
+  label: "Catppuccin Mocha",
+  description: "Soft pastel dark dashboard inspired by Catppuccin Mocha",
+  palette: {
+    background: { hex: "#1E1E2E", alpha: 1 },
+    midground: { hex: "#CDD6F4", alpha: 1 },
+    foreground: { hex: "#FFFFFF", alpha: 0 },
+    warmGlow: "rgba(203, 166, 247, 0.22)",
+    noiseOpacity: 0.18,
+  },
+  typography: {
+    ...DEFAULT_TYPOGRAPHY,
+    fontSans: `"Inter", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontDisplay: `"Inter", ${SYSTEM_SANS}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap",
+    lineHeight: "1.58",
+    letterSpacing: "0.005em",
+  },
+  layout: {
+    ...DEFAULT_LAYOUT,
+    radius: "0.85rem",
+  },
+  assets: {
+    bg: "radial-gradient(circle at 15% 10%, rgba(203, 166, 247, 0.22), transparent 31%), radial-gradient(circle at 82% 4%, rgba(137, 180, 250, 0.17), transparent 30%), radial-gradient(circle at 88% 86%, rgba(245, 194, 231, 0.13), transparent 36%), linear-gradient(135deg, #1E1E2E 0%, #181825 48%, #11111B 100%)",
+  },
+  colorOverrides: {
+    card: "#242437",
+    cardForeground: "#CDD6F4",
+    popover: "#181825",
+    popoverForeground: "#CDD6F4",
+    primary: "#CBA6F7",
+    primaryForeground: "#11111B",
+    secondary: "#313244",
+    secondaryForeground: "#CDD6F4",
+    muted: "#313244",
+    mutedForeground: "#BAC2DE",
+    accent: "#45475A",
+    accentForeground: "#F5C2E7",
+    destructive: "#F38BA8",
+    destructiveForeground: "#11111B",
+    success: "#A6E3A1",
+    warning: "#F9E2AF",
+    border: "rgba(180, 190, 254, 0.24)",
+    input: "rgba(180, 190, 254, 0.28)",
+    ring: "#B4BEFE",
+  },
+  componentStyles: {
+    backdrop: {
+      backgroundPosition: "center",
+      backgroundSize: "cover",
+      bgBlendMode: "normal",
+      fillerBlendMode: "normal",
+      fillerOpacity: "1",
+    },
+    header: {
+      background:
+        "linear-gradient(90deg, rgba(17, 17, 27, 0.92), rgba(30, 30, 46, 0.82))",
+      borderImage:
+        "linear-gradient(180deg, rgba(180, 190, 254, 0.36), rgba(203, 166, 247, 0.08)) 1",
+    },
+    sidebar: {
+      background:
+        "linear-gradient(180deg, rgba(24, 24, 37, 0.96), rgba(17, 17, 27, 0.96))",
+      borderImage:
+        "linear-gradient(180deg, rgba(203, 166, 247, 0.42), rgba(137, 180, 250, 0.16), rgba(245, 194, 231, 0.22)) 1",
+    },
+    tab: {
+      clipPath: "inset(0 round 0.75rem)",
+    },
+  },
+  customCSS: `
+    :root {
+      color-scheme: dark;
+      --cat-mocha-rosewater: #f5e0dc;
+      --cat-mocha-pink: #f5c2e7;
+      --cat-mocha-mauve: #cba6f7;
+      --cat-mocha-red: #f38ba8;
+      --cat-mocha-peach: #fab387;
+      --cat-mocha-yellow: #f9e2af;
+      --cat-mocha-green: #a6e3a1;
+      --cat-mocha-teal: #94e2d5;
+      --cat-mocha-sky: #89dceb;
+      --cat-mocha-blue: #89b4fa;
+      --cat-mocha-lavender: #b4befe;
+      --cat-mocha-text: #cdd6f4;
+      --cat-mocha-surface0: #313244;
+      --cat-mocha-base: #1e1e2e;
+      --cat-mocha-mantle: #181825;
+      --cat-mocha-crust: #11111b;
+      --color-text-primary: #CDD6F4;
+      --color-text-secondary: #BAC2DE;
+      --color-text-tertiary: #A6ADC8;
+      --color-text-on-accent: #11111B;
+      --series-input-token: #F9E2AF;
+      --series-output-token: #A6E3A1;
+    }
+
+    html, body, #root {
+      background: #1E1E2E;
+    }
+
+    [data-layout-variant] {
+      background: linear-gradient(135deg, #1E1E2E 0%, #181825 52%, #11111B 100%);
+    }
+
+    aside {
+      box-shadow: 20px 0 60px rgba(17, 17, 27, 0.42), inset -1px 0 0 rgba(180, 190, 254, 0.18);
+    }
+
+    aside nav a,
+    aside button,
+    [role="tab"],
+    [role="option"] {
+      border-radius: 0.75rem;
+    }
+
+    aside nav a:hover,
+    aside button:hover,
+    [role="tab"]:hover,
+    [role="option"]:hover {
+      background: rgba(69, 71, 90, 0.42);
+      box-shadow: inset 0 0 0 1px rgba(180, 190, 254, 0.16);
+    }
+
+    aside nav a[aria-current="page"] {
+      color: #CBA6F7 !important;
+      background: linear-gradient(90deg, rgba(203, 166, 247, 0.18), rgba(137, 180, 250, 0.08));
+      box-shadow: inset 0 0 0 1px rgba(203, 166, 247, 0.26), 0 10px 28px rgba(203, 166, 247, 0.12);
+    }
+
+    aside nav a[aria-current="page"] svg {
+      color: #F5C2E7;
+      filter: drop-shadow(0 0 8px rgba(245, 194, 231, 0.38));
+    }
+
+    .bg-card,
+    [class*="bg-card"] {
+      box-shadow: 0 18px 48px rgba(17, 17, 27, 0.28), inset 0 1px 0 rgba(205, 214, 244, 0.06);
+    }
+
+    input,
+    textarea,
+    select {
+      background-color: rgba(24, 24, 37, 0.74) !important;
+      border-color: rgba(180, 190, 254, 0.26) !important;
+      color: #CDD6F4 !important;
+    }
+
+    input:focus,
+    textarea:focus,
+    select:focus {
+      outline-color: #B4BEFE;
+      box-shadow: 0 0 0 3px rgba(180, 190, 254, 0.18);
+    }
+
+    ::selection {
+      background: rgba(203, 166, 247, 0.36);
+      color: #F5E0DC;
+    }
+  `,
+  seriesColors: {
+    inputTokenAccent: "#F9E2AF",
+    outputTokenAccent: "#A6E3A1",
+  },
+  swatchColors: ["#1E1E2E", "#CDD6F4", "#CBA6F7"],
+  terminalBackground: "#11111B",
+};
+
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
   "nous-blue": nousBlueTheme,
+  "catppuccin-mocha": catppuccinMochaTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,

@@ -122,6 +122,7 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
 // ── Collapsible helpers ──────────────────────────────────────────────
 
 function CollapseToggle({
+  color,
   count,
   open,
   suffix,
@@ -129,6 +130,7 @@ function CollapseToggle({
   title,
   onToggle
 }: {
+  color?: string
   count?: number
   open: boolean
   suffix?: string
@@ -136,10 +138,12 @@ function CollapseToggle({
   title: string
   onToggle: () => void
 }) {
+  const titleColor = color ?? t.color.accent
+
   return (
     <Box onClick={onToggle}>
-      <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
-      <Text bold color={t.color.accent}>
+      <Text color={titleColor}>{open ? '▾ ' : '▸ '}</Text>
+      <Text bold color={titleColor}>
         {title}
       </Text>
       {typeof count === 'number' ? (
@@ -208,7 +212,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
       <>
         {shown.map(([k, vs]) => (
           <Text key={k} wrap="truncate">
-            <Text color={t.color.muted}>{strip(k)}: </Text>
+            <Text color={t.color.accent}>{strip(k)}: </Text>
             <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
           </Text>
         ))}
@@ -231,7 +235,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
       <>
         {shown.map(([k, vs]) => (
           <Text key={k} wrap="truncate">
-            <Text color={t.color.muted}>{strip(k)}: </Text>
+            <Text color={t.color.label}>{strip(k)}: </Text>
             <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
           </Text>
         ))}
@@ -340,6 +344,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         {/* ── Tools (expanded by default) ── */}
         <Box flexDirection="column" marginTop={1}>
           <CollapseToggle
+            color={t.color.accent}
             onToggle={() => setToolsOpen(v => !v)}
             open={toolsOpen}
             t={t}
@@ -351,6 +356,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         {/* ── Skills (collapsed by default) ── */}
         <Box flexDirection="column" marginTop={1}>
           <CollapseToggle
+            color={t.color.ok}
             count={skillsTotal}
             onToggle={() => setSkillsOpen(v => !v)}
             open={skillsOpen}
@@ -365,6 +371,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         {sysPromptLen > 0 && (
           <Box flexDirection="column" marginTop={1}>
             <CollapseToggle
+              color={t.color.warn}
               onToggle={() => setSystemOpen(v => !v)}
               open={systemOpen}
               suffix={`— ${sysPromptLen.toLocaleString()} chars`}
@@ -379,6 +386,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         {info.mcp_servers && info.mcp_servers.length > 0 && (
           <Box flexDirection="column" marginTop={1}>
             <CollapseToggle
+              color={t.color.label}
               count={info.mcp_servers.length}
               onToggle={() => setMcpOpen(v => !v)}
               open={mcpOpen}
@@ -392,11 +400,17 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
         <Text />
 
-        <Text color={t.color.text}>
-          {toolsTotal} tools{' · '}
-          {skillsTotal} skills
-          {info.mcp_servers?.length ? ` · ${info.mcp_servers.length} MCP` : ''}
-          {' · '}
+        <Text>
+          <Text color={t.color.label}>{toolsTotal} tools</Text>
+          <Text color={t.color.muted}> · </Text>
+          <Text color={t.color.ok}>{skillsTotal} skills</Text>
+          {info.mcp_servers?.length ? (
+            <>
+              <Text color={t.color.muted}> · </Text>
+              <Text color={t.color.accent}>{info.mcp_servers.length} MCP</Text>
+            </>
+          ) : null}
+          <Text color={t.color.muted}> · </Text>
           <Text color={t.color.muted}>/help for commands</Text>
         </Text>
 

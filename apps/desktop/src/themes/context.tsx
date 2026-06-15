@@ -35,6 +35,10 @@ const PROFILE_MODES_KEY = 'hermes-desktop-profile-modes-v1'
 const LAST_PROFILE_KEY = 'hermes-desktop-active-profile-v1'
 const RETIRED_SKINS = new Set(['nous-light', 'default', 'gold'])
 
+const SKIN_ALIASES: Record<string, string> = {
+  'catppuccin-mocha': 'catppuccin'
+}
+
 export type ThemeMode = 'light' | 'dark' | 'system'
 
 const INJECTED_FONT_URLS = new Set<string>()
@@ -42,8 +46,11 @@ const INJECTED_FONT_URLS = new Set<string>()
 const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-scheme: dark)')): 'light' | 'dark' =>
   mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
 
-const normalizeSkin = (name: string | null): string =>
-  name && resolveTheme(name) && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
+const normalizeSkin = (name: string | null): string => {
+  const normalized = name ? (SKIN_ALIASES[name] ?? name) : null
+
+  return normalized && resolveTheme(normalized) && !RETIRED_SKINS.has(normalized) ? normalized : DEFAULT_SKIN_NAME
+}
 
 const normalizeMode = (value: string | null): ThemeMode =>
   value === 'light' || value === 'dark' || value === 'system' ? value : 'light'
@@ -212,10 +219,20 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     '--dt-destructive': c.destructive,
     '--dt-destructive-foreground': c.destructiveForeground,
     '--dt-sidebar-border': c.sidebarBorder ?? c.border,
+    '--dt-chat-background': c.chatBackground ?? 'var(--ui-bg-chrome)',
+    '--dt-file-icon': c.fileIcon ?? 'var(--ui-text-tertiary)',
+    '--dt-folder-icon': c.folderIcon ?? 'var(--ui-text-tertiary)',
+    '--dt-folder-open-icon': c.folderOpenIcon ?? c.folderIcon ?? 'var(--ui-text-tertiary)',
+    '--dt-nav-new-session-icon': c.navNewSessionIcon ?? 'color-mix(in srgb, currentColor 72%, transparent)',
+    '--dt-nav-skills-icon': c.navSkillsIcon ?? 'color-mix(in srgb, currentColor 72%, transparent)',
+    '--dt-nav-messaging-icon': c.navMessagingIcon ?? 'color-mix(in srgb, currentColor 72%, transparent)',
+    '--dt-nav-artifacts-icon': c.navArtifactsIcon ?? 'color-mix(in srgb, currentColor 72%, transparent)',
+    '--dt-search-icon': c.searchIcon ?? 'color-mix(in srgb, var(--ui-text-tertiary) 70%, transparent)',
     '--dt-user-bubble-border': c.userBubbleBorder ?? c.border,
     '--dt-font-sans': typo.fontSans,
     '--dt-font-mono': typo.fontMono,
-    '--noise-opacity-mul': isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)'
+    '--noise-opacity-mul': isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)',
+    '--theme-backdrop-opacity-mul': c.chatBackdropOpacity ?? '1'
   }
 
   for (const [k, v] of Object.entries({ ...seeds, ...mixesFor(isDark), ...palette })) {

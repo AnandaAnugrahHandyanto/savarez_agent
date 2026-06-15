@@ -38,6 +38,7 @@ display:
 | `slate` | 冷蓝色 — 面向开发者 | `Hermes Agent` | 皇家蓝边框（`#4169e1`），柔和蓝色文字。沉稳专业。无自定义 spinner，使用默认面孔。 |
 | `daylight` | 适用于亮色终端的浅色主题，深色文字配冷蓝点缀 | `Hermes Agent` | 专为白色或亮色终端设计。深石板色文字配蓝色边框，浅色状态面板，补全菜单在亮色终端配置下保持清晰可读。 |
 | `warm-lightmode` | 适用于浅色终端背景的暖棕/金色文字 | `Hermes Agent` | 适合浅色终端的暖羊皮纸色调。深棕色文字配马鞍棕点缀，奶油色状态面板。比 daylight 主题更温暖的大地色系选择。 |
+| `catppuccin-mocha` | Catppuccin Mocha — 柔和粉彩暗色主题 | `Hermes Agent` | Mocha base/crust 背景配更鲜艳的完整调色板 MOTD：red/peach/yellow/green/sky/mauve 块状标志行、加粗多色 caduceus 主图、sky 工具标签、green 技能标题、yellow 系统提示、peach 提示符，以及匹配的状态栏、补全菜单和选区表面。 |
 | `poseidon` | 海神主题 — 深蓝与海沫绿 | `Poseidon Agent` | 深蓝到海沫绿渐变。海洋主题 spinner（"charting currents"、"sounding the depth"）。三叉戟 ASCII 艺术横幅。 |
 | `sisyphus` | 西西弗斯主题 — 朴素灰度，彰显坚韧 | `Sisyphus Agent` | 浅灰色配强烈对比。巨石主题 spinner（"pushing uphill"、"resetting the boulder"、"enduring the loop"）。巨石与山丘 ASCII 艺术横幅。 |
 | `charizard` | 火山主题 — 焦橙与余烬色 | `Charizard Agent` | 暖焦橙到余烬色渐变。火焰主题 spinner（"banking into the draft"、"measuring burn"）。龙剪影 ASCII 艺术横幅。 |
