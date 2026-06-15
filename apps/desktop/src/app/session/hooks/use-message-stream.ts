@@ -18,17 +18,12 @@ import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
-import { mergeTokenUsagePayload, mergeUsageSnapshot, type TokenUsagePayload } from '@/lib/token-usage'
 import { setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
-  $localDeviceName,
-  $selectedStoredSessionId,
-  reconcileLiveSessionKey,
-  type SessionParticipant,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -38,10 +33,6 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
-  setLocalDeviceName,
-  setSelectedStoredSessionId,
-  setSessionActivityStatus,
-  setSessionParticipants,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -78,13 +69,13 @@ type SessionRuntimeStatePatch = Partial<
     ClientSessionState,
     | 'branch'
     | 'cwd'
-    | 'fastMode'
+    | 'fast'
     | 'model'
     | 'personality'
     | 'provider'
     | 'reasoningEffort'
     | 'serviceTier'
-    | 'yoloActive'
+    | 'yolo'
   >
 >
 
@@ -120,11 +111,11 @@ function sessionInfoStatePatch(payload: GatewayEventPayload | undefined): Sessio
   }
 
   if (typeof payload?.fast === 'boolean') {
-    patch.fastMode = payload.fast
+    patch.fast = payload.fast
   }
 
   if (typeof payload?.yolo === 'boolean') {
-    patch.yoloActive = payload.yolo
+    patch.yolo = payload.yolo
   }
 
   return patch
@@ -686,25 +677,13 @@ export function useMessageStream({
     (event: RpcEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
       const explicitSid = event.session_id || ''
-
       if (!explicitSid && gatewayEventRequiresSessionId(event.type)) {
         return
       }
-
       const sessionId = explicitSid || activeSessionIdRef.current
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
       if (event.type === 'gateway.ready') {
-        // First-wins device identity: the primary (local) gateway connects at
-        // boot before any remote backend can exist, so the first ready frame
-        // names THIS device. Later ready frames from remote backends carry the
-        // peer's name and must not overwrite it (channels Phase 2b).
-        const deviceName = typeof payload?.device_name === 'string' ? payload.device_name.trim() : ''
-
-        if (deviceName && !$localDeviceName.get()) {
-          setLocalDeviceName(deviceName)
-        }
-
         return
       } else if (event.type === 'session.info') {
         // Apply session-scoped fields when the event targets the active
@@ -715,16 +694,6 @@ export function useMessageStream({
         const modelChanged = typeof payload?.model === 'string'
         const providerChanged = typeof payload?.provider === 'string'
         const runningChanged = typeof payload?.running === 'boolean'
-        const liveStoredSessionId = typeof payload?.session_key === 'string' ? payload.session_key.trim() : ''
-
-        if (apply && sessionId && liveStoredSessionId) {
-          const previousStoredSessionId = $selectedStoredSessionId.get()
-
-          if (previousStoredSessionId !== liveStoredSessionId) {
-            reconcileLiveSessionKey(previousStoredSessionId || sessionId, liveStoredSessionId)
-            setSelectedStoredSessionId(liveStoredSessionId)
-          }
-        }
 
         if (apply) {
           if (modelChanged) {
@@ -764,13 +733,13 @@ export function useMessageStream({
           }
         }
 
-        if (sessionId && (hasStatePatch || liveStoredSessionId)) {
+        if (sessionId && hasStatePatch) {
           updateSessionState(sessionId, state => ({
             ...state,
             ...statePatch,
             branch: statePatch.branch ?? state.branch,
             cwd: statePatch.cwd ?? state.cwd
-          }), liveStoredSessionId || undefined)
+          }))
         }
 
         if (apply) {
@@ -802,12 +771,12 @@ export function useMessageStream({
                 streamId: null,
                 turnStartedAt: null
               }
-            }, liveStoredSessionId || undefined)
+            })
           }
         }
 
         if (payload?.usage && (!explicitSid || isActiveEvent)) {
-          setCurrentUsage(current => mergeUsageSnapshot(current, payload.usage))
+          setCurrentUsage(current => ({ ...current, ...payload.usage }))
         }
 
         if (typeof payload?.credential_warning === 'string' && payload.credential_warning) {
@@ -820,32 +789,6 @@ export function useMessageStream({
           void queryClient.invalidateQueries({
             queryKey: explicitSid && sessionId ? ['model-options', sessionId] : ['model-options']
           })
-        }
-      } else if (event.type === 'token.usage') {
-        if (!explicitSid || isActiveEvent) {
-          setCurrentUsage(current => mergeTokenUsagePayload(current, event.payload as TokenUsagePayload | undefined))
-        }
-      } else if (event.type === 'status.update') {
-        // Gateway lifecycle statuses (auto-compression progress, background
-        // process notices). Statusbar is an active-session surface; the next
-        // stream activity (deltas / tool events) clears it.
-        if (!explicitSid || isActiveEvent) {
-          const kind = typeof payload?.kind === 'string' ? payload.kind : ''
-          const text = typeof payload?.text === 'string' ? payload.text.trim() : ''
-
-          if (kind === 'ready') {
-            setSessionActivityStatus(null)
-          } else if (text && ['lifecycle', 'compressing', 'process', 'status'].includes(kind)) {
-            setSessionActivityStatus({ kind, text })
-          }
-        }
-      } else if (event.type === 'session.participants') {
-        // Channel presence: who's viewing this session (channels Phase 3). Keyed
-        // by session id so co-viewer chips render for the active session even
-        // when the roster event targets a background one.
-        if (explicitSid) {
-          const list = Array.isArray(payload?.participants) ? (payload.participants as SessionParticipant[]) : []
-          setSessionParticipants(explicitSid, list)
         }
       } else if (event.type === 'message.start') {
         if (!sessionId) {
@@ -875,10 +818,6 @@ export function useMessageStream({
       } else if (event.type === 'message.delta') {
         if (sessionId) {
           appendAssistantDelta(sessionId, coerceGatewayText(payload?.text))
-        }
-
-        if (isActiveEvent) {
-          setSessionActivityStatus(null)
         }
       } else if (event.type === 'thinking.delta') {
         // thinking.delta carries the kawaii spinner status (face + verb from
@@ -915,11 +854,10 @@ export function useMessageStream({
 
         if (isActiveEvent) {
           setTurnStartedAt(null)
-          setSessionActivityStatus(null)
         }
 
-        if (payload?.usage && (!explicitSid || isActiveEvent)) {
-          setCurrentUsage(current => mergeUsageSnapshot(current, payload.usage))
+        if (payload?.usage) {
+          setCurrentUsage(current => ({ ...current, ...payload.usage }))
         }
       } else if (event.type === 'tool.start' || event.type === 'tool.progress' || event.type === 'tool.generating') {
         if (!sessionId) {
@@ -928,15 +866,6 @@ export function useMessageStream({
 
         flushQueuedDeltas(sessionId)
         upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type)
-
-        // Update context usage in real-time during tool execution.
-        if (payload?.usage && (!explicitSid || isActiveEvent)) {
-          setCurrentUsage(current => mergeUsageSnapshot(current, payload.usage))
-        }
-
-        if (isActiveEvent) {
-          setSessionActivityStatus(null)
-        }
       } else if (event.type === 'tool.complete') {
         if (sessionId) {
           flushQueuedDeltas(sessionId)
@@ -946,11 +875,6 @@ export function useMessageStream({
           // the sidebar indicator clears as soon as it's answered, not only at
           // message.complete.
           updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
-        }
-
-        // Update context usage in real-time after tool completion.
-        if (payload?.usage && (!explicitSid || isActiveEvent)) {
-          setCurrentUsage(current => mergeUsageSnapshot(current, payload.usage))
         }
 
         if (typeof payload?.inline_diff === 'string' && payload.inline_diff.trim()) {

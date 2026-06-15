@@ -22,16 +22,21 @@ const http = require('node:http')
 const https = require('node:https')
 const net = require('node:net')
 const path = require('node:path')
-const { fileURLToPath, pathToFileURL } = require('node:url')
+const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { buildSessionWindowUrl, createSessionWindowRegistry } = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
-const { bundleNeedsRebuild } = require('./update-stamp.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
+const { readDirForIpc } = require('./fs-read-dir.cjs')
+const { gitRootForIpc } = require('./git-root.cjs')
+const {
+  OFFICIAL_REPO_HTTPS_URL,
+  isOfficialSshRemote
+} = require('./update-remote.cjs')
 const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -62,15 +67,9 @@ const {
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
   encryptDesktopSecret: encryptDesktopSecretStrict,
   resolveReadableFileForIpc,
+  resolveRequestedPathForIpc,
   resolveTimeoutMs
 } = require('./hardening.cjs')
-const {
-  REMOTE_PROBE_ATTEMPT_TIMEOUT_MS,
-  REMOTE_PROBE_DEADLINE_MS,
-  createRemoteAvailability,
-  spliceRemoteSessions,
-  waitForBackendReady
-} = require('./remote-sessions.cjs')
 
 let nodePty = null
 let nodePtyDir = null
@@ -169,8 +168,7 @@ const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 // build hasn't been invoked, or schema mismatch). Callers must handle null.
 //
 // Schema:
-//   { schemaVersion: 1, commit, branch, repository, bootstrapRef, commitPinned,
-//     repoUrlHttps, repoUrlSsh, builtAt, dirty, source }
+//   { schemaVersion: 1, commit, branch, builtAt, dirty, source }
 const INSTALL_STAMP_SCHEMA_VERSION = 1
 function loadInstallStamp() {
   // Try packaged location first (resources/install-stamp.json), then the
@@ -552,12 +550,7 @@ let connectionPromise = null
 // backends spawned lazily when a session belongs to a different profile. A user
 // with no named profiles never populates this map, so their experience is
 // byte-for-byte the single-backend behavior.
-const backendPool = new Map() // profile -> { process, port, token, connectionPromise, lastActiveAt, ready }
-// Cooldown registry for remote-profile backends that failed their reachability
-// probe. The session-list splice consults this so a dead remote is skipped
-// instantly instead of stalling every sidebar refresh; explicit user actions
-// (opening a remote session, switching profiles) still probe for real.
-const remoteAvailability = createRemoteAvailability({ log: line => rememberLog(line) })
+const backendPool = new Map() // profile -> { process, port, token, connectionPromise, lastActiveAt }
 // Keep the pool light: cap concurrent profile backends (LRU eviction) and reap
 // idle ones. A user idles at exactly the primary backend; pool backends only
 // exist while a non-primary profile is actively being chatted through.
@@ -740,7 +733,7 @@ function openExternalUrl(rawUrl) {
   if (parsed.protocol === 'file:') {
     let localPath
     try {
-      localPath = fileURLToPath(parsed.toString())
+      localPath = resolveRequestedPathForIpc(parsed.toString(), { purpose: 'Open external file' })
     } catch {
       return false
     }
@@ -1267,10 +1260,9 @@ function readDesktopUpdateConfig() {
   try {
     const parsed = JSON.parse(fs.readFileSync(DESKTOP_UPDATE_CONFIG_PATH, 'utf8'))
     const branch = typeof parsed?.branch === 'string' ? parsed.branch.trim() : ''
-    const remote = typeof parsed?.remote === 'string' ? parsed.remote.trim() : ''
-    return { branch: branch || DEFAULT_UPDATE_BRANCH, remote: remote || null }
+    return { branch: branch || DEFAULT_UPDATE_BRANCH }
   } catch {
-    return { branch: DEFAULT_UPDATE_BRANCH, remote: null }
+    return { branch: DEFAULT_UPDATE_BRANCH }
   }
 }
 
@@ -1327,28 +1319,9 @@ function runGit(args, options = {}) {
 
 const firstLine = text => (text || '').split('\n').find(Boolean) || ''
 
-function splitTrackingRef(ref) {
-  const value = String(ref || '').trim()
-  const slash = value.indexOf('/')
-  if (slash <= 0 || slash === value.length - 1) {
-    return null
-  }
-
-  return {
-    branch: value.slice(slash + 1),
-    ref: value,
-    remote: value.slice(0, slash)
-  }
-}
-
-async function resolveCurrentTrackingRef(updateRoot) {
-  const result = await runGit(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], {
-    cwd: updateRoot
-  })
-  if (result.code !== 0) {
-    return null
-  }
-  return splitTrackingRef(firstLine(result.stdout))
+async function getOriginUrl(updateRoot) {
+  const origin = await runGit(['remote', 'get-url', 'origin'], { cwd: updateRoot })
+  return origin.code === 0 ? origin.stdout.trim() : ''
 }
 
 function emitUpdateProgress(payload) {
@@ -1365,17 +1338,19 @@ function emitUpdateProgress(payload) {
 // installed clients. Read-only ls-remote probe; only flips on a definitive
 // "ref absent" (exit 2), never on a transient network error, so a flaky
 // connection can't strand a user on the wrong branch.
-async function resolveHealedBranch(updateRoot, branch, remote = 'origin') {
+async function resolveHealedBranch(updateRoot, branch) {
   if (!branch || branch === 'main') {
     return branch || 'main'
   }
 
+  const originUrl = await getOriginUrl(updateRoot)
+  const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
   const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, branch], { cwd: updateRoot })
   if (probe.code !== 2) {
     return branch
   }
 
-  rememberLog(`[updates] ${remote}/${branch} is gone (merged?); falling back to main`)
+  rememberLog(`[updates] origin/${branch} is gone (merged?); falling back to main`)
   const config = readDesktopUpdateConfig()
   if (config.branch !== 'main') {
     writeDesktopUpdateConfig({ ...config, branch: 'main' })
@@ -1383,53 +1358,9 @@ async function resolveHealedBranch(updateRoot, branch, remote = 'origin') {
   return 'main'
 }
 
-async function resolveUpdateTarget(updateRoot, configuredBranch, configuredRemote) {
-  const branch = configuredBranch || DEFAULT_UPDATE_BRANCH
-  const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
-  const currentBranch = firstLine(head.stdout).trim()
-  const tracking = await resolveCurrentTrackingRef(updateRoot)
-
-  // Determine which remote to track for updates.
-  let effectiveRemote = configuredRemote || 'origin'
-
-  // If not explicitly configured, auto-detect: if HEAD matches a fork remote
-  // (e.g., 'fork/main') and that fork has the user's unmerged PRs, prefer it.
-  if (!configuredRemote && tracking && tracking.remote !== 'origin') {
-    // Verify the non-origin remote actually tracks the configured branch
-    const probe = await runGit(['ls-remote', '--exit-code', '--heads', tracking.remote, branch], { cwd: updateRoot })
-    if (probe.code === 0) {
-      effectiveRemote = tracking.remote
-    }
-  }
-
-  if (
-    tracking &&
-    (!branch || branch === DEFAULT_UPDATE_BRANCH || currentBranch === branch || tracking.branch === branch)
-  ) {
-    // If tracking a non-origin remote, prefer it as the effective remote
-    // for the update target label/ref
-    return {
-      branch: tracking.branch,
-      currentBranch,
-      label: tracking.ref,
-      ref: tracking.ref,
-      remote: tracking.remote
-    }
-  }
-
-  const healedBranch = await resolveHealedBranch(updateRoot, branch, effectiveRemote)
-  return {
-    branch: healedBranch,
-    currentBranch,
-    label: `${effectiveRemote}/${healedBranch}`,
-    ref: `${effectiveRemote}/${healedBranch}`,
-    remote: effectiveRemote
-  }
-}
-
 async function checkUpdates() {
   const updateRoot = resolveUpdateRoot()
-  let { branch, remote } = readDesktopUpdateConfig()
+  let { branch } = readDesktopUpdateConfig()
   const gitDir = path.join(updateRoot, '.git')
   if (!directoryExists(gitDir)) {
     return {
@@ -1441,37 +1372,46 @@ async function checkUpdates() {
     }
   }
 
-  // --- Stale binary detection (before fetch, works offline) ---
-  // Two failure modes:
-  //   1. Git commit mismatch: the embedded install-stamp.commit (from when the
-  //      running .app was built) doesn't match git HEAD. This catches git pulls,
-  //      merges, and checkout changes.
-  //   2. Local file drift: files under apps/desktop/ differ from HEAD (uncommitted
-  //      edits, staged changes). This catches developer workflow changes that
-  //      don't alter the commit SHA.
-  let rebuildNeeded = false
-  let currentSha = ''
-  try {
-    currentSha = await runGit(['rev-parse', 'HEAD'], { cwd: updateRoot }).then(r => r.stdout?.trim() || '')
-    if (currentSha) {
-      // `runningAppBundle()` currently resolves only packaged macOS .app
-      // bundles; Linux/Windows/dev launches return null and skip this hint.
-      rebuildNeeded = bundleNeedsRebuild(runningAppBundle(), currentSha, fs, { repoRoot: updateRoot })
+  branch = await resolveHealedBranch(updateRoot, branch)
+  const originUrl = await getOriginUrl(updateRoot)
+  if (isOfficialSshRemote(originUrl)) {
+    const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
+    const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
+      git(['rev-parse', 'HEAD']),
+      runGit(['ls-remote', OFFICIAL_REPO_HTTPS_URL, `refs/heads/${branch}`], { cwd: updateRoot }),
+      git(['status', '--porcelain']),
+      git(['rev-parse', '--abbrev-ref', 'HEAD'])
+    ])
+    const targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
+    if (target.code !== 0 || !targetSha) {
+      return {
+        supported: true,
+        branch,
+        error: 'fetch-failed',
+        message: firstLine(target.stderr) || 'git ls-remote failed.',
+        hermesRoot: updateRoot,
+        fetchedAt: Date.now()
+      }
     }
-  } catch {
-    // Best-effort — don't let stamp or diff failure break the check
+    return {
+      supported: true,
+      branch,
+      currentBranch,
+      behind: currentSha && currentSha === targetSha ? 0 : 1,
+      currentSha,
+      targetSha,
+      commits: [],
+      dirty: dirtyStr.length > 0,
+      hermesRoot: updateRoot,
+      fetchedAt: Date.now()
+    }
   }
-  // --- End stale binary detection ---
 
-  const target = await resolveUpdateTarget(updateRoot, branch, remote)
-  branch = target.label
-  const fetched = await runGit(['fetch', '--quiet', target.remote, target.branch], { cwd: updateRoot })
+  const fetched = await runGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
   if (fetched.code !== 0) {
     return {
       supported: true,
       branch,
-      rebuildNeeded,
-      currentSha: currentSha || '',
       error: 'fetch-failed',
       message: firstLine(fetched.stderr) || 'git fetch failed.',
       hermesRoot: updateRoot,
@@ -1480,30 +1420,23 @@ async function checkUpdates() {
   }
 
   const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
-  const [currentShaAfter, targetSha, countStr, dirtyStr] = await Promise.all([
+  const [currentSha, targetSha, countStr, dirtyStr, currentBranch] = await Promise.all([
     git(['rev-parse', 'HEAD']),
-    git(['rev-parse', target.ref]),
-    git(['rev-list', `HEAD..${target.ref}`, '--count']),
-    git(['status', '--porcelain'])
+    git(['rev-parse', `origin/${branch}`]),
+    git(['rev-list', `HEAD..origin/${branch}`, '--count']),
+    git(['status', '--porcelain']),
+    git(['rev-parse', '--abbrev-ref', 'HEAD'])
   ])
 
-  // git fetch does not change HEAD, but re-check in case the initial
-  // rev-parse raced with an external pull — covers the edge where HEAD
-  // advanced between our pre-fetch and post-fetch reads.
-  if (!rebuildNeeded && currentShaAfter && currentShaAfter !== currentSha) {
-    rebuildNeeded = bundleNeedsRebuild(runningAppBundle(), currentShaAfter)
-  }
-
   const behind = Number.parseInt(countStr, 10) || 0
-  const commits = behind > 0 ? await readCommitLog(updateRoot, target.ref) : []
+  const commits = behind > 0 ? await readCommitLog(updateRoot, branch) : []
 
   return {
     supported: true,
     branch,
-    currentBranch: target.currentBranch,
+    currentBranch,
     behind,
-    rebuildNeeded,
-    currentSha: currentShaAfter,
+    currentSha,
     targetSha,
     commits,
     dirty: dirtyStr.length > 0,
@@ -1512,11 +1445,11 @@ async function checkUpdates() {
   }
 }
 
-async function readCommitLog(cwd, targetRef) {
+async function readCommitLog(cwd, branch) {
   const SEP = '\x1f'
   const REC = '\x1e'
   const { stdout } = await runGit(
-    ['log', `HEAD..${targetRef}`, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', '40'],
+    ['log', `HEAD..origin/${branch}`, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', '40'],
     { cwd }
   )
 
@@ -1639,6 +1572,20 @@ function forceKillProcessTree(pid) {
 // SIGTERM + app.quit() teardown already works (the macOS path is flawless), and
 // aggressively SIGKILL-ing the backend here would be an untested behavior change
 // for no benefit. So we no-op off Windows and leave that path exactly as it was.
+async function releaseBackendLockForUpdate(updateRoot) {
+  return releaseBackendLock(updateRoot, 'updates')
+}
+
+// Shared backend teardown + venv-shim unlock wait. Used by BOTH the self-update
+// hand-off and the desktop uninstaller — they have the identical Windows
+// problem: the desktop's backend (and the grandchildren IT spawned — a hermes
+// REPL, a pty terminal, the gateway) keep `hermes.exe` and other files in the
+// venv mandatory-locked, so any in-place replace/delete of the install tree
+// races a live handle and half-fails (#37532). We tree-kill every backend PID
+// the desktop owns, then poll the shim until it's genuinely writable.
+//
+// `tag` only flavors the log lines. No-op off Windows (POSIX has no mandatory
+// locks — the before-quit SIGTERM + the cleanup script's own PID-wait suffice).
 async function releaseBackendLock(updateRoot, tag) {
   if (!IS_WINDOWS) return { unlocked: true }
 
@@ -1670,42 +1617,6 @@ async function releaseBackendLock(updateRoot, tag) {
     await new Promise(r => setTimeout(r, 300))
   }
   rememberLog(`[${tag}] venv shim still locked after 15s; proceeding anyway (force)`)
-  return { unlocked: false }
-}
-
-async function releaseBackendLockForUpdate(updateRoot) {
-  if (!IS_WINDOWS) return { unlocked: true }
-
-  // Collect every backend PID the desktop owns: primary window backend + pool.
-  const pids = []
-  if (hermesProcess && Number.isInteger(hermesProcess.pid)) pids.push(hermesProcess.pid)
-  for (const entry of backendPool.values()) {
-    if (entry.process && Number.isInteger(entry.process.pid)) pids.push(entry.process.pid)
-  }
-
-  // Graceful first (lets Python flush), then tree-kill to catch grandchildren.
-  if (hermesProcess && !hermesProcess.killed) {
-    try {
-      hermesProcess.kill('SIGTERM')
-    } catch {
-      void 0
-    }
-  }
-  stopAllPoolBackends()
-  for (const pid of pids) forceKillProcessTree(pid)
-
-  const shim = venvHermesShimPath(updateRoot)
-  const deadlineMs = Date.now() + 15000
-  while (Date.now() < deadlineMs) {
-    if (!isShimLocked(shim)) {
-      rememberLog('[updates] venv shim unlocked; safe to hand off the update')
-      return { unlocked: true }
-    }
-    await new Promise(r => setTimeout(r, 300))
-  }
-  // Timed out: the updater's own wait_for_venv_free + force-kill is the second
-  // line of defense, and we pass --force so the guard won't dead-end. Log it.
-  rememberLog('[updates] venv shim still locked after 15s; handing off anyway (updater will force)')
   return { unlocked: false }
 }
 
@@ -1964,11 +1875,9 @@ async function applyUpdatesPosixInApp() {
   emitUpdateProgress({ stage: 'restart', message: 'Installing the updated app and restarting…', percent: 95 })
 
   // Detached swapper: wait for THIS process to exit (so the bundle is free),
-  // then atomically replace the running .app, clear quarantine, and reopen it.
-  // If the swap fails, fall back to launching the freshly rebuilt bundle
-  // directly so we do not leave the user with a dead quit.
+  // ditto the rebuilt app over the running one, clear quarantine, relaunch.
   const swapScript = `#!/bin/bash
-set -euo pipefail
+set -u
 APP_PID=${process.pid}
 SRC=${shellQuote(rebuiltApp)}
 DST=${shellQuote(targetApp)}
@@ -1976,21 +1885,13 @@ for _ in $(seq 1 240); do
   kill -0 "$APP_PID" 2>/dev/null || break
   sleep 0.5
 done
-cleanup() { rm -rf "$DST.hermes-update-old" 2>/dev/null || true; }
-trap cleanup EXIT
 if [ "$SRC" != "$DST" ]; then
-  if ! /usr/bin/ditto "$SRC" "$DST.hermes-update-new"; then
-    echo "[updates] ditto failed" >&2
-    /usr/bin/open "$SRC"
-    exit 0
+  if /usr/bin/ditto "$SRC" "$DST.hermes-update-new"; then
+    rm -rf "$DST.hermes-update-old" 2>/dev/null || true
+    mv "$DST" "$DST.hermes-update-old" 2>/dev/null || rm -rf "$DST"
+    mv "$DST.hermes-update-new" "$DST"
+    rm -rf "$DST.hermes-update-old" 2>/dev/null || true
   fi
-  mv "$DST" "$DST.hermes-update-old" 2>/dev/null || rm -rf "$DST"
-  if ! mv "$DST.hermes-update-new" "$DST"; then
-    echo "[updates] destination replace failed" >&2
-    /usr/bin/open "$SRC"
-    exit 0
-  fi
-  rm -rf "$DST.hermes-update-old" 2>/dev/null || true
 fi
 /usr/bin/xattr -dr com.apple.quarantine "$DST" 2>/dev/null || true
 /usr/bin/open "$DST"
@@ -2057,11 +1958,6 @@ function isBootstrapComplete() {
   return isHermesSourceRoot(ACTIVE_HERMES_ROOT) && fileExists(getVenvPython(VENV_ROOT))
 }
 
-function hasRunnableActiveInstall() {
-  const venvPython = getVenvPython(VENV_ROOT)
-  return isHermesSourceRoot(ACTIVE_HERMES_ROOT) && fileExists(venvPython) && canImportHermesCli(venvPython)
-}
-
 function writeBootstrapMarker(payload) {
   fs.mkdirSync(path.dirname(BOOTSTRAP_COMPLETE_MARKER), { recursive: true })
   const merged = {
@@ -2082,12 +1978,36 @@ function resolveWebDist() {
   const unpackedDist = path.join(unpackedPathFor(APP_ROOT), 'dist')
   if (directoryExists(unpackedDist)) return unpackedDist
 
-  return path.join(APP_ROOT, 'dist')
+  // Final fallback: APP_ROOT/dist. When packaged with asar:true this lives
+  // INSIDE app.asar — not a servable filesystem directory — so the embedded
+  // dashboard backend 404s on static routes (see #41327, #39472). The durable
+  // fix is unpacking dist/ (PR #41411 adds dist/** to asarUnpack so the tier-2
+  // unpackedDist above resolves). If we still land here while packaged, log it
+  // so the cause isn't silent.
+  const fallback = path.join(APP_ROOT, 'dist')
+  if (IS_PACKAGED && /app\.asar(?=$|[\\/])/.test(fallback) && !directoryExists(fallback)) {
+    rememberLog(
+      `[web-dist] dashboard frontend dir resolved to an asar-internal path that ` +
+        `is not a real directory: ${fallback}. Static routes will 404. ` +
+        `Ensure dist/** is unpacked (asarUnpack) or set HERMES_DESKTOP_WEB_DIST.`
+    )
+  }
+  return fallback
 }
 
 function resolveRendererIndex() {
   const candidates = [path.join(APP_ROOT, 'dist', 'index.html'), path.join(resolveWebDist(), 'index.html')]
-  return candidates.find(fileExists) || candidates[0]
+  const found = candidates.find(fileExists)
+  if (found) return found
+  // Nothing on disk. A packaged build with no renderer bundle blank-pages with
+  // a bare ERR_FILE_NOT_FOUND and no clue why (see #39484). Surface the cause
+  // and the fix before Electron loads the missing file.
+  rememberLog(
+    `[renderer] index.html not found — the desktop app was packaged without a ` +
+      `renderer bundle. Tried: ${candidates.join(', ')}. ` +
+      `Rebuild with: hermes desktop --force-build`
+  )
+  return candidates[0]
 }
 
 // True when `dir` lives inside the packaged app bundle / install tree.
@@ -2262,13 +2182,6 @@ function resolveHermesBackend(dashboardArgs) {
   //    to spawning hermes. Updates flow through the in-app update path
   //    (applyUpdates -> git pull) or `hermes update` from the CLI.
   if (isBootstrapComplete()) {
-    return createActiveBackend(dashboardArgs)
-  }
-
-  if (hasRunnableActiveInstall()) {
-    rememberLog(
-      `Using existing Hermes install at ${ACTIVE_HERMES_ROOT}: venv imports hermes_cli even though bootstrap marker is missing.`
-    )
     return createActiveBackend(dashboardArgs)
   }
 
@@ -2557,17 +2470,6 @@ function fetchJson(url, token, options = {}) {
       return
     }
 
-    let settled = false
-    let timeoutTimer = null
-    const timeoutError = () => new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`)
-    const finish = (fn, value) => {
-      if (settled) return
-      settled = true
-      if (timeoutTimer) clearTimeout(timeoutTimer)
-      fn(value)
-    }
-    const fail = error => finish(reject, error)
-    const succeed = value => finish(resolve, value)
     const req = client.request(
       parsed,
       {
@@ -2580,17 +2482,16 @@ function fetchJson(url, token, options = {}) {
       },
       res => {
         const chunks = []
-        res.on('error', fail)
+        res.on('error', reject)
         res.on('data', chunk => chunks.push(chunk))
         res.on('end', () => {
-          if (settled) return
           const text = Buffer.concat(chunks).toString('utf8')
           if ((res.statusCode || 500) >= 400) {
-            fail(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
+            reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
             return
           }
           if (!text) {
-            succeed(null)
+            resolve(null)
             return
           }
           // A 2xx response whose body is HTML means the request fell through
@@ -2600,7 +2501,7 @@ function fetchJson(url, token, options = {}) {
           const looksHtml = /^\s*<(?:!doctype|html)/i.test(text)
           const contentType = String(res.headers['content-type'] || '')
           if (looksHtml || contentType.includes('text/html')) {
-            fail(
+            reject(
               new Error(
                 `Expected JSON from ${url} but got HTML (status ${res.statusCode}). ` +
                   'The endpoint is likely missing on the Hermes backend.'
@@ -2609,24 +2510,18 @@ function fetchJson(url, token, options = {}) {
             return
           }
           try {
-            succeed(JSON.parse(text))
+            resolve(JSON.parse(text))
           } catch {
-            fail(new Error(`Invalid JSON from ${url} (status ${res.statusCode}): ${text.slice(0, 200)}`))
+            reject(new Error(`Invalid JSON from ${url} (status ${res.statusCode}): ${text.slice(0, 200)}`))
           }
         })
       }
     )
 
-    const abortForTimeout = () => {
-      const error = timeoutError()
-      req.destroy(error)
-      fail(error)
-    }
-    // ClientRequest#setTimeout only covers the assigned socket's idle timeout;
-    // keep a wall-clock guard too so DNS/pre-connect hangs honor timeoutMs.
-    timeoutTimer = setTimeout(abortForTimeout, timeoutMs)
-    req.on('error', fail)
-    req.setTimeout(timeoutMs, abortForTimeout)
+    req.on('error', reject)
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+    })
     if (body) req.write(body)
     req.end()
   })
@@ -2655,17 +2550,6 @@ function fetchPublicJson(url, options = {}) {
       return
     }
 
-    let settled = false
-    let timeoutTimer = null
-    const timeoutError = () => new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`)
-    const finish = (fn, value) => {
-      if (settled) return
-      settled = true
-      if (timeoutTimer) clearTimeout(timeoutTimer)
-      fn(value)
-    }
-    const fail = error => finish(reject, error)
-    const succeed = value => finish(resolve, value)
     const req = client.request(
       parsed,
       {
@@ -2679,20 +2563,19 @@ function fetchPublicJson(url, options = {}) {
         const chunks = []
         res.on('data', chunk => chunks.push(chunk))
         res.on('end', () => {
-          if (settled) return
           const text = Buffer.concat(chunks).toString('utf8')
           if ((res.statusCode || 500) >= 400) {
-            fail(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
+            reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
             return
           }
           if (!text) {
-            succeed(null)
+            resolve(null)
             return
           }
           const looksHtml = /^\s*<(?:!doctype|html)/i.test(text)
           const contentType = String(res.headers['content-type'] || '')
           if (looksHtml || contentType.includes('text/html')) {
-            fail(
+            reject(
               new Error(
                 `Expected JSON from ${url} but got HTML (status ${res.statusCode}). ` +
                   'The endpoint is likely missing on the Hermes backend.'
@@ -2701,24 +2584,18 @@ function fetchPublicJson(url, options = {}) {
             return
           }
           try {
-            succeed(JSON.parse(text))
+            resolve(JSON.parse(text))
           } catch {
-            fail(new Error(`Invalid JSON from ${url} (status ${res.statusCode}): ${text.slice(0, 200)}`))
+            reject(new Error(`Invalid JSON from ${url} (status ${res.statusCode}): ${text.slice(0, 200)}`))
           }
         })
       }
     )
 
-    const abortForTimeout = () => {
-      const error = timeoutError()
-      req.destroy(error)
-      fail(error)
-    }
-    // ClientRequest#setTimeout only covers the assigned socket's idle timeout;
-    // keep a wall-clock guard too so DNS/pre-connect hangs honor timeoutMs.
-    timeoutTimer = setTimeout(abortForTimeout, timeoutMs)
-    req.on('error', fail)
-    req.setTimeout(timeoutMs, abortForTimeout)
+    req.on('error', reject)
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+    })
     if (body) req.write(body)
     req.end()
   })
@@ -3004,10 +2881,10 @@ async function resourceBufferFromUrl(rawUrl) {
     const buffer = match[2] ? Buffer.from(encoded, 'base64') : Buffer.from(decodeURIComponent(encoded), 'utf8')
     return { buffer, mimeType }
   }
-  if (rawUrl.startsWith('file:')) {
-    const filePath = fileURLToPath(rawUrl)
-    const buffer = await fs.promises.readFile(filePath)
-    return { buffer, mimeType: mimeTypeForPath(filePath) }
+  if (/^file:/i.test(rawUrl)) {
+    const { resolvedPath } = await resolveReadableFileForIpc(rawUrl, { purpose: 'Image file' })
+    const buffer = await fs.promises.readFile(resolvedPath)
+    return { buffer, mimeType: mimeTypeForPath(resolvedPath) }
   }
 
   const parsed = new URL(rawUrl)
@@ -3085,11 +2962,13 @@ function expandUserPath(filePath) {
   return value
 }
 
-function previewFileTarget(rawTarget, baseDir) {
+async function previewFileTarget(rawTarget, baseDir) {
   const raw = String(rawTarget || '').trim()
   const base = baseDir ? path.resolve(expandUserPath(baseDir)) : resolveHermesCwd()
-  const filePath = raw.startsWith('file:') ? fileURLToPath(raw) : path.resolve(base, expandUserPath(raw))
-  let resolved = filePath
+  let resolved = resolveRequestedPathForIpc(/^file:/i.test(raw) ? raw : expandUserPath(raw), {
+    baseDir: base,
+    purpose: 'Preview target'
+  })
 
   if (directoryExists(resolved)) {
     resolved = path.join(resolved, 'index.html')
@@ -3099,6 +2978,8 @@ function previewFileTarget(rawTarget, baseDir) {
   if (!fileExists(resolved)) {
     return null
   }
+
+  ;({ resolvedPath: resolved } = await resolveReadableFileForIpc(resolved, { purpose: 'Preview target' }))
 
   const mimeType = mimeTypeForPath(resolved)
   const metadata = previewFileMetadata(resolved, mimeType)
@@ -3145,7 +3026,7 @@ function previewUrlTarget(rawTarget) {
   }
 }
 
-function normalizePreviewTarget(rawTarget, baseDir) {
+async function normalizePreviewTarget(rawTarget, baseDir) {
   const raw = String(rawTarget || '').trim()
 
   if (!raw) {
@@ -3157,20 +3038,15 @@ function normalizePreviewTarget(rawTarget, baseDir) {
       return previewUrlTarget(raw)
     }
 
-    return previewFileTarget(raw, baseDir)
+    return await previewFileTarget(raw, baseDir)
   } catch {
     return null
   }
 }
 
-function filePathFromPreviewUrl(rawUrl) {
-  const filePath = fileURLToPath(String(rawUrl || ''))
-
-  if (!fileExists(filePath)) {
-    throw new Error('Preview file is not readable')
-  }
-
-  return filePath
+async function filePathFromPreviewUrl(rawUrl) {
+  const { resolvedPath } = await resolveReadableFileForIpc(String(rawUrl || ''), { purpose: 'Preview file' })
+  return resolvedPath
 }
 
 function sendPreviewFileChanged(payload) {
@@ -3180,8 +3056,8 @@ function sendPreviewFileChanged(payload) {
   webContents.send('hermes:preview-file-changed', payload)
 }
 
-function watchPreviewFile(rawUrl) {
-  const filePath = filePathFromPreviewUrl(rawUrl)
+async function watchPreviewFile(rawUrl) {
+  const filePath = await filePathFromPreviewUrl(rawUrl)
   const watchDir = path.dirname(filePath)
   const targetName = path.basename(filePath)
   const id = crypto.randomBytes(12).toString('base64url')
@@ -3230,18 +3106,21 @@ function closePreviewWatchers() {
   }
 }
 
-// Readiness wait over /api/status. Default options fit a freshly spawned
-// LOCAL child (long deadline, retry through refused connections while the
-// server binds its port). Callers probing an already-running REMOTE backend
-// must pass a short deadline + attemptTimeoutMs and failFast so a dead tunnel
-// rejects in milliseconds instead of stalling for the local-boot deadline.
-async function waitForHermes(baseUrl, token, options = {}) {
-  const attemptTimeoutMs = options.attemptTimeoutMs
-  await waitForBackendReady(
-    () =>
-      fetchJson(`${baseUrl}/api/status`, token, attemptTimeoutMs ? { timeoutMs: attemptTimeoutMs } : {}),
-    options
-  )
+async function waitForHermes(baseUrl, token) {
+  const deadline = Date.now() + 45_000
+  let lastError = null
+
+  while (Date.now() < deadline) {
+    try {
+      await fetchJson(`${baseUrl}/api/status`, token)
+      return
+    } catch (error) {
+      lastError = error
+      await new Promise(resolve => setTimeout(resolve, 500))
+    }
+  }
+
+  throw new Error(`Hermes backend did not become ready: ${lastError?.message || 'timeout'}`)
 }
 
 function getWindowButtonPosition() {
@@ -3397,7 +3276,7 @@ function buildApplicationMenu() {
         label: 'Actual Size',
         accelerator: 'CommandOrControl+0',
         click: () => {
-          if (mainWindow && !mainWindow.isDestroyed()) setAndPersistZoomLevel(mainWindow, 0)
+          setAndPersistZoomLevel(mainWindow, 0)
         }
       },
       {
@@ -4520,20 +4399,31 @@ async function teardownPrimaryBackendAndWait() {
   const dying = hermesProcess && !hermesProcess.killed ? hermesProcess : null
   resetHermesConnection()
 
-  if (!dying) {
+  await waitForBackendExit(dying)
+}
+
+async function waitForBackendExit(child, timeoutMs = 5000) {
+  if (!child) {
+    return
+  }
+  if (child.exitCode !== null || child.signalCode !== null) {
     return
   }
 
   await new Promise(resolve => {
     const timer = setTimeout(() => {
       try {
-        dying.kill('SIGKILL')
+        if (IS_WINDOWS && Number.isInteger(child.pid)) {
+          forceKillProcessTree(child.pid)
+        } else {
+          child.kill('SIGKILL')
+        }
       } catch {
         // Already gone.
       }
       resolve()
-    }, 5000)
-    dying.once('exit', () => {
+    }, timeoutMs)
+    child.once('exit', () => {
       clearTimeout(timer)
       resolve()
     })
@@ -4566,19 +4456,11 @@ async function ensureBackend(profile) {
 
   evictLruPoolBackends(POOL_MAX_BACKENDS - 1)
 
-  const entry = { process: null, port: null, token: null, connectionPromise: null, lastActiveAt: Date.now(), ready: false }
+  const entry = { process: null, port: null, token: null, connectionPromise: null, lastActiveAt: Date.now() }
   entry.connectionPromise = spawnPoolBackend(key, entry).catch(error => {
     backendPool.delete(key)
     throw error
   })
-  // Warmness powers the session-splice budget: an established connection gets
-  // more time than a cold spawn/probe (which must never stall the sidebar).
-  entry.connectionPromise.then(
-    () => {
-      entry.ready = true
-    },
-    () => {}
-  )
   backendPool.set(key, entry)
   startPoolIdleReaper()
   return entry.connectionPromise
@@ -4643,22 +4525,7 @@ async function spawnPoolBackend(profile, entry) {
   // tolerate.
   const remote = await resolveRemoteBackend(profile)
   if (remote) {
-    // The remote backend is supposed to ALREADY be running — this is a
-    // reachability check, not a boot wait. Fail in milliseconds when nothing
-    // is listening (dead tunnel, sleeping host) instead of polling for the
-    // 45s local-boot deadline, and remember the failure so the session-list
-    // splice skips this profile until the cooldown lapses.
-    try {
-      await waitForHermes(remote.baseUrl, remote.token, {
-        deadlineMs: REMOTE_PROBE_DEADLINE_MS,
-        attemptTimeoutMs: REMOTE_PROBE_ATTEMPT_TIMEOUT_MS,
-        failFast: true
-      })
-    } catch (error) {
-      remoteAvailability.markDown(profile, error?.message)
-      throw error
-    }
-    remoteAvailability.markUp(profile)
+    await waitForHermes(remote.baseUrl, remote.token)
     return {
       ...remote,
       profile,
@@ -4689,6 +4556,9 @@ async function spawnPoolBackend(profile, entry) {
       // can still point at the install dir even when spawn cwd is home.
       TERMINAL_CWD: hermesCwd,
       HERMES_DASHBOARD_SESSION_TOKEN: token,
+      // Marks this dashboard backend as desktop-spawned so it runs the cron
+      // scheduler tick loop (the gateway isn't running under the app).
+      HERMES_DESKTOP: '1',
       HERMES_WEB_DIST: webDist
     },
     shell: backend.shell,
@@ -4751,10 +4621,68 @@ function stopPoolBackend(profile) {
   }
 }
 
+async function teardownPoolBackendAndWait(profile) {
+  const entry = backendPool.get(profile)
+  if (!entry) return
+  backendPool.delete(profile)
+
+  if (entry.process && !entry.process.killed) {
+    try {
+      entry.process.kill('SIGTERM')
+    } catch {
+      // Already gone.
+    }
+  }
+
+  await waitForBackendExit(entry.process)
+}
+
 function stopAllPoolBackends() {
   for (const profile of [...backendPool.keys()]) {
     stopPoolBackend(profile)
   }
+}
+
+function profileNameFromDeleteRequest(request) {
+  if (!request || String(request.method || 'GET').toUpperCase() !== 'DELETE') {
+    return null
+  }
+
+  const match = String(request.path || '').match(/^\/api\/profiles\/([^/?#]+)(?:[?#].*)?$/)
+  if (!match) {
+    return null
+  }
+
+  let raw = ''
+  try {
+    raw = decodeURIComponent(match[1])
+  } catch {
+    return null
+  }
+
+  const name = raw.trim()
+  if (!name) {
+    return null
+  }
+  if (name.toLowerCase() === 'default') {
+    return 'default'
+  }
+  return name.toLowerCase()
+}
+
+async function prepareProfileDeleteRequest(request) {
+  const profile = profileNameFromDeleteRequest(request)
+  if (!profile || profile === 'default' || !PROFILE_NAME_RE.test(profile)) {
+    return
+  }
+
+  if (profile === primaryProfileKey()) {
+    writeActiveDesktopProfile('default')
+    await teardownPrimaryBackendAndWait()
+    return
+  }
+
+  await teardownPoolBackendAndWait(profile)
 }
 
 async function startHermes() {
@@ -4833,6 +4761,9 @@ async function startHermes() {
         ...backend.env,
         TERMINAL_CWD: hermesCwd,
         HERMES_DASHBOARD_SESSION_TOKEN: token,
+        // Marks this dashboard backend as desktop-spawned so it runs the cron
+        // scheduler tick loop (the gateway isn't running under the app).
+        HERMES_DESKTOP: '1',
         HERMES_WEB_DIST: webDist
       },
       shell: backend.shell,
@@ -5019,7 +4950,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1220,
     height: 800,
-    minWidth: 900,
+    minWidth: 400,
     minHeight: 620,
     title: 'Hermes',
     // Frameless title bar on every platform so the renderer can paint the
@@ -5136,6 +5067,45 @@ function createWindow() {
 }
 
 ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(profile))
+// Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
+// so the 'exit'/'error' handlers that would clear a dead connectionPromise never
+// fire — once the remote becomes unreachable across a sleep/wake the renderer
+// re-dials the same dead descriptor forever and the composer stays stuck on
+// "Starting Hermes…". Before the renderer's backoff loop reconnects, it asks us
+// to confirm the cached PRIMARY backend is still reachable; if a remote one is
+// not, we drop the cache so the next getConnection() rebuilds it. Local backends
+// self-heal via their child 'exit' handler, so we never touch them here.
+ipcMain.handle('hermes:connection:revalidate', async () => {
+  if (!connectionPromise) {
+    return { ok: true, rebuilt: false }
+  }
+
+  let conn = null
+  try {
+    conn = await connectionPromise
+  } catch {
+    // The cached boot already rejected (its own catch nulls connectionPromise);
+    // nothing to revalidate — the next getConnection() builds fresh.
+    return { ok: true, rebuilt: false }
+  }
+
+  if (!conn || conn.mode !== 'remote' || !conn.baseUrl) {
+    return { ok: true, rebuilt: false }
+  }
+
+  const base = conn.baseUrl.replace(/\/+$/, '')
+  try {
+    await fetchPublicJson(`${base}/api/status`, { timeoutMs: 2_500 })
+    return { ok: true, rebuilt: false }
+  } catch {
+    // Unreachable remote: drop the stale cache so the renderer's next reconnect
+    // tick rebuilds a fresh, reachable descriptor. resetHermesConnection only
+    // nulls connectionPromise for a remote (no child to SIGTERM).
+    rememberLog('Cached remote Hermes backend failed liveness probe; dropping stale connection.')
+    resetHermesConnection()
+    return { ok: true, rebuilt: true }
+  }
+})
 ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
   touchPoolBackend(profile)
   return { ok: true }
@@ -5228,16 +5198,11 @@ ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
 
-  // The user may have just fixed a dead remote's URL/token — forget any
-  // unreachable-remote cooldowns so the next refresh probes the new target.
-  remoteAvailability.clear()
-
   return sanitizeDesktopConnectionConfig(config, payload?.profile)
 })
 ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
   const config = coerceDesktopConnectionConfig(payload)
   writeDesktopConnectionConfig(config)
-  remoteAvailability.clear()
 
   const key = connectionScopeKey(payload?.profile)
 
@@ -5368,11 +5333,8 @@ async function remoteSessionList(profile, searchParams) {
 
 // Unified list: primary's local aggregate, with each remote profile's stale local
 // rows/totals swapped for the remote's real ones, re-sorted by recency and
-// re-windowed to the requested page. A dead or slow remote contributes nothing
-// rather than breaking — or stalling — the sidebar: unreachable remotes sit in
-// a cooldown and are skipped instantly, and a remote that can't answer within
-// its splice budget is deferred to the next refresh (its fetch keeps running
-// in the background, warming the pool). See remote-sessions.cjs.
+// re-windowed to the requested page. A dead remote contributes nothing rather
+// than breaking the sidebar.
 async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   const limit = Math.max(1, Number(searchParams.get('limit')) || 20)
   const offset = Math.max(0, Number(searchParams.get('offset')) || 0)
@@ -5390,17 +5352,29 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   remoteParams.set('limit', String(limit + offset))
   remoteParams.set('offset', '0')
 
-  return spliceRemoteSessions({
-    base,
-    remoteProfiles,
-    limit,
-    offset,
-    order,
-    availability: remoteAvailability,
-    isWarm: name => Boolean(backendPool.get(String(name ?? '').trim())?.ready),
-    fetchRemote: name => remoteSessionList(name, remoteParams),
-    log: line => rememberLog(line)
-  })
+  const remoteSet = new Set(remoteProfiles)
+  const merged = rowsOf(base).filter(s => !remoteSet.has(s?.profile))
+  const profileTotals = { ...(base.profile_totals || {}) }
+  let total = (Number(base.total) || 0) - remoteProfiles.reduce((n, p) => n + (profileTotals[p] || 0), 0)
+
+  // Swap each remote profile's stale local rows/total for the remote's real ones.
+  await Promise.all(
+    remoteProfiles.map(async name => {
+      const list = await remoteSessionList(name, remoteParams).catch(() => null)
+      if (!list) {
+        delete profileTotals[name] // dead remote → drop its stale local total too
+        return
+      }
+      const rows = rowsOf(list)
+      merged.push(...rows)
+      profileTotals[name] = Number(list.total) || rows.length
+      total += profileTotals[name]
+    })
+  )
+
+  const recency = s => s?.[order] ?? s?.started_at ?? 0
+  merged.sort((a, b) => recency(b) - recency(a))
+  return { ...base, sessions: merged.slice(offset, offset + limit), total, profile_totals: profileTotals }
 }
 
 ipcMain.handle('hermes:api', async (_event, request) => {
@@ -5412,6 +5386,8 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   if (rerouted !== undefined) {
     return rerouted
   }
+
+  await prepareProfileDeleteRequest(request)
 
   const connection = await ensureBackend(request?.profile)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
@@ -5613,48 +5589,6 @@ ipcMain.handle('hermes:logs:reveal', async () => {
 
 ipcMain.handle('hermes:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, lines: hermesLog.slice(-200) }))
 
-// Always-hidden noise (covers non-git projects too — gitignore would catch
-// these anyway when present, but we want the same hygiene without one).
-const FS_READDIR_HIDDEN = new Set([
-  '.git',
-  '.hg',
-  '.svn',
-  '.cache',
-  '.next',
-  '.turbo',
-  '.venv',
-  '__pycache__',
-  'build',
-  'dist',
-  'node_modules',
-  'target',
-  'venv'
-])
-
-function findGitRoot(start) {
-  let dir = start
-
-  for (let i = 0; i < 50; i += 1) {
-    try {
-      if (fs.existsSync(path.join(dir, '.git'))) {
-        return dir
-      }
-    } catch {
-      return null
-    }
-
-    const parent = path.dirname(dir)
-
-    if (parent === dir) {
-      return null
-    }
-
-    dir = parent
-  }
-
-  return null
-}
-
 function isExecutableFile(filePath) {
   if (!filePath || !path.isAbsolute(filePath)) {
     return false
@@ -5837,46 +5771,9 @@ function disposeTerminalSession(id) {
   return true
 }
 
-ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => {
-  const resolved = path.resolve(String(dirPath || ''))
+ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dirPath))
 
-  if (!resolved) {
-    return { entries: [], error: 'invalid-path' }
-  }
-
-  try {
-    const dirents = await fs.promises.readdir(resolved, { withFileTypes: true })
-
-    const entries = dirents
-      .filter(d => {
-        if (FS_READDIR_HIDDEN.has(d.name)) {
-          return false
-        }
-
-        return true
-      })
-      .map(d => ({ name: d.name, path: path.join(resolved, d.name), isDirectory: d.isDirectory() }))
-      .sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.localeCompare(b.name))
-
-    return { entries }
-  } catch (error) {
-    return { entries: [], error: error?.code || 'read-error' }
-  }
-})
-
-ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => {
-  const input = String(startPath || '')
-  const resolved = input.startsWith('file:') ? fileURLToPath(input) : path.resolve(input)
-
-  try {
-    const stat = await fs.promises.stat(resolved)
-    const start = stat.isDirectory() ? resolved : path.dirname(resolved)
-
-    return findGitRoot(start)
-  } catch {
-    return findGitRoot(resolved)
-  }
-})
+ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))
 
 ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   if (!nodePty) {
@@ -5968,21 +5865,8 @@ ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig(
 
 ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
   const branch = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
-  const config = readDesktopUpdateConfig()
-  writeDesktopUpdateConfig({ branch, remote: config.remote })
-  return { branch, remote: config.remote }
-})
-
-ipcMain.handle('hermes:updates:remote:get', async () => {
-  const config = readDesktopUpdateConfig()
-  return { remote: config.remote }
-})
-
-ipcMain.handle('hermes:updates:remote:set', async (_event, name) => {
-  const remote = typeof name === 'string' && name.trim() ? name.trim() : null
-  const config = readDesktopUpdateConfig()
-  writeDesktopUpdateConfig({ branch: config.branch, remote })
-  return { branch: config.branch, remote }
+  writeDesktopUpdateConfig({ branch })
+  return { branch }
 })
 
 // Resolve the canonical Hermes version (the one `release.py` bumps in

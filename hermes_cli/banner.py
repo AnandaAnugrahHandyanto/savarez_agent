@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 from hermes_constants import get_hermes_home
 from typing import TYPE_CHECKING, Dict, List, Optional
 
@@ -121,6 +122,53 @@ _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
 UPDATE_AVAILABLE_NO_COUNT = -1
 
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
+_OFFICIAL_REPO_CANONICAL = "github.com/nousresearch/hermes-agent"
+
+
+def _canonical_github_remote(url: str | None) -> str:
+    """Return ``host/owner/repo`` for common GitHub remote URL forms."""
+    if not url:
+        return ""
+    value = url.strip()
+    if value.startswith("git@github.com:"):
+        value = "github.com/" + value[len("git@github.com:"):]
+    elif value.startswith("ssh://git@github.com/"):
+        value = "github.com/" + value[len("ssh://git@github.com/"):]
+    else:
+        parsed = urlparse(value)
+        if parsed.netloc and parsed.path:
+            value = f"{parsed.netloc}{parsed.path}"
+    value = value.strip().rstrip("/")
+    if value.endswith(".git"):
+        value = value[:-4]
+    return value.lower()
+
+
+def _is_ssh_remote(url: str | None) -> bool:
+    if not url:
+        return False
+    value = url.strip().lower()
+    return value.startswith("git@") or value.startswith("ssh://")
+
+
+def _is_official_ssh_remote(url: str | None) -> bool:
+    return _is_ssh_remote(url) and _canonical_github_remote(url) == _OFFICIAL_REPO_CANONICAL
+
+
+def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(cwd),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return (result.stdout or "").strip()
 
 
 def _check_via_rev(local_rev: str) -> Optional[int]:
@@ -144,46 +192,25 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
 
-def _git_tracking_ref(repo_dir: Path) -> str:
-    """Return the current branch's tracking ref, falling back to origin/main."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=str(repo_dir),
-        )
-        if result.returncode == 0:
-            ref = (result.stdout or "").strip()
-            if "/" in ref:
-                return ref
-    except Exception:
-        pass
-    return "origin/main"
+def _check_via_local_git(repo_dir: Path) -> Optional[int]:
+    """Count commits behind origin/main in a local checkout."""
+    origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
+    if _is_official_ssh_remote(origin_url):
+        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+        return _check_via_rev(head_rev) if head_rev else None
 
-
-def _fetch_tracking_ref(repo_dir: Path, tracking_ref: str) -> None:
-    """Best-effort fetch for the remote that owns ``tracking_ref``."""
-    remote = tracking_ref.split("/", 1)[0] if "/" in tracking_ref else "origin"
     try:
         subprocess.run(
-            ["git", "fetch", remote, "--quiet"],
+            ["git", "fetch", "origin", "--quiet"],
             capture_output=True, timeout=10,
             cwd=str(repo_dir),
         )
     except Exception:
         pass  # Offline or timeout — use stale refs, that's fine
 
-
-def _check_via_local_git(repo_dir: Path) -> Optional[int]:
-    """Count commits behind the current branch's tracking ref."""
-    tracking_ref = _git_tracking_ref(repo_dir)
-    _fetch_tracking_ref(repo_dir, tracking_ref)
-
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", f"HEAD..{tracking_ref}"],
+            ["git", "rev-list", "--count", "HEAD..origin/main"],
             capture_output=True, text=True, timeout=5,
             cwd=str(repo_dir),
         )
@@ -241,7 +268,7 @@ def check_for_updates() -> Optional[int]:
 
     Two paths: if ``HERMES_REVISION`` is set (nix builds embed it), compare
     it to upstream main via ``git ls-remote``. Otherwise look for a local
-    git checkout and count commits behind the current branch's tracking ref.
+    git checkout and count commits behind ``origin/main``.
 
     Returns the number of commits behind, ``UPDATE_AVAILABLE_NO_COUNT`` (-1)
     if behind but the count is unknown, ``0`` if up-to-date, or ``None`` if
@@ -369,11 +396,10 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
             pass
         return None
 
-    upstream_ref = _git_tracking_ref(repo_dir)
-    upstream = _git_short_hash(repo_dir, upstream_ref)
+    upstream = _git_short_hash(repo_dir, "origin/main")
     local = _git_short_hash(repo_dir, "HEAD")
     if not upstream or not local:
-        # Live-git lookup failed (e.g. shallow clone without the tracking ref).
+        # Live-git lookup failed (e.g. shallow clone without origin/main).
         # Fall back to the baked build SHA if available.
         try:
             from hermes_cli.build_info import get_build_sha
@@ -387,7 +413,7 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     ahead = 0
     try:
         result = subprocess.run(
-            ["git", "rev-list", "--count", f"{upstream_ref}..HEAD"],
+            ["git", "rev-list", "--count", "origin/main..HEAD"],
             capture_output=True,
             text=True,
             timeout=5,
