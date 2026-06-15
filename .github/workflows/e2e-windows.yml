@@ -22,25 +22,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ── Install AutoHotkey v2 ───────────────────────────────────────
-      # grab the portable build from the GitHub release.
       - name: Install AutoHotkey v2
         shell: pwsh
-        run: |
-          $version = '2.0.26'
-          $zip = "$env:RUNNER_TEMP\AutoHotkey_$version.zip"
-          $url = "https://github.com/AutoHotkey/AutoHotkey/releases/download/v$version/AutoHotkey_$version.zip"
-          Invoke-RestMethod -Uri $url -OutFile $zip
+        run: winget install -e --id AutoHotkey.AutoHotkey --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
 
-          $dest = "$env:RUNNER_TEMP\ahk-portable"
-          New-Item -ItemType Directory -Path $dest -Force | Out-Null
-          Expand-Archive -Path $zip -DestinationPath $dest -Force
-
-          $exe = Get-ChildItem -Path $dest -Recurse -Filter 'AutoHotkey64.exe' | Select-Object -First 1 -ExpandProperty FullName
-          if (-not $exe) { throw 'AutoHotkey64.exe not found in extracted archive' }
-
-          Copy-Item -Path $exe -Destination "$env:RUNNER_TEMP\AutoHotkey64.exe" -Force
-          Write-Host "AutoHotkey ready: $env:RUNNER_TEMP\AutoHotkey64.exe"
+      - name: Install ffmpeg
+        shell: pwsh
+        run: winget install -e --id Gyan.FFmpeg --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
