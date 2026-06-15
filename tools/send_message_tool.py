@@ -53,6 +53,8 @@ _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
 _VOICE_EXTS = {".ogg", ".opus"}
+_UPLOAD_FEEDBACK_THRESHOLD_BYTES = 1 * 1024 * 1024
+_UPLOAD_FAILURE_NOTICE_MAX_CHARS = 300
 # Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio
 # formats either route through sendVoice (Opus/OGG) or fall back to
 # document delivery.
@@ -78,6 +80,84 @@ def _sanitize_error_text(text) -> str:
 def _error(message: str) -> dict:
     """Build a standardized error payload with redacted content."""
     return {"error": _sanitize_error_text(message)}
+
+
+def _format_upload_size(size_bytes: int) -> str:
+    units = ("B", "KB", "MB", "GB")
+    value = float(max(size_bytes, 0))
+    unit = units[0]
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            break
+        value /= 1024
+    if unit == "B":
+        return f"{int(value)} {unit}"
+    return f"{value:.1f} {unit}"
+
+
+def _upload_notice_for_file(file_path: str) -> str | None:
+    try:
+        size_bytes = os.path.getsize(file_path)
+    except OSError:
+        return None
+    if size_bytes < _UPLOAD_FEEDBACK_THRESHOLD_BYTES:
+        return None
+    name = os.path.basename(file_path) or "attachment"
+    return f"Uploading attachment: {name} ({_format_upload_size(size_bytes)})..."
+
+
+def _upload_failure_notice(file_path: str, error) -> str:
+    name = os.path.basename(file_path) or "attachment"
+    detail = _sanitize_error_text(error or "unknown error")
+    if len(detail) > _UPLOAD_FAILURE_NOTICE_MAX_CHARS:
+        detail = detail[:_UPLOAD_FAILURE_NOTICE_MAX_CHARS].rstrip() + "..."
+    return f"Attachment upload failed: {name}: {detail}"
+
+
+async def _send_adapter_upload_notice(adapter, chat_id: str, file_path: str, metadata=None) -> None:
+    notice = _upload_notice_for_file(file_path)
+    if not notice:
+        return
+    try:
+        await adapter.send(chat_id, notice, metadata=metadata)
+    except Exception as e:
+        logger.debug("Could not send upload-start notice: %s", _sanitize_error_text(e))
+
+
+async def _send_adapter_upload_failure(adapter, chat_id: str, file_path: str, error, metadata=None) -> None:
+    try:
+        await adapter.send(chat_id, _upload_failure_notice(file_path, error), metadata=metadata)
+    except Exception as e:
+        logger.debug("Could not send upload-failure notice: %s", _sanitize_error_text(e))
+
+
+async def _send_telegram_upload_notice(bot, int_chat_id: int, file_path: str, thread_kwargs: dict) -> None:
+    notice = _upload_notice_for_file(file_path)
+    if not notice:
+        return
+    try:
+        await _send_telegram_message_with_retry(
+            bot,
+            chat_id=int_chat_id,
+            text=notice,
+            parse_mode=None,
+            **thread_kwargs,
+        )
+    except Exception as e:
+        logger.debug("Could not send Telegram upload-start notice: %s", _sanitize_error_text(e))
+
+
+async def _send_telegram_upload_failure(bot, int_chat_id: int, file_path: str, error, thread_kwargs: dict) -> None:
+    try:
+        await _send_telegram_message_with_retry(
+            bot,
+            chat_id=int_chat_id,
+            text=_upload_failure_notice(file_path, error),
+            parse_mode=None,
+            **thread_kwargs,
+        )
+    except Exception as e:
+        logger.debug("Could not send Telegram upload-failure notice: %s", _sanitize_error_text(e))
 
 
 def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
@@ -1085,6 +1165,12 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
 
             ext = os.path.splitext(media_path)[1].lower()
             try:
+                await _send_telegram_upload_notice(
+                    bot,
+                    int_chat_id,
+                    media_path,
+                    thread_kwargs,
+                )
                 with open(media_path, "rb") as f:
                     media_kwargs = dict(thread_kwargs)
                     try:
@@ -1145,6 +1231,13 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 warning = _sanitize_error_text(f"Failed to send media {media_path}: {e}")
                 logger.error(warning)
                 warnings.append(warning)
+                await _send_telegram_upload_failure(
+                    bot,
+                    int_chat_id,
+                    media_path,
+                    e,
+                    thread_kwargs,
+                )
 
         if last_msg is None:
             error = "No deliverable text or media remained after processing MEDIA tags"
@@ -1562,6 +1655,7 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
                 return _error(f"Media file not found: {media_path}")
 
             ext = os.path.splitext(media_path)[1].lower()
+            await _send_adapter_upload_notice(adapter, chat_id, media_path, metadata=metadata)
             if ext in _IMAGE_EXTS:
                 last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
             elif ext in _VIDEO_EXTS:
@@ -1574,6 +1668,7 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
                 last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
 
             if not last_result.success:
+                await _send_adapter_upload_failure(adapter, chat_id, media_path, last_result.error, metadata=metadata)
                 return _error(f"Matrix media send failed: {last_result.error}")
 
         if last_result is None:
@@ -1730,6 +1825,7 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
                 return _error(f"Media file not found: {media_path}")
 
             ext = os.path.splitext(media_path)[1].lower()
+            await _send_adapter_upload_notice(adapter, chat_id, media_path, metadata=metadata)
             if ext in _IMAGE_EXTS:
                 last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
             elif ext in _VIDEO_EXTS:
@@ -1742,6 +1838,7 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
                 last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
 
             if not last_result.success:
+                await _send_adapter_upload_failure(adapter, chat_id, media_path, last_result.error, metadata=metadata)
                 return _error(f"Feishu media send failed: {last_result.error}")
 
         if last_result is None:

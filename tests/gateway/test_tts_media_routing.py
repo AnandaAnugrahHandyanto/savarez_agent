@@ -21,6 +21,7 @@ from gateway.session import SessionSource, build_session_key
 class _MediaRoutingAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+        self.sent_texts = []
 
     async def connect(self):
         return True
@@ -29,6 +30,7 @@ class _MediaRoutingAdapter(BasePlatformAdapter):
         pass
 
     async def send(self, chat_id, content=None, **kwargs):
+        self.sent_texts.append(content)
         return SendResult(success=True, message_id="text")
 
     async def get_chat_info(self, chat_id):
@@ -119,6 +121,46 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
         metadata=None,
     )
     adapter.send_document.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_base_adapter_announces_large_media_upload_before_send(tmp_path, monkeypatch):
+    adapter = _MediaRoutingAdapter()
+    event = _event()
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "report.pdf")
+    media_file.write_bytes(b"x" * (1024 * 1024 + 1))
+    adapter._message_handler = AsyncMock(return_value=f"MEDIA:{media_file}")
+    adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert any(
+        text and text.startswith("Uploading attachment: report.pdf")
+        for text in adapter.sent_texts
+    )
+    adapter.send_document.assert_awaited_once_with(
+        chat_id="chat-1",
+        file_path=str(media_file),
+        metadata=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_base_adapter_surfaces_media_upload_failure_to_chat(tmp_path, monkeypatch):
+    adapter = _MediaRoutingAdapter()
+    event = _event()
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "report.pdf")
+    adapter._message_handler = AsyncMock(return_value=f"MEDIA:{media_file}")
+    adapter.send_document = AsyncMock(
+        return_value=SendResult(success=False, error="Feishu file upload failed: file too large")
+    )
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert any(
+        text == "Attachment upload failed: report.pdf: Feishu file upload failed: file too large"
+        for text in adapter.sent_texts
+    )
 
 
 def _fake_runner(thread_meta):
