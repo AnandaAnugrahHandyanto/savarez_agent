@@ -1924,6 +1924,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
             }
+            try:
+                import inspect as _ptb_inspect
+                if "media_write_timeout" in _ptb_inspect.signature(HTTPXRequest.__init__).parameters:
+                    request_kwargs["media_write_timeout"] = _env_float("HERMES_TELEGRAM_HTTP_MEDIA_WRITE_TIMEOUT", 180.0)
+            except Exception:
+                pass
 
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"})
             fallback_ips = self._fallback_ips()
