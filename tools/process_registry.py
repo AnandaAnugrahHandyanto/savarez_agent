@@ -107,6 +107,7 @@ class ProcessSession:
     # Watcher/notification metadata (persisted for crash recovery)
     watcher_platform: str = ""
     watcher_chat_id: str = ""
+    watcher_chat_type: str = ""
     watcher_user_id: str = ""
     watcher_user_name: str = ""
     watcher_thread_id: str = ""
@@ -278,6 +279,7 @@ class ProcessRegistry:
                     "suppressed": session._watch_suppressed,
                     "platform": session.watcher_platform,
                     "chat_id": session.watcher_chat_id,
+                    "chat_type": session.watcher_chat_type,
                     "user_id": session.watcher_user_id,
                     "user_name": session.watcher_user_name,
                     "thread_id": session.watcher_thread_id,
@@ -311,6 +313,7 @@ class ProcessRegistry:
             "suppressed": suppressed,
             "platform": session.watcher_platform,
             "chat_id": session.watcher_chat_id,
+            "chat_type": session.watcher_chat_type,
             "user_id": session.watcher_user_id,
             "user_name": session.watcher_user_name,
             "thread_id": session.watcher_thread_id,
@@ -1401,6 +1404,7 @@ class ProcessRegistry:
                             "session_key": s.session_key,
                             "watcher_platform": s.watcher_platform,
                             "watcher_chat_id": s.watcher_chat_id,
+                            "watcher_chat_type": s.watcher_chat_type,
                             "watcher_user_id": s.watcher_user_id,
                             "watcher_user_name": s.watcher_user_name,
                             "watcher_thread_id": s.watcher_thread_id,
@@ -1465,6 +1469,7 @@ class ProcessRegistry:
                     detached=True,  # Can't read output, but can report status + kill
                     watcher_platform=entry.get("watcher_platform", ""),
                     watcher_chat_id=entry.get("watcher_chat_id", ""),
+                    watcher_chat_type=entry.get("watcher_chat_type", ""),
                     watcher_user_id=entry.get("watcher_user_id", ""),
                     watcher_user_name=entry.get("watcher_user_name", ""),
                     watcher_thread_id=entry.get("watcher_thread_id", ""),
@@ -1486,6 +1491,7 @@ class ProcessRegistry:
                         "session_key": session.session_key,
                         "platform": session.watcher_platform,
                         "chat_id": session.watcher_chat_id,
+                        "chat_type": session.watcher_chat_type,
                         "user_id": session.watcher_user_id,
                         "user_name": session.watcher_user_name,
                         "thread_id": session.watcher_thread_id,

@@ -47,6 +47,7 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_NAME", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_TYPE", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
     monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
@@ -57,12 +58,14 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
     assert get_session_env("HERMES_SESSION_CHAT_ID") == "-1001"
     assert get_session_env("HERMES_SESSION_CHAT_NAME") == "Group"
+    assert get_session_env("HERMES_SESSION_CHAT_TYPE") == "group"
     assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
     assert get_session_env("HERMES_SESSION_USER_NAME") == "alice"
     assert get_session_env("HERMES_SESSION_THREAD_ID") == "17585"
 
     # os.environ should NOT be touched
     assert os.getenv("HERMES_SESSION_PLATFORM") is None
+    assert os.getenv("HERMES_SESSION_CHAT_TYPE") is None
     assert os.getenv("HERMES_SESSION_THREAD_ID") is None
 
     # Clean up
@@ -76,6 +79,7 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_NAME", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_TYPE", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
     monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
@@ -94,6 +98,7 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
     tokens = runner._set_session_env(context)
     assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
     assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
+    assert get_session_env("HERMES_SESSION_CHAT_TYPE") == "group"
 
     runner._clear_session_env(tokens)
 
@@ -101,6 +106,7 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
     assert get_session_env("HERMES_SESSION_PLATFORM") == ""
     assert get_session_env("HERMES_SESSION_CHAT_ID") == ""
     assert get_session_env("HERMES_SESSION_CHAT_NAME") == ""
+    assert get_session_env("HERMES_SESSION_CHAT_TYPE") == ""
     assert get_session_env("HERMES_SESSION_USER_ID") == ""
     assert get_session_env("HERMES_SESSION_USER_NAME") == ""
     assert get_session_env("HERMES_SESSION_THREAD_ID") == ""
@@ -149,6 +155,7 @@ def test_set_session_env_handles_missing_optional_fields():
     assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
     assert get_session_env("HERMES_SESSION_CHAT_ID") == "-1001"
     assert get_session_env("HERMES_SESSION_CHAT_NAME") == ""
+    assert get_session_env("HERMES_SESSION_CHAT_TYPE") == "private"
     assert get_session_env("HERMES_SESSION_THREAD_ID") == ""
 
     runner._clear_session_env(tokens)
@@ -333,3 +340,59 @@ async def test_run_in_executor_with_context_propagates_exceptions():
 
     with pytest.raises(ValueError, match="boom"):
         await runner._run_in_executor_with_context(blow_up)
+
+
+def test_build_process_event_source_uses_event_chat_type_without_session_cache():
+    """Recovered process watchers should carry chat_type without relying on cache."""
+    from gateway.config import Platform
+
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = None
+    runner._session_sources = {}
+
+    source = runner._build_process_event_source({
+        "platform": "telegram",
+        "chat_id": "2144471399",
+        "chat_type": "dm",
+        "thread_id": "17585",
+        "user_id": "123456",
+        "user_name": "alice",
+    })
+
+    assert source is not None
+    assert source.platform == Platform.TELEGRAM
+    assert source.chat_id == "2144471399"
+    assert source.chat_type == "dm"
+    assert source.thread_id == "17585"
+    assert source.user_id == "123456"
+    assert source.user_name == "alice"
+
+
+def test_set_session_vars_chat_type_keyword_does_not_shift_existing_callers():
+    """Adding chat_type must not shift existing positional callers."""
+    tokens = set_session_vars(
+        "telegram",
+        "-1001",
+        "Group",
+        "17585",
+        "123456",
+        "alice",
+        "telegram:group:-1001:17585:123456",
+        "session-1",
+        "msg-1",
+        "/tmp/work",
+        chat_type="group",
+    )
+    try:
+        assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
+        assert get_session_env("HERMES_SESSION_CHAT_ID") == "-1001"
+        assert get_session_env("HERMES_SESSION_CHAT_NAME") == "Group"
+        assert get_session_env("HERMES_SESSION_THREAD_ID") == "17585"
+        assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
+        assert get_session_env("HERMES_SESSION_USER_NAME") == "alice"
+        assert get_session_env("HERMES_SESSION_KEY") == "telegram:group:-1001:17585:123456"
+        assert get_session_env("HERMES_SESSION_ID") == "session-1"
+        assert get_session_env("HERMES_SESSION_MESSAGE_ID") == "msg-1"
+        assert get_session_env("HERMES_SESSION_CHAT_TYPE") == "group"
+    finally:
+        clear_session_vars(tokens)

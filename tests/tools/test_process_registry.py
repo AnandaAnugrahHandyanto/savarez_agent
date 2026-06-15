@@ -785,6 +785,7 @@ class TestCheckpoint:
             s = _make_session()
             s.watcher_platform = "telegram"
             s.watcher_chat_id = "999"
+            s.watcher_chat_type = "group"
             s.watcher_user_id = "u123"
             s.watcher_user_name = "alice"
             s.watcher_thread_id = "42"
@@ -796,6 +797,7 @@ class TestCheckpoint:
             assert len(data) == 1
             assert data[0]["watcher_platform"] == "telegram"
             assert data[0]["watcher_chat_id"] == "999"
+            assert data[0]["watcher_chat_type"] == "group"
             assert data[0]["watcher_user_id"] == "u123"
             assert data[0]["watcher_user_name"] == "alice"
             assert data[0]["watcher_thread_id"] == "42"
@@ -811,6 +813,7 @@ class TestCheckpoint:
             "session_key": "sk1",
             "watcher_platform": "telegram",
             "watcher_chat_id": "123",
+            "watcher_chat_type": "private",
             "watcher_user_id": "u123",
             "watcher_user_name": "alice",
             "watcher_thread_id": "42",
@@ -824,6 +827,7 @@ class TestCheckpoint:
             assert w["session_id"] == "proc_live"
             assert w["platform"] == "telegram"
             assert w["chat_id"] == "123"
+            assert w["chat_type"] == "private"
             assert w["user_id"] == "u123"
             assert w["user_name"] == "alice"
             assert w["thread_id"] == "42"
