@@ -4333,6 +4333,25 @@ _PLATFORMS = [
         "token_var": "SIGNAL_HTTP_URL",
     },
     {
+        "key": "nostr",
+        "label": "Nostr",
+        "emoji": "🟣",
+        "token_var": "NOSTR_PRIVATE_KEY",
+        "setup_instructions": [
+            "1. Generate a Nostr keypair (or use an existing one)",
+            "2. Set NOSTR_PRIVATE_KEY to your hex-encoded private key (or nsec)",
+            "3. Optionally set NOSTR_RELAYS (comma-separated relay WSS URLs)",
+            "4. Optionally set NOSTR_ALLOWED_USERS (comma-separated npubs/hex pubkeys)",
+            "5. Optionally set NOSTR_HOME_CHANNEL (default recipient npub/hex for cron)",
+        ],
+        "vars": [
+            {"key": "NOSTR_PRIVATE_KEY", "prompt": "Nostr private key (hex or nsec)", "password": True},
+            {"key": "NOSTR_RELAYS", "prompt": "Relay URLs (comma-separated, default: wss://relay.damus.io,wss://nos.lol,wss://relay.nostr.band)"},
+            {"key": "NOSTR_ALLOWED_USERS", "prompt": "Allowed user pubkeys (comma-separated npubs/hex, leave empty for all)"},
+            {"key": "NOSTR_HOME_CHANNEL", "prompt": "Default DM recipient for cron (npub or hex pubkey)"},
+        ],
+    },
+    {
         "key": "email",
         "label": "Email",
         "emoji": "📧",

@@ -906,6 +906,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.NOSTR:
+            result = await _send_nostr(pconfig, chat_id, chunk)
         elif platform == Platform.EMAIL:
             result = await _send_email(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SMS:
@@ -1413,6 +1415,20 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         return result
     except Exception as e:
         return _error(f"Signal send failed: {e}")
+
+
+async def _send_nostr(pconfig, chat_id, message):
+    """Send a Nostr encrypted DM via the standalone sender."""
+    try:
+        from gateway.platforms.nostr import send_nostr_standalone
+        result = await send_nostr_standalone(pconfig, chat_id, message)
+        if result.get("error"):
+            return {"error": result["error"]}
+        return {"success": True, "message_id": result.get("message_id", "")}
+    except ImportError:
+        return {"error": "Nostr adapter not available (websockets not installed)"}
+    except Exception as e:
+        return _error(f"Nostr send failed: {e}")
 
 
 async def _send_email(extra, chat_id, message):

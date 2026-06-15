@@ -6617,6 +6617,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
             return SignalAdapter(config)
 
+        elif platform == Platform.NOSTR:
+            from gateway.platforms.nostr import NostrAdapter, check_nostr_requirements
+            if not check_nostr_requirements():
+                logger.warning("Nostr: NOSTR_PRIVATE_KEY not configured or websockets not installed")
+                return None
+            return NostrAdapter(config)
+
         elif platform == Platform.EMAIL:
             from gateway.platforms.email import EmailAdapter, check_email_requirements
             if not check_email_requirements():
