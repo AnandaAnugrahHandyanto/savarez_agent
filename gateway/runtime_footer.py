@@ -1,4 +1,4 @@
-"""Gateway runtime-metadata footer.
+"""Gateway runtime-metadata footer and compact runtime prefix.
 
 Renders a compact footer showing runtime state (model, context %, cwd) and
 appends it to the FINAL message of an agent turn when enabled.  Off by default
@@ -10,10 +10,14 @@ Config (``~/.hermes/config.yaml``)::
       runtime_footer:
         enabled: true                       # off by default
         fields: [model, context_pct, cwd]   # order shown; drop any to hide
+      runtime_prefix:
+        enabled: true                       # prepend compact model tag
+        labels:
+          gpt-5.5: "[gpt5.5]"
 
-Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
-Users can toggle the global setting with ``/footer on|off`` from both the CLI
-and any gateway platform.
+Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``
+and ``display.platforms.<platform>.runtime_prefix``.  Users can toggle the
+footer with ``/footer on|off`` from both the CLI and any gateway platform.
 
 The footer is appended to the final response text in ``gateway/run.py`` right
 before returning the response to the adapter send path — so it only lands on
@@ -29,6 +33,15 @@ import os
 from typing import Any, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
+_DEFAULT_PREFIX_LABELS: dict[str, str] = {
+    "grok-composer": "[grok]",
+    "grok": "[grok]",
+    "gpt-5.5": "[gpt5.5]",
+    "gpt": "[gpt]",
+    "glm-5.1": "[glm]",
+    "glm-5.2": "[glm2]",
+    "glm": "[glm]",
+}
 _SEP = " · "
 
 
@@ -40,7 +53,7 @@ def _home_relative_cwd(cwd: str) -> str:
         home = os.path.expanduser("~")
         p = os.path.abspath(cwd)
         if home and (p == home or p.startswith(home + os.sep)):
-            return "~" + p[len(home):]
+            return "~" + p[len(home) :]
         return p
     except Exception:
         return cwd
@@ -146,4 +159,116 @@ def build_footer_line(
         context_length=context_length,
         cwd=cwd,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
+    )
+
+
+def resolve_prefix_config(
+    user_config: dict[str, Any] | None,
+    platform_key: str | None = None,
+) -> dict[str, Any]:
+    """Resolve effective runtime-prefix config for *platform_key*.
+
+    The prefix is intentionally separate from ``runtime_footer``: it provides a
+    small model tag at the start of visible gateway replies without adding cwd
+    or context details. Merge order mirrors ``resolve_footer_config``.
+    """
+    resolved: dict[str, Any] = {
+        "enabled": False,
+        "labels": dict(_DEFAULT_PREFIX_LABELS),
+    }
+    cfg = (user_config or {}).get("display") or {}
+
+    global_cfg = cfg.get("runtime_prefix")
+    if isinstance(global_cfg, dict):
+        if "enabled" in global_cfg:
+            resolved["enabled"] = bool(global_cfg.get("enabled"))
+        if isinstance(global_cfg.get("labels"), dict):
+            labels = dict(resolved["labels"])
+            labels.update({str(k): str(v) for k, v in global_cfg["labels"].items()})
+            resolved["labels"] = labels
+
+    if platform_key:
+        platforms = cfg.get("platforms") or {}
+        plat_cfg = platforms.get(platform_key)
+        if isinstance(plat_cfg, dict):
+            plat_prefix = plat_cfg.get("runtime_prefix")
+            if isinstance(plat_prefix, dict):
+                if "enabled" in plat_prefix:
+                    resolved["enabled"] = bool(plat_prefix.get("enabled"))
+                if isinstance(plat_prefix.get("labels"), dict):
+                    labels = dict(resolved["labels"])
+                    labels.update(
+                        {str(k): str(v) for k, v in plat_prefix["labels"].items()}
+                    )
+                    resolved["labels"] = labels
+
+    return resolved
+
+
+def _label_for_model(model: Optional[str], labels: dict[str, Any] | None = None) -> str:
+    """Return the configured compact label for *model*, or a safe default."""
+    short = _model_short(model)
+    if not short:
+        return ""
+
+    labels = labels or {}
+    lowered = {str(k).lower(): str(v) for k, v in labels.items() if str(v)}
+    for candidate in (str(model or ""), short):
+        val = lowered.get(candidate.lower())
+        if val:
+            return val
+
+    # Fallback to longest prefix match so a broad label like ``gpt`` can cover
+    # ``gpt-5.5`` while exact labels (checked above) still win.
+    short_l = short.lower()
+    for key in sorted(lowered, key=len, reverse=True):
+        if short_l.startswith(key):
+            return lowered[key]
+    return f"[{short}]"
+
+
+def build_runtime_prefix(
+    *,
+    user_config: dict[str, Any] | None,
+    platform_key: str | None,
+    model: Optional[str],
+) -> str:
+    """Return compact model prefix, e.g. ``[gpt5.5]``, or empty if disabled."""
+    cfg = resolve_prefix_config(user_config, platform_key)
+    if not cfg.get("enabled"):
+        return ""
+    return _label_for_model(model, cfg.get("labels") or {})
+
+
+def apply_runtime_prefix(response: str, prefix: str) -> str:
+    """Prepend *prefix* once to a final gateway response."""
+    if not response or not prefix:
+        return response
+    stripped = response.lstrip()
+    if stripped.startswith(prefix):
+        return response
+    leading = response[: len(response) - len(stripped)]
+    return f"{leading}{prefix} {stripped}"
+
+
+def format_runtime_prefix(
+    *,
+    model: Optional[str],
+    labels: dict[str, str] | None = None,
+) -> str:
+    """Compatibility helper returning the compact marker for *model*."""
+    return _label_for_model(model, labels or _DEFAULT_PREFIX_LABELS)
+
+
+def build_prefix_line(
+    *,
+    user_config: dict[str, Any] | None,
+    platform_key: str | None,
+    model: Optional[str],
+) -> str:
+    """Compatibility alias for the first-line runtime prefix entry point."""
+    return build_runtime_prefix(
+        user_config=user_config,
+        platform_key=platform_key,
+        model=model,
     )

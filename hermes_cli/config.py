@@ -1516,6 +1516,22 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
         },
+        # Gateway runtime prefix prepended to the FINAL visible reply when enabled.
+        # It is separate from runtime_footer so users can see a compact model tag
+        # without context/cwd metadata. Per-platform overrides go under
+        # display.platforms.<platform>.runtime_prefix.
+        "runtime_prefix": {
+            "enabled": False,
+            "labels": {
+                "grok-composer": "[grok]",
+                "grok": "[grok]",
+                "gpt-5.5": "[gpt5.5]",
+                "gpt": "[gpt]",
+                "glm-5.1": "[glm]",
+                "glm-5.2": "[glm2]",
+                "glm": "[glm]",
+            },
+        },
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
     },
 

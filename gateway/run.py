@@ -8949,6 +8949,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
+            # Compact runtime prefix — a small model tag at the START of the
+            # final visible reply (for example, [gpt5.5]). This is separate
+            # from the footer so users can identify the answering model
+            # without adding cwd/context chrome.
+            try:
+                from gateway.runtime_footer import (
+                    apply_runtime_prefix as _arp,
+                    build_runtime_prefix as _brp,
+                )
+
+                _runtime_prefix = _brp(
+                    user_config=_load_gateway_config(),
+                    platform_key=_platform_config_key(source.platform),
+                    model=agent_result.get("model"),
+                )
+            except Exception as _prefix_err:
+                logger.debug("runtime_prefix build failed: %s", _prefix_err)
+                _runtime_prefix = ""
+            if (
+                _runtime_prefix
+                and response
+                and not agent_result.get("already_sent")
+                and not _intentional_silence
+            ):
+                response = _arp(response, _runtime_prefix)
+
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When
             # streaming already delivered the body, we can't mutate the sent
