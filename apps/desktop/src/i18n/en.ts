@@ -1335,7 +1335,10 @@ export const en: Translations = {
       fetch: 'Downloading…',
       pull: 'Almost there…',
       pydeps: 'Finishing up…',
+      update: 'Updating Hermes…',
+      rebuild: 'Rebuilding the desktop app…',
       restart: 'Restarting Hermes…',
+      done: 'Update complete',
       manual: 'Update from your terminal',
       error: 'Update paused'
     },
