@@ -10,11 +10,108 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
+    SendResult,
     safe_url_for_log,
     utf16_len,
+    _internal_gateway_response_limit,
     _log_safe_path,
     _prefix_within_utf16_limit,
+    _truncate_internal_gateway_delivery_text,
 )
+from gateway.session import SessionSource
+
+
+class TestInternalGatewayResponseTruncation:
+    def test_leaves_short_internal_response_unchanged(self):
+        text = "짧은 내부 알림"
+        assert _truncate_internal_gateway_delivery_text(text, 900) == text
+
+    def test_truncates_long_internal_response_with_marker(self):
+        text = "가" * 1200
+        result = _truncate_internal_gateway_delivery_text(text, 200)
+
+        assert len(result) <= 200
+        assert "gateway internal response truncated to 200 chars" in result
+        assert result.startswith("가")
+
+    def test_gateway_config_limit_is_used(self):
+        assert (
+            _internal_gateway_response_limit(
+                {
+                    "gateway": {"internal_max_response_chars": "123"},
+                    "cron": {"max_delivery_chars": "456"},
+                }
+            )
+            == 123
+        )
+
+    @pytest.mark.parametrize("value", [None, 0, "0", "invalid"])
+    def test_unset_zero_or_invalid_gateway_limit_is_unbounded(self, value):
+        assert (
+            _internal_gateway_response_limit(
+                {
+                    "gateway": {"internal_max_response_chars": value},
+                    "cron": {"max_delivery_chars": "456"},
+                }
+            )
+            is None
+        )
+
+    @pytest.mark.asyncio
+    async def test_internal_delivery_path_truncates_but_user_delivery_does_not(self):
+        class StubAdapter(BasePlatformAdapter):
+            def __init__(self):
+                from gateway.config import Platform, PlatformConfig
+
+                super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+                self.sent = []
+
+            async def connect(self):
+                return True
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, *a, **kw):
+                pass
+
+            async def get_chat_info(self, *a):
+                return {}
+
+            async def _keep_typing(self, *a, **kw):
+                return None
+
+            async def _run_processing_hook(self, *a, **kw):
+                return None
+
+            async def _send_with_retry(self, chat_id, content, **kwargs):
+                self.sent.append(content)
+                return SendResult(success=True, message_id="m1")
+
+        adapter = StubAdapter()
+
+        async def handler(event):
+            return "가" * 1200
+
+        adapter.set_message_handler(handler)
+        source = SessionSource(platform=adapter.platform, chat_id="chat")
+
+        with patch(
+            "gateway.platforms.base._internal_gateway_response_limit",
+            return_value=200,
+        ):
+            await adapter._process_message_background(
+                MessageEvent(text="internal", source=source, internal=True),
+                "internal-session",
+            )
+            await adapter._process_message_background(
+                MessageEvent(text="user", source=source, internal=False),
+                "user-session",
+            )
+
+        assert len(adapter.sent[0]) <= 200
+        assert "gateway internal response truncated to 200 chars" in adapter.sent[0]
+        assert adapter.sent[1] == "가" * 1200
 
 
 class TestSecretCaptureGuidance:

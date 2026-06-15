@@ -2289,6 +2289,10 @@ DEFAULT_CONFIG = {
         # multi-tool agent turn. Bridged to HERMES_MEDIA_TRUST_RECENT_SECONDS.
         # Only consulted when ``strict`` is true.
         "trust_recent_files_seconds": 600,
+        # Optional length cap for synthetic/internal gateway responses such as
+        # background-process completion or restart-resume notices. null/0 means
+        # unbounded.
+        "internal_max_response_chars": None,
     },
 
     # Real-time token streaming to messaging platforms (Telegram, Discord,

@@ -52,6 +52,51 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def _positive_int(value) -> int | None:
+    """Coerce a config/env value to a positive int, or None when unset/invalid."""
+    if value in (None, "", False):
+        return None
+    try:
+        limit = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return limit if limit > 0 else None
+
+
+def _internal_gateway_response_limit(config: dict | None = None) -> int | None:
+    """Return configured max chars for synthetic gateway responses.
+
+    Restart auto-resume and background-process completion events are useful
+    recovery notices, but if they dump a full worker closeout they feel like
+    noisy alerts. Configure ``gateway.internal_max_response_chars`` to bound
+    those synthetic notices; unset, null, zero, or invalid values leave them
+    unbounded.
+    """
+    try:
+        if config is None:
+            from hermes_cli.config import load_config
+
+            config = load_config()
+        gateway_cfg = config.get("gateway", {}) if isinstance(config, dict) else {}
+        return _positive_int(gateway_cfg.get("internal_max_response_chars"))
+    except Exception:
+        return None
+
+
+def _truncate_internal_gateway_delivery_text(text: str, limit: int | None) -> str:
+    """Bound oversized synthetic gateway delivery text."""
+    if not limit or len(text) <= limit:
+        return text
+    marker = (
+        "\n\n…\n"
+        f"[gateway internal response truncated to {limit} chars; "
+        "full details remain in the session/workflow logs]"
+    )
+    if limit <= len(marker) + 20:
+        return text[:limit]
+    return text[: limit - len(marker)].rstrip() + marker
+
+
 def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
     """Build platform-aware thread metadata for adapter sends.
 
@@ -4320,6 +4365,20 @@ class BasePlatformAdapter(ABC):
 
                 # Send the text portion
                 if text_content and not _tts_caption_delivered:
+                    if getattr(event, "internal", False):
+                        before_len = len(text_content)
+                        text_content = _truncate_internal_gateway_delivery_text(
+                            text_content,
+                            _internal_gateway_response_limit(),
+                        )
+                        if len(text_content) < before_len:
+                            logger.info(
+                                "[%s] Truncated internal gateway response from %d to %d chars for %s",
+                                self.name,
+                                before_len,
+                                len(text_content),
+                                event.source.chat_id,
+                            )
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
                     # Mark final response messages for notification delivery.
