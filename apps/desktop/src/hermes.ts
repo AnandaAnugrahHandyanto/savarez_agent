@@ -44,6 +44,7 @@ import type {
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
+const TRANSCRIBE_AUDIO_TIMEOUT_MS = 60_000
 
 export type {
   ActionResponse,
@@ -733,7 +734,8 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
     body: {
       data_url: dataUrl,
       mime_type: mimeType
-    }
+    },
+    timeoutMs: TRANSCRIBE_AUDIO_TIMEOUT_MS
   })
 }
 
