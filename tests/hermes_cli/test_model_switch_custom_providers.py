@@ -5,9 +5,20 @@ shared slash-command pipeline (`/model` in CLI/gateway/Telegram) historically
 only looked at `providers:`.
 """
 
+import pytest
+
 import hermes_cli.providers as providers_mod
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.providers import resolve_provider_full
+
+
+@pytest.fixture(autouse=True)
+def _clear_custom_models_cache():
+    """Clear module-level cache to prevent cross-test leakage."""
+    from hermes_cli.model_switch import _custom_models_cache
+    _custom_models_cache.clear()
+    yield
+    _custom_models_cache.clear()
 
 
 _MOCK_VALIDATION = {
@@ -625,7 +636,7 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
 
     calls = []
 
-    def fake_fetch_api_models(api_key, base_url):
+    def fake_fetch_api_models(api_key, base_url, **_kw):
         calls.append((api_key, base_url))
         return ["gateway-model-a", "gateway-model-b", "gateway-model-c"]
 
@@ -686,7 +697,7 @@ def test_custom_providers_discover_models_false_keeps_explicit_subset(monkeypatc
 
     calls = []
 
-    def fake_fetch_api_models(api_key, base_url):
+    def fake_fetch_api_models(api_key, base_url, **_kw):
         calls.append((api_key, base_url))
         return ["gateway-model-a", "gateway-model-b", "gateway-model-c"]
 
@@ -742,7 +753,7 @@ def test_custom_providers_discover_models_false_string_is_normalised(monkeypatch
 
     calls = []
 
-    def fake_fetch_api_models(api_key, base_url):
+    def fake_fetch_api_models(api_key, base_url, **_kw):
         calls.append((api_key, base_url))
         return ["live-a", "live-b"]
 
