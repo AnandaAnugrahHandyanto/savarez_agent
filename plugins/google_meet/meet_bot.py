@@ -153,6 +153,7 @@ class _BotState:
         self._seen_transcript_segments: set = set()
         self._transcript_entries: list[tuple[str, str, str, str]] = []
         self._last_caption_text_by_caption_key: dict[str, str] = {}
+        self._speaker_by_caption_key: dict[str, str] = {}
         out_dir.mkdir(parents=True, exist_ok=True)
         self.transcript_path = out_dir / "transcript.txt"
         self.caption_debug_path = out_dir / "caption_debug.jsonl"
@@ -207,6 +208,51 @@ class _BotState:
         if not current.startswith(previous):
             return ""
         return current[len(previous):].lstrip(" \t\r\n,.;:!?-")
+
+    @staticmethod
+    def _same_caption_text(left: str, right: str) -> bool:
+        return re.sub(r"\s+", " ", left or "").strip().lower() == re.sub(
+            r"\s+", " ", right or ""
+        ).strip().lower()
+
+    @classmethod
+    def _is_cross_caption_key_revision(cls, previous: str, current: str) -> bool:
+        previous_norm = re.sub(r"\s+", " ", previous or "").strip()
+        current_norm = re.sub(r"\s+", " ", current or "").strip()
+        if not previous_norm or not current_norm:
+            return False
+        previous_lower = previous_norm.lower()
+        current_lower = current_norm.lower()
+        if current_lower == previous_lower:
+            return True
+        if current_lower.startswith(previous_lower):
+            return True
+        prefix_len = cls._common_prefix_len(previous_lower, current_lower)
+        return prefix_len >= 80 and cls._is_caption_revision(previous_norm, current_norm)
+
+    def _revision_caption_key_for_speaker(
+        self,
+        speaker: str,
+        text: str,
+        *,
+        exclude_caption_key: str,
+    ) -> str:
+        best_key = ""
+        best_score = -1
+        current_norm = re.sub(r"\s+", " ", text or "").strip().lower()
+        for caption_key, previous in self._last_caption_text_by_caption_key.items():
+            if caption_key == exclude_caption_key:
+                continue
+            if self._speaker_by_caption_key.get(caption_key) != speaker:
+                continue
+            if not self._is_cross_caption_key_revision(previous, text):
+                continue
+            previous_norm = re.sub(r"\s+", " ", previous or "").strip().lower()
+            score = self._common_prefix_len(previous_norm, current_norm)
+            if score > best_score:
+                best_key = caption_key
+                best_score = score
+        return best_key
 
     @staticmethod
     def _split_caption_text(text: str) -> list[str]:
@@ -339,7 +385,20 @@ class _BotState:
         self._seen.add(key)
         ts = self._touch_caption_progress()
         previous_full = self._last_caption_text_by_caption_key.get(caption_key, "")
+        if not previous_full and caption_id:
+            revision_caption_key = self._revision_caption_key_for_speaker(
+                speaker,
+                text,
+                exclude_caption_key=caption_key,
+            )
+            if revision_caption_key:
+                caption_key = revision_caption_key
+                previous_full = self._last_caption_text_by_caption_key.get(caption_key, "")
+        if previous_full and self._same_caption_text(previous_full, text):
+            self._flush()
+            return
         self._last_caption_text_by_caption_key[caption_key] = text
+        self._speaker_by_caption_key[caption_key] = speaker
 
         if previous_full:
             suffix = self._caption_suffix(previous_full, text)

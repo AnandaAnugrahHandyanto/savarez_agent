@@ -195,6 +195,46 @@ def test_bot_state_splits_growing_same_speaker_caption_before_it_gets_too_long(t
     assert status["transcriptLines"] == 2
 
 
+def test_bot_state_revises_split_caption_row_when_dom_row_id_changes(tmp_path):
+    from plugins.google_meet.meet_bot import MAX_TRANSCRIPT_TEXT_LEN, _BotState
+
+    out = tmp_path / "session"
+    state = _BotState(out_dir=out, meeting_id="abc-defg-hij",
+                      url="https://meet.google.com/abc-defg-hij")
+
+    prefix = " ".join(["alpha"] * 95)
+    first_tail = " ".join(["beta"] * 35)
+    final_tail = " ".join(["gamma"] * 20)
+    first = f"{prefix} {first_tail}"
+    final = f"{first} {final_tail}"
+
+    state.record_caption("Alex Rivera", first, caption_id="row-live-1")
+    state.record_caption("Alex Rivera", final, caption_id="row-live-2")
+
+    transcript = (out / "transcript.txt").read_text().splitlines()
+    stripped = [line.split("] ", 1)[1] for line in transcript]
+    expected_chunks = state._split_caption_text(final)
+    assert stripped == [f"Alex Rivera: {chunk}" for chunk in expected_chunks]
+    assert len(stripped) == len(expected_chunks)
+    assert all(len(line.split(": ", 1)[1]) <= MAX_TRANSCRIPT_TEXT_LEN for line in stripped)
+
+
+def test_bot_state_revises_short_caption_growth_when_dom_row_id_changes(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    out = tmp_path / "session"
+    state = _BotState(out_dir=out, meeting_id="abc-defg-hij",
+                      url="https://meet.google.com/abc-defg-hij")
+
+    state.record_caption("Alex Rivera", "will", caption_id="row-a")
+    state.record_caption("Alex Rivera", "will still be", caption_id="row-b")
+
+    transcript = (out / "transcript.txt").read_text().splitlines()
+    assert [line.split("] ", 1)[1] for line in transcript] == [
+        "Alex Rivera: will still be",
+    ]
+
+
 def test_bot_state_revises_matching_caption_row_without_collapsing_same_speaker_rows(tmp_path):
     from plugins.google_meet.meet_bot import _BotState
 
