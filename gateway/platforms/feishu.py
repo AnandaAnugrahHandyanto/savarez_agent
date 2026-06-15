@@ -4579,9 +4579,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 await asyncio.sleep(wait_seconds)
 
     def _resolve_domain(self) -> Any:
-        if self._domain_name.startswith("http"):
-            return self._domain_name
-        return LARK_DOMAIN if self._domain_name == "lark" else FEISHU_DOMAIN
+        return _resolve_feishu_domain(self._domain_name)
 
     async def _connect_websocket(self) -> None:
         if not FEISHU_WEBSOCKET_AVAILABLE:
@@ -4909,11 +4907,29 @@ class FeishuAdapter(BasePlatformAdapter):
 
 
 def _accounts_base_url(domain: str) -> str:
+    if domain.startswith("http"):
+        # Custom deployments host accounts/oauth on the same origin.
+        return domain.rstrip("/")
     return _ONBOARD_ACCOUNTS_URLS.get(domain, _ONBOARD_ACCOUNTS_URLS["feishu"])
 
 
 def _onboard_open_base_url(domain: str) -> str:
+    if domain.startswith("http"):
+        return domain.rstrip("/")
     return _ONBOARD_OPEN_URLS.get(domain, _ONBOARD_OPEN_URLS["feishu"])
+
+
+def _resolve_feishu_domain(domain_name: str) -> Any:
+    """Map a configured domain name to the SDK domain value.
+
+    ``domain_name`` may be:
+      - ``"feishu"`` (default) → SDK ``FEISHU_DOMAIN``
+      - ``"lark"``              → SDK ``LARK_DOMAIN``
+      - any ``http(s)://...``   → returned verbatim, for private deployments
+    """
+    if domain_name.startswith("http"):
+        return domain_name
+    return LARK_DOMAIN if domain_name == "lark" else FEISHU_DOMAIN
 
 
 def _post_registration(base_url: str, body: Dict[str, str]) -> dict:
@@ -5086,8 +5102,12 @@ def probe_bot(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
 
 
 def _build_onboard_client(app_id: str, app_secret: str, domain: str) -> Any:
-    """Build a lark Client for the given credentials and domain."""
-    sdk_domain = LARK_DOMAIN if domain == "lark" else FEISHU_DOMAIN
+    """Build a lark Client for the given credentials and domain.
+
+    ``domain`` accepts ``"feishu"``, ``"lark"``, or a full ``http(s)://`` URL
+    pointing at a private Feishu deployment.
+    """
+    sdk_domain = _resolve_feishu_domain(domain)
     return (
         lark.Client.builder()
         .app_id(app_id)
