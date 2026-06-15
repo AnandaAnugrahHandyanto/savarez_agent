@@ -81,3 +81,18 @@ def test_telegram_final_response_keeps_normal_answers():
     answer = "Here is the clean summary you asked for."
 
     assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
+
+
+def test_non_telegram_final_response_strips_dsml_tool_call_markup():
+    """Weixin/QQ should not receive provider text-encoded tool calls."""
+    raw = (
+        "Master 说得对，我会重建页面。\n"
+        "<｜DSML｜tool_calls> <｜DSML｜invoke name=\"write_file\">"
+        "<｜DSML｜parameter name=\"arguments\">{\"content\":\"internal\"}"
+    )
+
+    sanitized = _sanitize_gateway_final_response(Platform.WEIXIN, raw)
+
+    assert sanitized == "Master 说得对，我会重建页面。"
+    assert "DSML" not in sanitized
+    assert "write_file" not in sanitized
