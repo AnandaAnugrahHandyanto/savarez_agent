@@ -53,6 +53,12 @@ def adapter():
     return TelegramAdapter(config)
 
 
+@pytest.fixture()
+def adapter_inline_shell(adapter):
+    config = PlatformConfig(enabled=True, token="fake-token", extra={"prefer_inline_shell_commands": True})
+    return TelegramAdapter(config)
+
+
 # =========================================================================
 # _escape_mdv2
 # =========================================================================
@@ -772,6 +778,63 @@ class TestFormatMessageTables:
         assert out.count("*1*") == 1
         assert out.count("*9*") == 1
         assert "• Y: 8" in out
+
+
+# =========================================================================
+# format_message - prefer_inline_shell_commands
+# =========================================================================
+
+
+class TestFormatMessagePreferInlineShellCommands:
+    """Single-line shell/bash/sh/zsh fences become inline code when the
+    ``prefer_inline_shell_commands`` config flag is enabled."""
+
+    def test_single_line_shell_fence_converted_when_enabled(self, adapter_inline_shell):
+        text = "Run this:\n```shell\nls -la\n```"
+        result = adapter_inline_shell.format_message(text)
+        assert "`ls -la`" in result
+        assert "```" not in result
+
+    def test_single_line_shell_fence_unchanged_when_disabled(self, adapter):
+        text = "Run this:\n```shell\nls -la\n```"
+        result = adapter.format_message(text)
+        assert "```shell\nls -la\n```" in result
+
+    @pytest.mark.parametrize("lang", ["bash", "sh", "zsh"])
+    def test_bash_sh_zsh_all_convert(self, adapter_inline_shell, lang):
+        text = f"```{lang}\necho hi\n```"
+        result = adapter_inline_shell.format_message(text)
+        assert "`echo hi`" in result
+        assert "```" not in result
+
+    def test_multiline_shell_fence_untouched(self, adapter_inline_shell):
+        text = "```shell\necho hi\necho bye\n```"
+        result = adapter_inline_shell.format_message(text)
+        assert "```shell\necho hi\necho bye\n```" in result
+
+    def test_single_line_fence_with_backtick_untouched(self, adapter_inline_shell):
+        text = "```shell\necho `hostname`\n```"
+        result = adapter_inline_shell.format_message(text)
+        expected = "```shell\necho \\`hostname\\`\n```"
+        assert expected in result
+
+    def test_non_shell_language_never_converted(self, adapter_inline_shell):
+        text = "```python\nprint('hi')\n```"
+        result = adapter_inline_shell.format_message(text)
+        assert "```python\nprint('hi')\n```" in result
+        assert "`print('hi')`" not in result
+
+    def test_whitespace_trimmed(self, adapter_inline_shell):
+        text = "```shell\n   ls -la   \n```"
+        result = adapter_inline_shell.format_message(text)
+        assert "`ls -la`" in result
+        assert "```" not in result
+
+    def test_converted_inline_code_escaped_correctly_in_final_output(self, adapter_inline_shell):
+        text = "```shell\ncd C:\\Users\n```"
+        result = adapter_inline_shell.format_message(text)
+        assert r"`cd C:\\Users`" in result
+        assert "```" not in result
 
 
 @pytest.mark.asyncio

@@ -419,6 +419,13 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
+        # When enabled, single-line ```shell/bash/sh/zsh``` fences are
+        # rendered as inline code (`cmd`) instead of a fenced code block,
+        # since Telegram mobile makes inline code easier to tap-to-copy.
+        # Multiline bodies, heredocs/scripts, and commands containing a
+        # backtick are left as fenced blocks. Config:
+        # telegram.prefer_inline_shell_commands (default False).
+        self._prefer_inline_shell_commands: bool = self._coerce_bool_extra("prefer_inline_shell_commands", False)
         # Bot API 10.1 Rich Messages: when explicitly enabled, send final
         # replies via sendRichMessage with the raw agent markdown so
         # tables/task lists/etc. render natively. Disabled by default because
@@ -4877,6 +4884,25 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return {"name": str(chat_id), "type": "dm", "error": str(e)}
 
+    _SHELL_FENCE_RE = re.compile(r'```(?:shell|bash|sh|zsh)\n(.*?)```', re.DOTALL)
+
+    def _inline_shell_fences(self, text: str) -> str:
+        """Convert single-line ```shell/bash/sh/zsh``` fences to inline code.
+
+        Only fences whose stripped body is a single physical line and
+        contains no backtick are converted (escaping a backtick inside
+        inline code is ambiguous). Multiline bodies, heredocs/scripts, and
+        any other language tag are left untouched.
+        """
+
+        def _convert(m: "re.Match[str]") -> str:
+            body = m.group(1).strip()
+            if '\n' in body or '`' in body:
+                return m.group(0)
+            return f'`{body}`'
+
+        return self._SHELL_FENCE_RE.sub(_convert, text)
+
     def format_message(self, content: str) -> str:
         """
         Convert standard markdown to Telegram MarkdownV2 format.
@@ -4904,6 +4930,13 @@ class TelegramAdapter(BasePlatformAdapter):
         # 0) Rewrite GFM-style pipe tables into Telegram-friendly row groups
         #    before the normal MarkdownV2 conversions run.
         text = _wrap_markdown_tables(text)
+
+        # 0.5) Optionally convert single-line shell/bash/sh/zsh fences to
+        #      inline code (tap-to-copy on Telegram mobile). Must run before
+        #      step 1 so converted commands flow into step 2's inline-code
+        #      protection rather than the fenced-block regex below.
+        if self._prefer_inline_shell_commands:
+            text = self._inline_shell_fences(text)
 
         # 1) Protect fenced code blocks (``` ... ```)
         #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.
