@@ -855,6 +855,48 @@ def test_slack_flow_does_not_launch_when_create_discovers_existing_run(tmp_path,
     assert launched == []
 
 
+def test_slack_flow_refuses_new_run_during_runtime_sync_lease(tmp_path):
+    launched: list[str] = []
+    config = MonicaConfig(
+        enabled=True,
+        slack=SlackConfig(
+            allowed_channels=("C_MOBILE",),
+            bot_user_ids=("BMONICA",),
+        ),
+    )
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    lease, reason = state.try_acquire_runtime_sync_lease(
+        owner_id="hermes-update",
+        owner_pid=1234,
+        owner_host="host",
+        project_root="/repo/hermes",
+        pre_update_commit="dead1234",
+        started_at="2026-06-15T10:00:00Z",
+        expires_at="2026-06-15T10:15:00Z",
+    )
+    assert lease is not None
+    assert reason == ""
+    flow = MonicaSlackFlow(config=config, state=state, loop_launcher=launched.append)
+
+    result = flow.handle_gateway_event(
+        _slack_event(
+            "marketplace PDP copy is wrong",
+            raw_text="<@BMONICA> marketplace PDP copy is wrong",
+        )
+    )
+
+    assert result == {
+        "action": "skip_reply",
+        "reason": "monica_runtime_sync_in_progress",
+        "text": (
+            "Monica is temporarily paused while Hermes is updating. "
+            "Please retry after the update finishes."
+        ),
+    }
+    assert state.list_runs() == []
+    assert launched == []
+
+
 def test_slack_flow_tagged_approval_resumes_waiting_run(tmp_path):
     launched: list[str] = []
     config = MonicaConfig(
@@ -2781,6 +2823,55 @@ def test_dry_run_finishes_without_waiting_for_approval_or_code(tmp_path):
     assert "## Summary" in skills.status_posts[0]
 
 
+def test_loop_acquires_and_releases_loop_lease(tmp_path):
+    config = MonicaConfig(enabled=True, rollout_mode="dry_run")
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C_MOBILE",
+        thread_ts="1710000000.000100",
+        message_ts="1710000000.000200",
+        user_id="U_TAGGER",
+        request_text="can you fix this marketplace PDP copy bug?",
+    )
+    skills = FakeSkills()
+
+    MonicaLoop(config=config, state=state, skills=skills).run(run.id)
+
+    assert state.current_loop_lease(run.id) is None
+    updated = state.get_run(run.id)
+    assert updated is not None
+    assert updated.status == "done"
+
+
+def test_loop_skips_when_live_loop_lease_exists(tmp_path):
+    config = MonicaConfig(enabled=True, rollout_mode="dry_run")
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C_MOBILE",
+        thread_ts="1710000000.000100",
+        message_ts="1710000000.000200",
+        user_id="U_TAGGER",
+        request_text="can you fix this marketplace PDP copy bug?",
+    )
+    lease, reason = state.acquire_loop_lease(
+        run.id,
+        owner_id="other-gateway",
+        acquired_at=1781520000.0,
+        ttl_seconds=300,
+    )
+    assert lease is not None
+    assert reason == ""
+    skills = FakeSkills()
+
+    MonicaLoop(config=config, state=state, skills=skills).run(run.id)
+
+    assert skills.calls == []
+    assert state.get_run(run.id) == run
+    assert state.current_loop_lease(run.id) == lease
+
+
 def test_approved_pr_refuses_state_run_without_tag_or_dm_intake(tmp_path):
     config = MonicaConfig(
         enabled=True,
@@ -4067,6 +4158,13 @@ class ApprovedFixSkillsBadBaseCommit(ApprovedFixSkills):
         return result
 
 
+class ApprovedFixSkillsWrongBaseRef(ApprovedFixSkills):
+    def run_internal_codex_worker(self, run: Any) -> dict[str, Any]:
+        result = super().run_internal_codex_worker(run)
+        result["base_ref"] = "origin/dev"
+        return result
+
+
 class ApprovedFixSkillsWithWorktree(ApprovedFixSkills):
     def run_internal_codex_worker(self, run: Any) -> dict[str, Any]:
         result = super().run_internal_codex_worker(run)
@@ -4235,6 +4333,106 @@ def test_approved_pr_slack_tag_to_approval_to_proof_to_draft_pr_regression(tmp_p
             "url": "https://slack.example/files/android-screenshot.png",
         },
     ]
+    final_post = skills.status_posts[-1]
+    assert "Draft PR is ready: https://github.com/example/mobile/pull/123" in final_post
+    assert "Linear: https://linear.app/acme/issue/MOB-123" in final_post
+    assert "Base: origin/main @ abc1234" in final_post
+    assert "Verification: npm test" in final_post
+    assert "Proof target: elixir-card://marketplace/offer/fitness-first" in final_post
+    assert "expected text: Fitness First" in final_post
+    assert "https://slack.example/files/ios-screenshot.png" in final_post
+    assert "https://slack.example/files/android-screenshot.png" in final_post
+
+
+def test_approved_pr_dm_to_approval_to_proof_to_draft_pr_regression(tmp_path):
+    config = MonicaConfig(
+        enabled=True,
+        rollout_mode="approved_pr",
+        slack=SlackConfig(
+            allowed_channels=("C_MOBILE",),
+            bot_user_ids=("U_MONICA",),
+            approver_user_ids=("U_APPROVER",),
+        ),
+        verification=VerificationConfig(commands=("npm test",)),
+        proof=_approved_pr_proof_config(),
+    )
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    skills = ApprovedPrEndToEndSkills()
+
+    def launch(run_id: str) -> None:
+        MonicaLoop(config=config, state=state, skills=skills).run(run_id)
+
+    flow = MonicaSlackFlow(
+        config=config,
+        state=state,
+        loop_launcher=launch,
+        approval_readiness_checker=lambda: (True, ""),
+    )
+
+    queued = flow.handle_gateway_event(
+        _slack_event(
+            "can you fix this marketplace PDP copy bug?",
+            raw_text="can you fix this marketplace PDP copy bug?",
+            raw_type="message",
+            raw_channel_type="im",
+            channel_id="D_MONICA",
+            chat_type="dm",
+            user_id="U_REPORTER",
+        )
+    )
+
+    runs = state.list_runs()
+    assert queued == {"action": "skip", "reason": "monica_loop_queued"}
+    assert len(runs) == 1
+    waiting = state.get_run(runs[0].id)
+    assert waiting is not None
+    assert waiting.status == "awaiting_fix_approval"
+    assert waiting.channel_id == "D_MONICA"
+    assert waiting.raw_event is not None
+    assert waiting.raw_event["channel_type"] == "im"
+    assert waiting.linear_identifier == "MOB-123"
+    assert waiting.pr_url == ""
+    assert skills.calls == [
+        "read_slack_thread",
+        "infer_user_intent",
+        "create_or_update_linear",
+        "ask_fix_approval",
+    ]
+
+    approved = flow.handle_gateway_event(
+        _slack_event(
+            "approved, fix it",
+            raw_text="approved, fix it",
+            raw_type="message",
+            raw_channel_type="im",
+            channel_id="D_MONICA",
+            chat_type="dm",
+            user_id="U_APPROVER",
+            thread_ts="1710000000.000100",
+            message_ts="1710000001.000300",
+        )
+    )
+
+    done = state.get_run(runs[0].id)
+    assert approved == {"action": "skip", "reason": "monica_loop_approved"}
+    assert done is not None
+    assert done.status == "done"
+    assert done.approved_by_user_id == "U_APPROVER"
+    assert done.branch_name == "monica/MOB-123-checkout-crash"
+    assert done.base_branch == "origin/main"
+    assert done.base_commit == "abc1234"
+    assert done.pr_url == "https://github.com/example/mobile/pull/123"
+    assert skills.calls == [
+        "read_slack_thread",
+        "infer_user_intent",
+        "create_or_update_linear",
+        "ask_fix_approval",
+        "run_internal_codex_worker",
+        "run_verification",
+        "run_proof",
+        "open_draft_pr",
+    ]
+    assert skills.share_calls == ["share_proof_artifacts"]
     final_post = skills.status_posts[-1]
     assert "Draft PR is ready: https://github.com/example/mobile/pull/123" in final_post
     assert "Linear: https://linear.app/acme/issue/MOB-123" in final_post
@@ -4613,6 +4811,49 @@ def test_approved_pr_blocks_before_verification_when_worker_base_commit_is_not_s
     assert updated is not None
     assert updated.status == "blocked"
     assert updated.failure_reason == "approved_pr_base_commit_invalid"
+    assert updated.base_branch == ""
+    assert updated.base_commit == ""
+    assert updated.pr_url == ""
+    assert skills.calls == ["run_internal_codex_worker"]
+    assert skills.share_calls == []
+    assert "fresh mobile base commit" in skills.status_posts[0]
+
+
+def test_approved_pr_blocks_before_verification_when_worker_base_ref_mismatches_config(
+    tmp_path,
+):
+    config = MonicaConfig(
+        enabled=True,
+        rollout_mode="approved_pr",
+        slack=SlackConfig(bot_user_ids=("U_MONICA",), approver_user_ids=("U_TAGGER",)),
+        verification=VerificationConfig(commands=("npm test",)),
+        proof=_approved_pr_proof_config(),
+    )
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C_MOBILE",
+        thread_ts="1710000000.000100",
+        message_ts="1710000000.000200",
+        user_id="U_TAGGER",
+        request_text="marketplace PDP copy is wrong, please fix it",
+        raw_event=_approved_pr_raw_event(),
+    )
+    state.update_run(
+        run.id,
+        status="awaiting_fix_approval",
+        linear_identifier="MOB-123",
+        linear_url="https://linear.app/acme/issue/MOB-123",
+    )
+    state.approve_fix(run.id, approved_by_user_id="U_TAGGER")
+    skills = ApprovedFixSkillsWrongBaseRef()
+
+    MonicaLoop(config=config, state=state, skills=skills).run(run.id)
+
+    updated = state.get_run(run.id)
+    assert updated is not None
+    assert updated.status == "blocked"
+    assert updated.failure_reason == "approved_pr_base_ref_mismatch"
     assert updated.base_branch == ""
     assert updated.base_commit == ""
     assert updated.pr_url == ""
@@ -5054,6 +5295,27 @@ class RaisingProofSkills(ApprovedFixSkills):
         raise RuntimeError("simulator proof crashed before capture")
 
 
+class ProofSetupFailureSkills(ApprovedFixSkills):
+    def run_proof(
+        self,
+        run: Any,
+        worker_result: dict[str, Any],
+        verification: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.calls.append("run_proof")
+        self.proof_worker_result = dict(worker_result)
+        return {
+            "passed": False,
+            "summary": "proof setup failed: npm run monica:seed-auth exited 1",
+            "artifacts": [],
+            "proof_target": dict(self.proof_target),
+            "setup_commands": list(self.proof_setup_commands),
+            "commands": list(self.proof_commands),
+            "required_env_keys": list(self.proof_required_env_keys),
+            "platforms": list(self.proof_platforms),
+        }
+
+
 def test_proof_exception_marks_run_proof_blocked_instead_of_failed(tmp_path):
     config = MonicaConfig(
         enabled=True,
@@ -5092,6 +5354,51 @@ def test_proof_exception_marks_run_proof_blocked_instead_of_failed(tmp_path):
     assert "Verification passed" in skills.status_posts[0]
     assert "proof is unavailable" in skills.status_posts[0]
     assert "simulator proof crashed before capture" in skills.status_posts[0]
+
+
+def test_proof_setup_failure_blocks_share_and_pr_at_loop_level(tmp_path):
+    config = MonicaConfig(
+        enabled=True,
+        rollout_mode="approved_pr",
+        slack=SlackConfig(bot_user_ids=("U_MONICA",), approver_user_ids=("U_TAGGER",)),
+        verification=VerificationConfig(commands=("npm test",)),
+        proof=_approved_pr_proof_config(),
+    )
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C_MOBILE",
+        thread_ts="1710000000.000100",
+        message_ts="1710000000.000200",
+        user_id="U_TAGGER",
+        request_text="can you fix this marketplace PDP copy bug?",
+        raw_event=_approved_pr_raw_event(),
+    )
+    state.update_run(
+        run.id,
+        status="awaiting_fix_approval",
+        linear_identifier="MOB-123",
+        linear_url="https://linear.app/acme/issue/MOB-123",
+    )
+    state.approve_fix(run.id, approved_by_user_id="U_TAGGER")
+    skills = ProofSetupFailureSkills()
+
+    MonicaLoop(config=config, state=state, skills=skills).run(run.id)
+
+    updated = state.get_run(run.id)
+    assert updated is not None
+    assert updated.status == "proof_blocked"
+    assert updated.branch_name == "monica/MOB-123-checkout-crash"
+    assert updated.pr_url == ""
+    assert updated.failure_reason == (
+        "proof_unavailable: proof setup failed: npm run monica:seed-auth exited 1"
+    )
+    assert skills.calls == ["run_internal_codex_worker", "run_verification", "run_proof"]
+    assert skills.share_calls == []
+    assert skills.opened_pr_worker_result == {}
+    assert "Verification passed" in skills.status_posts[0]
+    assert "proof is unavailable" in skills.status_posts[0]
+    assert "npm run monica:seed-auth exited 1" in skills.status_posts[0]
 
 
 def test_proof_blocked_run_resumes_existing_branch_without_worker(tmp_path, monkeypatch):

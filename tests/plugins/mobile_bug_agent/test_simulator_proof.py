@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
+import subprocess
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,6 +31,33 @@ def _png_bytes() -> bytes:
     return base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFElEQVR4nGNgYGD4//8/w38GEAMAIewE/ITr/YQAAAAASUVORK5CYII="
     )
+
+
+def test_worktree_has_native_sensitive_changes_detects_untracked_config(tmp_path):
+    worktree = tmp_path / "app"
+    worktree.mkdir()
+    subprocess.run(["git", "init"], cwd=worktree, check=True, capture_output=True)
+    (worktree / "src").mkdir()
+    (worktree / "src" / "App.tsx").write_text("export default null;\n", encoding="utf-8")
+    subprocess.run(["git", "add", "src/App.tsx"], cwd=worktree, check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Monica",
+            "-c",
+            "user.email=monica@hermes.local",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        cwd=worktree,
+        check=True,
+        capture_output=True,
+    )
+    (worktree / "app.config.ts").write_text("export default {};\n", encoding="utf-8")
+
+    assert simulator_proof._worktree_has_native_sensitive_changes(worktree) is True
 
 
 def test_simulator_proof_ios_builds_launches_deep_link_and_screenshots(tmp_path):
@@ -76,9 +104,10 @@ def test_simulator_proof_ios_builds_launches_deep_link_and_screenshots(tmp_path)
     ]
 
 
-def test_simulator_proof_ios_records_target_text_note_after_route_match(tmp_path):
+def test_simulator_proof_ios_rejects_expected_text_when_only_route_matches(tmp_path):
     proof_dir = tmp_path / "proof"
     worktree = _worktree(tmp_path / "app")
+    screenshot_calls = []
 
     def run_text(args, cwd, timeout):
         if args[:4] == ("xcrun", "simctl", "openurl", "SIM-123"):
@@ -88,25 +117,27 @@ def test_simulator_proof_ios_records_target_text_note_after_route_match(tmp_path
                 encoding="utf-8",
             )
         if args[:4] == ("xcrun", "simctl", "io", "SIM-123"):
+            screenshot_calls.append(args)
             Path(args[-1]).write_bytes(_png_bytes())
         return "ok"
 
     harness = SimulatorProofHarness(run_text=run_text)
 
-    result = harness.run(
-        worktree=worktree,
-        proof_dir=proof_dir,
-        platforms=("ios",),
-        ios_simulator_udid="SIM-123",
-        deep_link="elixir-card://marketplace/SearchScreen",
-        expected_text="Search wellness products",
-        timeout_seconds=90,
-    )
+    with pytest.raises(RuntimeError, match="iOS proof target text was not observed"):
+        harness.run(
+            worktree=worktree,
+            proof_dir=proof_dir,
+            platforms=("ios",),
+            ios_simulator_udid="SIM-123",
+            deep_link="elixir-card://marketplace/SearchScreen",
+            expected_text="Search wellness products",
+            timeout_seconds=90,
+        )
 
-    assert result == [str(proof_dir / "ios-screenshot.png")]
-    assert "visible target text: Search wellness products" in (
-        proof_dir / "ios-target.log"
-    ).read_text(encoding="utf-8")
+    assert screenshot_calls == []
+    target_log = (proof_dir / "ios-target.log").read_text(encoding="utf-8")
+    assert "target route observed" in target_log
+    assert "visible target text" not in target_log
 
 
 def test_simulator_proof_ios_waits_for_target_screen_without_deep_link(monkeypatch, tmp_path):
@@ -956,6 +987,7 @@ def test_simulator_proof_android_captures_while_long_lived_run_is_foreground(mon
         run_bytes=run_bytes,
         run_android_until_foreground=run_android_until_foreground,
     )
+    monkeypatch.setattr(simulator_proof, "_android_package_is_installed", lambda *_args: False)
 
     result = harness.run(
         worktree=worktree,
@@ -1035,6 +1067,227 @@ def test_simulator_proof_android_captures_while_long_lived_run_is_foreground(mon
     ]
     assert bytes_calls == [
         (("adb", "-s", "emulator-5554", "exec-out", "screencap", "-p"), worktree, 120)
+    ]
+
+
+def test_simulator_proof_android_retries_deep_link_after_startup_route_wins(monkeypatch, tmp_path):
+    monkeypatch.delenv("MONICA_ANDROID_PACKAGER_HOSTNAME", raising=False)
+    monkeypatch.delenv("MONICA_PACKAGER_HOSTNAME", raising=False)
+    monkeypatch.delenv("REACT_NATIVE_PACKAGER_HOSTNAME", raising=False)
+    text_calls = []
+    bytes_calls = []
+    target_open_count = 0
+    proof_dir = tmp_path / "proof"
+    worktree = _worktree(tmp_path / "app")
+
+    def run_text(args, cwd, timeout):
+        nonlocal target_open_count
+        text_calls.append((args, cwd, timeout))
+        if args[:6] == (
+            "adb",
+            "-s",
+            "emulator-5554",
+            "shell",
+            "am",
+            "start",
+        ) and "elixir://marketplace/offer/fitness-first" in args:
+            target_open_count += 1
+            route = "/dashboard/Market" if target_open_count == 1 else "/MarketplacePdp"
+            proof_dir.mkdir(parents=True, exist_ok=True)
+            (proof_dir / "android-metro.stdout.log").write_text(
+                f"LOG  [APP-PERF-METRIC] ui.load | screen.load {route} | 180ms | ok",
+                encoding="utf-8",
+            )
+        return "ok"
+
+    def run_bytes(args, cwd, timeout):
+        bytes_calls.append((args, cwd, timeout))
+        return _png_bytes()
+
+    def run_android_until_foreground(
+        _args,
+        _cwd,
+        _timeout,
+        _adb,
+        _package,
+        _log_dir,
+        open_dev_client,
+        capture_foreground,
+        open_dev_client_before_foreground=False,
+    ):
+        open_dev_client()
+        capture_foreground()
+
+    harness = SimulatorProofHarness(
+        run_text=run_text,
+        run_bytes=run_bytes,
+        run_android_until_foreground=run_android_until_foreground,
+    )
+
+    result = harness.run(
+        worktree=worktree,
+        proof_dir=proof_dir,
+        platforms=("android",),
+        dev_client_scheme="elixir-card",
+        android_serial="emulator-5554",
+        android_package="com.elixir.card.staging",
+        deep_link="elixir://marketplace/offer/fitness-first",
+        timeout_seconds=120,
+    )
+
+    assert result == [str(proof_dir / "android-screenshot.png")]
+    assert target_open_count == 2
+    assert bytes_calls == [
+        (("adb", "-s", "emulator-5554", "exec-out", "screencap", "-p"), worktree, 120)
+    ]
+
+
+def test_simulator_proof_android_uses_metro_start_when_app_is_already_installed(monkeypatch, tmp_path):
+    monkeypatch.delenv("MONICA_ANDROID_EXPO_HOST", raising=False)
+    monkeypatch.delenv("MONICA_ANDROID_PACKAGER_HOSTNAME", raising=False)
+    monkeypatch.delenv("MONICA_PACKAGER_HOSTNAME", raising=False)
+    monkeypatch.delenv("REACT_NATIVE_PACKAGER_HOSTNAME", raising=False)
+    proof_dir = tmp_path / "proof"
+    worktree = _worktree(tmp_path / "app")
+    foreground_calls = []
+
+    def run_text(args, cwd, timeout):
+        if args == ("emulator", "-list-avds"):
+            return "MonicaPixel\n"
+        if args[-4:] == ("exec-out", "uiautomator", "dump", "/dev/tty"):
+            return "<hierarchy><node text='Search wellness products' /></hierarchy>"
+        return "ok"
+
+    def run_android_until_foreground(
+        args,
+        cwd,
+        timeout,
+        adb,
+        package,
+        log_dir,
+        open_dev_client,
+        capture_foreground,
+        open_dev_client_before_foreground=False,
+    ):
+        foreground_calls.append(
+            (args, cwd, timeout, adb, package, log_dir, open_dev_client_before_foreground)
+        )
+        assert log_dir is not None
+        (log_dir / "android-metro.stdout.log").write_text(
+            "LOG  [APP-PERF-METRIC] ui.load | screen.load /marketplace/SearchScreen | 180ms | ok",
+            encoding="utf-8",
+        )
+        open_dev_client()
+        capture_foreground()
+
+    monkeypatch.setattr(simulator_proof, "_android_package_is_installed", lambda *_args: True)
+    monkeypatch.setattr(simulator_proof, "_worktree_has_native_sensitive_changes", lambda _worktree: False)
+    monkeypatch.setattr(simulator_proof, "_ensure_android_emulator", lambda *_args: (lambda: None))
+    harness = SimulatorProofHarness(
+        run_text=run_text,
+        run_bytes=lambda _args, _cwd, _timeout: _png_bytes(),
+        run_android_until_foreground=run_android_until_foreground,
+    )
+
+    result = harness.run(
+        worktree=worktree,
+        proof_dir=proof_dir,
+        platforms=("android",),
+        dev_client_scheme="elixir-card",
+        android_serial="emulator-5554",
+        android_avd="MonicaPixel",
+        android_package="com.elixir.card",
+        deep_link="elixir-card://marketplace/SearchScreen",
+        expected_text="Search wellness products",
+        proof_screen="/marketplace/SearchScreen",
+        timeout_seconds=120,
+    )
+
+    assert result == [str(proof_dir / "android-screenshot.png")]
+    assert foreground_calls == [
+        (
+            (
+                "npx",
+                "expo",
+                "start",
+                "--dev-client",
+                "--clear",
+                "--host",
+                "localhost",
+                "--port",
+                "8081",
+            ),
+            worktree,
+            120,
+            ("adb", "-s", "emulator-5554"),
+            "com.elixir.card",
+            proof_dir,
+            True,
+        )
+    ]
+
+
+def test_simulator_proof_android_reinstalls_when_native_sensitive_files_changed(monkeypatch, tmp_path):
+    monkeypatch.delenv("MONICA_ANDROID_PACKAGER_HOSTNAME", raising=False)
+    monkeypatch.delenv("MONICA_PACKAGER_HOSTNAME", raising=False)
+    monkeypatch.delenv("REACT_NATIVE_PACKAGER_HOSTNAME", raising=False)
+    proof_dir = tmp_path / "proof"
+    worktree = _worktree(tmp_path / "app")
+    foreground_calls = []
+
+    def run_text(args, cwd, timeout):
+        if args == ("emulator", "-list-avds"):
+            return "MonicaPixel\n"
+        if args[-4:] == ("exec-out", "uiautomator", "dump", "/dev/tty"):
+            return "<hierarchy><node text='Search wellness products' /></hierarchy>"
+        return "ok"
+
+    def run_android_until_foreground(
+        args,
+        cwd,
+        timeout,
+        adb,
+        package,
+        log_dir,
+        open_dev_client,
+        capture_foreground,
+        open_dev_client_before_foreground=False,
+    ):
+        foreground_calls.append(args)
+        assert log_dir is not None
+        (log_dir / "android-metro.stdout.log").write_text(
+            "LOG  [APP-PERF-METRIC] ui.load | screen.load /marketplace/SearchScreen | 180ms | ok",
+            encoding="utf-8",
+        )
+        open_dev_client()
+        capture_foreground()
+
+    monkeypatch.setattr(simulator_proof, "_android_package_is_installed", lambda *_args: True)
+    monkeypatch.setattr(simulator_proof, "_worktree_has_native_sensitive_changes", lambda _worktree: True)
+    monkeypatch.setattr(simulator_proof, "_ensure_android_emulator", lambda *_args: (lambda: None))
+    harness = SimulatorProofHarness(
+        run_text=run_text,
+        run_bytes=lambda _args, _cwd, _timeout: _png_bytes(),
+        run_android_until_foreground=run_android_until_foreground,
+    )
+
+    result = harness.run(
+        worktree=worktree,
+        proof_dir=proof_dir,
+        platforms=("android",),
+        dev_client_scheme="elixir-card",
+        android_serial="emulator-5554",
+        android_avd="MonicaPixel",
+        android_package="com.elixir.card",
+        deep_link="elixir-card://marketplace/SearchScreen",
+        expected_text="Search wellness products",
+        proof_screen="/marketplace/SearchScreen",
+        timeout_seconds=120,
+    )
+
+    assert result == [str(proof_dir / "android-screenshot.png")]
+    assert foreground_calls == [
+        ("npx", "expo", "run:android", "--app-id", "com.elixir.card")
     ]
 
 
@@ -2335,6 +2588,22 @@ def test_target_route_wait_polls_until_route_matches_screen_marker(monkeypatch, 
     assert sleeps == [0.5]
 
 
+def test_final_route_requires_specific_proof_screen_not_generic_pdp(tmp_path):
+    stdout = tmp_path / "ios-metro.stdout.log"
+    stdout.write_text(
+        "LOG  [APP-PERF-METRIC] ui.load | screen.load /MarketplacePdp | 180ms | ok",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="iOS proof target route does not match proof target"):
+        simulator_proof._assert_final_route_is_target_screen(
+            "iOS",
+            stdout,
+            require_route=True,
+            target_screen="/GymPdpScreen",
+        )
+
+
 def test_metro_bundle_request_wait_fails_closed_with_log_paths(monkeypatch, tmp_path):
     stdout = tmp_path / "metro.stdout.log"
     stderr = tmp_path / "metro.stderr.log"
@@ -2457,14 +2726,17 @@ def test_launch_ios_bundle_returns_false_when_openurl_fails(monkeypatch, tmp_pat
     assert len(openurl_calls) == 3
 
 
-def test_simulator_proof_ios_tolerates_run_ios_failure_when_app_installed(monkeypatch, tmp_path):
+def test_simulator_proof_ios_skips_run_ios_when_app_installed(monkeypatch, tmp_path):
     proof_dir = tmp_path / "proof"
     worktree = _worktree(tmp_path / "app")
     monkeypatch.setattr(simulator_proof, "_ios_app_is_installed", lambda *_args: True)
+    monkeypatch.setattr(simulator_proof, "_worktree_has_native_sensitive_changes", lambda _worktree: False)
+    commands = []
 
     def run_text(args, cwd, timeout):
+        commands.append(args)
         if args[:3] == ("npx", "expo", "run:ios"):
-            raise RuntimeError("command failed (1): npx expo run:ios (osascript unavailable)")
+            raise AssertionError("run:ios should not be called when the iOS app is already installed")
         if args[:4] == ("xcrun", "simctl", "io", "SIM-123"):
             Path(args[-1]).write_bytes(_png_bytes())
         return "ok"
@@ -2485,6 +2757,39 @@ def test_simulator_proof_ios_tolerates_run_ios_failure_when_app_installed(monkey
     )
 
     assert result == [str(proof_dir / "ios-screenshot.png")]
+    assert ("npx", "expo", "run:ios", "--no-install", "--no-bundler") not in commands
+
+
+def test_simulator_proof_ios_reinstalls_when_native_sensitive_files_changed(monkeypatch, tmp_path):
+    proof_dir = tmp_path / "proof"
+    worktree = _worktree(tmp_path / "app")
+    monkeypatch.setattr(simulator_proof, "_ios_app_is_installed", lambda *_args: True)
+    monkeypatch.setattr(simulator_proof, "_worktree_has_native_sensitive_changes", lambda _worktree: True)
+    commands = []
+
+    def run_text(args, cwd, timeout):
+        commands.append(args)
+        if args[:4] == ("xcrun", "simctl", "io", "SIM-123"):
+            Path(args[-1]).write_bytes(_png_bytes())
+        return "ok"
+
+    def run_ios_until_ready(args, cwd, timeout, target, bundle_id, dev_client_url, log_dir, while_ready):
+        while_ready()
+
+    harness = SimulatorProofHarness(run_text=run_text, run_ios_until_ready=run_ios_until_ready)
+
+    result = harness.run(
+        worktree=worktree,
+        proof_dir=proof_dir,
+        platforms=("ios",),
+        dev_client_scheme="elixir-card",
+        ios_simulator_udid="SIM-123",
+        ios_bundle_id="com.elixir.card",
+        timeout_seconds=90,
+    )
+
+    assert result == [str(proof_dir / "ios-screenshot.png")]
+    assert ("npx", "expo", "run:ios", "--no-install", "--no-bundler") in commands
 
 
 def test_simulator_proof_ios_surfaces_run_ios_failure_when_app_missing(monkeypatch, tmp_path):

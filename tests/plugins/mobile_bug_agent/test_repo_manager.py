@@ -9,6 +9,48 @@ from plugins.mobile_bug_agent.config import RepoConfig
 from plugins.mobile_bug_agent.repo_manager import RepoManager, RepoManagerError
 
 
+def _git(cwd: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout
+
+
+def _init_dev_repo(path: Path) -> Path:
+    path.mkdir(parents=True)
+    _git(path, "init")
+    _git(path, "checkout", "-b", "dev")
+    _git(path, "config", "user.email", "monica@example.test")
+    _git(path, "config", "user.name", "Monica Test")
+    return path
+
+
+def _commit_file(repo: Path, name: str, content: str, message: str) -> str:
+    (repo / name).write_text(content)
+    _git(repo, "add", name)
+    _git(repo, "commit", "-m", message)
+    return _git(repo, "rev-parse", "HEAD").strip()
+
+
+def _create_bare_origin(tmp_path: Path) -> tuple[Path, Path, str]:
+    source = _init_dev_repo(tmp_path / "source")
+    first_commit = _commit_file(source, "app.txt", "one\n", "initial dev")
+    bare = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "clone", "--bare", str(source), str(bare)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    _git(source, "remote", "add", "origin", str(bare))
+    return source, bare, first_commit
+
+
 def test_repo_manager_clones_missing_repo_and_creates_named_worktree(tmp_path):
     commands: list[list[str]] = []
 
@@ -129,6 +171,69 @@ def test_repo_manager_fetches_existing_repo_before_worktree(tmp_path):
         "origin",
         ],
     ]
+
+
+def test_repo_manager_fetches_latest_remote_base_before_creating_worktree(tmp_path):
+    source, bare, first_commit = _create_bare_origin(tmp_path)
+    workspace_root = tmp_path / "runtime"
+
+    manager = RepoManager(
+        config=RepoConfig(
+            url=str(bare),
+            local_name="mobile-app",
+            default_branch="dev",
+        ),
+        workspace_root=workspace_root,
+    )
+
+    first = manager.prepare_worktree(linear_identifier="MOB-123", summary="Checkout crash")
+    assert first.base_ref == "origin/dev"
+    assert first.base_commit == first_commit
+
+    second_commit = _commit_file(source, "app.txt", "two\n", "latest dev")
+    _git(source, "push", "origin", "dev")
+
+    second = manager.prepare_worktree(linear_identifier="MOB-124", summary="Search copy")
+
+    assert second.base_ref == "origin/dev"
+    assert second.base_commit == second_commit
+    assert _git(second.path, "rev-parse", "HEAD").strip() == second_commit
+
+
+def test_repo_manager_prunes_deleted_remote_monica_branch_before_collision_check(tmp_path):
+    source, bare, _first_commit = _create_bare_origin(tmp_path)
+    stale_branch = "monica/MOB-123-checkout-crash"
+    _git(source, "checkout", "-b", stale_branch)
+    _git(source, "push", "origin", stale_branch)
+    _git(source, "checkout", "dev")
+
+    workspace_root = tmp_path / "runtime"
+    repo_path = workspace_root / "repos" / "mobile-app"
+    repo_path.parent.mkdir(parents=True)
+    subprocess.run(
+        ["git", "clone", str(bare), str(repo_path)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert stale_branch in _git(repo_path, "branch", "-r", "--list", f"origin/{stale_branch}")
+
+    _git(source, "push", "origin", "--delete", stale_branch)
+
+    manager = RepoManager(
+        config=RepoConfig(
+            url=str(bare),
+            local_name="mobile-app",
+            default_branch="dev",
+        ),
+        workspace_root=workspace_root,
+    )
+
+    worktree = manager.prepare_worktree(linear_identifier="MOB-123", summary="Checkout crash")
+
+    assert worktree.branch_name == stale_branch
+    assert _git(repo_path, "branch", "-r", "--list", f"origin/{stale_branch}") == ""
+    assert _git(worktree.path, "branch", "--show-current").strip() == stale_branch
 
 
 def test_repo_manager_rejects_existing_repo_with_wrong_origin_before_fetch(tmp_path):

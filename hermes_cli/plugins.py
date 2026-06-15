@@ -153,6 +153,11 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Gateway startup hook. Fired after the gateway has entered the running
+    # state and Python plugins are loaded. Observers should return quickly;
+    # long recovery work belongs in a plugin-owned background thread.
+    # Kwargs: gateway: GatewayRunner.
+    "gateway_startup",
     # Update lifecycle hook. Fired by `hermes update` before any repository,
     # install, or autostash mutation. Plugins may return:
     #   {"action": "block", "message": "..."} -> abort update with exit 2

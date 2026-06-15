@@ -174,6 +174,7 @@ class ProofResult:
     output: str
     artifacts: tuple[str, ...]
     platforms: tuple[str, ...]
+    artifact_metadata: tuple[Mapping[str, object], ...] = ()
     proof_target: Mapping[str, str] | None = None
     setup_commands: tuple[str, ...] = ()
     commands: tuple[str, ...] = ()
@@ -189,6 +190,10 @@ class ProofResult:
             "setup_commands": list(self.setup_commands),
             "commands": list(self.commands),
         }
+        if self.artifact_metadata:
+            payload["artifact_metadata"] = [
+                dict(item) for item in self.artifact_metadata
+            ]
         if self.proof_target:
             payload["proof_target"] = dict(self.proof_target)
         if self.required_env_keys:
@@ -727,11 +732,16 @@ class ProofRunner:
                 required_env_keys=required_env_keys,
             )
 
+        artifact_metadata = _proof_artifact_metadata(
+            artifacts=artifacts,
+            platforms=platforms,
+        )
         manifest_path = self._write_manifest(
             run=run,
             worktree=worktree_path,
             proof_dir=proof_dir,
             artifacts=artifacts,
+            artifact_metadata=artifact_metadata,
             platforms=platforms,
             proof_target=target,
             setup_commands=setup_commands,
@@ -745,6 +755,7 @@ class ProofRunner:
             output="\n\n".join(output_parts),
             artifacts=artifacts,
             platforms=platforms,
+            artifact_metadata=artifact_metadata,
             proof_target=target,
             setup_commands=setup_commands,
             commands=command_list,
@@ -820,6 +831,7 @@ class ProofRunner:
         worktree: Path,
         proof_dir: Path,
         artifacts: tuple[str, ...],
+        artifact_metadata: tuple[Mapping[str, object], ...],
         platforms: tuple[str, ...],
         proof_target: Mapping[str, str],
         setup_commands: tuple[str, ...],
@@ -839,6 +851,9 @@ class ProofRunner:
             "worktree": str(worktree),
             "platforms": list(platforms),
             "proof_artifacts": list(artifacts),
+            "proof_artifact_metadata": [
+                dict(item) for item in artifact_metadata
+            ],
             "setup_commands": list(setup_commands),
             "commands": list(commands),
             "required_env_keys": list(required_env_keys),
@@ -988,6 +1003,35 @@ def _proof_command_artifacts(
         if current != before:
             proof_artifacts.append(artifact)
     return tuple(proof_artifacts)
+
+
+def _proof_artifact_metadata(
+    *,
+    artifacts: tuple[str, ...],
+    platforms: tuple[str, ...],
+) -> tuple[Mapping[str, object], ...]:
+    metadata: list[dict[str, object]] = []
+    normalized_platforms = _normalized_platforms(platforms)
+    for artifact in artifacts:
+        path = Path(artifact)
+        entry: dict[str, object] = {
+            "path": str(path),
+            "platform": _artifact_platform(path, normalized_platforms),
+        }
+        fingerprint = _artifact_fingerprint(path)
+        if fingerprint is not None:
+            size, digest = fingerprint
+            entry["bytes"] = size
+            entry["sha256"] = digest
+        metadata.append(entry)
+    return tuple(metadata)
+
+
+def _artifact_platform(path: Path, platforms: tuple[str, ...]) -> str:
+    for platform in platforms:
+        if _artifact_matches_platform(str(path), platform):
+            return platform
+    return ""
 
 
 def _artifact_fingerprint(path: Path) -> tuple[int, str] | None:

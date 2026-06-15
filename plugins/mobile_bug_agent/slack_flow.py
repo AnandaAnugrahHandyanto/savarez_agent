@@ -312,6 +312,14 @@ class MonicaSlackFlow:
                     ),
                 }
 
+        gate = self.state.runtime_sync_gate()
+        if not gate.get("open", True):
+            return {
+                "action": "skip_reply",
+                "reason": "monica_runtime_sync_in_progress",
+                "text": _runtime_sync_paused_text(),
+            }
+
         request_text = self._request_text(event)
         thread_ts = self._thread_ts(event)
         message_ts = str(getattr(event, "message_id", "") or "")
@@ -682,6 +690,13 @@ def _log_slack_flow(
         cancelled_by,
         approved_by,
         requeued_by,
+    )
+
+
+def _runtime_sync_paused_text() -> str:
+    return (
+        "Monica is temporarily paused while Hermes is updating. "
+        "Please retry after the update finishes."
     )
 
 

@@ -142,6 +142,266 @@ def test_state_rejects_invalid_runtime_sync_commit(tmp_path):
     }
 
 
+def test_state_acquires_runtime_sync_lease_when_idle(tmp_path):
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+
+    lease, reason = state.try_acquire_runtime_sync_lease(
+        owner_id="hermes-update",
+        owner_pid=1234,
+        owner_host="host",
+        project_root="/repo/hermes",
+        pre_update_commit="dead1234",
+        started_at="2026-06-15T10:00:00Z",
+        expires_at="2026-06-15T10:15:00Z",
+    )
+
+    assert reason == ""
+    assert lease is not None
+    assert lease.owner_id == "hermes-update"
+    assert lease.pre_update_commit == "dead1234"
+    assert state.runtime_sync_gate()["open"] is False
+    assert state.runtime_sync_gate()["reason"] == "runtime_sync_in_progress"
+
+
+def test_state_defaults_runtime_sync_lease_expiry_after_start(tmp_path):
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+
+    lease, reason = state.try_acquire_runtime_sync_lease(
+        owner_id="hermes-update",
+        owner_pid=1234,
+        owner_host="host",
+        project_root="/repo/hermes",
+        pre_update_commit="dead1234",
+        started_at="2026-06-15T10:00:00Z",
+    )
+
+    assert reason == ""
+    assert lease is not None
+    assert lease.started_at == "2026-06-15T10:00:00Z"
+    assert lease.expires_at == "2026-06-15T10:30:00Z"
+
+
+def test_state_refuses_runtime_sync_lease_when_active_runs_exist(tmp_path):
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C123",
+        thread_ts="1710000000.000100",
+        message_ts="1710000000.000100",
+        user_id="U123",
+        request_text="@monica marketplace PDP copy is wrong",
+    )
+    state.update_run(run.id, status="proofing", linear_identifier="MOB-42")
+
+    lease, reason = state.try_acquire_runtime_sync_lease(
+        owner_id="hermes-update",
+        owner_pid=1234,
+        owner_host="host",
+        project_root="/repo/hermes",
+        pre_update_commit="dead1234",
+        started_at="2026-06-15T10:00:00Z",
+        expires_at="2026-06-15T10:15:00Z",
+    )
+
+    assert lease is None
+    assert reason == "monica_active"
+    assert state.current_runtime_sync_lease() is None
+
+
+def test_state_completes_runtime_sync_lease_and_records_metadata(tmp_path):
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    lease, reason = state.try_acquire_runtime_sync_lease(
+        owner_id="hermes-update",
+        owner_pid=1234,
+        owner_host="host",
+        project_root="/repo/hermes",
+        pre_update_commit="dead1234",
+        started_at="2026-06-15T10:00:00Z",
+        expires_at="2026-06-15T10:15:00Z",
+    )
+    assert lease is not None
+    assert reason == ""
+
+    metadata = state.complete_runtime_sync_lease(
+        lease_id=lease.lease_id,
+        post_update_commit="abc12345",
+        completed_at="2026-06-15T10:03:00Z",
+    )
+
+    assert metadata["last_synced_commit"] == "abc12345"
+    assert metadata["last_sync_status"] == "recorded"
+    assert metadata["last_sync_pre_update_commit"] == "dead1234"
+    assert metadata["last_sync_post_update_commit"] == "abc12345"
+    assert state.current_runtime_sync_lease() is None
+    assert state.runtime_sync_gate()["open"] is True
+
+
+def test_state_records_runtime_sync_failure_and_releases_lease(tmp_path):
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    lease, reason = state.try_acquire_runtime_sync_lease(
+        owner_id="hermes-update",
+        owner_pid=1234,
+        owner_host="host",
+        project_root="/repo/hermes",
+        pre_update_commit="dead1234",
+        started_at="2026-06-15T10:00:00Z",
+        expires_at="2026-06-15T10:15:00Z",
+    )
+    assert lease is not None
+    assert reason == ""
+
+    metadata = state.record_runtime_sync_failure(
+        lease_id=lease.lease_id,
+        reason="commit_unavailable",
+        completed_at="2026-06-15T10:03:00Z",
+    )
+
+    assert metadata["last_sync_status"] == "failed"
+    assert metadata["last_sync_failure_reason"] == "commit_unavailable"
+    assert state.current_runtime_sync_lease() is None
+
+
+def test_state_reaps_expired_runtime_sync_lease_and_records_failure(tmp_path):
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    lease, reason = state.try_acquire_runtime_sync_lease(
+        owner_id="hermes-update",
+        owner_pid=1234,
+        owner_host="host",
+        project_root="/repo/hermes",
+        pre_update_commit="dead1234",
+        started_at="2026-06-15T10:00:00Z",
+        expires_at="2026-06-15T10:15:00Z",
+    )
+    assert lease is not None
+    assert reason == ""
+
+    reaped = state.reap_stale_runtime_sync_lease(now="2026-06-15T10:16:00Z")
+
+    assert reaped is not None
+    assert reaped.lease_id == lease.lease_id
+    assert state.current_runtime_sync_lease() is None
+    health = state.runtime_sync_health()
+    assert health["last_sync_status"] == "failed"
+    assert health["last_sync_failure_reason"] == "lease_expired"
+    assert health["last_sync_lease_id"] == lease.lease_id
+    assert health["last_sync_completed_at"] == "2026-06-15T10:16:00Z"
+
+
+def test_state_acquires_and_releases_loop_lease(tmp_path):
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C123",
+        thread_ts="1710000000.000100",
+        message_ts="1710000000.000100",
+        user_id="U123",
+        request_text="@monica marketplace PDP copy is wrong",
+    )
+
+    lease, reason = state.acquire_loop_lease(
+        run.id,
+        owner_id="gateway-1",
+        owner_kind="gateway",
+        pid=1234,
+        acquired_at=1781520000.0,
+        ttl_seconds=300,
+    )
+
+    assert reason == ""
+    assert lease is not None
+    assert lease.run_id == run.id
+    assert lease.owner_id == "gateway-1"
+    assert state.current_loop_lease(run.id) == lease
+
+    released = state.release_loop_lease(lease.lease_id, reason="done")
+
+    assert released is True
+    assert state.current_loop_lease(run.id) is None
+
+
+def test_state_refuses_second_live_loop_lease(tmp_path):
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C123",
+        thread_ts="1710000000.000100",
+        message_ts="1710000000.000100",
+        user_id="U123",
+        request_text="@monica marketplace PDP copy is wrong",
+    )
+    first, reason = state.acquire_loop_lease(
+        run.id,
+        owner_id="gateway-1",
+        acquired_at=1781520000.0,
+        ttl_seconds=300,
+    )
+    assert first is not None
+    assert reason == ""
+
+    second, reason = state.acquire_loop_lease(
+        run.id,
+        owner_id="gateway-2",
+        acquired_at=1781520001.0,
+        ttl_seconds=300,
+    )
+
+    assert second is None
+    assert reason == "loop_already_active"
+    assert state.current_loop_lease(run.id) == first
+
+
+def test_state_reaps_expired_loop_lease(tmp_path):
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C123",
+        thread_ts="1710000000.000100",
+        message_ts="1710000000.000100",
+        user_id="U123",
+        request_text="@monica marketplace PDP copy is wrong",
+    )
+    lease, reason = state.acquire_loop_lease(
+        run.id,
+        owner_id="gateway-1",
+        acquired_at=1781520000.0,
+        ttl_seconds=1,
+    )
+    assert lease is not None
+    assert reason == ""
+
+    reaped = state.reap_stale_loop_leases(now=1781520300.0)
+
+    assert [item.lease_id for item in reaped] == [lease.lease_id]
+    assert state.current_loop_lease(run.id) is None
+
+
+def test_state_update_run_touches_active_loop_lease_status(tmp_path):
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C123",
+        thread_ts="1710000000.000100",
+        message_ts="1710000000.000100",
+        user_id="U123",
+        request_text="@monica marketplace PDP copy is wrong",
+    )
+    lease, reason = state.acquire_loop_lease(
+        run.id,
+        owner_id="gateway-1",
+        acquired_at=1781520000.0,
+        ttl_seconds=300,
+    )
+    assert lease is not None
+    assert reason == ""
+
+    state.update_run(run.id, status="fixing")
+
+    updated_lease = state.current_loop_lease(run.id)
+    assert updated_lease is not None
+    assert updated_lease.last_status == "fixing"
+    assert updated_lease.heartbeat_at >= lease.heartbeat_at
+
+
 def test_state_persists_raw_slack_payload(tmp_path):
     state = MonicaState.open(tmp_path / "monica.sqlite")
     run = state.create_run(

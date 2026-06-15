@@ -281,6 +281,57 @@ def test_readiness_accepts_builtin_android_simulator_proof_with_command_package(
     assert report.ready is True
 
 
+@pytest.mark.parametrize(
+    ("platform_order", "expected_failure_codes", "unexpected_failure_codes"),
+    (
+        (
+            ("ios",),
+            {"proof_ios_dev_client_scheme", "proof_ios_bundle_id"},
+            {"proof_android_package"},
+        ),
+        (
+            ("android",),
+            {"proof_ios_dev_client_scheme", "proof_android_package"},
+            {"proof_ios_bundle_id"},
+        ),
+    ),
+)
+def test_readiness_blocks_builtin_proof_auth_setup_without_selected_platform_app_settings(
+    platform_order,
+    expected_failure_codes,
+    unexpected_failure_codes,
+):
+    config = replace(
+        _code_rollout_config(),
+        proof=ProofConfig(
+            enabled=True,
+            required_for_done=True,
+            commands=("npm run monica:proof",),
+            setup_commands=(
+                "python -m plugins.mobile_bug_agent.proof_auth_setup --timeout-seconds 600",
+            ),
+            platform_order=platform_order,
+        ),
+    )
+
+    report = check_monica_readiness(
+        config=config,
+        environ={
+            "MONICA_SLACK_BOT_TOKEN": "xoxb-token",
+            "MONICA_SLACK_APP_TOKEN": "xapp-token",
+            "LINEAR_API_KEY": "lin-key",
+        },
+        which=lambda name: f"/usr/bin/{name}",
+        module_available=lambda name: True,
+        command_succeeds=lambda _command: True,
+    )
+
+    failure_codes = {issue.code for issue in report.failures}
+    assert report.ready is False
+    assert expected_failure_codes <= failure_codes
+    assert unexpected_failure_codes.isdisjoint(failure_codes)
+
+
 def test_readiness_blocks_approved_pr_without_proof_commands():
     config = replace(
         _code_rollout_config(),

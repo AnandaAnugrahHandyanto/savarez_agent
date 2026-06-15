@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -425,10 +426,11 @@ class DefaultMonicaSkills:
                 "share_errors": ["Slack client is not configured for proof artifact upload."],
             }
 
-        refs: list[dict[str, str]] = []
+        refs: list[dict[str, Any]] = []
         errors: list[str] = []
         shareable_artifacts, manifest_errors = _shareable_visual_proof_artifact_paths(proof)
         errors.extend(manifest_errors)
+        metadata_by_path = _proof_artifact_metadata_by_path(proof)
         for artifact in shareable_artifacts:
             platform = _proof_artifact_platform(artifact)
             title = _proof_artifact_title(platform=platform, path=artifact)
@@ -450,14 +452,21 @@ class DefaultMonicaSkills:
             if not url:
                 errors.append(f"{artifact}: Slack upload did not return a permalink")
                 continue
-            refs.append(
-                {
-                    "platform": platform,
-                    "path": str(artifact),
-                    "url": url,
-                    "title": title,
-                }
+            ref: dict[str, Any] = {
+                "platform": platform,
+                "path": str(artifact),
+                "url": url,
+                "title": title,
+            }
+            metadata = metadata_by_path.get(_proof_path_key(str(artifact))) or _local_artifact_metadata(
+                artifact,
+                platform=platform,
             )
+            for key in ("bytes", "sha256"):
+                if key in metadata:
+                    ref[key] = metadata[key]
+            ref.update(_uploaded_file_metadata(uploaded))
+            refs.append(ref)
         return {"shareable_artifacts": refs, "share_errors": errors}
 
     def open_draft_pr(
@@ -530,12 +539,17 @@ class DefaultMonicaSkills:
         branch_name = str(worker_result.get("branch_name") or run.branch_name or "")
         worktree_path = str(worker_result.get("worktree_path") or worker_result.get("worktree") or "")
         title = f"[{run.linear_identifier or 'Monica'}] {run.request_text.splitlines()[0][:90]}"
-        body = self._pr_body(run=run, worker_result=worker_result, verification=verification)
+        body_verification = dict(verification)
+        if self.config.rollout_mode == "approved_pr" and not _normalized_command_values(
+            body_verification.get("commands")
+        ):
+            body_verification["commands"] = tuple(self.config.verification.commands)
+        body = self._pr_body(run=run, worker_result=worker_result, verification=body_verification)
         if self.config.rollout_mode == "approved_pr":
             self._record_linear_approved_pr_context(
                 run=run,
                 worker_result=worker_result,
-                verification=verification,
+                verification=body_verification,
             )
         url = publisher.publish(
             worktree=worktree_path,
@@ -788,6 +802,7 @@ class DefaultMonicaSkills:
         evidence = _pr_evidence_lines(worker_result.get("evidence") or [])
         proof = _pr_proof_lines(worker_result.get("proof"))
         base = _pr_base_line(worker_result)
+        verification_commands = _markdown_list(verification.get("commands"))
         return "\n".join(
             _without_empty_sections(
                 [
@@ -803,6 +818,9 @@ class DefaultMonicaSkills:
                     evidence,
                     "",
                     "## Verification",
+                    "Commands:" if verification_commands else "",
+                    verification_commands,
+                    "",
                     str(verification.get("summary") or ""),
                     "",
                     "```",
@@ -1028,7 +1046,7 @@ def _linear_proof_shareable_lines(value: Any) -> list[str]:
         if not platform and path:
             platform = _proof_artifact_platform(Path(path))
         label = "iOS proof" if platform == "ios" else "Android proof" if platform == "android" else "Proof"
-        lines.append(f"{label}: {url}")
+        lines.append(f"{label}: {url}{_shareable_upload_suffix(item)}")
     return lines
 
 
@@ -1096,12 +1114,47 @@ def _pr_proof_lines(proof: Any) -> str:
     if shareable:
         lines.extend(shareable)
     artifacts = [str(path).strip() for path in proof.get("artifacts") or [] if str(path).strip()]
+    digest_lines = _proof_artifact_digest_lines(proof)
+    if digest_lines:
+        lines.append("Proof artifact digests:")
+        lines.extend(digest_lines)
     if artifacts:
         if shareable:
             lines.append(f"Local artifacts (debug): {', '.join(artifacts)}")
         else:
             lines.extend(f"- {path}" for path in artifacts)
     return "\n".join(lines)
+
+
+def _proof_artifact_digest_lines(proof: Mapping[str, Any]) -> list[str]:
+    lines: list[str] = []
+    shareable_paths = {
+        _proof_path_key(str(item.get("path") or ""))
+        for item in proof.get("shareable_artifacts") or []
+        if isinstance(item, dict)
+    }
+    metadata = _proof_artifact_metadata_items(proof)
+    if not metadata:
+        metadata = [
+            _local_artifact_metadata(Path(path))
+            for path in proof.get("artifacts") or []
+            if str(path).strip()
+        ]
+    for item in metadata:
+        path = Path(str(item.get("path") or ""))
+        path_key = _proof_path_key(str(path))
+        if shareable_paths and path_key not in shareable_paths:
+            continue
+        if path.suffix.lower() not in _VISUAL_PROOF_SUFFIXES:
+            continue
+        size = item.get("bytes")
+        digest = str(item.get("sha256") or "").strip()
+        if not isinstance(size, int) or size < 0 or not digest:
+            continue
+        platform = str(item.get("platform") or "").strip().lower() or _proof_artifact_platform(path)
+        label = "iOS" if platform == "ios" else "Android" if platform == "android" else "Proof"
+        lines.append(f"- {label}: {path.name} bytes={size} sha256={digest}")
+    return lines
 
 
 def _proof_target_from_worker_result(
@@ -1425,6 +1478,69 @@ def _manifest_proof_artifact_paths(manifest_path: Path) -> tuple[list[Path], lis
     return paths, errors
 
 
+def _proof_artifact_metadata_by_path(proof: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        _proof_path_key(str(item.get("path") or "")): item
+        for item in _proof_artifact_metadata_items(proof)
+        if _proof_path_key(str(item.get("path") or ""))
+    }
+
+
+def _proof_artifact_metadata_items(proof: Mapping[str, Any]) -> list[dict[str, Any]]:
+    for key in ("artifact_metadata", "proof_artifact_metadata"):
+        value = proof.get(key)
+        if isinstance(value, (list, tuple)):
+            items = [
+                dict(item)
+                for item in value
+                if isinstance(item, dict) and str(item.get("path") or "").strip()
+            ]
+            if items:
+                return items
+    manifest_path = _proof_manifest_artifact_path(_proof_artifact_paths(proof.get("artifacts")))
+    if manifest_path is None:
+        return []
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    value = payload.get("proof_artifact_metadata")
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [
+        dict(item)
+        for item in value
+        if isinstance(item, dict) and str(item.get("path") or "").strip()
+    ]
+
+
+def _local_artifact_metadata(path: Path, *, platform: str = "") -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "path": str(path),
+        "platform": platform or _proof_artifact_platform(path),
+    }
+    fingerprint = _artifact_fingerprint(path)
+    if fingerprint is not None:
+        size, digest = fingerprint
+        metadata["bytes"] = size
+        metadata["sha256"] = digest
+    return metadata
+
+
+def _artifact_fingerprint(path: Path) -> tuple[int, str] | None:
+    try:
+        size = path.stat().st_size
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return size, digest.hexdigest()
+
+
 def _proof_manifest_artifact_path(paths: list[Path]) -> Path | None:
     for path in paths:
         if path.name == _PROOF_MANIFEST_NAME:
@@ -1491,6 +1607,23 @@ def _uploaded_file_url(uploaded: Any) -> str:
     )
 
 
+def _uploaded_file_metadata(uploaded: Any) -> dict[str, str]:
+    if isinstance(uploaded, dict):
+        upload_id = str(uploaded.get("id") or uploaded.get("file_id") or "").strip()
+        name = str(uploaded.get("name") or uploaded.get("title") or "").strip()
+    else:
+        upload_id = str(
+            getattr(uploaded, "id", "") or getattr(uploaded, "file_id", "")
+        ).strip()
+        name = str(getattr(uploaded, "name", "") or getattr(uploaded, "title", "")).strip()
+    metadata: dict[str, str] = {}
+    if upload_id:
+        metadata["upload_id"] = upload_id
+    if name:
+        metadata["upload_name"] = name
+    return metadata
+
+
 def _proof_shareable_artifact_lines(value: Any) -> list[str]:
     if not isinstance(value, (list, tuple)):
         return []
@@ -1506,8 +1639,18 @@ def _proof_shareable_artifact_lines(value: Any) -> list[str]:
         if not platform and path:
             platform = _proof_artifact_platform(Path(path))
         label = "iOS" if platform == "ios" else "Android" if platform == "android" else "Proof"
-        lines.append(f"- {label}: {url}")
+        lines.append(f"- {label}: {url}{_shareable_upload_suffix(item)}")
     return lines
+
+
+def _shareable_upload_suffix(item: Mapping[str, Any]) -> str:
+    upload_id = str(item.get("upload_id") or item.get("file_id") or "").strip()
+    if not upload_id:
+        return ""
+    upload_name = str(item.get("upload_name") or item.get("name") or item.get("title") or "").strip()
+    if upload_name:
+        return f" (Slack upload: {upload_id}, {upload_name})"
+    return f" (Slack upload: {upload_id})"
 
 
 def _approved_pr_publish_block_reason(
@@ -1675,7 +1818,6 @@ def _approved_pr_publish_block_reason(
             "proof artifacts must stay under proof manifest directory before draft PR publishing: "
             f"{', '.join(outside_manifest_dir)}."
         )
-
     missing_target_evidence = _missing_target_text_evidence_platforms(
         artifacts=artifact_paths,
         expected_text=str(target.get("expected_text") or ""),
@@ -1704,6 +1846,17 @@ def _approved_pr_publish_block_reason(
             "duplicate shareable proof links are not enough before draft PR publishing: "
             f"{', '.join(duplicate_shareable)}."
         )
+    missing_upload_metadata = _shareable_proof_platforms_missing_upload_metadata(
+        proof.get("shareable_artifacts")
+    )
+    if missing_upload_metadata:
+        return (
+            "Slack upload metadata is required before draft PR publishing: "
+            f"missing {', '.join(missing_upload_metadata)}."
+        )
+    artifact_metadata_reason = _proof_manifest_artifact_metadata_file_block_reason(manifest_path)
+    if artifact_metadata_reason:
+        return artifact_metadata_reason
     return ""
 
 
@@ -1923,6 +2076,65 @@ def _normalized_artifact_values(value: Any) -> list[str]:
     return sorted({_proof_path_key(str(item)) for item in candidates if str(item).strip()})
 
 
+def _proof_manifest_artifact_metadata_block_reason(
+    payload: Mapping[str, Any],
+    *,
+    manifest_dir: Path,
+) -> str:
+    manifest_artifacts = set(_normalized_artifact_values(payload.get("proof_artifacts")))
+    value = payload.get("proof_artifact_metadata")
+    if not isinstance(value, list) or not value:
+        return "proof manifest artifact metadata is required before draft PR publishing."
+    metadata_by_path: dict[str, Mapping[str, Any]] = {}
+    missing_path_entries = False
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        path_key = _proof_path_key(str(item.get("path") or ""))
+        if not path_key:
+            missing_path_entries = True
+            continue
+        metadata_by_path[path_key] = item
+    if missing_path_entries or not metadata_by_path:
+        return "proof manifest artifact metadata must include artifact paths before draft PR publishing."
+    missing_metadata = sorted(manifest_artifacts - set(metadata_by_path))
+    if missing_metadata:
+        return (
+            "proof manifest artifact metadata is missing proof artifacts before "
+            f"draft PR publishing: {', '.join(missing_metadata)}."
+        )
+    for artifact in sorted(manifest_artifacts):
+        item = metadata_by_path[artifact]
+        if "platform" not in item:
+            return "proof manifest artifact metadata must include artifact platforms before draft PR publishing."
+        artifact_path = Path(artifact).expanduser()
+        if not artifact_path.is_absolute():
+            artifact_path = manifest_dir / artifact_path
+        fingerprint = _artifact_fingerprint(artifact_path)
+        if fingerprint is None:
+            continue
+        size, digest = fingerprint
+        if item.get("bytes") != size or str(item.get("sha256") or "") != digest:
+            return (
+                "proof manifest artifact metadata does not match local artifact "
+                f"digest before draft PR publishing: {artifact}."
+            )
+    return ""
+
+
+def _proof_manifest_artifact_metadata_file_block_reason(manifest_path: Path) -> str:
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return "proof manifest artifact metadata is required before draft PR publishing."
+    if not isinstance(payload, dict):
+        return "proof manifest artifact metadata is required before draft PR publishing."
+    return _proof_manifest_artifact_metadata_block_reason(
+        payload,
+        manifest_dir=manifest_path.parent,
+    )
+
+
 def _valid_proof_deep_link(value: Any) -> bool:
     deep_link = str(value or "").strip()
     if not deep_link or any(char.isspace() for char in deep_link):
@@ -2069,6 +2281,34 @@ def _shareable_proof_platforms_with_duplicate_urls(value: Any) -> list[str]:
             duplicates.append(platform)
         urls_by_platform[platform] = url
     return duplicates
+
+
+def _shareable_proof_platforms_missing_upload_metadata(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    missing: list[str] = []
+    for platform in ("ios", "android"):
+        found = False
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            url = _safe_proof_shareable_url(item.get("url") or item.get("permalink") or "")
+            if not url:
+                continue
+            ref_platform = str(item.get("platform") or "").strip().lower()
+            path = str(item.get("path") or "").strip()
+            if not ref_platform and path:
+                ref_platform = _proof_artifact_platform(Path(path))
+            if ref_platform != platform and not (
+                path and _proof_artifact_platform(Path(path)) == platform
+            ):
+                continue
+            if str(item.get("upload_id") or item.get("file_id") or "").strip():
+                found = True
+                break
+        if not found:
+            missing.append(platform)
+    return missing
 
 
 def _shareable_proof_ref_matches_local_artifact(

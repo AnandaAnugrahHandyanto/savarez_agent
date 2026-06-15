@@ -180,6 +180,59 @@ def test_status_json_reports_runtime_sync_guard(tmp_path, capsys):
     assert payload["runtime_sync"]["active_runs"][1]["status"] == "awaiting_fix_approval"
 
 
+def test_status_json_reports_runtime_sync_lease(tmp_path, capsys):
+    state = MonicaState.open(tmp_path / "state.sqlite")
+    lease, reason = state.try_acquire_runtime_sync_lease(
+        owner_id="hermes-update",
+        owner_pid=1234,
+        owner_host="host",
+        project_root="/repo/hermes",
+        pre_update_commit="dead1234",
+        started_at="2026-06-15T10:00:00Z",
+        expires_at="2026-06-15T10:15:00Z",
+    )
+    assert lease is not None
+    assert reason == ""
+
+    exit_code = run_status_command(
+        state=state,
+        limit=5,
+        json_output=True,
+        current_commit="dead1234",
+    )
+
+    out = capsys.readouterr().out
+    payload = json.loads(out.strip().splitlines()[-1])
+    assert exit_code == 0
+    assert payload["runtime_sync"]["idle"] is True
+    assert payload["runtime_sync"]["ready_for_monica_work"] is False
+    assert payload["runtime_sync"]["lease"]["active"] is True
+    assert payload["runtime_sync"]["lease"]["id"] == lease.lease_id
+    assert payload["runtime_sync"]["lease"]["pre_update_commit"] == "dead1234"
+
+
+def test_status_text_reports_runtime_sync_lease(tmp_path, capsys):
+    state = MonicaState.open(tmp_path / "state.sqlite")
+    lease, reason = state.try_acquire_runtime_sync_lease(
+        owner_id="hermes-update",
+        owner_pid=1234,
+        owner_host="host",
+        project_root="/repo/hermes",
+        pre_update_commit="dead1234",
+        started_at="2026-06-15T10:00:00Z",
+        expires_at="2026-06-15T10:15:00Z",
+    )
+    assert lease is not None
+    assert reason == ""
+
+    exit_code = run_status_command(state=state, limit=5, current_commit="dead1234")
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Runtime sync: updating" in out
+    assert f"lease:{lease.lease_id}" in out
+
+
 def test_status_json_reports_gateway_health_and_commit(tmp_path, capsys):
     state = MonicaState.open(tmp_path / "state.sqlite")
 
@@ -374,6 +427,46 @@ def test_retry_refuses_cancelled_runs(tmp_path, capsys, monkeypatch):
     assert "was cancelled from Slack" in capsys.readouterr().out
 
 
+def test_retry_refuses_during_runtime_sync_lease(tmp_path, capsys, monkeypatch):
+    state = MonicaState.open(tmp_path / "state.sqlite")
+    lease, reason = state.try_acquire_runtime_sync_lease(
+        owner_id="hermes-update",
+        owner_pid=1234,
+        owner_host="host",
+        project_root="/repo/hermes",
+        pre_update_commit="dead1234",
+        started_at="2026-06-15T10:00:00Z",
+        expires_at="2026-06-15T10:15:00Z",
+    )
+    assert lease is not None
+    assert reason == ""
+    run = state.create_run(
+        platform="slack",
+        channel_id="C123",
+        thread_ts="T1",
+        message_ts="T1",
+        user_id="U1",
+        request_text="@monica checkout crash",
+    )
+    state.update_run(
+        run.id,
+        status="failed",
+        failure_reason="opening_pr_failed: gh pr create failed",
+        approved_by_user_id="U_APPROVER",
+    )
+    launched: list[str] = []
+    monkeypatch.setattr(cli, "_run_loop", lambda run_id, *, state: launched.append(run_id))
+
+    exit_code = run_retry_command(state=state, run_id=run.id)
+
+    updated = state.get_run(run.id)
+    assert updated is not None
+    assert exit_code == 1
+    assert updated.status == "failed"
+    assert launched == []
+    assert "Hermes is updating" in capsys.readouterr().out
+
+
 def test_retry_failed_approved_run_resumes_from_approval_gate(tmp_path, capsys, monkeypatch):
     state = MonicaState.open(tmp_path / "state.sqlite")
     run = state.create_run(
@@ -400,6 +493,73 @@ def test_retry_failed_approved_run_resumes_from_approval_gate(tmp_path, capsys, 
     assert exit_code == 0
     assert updated.status == "approved"
     assert updated.failure_reason == ""
+    assert updated.approved_by_user_id == "U_APPROVER"
+    assert launched == [run.id]
+    assert f"Retried Monica run {run.id}" in capsys.readouterr().out
+
+
+def test_retry_failed_opening_pr_run_with_proof_metadata_resumes_from_proof_gate(
+    tmp_path,
+    capsys,
+    monkeypatch,
+):
+    state = MonicaState.open(tmp_path / "state.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C123",
+        thread_ts="T1",
+        message_ts="T1",
+        user_id="U1",
+        request_text="@monica checkout crash",
+    )
+    state.update_run(
+        run.id,
+        status="failed",
+        failure_reason="opening_pr_failed: body must include verification evidence.",
+        branch_name="monica/MOB-123-checkout-crash",
+        base_branch="origin/dev",
+        base_commit="abc1234",
+        proof_deep_link="elixir-card://marketplace/SearchScreen",
+        proof_expected_text="Search wellness products",
+        approved_by_user_id="U_APPROVER",
+    )
+    launched: list[str] = []
+
+    def fake_loop(run_id: str, *, state: MonicaState) -> None:
+        relaunched = state.get_run(run_id)
+        assert relaunched is not None
+        assert relaunched.status == "proof_blocked"
+        assert relaunched.failure_reason == ""
+        assert relaunched.branch_name == "monica/MOB-123-checkout-crash"
+        assert relaunched.base_branch == "origin/dev"
+        assert relaunched.base_commit == "abc1234"
+        assert relaunched.proof_deep_link == "elixir-card://marketplace/SearchScreen"
+        assert relaunched.proof_expected_text == "Search wellness products"
+        assert relaunched.pr_url == ""
+        launched.append(run_id)
+
+    monkeypatch.setattr(cli, "_run_loop", fake_loop)
+
+    exit_code = run_retry_command(
+        state=state,
+        run_id=run.id,
+        config=MonicaConfig(
+            rollout_mode="approved_pr",
+            slack=SlackConfig(approver_user_ids=("U_APPROVER",)),
+        ),
+        readiness_checker=lambda: 0,
+    )
+
+    updated = state.get_run(run.id)
+    assert updated is not None
+    assert exit_code == 0
+    assert updated.status == "proof_blocked"
+    assert updated.failure_reason == ""
+    assert updated.branch_name == "monica/MOB-123-checkout-crash"
+    assert updated.base_branch == "origin/dev"
+    assert updated.base_commit == "abc1234"
+    assert updated.proof_deep_link == "elixir-card://marketplace/SearchScreen"
+    assert updated.proof_expected_text == "Search wellness products"
     assert updated.approved_by_user_id == "U_APPROVER"
     assert launched == [run.id]
     assert f"Retried Monica run {run.id}" in capsys.readouterr().out
@@ -918,6 +1078,42 @@ def test_approve_waiting_run_marks_approved_and_invokes_loop(tmp_path, capsys, m
     assert f"Approved Monica run {run.id}" in capsys.readouterr().out
 
 
+def test_approve_refuses_during_runtime_sync_lease(tmp_path, capsys, monkeypatch):
+    state = MonicaState.open(tmp_path / "state.sqlite")
+    lease, reason = state.try_acquire_runtime_sync_lease(
+        owner_id="hermes-update",
+        owner_pid=1234,
+        owner_host="host",
+        project_root="/repo/hermes",
+        pre_update_commit="dead1234",
+        started_at="2026-06-15T10:00:00Z",
+        expires_at="2026-06-15T10:15:00Z",
+    )
+    assert lease is not None
+    assert reason == ""
+    run = state.create_run(
+        platform="slack",
+        channel_id="C123",
+        thread_ts="T1",
+        message_ts="T1",
+        user_id="U1",
+        request_text="@monica checkout crash",
+    )
+    state.update_run(run.id, status="awaiting_fix_approval", linear_identifier="MOB-123")
+    launched: list[str] = []
+    monkeypatch.setattr(cli, "_run_loop", lambda run_id, *, state: launched.append(run_id))
+
+    exit_code = run_approve_command(state=state, run_id=run.id, user_id="local-operator")
+
+    updated = state.get_run(run.id)
+    assert updated is not None
+    assert exit_code == 1
+    assert updated.status == "awaiting_fix_approval"
+    assert updated.approved_by_user_id == ""
+    assert launched == []
+    assert "Hermes is updating" in capsys.readouterr().out
+
+
 def test_approve_json_success_outputs_updated_run(tmp_path, capsys, monkeypatch):
     state = MonicaState.open(tmp_path / "state.sqlite")
     run = state.create_run(
@@ -1232,6 +1428,42 @@ def test_sync_approvals_reads_slack_thread_and_invokes_loop(tmp_path, capsys, mo
     }
 
 
+def test_sync_approvals_refuses_during_runtime_sync_lease(tmp_path, capsys, monkeypatch):
+    state = MonicaState.open(tmp_path / "state.sqlite")
+    lease, reason = state.try_acquire_runtime_sync_lease(
+        owner_id="hermes-update",
+        owner_pid=1234,
+        owner_host="host",
+        project_root="/repo/hermes",
+        pre_update_commit="dead1234",
+        started_at="2026-06-15T10:00:00Z",
+        expires_at="2026-06-15T10:15:00Z",
+    )
+    assert lease is not None
+    assert reason == ""
+    run = state.create_run(
+        platform="slack",
+        channel_id="C123",
+        thread_ts="1710000000.000100",
+        message_ts="1710000000.000100",
+        user_id="U_REPORTER",
+        request_text="@monica checkout crash",
+    )
+    state.update_run(run.id, status="awaiting_fix_approval", linear_identifier="MOB-123")
+    monkeypatch.setattr(cli, "monica_slack_bot_token", lambda: "xoxb-token")
+
+    exit_code = run_sync_approvals_command(
+        config=MonicaConfig(slack=SlackConfig(bot_user_ids=("BMONICA",), approver_user_ids=("U_APPROVER",))),
+        state=state,
+    )
+
+    updated = state.get_run(run.id)
+    assert updated is not None
+    assert exit_code == 1
+    assert updated.status == "awaiting_fix_approval"
+    assert "Hermes is updating" in capsys.readouterr().out
+
+
 def test_sync_approvals_requires_recovered_approval_to_tag_monica(tmp_path, capsys, monkeypatch):
     state = MonicaState.open(tmp_path / "state.sqlite")
     run = state.create_run(
@@ -1540,6 +1772,37 @@ def test_simulate_creates_local_slack_shaped_run_and_invokes_loop(tmp_path, caps
     assert runs[0].raw_event["permalink"] == "local://monica/simulated/sim-thread"
     assert "Simulated Monica run" in out
     assert "DRY-RUN" in out
+
+
+def test_simulate_refuses_during_runtime_sync_lease(tmp_path, capsys):
+    state = MonicaState.open(tmp_path / "state.sqlite")
+    lease, reason = state.try_acquire_runtime_sync_lease(
+        owner_id="hermes-update",
+        owner_pid=1234,
+        owner_host="host",
+        project_root="/repo/hermes",
+        pre_update_commit="dead1234",
+        started_at="2026-06-15T10:00:00Z",
+        expires_at="2026-06-15T10:15:00Z",
+    )
+    assert lease is not None
+    assert reason == ""
+    launched: list[str] = []
+
+    exit_code = run_simulate_command(
+        config=MonicaConfig(enabled=True, rollout_mode="dry_run"),
+        state=state,
+        text="checkout crashes on Android",
+        channel_id="LOCAL",
+        user_id="local-operator",
+        thread_ts="sim-thread",
+        loop_runner=lambda run_id, *, state: launched.append(run_id),
+    )
+
+    assert exit_code == 1
+    assert state.list_runs() == []
+    assert launched == []
+    assert "Hermes is updating" in capsys.readouterr().out
 
 
 def test_simulate_json_outputs_created_run(tmp_path, capsys):
@@ -5895,10 +6158,24 @@ def test_doctor_json_reports_gateway_health_and_commit(tmp_path, capsys):
         "runtime_sync": {
             "available": True,
             "idle": True,
+            "ready_for_monica_work": True,
             "current_commit": "abc12345",
             "stale": False,
             "last_synced_commit": "",
             "last_synced_at": "",
+            "last_sync_status": "",
+            "last_sync_failure_reason": "",
+            "lease": {
+                "active": False,
+                "id": "",
+                "started_at": "",
+                "expires_at": "",
+                "pre_update_commit": "",
+                "project_root": "",
+                "owner_id": "",
+                "owner_pid": 0,
+                "owner_host": "",
+            },
             "blocking_statuses": list(RUNTIME_SYNC_BLOCKING_STATUSES),
             "active_run_count": 0,
             "active_runs": [],
@@ -5996,6 +6273,41 @@ def test_doctor_json_reports_runtime_sync_health(tmp_path, capsys):
     assert payload["health"]["runtime_sync"]["active_runs"][0]["id"] == active.id
     assert payload["health"]["runtime_sync"]["active_runs"][0]["status"] == "opening_pr"
     assert any(warning["code"] == "runtime_sync_stale" for warning in payload["warnings"])
+
+
+def test_doctor_json_fails_during_runtime_sync_lease(tmp_path, capsys):
+    state = MonicaState.open(tmp_path / "state.sqlite")
+    lease, reason = state.try_acquire_runtime_sync_lease(
+        owner_id="hermes-update",
+        owner_pid=1234,
+        owner_host="host",
+        project_root="/repo/hermes",
+        pre_update_commit="dead1234",
+        started_at="2026-06-15T10:00:00Z",
+        expires_at="2026-06-15T10:15:00Z",
+    )
+    assert lease is not None
+    assert reason == ""
+
+    exit_code = run_doctor_command(
+        config=MonicaConfig(
+            enabled=True,
+            rollout_mode="dry_run",
+            slack=SlackConfig(bot_user_ids=("U123MONICA",), allowed_channels=("C123MOBILE",)),
+        ),
+        state=state,
+        json_output=True,
+        environ={"MONICA_SLACK_BOT_TOKEN": "xoxb-token"},
+        which=lambda name: f"/usr/bin/{name}",
+        module_available=lambda name: True,
+        current_commit="dead1234",
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert payload["ready"] is False
+    assert payload["health"]["runtime_sync"]["lease"]["active"] is True
+    assert any(failure["code"] == "runtime_sync_in_progress" for failure in payload["failures"])
 
 
 def test_doctor_text_warns_when_gateway_is_stopped(capsys):

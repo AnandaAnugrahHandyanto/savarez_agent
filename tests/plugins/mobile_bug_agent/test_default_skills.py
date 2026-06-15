@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import subprocess
@@ -164,6 +165,14 @@ def _valid_approved_pr_proof(
         android_target_path = root / "android-ui.xml"
         ios_route_path = root / "ios-metro.stdout.log"
         android_route_path = root / "android-metro.stdout.log"
+        proof_artifact_paths = [
+            ios_path,
+            android_path,
+            ios_target_path,
+            android_target_path,
+            ios_route_path,
+            android_route_path,
+        ]
         manifest_payload = {
             "linear_identifier": "MOB-123",
             "linear_url": "https://linear.app/acme/issue/MOB-123",
@@ -177,14 +186,7 @@ def _valid_approved_pr_proof(
             "setup_commands": ["npm run monica:seed-auth"],
             "commands": ["npm run monica:proof"],
             "platforms": ["ios", "android"],
-            "proof_artifacts": [
-                str(ios_path),
-                str(android_path),
-                str(ios_target_path),
-                str(android_target_path),
-                str(ios_route_path),
-                str(android_route_path),
-            ],
+            "proof_artifacts": [str(path) for path in proof_artifact_paths],
             "required_env_keys": ["MONICA_TEST_LOGIN_TOKEN"],
         }
         if run_id:
@@ -207,6 +209,10 @@ def _valid_approved_pr_proof(
             "LOG  [APP-PERF-METRIC] ui.load | screen.load /MarketplacePdp | 190ms | ok",
             encoding="utf-8",
         )
+        manifest_payload["proof_artifact_metadata"] = _test_proof_artifact_metadata(
+            tuple(proof_artifact_paths)
+        )
+        manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
         manifest_artifact = str(manifest_path)
         ios_artifact = str(ios_path)
         android_artifact = str(android_path)
@@ -234,19 +240,49 @@ def _valid_approved_pr_proof(
             ios_route_artifact,
             android_route_artifact,
         ],
+        "artifact_metadata": _test_proof_artifact_metadata(
+            tuple(Path(path) for path in (
+                ios_artifact,
+                android_artifact,
+                ios_target_artifact,
+                android_target_artifact,
+                ios_route_artifact,
+                android_route_artifact,
+            ))
+        ),
         "shareable_artifacts": [
             {
                 "platform": "ios",
                 "path": ios_artifact,
                 "url": "https://slack.example/files/ios-pdp-fixed.png",
+                "upload_id": "F-ios-pdp-fixed.png",
+                "upload_name": "ios-pdp-fixed.png",
             },
             {
                 "platform": "android",
                 "path": android_artifact,
                 "url": "https://slack.example/files/android-pdp-fixed.mp4",
+                "upload_id": "F-android-pdp-fixed.mp4",
+                "upload_name": "android-pdp-fixed.mp4",
             },
         ],
     }
+
+
+def _test_proof_artifact_metadata(paths: tuple[Path, ...]) -> list[dict[str, object]]:
+    metadata: list[dict[str, object]] = []
+    for path in paths:
+        name = path.name.casefold()
+        item: dict[str, object] = {
+            "path": str(path),
+            "platform": "ios" if "ios" in name else "android" if "android" in name else "",
+        }
+        if path.is_file():
+            content = path.read_bytes()
+            item["bytes"] = len(content)
+            item["sha256"] = hashlib.sha256(content).hexdigest()
+        metadata.append(item)
+    return metadata
 
 
 def _valid_approved_pr_worker_result(tmp_path: Any, *, run: Any | None = None) -> dict[str, Any]:
@@ -1015,12 +1051,20 @@ def test_default_skills_uploads_visual_proof_artifacts_to_slack_thread(tmp_path)
             "path": str(ios),
             "url": "https://slack.example/files/ios-pdp-fixed.png",
             "title": "Monica iOS proof: ios-pdp-fixed.png",
+            "bytes": len(b"ios"),
+            "sha256": hashlib.sha256(b"ios").hexdigest(),
+            "upload_id": "F-ios-pdp-fixed.png",
+            "upload_name": "ios-pdp-fixed.png",
         },
         {
             "platform": "android",
             "path": str(android),
             "url": "https://slack.example/files/android-pdp-fixed.mp4",
             "title": "Monica Android proof: android-pdp-fixed.mp4",
+            "bytes": len(b"android"),
+            "sha256": hashlib.sha256(b"android").hexdigest(),
+            "upload_id": "F-android-pdp-fixed.mp4",
+            "upload_name": "android-pdp-fixed.mp4",
         },
     ]
 
@@ -1780,6 +1824,46 @@ def test_default_skills_pr_body_includes_slack_permalink_and_evidence(tmp_path):
     assert "/tmp/monica-proof/android-pdp-fixed.mp4" in body
 
 
+def test_default_skills_pr_body_includes_proof_screen_when_worker_supplies_it(tmp_path):
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C_MOBILE",
+        thread_ts="1710000000.000100",
+        message_ts="1710000000.000200",
+        user_id="U_TAGGER",
+        request_text="Marketplace PDP copy is wrong",
+    )
+    run = state.update_run(
+        run.id,
+        linear_identifier="MOB-123",
+        linear_url="https://linear.app/acme/issue/MOB-123",
+    )
+
+    body = DefaultMonicaSkills._pr_body(
+        run=run,
+        worker_result={
+            "summary": "Patched PDP copy.",
+            "base_ref": "origin/dev",
+            "base_commit": "abc1234",
+            "proof": {
+                "summary": "Proof captured.",
+                "proof_target": {
+                    "deep_link": "elixir-card://marketplace/offer/fitness-first",
+                    "expected_text": "Fitness First",
+                    "screen": "/MarketplacePdp",
+                },
+            },
+        },
+        verification={"summary": "Verification passed.", "output": "npm test\nok"},
+    )
+
+    assert "## Proof" in body
+    assert "Target: elixir-card://marketplace/offer/fitness-first" in body
+    assert "Expected text: Fitness First" in body
+    assert "Screen: /MarketplacePdp" in body
+
+
 def test_default_skills_open_draft_pr_records_base_and_proof_context_on_linear(tmp_path):
     state = MonicaState.open(tmp_path / "monica.sqlite")
     run = state.create_run(
@@ -1838,7 +1922,64 @@ def test_default_skills_open_draft_pr_records_base_and_proof_context_on_linear(t
     assert "Required env keys: MONICA_TEST_LOGIN_TOKEN" in comment.body
     assert "iOS proof: https://slack.example/files/ios-pdp-fixed.png" in comment.body
     assert "Android proof: https://slack.example/files/android-pdp-fixed.mp4" in comment.body
+    assert "Slack upload: F-ios-pdp-fixed.png, ios-pdp-fixed.png" in comment.body
+    assert "Slack upload: F-android-pdp-fixed.mp4, android-pdp-fixed.mp4" in comment.body
     assert publisher.calls
+
+
+def test_default_skills_open_draft_pr_includes_slack_upload_metadata_in_body(tmp_path):
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C_MOBILE",
+        thread_ts="1710000000.000100",
+        message_ts="1710000000.000200",
+        user_id="U_TAGGER",
+        request_text="Marketplace PDP copy is wrong",
+    )
+    run = state.update_run(
+        run.id,
+        linear_identifier="MOB-123",
+        linear_url="https://linear.app/acme/issue/MOB-123",
+        approved_by_user_id="U_ALLOWED",
+    )
+    publisher = CapturingPrPublisher()
+    skills = DefaultMonicaSkills(
+        config=MonicaConfig(
+            rollout_mode="approved_pr",
+            repo=RepoConfig(default_branch="dev", branch_prefix="monica"),
+            slack=SlackConfig(approver_user_ids=("U_ALLOWED",)),
+            verification=VerificationConfig(commands=("npm test",)),
+            proof=ProofConfig(
+                setup_commands=("npm run monica:seed-auth",),
+                commands=("npm run monica:proof",),
+                required_env_keys=("MONICA_TEST_LOGIN_TOKEN",),
+            ),
+        ),
+        state=state,
+        pr_publisher=publisher,
+    )
+    worker_result = _valid_approved_pr_worker_result(tmp_path, run=run)
+    worker_result["proof"]["required_env_keys"] = ["MONICA_TEST_LOGIN_TOKEN"]
+    _update_proof_manifest(worker_result, required_env_keys=["MONICA_TEST_LOGIN_TOKEN"])
+
+    skills.open_draft_pr(
+        run,
+        worker_result,
+        {
+            "passed": True,
+            "summary": "Verification passed.",
+            "commands": ("npm test",),
+            "output": "All checks passed.",
+        },
+    )
+
+    body = publisher.calls[0]["body"]
+    assert "- iOS: https://slack.example/files/ios-pdp-fixed.png" in body
+    assert "- Android: https://slack.example/files/android-pdp-fixed.mp4" in body
+    assert "Slack upload: F-ios-pdp-fixed.png, ios-pdp-fixed.png" in body
+    assert "Slack upload: F-android-pdp-fixed.mp4, android-pdp-fixed.mp4" in body
+    assert "Local artifacts (debug):" in body
 
 
 def test_default_skills_open_draft_pr_normalizes_configured_required_env_keys(tmp_path):
@@ -3398,6 +3539,170 @@ def test_default_skills_open_draft_pr_refuses_verification_without_command_evide
     assert publisher.calls == []
 
 
+def test_default_skills_open_draft_pr_includes_verification_commands_in_body(tmp_path):
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C_MOBILE",
+        thread_ts="1710000000.000100",
+        message_ts="1710000000.000200",
+        user_id="U_TAGGER",
+        request_text="Marketplace PDP copy is wrong",
+    )
+    run = state.update_run(
+        run.id,
+        linear_identifier="MOB-123",
+        linear_url="https://linear.app/acme/issue/MOB-123",
+        approved_by_user_id="U_ALLOWED",
+    )
+    publisher = CapturingPrPublisher()
+    skills = DefaultMonicaSkills(
+        config=MonicaConfig(
+            rollout_mode="approved_pr",
+            repo=RepoConfig(default_branch="dev", branch_prefix="monica"),
+            slack=SlackConfig(approver_user_ids=("U_ALLOWED",)),
+            verification=VerificationConfig(commands=("npm test",)),
+            proof=ProofConfig(
+                setup_commands=("npm run monica:seed-auth",),
+                commands=("npm run monica:proof",),
+                required_env_keys=("MONICA_TEST_LOGIN_TOKEN",),
+            ),
+        ),
+        state=state,
+        pr_publisher=publisher,
+    )
+    worker_result = _valid_approved_pr_worker_result(tmp_path, run=run)
+    worker_result["proof"]["required_env_keys"] = ["MONICA_TEST_LOGIN_TOKEN"]
+    _update_proof_manifest(worker_result, required_env_keys=["MONICA_TEST_LOGIN_TOKEN"])
+
+    skills.open_draft_pr(
+        run,
+        worker_result,
+        {
+            "passed": True,
+            "summary": "Verification passed.",
+            "commands": ("npm test",),
+            "output": "All checks passed.",
+        },
+    )
+
+    assert len(publisher.calls) == 1
+    body = publisher.calls[0]["body"]
+    assert "## Verification" in body
+    assert "- npm test" in body
+    assert "All checks passed." in body
+
+
+def test_default_skills_open_draft_pr_fills_configured_verification_commands_in_body(tmp_path):
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C_MOBILE",
+        thread_ts="1710000000.000100",
+        message_ts="1710000000.000200",
+        user_id="U_TAGGER",
+        request_text="Marketplace PDP copy is wrong",
+    )
+    run = state.update_run(
+        run.id,
+        linear_identifier="MOB-123",
+        linear_url="https://linear.app/acme/issue/MOB-123",
+        approved_by_user_id="U_ALLOWED",
+    )
+    publisher = CapturingPrPublisher()
+    skills = DefaultMonicaSkills(
+        config=MonicaConfig(
+            rollout_mode="approved_pr",
+            repo=RepoConfig(default_branch="dev", branch_prefix="monica"),
+            slack=SlackConfig(approver_user_ids=("U_ALLOWED",)),
+            verification=VerificationConfig(commands=("npm test",)),
+            proof=ProofConfig(
+                setup_commands=("npm run monica:seed-auth",),
+                commands=("npm run monica:proof",),
+                required_env_keys=("MONICA_TEST_LOGIN_TOKEN",),
+            ),
+        ),
+        state=state,
+        pr_publisher=publisher,
+    )
+    worker_result = _valid_approved_pr_worker_result(tmp_path, run=run)
+    worker_result["proof"]["required_env_keys"] = ["MONICA_TEST_LOGIN_TOKEN"]
+    _update_proof_manifest(worker_result, required_env_keys=["MONICA_TEST_LOGIN_TOKEN"])
+
+    skills.open_draft_pr(
+        run,
+        worker_result,
+        {
+            "passed": True,
+            "summary": "Verification passed.",
+            "output": "MONICA_ENV=1 npm test\nAll checks passed.",
+        },
+    )
+
+    assert len(publisher.calls) == 1
+    body = publisher.calls[0]["body"]
+    assert "## Verification" in body
+    assert "- npm test" in body
+    assert "MONICA_ENV=1 npm test" in body
+
+
+def test_default_skills_open_draft_pr_includes_proof_artifact_digests_in_body(tmp_path):
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C_MOBILE",
+        thread_ts="1710000000.000100",
+        message_ts="1710000000.000200",
+        user_id="U_TAGGER",
+        request_text="Marketplace PDP copy is wrong",
+    )
+    run = state.update_run(
+        run.id,
+        linear_identifier="MOB-123",
+        linear_url="https://linear.app/acme/issue/MOB-123",
+        approved_by_user_id="U_ALLOWED",
+    )
+    publisher = CapturingPrPublisher()
+    skills = DefaultMonicaSkills(
+        config=MonicaConfig(
+            rollout_mode="approved_pr",
+            repo=RepoConfig(default_branch="dev", branch_prefix="monica"),
+            slack=SlackConfig(approver_user_ids=("U_ALLOWED",)),
+            verification=VerificationConfig(commands=("npm test",)),
+            proof=ProofConfig(
+                setup_commands=("npm run monica:seed-auth",),
+                commands=("npm run monica:proof",),
+                required_env_keys=("MONICA_TEST_LOGIN_TOKEN",),
+            ),
+        ),
+        state=state,
+        pr_publisher=publisher,
+    )
+    worker_result = _valid_approved_pr_worker_result(tmp_path, run=run)
+
+    skills.open_draft_pr(
+        run,
+        worker_result,
+        {
+            "passed": True,
+            "summary": "Verification passed.",
+            "commands": ("npm test",),
+            "output": "All checks passed.",
+        },
+    )
+
+    body = publisher.calls[0]["body"]
+    assert "Proof artifact digests:" in body
+    assert (
+        "iOS: ios-pdp-fixed.png "
+        f"bytes={len(b'ios proof')} sha256={hashlib.sha256(b'ios proof').hexdigest()}"
+    ) in body
+    assert (
+        "Android: android-pdp-fixed.mp4 "
+        f"bytes={len(b'android proof')} sha256={hashlib.sha256(b'android proof').hexdigest()}"
+    ) in body
+
+
 def test_default_skills_open_draft_pr_refuses_non_pull_request_url_from_publisher(tmp_path):
     state = MonicaState.open(tmp_path / "monica.sqlite")
     run = state.create_run(
@@ -3669,6 +3974,62 @@ def test_default_skills_open_draft_pr_refuses_local_only_proof_before_publishing
             run,
             worker_result,
             {"summary": "Verification passed.", "output": "npm test\nok"},
+        )
+
+    assert publisher.calls == []
+
+
+def test_default_skills_open_draft_pr_refuses_shareable_links_without_slack_upload_metadata(
+    tmp_path,
+):
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C_MOBILE",
+        thread_ts="1710000000.000100",
+        message_ts="1710000000.000200",
+        user_id="U_TAGGER",
+        request_text="Marketplace PDP copy is wrong",
+    )
+    run = state.update_run(
+        run.id,
+        linear_identifier="MOB-123",
+        linear_url="https://linear.app/acme/issue/MOB-123",
+        approved_by_user_id="U_ALLOWED",
+    )
+    publisher = CapturingPrPublisher()
+    skills = DefaultMonicaSkills(
+        config=MonicaConfig(
+            rollout_mode="approved_pr",
+            repo=RepoConfig(default_branch="dev", branch_prefix="monica"),
+            slack=SlackConfig(approver_user_ids=("U_ALLOWED",)),
+            verification=VerificationConfig(commands=("npm test",)),
+            proof=ProofConfig(
+                setup_commands=("npm run monica:seed-auth",),
+                commands=("npm run monica:proof",),
+                required_env_keys=("MONICA_TEST_LOGIN_TOKEN",),
+            ),
+        ),
+        state=state,
+        pr_publisher=publisher,
+    )
+    worker_result = _valid_approved_pr_worker_result(tmp_path, run=run)
+    worker_result["proof"]["required_env_keys"] = ["MONICA_TEST_LOGIN_TOKEN"]
+    for item in worker_result["proof"]["shareable_artifacts"]:
+        item.pop("upload_id", None)
+        item.pop("upload_name", None)
+    _update_proof_manifest(worker_result, required_env_keys=["MONICA_TEST_LOGIN_TOKEN"])
+
+    with pytest.raises(DraftPrPublisherError, match="Slack upload metadata"):
+        skills.open_draft_pr(
+            run,
+            worker_result,
+            {
+                "passed": True,
+                "summary": "Verification passed.",
+                "commands": ("npm test",),
+                "output": "All checks passed.",
+            },
         )
 
     assert publisher.calls == []

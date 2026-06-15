@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -337,6 +338,12 @@ def _validate_pr_body(
         raise DraftPrPublisherError(
             "body must include distinct iOS and Android shareable proof links."
         )
+    missing_slack_upload_metadata = _proof_section_missing_slack_upload_metadata(body)
+    if missing_slack_upload_metadata:
+        raise DraftPrPublisherError(
+            "body must include iOS and Android Slack upload metadata: "
+            f"missing {', '.join(missing_slack_upload_metadata)}."
+        )
     missing_local_artifacts = _proof_section_missing_local_visual_artifacts(body)
     if missing_local_artifacts:
         raise DraftPrPublisherError(
@@ -516,7 +523,7 @@ def _clean_verification_section(section: str) -> str:
 
 def _verification_section_has_command_evidence(section: str) -> bool:
     command_re = re.compile(
-        r"(?im)^\s*(?:[$>]\s*)?(?:"
+        r"(?im)^\s*(?:[-*+]\s+)?(?:[$>]\s*)?(?:"
         r"(?:uv\s+run\s+)?pytest\b"
         r"|python\s+-m\s+pytest\b"
         r"|npm\s+(?:test|run\s+[\w:.-]*(?:test|lint|type[-:]?check|check)[\w:.-]*)\b"
@@ -525,6 +532,7 @@ def _verification_section_has_command_evidence(section: str) -> bool:
         r"|(?:npx\s+)?(?:jest|vitest|detox|maestro)\b"
         r"|(?:\./)?gradlew\b"
         r"|gradle\b"
+        r"|git\s+diff\s+--check\b"
         r"|xcodebuild\b"
         r")"
     )
@@ -560,6 +568,29 @@ def _proof_section_has_distinct_platform_links(body: str) -> bool:
     ios_url = _proof_section_platform_url(section, "ios")
     android_url = _proof_section_platform_url(section, "android")
     return bool(ios_url and android_url and ios_url != android_url)
+
+
+def _proof_section_missing_slack_upload_metadata(body: str) -> list[str]:
+    section = _proof_section(body)
+    if not section:
+        return ["ios", "android"]
+    return [
+        platform
+        for platform in ("ios", "android")
+        if not _proof_section_platform_has_slack_upload_metadata(section, platform)
+    ]
+
+
+def _proof_section_platform_has_slack_upload_metadata(section: str, platform: str) -> bool:
+    labels = ("ios", "iphone", "ipad") if platform == "ios" else ("android",)
+    for line in section.splitlines():
+        if not any(label in line.casefold() for label in labels):
+            continue
+        if not _http_urls(line):
+            continue
+        if re.search(r"(?i)\bSlack\s+upload\s*:\s*\S+", line):
+            return True
+    return False
 
 
 def _proof_section_missing_local_visual_artifacts(body: str) -> list[str]:
@@ -765,6 +796,12 @@ def _proof_section_manifest_block_reason(
         str(expected_worktree),
     ):
         return "body local proof manifest worktree does not match PR worktree."
+    metadata_reason = _manifest_artifact_metadata_block_reason(
+        payload,
+        manifest_dir=manifest_dir,
+    )
+    if metadata_reason:
+        return metadata_reason
     return ""
 
 
@@ -937,6 +974,52 @@ def _manifest_artifact_refs_outside_dir(
         if not _path_is_under_dir(artifact_path, manifest_dir):
             outside.append(_local_artifact_ref_key(artifact) or artifact)
     return outside
+
+
+def _manifest_artifact_metadata_block_reason(
+    payload: dict[str, object],
+    *,
+    manifest_dir: Path,
+) -> str:
+    manifest_artifacts = _manifest_proof_artifact_keys(payload)
+    value = payload.get("proof_artifact_metadata")
+    if not isinstance(value, list) or not value:
+        return "body local proof manifest artifact metadata is required."
+    metadata_by_path: dict[str, dict[str, object]] = {}
+    missing_path_entries = False
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        path_key = _local_artifact_ref_key(str(item.get("path") or ""))
+        if not path_key:
+            missing_path_entries = True
+            continue
+        metadata_by_path[path_key] = item
+    if missing_path_entries or not metadata_by_path:
+        return "body local proof manifest artifact metadata must include artifact paths."
+    missing_metadata = sorted(manifest_artifacts - set(metadata_by_path))
+    if missing_metadata:
+        return (
+            "body local proof manifest artifact metadata is missing proof artifact(s): "
+            f"{', '.join(missing_metadata)}."
+        )
+    for artifact in sorted(manifest_artifacts):
+        item = metadata_by_path[artifact]
+        if "platform" not in item:
+            return "body local proof manifest artifact metadata must include artifact platforms."
+        artifact_path = _manifest_artifact_path(artifact, manifest_dir=manifest_dir)
+        if not _path_is_under_dir(artifact_path, manifest_dir):
+            continue
+        fingerprint = _artifact_fingerprint(artifact_path)
+        if fingerprint is None:
+            continue
+        size, digest = fingerprint
+        if item.get("bytes") != size or str(item.get("sha256") or "") != digest:
+            return (
+                "body local proof manifest artifact metadata does not match local "
+                f"artifact digest: {artifact}."
+            )
+    return ""
 
 
 def _body_artifact_refs_outside_dir(
@@ -1200,6 +1283,18 @@ def _local_artifact_ref_has_bytes(ref: str) -> bool:
         return path.is_file() and path.stat().st_size > 0
     except OSError:
         return False
+
+
+def _artifact_fingerprint(path: Path) -> tuple[int, str] | None:
+    try:
+        size = path.stat().st_size
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return size, digest.hexdigest()
 
 
 def _proof_section_invalid_local_image_artifact_files(body: str) -> list[str]:

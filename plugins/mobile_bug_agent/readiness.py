@@ -511,34 +511,50 @@ def check_monica_readiness(
                     ),
                 )
             uses_builtin_simulator_proof = _uses_builtin_simulator_proof(config.proof.commands)
+            uses_builtin_proof_auth_setup = _uses_builtin_proof_auth_setup(
+                config.proof.setup_commands
+            )
+            dev_client_scheme_command_groups: list[tuple[str, ...]] = []
+            if uses_builtin_proof_auth_setup and proof_platforms:
+                dev_client_scheme_command_groups.append(config.proof.setup_commands)
+            if uses_builtin_simulator_proof and "ios" in proof_platforms:
+                dev_client_scheme_command_groups.append(config.proof.commands)
+            if dev_client_scheme_command_groups:
+                require(
+                    "proof_ios_dev_client_scheme",
+                    _proof_setting_configured_for_all_command_groups(
+                        config.proof.dev_client_scheme,
+                        tuple(dev_client_scheme_command_groups),
+                        cli_flag="--dev-client-scheme",
+                        env_var="MONICA_DEV_CLIENT_SCHEME",
+                    ),
+                    (
+                        "Built-in Monica simulator proof/auth setup uses the Expo "
+                        "dev-client harness; set proof.dev_client_scheme or pass "
+                        "--dev-client-scheme/MONICA_DEV_CLIENT_SCHEME in each built-in "
+                        "proof command/setup command that needs it"
+                    ),
+                )
             if "ios" in proof_platforms:
+                ios_bundle_id_command_groups: list[tuple[str, ...]] = []
                 if uses_builtin_simulator_proof:
-                    require(
-                        "proof_ios_dev_client_scheme",
-                        _proof_setting_configured(
-                            config.proof.dev_client_scheme,
-                            config.proof.commands,
-                            cli_flag="--dev-client-scheme",
-                            env_var="MONICA_DEV_CLIENT_SCHEME",
-                        ),
-                        (
-                            "iOS simulator proof uses Monica's built-in Expo dev-client harness; "
-                            "set proof.dev_client_scheme or pass --dev-client-scheme/"
-                            "MONICA_DEV_CLIENT_SCHEME in proof.commands"
-                        ),
-                    )
+                    ios_bundle_id_command_groups.append(config.proof.commands)
+                if uses_builtin_proof_auth_setup:
+                    ios_bundle_id_command_groups.append(config.proof.setup_commands)
+                if ios_bundle_id_command_groups:
                     require(
                         "proof_ios_bundle_id",
-                        _proof_setting_configured(
+                        _proof_setting_configured_for_all_command_groups(
                             config.proof.ios_bundle_id,
-                            config.proof.commands,
+                            tuple(ios_bundle_id_command_groups),
                             cli_flag="--ios-bundle-id",
                             env_var="MONICA_IOS_BUNDLE_ID",
                         ),
                         (
-                            "iOS simulator proof uses Monica's built-in Expo dev-client harness; "
-                            "set proof.ios_bundle_id or pass --ios-bundle-id/"
-                            "MONICA_IOS_BUNDLE_ID in proof.commands"
+                            "Built-in Monica iOS simulator proof/auth setup uses the Expo "
+                            "dev-client harness; set proof.ios_bundle_id or pass "
+                            "--ios-bundle-id/MONICA_IOS_BUNDLE_ID in each built-in "
+                            "proof command/setup command that needs it"
                         ),
                     )
                 ios_tools_present = resolve("xcrun") is not None and resolve("xcodebuild") is not None
@@ -558,19 +574,25 @@ def check_monica_readiness(
                     ),
                 )
             if "android" in proof_platforms:
+                android_package_command_groups: list[tuple[str, ...]] = []
                 if uses_builtin_simulator_proof:
+                    android_package_command_groups.append(config.proof.commands)
+                if uses_builtin_proof_auth_setup:
+                    android_package_command_groups.append(config.proof.setup_commands)
+                if android_package_command_groups:
                     require(
                         "proof_android_package",
-                        _proof_setting_configured(
+                        _proof_setting_configured_for_all_command_groups(
                             config.proof.android_package,
-                            config.proof.commands,
+                            tuple(android_package_command_groups),
                             cli_flag="--android-package",
                             env_var="MONICA_ANDROID_PACKAGE",
                         ),
                         (
-                            "Android simulator proof uses Monica's built-in Expo dev-client harness; "
-                            "set proof.android_package or pass --android-package/"
-                            "MONICA_ANDROID_PACKAGE in proof.commands"
+                            "Built-in Monica Android simulator proof/auth setup uses the Expo "
+                            "dev-client harness; set proof.android_package or pass "
+                            "--android-package/MONICA_ANDROID_PACKAGE in each built-in "
+                            "proof command/setup command that needs it"
                         ),
                     )
                 warn(
@@ -850,6 +872,10 @@ def _uses_builtin_simulator_proof(commands: tuple[str, ...]) -> bool:
     return any("plugins.mobile_bug_agent.simulator_proof" in command for command in commands)
 
 
+def _uses_builtin_proof_auth_setup(commands: tuple[str, ...]) -> bool:
+    return any("plugins.mobile_bug_agent.proof_auth_setup" in command for command in commands)
+
+
 def _has_non_blank_values(values: tuple[str, ...]) -> bool:
     return any(str(value or "").strip() for value in values)
 
@@ -1027,6 +1053,24 @@ def _proof_setting_configured(
         return True
     assignment_re = re.compile(rf"(?:^|[\s;])(?:export\s+)?{re.escape(env_var)}\s*=")
     return any(cli_flag in command or assignment_re.search(command) for command in commands)
+
+
+def _proof_setting_configured_for_all_command_groups(
+    config_value: str | None,
+    command_groups: tuple[tuple[str, ...], ...],
+    *,
+    cli_flag: str,
+    env_var: str,
+) -> bool:
+    return all(
+        _proof_setting_configured(
+            config_value,
+            commands,
+            cli_flag=cli_flag,
+            env_var=env_var,
+        )
+        for commands in command_groups
+    )
 
 
 def _scope_set(value: object) -> set[str]:

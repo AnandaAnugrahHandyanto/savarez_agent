@@ -7,7 +7,9 @@ the agentic workflow, then the workflow decides the next useful step.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import socket
 import subprocess
 import threading
 from datetime import datetime, timezone
@@ -78,10 +80,95 @@ def _on_pre_gateway_dispatch(event: Any, gateway: Any = None, **_: Any) -> dict[
         return None
 
 
-def _on_pre_update(**_: Any) -> dict[str, str] | None:
+def _on_gateway_startup(gateway: Any = None, **_: Any) -> dict[str, str]:
+    thread = threading.Thread(
+        target=_recover_runtime_on_gateway_startup,
+        name="monica-gateway-startup-recovery",
+        daemon=True,
+    )
+    thread.start()
+    return {"action": "started"}
+
+
+def _recover_runtime_on_gateway_startup() -> None:
+    try:
+        flow = _runtime()
+        _recover_on_gateway_startup(
+            config=flow.config,
+            state=flow.state,
+            loop_launcher=flow.loop_launcher,
+        )
+    except Exception:
+        logger.warning("Monica gateway startup recovery failed", exc_info=True)
+
+
+def _recover_on_gateway_startup(
+    *,
+    config: Any,
+    state: MonicaState,
+    loop_launcher: Any,
+    sync_approvals: Any | None = None,
+    now: str | float | datetime | None = None,
+) -> dict[str, Any]:
+    state.reap_stale_runtime_sync_lease(now=now)
+    if not state.runtime_sync_gate().get("open", True):
+        return {"skipped": "runtime_sync_in_progress", "launched": 0}
+    approval_sync_exit_code: int | None = None
+    if any(run.status == "awaiting_fix_approval" for run in state.list_runs(limit=100)):
+        if sync_approvals is None:
+            from .cli import run_sync_approvals_command
+
+            sync_approvals = run_sync_approvals_command
+        try:
+            approval_sync_exit_code = int(
+                sync_approvals(
+                    config=config,
+                    state=state,
+                    limit=50,
+                )
+            )
+        except Exception as exc:
+            logger.warning("Monica startup approval sync failed: %s", exc, exc_info=True)
+            approval_sync_exit_code = 1
+    launched = _recover_pending_runs_on_gateway_startup(
+        state=state,
+        loop_launcher=loop_launcher,
+    )
+    result: dict[str, Any] = dict(launched)
+    if approval_sync_exit_code is not None:
+        result["approval_sync_exit_code"] = approval_sync_exit_code
+    return result
+
+
+def _recover_pending_runs_on_gateway_startup(
+    *,
+    state: MonicaState,
+    loop_launcher: Any,
+    now: float | None = None,
+) -> dict[str, int]:
+    state.reap_stale_loop_leases(now=now)
+    launched = 0
+    candidates = [
+        run
+        for run in state.list_runs(limit=100)
+        if run.status in {"approved", "queued", "triaging"}
+        and state.current_loop_lease(run.id) is None
+    ]
+    candidates.sort(key=lambda run: (run.status != "approved", run.created_at, run.id))
+    for run in candidates:
+        if run.status == "triaging":
+            state.update_run(run.id, status="queued", failure_reason="")
+        loop_launcher(run.id)
+        launched += 1
+    return {"launched": launched}
+
+
+def _on_pre_update(project_root: str = "", **_: Any) -> dict[str, str] | None:
     try:
         config = load_monica_config()
         state = MonicaState.open(runtime_root(config) / "state.sqlite")
+        now = _utc_now_iso()
+        state.reap_stale_runtime_sync_lease(now=now)
         active_runs = state.list_runtime_sync_blocking_runs()
     except Exception as exc:
         logger.debug("Monica pre-update idle check unavailable: %s", exc, exc_info=True)
@@ -93,7 +180,43 @@ def _on_pre_update(**_: Any) -> dict[str, str] | None:
             ),
         }
     if not active_runs:
-        return None
+        commit = _current_hermes_commit(project_root)
+        lease, reason = state.try_acquire_runtime_sync_lease(
+            owner_id="hermes-update",
+            owner_pid=os.getpid(),
+            owner_host=socket.gethostname(),
+            project_root=str(project_root or Path(__file__).resolve().parents[2]),
+            pre_update_commit=commit,
+            started_at=now,
+        )
+        if lease is not None:
+            return None
+        if reason == "runtime_sync_in_progress":
+            return {
+                "action": "block",
+                "message": (
+                    "Monica runtime sync is already in progress. "
+                    "Wait for the current Hermes update to finish before starting another update."
+                ),
+            }
+        if reason == "commit_unavailable":
+            return {
+                "action": "block",
+                "message": (
+                    "Monica could not identify the current Hermes commit, so `hermes update` "
+                    "was not started. Run `git rev-parse --short=8 HEAD` in the Hermes checkout "
+                    "and retry once the repository is readable."
+                ),
+            }
+        active_runs = state.list_runtime_sync_blocking_runs()
+        if not active_runs:
+            return {
+                "action": "block",
+                "message": (
+                    "Monica could not acquire the runtime sync lease, so `hermes update` "
+                    "was not started. Run `hermes mobile-bug-agent doctor` on the host."
+                ),
+            }
     labels = ", ".join(_active_run_label(run) for run in active_runs[:5])
     if len(active_runs) > 5:
         labels += f", +{len(active_runs) - 5} more"
@@ -111,8 +234,15 @@ def _on_post_update(project_root: str = "", **_: Any) -> dict[str, str] | None:
     try:
         config = load_monica_config()
         state = MonicaState.open(runtime_root(config) / "state.sqlite")
+        lease = state.current_runtime_sync_lease()
         active_runs = state.list_runtime_sync_blocking_runs()
         if active_runs:
+            if lease is not None:
+                state.record_runtime_sync_failure(
+                    lease_id=lease.lease_id,
+                    reason="monica_active",
+                    completed_at=_utc_now_iso(),
+                )
             labels = ", ".join(_active_run_label(run) for run in active_runs[:5])
             if len(active_runs) > 5:
                 labels += f", +{len(active_runs) - 5} more"
@@ -124,11 +254,27 @@ def _on_post_update(project_root: str = "", **_: Any) -> dict[str, str] | None:
             }
         commit = _current_hermes_commit(project_root)
         if not _looks_like_git_commit(commit):
+            if lease is not None:
+                state.record_runtime_sync_failure(
+                    lease_id=lease.lease_id,
+                    reason="commit_unavailable",
+                    completed_at=_utc_now_iso(),
+                )
             return {"action": "skipped", "reason": "commit_unavailable"}
-        metadata = state.record_runtime_sync(
-            commit=commit,
-            synced_at=_utc_now_iso(),
-        )
+        if lease is not None:
+            metadata = state.complete_runtime_sync_lease(
+                lease_id=lease.lease_id,
+                post_update_commit=commit,
+                completed_at=_utc_now_iso(),
+            )
+        else:
+            metadata = {
+                **state.record_runtime_sync(
+                    commit=commit,
+                    synced_at=_utc_now_iso(),
+                ),
+                "last_sync_status": "recorded",
+            }
     except Exception as exc:
         logger.debug("Monica post-update sync record unavailable: %s", exc, exc_info=True)
         return None
@@ -211,5 +357,6 @@ def register(ctx) -> None:
         description="Operator CLI for Monica Slack-to-Linear mobile bug loops.",
     )
     ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch)
+    ctx.register_hook("gateway_startup", _on_gateway_startup)
     ctx.register_hook("pre_update", _on_pre_update)
     ctx.register_hook("post_update", _on_post_update)

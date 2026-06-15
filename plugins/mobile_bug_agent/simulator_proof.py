@@ -206,20 +206,25 @@ class SimulatorProofHarness:
             if clean_bundle_id:
                 if _ios_clean_install_enabled():
                     _uninstall_ios_bundle(target, app_dir, clean_bundle_id)
-                try:
-                    self._run_text(
-                        ("npx", "expo", "run:ios", "--no-install", "--no-bundler"),
-                        app_dir,
-                        timeout_seconds,
-                    )
-                except RuntimeError:
-                    # expo run:ios can fail after build+install on its cosmetic
-                    # Simulator.app activation step (osascript is unavailable in
-                    # headless contexts). The uninstall above guarantees an
-                    # installed app reflects this build, so only re-raise when
-                    # the install never happened.
-                    if not _ios_app_is_installed(target, app_dir, clean_bundle_id):
-                        raise
+                if not _ios_app_is_installed(
+                    target,
+                    app_dir,
+                    clean_bundle_id,
+                ) or _worktree_has_native_sensitive_changes(worktree):
+                    try:
+                        self._run_text(
+                            ("npx", "expo", "run:ios", "--no-install", "--no-bundler"),
+                            app_dir,
+                            timeout_seconds,
+                        )
+                    except RuntimeError:
+                        # expo run:ios can fail after build+install on its cosmetic
+                        # Simulator.app activation step (osascript is unavailable in
+                        # headless contexts). The uninstall above guarantees an
+                        # installed app reflects this build, so only re-raise when
+                        # the install never happened.
+                        if not _ios_app_is_installed(target, app_dir, clean_bundle_id):
+                            raise
                 _grant_ios_notification_permission(
                     self._run_text,
                     target,
@@ -304,33 +309,41 @@ class SimulatorProofHarness:
                     time.sleep(_android_settle_seconds())
 
             def capture_ready_app() -> None:
-                if deep_link.strip():
-                    _open_android_url(
-                        self._run_text,
-                        adb,
-                        worktree,
-                        timeout_seconds,
-                        deep_link.strip(),
-                        android_package.strip(),
-                    )
-                    time.sleep(_android_settle_seconds())
-                if deep_link.strip() or proof_screen.strip():
-                    _wait_until_final_route_leaves_non_target(
-                        "Android",
-                        proof_dir / "android-metro.stdout.log",
-                        timeout_seconds=timeout_seconds,
-                        require_route=True,
-                        target_deep_link=deep_link,
-                        target_screen=proof_screen,
-                    )
-                _assert_deep_link_not_auth_gated("Android", proof_dir / "android-metro.stdout.log", deep_link)
-                _assert_final_route_is_target_screen(
-                    "Android",
-                    proof_dir / "android-metro.stdout.log",
-                    require_route=bool(deep_link.strip() or proof_screen.strip()),
-                    target_deep_link=deep_link,
-                    target_screen=proof_screen,
-                )
+                target_attempts = 2 if deep_link.strip() else 1
+                for attempt in range(target_attempts):
+                    if deep_link.strip():
+                        _open_android_url(
+                            self._run_text,
+                            adb,
+                            worktree,
+                            timeout_seconds,
+                            deep_link.strip(),
+                            android_package.strip(),
+                        )
+                        time.sleep(_android_settle_seconds())
+                    try:
+                        if deep_link.strip() or proof_screen.strip():
+                            _wait_until_final_route_leaves_non_target(
+                                "Android",
+                                proof_dir / "android-metro.stdout.log",
+                                timeout_seconds=timeout_seconds,
+                                require_route=True,
+                                target_deep_link=deep_link,
+                                target_screen=proof_screen,
+                            )
+                        _assert_deep_link_not_auth_gated("Android", proof_dir / "android-metro.stdout.log", deep_link)
+                        _assert_final_route_is_target_screen(
+                            "Android",
+                            proof_dir / "android-metro.stdout.log",
+                            require_route=bool(deep_link.strip() or proof_screen.strip()),
+                            target_deep_link=deep_link,
+                            target_screen=proof_screen,
+                        )
+                        break
+                    except RuntimeError as exc:
+                        if attempt + 1 < target_attempts and _android_target_retryable(exc):
+                            continue
+                        raise
                 if android_package.strip():
                     _assert_android_not_expo_dev_client_launcher(
                         self._run_text,
@@ -346,8 +359,14 @@ class SimulatorProofHarness:
 
             if package:
                 self._run_text((*adb, "shell", "am", "force-stop", package), worktree, timeout_seconds)
+                command = (
+                    _android_metro_command()
+                    if _android_package_is_installed(adb, worktree, package)
+                    and not _worktree_has_native_sensitive_changes(worktree)
+                    else _android_run_command(package)
+                )
                 self._run_android_until_foreground(
-                    _android_run_command(package),
+                    command,
                     _expo_project_dir(worktree),
                     timeout_seconds,
                     adb,
@@ -1092,6 +1111,115 @@ def _android_run_command(package: str) -> tuple[str, ...]:
     return ("npx", "expo", "run:android", "--app-id", clean_package)
 
 
+def _android_metro_command() -> tuple[str, ...]:
+    return (
+        "npx",
+        "expo",
+        "start",
+        "--dev-client",
+        "--clear",
+        "--host",
+        _android_expo_host(),
+        "--port",
+        "8081",
+    )
+
+
+_NATIVE_SENSITIVE_PATH_MARKERS = (
+    "/android/",
+    "/ios/",
+    "/macos/",
+    "/windows/",
+    "android/",
+    "ios/",
+    "macos/",
+    "windows/",
+)
+_NATIVE_SENSITIVE_FILE_NAMES = {
+    "app.config.js",
+    "app.config.ts",
+    "app.json",
+    "babel.config.js",
+    "eas.json",
+    "metro.config.js",
+    "package-lock.json",
+    "package.json",
+    "pnpm-lock.yaml",
+    "Podfile",
+    "Podfile.lock",
+    "yarn.lock",
+}
+_NATIVE_SENSITIVE_SUFFIXES = (
+    ".gradle",
+    ".gradle.kts",
+    ".podspec",
+)
+
+
+def _worktree_has_native_sensitive_changes(worktree: Path) -> bool:
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "diff",
+                "--name-only",
+                "--diff-filter=ACDMRTUXB",
+                "HEAD",
+                "--",
+            ],
+            cwd=str(worktree),
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return True
+    if proc.returncode != 0:
+        return True
+    if any(_path_is_native_sensitive(path) for path in str(proc.stdout or "").splitlines()):
+        return True
+    try:
+        untracked = subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ],
+            cwd=str(worktree),
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return True
+    if untracked.returncode != 0:
+        return True
+    return any(
+        _path_is_native_sensitive(path)
+        for path in str(untracked.stdout or "").split("\0")
+        if path
+    )
+
+
+def _path_is_native_sensitive(value: str) -> bool:
+    normalized = str(value or "").strip().replace("\\", "/")
+    if not normalized:
+        return False
+    name = Path(normalized).name
+    if name in _NATIVE_SENSITIVE_FILE_NAMES:
+        return True
+    if normalized.endswith(_NATIVE_SENSITIVE_SUFFIXES):
+        return True
+    return any(
+        normalized == marker.rstrip("/") or marker in normalized
+        for marker in _NATIVE_SENSITIVE_PATH_MARKERS
+    )
+
+
 def _resolve_android_launch_activity(adb: tuple[str, ...], cwd: Path, package: str) -> str:
     try:
         proc = subprocess.run(
@@ -1218,8 +1346,13 @@ def _assert_final_route_is_target_screen(
             )
         return
     if route not in _NON_TARGET_SCREEN_ROUTES:
-        target_tokens = _target_route_tokens(target_screen or target_deep_link)
-        if target_tokens and not _route_matches_target(route, target_tokens):
+        clean_target_screen = str(target_screen or "").strip()
+        target_tokens = _target_route_tokens(clean_target_screen or target_deep_link)
+        if target_tokens and not _route_matches_target(
+            route,
+            target_tokens,
+            target_screen=clean_target_screen,
+        ):
             raise RuntimeError(
                 f"{platform} proof target route does not match proof target: {route}"
             )
@@ -1241,16 +1374,27 @@ def _wait_until_final_route_leaves_non_target(
     wait_seconds = min(_proof_target_wait_seconds(), max(float(timeout_seconds), 0.0))
     if wait_seconds <= 0:
         return
-    target_tokens = _target_route_tokens(target_screen or target_deep_link)
+    clean_target_screen = str(target_screen or "").strip()
+    target_tokens = _target_route_tokens(clean_target_screen or target_deep_link)
     route = _last_screen_load_route(_read_optional_text(metro_stdout))
-    if _route_is_ready_for_capture(route, require_route=require_route, target_tokens=target_tokens):
+    if _route_is_ready_for_capture(
+        route,
+        require_route=require_route,
+        target_tokens=target_tokens,
+        target_screen=clean_target_screen,
+    ):
         return
 
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
         time.sleep(_proof_target_poll_seconds())
         route = _last_screen_load_route(_read_optional_text(metro_stdout))
-        if _route_is_ready_for_capture(route, require_route=require_route, target_tokens=target_tokens):
+        if _route_is_ready_for_capture(
+            route,
+            require_route=require_route,
+            target_tokens=target_tokens,
+            target_screen=clean_target_screen,
+        ):
             return
     if not route and require_route:
         raise RuntimeError(
@@ -1270,12 +1414,31 @@ def _route_is_ready_for_capture(
     *,
     require_route: bool,
     target_tokens: frozenset[str] = frozenset(),
+    target_screen: str = "",
 ) -> bool:
     if not route:
         return not require_route
     if route in _NON_TARGET_SCREEN_ROUTES:
         return False
-    return not target_tokens or _route_matches_target(route, target_tokens)
+    return not target_tokens or _route_matches_target(
+        route,
+        target_tokens,
+        target_screen=target_screen,
+    )
+
+
+def _android_target_retryable(exc: RuntimeError) -> bool:
+    message = str(exc).casefold()
+    if "onboarding" in message or "login" in message:
+        return False
+    return any(
+        marker in message
+        for marker in (
+            "proof target route does not match proof target",
+            "proof stayed on non-target app screen",
+            "proof did not observe a target screen route",
+        )
+    )
 
 
 def _target_route_tokens(deep_link: str) -> frozenset[str]:
@@ -1296,13 +1459,25 @@ def _target_route_tokens(deep_link: str) -> frozenset[str]:
     return _expand_target_route_tokens(_route_match_tokens(" ".join(route_parts)))
 
 
-def _route_matches_target(route: str, target_tokens: frozenset[str]) -> bool:
+def _route_matches_target(
+    route: str,
+    target_tokens: frozenset[str],
+    *,
+    target_screen: str = "",
+) -> bool:
+    if target_screen and _exact_route_key(route) == _exact_route_key(target_screen):
+        return True
     route_tokens = _route_match_tokens(route)
     if not route_tokens or not target_tokens:
         return False
     matched_tokens = route_tokens.intersection(target_tokens)
-    if any(token not in _GENERIC_ROUTE_MATCH_TOKENS for token in matched_tokens):
+    generic_tokens = set(_GENERIC_ROUTE_MATCH_TOKENS)
+    if target_screen:
+        generic_tokens.update(_PDP_TARGET_TOKENS)
+    if any(token not in generic_tokens for token in matched_tokens):
         return True
+    if target_screen:
+        return False
     for route_token in route_tokens:
         for target_token in target_tokens:
             if route_token in _GENERIC_ROUTE_MATCH_TOKENS or target_token in _GENERIC_ROUTE_MATCH_TOKENS:
@@ -1329,6 +1504,10 @@ def _route_match_tokens(value: str) -> frozenset[str]:
         )
         if token and token not in _ROUTE_MATCH_IGNORED_TOKENS
     )
+
+
+def _exact_route_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
 
 
 def _last_screen_load_route(value: str) -> str:
@@ -1368,11 +1547,25 @@ def _assert_ios_expected_text_observed(
     except OSError as exc:
         raise RuntimeError("iOS proof Metro log was unavailable for target text validation.") from exc
     if not _ios_visible_target_text_observed(log_text, clean_expected_text):
-        if not allow_target_route_note:
-            raise RuntimeError(f"iOS proof target text was not observed in Metro log: {clean_expected_text}")
-        route = _last_screen_load_route(log_text)
-        if not route or route in _NON_TARGET_SCREEN_ROUTES:
-            raise RuntimeError(f"iOS proof target text was not observed in Metro log: {clean_expected_text}")
+        if allow_target_route_note:
+            route = _last_screen_load_route(log_text)
+            if route and route not in _NON_TARGET_SCREEN_ROUTES:
+                note_log = proof_dir / "ios-target.log"
+                try:
+                    note_log.write_text(
+                        "\n".join(
+                            [
+                                "Monica iOS proof target route observed.",
+                                f"route={route}",
+                                f"source={metro_stdout.name}",
+                                "",
+                            ]
+                        ),
+                        encoding="utf-8",
+                    )
+                except OSError as exc:
+                    raise RuntimeError("failed to write iOS proof target route artifact") from exc
+        raise RuntimeError(f"iOS proof target text was not observed in Metro log: {clean_expected_text}")
     target_log = proof_dir / "ios-target.log"
     try:
         target_log.write_text(
@@ -1608,6 +1801,10 @@ def _ios_packager_hostname() -> str:
 
 def _ios_expo_host() -> str:
     return os.environ.get("MONICA_IOS_EXPO_HOST", "").strip() or "localhost"
+
+
+def _android_expo_host() -> str:
+    return os.environ.get("MONICA_ANDROID_EXPO_HOST", "").strip() or "localhost"
 
 
 def _ios_metro_env() -> dict[str, str]:

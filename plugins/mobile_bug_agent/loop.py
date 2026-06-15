@@ -152,10 +152,23 @@ class MonicaLoop:
         run = self.state.get_run(run_id)
         if run is None:
             raise KeyError(run_id)
+        lease, reason = self.state.acquire_loop_lease(
+            run_id,
+            owner_id=f"monica-loop:{os.getpid()}",
+            owner_kind="gateway",
+            pid=os.getpid(),
+        )
+        if lease is None:
+            if reason == "loop_already_active":
+                self._log_run("lease_skipped", run, stage=run.status or "unknown")
+                return
+            raise RuntimeError(f"failed to acquire Monica loop lease: {reason}")
         try:
             self._run(run)
         except Exception as exc:
             self._mark_failed(run_id, exc)
+        finally:
+            self.state.release_loop_lease(lease.lease_id, reason="finished")
 
     def _run(self, run: Any) -> None:
         if self.config.rollout_mode not in SUPPORTED_ROLLOUT_MODES:

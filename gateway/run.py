@@ -1229,6 +1229,16 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+def _invoke_gateway_startup_plugin_hooks(gateway: Any) -> list[Any]:
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+        return list(_invoke_hook("gateway_startup", gateway=gateway))
+    except Exception as exc:
+        logger.warning("gateway_startup plugin hook invocation failed: %s", exc)
+        return []
+
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -4937,6 +4947,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         await self.hooks.emit("gateway:startup", {
             "platforms": [p.value for p in self.adapters.keys()],
         })
+        _invoke_gateway_startup_plugin_hooks(self)
         
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)

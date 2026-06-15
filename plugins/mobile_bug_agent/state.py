@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 _GIT_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+_RUNTIME_SYNC_LEASE_NAME = "hermes_update"
+_RUNTIME_SYNC_LEASE_TTL_SECONDS = 30 * 60
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,50 @@ class MonicaRun:
     approved_by_user_id: str = ""
     created_at: str = ""
     updated_at: str = ""
+
+
+@dataclass(frozen=True)
+class RuntimeSyncLease:
+    name: str
+    lease_id: str
+    owner_id: str
+    owner_pid: int
+    owner_host: str
+    project_root: str
+    pre_update_commit: str
+    started_at: str
+    expires_at: str
+    args: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "lease_id": self.lease_id,
+            "owner_id": self.owner_id,
+            "owner_pid": self.owner_pid,
+            "owner_host": self.owner_host,
+            "project_root": self.project_root,
+            "pre_update_commit": self.pre_update_commit,
+            "started_at": self.started_at,
+            "expires_at": self.expires_at,
+            "args": dict(self.args),
+        }
+
+
+@dataclass(frozen=True)
+class MonicaLoopLease:
+    lease_id: str
+    run_id: str
+    owner_id: str
+    owner_kind: str
+    pid: int
+    status_at_acquire: str
+    last_status: str
+    acquired_at: float
+    heartbeat_at: float
+    expires_at: float
+    released_at: float | None = None
+    release_reason: str = ""
 
 
 class MonicaState:
@@ -124,6 +170,47 @@ class MonicaState:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 )
+                """
+            )
+            self._db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS runtime_sync_lease (
+                    name TEXT PRIMARY KEY,
+                    lease_id TEXT NOT NULL,
+                    owner_id TEXT NOT NULL,
+                    owner_pid INTEGER NOT NULL DEFAULT 0,
+                    owner_host TEXT NOT NULL DEFAULT '',
+                    project_root TEXT NOT NULL DEFAULT '',
+                    pre_update_commit TEXT NOT NULL DEFAULT '',
+                    started_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    args_json TEXT NOT NULL DEFAULT '{}'
+                )
+                """
+            )
+            self._db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS loop_leases (
+                    id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    owner_id TEXT NOT NULL,
+                    owner_kind TEXT NOT NULL DEFAULT 'gateway',
+                    pid INTEGER NOT NULL DEFAULT 0,
+                    status_at_acquire TEXT NOT NULL,
+                    last_status TEXT NOT NULL,
+                    acquired_at REAL NOT NULL,
+                    heartbeat_at REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    released_at REAL,
+                    release_reason TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            self._db.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_monica_loop_leases_one_active
+                ON loop_leases(run_id)
+                WHERE released_at IS NULL
                 """
             )
             self._db.commit()
@@ -273,16 +360,260 @@ class MonicaState:
 
     def list_runtime_sync_blocking_runs(self) -> list[MonicaRun]:
         with self._lock:
-            placeholders = ",".join("?" for _ in RUNTIME_SYNC_TERMINAL_STATUSES)
-            rows = self._db.execute(
-                f"SELECT * FROM runs WHERE status NOT IN ({placeholders})",
-                RUNTIME_SYNC_TERMINAL_STATUSES,
-            ).fetchall()
-            runs = [self._row_to_run(row) for row in rows]
+            runs = self._list_runtime_sync_blocking_runs_locked()
         return sorted(runs, key=lambda run: _STATUS_PRIORITY.get(run.status, 0), reverse=True)
 
     def is_idle_for_runtime_sync(self) -> bool:
         return not self.list_runtime_sync_blocking_runs()
+
+    def try_acquire_runtime_sync_lease(
+        self,
+        *,
+        owner_id: str,
+        owner_pid: int = 0,
+        owner_host: str = "",
+        project_root: str = "",
+        pre_update_commit: str,
+        started_at: str | None = None,
+        expires_at: str | None = None,
+        args: dict[str, Any] | None = None,
+    ) -> tuple[RuntimeSyncLease | None, str]:
+        clean_commit = str(pre_update_commit or "").strip()
+        if not _GIT_COMMIT_RE.fullmatch(clean_commit):
+            return None, "commit_unavailable"
+        with self._lock:
+            if self._current_runtime_sync_lease_locked() is not None:
+                return None, "runtime_sync_in_progress"
+            if self._list_runtime_sync_blocking_runs_locked():
+                return None, "monica_active"
+            lease_id = uuid.uuid4().hex
+            started = str(started_at or _utc_now_iso()).strip()
+            expires = str(expires_at or _runtime_sync_lease_expires_at(started)).strip()
+            self._db.execute(
+                """
+                INSERT INTO runtime_sync_lease (
+                    name, lease_id, owner_id, owner_pid, owner_host, project_root,
+                    pre_update_commit, started_at, expires_at, args_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _RUNTIME_SYNC_LEASE_NAME,
+                    lease_id,
+                    str(owner_id or "").strip(),
+                    int(owner_pid or 0),
+                    str(owner_host or "").strip(),
+                    str(project_root or "").strip(),
+                    clean_commit,
+                    started,
+                    expires,
+                    _json_dumps(args or {}),
+                ),
+            )
+            self._db.commit()
+            lease = self._current_runtime_sync_lease_locked()
+            if lease is None:  # pragma: no cover - sqlite insert/get invariant
+                raise RuntimeError("failed to acquire Monica runtime sync lease")
+            return lease, ""
+
+    def current_runtime_sync_lease(self) -> RuntimeSyncLease | None:
+        with self._lock:
+            return self._current_runtime_sync_lease_locked()
+
+    def runtime_sync_gate(self) -> dict[str, Any]:
+        lease = self.current_runtime_sync_lease()
+        if lease is None:
+            return {"open": True, "reason": "", "lease": None}
+        return {
+            "open": False,
+            "reason": "runtime_sync_in_progress",
+            "lease": lease.to_dict(),
+        }
+
+    def complete_runtime_sync_lease(
+        self,
+        *,
+        lease_id: str,
+        post_update_commit: str,
+        completed_at: str | None = None,
+    ) -> dict[str, str]:
+        clean_commit = str(post_update_commit or "").strip()
+        if not _GIT_COMMIT_RE.fullmatch(clean_commit):
+            raise ValueError("runtime sync commit must be a git SHA")
+        with self._lock:
+            lease = self._current_runtime_sync_lease_locked()
+            if lease is None or lease.lease_id != str(lease_id or "").strip():
+                raise KeyError("runtime sync lease not found")
+            completed = str(completed_at or _utc_now_iso()).strip()
+            metadata = {
+                "last_synced_commit": clean_commit,
+                "last_synced_at": completed,
+                "last_sync_status": "recorded",
+                "last_sync_failure_reason": "",
+                "last_sync_lease_id": lease.lease_id,
+                "last_sync_started_at": lease.started_at,
+                "last_sync_completed_at": completed,
+                "last_sync_pre_update_commit": lease.pre_update_commit,
+                "last_sync_post_update_commit": clean_commit,
+                "last_sync_project_root": lease.project_root,
+            }
+            self._write_runtime_sync_metadata_locked(metadata)
+            self._delete_runtime_sync_lease_locked(lease.lease_id)
+            self._db.commit()
+            return metadata
+
+    def record_runtime_sync_failure(
+        self,
+        *,
+        lease_id: str = "",
+        reason: str,
+        completed_at: str | None = None,
+    ) -> dict[str, str]:
+        with self._lock:
+            lease = self._current_runtime_sync_lease_locked()
+            clean_lease_id = str(lease_id or "").strip()
+            if clean_lease_id and lease is not None and lease.lease_id != clean_lease_id:
+                raise KeyError("runtime sync lease not found")
+            completed = str(completed_at or _utc_now_iso()).strip()
+            metadata = {
+                "last_sync_status": "failed",
+                "last_sync_failure_reason": str(reason or "").strip() or "unknown",
+                "last_sync_lease_id": lease.lease_id if lease else clean_lease_id,
+                "last_sync_started_at": lease.started_at if lease else "",
+                "last_sync_completed_at": completed,
+                "last_sync_pre_update_commit": lease.pre_update_commit if lease else "",
+                "last_sync_post_update_commit": "",
+                "last_sync_project_root": lease.project_root if lease else "",
+            }
+            self._write_runtime_sync_metadata_locked(metadata)
+            if lease is not None:
+                self._delete_runtime_sync_lease_locked(lease.lease_id)
+            self._db.commit()
+            return metadata
+
+    def reap_stale_runtime_sync_lease(
+        self,
+        *,
+        now: str | float | datetime | None = None,
+    ) -> RuntimeSyncLease | None:
+        cutoff = _timestamp_from_value(now)
+        if cutoff is None:
+            cutoff = datetime.now(timezone.utc).timestamp()
+        completed = _iso_from_timestamp(cutoff)
+        with self._lock:
+            lease = self._current_runtime_sync_lease_locked()
+            if lease is None:
+                return None
+            expires_at = _timestamp_from_value(lease.expires_at)
+            if expires_at is None or expires_at > cutoff:
+                return None
+            metadata = {
+                "last_sync_status": "failed",
+                "last_sync_failure_reason": "lease_expired",
+                "last_sync_lease_id": lease.lease_id,
+                "last_sync_started_at": lease.started_at,
+                "last_sync_completed_at": completed,
+                "last_sync_pre_update_commit": lease.pre_update_commit,
+                "last_sync_post_update_commit": "",
+                "last_sync_project_root": lease.project_root,
+            }
+            self._write_runtime_sync_metadata_locked(metadata)
+            self._delete_runtime_sync_lease_locked(lease.lease_id)
+            self._db.commit()
+            return lease
+
+    def acquire_loop_lease(
+        self,
+        run_id: str,
+        *,
+        owner_id: str,
+        owner_kind: str = "gateway",
+        pid: int = 0,
+        acquired_at: float | None = None,
+        ttl_seconds: float = 900.0,
+    ) -> tuple[MonicaLoopLease | None, str]:
+        with self._lock:
+            run = self.get_run(run_id)
+            if run is None:
+                return None, "run_not_found"
+            existing = self._current_loop_lease_locked(run_id)
+            if existing is not None:
+                return None, "loop_already_active"
+            now = float(acquired_at if acquired_at is not None else datetime.now(timezone.utc).timestamp())
+            lease_id = uuid.uuid4().hex
+            self._db.execute(
+                """
+                INSERT INTO loop_leases (
+                    id, run_id, owner_id, owner_kind, pid, status_at_acquire,
+                    last_status, acquired_at, heartbeat_at, expires_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    lease_id,
+                    run.id,
+                    str(owner_id or "").strip(),
+                    str(owner_kind or "gateway").strip() or "gateway",
+                    int(pid or 0),
+                    run.status,
+                    run.status,
+                    now,
+                    now,
+                    now + float(ttl_seconds or 0),
+                ),
+            )
+            self._db.commit()
+            lease = self._current_loop_lease_locked(run.id)
+            if lease is None:  # pragma: no cover - sqlite insert/get invariant
+                raise RuntimeError(f"failed to acquire Monica loop lease for {run.id}")
+            return lease, ""
+
+    def current_loop_lease(self, run_id: str) -> MonicaLoopLease | None:
+        with self._lock:
+            return self._current_loop_lease_locked(run_id)
+
+    def release_loop_lease(self, lease_id: str, *, reason: str = "") -> bool:
+        with self._lock:
+            cursor = self._db.execute(
+                """
+                UPDATE loop_leases
+                SET released_at = ?,
+                    release_reason = ?
+                WHERE id = ? AND released_at IS NULL
+                """,
+                (
+                    datetime.now(timezone.utc).timestamp(),
+                    str(reason or "").strip(),
+                    str(lease_id or "").strip(),
+                ),
+            )
+            self._db.commit()
+            return cursor.rowcount > 0
+
+    def reap_stale_loop_leases(self, *, now: float | None = None) -> list[MonicaLoopLease]:
+        cutoff = float(now if now is not None else datetime.now(timezone.utc).timestamp())
+        with self._lock:
+            rows = self._db.execute(
+                """
+                SELECT * FROM loop_leases
+                WHERE released_at IS NULL AND expires_at <= ?
+                ORDER BY expires_at ASC, id ASC
+                """,
+                (cutoff,),
+            ).fetchall()
+            leases = [self._row_to_loop_lease(row) for row in rows]
+            for lease in leases:
+                self._db.execute(
+                    """
+                    UPDATE loop_leases
+                    SET released_at = ?,
+                        release_reason = ?
+                    WHERE id = ? AND released_at IS NULL
+                    """,
+                    (cutoff, "stale_reaped", lease.lease_id),
+                )
+            self._db.commit()
+            return leases
 
     def record_runtime_sync(self, *, commit: str, synced_at: str | None = None) -> dict[str, str]:
         clean_commit = str(commit or "").strip()
@@ -293,24 +624,34 @@ class MonicaState:
             "last_synced_at": str(synced_at or _utc_now_iso()).strip(),
         }
         with self._lock:
-            self._db.executemany(
-                """
-                INSERT INTO runtime_sync_metadata(key, value)
-                VALUES (?, ?)
-                ON CONFLICT(key) DO UPDATE SET value=excluded.value
-                """,
-                tuple(metadata.items()),
-            )
+            self._write_runtime_sync_metadata_locked(metadata)
             self._db.commit()
         return metadata
 
     def runtime_sync_metadata(self) -> dict[str, str]:
         with self._lock:
-            rows = self._db.execute("SELECT key, value FROM runtime_sync_metadata").fetchall()
-        values = {str(row["key"]): str(row["value"]) for row in rows}
+            values = self._runtime_sync_metadata_values_locked()
         return {
             "last_synced_commit": values.get("last_synced_commit", ""),
             "last_synced_at": values.get("last_synced_at", ""),
+        }
+
+    def runtime_sync_health(self) -> dict[str, Any]:
+        with self._lock:
+            values = self._runtime_sync_metadata_values_locked()
+            lease = self._current_runtime_sync_lease_locked()
+        return {
+            "last_synced_commit": values.get("last_synced_commit", ""),
+            "last_synced_at": values.get("last_synced_at", ""),
+            "last_sync_status": values.get("last_sync_status", ""),
+            "last_sync_failure_reason": values.get("last_sync_failure_reason", ""),
+            "last_sync_lease_id": values.get("last_sync_lease_id", ""),
+            "last_sync_started_at": values.get("last_sync_started_at", ""),
+            "last_sync_completed_at": values.get("last_sync_completed_at", ""),
+            "last_sync_pre_update_commit": values.get("last_sync_pre_update_commit", ""),
+            "last_sync_post_update_commit": values.get("last_sync_post_update_commit", ""),
+            "last_sync_project_root": values.get("last_sync_project_root", ""),
+            "lease": lease.to_dict() if lease else None,
         }
 
     def update_run(self, run_id: str, **fields: Any) -> MonicaRun:
@@ -359,11 +700,73 @@ class MonicaState:
                 f"UPDATE runs SET {assignments}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                 values,
             )
+            if "status" in updates:
+                now = datetime.now(timezone.utc).timestamp()
+                self._db.execute(
+                    """
+                    UPDATE loop_leases
+                    SET last_status = ?,
+                        heartbeat_at = ?,
+                        expires_at = CASE
+                            WHEN expires_at < ? THEN ?
+                            ELSE expires_at
+                        END
+                    WHERE run_id = ? AND released_at IS NULL
+                    """,
+                    (updates["status"], now, now, now, run_id),
+                )
             self._db.commit()
             run = self.get_run(run_id)
             if run is None:
                 raise KeyError(run_id)
             return run
+
+    def _list_runtime_sync_blocking_runs_locked(self) -> list[MonicaRun]:
+        placeholders = ",".join("?" for _ in RUNTIME_SYNC_TERMINAL_STATUSES)
+        rows = self._db.execute(
+            f"SELECT * FROM runs WHERE status NOT IN ({placeholders})",
+            RUNTIME_SYNC_TERMINAL_STATUSES,
+        ).fetchall()
+        return [self._row_to_run(row) for row in rows]
+
+    def _current_runtime_sync_lease_locked(self) -> RuntimeSyncLease | None:
+        row = self._db.execute(
+            "SELECT * FROM runtime_sync_lease WHERE name = ?",
+            (_RUNTIME_SYNC_LEASE_NAME,),
+        ).fetchone()
+        return self._row_to_runtime_sync_lease(row) if row else None
+
+    def _delete_runtime_sync_lease_locked(self, lease_id: str) -> None:
+        self._db.execute(
+            "DELETE FROM runtime_sync_lease WHERE name = ? AND lease_id = ?",
+            (_RUNTIME_SYNC_LEASE_NAME, str(lease_id or "").strip()),
+        )
+
+    def _current_loop_lease_locked(self, run_id: str) -> MonicaLoopLease | None:
+        row = self._db.execute(
+            """
+            SELECT * FROM loop_leases
+            WHERE run_id = ? AND released_at IS NULL
+            ORDER BY acquired_at DESC, id DESC
+            LIMIT 1
+            """,
+            (str(run_id or "").strip(),),
+        ).fetchone()
+        return self._row_to_loop_lease(row) if row else None
+
+    def _write_runtime_sync_metadata_locked(self, metadata: dict[str, str]) -> None:
+        self._db.executemany(
+            """
+            INSERT INTO runtime_sync_metadata(key, value)
+            VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value
+            """,
+            tuple((str(key), str(value)) for key, value in metadata.items()),
+        )
+
+    def _runtime_sync_metadata_values_locked(self) -> dict[str, str]:
+        rows = self._db.execute("SELECT key, value FROM runtime_sync_metadata").fetchall()
+        return {str(row["key"]): str(row["value"]) for row in rows}
 
     @staticmethod
     def _row_to_run(row: sqlite3.Row) -> MonicaRun:
@@ -392,6 +795,39 @@ class MonicaState:
             approved_by_user_id=row["approved_by_user_id"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _row_to_runtime_sync_lease(row: sqlite3.Row) -> RuntimeSyncLease:
+        return RuntimeSyncLease(
+            name=str(row["name"]),
+            lease_id=str(row["lease_id"]),
+            owner_id=str(row["owner_id"]),
+            owner_pid=int(row["owner_pid"] or 0),
+            owner_host=str(row["owner_host"] or ""),
+            project_root=str(row["project_root"] or ""),
+            pre_update_commit=str(row["pre_update_commit"] or ""),
+            started_at=str(row["started_at"] or ""),
+            expires_at=str(row["expires_at"] or ""),
+            args=_json_loads(str(row["args_json"] or "{}")),
+        )
+
+    @staticmethod
+    def _row_to_loop_lease(row: sqlite3.Row) -> MonicaLoopLease:
+        released = row["released_at"]
+        return MonicaLoopLease(
+            lease_id=str(row["id"]),
+            run_id=str(row["run_id"]),
+            owner_id=str(row["owner_id"]),
+            owner_kind=str(row["owner_kind"] or "gateway"),
+            pid=int(row["pid"] or 0),
+            status_at_acquire=str(row["status_at_acquire"] or ""),
+            last_status=str(row["last_status"] or ""),
+            acquired_at=float(row["acquired_at"] or 0.0),
+            heartbeat_at=float(row["heartbeat_at"] or 0.0),
+            expires_at=float(row["expires_at"] or 0.0),
+            released_at=float(released) if released is not None else None,
+            release_reason=str(row["release_reason"] or ""),
         )
 
     def approve_fix(self, run_id: str, *, approved_by_user_id: str) -> MonicaRun:
@@ -488,6 +924,42 @@ RUNTIME_SYNC_BLOCKING_STATUSES = (
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _timestamp_from_value(value: str | float | datetime | None) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, (int, float)):
+        return float(value)
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _iso_from_timestamp(value: float) -> str:
+    return (
+        datetime.fromtimestamp(float(value), timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _runtime_sync_lease_expires_at(started_at: str) -> str:
+    started = _timestamp_from_value(started_at)
+    if started is None:
+        started = datetime.now(timezone.utc).timestamp()
+    return _iso_from_timestamp(started + _RUNTIME_SYNC_LEASE_TTL_SECONDS)
 
 
 def _run_dedup_score(row: sqlite3.Row) -> tuple[int, int, int, int, int, str, str, int]:

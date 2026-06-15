@@ -1515,7 +1515,8 @@ def run_status_command(
 ) -> int:
     runs = state.list_runs(limit=limit)
     runtime_sync_blocking_runs = state.list_runtime_sync_blocking_runs()
-    runtime_sync_metadata = state.runtime_sync_metadata()
+    runtime_sync_metadata = state.runtime_sync_health()
+    runtime_sync_lease = _runtime_sync_lease_payload(runtime_sync_metadata.get("lease"))
     gateway_health = _gateway_health_payload(
         gateway_status if gateway_status is not None else _read_gateway_status(),
         now=time.time() if now is None else now,
@@ -1537,10 +1538,17 @@ def run_status_command(
                     "runs": [_run_payload(run, include_raw_event=False) for run in runs],
                     "runtime_sync": {
                         "idle": not runtime_sync_blocking_runs,
+                        "ready_for_monica_work": (
+                            not runtime_sync_blocking_runs
+                            and not runtime_sync_lease["active"]
+                        ),
                         "current_commit": commit,
                         "stale": runtime_sync_stale,
                         "last_synced_commit": runtime_sync_metadata["last_synced_commit"],
                         "last_synced_at": runtime_sync_metadata["last_synced_at"],
+                        "last_sync_status": runtime_sync_metadata["last_sync_status"],
+                        "last_sync_failure_reason": runtime_sync_metadata["last_sync_failure_reason"],
+                        "lease": runtime_sync_lease,
                         "blocking_statuses": list(RUNTIME_SYNC_BLOCKING_STATUSES),
                         "active_run_count": len(runtime_sync_blocking_runs),
                         "active_runs": [
@@ -1562,6 +1570,7 @@ def run_status_command(
             last_synced_at=runtime_sync_metadata["last_synced_at"],
             active_runs=runtime_sync_blocking_runs,
             stale=runtime_sync_stale,
+            lease=runtime_sync_lease,
         )
     )
     if not runs:
@@ -1617,14 +1626,18 @@ def _format_runtime_sync_status(
     last_synced_at: Any,
     active_runs: list[Any] | tuple[Any, ...] = (),
     stale: bool = False,
+    lease: dict[str, Any] | None = None,
 ) -> str:
-    state = "idle" if active_run_count == 0 else "blocked"
+    lease_payload = lease or {"active": False}
+    state = "updating" if lease_payload.get("active") else ("idle" if active_run_count == 0 else "blocked")
     commit = _status_text_value(last_synced_commit)
     synced_at = _status_text_value(last_synced_at)
     line = (
         f"Runtime sync: {state} active_runs:{active_run_count} "
         f"last_commit:{commit} last_synced:{synced_at}"
     )
+    if lease_payload.get("active"):
+        line += f" lease:{_status_text_value(lease_payload.get('id'))}"
     if stale:
         line += " stale:true"
     if active_run_count > 0:
@@ -1646,6 +1659,7 @@ def _format_runtime_sync_health(payload: dict[str, Any]) -> str:
         last_synced_at=payload.get("last_synced_at"),
         active_runs=payload.get("active_runs") or (),
         stale=bool(payload.get("stale")),
+        lease=_runtime_sync_lease_payload(payload.get("lease")),
     )
 
 
@@ -1697,19 +1711,25 @@ def _runtime_sync_health_payload(
         return {
             "available": False,
             "idle": None,
+            "ready_for_monica_work": False,
             "current_commit": commit,
             "stale": False,
             "last_synced_commit": "",
             "last_synced_at": "",
+            "last_sync_status": "",
+            "last_sync_failure_reason": "",
+            "lease": _runtime_sync_lease_payload(None),
             "blocking_statuses": list(RUNTIME_SYNC_BLOCKING_STATUSES),
             "active_run_count": None,
             "active_runs": [],
         }
     active_runs = resolved_state.list_runtime_sync_blocking_runs()
-    metadata = resolved_state.runtime_sync_metadata()
+    metadata = resolved_state.runtime_sync_health()
+    lease = _runtime_sync_lease_payload(metadata.get("lease"))
     return {
         "available": True,
         "idle": not active_runs,
+        "ready_for_monica_work": not active_runs and not lease["active"],
         "current_commit": commit,
         "stale": _runtime_sync_stale(
             current_commit=commit,
@@ -1717,12 +1737,47 @@ def _runtime_sync_health_payload(
         ),
         "last_synced_commit": metadata["last_synced_commit"],
         "last_synced_at": metadata["last_synced_at"],
+        "last_sync_status": metadata["last_sync_status"],
+        "last_sync_failure_reason": metadata["last_sync_failure_reason"],
+        "lease": lease,
         "blocking_statuses": list(RUNTIME_SYNC_BLOCKING_STATUSES),
         "active_run_count": len(active_runs),
         "active_runs": [
             _run_payload(run, include_raw_event=False)
             for run in active_runs
         ],
+    }
+
+
+def _runtime_sync_lease_payload(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return _inactive_runtime_sync_lease_payload()
+    if "active" in value and not value.get("active"):
+        return _inactive_runtime_sync_lease_payload()
+    return {
+        "active": True,
+        "id": str(value.get("lease_id") or value.get("id") or ""),
+        "started_at": str(value.get("started_at") or ""),
+        "expires_at": str(value.get("expires_at") or ""),
+        "pre_update_commit": str(value.get("pre_update_commit") or ""),
+        "project_root": str(value.get("project_root") or ""),
+        "owner_id": str(value.get("owner_id") or ""),
+        "owner_pid": int(value.get("owner_pid") or 0),
+        "owner_host": str(value.get("owner_host") or ""),
+    }
+
+
+def _inactive_runtime_sync_lease_payload() -> dict[str, Any]:
+    return {
+        "active": False,
+        "id": "",
+        "started_at": "",
+        "expires_at": "",
+        "pre_update_commit": "",
+        "project_root": "",
+        "owner_id": "",
+        "owner_pid": 0,
+        "owner_host": "",
     }
 
 
@@ -1955,6 +2010,10 @@ def run_doctor_command(
         runtime_sync_health,
         rollout_mode=report.rollout_mode,
     )
+    runtime_sync_failures = _doctor_runtime_sync_failures(
+        runtime_sync_health,
+        rollout_mode=report.rollout_mode,
+    )
     gateway_failures = _doctor_gateway_failures(
         gateway_health,
         gateway_service_health,
@@ -1971,9 +2030,10 @@ def run_doctor_command(
         payload = _readiness_report_payload(report)
         payload["warnings"].extend(gateway_warnings)
         payload["warnings"].extend(runtime_sync_warnings)
+        payload["failures"].extend(runtime_sync_failures)
         payload["failures"].extend(gateway_failures)
         payload["failures"].extend(plugin_failures)
-        if gateway_failures or plugin_failures:
+        if runtime_sync_failures or gateway_failures or plugin_failures:
             payload["ready"] = False
         health = {
             "hermes_commit": commit,
@@ -1985,7 +2045,14 @@ def run_doctor_command(
             health["plugin"] = plugin_health
         payload["health"] = health
         print(json.dumps(payload, sort_keys=True))
-        return 0 if report.ready and not gateway_failures and not plugin_failures else 1
+        return (
+            0
+            if report.ready
+            and not runtime_sync_failures
+            and not gateway_failures
+            and not plugin_failures
+            else 1
+        )
 
     print(f"Hermes commit: {commit or 'unavailable'}")
     print(_format_gateway_health(gateway_health))
@@ -2002,13 +2069,15 @@ def run_doctor_command(
         print(f"WARN: {warning['message']}")
     for warning in runtime_sync_warnings:
         print(f"WARN: {warning['message']}")
+    for failure in runtime_sync_failures:
+        print(f"FAIL: {failure['message']}")
     for failure in gateway_failures:
         print(f"FAIL: {failure['message']}")
     for failure in plugin_failures:
         print(f"FAIL: {failure['message']}")
     for failure in report.failures:
         print(f"FAIL: {failure.message}")
-    if report.failures or gateway_failures or plugin_failures:
+    if report.failures or runtime_sync_failures or gateway_failures or plugin_failures:
         print("Monica doctor: not ready")
         return 1
     print("Monica doctor: ready")
@@ -2082,6 +2151,28 @@ def _doctor_runtime_sync_warnings(
             "while Monica is idle to record the current runtime."
         )
     return [{"code": "runtime_sync_stale", "message": message}]
+
+
+def _doctor_runtime_sync_failures(
+    runtime_sync_health: dict[str, Any],
+    *,
+    rollout_mode: str = "",
+) -> list[dict[str, str]]:
+    if not runtime_sync_health.get("available"):
+        return []
+    lease = _runtime_sync_lease_payload(runtime_sync_health.get("lease"))
+    if not lease.get("active"):
+        return []
+    return [
+        {
+            "code": "runtime_sync_in_progress",
+            "message": (
+                "Monica is temporarily paused while Hermes is updating "
+                f"(lease {lease.get('id') or '-'}). Wait for the update to finish "
+                "before starting or approving Monica work."
+            ),
+        }
+    ]
 
 
 def _doctor_gateway_warnings(
@@ -2911,6 +3002,20 @@ def _config_for_doctor_target(
     return replace(config, rollout_mode=target, dry_run=(target == "dry_run"))
 
 
+def _runtime_sync_block_message() -> str:
+    return (
+        "Hermes is updating; Monica is temporarily paused. "
+        "Retry after the update finishes."
+    )
+
+
+def _runtime_sync_block_reason(state: MonicaState) -> str:
+    gate = state.runtime_sync_gate()
+    if gate.get("open", True):
+        return ""
+    return _runtime_sync_block_message()
+
+
 def run_retry_command(
     *,
     state: MonicaState,
@@ -2969,12 +3074,33 @@ def run_retry_command(
             return 1
         print(message)
         return 1
-    is_proof_resume = run.status in {"proof_blocked", "proofing"} and bool(
-        str(run.branch_name or "").strip()
+    runtime_sync_reason = _runtime_sync_block_reason(state)
+    if runtime_sync_reason:
+        if json_output:
+            _print_operator_error_json(
+                action="retry",
+                code="runtime_sync_in_progress",
+                message=runtime_sync_reason,
+                run=run,
+            )
+            return 1
+        print(runtime_sync_reason)
+        return 1
+    branch_name = str(run.branch_name or "").strip()
+    is_proof_resume = run.status in {"proof_blocked", "proofing"} and bool(branch_name)
+    is_opening_pr_resume = (
+        run.status == "failed"
+        and str(run.failure_reason or "").startswith("opening_pr_failed:")
+        and bool(branch_name)
+        and bool(str(run.approved_by_user_id or "").strip())
     )
-    next_status = "proof_blocked" if is_proof_resume else ("approved" if run.approved_by_user_id else "queued")
+    is_existing_branch_resume = is_proof_resume or is_opening_pr_resume
+    next_status = "proof_blocked" if is_existing_branch_resume else ("approved" if run.approved_by_user_id else "queued")
     if (
-        (next_status == "approved" or (is_proof_resume and config is not None and config.rollout_mode == "approved_pr"))
+        (
+            next_status == "approved"
+            or (is_existing_branch_resume and config is not None and config.rollout_mode == "approved_pr")
+        )
         and config is not None
         and not _is_allowed_local_approver(config=config, user_id=run.approved_by_user_id)
     ):
@@ -2995,7 +3121,7 @@ def run_retry_command(
     should_check_readiness = (
         config is not None
         and config.rollout_mode in {"local_fix_only", "approved_pr"}
-        and (next_status == "approved" or is_proof_resume)
+        and (next_status == "approved" or is_existing_branch_resume)
     )
     if should_check_readiness:
         checker = readiness_checker or (lambda: run_doctor_command(config=config))
@@ -3029,11 +3155,11 @@ def run_retry_command(
         run.id,
         status=next_status,
         failure_reason="",
-        branch_name=run.branch_name if is_proof_resume else "",
-        base_branch=run.base_branch if is_proof_resume else "",
-        base_commit=run.base_commit if is_proof_resume else "",
-        proof_deep_link=run.proof_deep_link if is_proof_resume else "",
-        proof_expected_text=run.proof_expected_text if is_proof_resume else "",
+        branch_name=run.branch_name if is_existing_branch_resume else "",
+        base_branch=run.base_branch if is_existing_branch_resume else "",
+        base_commit=run.base_commit if is_existing_branch_resume else "",
+        proof_deep_link=run.proof_deep_link if is_existing_branch_resume else "",
+        proof_expected_text=run.proof_expected_text if is_existing_branch_resume else "",
         pr_url="",
     )
     _run_loop(run.id, state=state)
@@ -3086,6 +3212,18 @@ def run_approve_command(
             )
             return 1
         print(message)
+        return 1
+    runtime_sync_reason = _runtime_sync_block_reason(state)
+    if runtime_sync_reason:
+        if json_output:
+            _print_operator_error_json(
+                action="approve",
+                code="runtime_sync_in_progress",
+                message=runtime_sync_reason,
+                run=run,
+            )
+            return 1
+        print(runtime_sync_reason)
         return 1
     if config is not None and config.rollout_mode in {"local_fix_only", "approved_pr"}:
         checker = readiness_checker or (lambda: run_doctor_command(config=config))
@@ -3158,6 +3296,20 @@ def run_sync_approvals_command(
             _print_sync_approvals_json(ok=False, results=[], error={"code": "not_found", "message": message})
             return 1
         print(message)
+        return 1
+    runtime_sync_reason = _runtime_sync_block_reason(state)
+    if runtime_sync_reason:
+        if json_output:
+            _print_sync_approvals_json(
+                ok=False,
+                results=[],
+                error={
+                    "code": "runtime_sync_in_progress",
+                    "message": runtime_sync_reason,
+                },
+            )
+            return 1
+        print(runtime_sync_reason)
         return 1
 
     token = monica_slack_bot_token()
@@ -3423,6 +3575,18 @@ def run_simulate_command(
             )
             return 1
         print("Monica is disabled: set mobile_bug_agent.enabled: true before simulating.")
+        return 1
+    runtime_sync_reason = _runtime_sync_block_reason(state)
+    if runtime_sync_reason:
+        if json_output:
+            _print_simulation_error_json(
+                code="runtime_sync_in_progress",
+                message=runtime_sync_reason,
+                config=config,
+                allow_side_effects=allow_side_effects,
+            )
+            return 1
+        print(runtime_sync_reason)
         return 1
     clean_text = " ".join(str(text or "").split())
     if not clean_text:

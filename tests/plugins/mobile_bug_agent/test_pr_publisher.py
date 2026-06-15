@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -14,6 +15,22 @@ def _png_bytes() -> bytes:
     return base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFElEQVR4nGNgYGD4//8/w38GEAMAIewE/ITr/YQAAAAASUVORK5CYII="
     )
+
+
+def _artifact_metadata(paths: tuple[Path, ...]) -> list[dict[str, object]]:
+    metadata: list[dict[str, object]] = []
+    for path in paths:
+        name = path.name.casefold()
+        platform = "ios" if "ios" in name else "android" if "android" in name else ""
+        metadata.append(
+            {
+                "path": str(path),
+                "platform": platform,
+                "bytes": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    return metadata
 
 
 VALID_PR_BODY = """## Links
@@ -37,8 +54,8 @@ Proof commands:
 Required env keys: MONICA_TEST_LOGIN_TOKEN
 Target: elixir-card://marketplace/offer/fitness-first
 Expected text: Fitness First
-- iOS: https://slack.example/files/ios-pdp-fixed.png
-- Android: https://slack.example/files/android-pdp-fixed.mp4
+- iOS: https://slack.example/files/ios-pdp-fixed.png (Slack upload: F-ios-pdp-fixed.png, ios-pdp-fixed.png)
+- Android: https://slack.example/files/android-pdp-fixed.mp4 (Slack upload: F-android-pdp-fixed.mp4, android-pdp-fixed.mp4)
 Local artifacts (debug): /tmp/monica-proof/monica-proof-manifest.json, /tmp/monica-proof/ios-pdp-fixed.png, /tmp/monica-proof/android-pdp-fixed.mp4
 """
 
@@ -59,8 +76,8 @@ Proof commands:
 Required env keys: MONICA_TEST_LOGIN_TOKEN
 Target: elixir-card://marketplace/offer/fitness-first
 Expected text: Fitness First
-- iOS: https://slack.example/files/ios-pdp-fixed.png
-- Android: https://slack.example/files/android-pdp-fixed.mp4
+- iOS: https://slack.example/files/ios-pdp-fixed.png (Slack upload: F-ios-pdp-fixed.png, ios-pdp-fixed.png)
+- Android: https://slack.example/files/android-pdp-fixed.mp4 (Slack upload: F-android-pdp-fixed.mp4, android-pdp-fixed.mp4)
 """
 
 
@@ -85,32 +102,6 @@ def _valid_pr_body_local_artifacts(tmp_path):
         "ios-metro.stdout.log",
         "android-metro.stdout.log",
     )
-    (proof_dir / "monica-proof-manifest.json").write_text(
-        json.dumps(
-            {
-                "run_id": "run-123",
-                "proof_artifacts": [
-                    str(proof_dir / name)
-                    for name in (*visual_artifacts, *target_text_artifacts)
-                ],
-                "proof_target": {
-                    "deep_link": "elixir-card://marketplace/offer/fitness-first",
-                    "expected_text": "Fitness First",
-                },
-                "linear_identifier": "MOB-42",
-                "linear_url": "https://linear.app/acme/issue/MOB-42",
-                "branch_name": "monica/MOB-42-checkout-crash",
-                "worktree": str(tmp_path),
-                "base_ref": "origin/main",
-                "base_commit": "abc1234",
-                "setup_commands": ["npm run monica:seed-auth"],
-                "commands": ["npm run monica:proof"],
-                "required_env_keys": ["MONICA_TEST_LOGIN_TOKEN"],
-                "platforms": ["ios", "android"],
-            }
-        ),
-        encoding="utf-8",
-    )
     for name in visual_artifacts:
         if Path(name).suffix.lower() == ".png":
             (proof_dir / name).write_bytes(_png_bytes())
@@ -130,6 +121,33 @@ def _valid_pr_body_local_artifacts(tmp_path):
     )
     (proof_dir / "android-metro.stdout.log").write_text(
         "LOG  [APP-PERF-METRIC] ui.load | screen.load /MarketplacePdp | 190ms | ok\n",
+        encoding="utf-8",
+    )
+    artifact_paths = tuple(
+        proof_dir / name for name in (*visual_artifacts, *target_text_artifacts)
+    )
+    (proof_dir / "monica-proof-manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run-123",
+                "proof_artifacts": [str(path) for path in artifact_paths],
+                "proof_artifact_metadata": _artifact_metadata(artifact_paths),
+                "proof_target": {
+                    "deep_link": "elixir-card://marketplace/offer/fitness-first",
+                    "expected_text": "Fitness First",
+                },
+                "linear_identifier": "MOB-42",
+                "linear_url": "https://linear.app/acme/issue/MOB-42",
+                "branch_name": "monica/MOB-42-checkout-crash",
+                "worktree": str(tmp_path),
+                "base_ref": "origin/main",
+                "base_commit": "abc1234",
+                "setup_commands": ["npm run monica:seed-auth"],
+                "commands": ["npm run monica:proof"],
+                "required_env_keys": ["MONICA_TEST_LOGIN_TOKEN"],
+                "platforms": ["ios", "android"],
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -188,6 +206,14 @@ def test_publisher_rejects_manifest_that_drops_body_proof_screen_before_running_
 
     def run_command(args, cwd=None):
         calls.append((args, cwd))
+        if args == ["git", "branch", "--show-current"]:
+            return "monica/MOB-42-checkout-crash\n"
+        if args[:3] == ["git", "diff", "--name-only"]:
+            return "src/Marketplace.tsx\n"
+        if args[:4] == ["gh", "pr", "create", "--draft"]:
+            return "https://github.com/acme/mobile/pull/123\n"
+        if args[:3] == ["gh", "pr", "view"]:
+            return "true\n"
         return ""
 
     publisher = DraftPrPublisher(run_command=run_command)
@@ -412,6 +438,8 @@ def test_publisher_rejects_non_linear_url_before_running_commands(tmp_path):
 
     def run_command(args, cwd=None):
         calls.append((args, cwd))
+        if args == ["git", "branch", "--show-current"]:
+            return "monica/MOB-42-checkout-crash\n"
         return ""
 
     publisher = DraftPrPublisher(run_command=run_command)
@@ -609,10 +637,109 @@ Proof commands:
 - npm run monica:proof
 Target: elixir-card://marketplace/offer/fitness-first
 Expected text: Fitness First
-- iOS: https://slack.example/files/ios-pdp-fixed.png
-- Android: https://slack.example/files/android-pdp-fixed.mp4
+- iOS: https://slack.example/files/ios-pdp-fixed.png (Slack upload: F-ios-pdp-fixed.png, ios-pdp-fixed.png)
+- Android: https://slack.example/files/android-pdp-fixed.mp4 (Slack upload: F-android-pdp-fixed.mp4, android-pdp-fixed.mp4)
 Local artifacts (debug): /tmp/monica-proof/monica-proof-manifest.json, /tmp/monica-proof/ios-pdp-fixed.png, /tmp/monica-proof/android-pdp-fixed.mp4
 """,
+        )
+
+    assert calls == []
+
+
+def test_publisher_accepts_git_diff_check_as_verification_evidence(tmp_path):
+    calls = []
+
+    def run_command(args, cwd=None):
+        calls.append((args, cwd))
+        if args == ["git", "branch", "--show-current"]:
+            return "monica/MOB-42-checkout-crash\n"
+        if args == ["git", "status", "--porcelain"]:
+            return ""
+        if args[:3] == ["git", "diff", "--name-only"]:
+            return "src/Marketplace.tsx\n"
+        if args[:4] == ["gh", "pr", "create", "--draft"]:
+            return "https://github.com/acme/mobile/pull/123\n"
+        if args[:3] == ["gh", "pr", "view"]:
+            return "true\n"
+        return ""
+
+    publisher = DraftPrPublisher(run_command=run_command)
+
+    result = publisher.publish(
+        worktree=_mark_git_worktree(tmp_path),
+        branch_name="monica/MOB-42-checkout-crash",
+        base_branch="main",
+        title="[MOB-42] Fix Marketplace copy",
+        body=VALID_PR_BODY.replace("npm test\nok", "git diff --check\nok"),
+    )
+
+    assert result == "https://github.com/acme/mobile/pull/123"
+    assert calls
+
+
+def test_publisher_accepts_markdown_bullet_verification_command_evidence(tmp_path):
+    calls = []
+
+    def run_command(args, cwd=None):
+        calls.append((args, cwd))
+        if args == ["git", "branch", "--show-current"]:
+            return "monica/MOB-42-checkout-crash\n"
+        if args == ["git", "status", "--porcelain"]:
+            return ""
+        if args[:3] == ["git", "diff", "--name-only"]:
+            return "src/Marketplace.tsx\n"
+        if args[:4] == ["gh", "pr", "create", "--draft"]:
+            return "https://github.com/acme/mobile/pull/123\n"
+        if args[:3] == ["gh", "pr", "view"]:
+            return "true\n"
+        return ""
+
+    publisher = DraftPrPublisher(run_command=run_command)
+    body = VALID_PR_BODY.replace(
+        "```\nnpm test\nok\n```",
+        "Commands:\n- npm test\n\nAll checks passed.",
+    )
+
+    result = publisher.publish(
+        worktree=_mark_git_worktree(tmp_path),
+        branch_name="monica/MOB-42-checkout-crash",
+        base_branch="main",
+        title="[MOB-42] Fix Marketplace copy",
+        body=body,
+    )
+
+    assert result == "https://github.com/acme/mobile/pull/123"
+    assert calls
+
+
+def test_publisher_rejects_manifest_without_artifact_metadata(tmp_path):
+    manifest_path = Path("/tmp/monica-proof/monica-proof-manifest.json")
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload.pop("proof_artifact_metadata", None)
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    calls = []
+
+    def run_command(args, cwd=None):
+        calls.append((args, cwd))
+        if args == ["git", "branch", "--show-current"]:
+            return "monica/MOB-42-checkout-crash\n"
+        if args[:3] == ["git", "diff", "--name-only"]:
+            return "src/Marketplace.tsx\n"
+        if args[:4] == ["gh", "pr", "create", "--draft"]:
+            return "https://github.com/acme/mobile/pull/123\n"
+        if args[:3] == ["gh", "pr", "view"]:
+            return "true\n"
+        return ""
+
+    publisher = DraftPrPublisher(run_command=run_command)
+
+    with pytest.raises(DraftPrPublisherError, match="proof manifest artifact metadata"):
+        publisher.publish(
+            worktree=_mark_git_worktree(tmp_path),
+            branch_name="monica/MOB-42-checkout-crash",
+            base_branch="main",
+            title="[MOB-42] Fix Marketplace copy",
+            body=VALID_PR_BODY,
         )
 
     assert calls == []
@@ -663,8 +790,8 @@ Proof commands:
 - npm run monica:proof
 Target: elixir-card://marketplace/offer/fitness-first
 Expected text: Fitness First
-- iOS: https://slack.example/files/ios-pdp-fixed.png
-- Android: https://slack.example/files/android-pdp-fixed.mp4
+- iOS: https://slack.example/files/ios-pdp-fixed.png (Slack upload: F-ios-pdp-fixed.png, ios-pdp-fixed.png)
+- Android: https://slack.example/files/android-pdp-fixed.mp4 (Slack upload: F-android-pdp-fixed.mp4, android-pdp-fixed.mp4)
 Local artifacts (debug): /tmp/monica-proof/monica-proof-manifest.json, /tmp/monica-proof/ios-pdp-fixed.png, /tmp/monica-proof/android-pdp-fixed.mp4
 """,
         )
@@ -839,6 +966,42 @@ Expected text: Fitness First
 - iOS: https://slack.example/files/shared-proof.png
 - Android: https://slack.example/files/shared-proof.png
 """,
+        )
+
+    assert calls == []
+
+
+def test_publisher_requires_slack_upload_metadata_for_shareable_proof_links(tmp_path):
+    calls = []
+
+    def run_command(args, cwd=None):
+        calls.append((args, cwd))
+        if args == ["git", "branch", "--show-current"]:
+            return "monica/MOB-42-checkout-crash\n"
+        if args[:3] == ["git", "diff", "--name-only"]:
+            return "src/Checkout.tsx\n"
+        if args[:4] == ["gh", "pr", "create", "--draft"]:
+            return "https://github.com/acme/mobile/pull/123\n"
+        if args[:3] == ["gh", "pr", "view"]:
+            return "true\n"
+        return ""
+
+    publisher = DraftPrPublisher(run_command=run_command)
+    body = VALID_PR_BODY.replace(
+        " (Slack upload: F-ios-pdp-fixed.png, ios-pdp-fixed.png)",
+        "",
+    ).replace(
+        " (Slack upload: F-android-pdp-fixed.mp4, android-pdp-fixed.mp4)",
+        "",
+    )
+
+    with pytest.raises(DraftPrPublisherError, match="Slack upload metadata"):
+        publisher.publish(
+            worktree=_mark_git_worktree(tmp_path),
+            branch_name="monica/MOB-42-checkout-crash",
+            base_branch="main",
+            title="[MOB-42] Fix Android checkout crash",
+            body=body,
         )
 
     assert calls == []
@@ -2370,8 +2533,8 @@ ok
 ## Proof
 Target: elixir-card://marketplace/offer/fitness-first
 Expected text: Fitness First
-- iOS: https://slack.example/files/ios-pdp-fixed.png
-- Android: https://slack.example/files/android-pdp-fixed.mp4
+- iOS: https://slack.example/files/ios-pdp-fixed.png (Slack upload: F-ios-pdp-fixed.png, ios-pdp-fixed.png)
+- Android: https://slack.example/files/android-pdp-fixed.mp4 (Slack upload: F-android-pdp-fixed.mp4, android-pdp-fixed.mp4)
 Local artifacts (debug): /tmp/monica-proof/monica-proof-manifest.json, /tmp/monica-proof/ios-pdp-fixed.png, /tmp/monica-proof/android-pdp-fixed.mp4
 """,
         )
@@ -2420,8 +2583,8 @@ Setup commands:
 Target: elixir-card://marketplace/offer/fitness-first
 Proof commands:
 Expected text: Fitness First
-- iOS: https://slack.example/files/ios-pdp-fixed.png
-- Android: https://slack.example/files/android-pdp-fixed.mp4
+- iOS: https://slack.example/files/ios-pdp-fixed.png (Slack upload: F-ios-pdp-fixed.png, ios-pdp-fixed.png)
+- Android: https://slack.example/files/android-pdp-fixed.mp4 (Slack upload: F-android-pdp-fixed.mp4, android-pdp-fixed.mp4)
 Local artifacts (debug): /tmp/monica-proof/monica-proof-manifest.json, /tmp/monica-proof/ios-pdp-fixed.png, /tmp/monica-proof/android-pdp-fixed.mp4
 """,
         )
@@ -2769,8 +2932,8 @@ ok
 ```
 
 ## Proof
-- iOS: https://slack.example/files/ios-pdp-fixed.png
-- Android: https://slack.example/files/android-pdp-fixed.mp4
+- iOS: https://slack.example/files/ios-pdp-fixed.png (Slack upload: F-ios-pdp-fixed.png, ios-pdp-fixed.png)
+- Android: https://slack.example/files/android-pdp-fixed.mp4 (Slack upload: F-android-pdp-fixed.mp4, android-pdp-fixed.mp4)
 """,
         )
 
@@ -3131,8 +3294,8 @@ ok
 ## Proof
 Target: elixir-card://marketplace/offer/fitness-first
 Expected text: Fitness First
-- iOS: https://slack.example/files/ios-pdp-fixed.png
-- Android: https://slack.example/files/android-pdp-fixed.mp4
+- iOS: https://slack.example/files/ios-pdp-fixed.png (Slack upload: F-ios-pdp-fixed.png, ios-pdp-fixed.png)
+- Android: https://slack.example/files/android-pdp-fixed.mp4 (Slack upload: F-android-pdp-fixed.mp4, android-pdp-fixed.mp4)
 Local artifacts (debug): /tmp/monica-proof/monica-proof-manifest.json, /tmp/monica-proof/ios-pdp-fixed.png, /tmp/monica-proof/android-pdp-fixed.mp4
 """,
         )
@@ -3208,8 +3371,8 @@ Proof commands:
 Required env keys: MONICA_TEST_LOGIN_TOKEN
 Target: elixir-card://marketplace/offer/fitness-first
 Expected text: Fitness First
-- iOS: https://slack.example/files/ios-pdp-fixed.png
-- Android: https://slack.example/files/android-pdp-fixed.mp4
+- iOS: https://slack.example/files/ios-pdp-fixed.png (Slack upload: F-ios-pdp-fixed.png, ios-pdp-fixed.png)
+- Android: https://slack.example/files/android-pdp-fixed.mp4 (Slack upload: F-android-pdp-fixed.mp4, android-pdp-fixed.mp4)
 Local artifacts (debug): /tmp/monica-proof/monica-proof-manifest.json, /tmp/monica-proof/ios-pdp-fixed.png, /tmp/monica-proof/android-pdp-fixed.mp4
 """,
     )

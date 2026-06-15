@@ -16,6 +16,8 @@ from .simulator_proof import (
     RunText,
     SimulatorProofHarness,
     _android_packager_hostname,
+    _android_metro_command,
+    _android_package_is_installed,
     _android_run_command,
     _android_settle_seconds,
     _clean_platforms,
@@ -35,12 +37,15 @@ from .simulator_proof import (
     _run_ios_until_ready,
     _run_text_command,
     _tail_text,
+    _worktree_has_native_sensitive_changes,
 )
 
 
 MONICA_AUTH_BOOTSTRAP_NAME = "monica-auth-bootstrap"
 MONICA_AUTH_LOG_MARKER = "MONICA_AUTH_SETUP_COMPLETE"
 _MONICA_AUTH_FAILED_MARKER = "MONICA_AUTH_SETUP_FAILED"
+_AUTH_RESTORED_MARKER = "Session restored:"
+_AUTH_TOKEN_VALID_MARKER = "[Auth] Token valid, initialization complete"
 _BOOTSTRAP_IMPORT = f'import "./{MONICA_AUTH_BOOTSTRAP_NAME}";'
 _BOOTSTRAP_ANCHOR = 'import "@elixir/ui-kit/boot";'
 
@@ -149,6 +154,7 @@ class ProofAuthBootstrapPatch:
 
     def _cleanup_stale_generated_bootstrap(self) -> None:
         if not self.bootstrap_path.exists():
+            self._cleanup_stale_layout_import()
             return
         try:
             text = self.bootstrap_path.read_text(encoding="utf-8", errors="replace")
@@ -156,6 +162,18 @@ class ProofAuthBootstrapPatch:
             return
         if MONICA_AUTH_LOG_MARKER in text and "[MonicaProofAuth]" in text:
             self.bootstrap_path.unlink(missing_ok=True)
+            self._cleanup_stale_layout_import()
+
+    def _cleanup_stale_layout_import(self) -> None:
+        if not self.layout_path.is_file():
+            return
+        try:
+            text = self.layout_path.read_text(encoding="utf-8")
+        except OSError:
+            return
+        cleaned = _remove_bootstrap_import(text)
+        if cleaned != text:
+            self.layout_path.write_text(cleaned, encoding="utf-8")
 
 
 class ProofAuthSetupHarness:
@@ -261,15 +279,20 @@ class ProofAuthSetupHarness:
         restore_fingerprint_config = _install_temporary_ios_fast_fingerprint_config(app_dir)
         try:
             self._proof_harness._prepare_ios_native_project(app_dir, timeout_seconds)
-            try:
-                self._run_text(
-                    ("npx", "expo", "run:ios", "--no-install", "--no-bundler"),
-                    app_dir,
-                    timeout_seconds,
-                )
-            except RuntimeError:
-                if not _ios_app_is_installed(target, app_dir, clean_bundle_id):
-                    raise
+            if not _ios_app_is_installed(
+                target,
+                app_dir,
+                clean_bundle_id,
+            ) or _worktree_has_native_sensitive_changes(worktree):
+                try:
+                    self._run_text(
+                        ("npx", "expo", "run:ios", "--no-install", "--no-bundler"),
+                        app_dir,
+                        timeout_seconds,
+                    )
+                except RuntimeError:
+                    if not _ios_app_is_installed(target, app_dir, clean_bundle_id):
+                        raise
             _grant_ios_notification_permission(
                 self._run_text,
                 target,
@@ -364,8 +387,14 @@ class ProofAuthSetupHarness:
                     sleep=self._sleep,
                 )
 
+            command = (
+                _android_metro_command()
+                if _android_package_is_installed(adb, worktree, package)
+                and not _worktree_has_native_sensitive_changes(worktree)
+                else _android_run_command(package)
+            )
             self._run_android_until_foreground(
-                _android_run_command(package),
+                command,
                 app_dir,
                 timeout_seconds,
                 adb,
@@ -387,6 +416,14 @@ def _patch_root_layout(text: str) -> str:
     return f"{_BOOTSTRAP_IMPORT}\n{text}"
 
 
+def _remove_bootstrap_import(text: str) -> str:
+    return "".join(
+        line
+        for line in text.splitlines(keepends=True)
+        if line.strip() != _BOOTSTRAP_IMPORT
+    )
+
+
 def _wait_for_auth_setup_marker(
     stdout_path: Path,
     stderr_path: Path,
@@ -398,8 +435,6 @@ def _wait_for_auth_setup_marker(
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         text = "\n".join((_tail_text(stdout_path, 12000), _tail_text(stderr_path, 12000)))
-        if MONICA_AUTH_LOG_MARKER in text:
-            return
         if _MONICA_AUTH_FAILED_MARKER in text:
             raise RuntimeError(
                 "\n".join(
@@ -410,6 +445,8 @@ def _wait_for_auth_setup_marker(
                     ]
                 )
             )
+        if MONICA_AUTH_LOG_MARKER in text or _auth_setup_restored_session_observed(text):
+            return
         sleep(1)
     raise RuntimeError(
         "\n".join(
@@ -422,6 +459,12 @@ def _wait_for_auth_setup_marker(
             ]
         )
     )
+
+
+def _auth_setup_restored_session_observed(text: str) -> bool:
+    # The bootstrap can start after a valid session has already restored. Treat
+    # that as setup-complete; target-screen simulator proof still fail-closes.
+    return _AUTH_RESTORED_MARKER in text and _AUTH_TOKEN_VALID_MARKER in text
 
 
 def _env(name: str) -> str:

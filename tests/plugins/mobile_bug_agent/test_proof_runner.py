@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -157,6 +159,68 @@ def test_proof_runner_creates_fresh_proof_dir_before_setup_commands(tmp_path):
 
     assert result.passed is True
     assert calls == [("seed-test-auth", True), ("capture-proof", True)]
+
+
+def test_proof_runner_writes_manifest_artifact_metadata(tmp_path):
+    def run(command, _cwd, _timeout, _env):
+        proof_dir = tmp_path / "monica-runtime" / "proof" / "run-123"
+        if command == "capture-proof":
+            (proof_dir / "ios-screenshot.png").write_bytes(_png_bytes())
+            (proof_dir / "android-recording.mp4").write_bytes(b"android proof video")
+            (proof_dir / "ios-ui.xml").write_text("<node text='Fitness First' />", encoding="utf-8")
+            (proof_dir / "android-ui.xml").write_text("<node text='Fitness First' />", encoding="utf-8")
+            (proof_dir / "ios-metro.stdout.log").write_text(
+                "LOG  [APP-PERF-METRIC] ui.load | screen.load /MarketplacePdp | 180ms | ok",
+                encoding="utf-8",
+            )
+            (proof_dir / "android-metro.stdout.log").write_text(
+                "LOG  [APP-PERF-METRIC] ui.load | screen.load /MarketplacePdp | 190ms | ok",
+                encoding="utf-8",
+            )
+        return 0, "ok", ""
+
+    runner = ProofRunner(
+        config=MonicaConfig(
+            rollout_mode="approved_pr",
+            repo=RepoConfig(default_branch="dev"),
+            proof=ProofConfig(
+                enabled=True,
+                required_for_done=True,
+                setup_commands=("seed-test-auth",),
+                commands=("capture-proof",),
+                required_env_keys=("MONICA_TEST_LOGIN_TOKEN",),
+                platform_order=("ios", "android"),
+                artifact_dir="proof",
+            ),
+            runtime=RuntimeConfig(home_subdir=str(tmp_path / "monica-runtime")),
+        ),
+        run_command=run,
+    )
+
+    result = runner.run(
+        run=FakeRun(),
+        worktree=_mark_git_worktree(tmp_path / "worktree"),
+        proof_target={
+            "deep_link": "elixir-card://marketplace/offer/fitness-first",
+            "expected_text": "Fitness First",
+        },
+    )
+
+    assert result.passed is True
+    manifest_path = Path(result.artifacts[0])
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    metadata = payload["proof_artifact_metadata"]
+    assert {item["path"] for item in metadata} == set(payload["proof_artifacts"])
+    by_name = {os.path.basename(item["path"]): item for item in metadata}
+    ios = by_name["ios-screenshot.png"]
+    assert ios["platform"] == "ios"
+    assert ios["bytes"] == len(_png_bytes())
+    assert ios["sha256"] == hashlib.sha256(_png_bytes()).hexdigest()
+    android = by_name["android-recording.mp4"]
+    assert android["platform"] == "android"
+    assert android["bytes"] == len(b"android proof video")
+    assert android["sha256"] == hashlib.sha256(b"android proof video").hexdigest()
+    assert result.to_dict()["artifact_metadata"] == metadata
 
 
 def test_proof_runner_blocks_approved_pr_with_placeholder_setup_command(tmp_path):
