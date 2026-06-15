@@ -340,8 +340,64 @@ def _recover_pending_messages(session_db, profile: Optional[str] = None) -> int:
 
             logger.info("Recovering %d message(s) for session %s", len(entries), session_id)
 
-            # Try to recover each message
-            for entry in entries:
+            # ── Deduplication: find max-overlap prefix with existing DB messages ──
+            # JSONL fallback files are always append-only, written from
+            # messages[_last_flushed_db_idx:].  If DB writes partially
+            # succeeded before the fallback (or succeeded in a later turn
+            # after recovery), the pending file's PREFIX may overlap with
+            # the DB's SUFFIX.  Find that overlap so we only insert truly
+            # new messages.
+            db_msgs = session_db.get_messages(session_id)
+            overlap = 0  # number of pending entries that match DB suffix
+            if db_msgs:
+                # Normalize both sides to comparable keys.  Comparison uses
+                # (role, content, tool_name, tool_calls_json, tool_call_id)
+                # — NOT timestamp — so the match is content-stable and won't
+                # false-negative across clock skew or recovery delays.
+                import json as _json
+                def _mk_key(m):
+                    if not isinstance(m, dict):
+                        return None
+                    tc = m.get("tool_calls")
+                    tc_str = _json.dumps(tc, sort_keys=True) if tc else None
+                    return (
+                        m.get("role"),
+                        m.get("content"),
+                        m.get("tool_name"),
+                        tc_str,
+                        m.get("tool_call_id"),
+                    )
+
+                db_keys = [_mk_key(m) for m in db_msgs if _mk_key(m) is not None]
+
+                # Build pending keys from the unwrapped messages
+                pending_keys = []
+                for entry in entries:
+                    msg = None
+                    if isinstance(entry, dict) and "_fallback_timestamp" in entry and "message" in entry:
+                        msg = entry.get("message")
+                    else:
+                        msg = entry
+                    pending_keys.append(_mk_key(msg) if isinstance(msg, dict) else None)
+
+                # Find maximum overlap: db_msgs[-N:] == pending_keys[:N]
+                max_possible = min(len(db_keys), len(pending_keys))
+                overlap = 0
+                for n in range(max_possible, 0, -1):
+                    if db_keys[-n:] == pending_keys[:n]:
+                        overlap = n
+                        break
+
+                if overlap > 0:
+                    logger.info(
+                        "Skipping %d already-persisted message(s) for session %s (overlap found)",
+                        overlap, session_id,
+                    )
+            # ── End deduplication ──
+
+            # Try to recover only non-overlapping entries
+            new_entries = entries[overlap:]
+            for entry in new_entries:
                 try:
                     # Support both formats: new wrapped {"_fallback_timestamp": t, "message": m}
                     # and old plain message format
