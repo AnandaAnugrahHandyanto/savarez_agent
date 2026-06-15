@@ -3828,6 +3828,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return True  # handled (silently dropped); do not fall through
 
+        # --- Approval intercept (#46866) ---
+        # When the agent is blocked waiting for a dangerous-command approval,
+        # the user's reply arrives here as a "busy" message and was previously
+        # misrouted as an OOB steer, causing approvals to always time out.
+        # Check for a pending gateway approval BEFORE steer/queue logic so
+        # the reply unblocks the waiting tool thread instead of being queued.
+        try:
+            from tools.approval import has_blocking_approval, resolve_gateway_approval
+            if has_blocking_approval(session_key):
+                raw_reply = (event.text or "").strip()
+                cmd = event.get_command() if hasattr(event, "get_command") else ""
+                norm_reply = raw_reply.lstrip("!/").lower()
+                choice = None
+                if cmd in {"approve", "yes", "ok", "y"}:
+                    choice = "once"
+                elif cmd in {"always"}:
+                    choice = "always"
+                elif cmd in {"deny", "no", "n"}:
+                    choice = "deny"
+                elif norm_reply in {"approve", "approve once", "once", "yes", "y", "ok"}:
+                    choice = "once"
+                elif norm_reply in {"always", "always approve", "approve always"}:
+                    choice = "always"
+                elif norm_reply in {"deny", "no", "n", "cancel", "nevermind"}:
+                    choice = "deny"
+                if choice is not None:
+                    resolved = resolve_gateway_approval(session_key, choice)
+                    if resolved:
+                        adapter = self.adapters.get(event.source.platform)
+                        label = {"once": "✅ Approved (once)", "always": "✅ Always approved", "deny": "❌ Denied"}.get(choice, choice)
+                        if adapter:
+                            try:
+                                await adapter._send_with_retry(
+                                    chat_id=event.source.chat_id,
+                                    content=label,
+                                )
+                            except Exception:
+                                pass
+                        return True
+        except Exception:
+            pass  # fail open — fall through to normal busy handling
+
         # --- Draining case (gateway restarting/stopping) ---
         if self._draining:
             adapter = self.adapters.get(event.source.platform)
