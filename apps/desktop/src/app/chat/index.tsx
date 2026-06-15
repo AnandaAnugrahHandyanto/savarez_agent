@@ -60,6 +60,7 @@ import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { threadLoadingState } from './thread-loading'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
+  autoTtsEnabled?: boolean
   gateway: HermesGateway | null
   onToggleSelectedPin: () => void
   onDeleteSelectedSession: () => void
@@ -256,6 +257,7 @@ export function ChatView({
   onAddUrl,
   onAttachImageBlob,
   onAttachDroppedItems,
+  autoTtsEnabled,
   onBranchInNewChat,
   maxVoiceRecordingSeconds,
   onPasteClipboardImage,
@@ -432,6 +434,7 @@ export function ChatView({
           {showChatBar && (
             <Suspense fallback={<ChatBarFallback />}>
               <ChatBar
+                autoTtsEnabled={autoTtsEnabled}
                 busy={busy}
                 cwd={currentCwd}
                 disabled={!gatewayOpen}

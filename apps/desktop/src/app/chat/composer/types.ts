@@ -28,6 +28,7 @@ export interface ChatBarState {
 }
 
 export interface ChatBarProps {
+  autoTtsEnabled?: boolean
   busy: boolean
   disabled: boolean
   focusKey?: string | null
