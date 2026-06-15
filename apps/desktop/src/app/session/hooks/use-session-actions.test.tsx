@@ -3,12 +3,13 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { chatMessageText, textPart } from '@/lib/chat-messages'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import { $currentCwd } from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
 
-import { useSessionActions } from './use-session-actions'
+import { mergeResumeInflightMessages, useSessionActions } from './use-session-actions'
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -77,6 +78,86 @@ async function createWith(profileSetup: () => void): Promise<Record<string, unkn
 
   return createParams
 }
+
+describe('mergeResumeInflightMessages', () => {
+  it('replays an active inflight turn as a pending assistant stream', () => {
+    const merged = mergeResumeInflightMessages(
+      [],
+      [
+        { id: 'local-user', role: 'user', parts: [textPart('question')] },
+        { id: 'local-assistant', role: 'assistant', parts: [textPart('partial answer')], pending: true }
+      ],
+      {
+        assistant: 'partial answer',
+        started_at: 10,
+        streaming: true,
+        user: 'question'
+      },
+      true
+    )
+
+    expect(merged).not.toBeNull()
+    expect(merged!.busy).toBe(true)
+    expect(merged!.awaitingResponse).toBe(true)
+    expect(merged!.streamId).toBe('local-assistant')
+    expect(merged!.turnStartedAt).toBe(10_000)
+    expect(merged!.messages).toHaveLength(2)
+    expect(merged!.messages[0]?.id).toBe('local-user')
+    expect(merged!.messages[1]).toMatchObject({ id: 'local-assistant', pending: true, role: 'assistant' })
+    expect(chatMessageText(merged!.messages[1]!)).toBe('partial answer')
+  })
+
+  it('replays a failed inflight turn as a settled assistant error with partial text', () => {
+    const merged = mergeResumeInflightMessages(
+      [{ id: 'stored-user', role: 'user', parts: [textPart('question')] }],
+      [],
+      {
+        assistant: 'partial answer',
+        error: 'provider crashed',
+        recoverable: true,
+        status: 'error',
+        streaming: false,
+        user: 'question'
+      },
+      false
+    )
+
+    expect(merged).not.toBeNull()
+    expect(merged!.busy).toBe(false)
+    expect(merged!.awaitingResponse).toBe(false)
+    expect(merged!.streamId).toBeNull()
+    expect(merged!.messages).toHaveLength(2)
+    expect(merged!.messages[1]).toMatchObject({ error: 'provider crashed', pending: false, role: 'assistant' })
+    expect(chatMessageText(merged!.messages[1]!)).toBe('partial answer')
+  })
+
+  it('does not reuse a stale completed assistant message for a resumed blank stream', () => {
+    const merged = mergeResumeInflightMessages(
+      [
+        { id: 'stored-user', role: 'user', parts: [textPart('old question')] },
+        { id: 'stored-assistant', role: 'assistant', parts: [textPart('old answer')] }
+      ],
+      [
+        { id: 'local-user', role: 'user', parts: [textPart('old question')] },
+        { id: 'local-assistant', role: 'assistant', parts: [textPart('old answer')] }
+      ],
+      {
+        assistant: '',
+        streaming: true,
+        user: 'new question'
+      },
+      true
+    )
+
+    expect(merged).not.toBeNull()
+    expect(merged!.messages).toHaveLength(4)
+    expect(chatMessageText(merged!.messages[0]!)).toBe('old question')
+    expect(chatMessageText(merged!.messages[1]!)).toBe('old answer')
+    expect(chatMessageText(merged!.messages[2]!)).toBe('new question')
+    expect(chatMessageText(merged!.messages[3]!)).toBe('')
+    expect(merged!.messages[3]).toMatchObject({ pending: true, role: 'assistant' })
+  })
+})
 
 describe('createBackendSessionForSend profile routing', () => {
   afterEach(() => {

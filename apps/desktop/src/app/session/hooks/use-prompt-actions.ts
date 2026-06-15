@@ -583,6 +583,50 @@ export function usePromptActions({
         return false
       }
 
+      let sessionId: null | string = activeSessionId || activeSessionIdRef.current
+
+      const existingVisibleMessages = $messages
+        .get()
+        .some(
+          message =>
+            !message.hidden &&
+            (message.role === 'user' || message.role === 'assistant') &&
+            Boolean(chatMessageText(message).trim())
+        )
+
+      if (!sessionId && selectedStoredSessionIdRef.current) {
+        try {
+          await resumeStoredSession(selectedStoredSessionIdRef.current)
+          sessionId = activeSessionIdRef.current
+        } catch (err) {
+          notifyError(err, copy.sessionUnavailable)
+
+          return false
+        }
+      }
+
+      if (!sessionId && existingVisibleMessages) {
+        const message =
+          'This chat has visible messages but is not attached to a backend session. Reopen or resume the session before sending so context is not lost.'
+
+        notify({ kind: 'error', title: copy.sessionUnavailable, message })
+        setMessages(current =>
+          current.some(item => item.role === 'assistant' && item.error === message)
+            ? current
+            : [
+                ...current,
+                {
+                  id: `assistant-error-detached-${Date.now()}`,
+                  role: 'assistant',
+                  parts: [],
+                  error: message
+                }
+              ]
+        )
+
+        return false
+      }
+
       const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
       const buildUserMessage = (): ChatMessage => ({
@@ -656,8 +700,6 @@ export function usePromptActions({
       setBusy(true)
       setAwaitingResponse(true)
       clearNotifications()
-
-      let sessionId: null | string = activeSessionId
 
       if (sessionId) {
         seedOptimistic(sessionId)
@@ -778,10 +820,12 @@ export function usePromptActions({
     },
     [
       activeSessionId,
+      activeSessionIdRef,
       busyRef,
       copy,
       createBackendSessionForSend,
       requestGateway,
+      resumeStoredSession,
       selectedStoredSessionIdRef,
       syncAttachmentsForSubmit,
       updateSessionState
@@ -1283,6 +1327,7 @@ export function usePromptActions({
 
   const cancelRun = useCallback(async () => {
     const sessionId = activeSessionId || activeSessionIdRef.current
+
     const releaseBusy = () => {
       setMutableRef(busyRef, false)
       setBusy(false)
