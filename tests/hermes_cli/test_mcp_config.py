@@ -11,6 +11,14 @@ from pathlib import Path
 import pytest
 
 
+def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
+    from unittest.mock import MagicMock
+
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = is_tty
+    monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -654,6 +662,11 @@ class TestMcpRemoveEvictsManager:
             "hermes_cli.mcp_config.get_hermes_home", lambda: tmp_path
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # The MCP SDK is present in CI, so get_or_build_provider reaches the
+        # non-interactive OAuth guard and raises OAuthNonInteractiveError when
+        # stdin is not a TTY. Pin an interactive stdin so this eviction test
+        # exercises the cache path rather than the non-interactive auth path.
+        _set_interactive_stdin(monkeypatch)
 
         from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
         reset_manager_for_tests()
