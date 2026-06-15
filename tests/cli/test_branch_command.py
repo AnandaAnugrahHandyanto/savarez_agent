@@ -212,12 +212,12 @@ class TestBranchCommandCLI:
         assert kwargs["reset"] is False
         assert kwargs["reason"] == "branch"
 
-    def test_fork_alias(self):
-        """The /fork alias should resolve to 'branch'."""
+    def test_fork_command(self):
+        """The /fork command should resolve as a first-class command."""
         from hermes_cli.commands import resolve_command
         result = resolve_command("fork")
         assert result is not None
-        assert result.name == "branch"
+        assert result.name == "fork"
 
 
 class TestBranchCommandDef:
@@ -229,11 +229,11 @@ class TestBranchCommandDef:
         names = [c.name for c in COMMAND_REGISTRY]
         assert "branch" in names
 
-    def test_branch_has_fork_alias(self):
-        """The branch command should have 'fork' as an alias."""
+    def test_fork_in_registry(self):
+        """The fork command should be in the command registry."""
         from hermes_cli.commands import COMMAND_REGISTRY
-        branch = next(c for c in COMMAND_REGISTRY if c.name == "branch")
-        assert "fork" in branch.aliases
+        fork = next(c for c in COMMAND_REGISTRY if c.name == "fork")
+        assert fork.category == "Session"
 
     def test_branch_in_session_category(self):
         """The branch command should be in the Session category."""
