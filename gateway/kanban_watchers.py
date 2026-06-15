@@ -141,7 +141,7 @@ class GatewayKanbanWatchersMixin:
                             (last_eid,),
                         ).fetchall()
                     else:
-                        cutoff = _time.time() - 600
+                        cutoff = time.time() - 600
                         recent_event_rows = conn.execute(
                             "SELECT te.id, te.task_id, te.kind, te.payload "
                             "FROM task_events te WHERE te.created_at > ? "
