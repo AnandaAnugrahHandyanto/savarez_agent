@@ -1424,6 +1424,32 @@ class TestBangPrefixCommands:
         assert msg_event.message_type == MessageType.COMMAND
 
     @pytest.mark.asyncio
+    async def test_bang_model_text_file_does_not_pollute_args(self, adapter):
+        """Text-file snippets must not be injected into command args."""
+        evt = self._make_event("!model gpt-5.5")
+        evt["files"] = [{
+            "mimetype": "text/plain",
+            "name": "notes.txt",
+            "url_private_download": "https://files.slack.com/notes.txt",
+            "size": 11,
+        }]
+
+        with patch.object(
+            adapter,
+            "_download_slack_file_bytes",
+            new_callable=AsyncMock,
+            return_value=b"hello world",
+        ):
+            await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/model gpt-5.5"
+        assert msg_event.get_command_args() == "gpt-5.5"
+        assert "[Content of notes.txt]" not in msg_event.text
+        assert "hello world" not in msg_event.text
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
     async def test_bang_model_non_rich_blocks_do_not_pollute_args(self, adapter):
         """Serialized Block Kit payload must not become command args."""
         evt = self._make_event("!model gpt-5.5")
