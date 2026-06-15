@@ -1529,7 +1529,9 @@ class GatewayStreamConsumer:
                 # First message — send new, threaded to the original user message
                 # so it lands in the correct topic/thread.
                 send_metadata = dict(self.metadata or {})
-                if not finalize:
+                if finalize:
+                    send_metadata.pop("expect_edits", None)
+                else:
                     send_metadata["expect_edits"] = True
                 result = await self.adapter.send(
                     chat_id=self.chat_id,

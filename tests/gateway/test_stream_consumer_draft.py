@@ -129,7 +129,12 @@ class TestDraftStreamingHappyPath:
             transport="auto", chat_type="dm",
             edit_interval=0.01, buffer_threshold=5, cursor="",
         )
-        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "12345",
+            cfg,
+            metadata={"expect_edits": True},
+        )
 
         consumer.on_delta("Hello ")
         task = asyncio.create_task(consumer.run())
