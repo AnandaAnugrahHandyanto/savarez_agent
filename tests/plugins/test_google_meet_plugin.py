@@ -235,6 +235,30 @@ def test_bot_state_revises_short_caption_growth_when_dom_row_id_changes(tmp_path
     ]
 
 
+def test_bot_state_revises_caption_growth_with_punctuation_drift_and_new_row_id(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    out = tmp_path / "session"
+    state = _BotState(out_dir=out, meeting_id="abc-defg-hij",
+                      url="https://meet.google.com/abc-defg-hij")
+
+    state.record_caption(
+        "Alex Rivera",
+        "do not fearful withdrawal perhaps it's",
+        caption_id="row-a",
+    )
+    state.record_caption(
+        "Alex Rivera",
+        "do not fearful withdrawal, perhaps it's quite possible.",
+        caption_id="row-b",
+    )
+
+    transcript = (out / "transcript.txt").read_text().splitlines()
+    assert [line.split("] ", 1)[1] for line in transcript] == [
+        "Alex Rivera: do not fearful withdrawal, perhaps it's quite possible.",
+    ]
+
+
 def test_bot_state_revises_matching_caption_row_without_collapsing_same_speaker_rows(tmp_path):
     from plugins.google_meet.meet_bot import _BotState
 

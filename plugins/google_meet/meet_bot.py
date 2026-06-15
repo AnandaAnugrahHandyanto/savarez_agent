@@ -215,6 +215,18 @@ class _BotState:
             r"\s+", " ", right or ""
         ).strip().lower()
 
+    @staticmethod
+    def _caption_tokens(text: str) -> list[str]:
+        return re.findall(r"[\w']+", (text or "").lower())
+
+    @classmethod
+    def _is_caption_token_prefix(cls, previous: str, current: str) -> bool:
+        previous_tokens = cls._caption_tokens(previous)
+        current_tokens = cls._caption_tokens(current)
+        if not previous_tokens or len(current_tokens) <= len(previous_tokens):
+            return False
+        return current_tokens[: len(previous_tokens)] == previous_tokens
+
     @classmethod
     def _is_cross_caption_key_revision(cls, previous: str, current: str) -> bool:
         previous_norm = re.sub(r"\s+", " ", previous or "").strip()
@@ -226,6 +238,8 @@ class _BotState:
         if current_lower == previous_lower:
             return True
         if current_lower.startswith(previous_lower):
+            return True
+        if cls._is_caption_token_prefix(previous_norm, current_norm):
             return True
         prefix_len = cls._common_prefix_len(previous_lower, current_lower)
         return prefix_len >= 80 and cls._is_caption_revision(previous_norm, current_norm)
