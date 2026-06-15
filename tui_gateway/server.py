@@ -6996,14 +6996,15 @@ def _(rid, params: dict) -> dict:
                         4009,
                         "session busy — /interrupt the current turn before switching models",
                     )
-                if session.get("agent") is None:
-                    session_id = params.get("session_id", "")
-                    _start_agent_build(session_id, session)
-                    init_err = _wait_agent(session, rid)
-                    if init_err:
-                        return init_err
-                    if session.get("agent") is None:
-                        return _err(rid, 5032, "agent initialization failed")
+                # Idle lazy sessions may not have built their agent yet.
+                # Don't block model switches on a full agent build here: the
+                # Desktop picker has a 30s request timeout, and building the
+                # initial agent just to persist a session override can race or
+                # time out on a brand-new chat even though no live runtime needs
+                # to be mutated yet. `_apply_model_switch()` already supports an
+                # agent-less session dict and records the selected model as the
+                # session's pinned override, so the eventual lazy build starts on
+                # the newly chosen model directly.
                 result = _apply_model_switch(
                     params.get("session_id", ""),
                     session,

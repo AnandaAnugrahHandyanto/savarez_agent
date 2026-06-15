@@ -3239,12 +3239,17 @@ def run_conversation(
                             force=True,
                         )
                     logger.error(f"{agent.log_prefix}Non-retryable client error: {api_error}")
-                    # Skip session persistence when the error is likely
-                    # context-overflow related (status 400 + large session).
+                    # Skip session persistence only when this 400 has already
+                    # been classified as context-overflow related.  Large
+                    # sessions can also hit deterministic client errors (for
+                    # example GitHub Copilot ``model_not_supported`` after a
+                    # model switch).  Dropping those turns makes the desktop
+                    # look like it "lost memory" and hides the real error from
+                    # the transcript.
                     # Persisting the failed user message would make the
                     # session even larger, causing the same failure on the
                     # next attempt. (#1630)
-                    if status_code == 400 and (approx_tokens > 50000 or len(api_messages) > 80):
+                    if is_context_length_error and (approx_tokens > 50000 or len(api_messages) > 80):
                         agent._vprint(
                             f"{agent.log_prefix}⚠️  Skipping session persistence "
                             f"for large failed session to prevent growth loop.",

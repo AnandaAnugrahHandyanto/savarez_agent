@@ -2854,31 +2854,32 @@ def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch
 
 
 
-def test_config_set_model_waits_for_lazy_agent_before_switch(monkeypatch):
-    """A model switch against a lazy-created live session must apply to the
-    real agent, not just process env, before the prompt is dispatched.
+def test_config_set_model_on_lazy_session_uses_override_path_without_build(monkeypatch):
+    """A model switch against a lazy-created live session should persist the
+    session override immediately and let the eventual lazy build start on the
+    chosen model, rather than blocking on agent initialization first.
     """
 
-    agent_ready = threading.Event()
-    agent = types.SimpleNamespace(model="old/model", provider="old-provider")
-    session = _session(agent=agent)
+    session = _session()
     session["agent"] = None
-    session["agent_ready"] = agent_ready
+    session["agent_ready"] = threading.Event()
     server._sessions["sid"] = session
     calls = []
 
     def fake_start(sid, target):
         calls.append(("start", sid))
-        target["agent"] = agent
-        agent_ready.set()
+
+    def fake_wait(target, rid, timeout=30.0):
+        calls.append(("wait", rid, timeout))
+        return None
 
     def fake_apply(sid, target, raw, **kwargs):
         calls.append(("apply", sid, target.get("agent"), raw))
-        if target.get("agent") is not agent:
-            raise AssertionError("model switch ran before lazy agent was ready")
+        assert target.get("agent") is None
         return {"value": "new/model", "warning": ""}
 
     monkeypatch.setattr(server, "_start_agent_build", fake_start)
+    monkeypatch.setattr(server, "_wait_agent", fake_wait)
     monkeypatch.setattr(server, "_apply_model_switch", fake_apply)
 
     try:
@@ -2891,9 +2892,10 @@ def test_config_set_model_waits_for_lazy_agent_before_switch(monkeypatch):
         )
 
         assert resp["result"]["value"] == "new/model"
-        assert calls == [("start", "sid"), ("apply", "sid", agent, "new/model")]
+        assert calls == [("apply", "sid", None, "new/model")]
     finally:
         server._sessions.pop("sid", None)
+
 
 def test_config_set_model_uses_live_switch_path(monkeypatch):
     server._sessions["sid"] = _session()
@@ -4542,6 +4544,96 @@ def test_config_set_model_allowed_when_idle(monkeypatch):
         assert seen["called"]
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_config_set_model_on_lazy_idle_session_skips_agent_build(monkeypatch):
+    """Brand-new Desktop chats should switch immediately instead of waiting for
+    lazy agent initialization to finish before persisting the session override.
+    """
+
+    seen = {"called": False, "start": False, "wait": False}
+
+    def _fake_apply(sid, session, raw, **_kwargs):
+        seen["called"] = True
+        assert sid == "sid"
+        assert session.get("agent") is None
+        return {"value": "gemini-2.5-pro", "warning": ""}
+
+    monkeypatch.setattr(server, "_apply_model_switch", _fake_apply)
+    monkeypatch.setattr(
+        server,
+        "_start_agent_build",
+        lambda *args, **kwargs: seen.__setitem__("start", True),
+    )
+    monkeypatch.setattr(
+        server,
+        "_wait_agent",
+        lambda *args, **kwargs: seen.__setitem__("wait", True),
+    )
+
+    session = _session(running=False)
+    session["agent"] = None
+    server._sessions["sid"] = session
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "gemini-2.5-pro --provider copilot",
+                },
+            }
+        )
+        assert resp is not None
+        assert resp.get("result")
+        assert resp["result"]["value"] == "gemini-2.5-pro"
+        assert seen == {"called": True, "start": False, "wait": False}
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_apply_model_switch_marks_slash_worker_stale_instead_of_restarting(monkeypatch):
+    class Agent:
+        model = "old/model"
+        provider = "old-provider"
+        base_url = ""
+        api_key = ""
+
+        def switch_model(self, **kwargs):
+            self.model = kwargs["new_model"]
+            self.provider = kwargs["new_provider"]
+
+    result = types.SimpleNamespace(
+        success=True,
+        new_model="anthropic/claude-sonnet-4.6",
+        target_provider="anthropic",
+        api_key="key",
+        base_url="https://api.anthropic.com",
+        api_mode="anthropic_messages",
+        warning_message="",
+        model_info=None,
+    )
+    restart_called = {"value": False}
+    persisted = {"value": False}
+    emitted = []
+    session = _session(agent=Agent())
+    session["slash_worker"] = types.SimpleNamespace(close=lambda: None, model="old/model")
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kwargs: result)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, s: restart_called.__setitem__("value", True))
+    monkeypatch.setattr(server, "_persist_live_session_runtime", lambda s: persisted.__setitem__("value", True))
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+    monkeypatch.setattr(server, "_session_info", lambda agent, session: {"model": agent.model, "provider": agent.provider})
+
+    out = server._apply_model_switch("sid", session, "anthropic/claude-sonnet-4.6 --provider anthropic")
+
+    assert out["value"] == "anthropic/claude-sonnet-4.6"
+    assert session["slash_worker_stale"] is True
+    assert restart_called["value"] is False
+    assert persisted["value"] is True
+    assert emitted and emitted[-1][0] == "session.info"
 
 
 def test_mirror_slash_side_effects_rejects_mutating_commands_while_running(monkeypatch):

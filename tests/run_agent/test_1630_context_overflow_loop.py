@@ -261,31 +261,40 @@ class TestContextOverflowErrorMessages:
 
 class TestAgentSkipsPersistenceForLargeFailedSessions:
     """When a 400 error occurs and the session is large, the agent
-    should skip persisting to prevent the growth loop."""
+    should skip persisting only for confirmed context-overflow failures."""
 
-    def test_large_session_400_skips_persistence(self):
-        """Status 400 + high token count should skip persistence."""
-        status_code = 400
+    def test_large_context_overflow_400_skips_persistence(self):
+        """Status 400 + high token count + context overflow should skip persistence."""
+        is_context_length_error = True
         approx_tokens = 60000  # > 50000 threshold
         api_messages = [{"role": "user", "content": "x"}] * 10
 
-        should_skip = status_code == 400 and (approx_tokens > 50000 or len(api_messages) > 80)
+        should_skip = is_context_length_error and (approx_tokens > 50000 or len(api_messages) > 80)
         assert should_skip
+
+    def test_large_descriptive_400_persists_normally(self):
+        """Large non-context client errors must persist so the UI keeps the real error."""
+        is_context_length_error = False
+        approx_tokens = 60000
+        api_messages = [{"role": "user", "content": "x"}] * 10
+
+        should_skip = is_context_length_error and (approx_tokens > 50000 or len(api_messages) > 80)
+        assert not should_skip
 
     def test_small_session_400_persists_normally(self):
         """Status 400 + small session should still persist."""
-        status_code = 400
+        is_context_length_error = True
         approx_tokens = 5000  # < 50000
         api_messages = [{"role": "user", "content": "x"}] * 10  # < 80
 
-        should_skip = status_code == 400 and (approx_tokens > 50000 or len(api_messages) > 80)
+        should_skip = is_context_length_error and (approx_tokens > 50000 or len(api_messages) > 80)
         assert not should_skip
 
     def test_non_400_error_persists_normally(self):
         """Non-400 errors should always persist normally."""
-        status_code = 401  # Auth error
+        is_context_length_error = False
         approx_tokens = 100000  # Large session, but not a 400
         api_messages = [{"role": "user", "content": "x"}] * 100
 
-        should_skip = status_code == 400 and (approx_tokens > 50000 or len(api_messages) > 80)
+        should_skip = is_context_length_error and (approx_tokens > 50000 or len(api_messages) > 80)
         assert not should_skip
