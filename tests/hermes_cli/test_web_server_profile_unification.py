@@ -6,6 +6,8 @@ profile switcher can target any profile's HERMES_HOME. These tests pin:
 reads/writes land in the REQUESTED profile, the dashboard's own profile
 stays untouched, and the chat PTY env is scoped via HERMES_HOME.
 """
+import re
+
 import pytest
 import yaml
 
@@ -58,7 +60,10 @@ def test_dashboard_plugin_endpoints_are_profile_scoped():
     api_src = Path(__file__).resolve().parents[2] / "web/src/lib/api.ts"
     text = api_src.read_text(encoding="utf-8")
 
-    prefix_block = text.split("const PROFILE_SCOPED_PREFIXES = [", 1)[1].split("];", 1)[0]
+    prefix_match = re.search(r"const\s+PROFILE_SCOPED_PREFIXES\s*=\s*\[(?P<body>.*?)\];", text, re.S)
+    assert prefix_match is not None
+
+    prefix_block = prefix_match.group("body")
     assert '"/api/dashboard/plugins"' in prefix_block
     assert '"/api/dashboard/agent-plugins"' in prefix_block
     assert '"/api/dashboard/plugin-providers"' in prefix_block

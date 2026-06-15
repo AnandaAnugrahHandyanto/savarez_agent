@@ -11242,28 +11242,28 @@ def _discover_dashboard_plugins() -> list:
     return plugins
 
 
-# Cache discovered plugins per-process (refresh on explicit re-scan or
-# whenever the active profile/HERMES_HOME changes).
-_dashboard_plugins_cache: Optional[list] = None
-_dashboard_plugins_cache_key: Optional[str] = None
+# Cache discovered plugins per-profile so concurrent requests do not
+# overwrite each other’s results. Refresh on explicit re-scan or when the
+# active profile/HERMES_HOME changes.
+_dashboard_plugins_cache: Dict[str, List[Dict[str, Any]]] = {}
+_dashboard_plugins_lock = threading.RLock()
 
 
 def _get_dashboard_plugins(force_rescan: bool = False) -> list:
-    global _dashboard_plugins_cache, _dashboard_plugins_cache_key
-
     current_key = str(get_hermes_home().resolve())
-    if (
-        force_rescan
-        or _dashboard_plugins_cache is None
-        or _dashboard_plugins_cache_key != current_key
-    ):
-        _dashboard_plugins_cache = _discover_dashboard_plugins()
-        _dashboard_plugins_cache_key = current_key
-    elif _dashboard_plugins_cache:
-        if any(not Path(p["_dir"]).is_dir() for p in _dashboard_plugins_cache):
-            _dashboard_plugins_cache = _discover_dashboard_plugins()
-            _dashboard_plugins_cache_key = current_key
-    return _dashboard_plugins_cache
+
+    with _dashboard_plugins_lock:
+        cached_plugins = _dashboard_plugins_cache.get(current_key)
+        if force_rescan or cached_plugins is None:
+            cached_plugins = _discover_dashboard_plugins()
+            _dashboard_plugins_cache[current_key] = cached_plugins
+            return cached_plugins
+
+        if any(not Path(p["_dir"]).is_dir() for p in cached_plugins):
+            cached_plugins = _discover_dashboard_plugins()
+            _dashboard_plugins_cache[current_key] = cached_plugins
+
+        return cached_plugins
 
 
 @app.get("/api/dashboard/plugins")
