@@ -157,7 +157,9 @@ export interface SessionInfo {
   reasoning_effort?: string
   release_date?: string
   service_tier?: string
+  status_label?: string
   skills: Record<string, string[]>
+  title?: string
   system_prompt?: string
   tools: Record<string, string[]>
   update_behind?: number | null

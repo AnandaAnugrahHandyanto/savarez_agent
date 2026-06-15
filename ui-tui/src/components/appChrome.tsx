@@ -411,6 +411,8 @@ export function StatusRule({
   model,
   modelFast,
   modelReasoningEffort,
+  statusLabel,
+  sessionTitle,
   indicatorStyle = 'kaomoji',
   notice,
   usage,
@@ -440,6 +442,7 @@ export function StatusRule({
 
   const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+  const identityText = [statusLabel, sessionTitle].map(v => String(v ?? '').trim()).filter(Boolean).join(' │ ')
 
   // A credits notice replaces the status/verb slot, but only when idle —
   // while busy the FaceTicker always wins (R1 render priority). The notice
@@ -467,6 +470,7 @@ export function StatusRule({
   const essentialWidth =
     stringWidth('─ ') +
     slotWidth +
+    (identityText ? stringWidth(' │ ') + stringWidth(identityText) : 0) +
     stringWidth(' │ ') +
     stringWidth(modelText) +
     (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
@@ -562,6 +566,12 @@ export function StatusRule({
           {DEV_CREDITS_MODE ? (
             <Text color={t.color.warn} wrap="truncate-end">
               {' (dev credits)'}
+            </Text>
+          ) : null}
+          {identityText ? (
+            <Text color={t.color.accent} wrap="truncate-end">
+              {' │ '}
+              {identityText}
             </Text>
           ) : null}
           <Text color={t.color.muted} wrap="truncate-end">
@@ -759,6 +769,8 @@ interface StatusRuleProps {
   model: string
   modelFast?: boolean
   modelReasoningEffort?: string
+  statusLabel?: string
+  sessionTitle?: string
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null
   sessionStartedAt?: null | number

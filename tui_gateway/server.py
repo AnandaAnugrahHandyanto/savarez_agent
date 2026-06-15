@@ -2367,6 +2367,33 @@ def _current_profile_name() -> str:
 DESKTOP_BACKEND_CONTRACT = 2
 
 
+def _status_label() -> str:
+    return (
+        os.getenv("HERMES_STATUS_LABEL")
+        or os.getenv("HERMES_STATUS_HOST_LABEL")
+        or str((_load_cfg().get("display") or {}).get("status_label") or "").strip()
+    )
+
+
+def _reasoning_effort_label(reasoning_config: object = None) -> str:
+    effort = ""
+    if isinstance(reasoning_config, dict):
+        if reasoning_config.get("enabled") is False:
+            effort = "off"
+        else:
+            effort = str(
+                reasoning_config.get("effort")
+                or reasoning_config.get("reasoning_effort")
+                or reasoning_config.get("level")
+                or ""
+            ).strip()
+    if not effort:
+        effort = str((_load_cfg().get("agent") or {}).get("reasoning_effort", "") or "").strip()
+    if effort.lower() in {"none", "false", "disabled"}:
+        effort = "off"
+    return effort.lower() if effort else ""
+
+
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         for candidate in _sessions.values():
@@ -2377,13 +2404,10 @@ def _session_info(agent, session: dict | None = None) -> dict:
     cfg_personality = ((_load_cfg().get("display") or {}).get("personality") or "")
     personality = (session or {}).get("personality", cfg_personality)
     reasoning_config = getattr(agent, "reasoning_config", None)
-    reasoning_effort = ""
-    if (
-        isinstance(reasoning_config, dict)
-        and reasoning_config.get("enabled") is not False
-    ):
-        reasoning_effort = str(reasoning_config.get("effort", "") or "")
+    reasoning_effort = _reasoning_effort_label(reasoning_config)
     service_tier = getattr(agent, "service_tier", None) or ""
+    session_key = str((session or {}).get("session_key") or getattr(agent, "session_id", "") or "")
+    title = _session_safe_title(session or {}, session_key) if session_key else ""
     # Effective approval-bypass state — the same three sources that
     # check_all_command_guards() ORs together: persistent config
     # (approvals.mode=off), the process-scoped --yolo env, and the
@@ -2408,6 +2432,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "provider": getattr(agent, "provider", ""),
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
+        "status_label": _status_label(),
+        "title": title,
         "fast": service_tier == "priority",
         "yolo": yolo,
         "tools": {},
@@ -4390,6 +4416,13 @@ def _session_live_title(session: dict, key: str) -> str:
     return title
 
 
+def _session_safe_title(session: dict, key: str) -> str:
+    try:
+        return _session_live_title(session, key)
+    except Exception:
+        return str((session or {}).get("pending_title") or "").strip()
+
+
 def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     key = str(session.get("session_key") or sid)
     agent = session.get("agent")
@@ -4411,7 +4444,7 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
         "session_key": key,
         "started_at": float(session.get("created_at") or now),
         "status": status,
-        "title": _session_live_title(session, key),
+        "title": _session_safe_title(session, key),
     }
 
 
@@ -4427,11 +4460,15 @@ def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
 def _fallback_session_info(session: dict) -> dict:
     agent = session.get("agent")
     if agent is not None:
-        return _session_info(agent)
+        return _session_info(agent, session)
+    reasoning_config = _load_reasoning_config()
     return {
         "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
         "lazy": True,
         "model": _resolve_model(),
+        "reasoning_effort": _reasoning_effort_label(reasoning_config),
+        "status_label": _status_label(),
+        "title": _session_safe_title(session, str(session.get("session_key") or "")),
         "skills": {},
         "tools": {},
     }
