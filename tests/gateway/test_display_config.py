@@ -198,7 +198,12 @@ class TestPlatformDefaults:
         """Default config carries the Telegram override for merged user configs."""
         from hermes_cli.config import DEFAULT_CONFIG
 
-        telegram = DEFAULT_CONFIG["display"]["platforms"]["telegram"]
+        display = DEFAULT_CONFIG["display"]
+        assert isinstance(display, dict)
+        platforms = display["platforms"]
+        assert isinstance(platforms, dict)
+        telegram = platforms["telegram"]
+        assert isinstance(telegram, dict)
         assert telegram["interim_assistant_messages"] is False
 
     def test_medium_tier_platforms(self):
@@ -339,6 +344,61 @@ class TestConfigMigration:
         updated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         # Existing "verbose" should NOT be overwritten by legacy "off"
         assert updated["display"]["platforms"]["telegram"]["tool_progress"] == "verbose"
+
+    def test_migration_seeds_telegram_interim_override_for_existing_configs(self, tmp_path, monkeypatch):
+        """Existing configs get the new Telegram-specific interim-message default."""
+        import importlib
+
+        import yaml
+
+        from gateway.display_config import resolve_display_setting
+
+        config_path = tmp_path / "config.yaml"
+        config = {
+            "_config_version": 27,
+            "display": {
+                "interim_assistant_messages": True,
+                "platforms": {"telegram": {"streaming": True}},
+            },
+        }
+        config_path.write_text(yaml.dump(config), encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import hermes_cli.config as cfg_mod
+        importlib.reload(cfg_mod)
+
+        cfg_mod.migrate_config(interactive=False, quiet=True)
+        updated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        telegram = updated["display"]["platforms"]["telegram"]
+        assert updated["display"]["interim_assistant_messages"] is True
+        assert telegram["streaming"] is True
+        assert telegram["interim_assistant_messages"] is False
+        assert resolve_display_setting(updated, "telegram", "interim_assistant_messages") is False
+
+    def test_migration_preserves_telegram_interim_opt_in(self, tmp_path, monkeypatch):
+        """Explicit Telegram interim-message opt-in survives the migration."""
+        import importlib
+
+        import yaml
+
+        config_path = tmp_path / "config.yaml"
+        config = {
+            "_config_version": 27,
+            "display": {
+                "platforms": {"telegram": {"interim_assistant_messages": True}},
+            },
+        }
+        config_path.write_text(yaml.dump(config), encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import hermes_cli.config as cfg_mod
+        importlib.reload(cfg_mod)
+
+        cfg_mod.migrate_config(interactive=False, quiet=True)
+        updated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert updated["display"]["platforms"]["telegram"]["interim_assistant_messages"] is True
 
 
 # ---------------------------------------------------------------------------
