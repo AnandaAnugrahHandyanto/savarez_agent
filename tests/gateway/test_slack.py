@@ -1327,8 +1327,8 @@ class TestBangPrefixCommands:
         assert msg_event.message_type == MessageType.COMMAND
 
     @pytest.mark.asyncio
-    async def test_bang_command_blocks_strip_plain_text_and_keep_quote(self, adapter):
-        """When blocks echo the command plus quotes, drop only the echoed command."""
+    async def test_bang_command_blocks_do_not_pollute_args(self, adapter):
+        """Command args must stay exact even when blocks contain quoted extras."""
         evt = self._make_event("!queue summarize")
         evt["blocks"] = [{
             "type": "rich_text",
@@ -1350,8 +1350,94 @@ class TestBangPrefixCommands:
         await adapter._handle_slack_message(evt)
 
         msg_event = adapter.handle_message.call_args[0][0]
-        assert msg_event.text == "/queue summarize\n> Quoted line"
+        assert msg_event.text == "/queue summarize"
+        assert msg_event.get_command_args() == "summarize"
         assert "!queue summarize" not in msg_event.text
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_mentioned_bang_model_command_blocks_args_are_exact(self, adapter):
+        """``<@bot> !model`` must strip the mention before command parsing."""
+        adapter._bot_user_id = "U_BOT"
+        evt = self._make_event(
+            "<@U_BOT> !model gpt-5.5",
+            channel_type="channel",
+            channel="C123",
+        )
+        evt["blocks"] = [{
+            "type": "rich_text",
+            "elements": [{
+                "type": "rich_text_section",
+                "elements": [{"type": "text", "text": "<@U_BOT> !model gpt-5.5"}],
+            }],
+        }]
+
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/model gpt-5.5"
+        assert msg_event.get_command_args() == "gpt-5.5"
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_model_thread_context_does_not_pollute_args(self, adapter):
+        """Fetched thread context must not be prepended to command text."""
+        evt = self._make_event(
+            "!model gpt-5.5",
+            thread_ts="1111111111.000001",
+            channel_type="channel",
+            channel="C123",
+        )
+        adapter._bot_message_ts.add("1111111111.000001")
+
+        with patch.object(
+            adapter,
+            "_fetch_thread_context",
+            new_callable=AsyncMock,
+            return_value="[Thread context]\nnoise\n\n",
+        ) as fetch_context:
+            await adapter._handle_slack_message(evt)
+
+        fetch_context.assert_not_awaited()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/model gpt-5.5"
+        assert msg_event.get_command_args() == "gpt-5.5"
+        assert msg_event.message_type == MessageType.COMMAND
+        assert msg_event.source.thread_id == "1111111111.000001"
+
+    @pytest.mark.asyncio
+    async def test_bang_model_attachments_do_not_pollute_args(self, adapter):
+        """Slack unfurls/attachments must not become model command args."""
+        evt = self._make_event("!model gpt-5.5")
+        evt["attachments"] = [{
+            "title": "Preview",
+            "title_link": "https://example.com/preview",
+            "text": "unfurl body",
+        }]
+
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/model gpt-5.5"
+        assert msg_event.get_command_args() == "gpt-5.5"
+        assert "Preview" not in msg_event.text
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_model_non_rich_blocks_do_not_pollute_args(self, adapter):
+        """Serialized Block Kit payload must not become command args."""
+        evt = self._make_event("!model gpt-5.5")
+        evt["blocks"] = [{
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "metadata from Slack block"},
+        }]
+
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/model gpt-5.5"
+        assert msg_event.get_command_args() == "gpt-5.5"
+        assert "Slack Block Kit" not in msg_event.text
         assert msg_event.message_type == MessageType.COMMAND
 
     @pytest.mark.asyncio
