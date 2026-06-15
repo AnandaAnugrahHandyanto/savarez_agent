@@ -2315,3 +2315,141 @@ class TestSessionIdHeader:
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["conversation_history"] == []
             assert call_kwargs["session_id"] == "some-session"
+
+
+# --- Hermes provider quota regression tests ---
+
+
+class TestProviderQuotaFailureRegression:
+    @staticmethod
+    def _failed_result():
+        return (
+            {
+                "final_response": (
+                    "The provider usage limit has been reached. "
+                    "Hermes is running, but the current provider cannot "
+                    "process new requests until its quota is available again."
+                ),
+                "messages": [],
+                "api_calls": 1,
+                "completed": False,
+                "failed": True,
+                "error": "The usage limit has been reached",
+                "failure_reason": "rate_limit",
+                "error_status": 429,
+            },
+            {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_rate_limit_returns_http_429(self, adapter):
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_run_agent",
+                new_callable=AsyncMock,
+                return_value=self._failed_result(),
+            ):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "stream": False,
+                        "messages": [
+                            {"role": "user", "content": "hello"}
+                        ],
+                    },
+                )
+
+                assert resp.status == 429
+                body = await resp.json()
+                assert body["error"]["type"] == "rate_limit_error"
+                assert body["error"]["code"] == "rate_limit"
+                assert "usage limit" in body["error"]["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_responses_rate_limit_returns_http_429(self, adapter):
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_run_agent",
+                new_callable=AsyncMock,
+                return_value=self._failed_result(),
+            ):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "stream": False,
+                        "input": "hello",
+                    },
+                )
+
+                assert resp.status == 429
+                body = await resp.json()
+                assert body["error"]["type"] == "rate_limit_error"
+                assert body["error"]["code"] == "rate_limit"
+
+    @pytest.mark.asyncio
+    async def test_streaming_chat_surfaces_quota_message(self, adapter):
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_run_agent",
+                new_callable=AsyncMock,
+                return_value=self._failed_result(),
+            ):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "stream": True,
+                        "messages": [
+                            {"role": "user", "content": "hello"}
+                        ],
+                    },
+                )
+
+                assert resp.status == 200
+                body = await resp.text()
+                assert "provider usage limit has been reached" in body.lower()
+                assert "data: [DONE]" in body
+
+    @pytest.mark.asyncio
+    async def test_streaming_responses_emits_rate_limit_failure(self, adapter):
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_run_agent",
+                new_callable=AsyncMock,
+                return_value=self._failed_result(),
+            ):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "stream": True,
+                        "input": "hello",
+                    },
+                )
+
+                assert resp.status == 200
+                body = await resp.text()
+
+                assert "event: response.failed" in body
+                assert '"status": "failed"' in body
+                assert '"type": "rate_limit_error"' in body
+                assert '"code": "rate_limit"' in body
+                assert "event: response.completed" not in body
