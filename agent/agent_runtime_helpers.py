@@ -2162,6 +2162,111 @@ def looks_like_codex_intermediate_ack(
 
 
 
+def looks_like_post_tool_progress_only(
+    agent,
+    assistant_content: str,
+    messages: List[Dict[str, Any]],
+    current_turn_user_idx: int | None = None,
+) -> bool:
+    """Detect status/progress text that should not close a post-tool turn.
+
+    Some weaker/tool-shaky models answer after tool results with text like
+    "정보수집중" / "찾은 내용 분석중" / "I'm analyzing the results" and no
+    tool call. Treating that as final leaves Slack threads with a progress
+    notice instead of a closeout. Keep this deliberately narrow: it only
+    applies when recent tool results exist and the visible text is short,
+    status-shaped, and lacks final-answer markers.
+    """
+    recent_messages = messages[-8:]
+    if isinstance(current_turn_user_idx, int) and 0 <= current_turn_user_idx < len(messages):
+        recent_messages = messages[current_turn_user_idx + 1:]
+    if not any(isinstance(msg, dict) and msg.get("role") == "tool" for msg in recent_messages):
+        return False
+
+    visible = agent._strip_think_blocks(assistant_content or "").strip()
+    if not visible:
+        return False
+    if len(visible) > 500:
+        return False
+
+    lowered = re.sub(r"\s+", " ", visible.lower()).strip()
+    final_markers = (
+        "작업한 일",
+        "검증 근거",
+        "남은 일",
+        "보안/주의",
+        "결론",
+        "최종",
+        "완료했습니다",
+        "완료됨",
+        "완료:",
+        "done:",
+        "completed",
+        "final answer",
+        "here is",
+        "here's",
+        "result:",
+        "results:",
+        "summary:",
+        "verified",
+    )
+    if any(marker in lowered for marker in final_markers):
+        return False
+
+    english_progress_patterns = (
+        r"working on it",
+        r"still (?:checking|analyzing|analysing|researching|working)",
+        r"i(?:'|’)m (?:checking|analyzing|analysing|researching|working)",
+        r"i am (?:checking|analyzing|analysing|researching|working)",
+        r"looking into (?:it|this)",
+        r"gathering (?:info|information|data|sources)",
+        r"analy[sz]ing (?:the )?(?:results|findings|data|sources)",
+        r"i(?:'|’)ll (?:check|analy[sz]e|review|summari[sz]e|report back)",
+        r"i will (?:check|analy[sz]e|review|summari[sz]e|report back)",
+    )
+    if any(
+        re.fullmatch(rf"\s*{pattern}\s*[.!…]*\s*", visible, re.IGNORECASE)
+        for pattern in english_progress_patterns
+    ):
+        return True
+
+    # Catch compact Korean status-only strings without treating valid final
+    # answers like "확인 중 발견한 문제는..." as progress.  Normalize away
+    # punctuation and polite endings, then require the whole response to be
+    # composed only of known progress fragments.
+    korean_status = re.sub(r"[\s\.,!?:;。！？…·~\-]+", "", visible.lower())
+    for suffix in ("입니다", "이에요", "예요"):
+        korean_status = korean_status.replace(suffix, "")
+    compact_markers = (
+        "정보수집중",
+        "자료수집중",
+        "찾은내용분석중",
+        "분석중",
+        "조사중",
+        "정리중",
+        "검토중",
+        "확인중",
+        "처리중",
+        "작업중",
+        "진행중",
+        "잠시만",
+        "곧정리",
+        "곧보고",
+        "마저확인",
+        "마저분석",
+        "마저정리",
+    )
+    remaining = korean_status
+    while remaining:
+        for marker in sorted(compact_markers, key=len, reverse=True):
+            if remaining.startswith(marker):
+                remaining = remaining[len(marker):]
+                break
+        else:
+            return False
+    return bool(korean_status)
+
+
 
 def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> None:
     """Copy provider-facing reasoning fields onto an API replay message."""
@@ -2597,6 +2702,7 @@ __all__ = [
     "repair_tool_call",
     "sanitize_api_messages",
     "looks_like_codex_intermediate_ack",
+    "looks_like_post_tool_progress_only",
     "copy_reasoning_content_for_api",
     "cleanup_dead_connections",
     "extract_api_error_context",

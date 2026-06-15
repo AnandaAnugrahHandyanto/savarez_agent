@@ -1388,6 +1388,21 @@ class AIAgent:
         from agent.agent_runtime_helpers import looks_like_codex_intermediate_ack
         return looks_like_codex_intermediate_ack(self, user_message, assistant_content, messages)
 
+    def _looks_like_post_tool_progress_only(
+        self,
+        assistant_content: str,
+        messages: List[Dict[str, Any]],
+        current_turn_user_idx: Optional[int] = None,
+    ) -> bool:
+        """Forwarder — see ``agent.agent_runtime_helpers.looks_like_post_tool_progress_only``."""
+        from agent.agent_runtime_helpers import looks_like_post_tool_progress_only
+        return looks_like_post_tool_progress_only(
+            self,
+            assistant_content,
+            messages,
+            current_turn_user_idx=current_turn_user_idx,
+        )
+
     def _extract_reasoning(self, assistant_message) -> Optional[str]:
         """Forwarder — see ``agent.agent_runtime_helpers.extract_reasoning``."""
         from agent.agent_runtime_helpers import extract_reasoning
@@ -1505,6 +1520,7 @@ class AIAgent:
             and (
                 messages[-1].get("_empty_recovery_synthetic")
                 or messages[-1].get("_empty_terminal_sentinel")
+                or messages[-1].get("_post_tool_progress_synthetic")
             )
         ):
             messages.pop()
