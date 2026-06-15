@@ -202,7 +202,7 @@ class TestAcpExecAskGate:
     notify_cb registered in _gateway_notify_cbs — not applicable to ACP,
     which uses a direct callback shape.)"""
 
-    def test_interactive_env_var_routes_to_callback(self, monkeypatch):
+    def test_interactive_env_var_routes_to_callback(self, monkeypatch, request):
         """When HERMES_INTERACTIVE is set and an approval callback is
         registered, a dangerous command must route through the callback."""
         # Clean env
@@ -210,8 +210,25 @@ class TestAcpExecAskGate:
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
 
+        from tools import approval as approval_mod
         from tools.approval import check_all_command_guards
+
+        token = approval_mod.set_current_session_key("test-acp-exec-ask-gate")
+        with approval_mod._lock:
+            old_permanent = set(approval_mod._permanent_approved)
+            approval_mod._permanent_approved.clear()
+            approval_mod._session_approved.clear()
+            approval_mod._session_yolo.clear()
+        request.addfinalizer(lambda: approval_mod.reset_current_session_key(token))
+        def _restore_approval_state():
+            with approval_mod._lock:
+                approval_mod._permanent_approved.clear()
+                approval_mod._permanent_approved.update(old_permanent)
+                approval_mod._session_approved.clear()
+                approval_mod._session_yolo.clear()
+        request.addfinalizer(_restore_approval_state)
 
         called_with = []
 
