@@ -1,50 +1,59 @@
-"""ZAI / GLM provider profile.
+"""ZAI / GLM provider profile."""
 
-The Z.AI inference base URL ``https://api.z.ai/api/paas/v4`` is paired
-with an explicit ``models_url`` so the catalog probe goes to a known
-endpoint. ``auth.py`` independently auto-detects the right base URL
-(general paas vs. GLM Coding Plan ``/coding/paas/v4``) on first use
-via ``detect_zai_endpoint()`` and caches the result keyed on the API
-key hash — so this static base_url is just the default for offline /
-un-keyed clients.
-"""
-
+import logging
 from providers import register_provider
 from providers.base import ProviderProfile
 
-# Models that are live on the API but missing from the /models catalog.
-# glm-5.2 is callable but not listed by z.ai's /v1/models endpoint.
-_EXTRA_MODELS = ("glm-5.2",)
+logger = logging.getLogger(__name__)
+
+# Models that work via /chat/completions but are absent from /models catalog
+_EXTRA_MODELS = {
+    "glm-5.2",
+    "glm-5",
+    "glm-4-9b",
+    "glm-4.5",
+    "glm-4.5-air",
+    "glm-4.6",
+    "glm-4.7",
+    "glm-4.5-flash",
+}
 
 
-class _ZaiProvider(ProviderProfile):
-    def fetch_models(self, *, api_key=None, timeout=8.0):
-        live = super().fetch_models(api_key=api_key, timeout=timeout) or []
-        return sorted(set(live) | set(_EXTRA_MODELS))
+class ZAIProfile(ProviderProfile):
+    """Z.AI / GLM provider with extended model catalog."""
+
+    def fetch_models(
+        self,
+        *,
+        api_key: str | None = None,
+        timeout: float = 8.0,
+    ) -> list[str] | None:
+        """Fetch live catalog and merge with known working models."""
+        live_models = super().fetch_models(api_key=api_key, timeout=timeout)
+        if live_models is None:
+            # If live fetch fails, return our curated fallback list
+            return list(_EXTRA_MODELS)
+        # Merge: live models + extra models (deduped)
+        merged = set(live_models) | _EXTRA_MODELS
+        return sorted(merged)
 
 
-zai = _ZaiProvider(
+zai = ZAIProfile(
     name="zai",
     aliases=("glm", "z-ai", "z.ai", "zhipu"),
     env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
     display_name="Z.AI (GLM)",
     description="Z.AI / GLM — Zhipu AI models",
     signup_url="https://z.ai/",
-    # Fallback catalog used when /v1/models is unreachable (no key, 401,
-    # network error). Keep newest flagship first so /model picker default
-    # points at the latest reasoning model. 2026-06-13: GLM-5.2 added —
-    # 1M ctx, 131K max output, reasoning-capable, text-only.
     fallback_models=(
         "glm-5.2",
-        "glm-5.1",
         "glm-5",
-        "glm-4.7",
+        "glm-4-9b",
+        "glm-4.5",
+        "glm-4.5-air",
         "glm-4.5-flash",
     ),
-    base_url="https://api.z.ai/api/paas/v4",
-    models_url="https://api.z.ai/api/paas/v4/models",
-    # Auxiliary tasks (compression, etc.) keep using a cheap model — the
-    # flagship glm-5.2 is overkill for summarisation.
+    base_url="https://api.z.ai/api/coding/paas/v4",
     default_aux_model="glm-4.5-flash",
 )
 
