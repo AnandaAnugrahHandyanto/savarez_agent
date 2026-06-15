@@ -785,9 +785,12 @@ def init_agent(
             _routed_client, _ = resolve_provider_client(
                 agent.provider or "auto", model=agent.model, raw_codex=True)
             if _routed_client is not None:
+                # Update agent metadata from the resolved client so feature
+                # detection (Azure, Copilot, etc.) reflects the active endpoint.
+                agent.base_url = str(_routed_client.base_url)
                 client_kwargs = {
                     "api_key": _routed_client.api_key,
-                    "base_url": str(_routed_client.base_url),
+                    "base_url": agent.base_url,
                 }
                 if _provider_timeout is not None:
                     client_kwargs["timeout"] = _provider_timeout
@@ -800,6 +803,21 @@ def init_agent(
                     _routed_headers = getattr(_routed_client, "_default_headers", None)
                 if _routed_headers:
                     client_kwargs["default_headers"] = dict(_routed_headers)
+
+                # Preserve provider-specific query params (e.g. Azure api-version)
+                # the router set.
+                _routed_query = getattr(_routed_client, "_custom_query", None)
+                if not _routed_query:
+                    _routed_query = getattr(_routed_client, "default_query", None)
+                if _routed_query:
+                    client_kwargs["default_query"] = dict(_routed_query)
+
+                # RE-EVALUATE api_mode if it was auto-upgraded to codex_responses
+                # but the resolved URL is actually Azure (which doesn't support it).
+                if agent.api_mode == "codex_responses" and api_mode is None and agent._is_azure_openai_url():
+                    agent.api_mode = "chat_completions"
+                    if hasattr(agent, "_transport_cache"):
+                        agent._transport_cache.clear()
             else:
                 # When the user explicitly chose a non-OpenRouter provider
                 # but no credentials were found, fail fast with a clear

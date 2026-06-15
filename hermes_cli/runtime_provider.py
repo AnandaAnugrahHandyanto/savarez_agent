@@ -1036,14 +1036,17 @@ def _resolve_azure_foundry_runtime(
     # explicitly chosen anthropic_messages (Anthropic-style endpoint).
     effective_model = str(target_model or model_cfg.get("default") or "").strip()
     if effective_model and cfg_api_mode != "anthropic_messages":
-        try:
-            from hermes_cli.models import azure_foundry_model_api_mode
+        if str(model_cfg.get("api_mode") or "").strip().lower() == "chat_completions":
+            pass # Respect explicit configuration
+        else:
+            try:
+                from hermes_cli.models import azure_foundry_model_api_mode
 
-            inferred = azure_foundry_model_api_mode(effective_model)
-        except Exception:
-            inferred = None
-        if inferred:
-            cfg_api_mode = inferred
+                inferred = azure_foundry_model_api_mode(effective_model)
+            except Exception:
+                inferred = None
+            if inferred:
+                cfg_api_mode = inferred
 
     env_base_url = os.getenv("AZURE_FOUNDRY_BASE_URL", "").strip().rstrip("/")
     base_url = explicit_base_url_clean or cfg_base_url or env_base_url
