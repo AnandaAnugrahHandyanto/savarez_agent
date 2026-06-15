@@ -2715,6 +2715,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
         return True
 
+    def _is_telegram_renamable_thread(self, source: SessionSource) -> bool:
+        """True for any Telegram forum thread whose name can be synced to the
+        session title: DM topic lanes AND group forum topics.
+
+        Excludes the General (pinned) topic -- that's the lobby/root.
+        Does NOT gate on chat_type, so this works for both ``dm`` and
+        ``group``/``supergroup`` forum threads.
+        """
+        if source.platform != Platform.TELEGRAM:
+            return False
+        tid = str(source.thread_id or "")
+        if not tid or tid in self._TELEGRAM_GENERAL_TOPIC_IDS:
+            return False
+        return True
+
     _TELEGRAM_LOBBY_REMINDER_COOLDOWN_S = 30.0
 
     def _should_send_telegram_lobby_reminder(self, source: SessionSource) -> bool:
