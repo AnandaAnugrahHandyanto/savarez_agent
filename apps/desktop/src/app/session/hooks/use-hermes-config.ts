@@ -12,6 +12,7 @@ import {
   setCurrentServiceTier,
   setIntroPersonality
 } from '@/store/session'
+import { useTheme } from '@/themes'
 
 const DEFAULT_VOICE_SECONDS = 120
 const FAST_TIERS = new Set(['fast', 'priority', 'on'])
@@ -26,6 +27,7 @@ interface HermesConfigOptions {
 }
 
 export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: HermesConfigOptions) {
+  const { setTheme } = useTheme()
   const [voiceMaxRecordingSeconds, setVoiceMaxRecordingSeconds] = useState(DEFAULT_VOICE_SECONDS)
   const [sttEnabled, setSttEnabled] = useState(true)
 
@@ -65,6 +67,12 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
 
       setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
       setSttEnabled(config.stt?.enabled !== false)
+
+      const backendTheme = config.dashboard?.theme
+
+      if (backendTheme) {
+        setTheme(backendTheme)
+      }
     } catch {
       // Config is nice-to-have; chat still works without it.
     }

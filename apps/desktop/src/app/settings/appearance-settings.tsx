@@ -3,6 +3,7 @@ import { useState } from 'react'
 
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
@@ -16,6 +17,19 @@ import { isUserTheme, removeUserTheme, resolveTheme } from '@/themes/user-themes
 
 import { MODE_OPTIONS } from './constants'
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
+
+async function updateBackendTheme(name: string) {
+  try {
+    const config = await getHermesConfigRecord()
+    config.dashboard = {
+      ...((config.dashboard as Record<string, unknown>) || {}),
+      theme: name
+    }
+    await saveHermesConfig(config)
+  } catch {
+    // Ignore save errors
+  }
+}
 
 function ThemePreview({ name }: { name: string }) {
   const t = resolveTheme(name)
@@ -80,6 +94,7 @@ function VscodeThemeInstaller() {
 
       triggerHaptic('crisp')
       setTheme(theme.name)
+      void updateBackendTheme(theme.name)
       setStatus({ kind: 'success', text: a.installed(theme.label) })
       setId('')
     } catch (error) {
@@ -229,6 +244,7 @@ export function AppearanceSettings() {
                           onClick={() => {
                             triggerHaptic('crisp')
                             setTheme(theme.name)
+                            void updateBackendTheme(theme.name)
                           }}
                           type="button"
                         >
@@ -260,6 +276,7 @@ export function AppearanceSettings() {
                               // Re-normalize off the now-missing skin → default.
                               if (active) {
                                 setTheme(theme.name)
+                                void updateBackendTheme(theme.name)
                               }
                             }}
                             title={a.removeTheme}
