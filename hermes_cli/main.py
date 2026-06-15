@@ -11158,7 +11158,8 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
-        "dump", "fallback", "gateway", "hooks", "import", "insights",
+        "discord-native", "dump", "fallback", "gateway", "hooks", "import",
+        "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
         "prompt-size",
@@ -11505,6 +11506,25 @@ def main():
 
     parser, subparsers, chat_parser = build_top_level_parser()
     chat_parser.set_defaults(func=cmd_chat)
+
+    # =========================================================================
+    # discord-native command — offline v2 multi-bot onboarding skeleton
+    # =========================================================================
+    from hermes_cli.discord_native import (
+        cmd_discord_native,
+        register_parser as register_discord_native_parser,
+    )
+
+    discord_native_parser = subparsers.add_parser(
+        "discord-native",
+        help="Offline Discord native multi-bot onboarding tools",
+        description=(
+            "Plan, sync, verify, and inspect Discord native multi-bot protocol "
+            "metadata without connecting the active gateway."
+        ),
+    )
+    register_discord_native_parser(discord_native_parser)
+    discord_native_parser.set_defaults(func=cmd_discord_native)
 
     # =========================================================================
     # model command
