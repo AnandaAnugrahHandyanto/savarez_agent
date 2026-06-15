@@ -553,7 +553,7 @@ class TestSendViaRestApi:
         adapter = _make_adapter(notify_service="notify.mobile_app_iphone")
         mock_session = self._mock_aiohttp_session(200)
 
-        with patch("gateway.platforms.homeassistant.aiohttp") as mock_aiohttp:
+        with patch("plugins.platforms.homeassistant.adapter.aiohttp") as mock_aiohttp:
             mock_aiohttp.ClientSession = MagicMock(return_value=mock_session)
             mock_aiohttp.ClientTimeout = lambda total: total
 
