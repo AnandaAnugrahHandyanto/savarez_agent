@@ -1251,7 +1251,14 @@ def run_oauth_setup_token() -> Optional[str]:
 # Stores credentials in ~/.hermes/.anthropic_oauth.json (our own file).
 
 _OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-_OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
+# Anthropic deprecated console.anthropic.com/v1/oauth/token in April 2026 in
+# favor of platform.claude.com/v1/oauth/token. Try the new endpoint first and
+# fall back to the legacy host, mirroring the dual-endpoint pattern used in
+# refresh_anthropic_oauth_pure() above.
+_OAUTH_TOKEN_URLS = (
+    "https://platform.claude.com/v1/oauth/token",
+    "https://console.anthropic.com/v1/oauth/token",
+)
 _OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
 _OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
 _HERMES_OAUTH_FILE = get_hermes_home() / ".anthropic_oauth.json"
@@ -1350,7 +1357,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
         }).encode()
 
         req = urllib.request.Request(
-            _OAUTH_TOKEN_URL,
+            _OAUTH_TOKEN_URLS[0],  # placeholder; overridden inside loop
             data=exchange_data,
             headers={
                 "Content-Type": "application/json",
@@ -1359,8 +1366,22 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            result = json.loads(resp.read().decode())
+        result = None
+        last_error: Optional[Exception] = None
+        for endpoint in _OAUTH_TOKEN_URLS:
+            req.full_url = endpoint
+            try:
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    result = json.loads(resp.read().decode())
+                break
+            except Exception as exc:
+                last_error = exc
+                logger.debug("PKCE token exchange failed at %s: %s", endpoint, exc)
+                continue
+        if result is None:
+            raise last_error if last_error is not None else RuntimeError(
+                "PKCE token exchange failed against all known endpoints"
+            )
     except Exception as e:
         print(f"Token exchange failed: {e}")
         return None

@@ -5299,7 +5299,7 @@ _oauth_sessions_lock = threading.Lock()
 try:
     from agent.anthropic_adapter import (
         _OAUTH_CLIENT_ID as _ANTHROPIC_OAUTH_CLIENT_ID,
-        _OAUTH_TOKEN_URL as _ANTHROPIC_OAUTH_TOKEN_URL,
+        _OAUTH_TOKEN_URLS as _ANTHROPIC_OAUTH_TOKEN_URLS,
         _OAUTH_REDIRECT_URI as _ANTHROPIC_OAUTH_REDIRECT_URI,
         _OAUTH_SCOPES as _ANTHROPIC_OAUTH_SCOPES,
         _generate_pkce as _generate_pkce_pair,
@@ -5455,7 +5455,7 @@ def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
         "code_verifier": sess["verifier"],
     }).encode()
     req = urllib.request.Request(
-        _ANTHROPIC_OAUTH_TOKEN_URL,
+        _ANTHROPIC_OAUTH_TOKEN_URLS[0],  # placeholder; overridden inside loop
         data=exchange_data,
         headers={
             "Content-Type": "application/json",
@@ -5463,13 +5463,22 @@ def _submit_anthropic_pkce(session_id: str, code_input: str) -> Dict[str, Any]:
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            result = json.loads(resp.read().decode())
-    except Exception as e:
+    result = None
+    last_error: Optional[Exception] = None
+    for endpoint in _ANTHROPIC_OAUTH_TOKEN_URLS:
+        req.full_url = endpoint
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                result = json.loads(resp.read().decode())
+            break
+        except Exception as exc:
+            last_error = exc
+            _log.debug("Anthropic PKCE token exchange failed at %s: %s", endpoint, exc)
+            continue
+    if result is None:
         with _oauth_sessions_lock:
             sess["status"] = "error"
-            sess["error_message"] = f"Token exchange failed: {e}"
+            sess["error_message"] = f"Token exchange failed: {last_error}"
         return {"ok": False, "status": "error", "message": sess["error_message"]}
 
     access_token = result.get("access_token", "")
