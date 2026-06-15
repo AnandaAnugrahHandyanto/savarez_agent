@@ -340,8 +340,12 @@ def build_turn_context(
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
 
-    # Per-turn file-mutation verifier state.
+    # Per-turn file-mutation verifier state.  The remediation counter is
+    # consumed inside the main conversation loop: a failed patch/write_file
+    # should get an automatic follow-up chance before the finalizer falls
+    # back to the user-facing verifier footer.
     agent._turn_failed_file_mutations = {}
+    agent._turn_file_mutation_remediation_retries = 0
 
     # Record the execution thread so interrupt()/clear_interrupt() can scope
     # the tool-level interrupt signal to THIS agent's thread only.

@@ -69,6 +69,59 @@ logger = logging.getLogger(__name__)
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
+MAX_FILE_MUTATION_REMEDIATION_RETRIES = 1
+
+
+def _file_mutation_remediation_prompt(failed: Dict[str, Dict[str, Any]]) -> str:
+    """Build the synthetic continuation prompt for unresolved edit failures.
+
+    The turn-end verifier footer is intentionally user-facing and advisory.
+    This prompt is stricter: it is injected before the model is allowed to
+    finish, so failed file mutations become actionable work rather than a
+    post-hoc warning that the user has to notice and ask about.
+    """
+    lines = [
+        "[System: File-mutation verifier follow-up required before final answer.]",
+        "One or more file-edit tool calls in this turn did NOT modify their target files.",
+        "Do not claim those edits succeeded. Inspect the current file/status, then either:",
+        "1. repair the failed edit with a correct patch/write_file call, or",
+        "2. if repair is genuinely blocked, explicitly report the blocker and evidence.",
+        "A later successful write_file/patch to the same path clears this verifier state.",
+        "Unresolved failed edits:",
+    ]
+    for idx, (path, info) in enumerate(failed.items()):
+        if idx >= 10:
+            lines.append(f"- … and {len(failed) - idx} more")
+            break
+        tool = (info.get("tool") or "patch").strip()
+        preview = (info.get("error_preview") or "failed").strip()
+        if len(preview) > 240:
+            preview = preview[:239].rstrip() + "…"
+        lines.append(f"- `{path}` — [{tool}] {preview}")
+    return "\n".join(lines)
+
+
+def _should_remediate_file_mutation_failures(agent: Any, api_call_count: int) -> bool:
+    """Return True when the loop should nudge itself to repair failed edits."""
+    failed = getattr(agent, "_turn_failed_file_mutations", None) or {}
+    if not failed:
+        return False
+    try:
+        if not agent._file_mutation_verifier_enabled():
+            return False
+    except Exception:
+        return False
+    retries = getattr(agent, "_turn_file_mutation_remediation_retries", 0)
+    if retries >= MAX_FILE_MUTATION_REMEDIATION_RETRIES:
+        return False
+
+    max_iterations = getattr(agent, "max_iterations", 0) or 0
+    if max_iterations and api_call_count >= max_iterations:
+        return False
+    budget = getattr(agent, "iteration_budget", None)
+    if budget is not None and getattr(budget, "remaining", 1) <= 0 and not getattr(agent, "_budget_grace_call", False):
+        return False
+    return True
 
 
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
@@ -4314,7 +4367,42 @@ def run_conversation(
                     length_continue_retries = 0
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
-                
+
+                # If any file-edit tool call failed earlier in this turn and
+                # has not been superseded by a later successful edit to the
+                # same path, do not let the model finalize with a possibly
+                # over-claiming summary.  Inject one bounded continuation turn
+                # that forces inspection/repair first.  If the retry cannot
+                # clear the verifier state, the existing finalizer footer still
+                # reports the unresolved failure to the user.
+                if _should_remediate_file_mutation_failures(agent, api_call_count):
+                    failed_mutations = dict(getattr(agent, "_turn_failed_file_mutations", {}) or {})
+                    agent._turn_file_mutation_remediation_retries = (
+                        getattr(agent, "_turn_file_mutation_remediation_retries", 0) + 1
+                    )
+                    logger.warning(
+                        "File-mutation verifier found %d unresolved edit failure(s); "
+                        "nudging model to remediate before final response (%d/%d)",
+                        len(failed_mutations),
+                        agent._turn_file_mutation_remediation_retries,
+                        MAX_FILE_MUTATION_REMEDIATION_RETRIES,
+                    )
+                    agent._buffer_status(
+                        "⚠️ File edit verification failed — retrying with automatic remediation "
+                        f"({agent._turn_file_mutation_remediation_retries}/{MAX_FILE_MUTATION_REMEDIATION_RETRIES})"
+                    )
+                    interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
+                    interim_msg["content"] = final_response
+                    interim_msg["_file_mutation_remediation_synthetic"] = True
+                    messages.append(interim_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": _file_mutation_remediation_prompt(failed_mutations),
+                        "_file_mutation_remediation_synthetic": True,
+                    })
+                    agent._session_messages = messages
+                    continue
+
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
 
                 # Pop thinking-only prefill and empty-response retry
