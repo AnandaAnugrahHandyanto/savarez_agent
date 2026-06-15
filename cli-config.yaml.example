@@ -725,6 +725,10 @@ platform_toolsets:
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 #       rich_messages: false          # Opt in to Bot API 10.1 rich messages; default uses legacy MarkdownV2
+#   slack:
+#     extra:
+#       unfurl_links: false  # Set false to suppress Slack link-preview cards (useful for link-heavy bots)
+#       unfurl_media: false  # Set false to suppress media/rich-link preview cards
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

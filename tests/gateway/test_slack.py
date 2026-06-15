@@ -3122,6 +3122,33 @@ class TestReplyBroadcast:
 
 
 # ---------------------------------------------------------------------------
+# TestUnfurl
+# ---------------------------------------------------------------------------
+
+
+class TestUnfurl:
+    """Test unfurl_links / unfurl_media config options."""
+
+    @pytest.mark.asyncio
+    async def test_unfurl_omitted_by_default(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        await adapter.send("C123", "see https://example.com")
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "unfurl_links" not in kwargs
+        assert "unfurl_media" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_unfurl_disabled_via_config(self, adapter):
+        adapter.config.extra["unfurl_links"] = False
+        adapter.config.extra["unfurl_media"] = False
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        await adapter.send("C123", "see https://example.com")
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs.get("unfurl_links") is False
+        assert kwargs.get("unfurl_media") is False
+
+
+# ---------------------------------------------------------------------------
 # TestFallbackPreservesThreadContext
 # ---------------------------------------------------------------------------
 

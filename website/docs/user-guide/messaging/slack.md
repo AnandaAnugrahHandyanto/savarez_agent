@@ -340,6 +340,11 @@ platforms:
       # (Slack's "Also send to channel" feature).
       # Only the first chunk of the first reply is broadcast.
       reply_broadcast: false
+
+      # Suppress link-preview cards ("unfurls"). Useful for link-heavy bots.
+      # Omit to keep Slack's default behavior.
+      # unfurl_links: false
+      # unfurl_media: false
 ```
 
 | Key | Default | Description |
@@ -347,6 +352,8 @@ platforms:
 | `platforms.slack.reply_to_mode` | `"first"` | Threading mode for multi-part messages: `"off"`, `"first"`, or `"all"` |
 | `platforms.slack.extra.reply_in_thread` | `true` | When `false`, channel messages get direct replies instead of threads. Messages inside existing threads still reply in-thread. |
 | `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
+| `platforms.slack.extra.unfurl_links` | _(Slack default)_ | When set, passes `unfurl_links` to `chat.postMessage`. Set `false` to suppress text-link preview cards. Unset → Slack default. |
+| `platforms.slack.extra.unfurl_media` | _(Slack default)_ | When set, passes `unfurl_media` to `chat.postMessage`. Set `false` to suppress media/rich-link preview cards. Unset → Slack default. |
 
 ### Session Isolation
 

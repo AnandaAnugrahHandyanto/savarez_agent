@@ -1164,12 +1164,23 @@ class SlackAdapter(BasePlatformAdapter):
             # Controlled via platform config: gateway.slack.reply_broadcast
             broadcast = self.config.extra.get("reply_broadcast", False)
 
+            # Link unfurls: use Slack's default behavior unless explicitly
+            # overridden via platform config (gateway.slack.unfurl_links /
+            # unfurl_media). Link-heavy bots can set these to false to suppress
+            # the preview cards. Left unset → kwarg omitted, behavior unchanged.
+            unfurl_links = self.config.extra.get("unfurl_links")
+            unfurl_media = self.config.extra.get("unfurl_media")
+
             for i, chunk in enumerate(chunks):
                 kwargs = {
                     "channel": chat_id,
                     "text": chunk,
                     "mrkdwn": True,
                 }
+                if unfurl_links is not None:
+                    kwargs["unfurl_links"] = unfurl_links
+                if unfurl_media is not None:
+                    kwargs["unfurl_media"] = unfurl_media
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
                     # Only broadcast the first chunk of the first reply
