@@ -167,6 +167,10 @@ VALID_HOOKS: Set[str] = {
     #   choice: "once" | "session" | "always" | "deny" | "timeout"
     "pre_approval_request",
     "post_approval_response",
+    # Transform assistant message content before it is written to the session DB.
+    # Plugins return a string to replace the persisted content, or None to keep original.
+    # First non-None string wins. Useful for PII restoration, artifact cleanup.
+    "transform_persisted_assistant",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
