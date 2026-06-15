@@ -1339,6 +1339,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         final_response_text = ""
         agent_error: Optional[str] = None
+        agent_failure_reason: Optional[str] = None
         usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         terminal_snapshot_persisted = False
 
@@ -1606,8 +1607,25 @@ class APIServerAdapter(BasePlatformAdapter):
                     await _emit_text_delta(agent_final)
                 if agent_final and not final_response_text:
                     final_response_text = agent_final
-                if isinstance(result, dict) and result.get("error") and not final_response_text:
-                    agent_error = result["error"]
+                if isinstance(result, dict) and result.get("failed"):
+                    agent_failure_reason = str(
+                        result.get("failure_reason") or "agent_failed"
+                    )
+                    agent_error = str(
+                        result.get("error")
+                        or result.get("final_response")
+                        or (
+                            "The upstream provider usage limit has been reached."
+                            if agent_failure_reason == "rate_limit"
+                            else "The agent could not complete the request."
+                        )
+                    )
+                elif (
+                    isinstance(result, dict)
+                    and result.get("error")
+                    and not final_response_text
+                ):
+                    agent_error = str(result["error"])
             except Exception as e:  # noqa: BLE001
                 logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
                 agent_error = str(e)
@@ -1654,7 +1672,15 @@ class APIServerAdapter(BasePlatformAdapter):
             if agent_error:
                 failed_env = _envelope("failed")
                 failed_env["output"] = final_items
-                failed_env["error"] = {"message": agent_error, "type": "server_error"}
+                failed_env["error"] = {
+                    "message": agent_error,
+                    "type": (
+                        "rate_limit_error"
+                        if agent_failure_reason == "rate_limit"
+                        else "server_error"
+                    ),
+                    "code": agent_failure_reason or "agent_failed",
+                }
                 failed_env["usage"] = {
                     "input_tokens": usage.get("input_tokens", 0),
                     "output_tokens": usage.get("output_tokens", 0),
@@ -1946,6 +1972,37 @@ class APIServerAdapter(BasePlatformAdapter):
                     _openai_error(f"Internal server error: {e}", err_type="server_error"),
                     status=500,
                 )
+
+        # run_conversation can return a structured terminal failure
+        # without raising. Do not expose it as a successful completed response.
+        if result.get("failed"):
+            failure_reason = str(
+                result.get("failure_reason") or "agent_failed"
+            )
+            failure_message = str(
+                result.get("error")
+                or result.get("final_response")
+                or (
+                    "The upstream provider usage limit has been reached."
+                    if failure_reason == "rate_limit"
+                    else "The agent could not complete the request."
+                )
+            )
+            status = 429 if failure_reason == "rate_limit" else 502
+            error_type = (
+                "rate_limit_error"
+                if failure_reason == "rate_limit"
+                else "server_error"
+            )
+            return web.json_response(
+                _openai_error(
+                    failure_message,
+                    err_type=error_type,
+                    code=failure_reason,
+                ),
+                status=status,
+                headers={"X-Hermes-Session-Id": session_id},
+            )
 
         final_response = result.get("final_response", "")
         if not final_response:

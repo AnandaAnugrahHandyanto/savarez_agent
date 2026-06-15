@@ -11446,7 +11446,61 @@ class AIAgent:
                             ),
                         }
 
-                    # For rate limits, respect the Retry-After header if present
+                    # Account-level quota exhaustion is not a transient rate
+                    # limit. Retrying the same provider and credential only
+                    # delays the inevitable terminal failure.
+                    _hard_quota_summary = str(api_error)
+                    _hard_quota_markers = (
+                        "usage limit has been reached",
+                        "usage_limit_reached",
+                        "insufficient_quota",
+                        "quota has been exhausted",
+                        "quota exceeded",
+                    )
+                    _hard_quota_exhausted = (
+                        is_rate_limited
+                        and any(
+                            marker in _hard_quota_summary.lower()
+                            for marker in _hard_quota_markers
+                        )
+                    )
+
+                    if _hard_quota_exhausted:
+                        logging.error(
+                            "%sHard provider quota exhaustion detected; "
+                            "skipping retries. %s | provider=%s model=%s "
+                            "msgs=%s tokens=~%s",
+                            self.log_prefix,
+                            _hard_quota_summary,
+                            _provider,
+                            _model,
+                            len(api_messages),
+                            f"{approx_tokens:,}",
+                        )
+                        if api_kwargs is not None:
+                            self._dump_api_request_debug(
+                                api_kwargs,
+                                reason="hard_quota_exhausted",
+                                error=api_error,
+                            )
+                        self._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": (
+                                "The provider usage limit has been reached. "
+                                "Hermes is running, but the current provider "
+                                "cannot process new requests until its quota "
+                                "is available again."
+                            ),
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "failed": True,
+                            "error": _hard_quota_summary,
+                            "failure_reason": "rate_limit",
+                            "error_status": 429,
+                        }
+
+                    # For transient rate limits, respect Retry-After if present.
                     _retry_after = None
                     if is_rate_limited:
                         _resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
