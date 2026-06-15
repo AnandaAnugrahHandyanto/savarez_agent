@@ -563,7 +563,7 @@ class SignalAdapter(BasePlatformAdapter):
                     logger.warning("Signal: attachment too large (%d bytes), skipping", att_size)
                     continue
                 try:
-                    cached_path, ext = await self._fetch_attachment(att_id)
+                    cached_path, ext = await self._fetch_attachment(att_id, att)
                     if cached_path:
                         # Use contentType from Signal if available, else map from extension
                         content_type = att.get("contentType") or _ext_to_mime(ext)
@@ -600,8 +600,6 @@ class SignalAdapter(BasePlatformAdapter):
         if media_types:
             if any(mt.startswith("audio/") for mt in media_types):
                 msg_type = MessageType.VOICE
-            elif any(mt.startswith("image/") for mt in media_types):
-                msg_type = MessageType.PHOTO
             elif any(mt.startswith("video/") for mt in media_types):
                 msg_type = MessageType.VIDEO
             else:
@@ -703,7 +701,7 @@ class SignalAdapter(BasePlatformAdapter):
     # Attachment Handling
     # ------------------------------------------------------------------
 
-    async def _fetch_attachment(self, attachment_id: str) -> tuple:
+    async def _fetch_attachment(self, attachment_id: str, attachment_meta: Optional[dict] = None) -> tuple:
         """Fetch an attachment via JSON-RPC and cache it. Returns (path, ext)."""
         result = await self._rpc("getAttachment", {
             "account": self.account,
@@ -729,7 +727,12 @@ class SignalAdapter(BasePlatformAdapter):
         elif _is_audio_ext(ext):
             path = cache_audio_from_bytes(raw_data, ext)
         else:
-            path = cache_document_from_bytes(raw_data, ext)
+            filename = None
+            if isinstance(attachment_meta, dict):
+                raw_filename = attachment_meta.get("filename") or attachment_meta.get("name")
+                if raw_filename:
+                    filename = Path(str(raw_filename)).name
+            path = cache_document_from_bytes(raw_data, filename or ext)
 
         return path, ext
 

@@ -273,6 +273,76 @@ class TestSignalAttachmentFetch:
         assert path == "/tmp/test.pdf"
         assert ext == ".pdf"
 
+    @pytest.mark.asyncio
+    async def test_fetch_attachment_preserves_signal_filename_for_documents(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        pdf_data = b"%PDF-1.4" + b"\x00" * 100
+        b64_data = base64.b64encode(pdf_data).decode()
+        adapter._rpc, _ = _stub_rpc({"data": b64_data})
+
+        with patch("gateway.platforms.signal.cache_document_from_bytes", return_value="/tmp/document.pdf") as cache_doc:
+            path, ext = await adapter._fetch_attachment("doc-456", {"filename": "document.pdf"})
+
+        assert path == "/tmp/document.pdf"
+        assert ext == ".pdf"
+        cache_doc.assert_called_once_with(pdf_data, "document.pdf")
+
+    @pytest.mark.asyncio
+    async def test_fetch_attachment_strips_signal_filename_path_components(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        pdf_data = b"%PDF-1.4" + b"\x00" * 100
+        b64_data = base64.b64encode(pdf_data).decode()
+        adapter._rpc, _ = _stub_rpc({"data": b64_data})
+
+        with patch("gateway.platforms.signal.cache_document_from_bytes", return_value="/tmp/passwd") as cache_doc:
+            await adapter._fetch_attachment("doc-456", {"filename": "../../../passwd"})
+
+        cache_doc.assert_called_once_with(pdf_data, "passwd")
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_marks_non_image_audio_attachment_as_document(self, monkeypatch):
+        from gateway.platforms.base import MessageType
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        async def fake_fetch(attachment_id, attachment_meta=None):
+            assert attachment_id == "att-pdf"
+            assert attachment_meta["filename"] == "document.pdf"
+            return "/tmp/document.pdf", ".pdf"
+
+        adapter._fetch_attachment = fake_fetch
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****1111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1000000000,
+                "dataMessage": {
+                    "message": "see attached",
+                    "attachments": [{
+                        "id": "att-pdf",
+                        "filename": "document.pdf",
+                        "contentType": "application/pdf",
+                        "size": 128,
+                    }],
+                },
+            }
+        })
+
+        event = captured["event"]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_urls == ["/tmp/document.pdf"]
+        assert event.media_types == ["application/pdf"]
+
 
 # ---------------------------------------------------------------------------
 # Session Source
