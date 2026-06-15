@@ -558,3 +558,73 @@ class TestSharedTreeWalk:
         els = b._walk_elements(1, _WIDE)
         assert [e.label for e in els] == ["field"]
         assert b._control_at_index(1, 1).Name == "field"
+
+
+# ---------------------------------------------------------------------------
+# switch_desktop overlay safety. A virtual-desktop transition tears down the
+# overlay subprocess, so the action stops it, switches, then restarts it — but
+# only an overlay that was actually running comes back. A deliberately-disabled
+# overlay (HERMES_COMPUTER_USE_OVERLAY=0) or one that already failed itself off
+# must stay down. Regression guard: an earlier revision force-cleared _dead
+# before start(), resurrecting the kill-switched overlay on every switch.
+# ---------------------------------------------------------------------------
+
+class _FakeOverlay:
+    """Mirrors _OverlayClient.start/stop/_proc/_dead semantics."""
+
+    def __init__(self, *, dead, proc):
+        self._dead = dead
+        self._proc = proc
+        self.calls = []
+
+    def stop(self):
+        self.calls.append("stop")
+        self._proc = None
+
+    def start(self):
+        self.calls.append("start")
+        if self._dead or self._proc is not None:   # same guard as the real client
+            return
+        self._proc = "spawned"
+
+    def send(self, msg):
+        self.calls.append(("send", msg.get("cmd")))
+
+
+class TestSwitchDesktopOverlaySafety:
+    @pytest.fixture
+    def wb_no_input(self, monkeypatch):
+        """windows_backend with the win32 input layer stubbed out."""
+        from tools.computer_use import windows_backend as wb
+        sent = []
+        monkeypatch.setattr(wb, "_key_event", lambda vk, down: (vk, down))
+        monkeypatch.setattr(wb, "_send_inputs", lambda seq: sent.append(seq))
+        monkeypatch.setattr(wb.time, "sleep", lambda *_a: None)
+        return wb, sent
+
+    def test_live_overlay_is_restarted_after_switch(self, wb_no_input):
+        wb, sent = wb_no_input
+        ov = _FakeOverlay(dead=False, proc="running")
+        assert wb._switch_desktop_via_keybd("left", ov) is True
+        assert ov.calls == ["stop", "start"]       # stopped, then brought back
+        assert ov._proc == "spawned"               # actually respawned
+        assert len(sent) == 1 and len(sent[0]) == 6  # the Ctrl+Win+Arrow combo
+
+    def test_disabled_overlay_is_not_resurrected(self, wb_no_input):
+        # HERMES_COMPUTER_USE_OVERLAY=0 → _dead set, no subprocess. The switch
+        # must still happen, but the overlay must NOT be revived. This fails on
+        # the force-clear-_dead revision (which respawned it every switch).
+        wb, sent = wb_no_input
+        ov = _FakeOverlay(dead=True, proc=None)
+        assert wb._switch_desktop_via_keybd("right", ov) is True
+        assert "start" not in ov.calls             # never tried to revive it
+        assert ov._proc is None                    # stays down
+        assert ov._dead is True                    # kill switch left intact
+        assert len(sent) == 1                       # desktop still switched
+
+    def test_invalid_direction_is_rejected_without_side_effects(self, wb_no_input):
+        wb, sent = wb_no_input
+        ov = _FakeOverlay(dead=False, proc="running")
+        assert wb._switch_desktop_via_keybd("up", ov) is False
+        assert ov.calls == []                       # overlay untouched
+        assert sent == []                           # no input injected
