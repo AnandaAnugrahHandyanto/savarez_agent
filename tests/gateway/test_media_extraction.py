@@ -259,6 +259,58 @@ caption
         )
         assert tags == []
 
+    def test_gateway_auto_append_responses_api_image_generate_current_turn(self):
+        """Responses API function_call_output rows can deliver new images."""
+        from gateway.run import _collect_auto_append_media_tags
+
+        messages = [
+            {"type": "function_call", "call_id": "call_img", "name": "image_generate"},
+            {
+                "type": "function_call_output",
+                "call_id": "call_img",
+                "output": '{"success": true, "image": "/tmp/gen/current.png"}',
+            },
+        ]
+
+        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
+        assert tags == ["MEDIA:/tmp/gen/current.png"]
+        assert voice is False
+
+    def test_historical_responses_api_image_generate_paths_are_deduped(self):
+        """Old Responses API image_generate outputs must not resend each reply."""
+        from gateway.run import (
+            _collect_auto_append_media_tags,
+            _collect_historical_media_paths,
+        )
+
+        history = [
+            {"type": "function_call", "call_id": "old_img", "name": "image_generate"},
+            {
+                "type": "function_call_output",
+                "call_id": "old_img",
+                "output": '{"success": true, "image": "/tmp/gen/old.png"}',
+            },
+            {"role": "assistant", "content": "Here is the old image."},
+        ]
+        compressed_messages = [
+            {"type": "function_call", "call_id": "old_img", "name": "image_generate"},
+            {
+                "type": "function_call_output",
+                "call_id": "old_img",
+                "output": '{"success": true, "image": "/tmp/gen/old.png"}',
+            },
+            {"role": "assistant", "content": "Text only reply."},
+        ]
+
+        history_media_paths = _collect_historical_media_paths(history)
+        tags, _ = _collect_auto_append_media_tags(
+            compressed_messages,
+            history_offset=99,
+            history_media_paths=history_media_paths,
+        )
+        assert history_media_paths == {"/tmp/gen/old.png"}
+        assert tags == []
+
     def test_media_tags_not_extracted_from_history(self):
         """MEDIA tags from previous turns should NOT be extracted again."""
         # Simulate conversation history with a TTS call from a previous turn
