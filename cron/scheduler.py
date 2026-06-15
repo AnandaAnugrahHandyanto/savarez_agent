@@ -969,12 +969,20 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     try:
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
+        # Ensure the child Python process uses UTF-8 for stdout/stderr.
+        # Without this, a long-running scheduler on Windows may decode the
+        # script's UTF-8 output as cp1252, producing mojibake in Discord/etc.
+        env = os.environ.copy()
+        env.setdefault("PYTHONIOENCODING", "utf-8")
         result = subprocess.run(
             argv,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=script_timeout,
             cwd=str(path.parent),
+            env=env,
             **popen_kwargs,
         )
         stdout = (result.stdout or "").strip()
