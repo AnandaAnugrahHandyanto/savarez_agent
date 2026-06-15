@@ -1897,7 +1897,7 @@ class TestSendTyping:
 
     @pytest.mark.asyncio
     async def test_stop_typing_handles_api_error_gracefully(self, adapter):
-        adapter._active_status_threads["C123"] = "parent_ts"
+        adapter._active_status_threads["C123"] = {"parent_ts"}
         adapter._app.client.assistant_threads_setStatus = AsyncMock(
             side_effect=Exception("missing_scope")
         )
@@ -1917,7 +1917,7 @@ class TestSendTyping:
             return_value={"ts": "reply_ts"}
         )
         adapter._app.client.assistant_threads_setStatus = AsyncMock()
-        adapter._active_status_threads["C123"] = "parent_ts"
+        adapter._active_status_threads["C123"] = {"parent_ts"}
 
         result = await adapter.send("C123", "done", metadata={"thread_id": "parent_ts"})
 
@@ -1931,10 +1931,39 @@ class TestSendTyping:
         assert "C123" not in adapter._active_status_threads
 
     @pytest.mark.asyncio
+    async def test_parallel_thread_statuses_do_not_overwrite_each_other(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        await adapter.send_typing("C123", metadata={"thread_id": "thread_a"})
+        await adapter.send_typing("C123", metadata={"thread_id": "thread_b"})
+
+        await adapter.stop_typing("C123", metadata={"thread_id": "thread_a"})
+
+        assert adapter._active_status_threads["C123"] == {"thread_b"}
+        assert adapter._app.client.assistant_threads_setStatus.call_args_list[-1] == call(
+            channel_id="C123",
+            thread_ts="thread_a",
+            status="",
+        )
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_without_metadata_clears_all_tracked_threads(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter._active_status_threads["C123"] = {"thread_a", "thread_b"}
+
+        await adapter.stop_typing("C123")
+
+        cleared_threads = {
+            call_args.kwargs["thread_ts"]
+            for call_args in adapter._app.client.assistant_threads_setStatus.call_args_list
+        }
+        assert cleared_threads == {"thread_a", "thread_b"}
+        assert "C123" not in adapter._active_status_threads
+
+    @pytest.mark.asyncio
     async def test_streaming_final_edit_clears_status(self, adapter):
         adapter._app.client.chat_update = AsyncMock()
         adapter._app.client.assistant_threads_setStatus = AsyncMock()
-        adapter._active_status_threads["C123"] = "parent_ts"
+        adapter._active_status_threads["C123"] = {"parent_ts"}
 
         result = await adapter.edit_message(
             "C123",
@@ -1957,10 +1986,32 @@ class TestSendTyping:
         assert "C123" not in adapter._active_status_threads
 
     @pytest.mark.asyncio
+    async def test_streaming_final_edit_with_metadata_clears_only_target_thread(self, adapter):
+        adapter._app.client.chat_update = AsyncMock()
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter._active_status_threads["C123"] = {"thread_a", "thread_b"}
+
+        result = await adapter.edit_message(
+            "C123",
+            "reply_ts",
+            "done",
+            finalize=True,
+            metadata={"thread_id": "thread_a"},
+        )
+
+        assert result.success
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="thread_a",
+            status="",
+        )
+        assert adapter._active_status_threads["C123"] == {"thread_b"}
+
+    @pytest.mark.asyncio
     async def test_streaming_intermediate_edit_keeps_status(self, adapter):
         adapter._app.client.chat_update = AsyncMock()
         adapter._app.client.assistant_threads_setStatus = AsyncMock()
-        adapter._active_status_threads["C123"] = "parent_ts"
+        adapter._active_status_threads["C123"] = {"parent_ts"}
 
         result = await adapter.edit_message(
             "C123",
@@ -1971,7 +2022,7 @@ class TestSendTyping:
 
         assert result.success
         adapter._app.client.assistant_threads_setStatus.assert_not_called()
-        assert adapter._active_status_threads["C123"] == "parent_ts"
+        assert adapter._active_status_threads["C123"] == {"parent_ts"}
 
 
 # ---------------------------------------------------------------------------
