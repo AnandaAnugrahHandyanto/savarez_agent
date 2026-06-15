@@ -60,8 +60,13 @@ MAX_MESSAGE_LENGTH = 8000  # Signal message size limit
 TYPING_INTERVAL = 8.0  # seconds between typing indicator refreshes
 WS_RETRY_DELAY_INITIAL = 2.0
 WS_RETRY_DELAY_MAX = 60.0
-HEALTH_CHECK_INTERVAL = 30.0  # seconds between health checks
-HEALTH_CHECK_STALE_THRESHOLD = 120.0  # seconds without WS activity before concern
+# aiohttp sends a WS PING every WS_HEARTBEAT_INTERVAL seconds and raises
+# ServerTimeoutError (an aiohttp.ClientError) if the peer stops PONGing — this is
+# how a dead *transport* is detected and reconnected. It is NOT proof that the
+# receive path is delivering messages (see _health_monitor).
+WS_HEARTBEAT_INTERVAL = 30.0  # seconds between WS protocol pings
+HEALTH_CHECK_INTERVAL = 30.0  # seconds between liveness observations
+HEALTH_CHECK_STALE_THRESHOLD = 300.0  # seconds of application-idle before logging
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +229,16 @@ class SignalAdapter(BasePlatformAdapter):
         self._typing_failures: Dict[str, int] = {}
         self._typing_skip_until: Dict[str, float] = {}
         self._running = False
-        self._last_receive_activity = 0.0
+        # Two distinct liveness signals — kept separate on purpose:
+        #   _last_ws_activity: any inbound WS frame (incl. receipts, typing,
+        #     sync events, keepalives). Reflects transport activity only.
+        #   _last_inbound_message: stamped solely when a real user MessageEvent
+        #     is dispatched. A healthy daemon / busy transport does NOT imply
+        #     the receive path is delivering — envelopes can be silently dropped
+        #     (e.g. a signal-cli sealed-sender bug) while the socket looks alive.
+        #     See #32574 (cross-adapter watchdog) / #40199 (expose last-inbound).
+        self._last_ws_activity = 0.0
+        self._last_inbound_message = 0.0
         self._ws_session: Optional[aiohttp.ClientSession] = None
 
         # Normalize account for self-message filtering
@@ -279,7 +293,7 @@ class SignalAdapter(BasePlatformAdapter):
                 return False
 
             self._running = True
-            self._last_receive_activity = time.time()
+            self._last_ws_activity = time.time()
             self._receive_task = asyncio.create_task(self._receive_listener())
             self._health_monitor_task = asyncio.create_task(self._health_monitor())
 
@@ -338,15 +352,20 @@ class SignalAdapter(BasePlatformAdapter):
             try:
                 logger.debug("Signal WS: connecting to %s", ws_url)
                 self._ws_session = aiohttp.ClientSession()
-                async with self._ws_session.ws_connect(ws_url) as ws:
+                # heartbeat= lets aiohttp detect a dead transport (no PONG) and
+                # raise, which the reconnect loop below handles. This replaces
+                # the old daemon-health probe that masked silent-receive stalls.
+                async with self._ws_session.ws_connect(
+                    ws_url, heartbeat=WS_HEARTBEAT_INTERVAL
+                ) as ws:
                     backoff = WS_RETRY_DELAY_INITIAL
-                    self._last_receive_activity = time.time()
+                    self._last_ws_activity = time.time()
                     logger.info("Signal WS: connected")
 
                     async for msg in ws:
                         if not self._running:
                             break
-                        self._last_receive_activity = time.time()
+                        self._last_ws_activity = time.time()
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             try:
                                 data = json.loads(msg.data)
@@ -383,38 +402,42 @@ class SignalAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _health_monitor(self) -> None:
-        """Monitor WebSocket health and force reconnect if stale."""
+        """Observe receive-path liveness without masking it as healthy.
+
+        A quiet chat is legitimately silent for long stretches, and the aiohttp
+        WebSocket heartbeat (see _receive_listener) already detects a dead
+        transport and triggers reconnect — so application idleness must NOT be
+        treated as a stale connection (that only causes reconnect churn).
+
+        Critically, a healthy signal-cli daemon is *not* proof that the receive
+        path is delivering: the daemon can stay up while envelopes are silently
+        dropped (e.g. a sealed-sender bug), which presents as "connected but not
+        receiving". We therefore track real dispatched messages
+        (_last_inbound_message) separately from transport frames
+        (_last_ws_activity) and surface prolonged silence rather than resetting
+        it on a daemon-health check. The cross-adapter watchdog in #32574 /
+        #40199 is the intended consumer of these timestamps.
+        """
         while self._running:
             await asyncio.sleep(HEALTH_CHECK_INTERVAL)
             if not self._running:
                 break
 
-            elapsed = time.time() - self._last_receive_activity
-            if elapsed > HEALTH_CHECK_STALE_THRESHOLD:
-                logger.warning("Signal: receive WS idle for %.0fs, checking daemon health", elapsed)
-                try:
-                    resp = await self.client.get(
-                        f"{self.http_url}/v1/about", timeout=10.0
+            now = time.time()
+            ws_idle = now - self._last_ws_activity
+            if ws_idle > HEALTH_CHECK_STALE_THRESHOLD:
+                if self._last_inbound_message:
+                    logger.debug(
+                        "Signal: receive WS application-idle for %.0fs "
+                        "(no message dispatched for %.0fs)",
+                        ws_idle, now - self._last_inbound_message,
                     )
-                    if resp.status_code == 200:
-                        # A quiet chat is normal — reset the idle clock when the
-                        # daemon is healthy so we don't reconnect every 2 minutes.
-                        self._last_receive_activity = time.time()
-                        logger.debug(
-                            "Signal: daemon healthy, receive WS quiet for %.0fs",
-                            elapsed,
-                        )
-                    else:
-                        logger.warning("Signal: health check failed (%d), forcing reconnect", resp.status_code)
-                        self._force_reconnect()
-                except Exception as e:
-                    logger.warning("Signal: health check error: %s, forcing reconnect", e)
-                    self._force_reconnect()
-
-    def _force_reconnect(self) -> None:
-        """Force WebSocket reconnection by closing the active session."""
-        if self._ws_session and not self._ws_session.closed:
-            asyncio.create_task(self._ws_session.close())
+                else:
+                    logger.debug(
+                        "Signal: receive WS application-idle for %.0fs "
+                        "(no message dispatched yet)",
+                        ws_idle,
+                    )
 
     # ------------------------------------------------------------------
     # Message Handling
@@ -630,6 +653,10 @@ class SignalAdapter(BasePlatformAdapter):
         logger.debug("Signal: message from %s in %s: %s",
                       redact_phone(sender), chat_id[:20], (text or "")[:50])
 
+        # Receive-path liveness: stamped only for a real, dispatched user
+        # message — never on keepalives, receipts, sync events, or daemon-health.
+        # This is the honest "are we actually receiving?" signal (#32574/#40199).
+        self._last_inbound_message = time.time()
         await self.handle_message(event)
 
     def _remember_recipient_identifiers(self, number: Optional[str], service_id: Optional[str]) -> None:
