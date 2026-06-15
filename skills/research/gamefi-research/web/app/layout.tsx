@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Game Research Workflow for Hermes",
+  title: "GameFi Research Workflow for Hermes Agent",
   description:
-    "A structured Hermes workflow for game project discovery, public repository review, and clean research summaries. Showcase demo — static sample data.",
+    "A structured Hermes workflow for game project discovery, public repository review, and clean research summaries. Showcase demo — static, fictional sample data.",
 };
 
 export default function RootLayout({

@@ -6,7 +6,18 @@ import {
   sampleProject,
   categoryStyle,
   reportMarkdown,
+  stats,
+  categoryCounts,
+  topProjects,
+  scoreBreakdown,
+  scoreCeiling,
+  relevanceFilter,
+  sourceLinks,
+  fictionalDisclaimer,
+  type Category,
 } from "@/lib/sampleData";
+
+const CATEGORY_ORDER: Category[] = ["WATCH", "TEST", "CONTACT", "SKIP"];
 
 function SectionTitle({
   eyebrow,
@@ -41,8 +52,11 @@ export default function Page() {
           Hermes Agent · research workflow skill
         </span>
         <h1 className="mx-auto mt-6 max-w-3xl text-4xl font-bold tracking-tight text-white sm:text-5xl">
-          Game Research Workflow for Hermes
+          GameFi Research Workflow
         </h1>
+        <p className="mx-auto mt-3 text-sm font-medium text-slate-500">
+          for Hermes Agent
+        </p>
         <p className="mx-auto mt-5 max-w-2xl text-lg text-slate-400">
           A structured Hermes workflow for game project discovery, public
           repository review, and clean research summaries.
@@ -86,6 +100,49 @@ export default function Page() {
         </SectionTitle>
       </section>
 
+      {/* 2b. Stats */}
+      <section className="mt-16">
+        <SectionTitle eyebrow="At a glance" title="Scan summary">
+          An illustrative run summary. Counts use the same WATCH / TEST /
+          CONTACT / SKIP buckets the scanner produces.
+        </SectionTitle>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/50 px-5 py-6">
+            <p className="text-3xl font-bold text-white">{stats.projectsScanned}</p>
+            <p className="mt-1 text-sm text-slate-400">Projects scanned</p>
+          </div>
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/50 px-5 py-6">
+            <p className="text-3xl font-bold text-white">{stats.topRanked}</p>
+            <p className="mt-1 text-sm text-slate-400">Top ranked projects</p>
+          </div>
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/50 px-5 py-6">
+            <p className="text-3xl font-bold text-white">{stats.projectsScored}</p>
+            <p className="mt-1 text-sm text-slate-400">Projects scored</p>
+          </div>
+          <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 px-5 py-6">
+            <p className="text-lg font-bold text-emerald-300">Public signals only</p>
+            <p className="mt-1 text-sm text-slate-400">No private data used</p>
+          </div>
+        </div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {CATEGORY_ORDER.map((cat) => (
+            <div
+              key={cat}
+              className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-3"
+            >
+              <span
+                className={`rounded-md px-2.5 py-1 text-xs font-bold tracking-wide ${categoryStyle[cat]}`}
+              >
+                {cat}
+              </span>
+              <span className="text-xl font-bold text-white">
+                {categoryCounts[cat]}
+              </span>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {/* 3. Workflow */}
       <section className="mt-16">
         <SectionTitle eyebrow="How it works" title="The workflow" />
@@ -120,9 +177,107 @@ export default function Page() {
         </div>
       </section>
 
+      {/* 4b. Top projects table */}
+      <section className="mt-16">
+        <SectionTitle eyebrow="Ranked" title="Top projects">
+          Sorted by AI Research Signal Score. Reasons are short, neutral notes —
+          not recommendations.
+        </SectionTitle>
+        <p className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-sm text-amber-200/90">
+          {fictionalDisclaimer}
+        </p>
+        <div className="overflow-x-auto rounded-2xl border border-slate-800">
+          <table className="w-full min-w-[640px] border-collapse text-left text-sm">
+            <thead>
+              <tr className="bg-slate-900/80 text-xs uppercase tracking-wider text-slate-500">
+                <th className="px-4 py-3 font-semibold">Project</th>
+                <th className="px-4 py-3 font-semibold">Score</th>
+                <th className="px-4 py-3 font-semibold">Category</th>
+                <th className="px-4 py-3 font-semibold">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {topProjects.map((p) => (
+                <tr
+                  key={p.name}
+                  className="border-t border-slate-800 odd:bg-slate-900/30"
+                >
+                  <td className="px-4 py-3 font-medium text-white">{p.name}</td>
+                  <td className="px-4 py-3 font-semibold text-slate-200">
+                    {p.score}
+                    <span className="text-xs text-slate-500"> / {scoreCeiling}</span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span
+                      className={`rounded-md px-2.5 py-1 text-xs font-bold tracking-wide ${categoryStyle[p.category]}`}
+                    >
+                      {p.category}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-slate-400">{p.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* 4c. Score breakdown */}
+      <section className="mt-16">
+        <SectionTitle
+          eyebrow="How scoring works"
+          title="AI Research Signal Score breakdown"
+        >
+          The score (0–{scoreCeiling}) reflects research signal strength — how
+          much there is to look at and how active/early a project appears — not
+          financial merit. It is the sum of these public-signal components.
+        </SectionTitle>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {scoreBreakdown.map((c) => (
+            <div
+              key={c.label}
+              className="rounded-xl border border-slate-800 bg-slate-900/50 p-4"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold text-white">{c.label}</h3>
+                <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5 text-xs font-mono text-sky-300">
+                  {c.max}
+                </span>
+              </div>
+              <p className="mt-2 text-sm text-slate-400">{c.detail}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* 4d. Relevance filter */}
+      <section className="mt-16">
+        <SectionTitle eyebrow="Fewer false positives" title="Relevance filter">
+          {relevanceFilter.summary}
+        </SectionTitle>
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6">
+          <p className="text-sm leading-relaxed text-slate-300">
+            {relevanceFilter.detail}
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {relevanceFilter.domainTerms.map((t) => (
+              <span
+                key={t}
+                className="rounded-full border border-slate-700 bg-slate-800/60 px-3 py-1 text-xs text-slate-300"
+              >
+                {t}
+              </span>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* 5. Sample Output */}
       <section className="mt-16">
-        <SectionTitle eyebrow="Example" title="Sample output" />
+        <SectionTitle eyebrow="Example" title="Sample output">
+          A single fictional project, shown the way one entry appears after
+          scoring.
+        </SectionTitle>
         <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-lg font-semibold text-white">
@@ -207,24 +362,36 @@ export default function Page() {
         </ul>
       </section>
 
-      {/* 8. Links */}
+      {/* 8. Source links */}
       <section className="mt-16">
-        <SectionTitle eyebrow="Links" title="Project links" />
-        <a
-          href={PR_URL}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-3 text-sm text-sky-300 transition hover:border-slate-600"
-        >
-          Pull Request · NousResearch/hermes-agent #40136
-        </a>
+        <SectionTitle eyebrow="Links" title="Source links">
+          Every signal the workflow uses comes from a public source. Sample
+          repository links are fictional and included only to show the report
+          layout.
+        </SectionTitle>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {sourceLinks.map((l) => (
+            <a
+              key={l.label}
+              href={l.href}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-3 transition hover:border-slate-600"
+            >
+              <p className="text-sm font-medium text-sky-300">{l.label}</p>
+              <p className="mt-1 text-xs text-slate-500">{l.note}</p>
+            </a>
+          ))}
+        </div>
       </section>
 
       <footer className="mt-16 border-t border-slate-800 pt-6 text-xs text-slate-500">
-        <p>Game Research Workflow for Hermes · demo page · static sample data.</p>
+        <p>GameFi Research Workflow for Hermes Agent · demo page · static sample data.</p>
         <p className="mt-1">
-          Neutral research showcase. Public repository signals only. All data
-          shown is illustrative and unverified — verify manually.
+          Neutral research showcase. Public repository signals only. All sample
+          projects are fictional and for UI demonstration only — every signal is
+          automated, unverified, and must be confirmed manually. Not advice of
+          any kind.
         </p>
       </footer>
     </main>
