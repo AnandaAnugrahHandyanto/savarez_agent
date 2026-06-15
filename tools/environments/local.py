@@ -378,6 +378,24 @@ def _make_run_env(env: dict) -> dict:
             run_env[real_key] = v
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
+
+    # Fallback: passthrough keys listed in config or registered by skills may
+    # live in ~/.hermes/.env without being exported to os.environ.  The Docker
+    # backend already does this (docker.py:_build_init_env_args); mirror it for
+    # the local backend so env_passthrough works consistently regardless of
+    # backend choice.
+    try:
+        from tools.env_passthrough import get_all_passthrough as _get_all_pt
+        missing = {k for k in _get_all_pt() if k not in run_env}
+        if missing:
+            from hermes_cli.config import load_env
+            hermes_env = load_env() or {}
+            for k in missing:
+                if k in hermes_env:
+                    run_env[k] = hermes_env[k]
+    except Exception:
+        pass
+
     path_key = _path_env_key(run_env)
     if path_key is not None:
         run_env[path_key] = _append_missing_sane_path_entries(run_env.get(path_key, ""))
