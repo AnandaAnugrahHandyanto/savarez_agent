@@ -79,6 +79,47 @@ class TestGetProvider:
         assert _get_provider({"enabled": False, "provider": "openai"}) == "none"
 
 
+class TestTranscriptionStatus:
+    """transcription_status() reports backend readiness without lazy installs."""
+
+    def test_local_missing_packages_reports_installable_when_lazy_allowed(self):
+        def find_spec(name):
+            return False
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "local", "local": {"model": "base"}}), \
+             patch("tools.transcription_tools._safe_find_spec", side_effect=find_spec), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("hermes_cli.config.load_config", return_value={"security": {"allow_lazy_installs": True}}):
+            from tools.transcription_tools import transcription_status
+
+            status = transcription_status()
+
+        assert status["available"] is False
+        assert status["configured_provider"] == "local"
+        assert status["lazy_installs_allowed"] is True
+        assert status["local"]["missing_packages"] == ["faster-whisper", "sounddevice", "numpy"]
+        assert status["resolved_provider"] == "none"
+
+    def test_local_ready_reports_available_without_requiring_sounddevice(self):
+        def find_spec(name):
+            return name == "faster_whisper"
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "local", "local": {"model": "small"}}), \
+             patch("tools.transcription_tools._safe_find_spec", side_effect=find_spec), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("hermes_cli.config.load_config", return_value={"security": {"allow_lazy_installs": False}}):
+            from tools.transcription_tools import transcription_status
+
+            status = transcription_status()
+
+        assert status["available"] is True
+        assert status["local"]["faster_whisper_available"] is True
+        assert status["local"]["sounddevice_available"] is False
+        assert status["local"]["numpy_available"] is False
+        assert status["local"]["model"] == "small"
+        assert status["resolved_provider"] == "local"
+
+
 # ---------------------------------------------------------------------------
 # File validation
 # ---------------------------------------------------------------------------

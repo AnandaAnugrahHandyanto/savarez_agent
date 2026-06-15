@@ -179,6 +179,77 @@ def _has_local_command() -> bool:
     return _get_local_command_template() is not None
 
 
+def transcription_status() -> Dict[str, Any]:
+    """Return non-mutating STT availability diagnostics for UI/status surfaces."""
+    stt_config = _load_stt_config()
+    enabled = is_stt_enabled(stt_config)
+    provider = str(stt_config.get("provider") or DEFAULT_PROVIDER)
+    local_cfg = stt_config.get("local") if isinstance(stt_config.get("local"), dict) else {}
+    faster_whisper_available = _safe_find_spec("faster_whisper")
+    sounddevice_available = _safe_find_spec("sounddevice")
+    numpy_available = _safe_find_spec("numpy")
+    local_command_available = _has_local_command()
+    lazy_installs_allowed = True
+
+    try:
+        from hermes_cli.config import load_config
+
+        security = load_config().get("security") or {}
+        lazy_installs_allowed = bool(security.get("allow_lazy_installs", True))
+    except Exception:
+        lazy_installs_allowed = True
+
+    def provider_available(name: str) -> bool:
+        if name == "local":
+            return faster_whisper_available or local_command_available
+        if name == "local_command":
+            return local_command_available
+        if name == "groq":
+            return _HAS_OPENAI and bool(get_env_value("GROQ_API_KEY"))
+        if name == "openai":
+            return _HAS_OPENAI and _has_openai_audio_backend()
+        if name == "mistral":
+            return _HAS_MISTRAL and bool(get_env_value("MISTRAL_API_KEY"))
+        if name == "xai":
+            try:
+                from tools.xai_http import resolve_xai_http_credentials
+
+                return bool(resolve_xai_http_credentials().get("api_key"))
+            except Exception:
+                return False
+        if name == "elevenlabs":
+            return bool(get_env_value("ELEVENLABS_API_KEY"))
+
+        return False
+
+    available = enabled and provider_available(provider)
+    local_missing = [
+        name
+        for name, present in (
+            ("faster-whisper", faster_whisper_available),
+            ("sounddevice", sounddevice_available),
+            ("numpy", numpy_available),
+        )
+        if not present
+    ]
+
+    return {
+        "available": available,
+        "configured_provider": provider,
+        "enabled": enabled,
+        "lazy_installs_allowed": lazy_installs_allowed,
+        "local": {
+            "faster_whisper_available": faster_whisper_available,
+            "local_command_available": local_command_available,
+            "missing_packages": local_missing,
+            "model": local_cfg.get("model", DEFAULT_LOCAL_MODEL),
+            "numpy_available": numpy_available,
+            "sounddevice_available": sounddevice_available,
+        },
+        "resolved_provider": provider if available else "none",
+    }
+
+
 def _normalize_local_model(model_name: Optional[str]) -> str:
     """Return a valid faster-whisper model size, mapping cloud-only names to the default.
 

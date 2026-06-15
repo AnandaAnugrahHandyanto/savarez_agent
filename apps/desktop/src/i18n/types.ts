@@ -132,6 +132,7 @@ export interface Translations {
       microphoneFailed: string
       microphoneInUse: string
       microphonePermissionDenied: string
+      microphoneSelectionUnavailable: string
       microphoneStartFailed: string
       microphoneUnsupported: string
       noMicrophone: string
@@ -142,6 +143,7 @@ export interface Translations {
       transcriptionUnavailable: string
       tryRecordingAgain: string
       unavailable: string
+      usingSystemMicrophone: string
     }
     // Native OS notification copy (titles + generic fallback bodies). Dynamic
     // bodies (the agent's reply, a command, an error) are passed through raw.
@@ -268,6 +270,36 @@ export interface Translations {
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
+    voice: {
+      title: string
+      microphoneTitle: string
+      microphoneDesc: string
+      systemDefault: string
+      refreshDevices: string
+      devicesUnavailable: string
+      missingDeviceOption: string
+      selectedDeviceUnavailable: string
+      backendTitle: string
+      localBackend: string
+      remoteBackend: string
+      localBackendDesc: string
+      remoteBackendDesc: (baseUrl: string) => string
+      sttTitle: string
+      refreshStatus: string
+      checkingStatus: string
+      statusUnavailable: string
+      statusUnsupported: string
+      statusFailed: string
+      statusError: (message: string) => string
+      sttDisabled: string
+      sttReady: (provider: string) => string
+      sttUnavailable: (provider: string) => string
+      localSttInstallable: (missing: string) => string
+      localSttMissing: (missing: string) => string
+      localCommandAvailable: (missing: string) => string
+      localPackagesReady: string
+      localPackagesMissing: (missing: string) => string
+    }
     about: {
       heading: string
       version: (value: string) => string

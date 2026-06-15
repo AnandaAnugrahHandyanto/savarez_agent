@@ -203,6 +203,8 @@ export function useVoiceConversation({
         silenceLevel: 0.075,
         silenceMs: 1_250,
         idleSilenceMs: 12_000,
+        onDeviceFallback: () =>
+          notify({ kind: 'warning', title: voiceCopy.microphoneSelectionUnavailable, message: voiceCopy.usingSystemMicrophone }),
         onError: error => {
           notifyError(error, voiceCopy.microphoneFailed)
           pendingStartRef.current = false
@@ -218,7 +220,15 @@ export function useVoiceConversation({
       setStatus('idle')
       onFatalError?.()
     }
-  }, [handle, handleTurn, onFatalError, voiceCopy.couldNotStartSession, voiceCopy.microphoneFailed])
+  }, [
+    handle,
+    handleTurn,
+    onFatalError,
+    voiceCopy.couldNotStartSession,
+    voiceCopy.microphoneFailed,
+    voiceCopy.microphoneSelectionUnavailable,
+    voiceCopy.usingSystemMicrophone
+  ])
 
   const speak = useCallback(async (text: string) => {
     setStatus('speaking')

@@ -23,6 +23,7 @@ import { fieldCopyForSchemaKey } from './field-copy'
 import { enumOptionsFor, getNested, prettyName, setNested } from './helpers'
 import { ModelSettings } from './model-settings'
 import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
+import { VoiceSettingsPanel } from './voice-settings-panel'
 
 function ConfigField({
   schemaKey,
@@ -215,7 +216,7 @@ export function ConfigSettings({
       .catch(err => notifyError(err, c.failedLoad))
 
     return () => void (cancelled = true)
-  }, [])
+  }, [c.failedLoad])
 
   useEffect(() => {
     let cancelled = false
@@ -263,7 +264,7 @@ export function ConfigSettings({
     }, 550)
 
     return () => window.clearTimeout(t)
-  }, [config, onConfigSaved, saveVersion])
+  }, [c.autosaveFailed, config, onConfigSaved, saveVersion])
 
   const updateConfig = (next: HermesConfigRecord) => {
     saveVersionRef.current += 1
@@ -350,6 +351,7 @@ export function ConfigSettings({
           <ModelSettings onMainModelChanged={onMainModelChanged} />
         </div>
       )}
+      {activeSectionId === 'voice' && <VoiceSettingsPanel />}
       {fields.length === 0 ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : (
