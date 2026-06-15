@@ -52,11 +52,13 @@ export function usePlugins() {
         }
       }
 
-      // Load JS bundle. Cache-bust with hour resolution so updates
-      // to plugin files are picked up within an hour without hard
-      // refresh, while avoiding per-ms cache pollution from Date.now().
+      // Load JS bundle. In dev, cache-bust so Vite HMR can clear the
+      // in-memory registry while the browser would otherwise never
+      // re-execute a previously cached <script> URL.
       const baseUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.entry}`;
-      const scriptSrc = `${baseUrl}?v=${Math.floor(Date.now() / 3600000)}`;
+      const scriptSrc = import.meta.env.DEV
+        ? `${baseUrl}?hermes_dv=${Date.now()}`
+        : baseUrl;
       if (!import.meta.env.DEV) {
         if (loadedScripts.current.has(baseUrl)) continue;
         loadedScripts.current.add(baseUrl);
