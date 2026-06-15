@@ -534,7 +534,7 @@ def generate_fcpxml_timeline(
     width: int = 1920,
     height: int = 1080,
     markers: list[dict[str, Any]] | None = None,
-    dry_run: bool = False,
+    dry_run: bool = True,
 ) -> dict[str, Any]:
     if frame_rate <= 0 or frame_rate > 240:
         return _error("frame_rate must be between 1 and 240.", frame_rate=frame_rate)
@@ -663,7 +663,7 @@ def generate_marker_csv(
     output_path: str | None = None,
     name: str = "Hermes Markers",
     frame_rate: int = 24,
-    dry_run: bool = False,
+    dry_run: bool = True,
 ) -> dict[str, Any]:
     destination = _output_path(output_path, name, ".markers.csv")
     normalized = []

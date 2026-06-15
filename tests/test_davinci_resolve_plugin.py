@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import platform
 import sys
 from pathlib import Path
+
+import yaml
 
 
 PLUGIN_DIR = Path(__file__).resolve().parents[1] / "plugins" / "video" / "davinci_resolve"
@@ -60,6 +63,7 @@ def test_davinci_resolve_plugin_registers_expected_tools():
         "resolve_generate_marker_csv",
     ]
     assert {tool["toolset"] for tool in ctx.tools} == {"davinciresolve"}
+    assert all(tool["check_fn"]() is (platform.system() == "Darwin") for tool in ctx.tools)
 
 
 def test_davinci_resolve_dry_run_handlers_return_json(tmp_path):
@@ -94,6 +98,39 @@ def test_davinci_resolve_dry_run_handlers_return_json(tmp_path):
     assert render["plan"]["render_codec"] == "H264"
 
 
+def test_davinci_resolve_interchange_generators_default_to_dry_run(tmp_path):
+    tools = _load_tools()
+    media = tmp_path / "clip.mp4"
+    media.write_bytes(b"not real media, but enough for path validation")
+    fcpxml_output = tmp_path / "timeline.fcpxml"
+    marker_output = tmp_path / "markers.csv"
+
+    fcpxml = json.loads(
+        tools.handle_generate_fcpxml_timeline(
+            {
+                "name": "Hermes FCPXML",
+                "media_paths": [str(media)],
+                "output_path": str(fcpxml_output),
+            }
+        )
+    )
+    markers = json.loads(
+        tools.handle_generate_marker_csv(
+            {
+                "markers": [{"frame": 0, "name": "Start"}],
+                "output_path": str(marker_output),
+            }
+        )
+    )
+
+    assert fcpxml["ok"] is True
+    assert fcpxml["dry_run"] is True
+    assert markers["ok"] is True
+    assert markers["dry_run"] is True
+    assert not fcpxml_output.exists()
+    assert not marker_output.exists()
+
+
 def test_davinci_resolve_scan_media_folder(tmp_path):
     tools = _load_tools()
     (tmp_path / "a.mov").write_bytes(b"x")
@@ -112,3 +149,30 @@ def test_davinci_resolve_scan_media_folder(tmp_path):
     assert result["returned_count"] == 1
     assert result["counts"]["video"] == 1
     assert result["files"][0]["name"] == "a.mov"
+
+
+def test_davinci_resolve_plugin_manager_loads_with_registry_gating(tmp_path, monkeypatch):
+    from hermes_cli.plugins import PluginManager
+    from tools.registry import registry
+
+    hermes_home = tmp_path / "hermes_home"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump({"plugins": {"enabled": ["video/davinci_resolve"]}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    manager = PluginManager()
+    manager.discover_and_load()
+
+    loaded = manager._plugins["video/davinci_resolve"]
+    assert loaded.enabled is True
+    assert loaded.error is None
+    assert "resolve_probe" in loaded.tools_registered
+
+    entry = registry.get_entry("resolve_probe")
+    assert entry is not None
+    assert entry.toolset == "davinciresolve"
+    assert entry.check_fn is not None
+    assert entry.check_fn() is (platform.system() == "Darwin")
