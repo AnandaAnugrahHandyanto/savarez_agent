@@ -2368,7 +2368,16 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if not base_url:
                 base_url = _p.base_url
             if api_key:
-                live = _p.fetch_models(api_key=api_key)
+                # Use the resolved base URL (which may differ from the
+                # profile default, e.g. open.bigmodel.cn vs api.z.ai for
+                # providers with per-region endpoints).  Save/restore so
+                # we don't mutate the global ProviderProfile in-place.
+                _original_url = _p.base_url
+                try:
+                    _p.base_url = base_url
+                    live = _p.fetch_models(api_key=api_key)
+                finally:
+                    _p.base_url = _original_url
                 if live:
                     if normalized in {"kimi-coding", "kimi-coding-cn"}:
                         curated = list(_PROVIDER_MODELS.get(normalized, []))
