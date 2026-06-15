@@ -110,6 +110,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
                args_hint="[text | remove N | clear]"),
     CommandDef("status", "Show session info", "Session"),
+    CommandDef("egress", "Show Docker egress proxy status", "Session",
+               args_hint="[status]", subcommands=("status",)),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
@@ -531,6 +533,7 @@ _TELEGRAM_MENU_PRIORITY = (
     "new",
     "stop",
     "status",
+    "egress",
     "resume",
     "sessions",
     "model",
@@ -1053,7 +1056,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 # the telegram-parity test reads it so an entry here is a deliberate
 # "Slack-via-/hermes" decision, not a silent clamp.
 #   - credits: the billing/top-up surface; reached via /hermes credits on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits"})
+#   - egress: Docker-only proxy status; reachable as /hermes egress on Slack
+#     while preserving /debug as a native Slack diagnostic command under the cap.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "egress"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
