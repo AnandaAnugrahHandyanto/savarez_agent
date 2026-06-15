@@ -526,7 +526,35 @@ class TestDeliverResultWrapping:
         assert "(job_id: test-job)" in sent_content
         assert "-------------" in sent_content
         assert "Here is today's summary." in sent_content
-        assert "To stop or manage this job" in sent_content
+        assert "To pause or remove this scheduled job" in sent_content
+        assert "stop reminder" not in sent_content
+
+    def test_one_time_delivery_omits_management_footer(self):
+        """One-shot reminders should not imply an ongoing recurring job to stop."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "one-shot",
+                "name": "Reminder: haircut",
+                "deliver": "origin",
+                "repeat": "once",
+                "schedule": {"kind": "once", "run_at": "2026-05-20T20:00:00+00:00"},
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Haircut appointment in one hour.")
+
+        sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
+        assert "Cronjob Response: Reminder: haircut" in sent_content
+        assert "Haircut appointment in one hour." in sent_content
+        assert "To pause or remove this scheduled job" not in sent_content
+        assert "stop reminder" not in sent_content
 
     def test_delivery_uses_job_id_when_no_name(self):
         """When a job has no name, the wrapper should fall back to job id."""

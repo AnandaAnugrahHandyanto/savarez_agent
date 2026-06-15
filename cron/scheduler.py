@@ -656,6 +656,13 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _is_one_time_job(job: dict) -> bool:
+    """Return True for one-shot jobs that should not advertise ongoing management."""
+    schedule = job.get("schedule") or {}
+    repeat = str(job.get("repeat") or "").lower()
+    return schedule.get("kind") == "once" or repeat == "once"
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -695,9 +702,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job_id})\n"
             f"-------------\n\n"
-            f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+            f"{content}"
         )
+        if not _is_one_time_job(job):
+            delivery_content += (
+                "\n\n"
+                f"To pause or remove this scheduled job, ask me with its name or ID ({job_id})."
+            )
     else:
         delivery_content = content
 

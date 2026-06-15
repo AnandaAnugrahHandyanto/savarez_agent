@@ -4861,9 +4861,17 @@ class MessageSender:
             return content
 
         divider = "\n-------------\n\n"
-        footer_prefix = '\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder '
+        old_footer_prefix = '\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder '
+        new_footer_prefix = '\n\nTo pause or remove this scheduled job, ask me with its name or ID ('
         divider_pos = content.find(divider)
-        footer_pos = content.rfind(footer_prefix)
+        footer_positions = [
+            pos for pos in (
+                content.rfind(old_footer_prefix),
+                content.rfind(new_footer_prefix),
+            )
+            if pos >= 0
+        ]
+        footer_pos = max(footer_positions) if footer_positions else -1
         if divider_pos < 0 or footer_pos < 0 or footer_pos <= divider_pos:
             return content
 
