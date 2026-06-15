@@ -13704,7 +13704,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # which LLM model the sub-agent is running on.
             if tool_name == "delegate_task":
                 from agent.display import _get_delegation_model_label
-                _dt_tag = _get_delegation_model_label()
+                _dt_provider = args.get("provider") if isinstance(args, dict) else None
+                _dt_model = args.get("model") if isinstance(args, dict) else None
+                if not (_dt_provider or _dt_model):
+                    try:
+                        from cli import CLI_CONFIG as _CLI_CONFIG
+                        _deleg_cfg = _CLI_CONFIG.get("delegation") or {}
+                        _dt_provider = _deleg_cfg.get("provider")
+                        _dt_model = _deleg_cfg.get("model")
+                    except Exception:
+                        pass
+                _dt_tag = _get_delegation_model_label(provider=_dt_provider, model=_dt_model)
             else:
                 _dt_tag = ""
             # Verbose mode: show detailed arguments, respects tool_preview_length

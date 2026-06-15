@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
@@ -165,38 +165,15 @@ def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
 # =========================================================================
 
 
-def _get_delegation_model_label() -> str:
-    """Read delegation config and return a short model tag for display.
+def _get_delegation_model_label(provider: Optional[str] = None, model: Optional[str] = None) -> str:
+    """Return a short model tag for display from actual runtime values.
 
-    Returns ``[opencode-go/deepseek-v4-flash] `` (with trailing space) when
-    ``delegation.provider`` / ``delegation.model`` is configured in config.yaml,
-    or empty string when delegation defers to the parent agent (no override).
-
-    Falls back silently on import/config errors.
+    Returns ``[xai-oauth/grok-build-0.1] `` (with trailing space) when
+    provider and model are provided, or empty string when not available.
     """
-    try:
-        from cli import CLI_CONFIG  # type: ignore[import-untyped]
-
-        cfg = CLI_CONFIG.get("delegation") or {}
-        model = str(cfg.get("model") or "").strip()
-        provider = str(cfg.get("provider") or "").strip()
-        if model or provider:
-            parts = [p for p in [provider, model] if p]
-            return f"[{'/'.join(parts)}] "
-    except Exception:
-        pass
-    try:
-        from hermes_cli.config import load_config
-
-        full = load_config()
-        cfg = full.get("delegation") or {}
-        model = str(cfg.get("model") or "").strip()
-        provider = str(cfg.get("provider") or "").strip()
-        if model or provider:
-            parts = [p for p in [provider, model] if p]
-            return f"[{'/'.join(parts)}] "
-    except Exception:
-        pass
+    if provider or model:
+        parts = [p for p in [provider, model] if p]
+        return f"[{'/'.join(parts)}] "
     return ""
 
 
@@ -1096,7 +1073,33 @@ def get_cute_tool_message(
         return _wrap(f"┊ 🐍 exec      {_trunc(first_line, 35)}  {dur}")
     if tool_name == "delegate_task":
         tasks = args.get("tasks")
-        tag = _get_delegation_model_label()
+        # Prefer runtime actual provider/model from the delegate result dict
+        # (populated by _run_single_child after child runs with its resolved creds).
+        # Falls back to explicit args if the tool call ever carries them,
+        # else empty (preview callers in tool_executor/gateway will supply intended).
+        provider = None
+        model = None
+        if result:
+            try:
+                if isinstance(result, str):
+                    res = safe_json_loads(result) or {}
+                else:
+                    res = result if isinstance(result, dict) else {}
+                results_list = res.get("results") or []
+                if results_list and isinstance(results_list, list):
+                    first = results_list[0] if results_list else {}
+                    if isinstance(first, dict):
+                        provider = first.get("provider")
+                        model = first.get("model")
+                elif isinstance(res, dict):
+                    provider = res.get("provider")
+                    model = res.get("model")
+            except Exception:
+                pass
+        if not (provider or model):
+            provider = args.get("provider") if isinstance(args, dict) else None
+            model = args.get("model") if isinstance(args, dict) else None
+        tag = _get_delegation_model_label(provider=provider, model=model)
         if tasks and isinstance(tasks, list):
             task_count, goals = _delegate_task_goal_parts(tasks, per_goal_len=30)
             detail = " | ".join(goals) if goals else "parallel"

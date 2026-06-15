@@ -1087,7 +1087,20 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"  {_get_cute_tool_message_impl('read_terminal', function_args, tool_duration, result=function_result)}")
         elif function_name == "delegate_task":
             tasks_arg = function_args.get("tasks")
-            _tag = _get_delegation_model_label()
+            # Pull provider/model from tool call args (model-specified) or
+            # from delegation config (user-configured).  If neither is set
+            # the tag is empty — no badge shown for parent-inherited runs.
+            _dt_provider = function_args.get("provider")
+            _dt_model = function_args.get("model")
+            if not (_dt_provider or _dt_model):
+                try:
+                    from cli import CLI_CONFIG as _CLI_CONFIG
+                    _deleg_cfg = _CLI_CONFIG.get("delegation") or {}
+                    _dt_provider = _deleg_cfg.get("provider")
+                    _dt_model = _deleg_cfg.get("model")
+                except Exception:
+                    pass
+            _tag = _get_delegation_model_label(provider=_dt_provider, model=_dt_model)
             if tasks_arg and isinstance(tasks_arg, list):
                 spinner_label = f"🔀 {_tag}delegating {len(tasks_arg)} tasks · (/agents to monitor)"
             else:
