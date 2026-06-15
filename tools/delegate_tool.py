@@ -478,6 +478,52 @@ def _get_max_spawn_depth() -> int:
     return floored
 
 
+def _get_shadow_clone_mode() -> bool:
+    """Read delegation.shadow_clone_mode from config.
+
+    When True, background=True delegations create a Kanban ticket on dispatch,
+    write results to the ticket on completion, and return via the non-blocking
+    per-session inbox rather than triggering a full LLM synthetic turn per clone.
+
+    Default: False (original inject behaviour preserved).
+    """
+    cfg = _load_config()
+    return bool(cfg.get("shadow_clone_mode", False))
+
+
+def _get_shadow_clone_board() -> str:
+    """Read delegation.shadow_clone_board from config (default: 'default')."""
+    cfg = _load_config()
+    return str(cfg.get("shadow_clone_board", "default"))
+
+
+def _extract_insights(agent) -> list:
+    """Extract key insights from agent conversation history.
+
+    Stub implementation: returns empty list.
+    Future: call haiku to extract 3 key decision points from agent.conversation_history.
+    """
+    return []
+
+
+def _extract_decision_trail(agent) -> list:
+    """Extract decision trail: [{tool, args_preview}] from agent history.
+
+    Iterates tool_calls from conversation history and summarises.
+    Capped at 50 entries to avoid excessive Kanban metadata size.
+    """
+    trail = []
+    for msg in getattr(agent, "conversation_history", []):
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                fn = tc.get("function", {})
+                trail.append({
+                    "tool": fn.get("name", "?"),
+                    "args_preview": str(fn.get("arguments", ""))[:80],
+                })
+    return trail[:50]
+
+
 def _get_orchestrator_enabled() -> bool:
     """Global kill switch for the orchestrator role.
 
@@ -2019,6 +2065,9 @@ def delegate_task(
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     parent_agent=None,
+    background: bool = False,
+    timeout_seconds: Optional[float] = None,
+    shadow_clone: bool = False,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2027,7 +2076,12 @@ def delegate_task(
       - Single: provide goal (+ optional context, toolsets, role)
       - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
 
-    The 'role' parameter controls whether a child can further delegate:
+    When ``background=True`` (single-task only), the subagent is dispatched
+    in a background thread and a handle is returned immediately. The parent
+    turn is NOT blocked. When the subagent finishes, its result re-enters
+    the conversation as a new turn via the completion queue (idle drain rail).
+
+    The ``role`` parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
@@ -2046,8 +2100,132 @@ def delegate_task(
             "(`p` in /agents) or the `delegation.pause` RPC before retrying."
         )
 
-    # Normalise the top-level role once; per-task overrides re-normalise.
+    # Normalise the top-level role once; used by both sync and async paths.
     top_role = _normalize_role(role)
+
+    # ── Background (async) dispatch ─────────────────────────────────────────
+    if background:
+        # v1: single-task only
+        recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
+        if tasks_error:
+            return tool_error(tasks_error)
+        if recovered_tasks is not None:
+            tasks = recovered_tasks
+        if tasks and isinstance(tasks, list) and len(tasks) > 1:
+            return tool_error(
+                "background=True is only supported for single-task delegation "
+                "(one 'goal'). Use multiple delegate_task(background=True) calls, "
+                "or set background=false for batch."
+            )
+        if not (goal and isinstance(goal, str) and goal.strip()):
+            return tool_error(
+                "background=True requires a 'goal' (single task). "
+                "Provide goal, or set background=false."
+            )
+
+        # Lazy-import to avoid circular dependency at module load time.
+        from tools.async_delegation import dispatch as _async_dispatch
+        from tools.process_registry import process_registry as _process_registry
+
+        # Use the gateway session key (e.g. "agent:main:telegram:dm:8494508720")
+        # so the async delegation watcher can route the completion event back to
+        # the correct running session via _running_agents.  Fallback to session_id
+        # (SQLite UUID) for non-gateway contexts (CLI, tests).
+        session_key = (
+            getattr(parent_agent, "_gateway_session_key", None)
+            or getattr(parent_agent, "session_id", None)
+            or ""
+        )
+        _pa_model = getattr(parent_agent, "model", None) or ""
+        _pa_provider = getattr(parent_agent, "provider", None) or ""
+
+        # ── Task 6: Collect routing metadata from parent agent ─────────────────
+        _routing_meta: Dict[str, str] = {}
+        for _attr in ("platform", "chat_id", "thread_id", "user_id", "user_name", "message_id"):
+            _val = getattr(parent_agent, _attr, None)
+            if _val:
+                _routing_meta[_attr] = str(_val)
+
+        # ── Task 1: Create Kanban ticket on dispatch (shadow clone mode) ────────
+        _use_shadow_clone = shadow_clone or _get_shadow_clone_mode()
+        _kanban_ticket_id: Optional[str] = None
+        if _use_shadow_clone:
+            try:
+                from hermes_cli import kanban_db as _kanban_db
+                with _kanban_db.connect_closing() as _conn:
+                    _kanban_ticket_id = _kanban_db.create_task(
+                        _conn,
+                        title=f"[ShadowClone] {(goal or '')[:80]}",
+                        body=f"## Goal\n{goal or ''}\n\n## Context\n{context or ''}",
+                        assignee="shadow_clone",
+                        created_by=session_key,
+                        workspace_kind="scratch",
+                        initial_status="running",
+                    )
+                logger.info("Shadow clone: Kanban ticket %s created for delegation", _kanban_ticket_id)
+            except Exception as _ke:
+                logger.warning("Shadow clone: failed to create Kanban ticket: %s", _ke)
+                # Graceful degradation: continue without ticket (fallback to original inject)
+                _kanban_ticket_id = None
+                _use_shadow_clone = False
+
+        task_info = {
+            "goal": goal,
+            "context": context,
+            "toolsets": toolsets,
+            "role": top_role,
+            "model": _pa_model,
+            "provider": _pa_provider,
+            "shadow_clone": _use_shadow_clone,
+            "kanban_ticket_id": _kanban_ticket_id,
+            "routing_meta": _routing_meta,
+        }
+
+        # Pre-build the child agent on the calling thread (thread-safe) so
+        # _run_single_child always receives a valid AIAgent, not None.
+        # The background path previously skipped _build_child_agent entirely,
+        # which caused AttributeError: 'NoneType' has no attribute
+        # 'run_conversation' inside the background thread — especially visible
+        # on session-resume after a gateway restart (bug #async-delegation-resume).
+        _bg_cfg = _load_config()
+        _bg_max_iter = _bg_cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+        try:
+            _bg_creds = _resolve_delegation_credentials(_bg_cfg, parent_agent)
+        except ValueError as exc:
+            return tool_error(str(exc))
+
+        _bg_child = _build_child_agent(
+            task_index=0,
+            goal=goal,
+            context=context,
+            toolsets=toolsets,
+            model=_bg_creds["model"],
+            max_iterations=_bg_max_iter,
+            task_count=1,
+            parent_agent=parent_agent,
+            override_provider=_bg_creds["provider"],
+            override_base_url=_bg_creds["base_url"],
+            override_api_key=_bg_creds["api_key"],
+            override_api_mode=_bg_creds["api_mode"],
+            override_acp_command=acp_command or _bg_creds.get("command"),
+            override_acp_args=acp_args if acp_args is not None else _bg_creds.get("args"),
+            role=top_role,
+        )
+
+        result = _async_dispatch(
+            runner_fn=lambda: _run_single_child(
+                task_index=0,
+                goal=goal,
+                child=_bg_child,
+                parent_agent=parent_agent,
+            ),
+            task_info=task_info,
+            completion_queue=_process_registry.completion_queue,
+            session_key=session_key,
+            parent_agent=parent_agent,
+            timeout_seconds=float(timeout_seconds) if timeout_seconds is not None else None,
+        )
+        return json.dumps(result, ensure_ascii=False)
 
     # Depth limit — configurable via delegation.max_spawn_depth,
     # default 2 for parity with the original MAX_DEPTH constant.
@@ -2153,19 +2331,35 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task model/provider override: if the task specifies its own
+            # model or provider, re-resolve credentials for that task so the
+            # correct base_url / api_key / api_mode are derived from the
+            # per-task provider (not the global delegation config).
+            if t.get("model") or t.get("provider"):
+                task_cfg = dict(cfg)
+                if t.get("model"):
+                    task_cfg["model"] = t["model"]
+                if t.get("provider"):
+                    task_cfg["provider"] = t["provider"]
+                try:
+                    task_creds = _resolve_delegation_credentials(task_cfg, parent_agent)
+                except ValueError as exc:
+                    return tool_error(str(exc))
+            else:
+                task_creds = creds
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=t.get("acp_command")
                 or acp_command
                 or creds.get("command"),
@@ -2891,6 +3085,28 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Model override for this specific task "
+                                "(e.g. 'claude-haiku-4-5', 'claude-opus-4-5', "
+                                "'minimaxai/minimax-m2.7'). When omitted, inherits "
+                                "the parent config or top-level delegation.model. "
+                                "Use lighter models (haiku) for simple tool tasks; "
+                                "heavier models (opus) for complex reasoning."
+                            ),
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Provider override for this specific task "
+                                "(e.g. 'anthropic', 'nvidia', 'openrouter'). "
+                                "When set alongside 'model', full credentials are "
+                                "resolved via the provider system — base_url, "
+                                "api_key, and api_mode are derived automatically. "
+                                "When omitted, inherits the parent provider."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2926,6 +3142,27 @@ DELEGATE_TASK_SCHEMA = {
                     "Leave empty unless acp_command is explicitly provided."
                 ),
             },
+            "background": {
+                "type": "boolean",
+                "description": (
+                    "Dispatch the subagent in the background and return immediately "
+                    "(non-blocking). The parent turn is NOT blocked while the subagent runs. "
+                    "When the subagent finishes, its result re-enters the conversation as a "
+                    "new turn. Requires a single 'goal' (not 'tasks'). "
+                    "v1: single-task only; multi-task batch is rejected. "
+                    "Capacity is limited by delegation.max_async_children (default 3)."
+                ),
+            },
+            "timeout_seconds": {
+                "type": "number",
+                "description": (
+                    "Optional wall-clock deadline for background delegations. "
+                    "If the subagent has not finished within this many seconds after dispatch, "
+                    "it is marked status='timed_out' and evicted. "
+                    "Only honoured when background=True. "
+                    "Omit to disable (default: no timeout)."
+                ),
+            },
         },
         "required": [],
     },
@@ -2949,6 +3186,8 @@ registry.register(
         acp_args=args.get("acp_args"),
         role=args.get("role"),
         parent_agent=kw.get("parent_agent"),
+        background=args.get("background", False),
+        timeout_seconds=args.get("timeout_seconds"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

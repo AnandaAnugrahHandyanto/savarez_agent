@@ -1559,6 +1559,31 @@ def format_process_notification(evt: dict) -> "str | None":
         text += "]"
         return text
 
+    if evt_type == "async_delegation":
+        _did = evt.get("delegation_id", "?")
+        _goal = evt.get("goal", "")[:80]
+        _status = evt.get("status", "completed")
+        _result = evt.get("result", {})
+        _duration = evt.get("duration_seconds", 0)
+        _session_key = evt.get("session_key", "")
+        _context = evt.get("context", "")[:120]
+
+        # Render result summary
+        if isinstance(_result, dict):
+            _summary = _result.get("summary") or _result.get("error") or str(_result)
+        else:
+            _summary = str(_result)
+
+        _summary_short = _summary[:300] if _summary else "(no output)"
+
+        return (
+            f"[ASYNC DELEGATION COMPLETE — {_did}]\n"
+            f"Goal: {_goal}\n"
+            f"Context: {_context}\n"
+            f"Status: {_status}  Duration: {_duration}s\n"
+            f"Result:\n{_summary_short}]"
+        )
+
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")
     _reason = evt.get("completion_reason") or "exited"
