@@ -145,7 +145,7 @@ VERCEL_OIDC_TOKEN="$(vc project token <project-name>)" hermes chat
 VERCEL_OIDC_TOKEN="$(vc project token)" hermes chat
 ```
 
-При `container_persistent: true` Hermes использует Vercel snapshots, чтобы сохранять состояние файловой системы между пересозданиями sandbox для одной и той же задачи. В snapshot могут попадать синхронизированные Hermes учётные данные, навыки и кеш-файлы внутри sandbox. Snapshots не сохраняют живые процессы, пространство PID и саму identity запущенного sandbox.
+При `container_persistent: true` Hermes использует Vercel snapshots, чтобы сохранять состояние файловой системы между пересозданиями sandbox для одной и той же задачи. В snapshot могут попадать синхронизированные Hermes учётные данные, навыки и кэш-файлы внутри sandbox. Snapshots не сохраняют живые процессы, пространство PID и саму identity запущенного sandbox.
 
 Фоновые terminal-команды используют общий для Hermes не локальный поток выполнения: spawn, poll, wait, log и kill проходят через стандартный process tool, пока sandbox жив, но Hermes не умеет нативно восстанавливать отложенные процессы Vercel после очистки или перезапуска.
 

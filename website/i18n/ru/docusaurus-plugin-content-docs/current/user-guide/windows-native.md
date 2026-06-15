@@ -136,7 +136,7 @@ iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/script
 
 До PR #21561 на Windows сочетание `Ctrl-X Ctrl-E` и команда `/edit` попросту не открывали редактор. `prompt_toolkit` использует фиксированный POSIX-список резервных редакторов (`/usr/bin/nano`, `/usr/bin/pico`, `/usr/bin/vi`, …), и на Windows этот список бесполезен даже при полном Git for Windows.
 
-Windows stdio shim в Hermes теперь задаёт `EDITOR=notepad` по умолчанию. Notepad есть в каждой Windows-сборке и работает как блокирующий редактор — `subprocess.call(["notepad", file])` ждёт, пока окно не закроется.
+Windows-обёртка stdio в Hermes теперь задаёт `EDITOR=notepad` по умолчанию. Notepad есть в каждой Windows-сборке и работает как блокирующий редактор — `subprocess.call(["notepad", file])` ждёт, пока окно не закроется.
 
 **Пользовательские переопределения по-прежнему имеют приоритет** (они проверяются раньше `setdefault`):
 
@@ -202,10 +202,10 @@ hermes gateway uninstall   # Удаляет запись schtasks, ярлык в
 
 | Путь | Содержимое |
 |---|---|
-| `%LOCALAPPDATA%\hermes\hermes-agent\` | Git checkout + venv. `venv\Scripts\hermes.exe` — команда, которую установщик добавляет в пользовательский PATH. Можно безболезненно удалить через `Remove-Item -Recurse` и установить заново. |
+| `%LOCALAPPDATA%\hermes\hermes-agent\` | Рабочая копия Git + venv. `venv\Scripts\hermes.exe` — команда, которую установщик добавляет в пользовательский PATH. Можно безболезненно удалить через `Remove-Item -Recurse` и установить заново. |
 | `%LOCALAPPDATA%\hermes\git\` | PortableGit (только если его поставил сам установщик). |
 | `%LOCALAPPDATA%\hermes\node\` | Portable Node.js (только если его поставил сам установщик). |
-| `%LOCALAPPDATA%\hermes\bin\` | Управляемый Hermes `uv.exe` — Python manager, который используется для обновлений. |
+| `%LOCALAPPDATA%\hermes\bin\` | Служебный `uv.exe`, которым управляет Hermes, — менеджер Python, используемый для обновлений. |
 | `%LOCALAPPDATA%\hermes\` (корень) | Ваша конфигурация, данные авторизации, навыки, сессии и журналы (`config.yaml`, `.env`, `skills\`, `sessions\`, `logs\`, …). **Переживает переустановки.** |
 
 В нативной Windows установщик задаёт `HERMES_HOME=%LOCALAPPDATA%\hermes`, поэтому данные и служебная инфраструктура установки живут под одним корнем `%LOCALAPPDATA%\hermes`: установка и среда выполнения находятся в подкаталогах `hermes-agent\`, `git\`, `node\` и `bin\`, а ваши данные лежат прямо в `%LOCALAPPDATA%\hermes`. Переустановка заменяет только рабочую копию `hermes-agent\`, так что данные сохраняются. Но поскольку они делят общий корень, **не выполняйте** `Remove-Item -Recurse %LOCALAPPDATA%\hermes`, если хотите сохранить данные; удаляйте только подкаталог `hermes-agent\`. По структуре каталог данных совпадает с Linux `~/.hermes`, поэтому его можно зеркалировать между машинами.
@@ -217,7 +217,7 @@ hermes gateway uninstall   # Удаляет запись schtasks, ярлык в
 Браузерный инструмент использует `agent-browser` — Node-помощник для управления Chromium. На Windows:
 
 - Установщик ставит `agent-browser` в PATH через npm.
-  - `shutil.which("agent-browser", path=...)` автоматически находит `.cmd` shim — `CreateProcessW` не умеет запускать shebang без расширения, поэтому Hermes всегда выбирает `.CMD`-обёртку. Не запускайте shebang-файл напрямую; всегда используйте `.cmd`.
+- `shutil.which("agent-browser", path=...)` автоматически находит `.cmd`-обёртку — `CreateProcessW` не умеет запускать shebang без расширения, поэтому Hermes всегда выбирает `.CMD`-обёртку. Не запускайте shebang-файл напрямую; всегда используйте `.cmd`.
 - Playwright Chromium автоматически ставится при первом запуске (`npx playwright install chromium`). Если установка не удалась, `hermes doctor` покажет ошибку и подскажет, что именно нужно исправить.
 
 ## Практические заметки по запуску Hermes в Windows
@@ -251,7 +251,7 @@ TELEGRAM_BOT_TOKEN=...
 | Переменная | Эффект |
 |---|---|
 | `HERMES_GIT_BASH_PATH` | Переопределяет поиск `bash.exe`. Можно указать любой bash — полный Git for Windows, bash из WSL через symlink, MSYS2, Cygwin. Установщик задаёт её автоматически. |
-| `HERMES_DISABLE_WINDOWS_UTF8` | Если поставить `1`, отключает UTF-8 stdio shim и возвращает кодовую страницу локали. Полезно для поиска регрессий, связанных с кодировкой. |
+| `HERMES_DISABLE_WINDOWS_UTF8` | Если поставить `1`, отключает обёртку stdio для UTF-8 и возвращает кодовую страницу локали. Полезно для поиска регрессий, связанных с кодировкой. |
 | `EDITOR` / `VISUAL` | Ваш редактор для `/edit` и `Ctrl-X Ctrl-E`. Если обе переменные пусты, Hermes по умолчанию использует `notepad`. |
 
 ## Удаление
@@ -288,10 +288,10 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.hermes"
 ## Типичные ловушки
 
 **`hermes: command not found` сразу после установки.**
-Откройте новое окно PowerShell. Установщик уже добавил `%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts` в пользовательский PATH, но существующим shell-сессиям нужен перезапуск, чтобы его увидеть.
+Откройте новое окно PowerShell. Установщик уже добавил `%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts` в пользовательский PATH, но существующим shell-сессиям нужен перезапуск, чтобы его увидеть. Пока можно запустить Hermes напрямую: `& "$env:LOCALAPPDATA\hermes\hermes-agent\venv\Scripts\hermes.exe"`.
 
 **`WinError 193: %1 is not a valid Win32 application` при запуске инструмента.**
-Вы наткнулись на shebang-скрипт, минуя `.cmd` shim. Hermes резолвит команды через `shutil.which(cmd, path=local_bin)`, чтобы PATHEXT подхватывал `.CMD`. Если вы вызываете инструмент по жёстко заданному пути, переключитесь на `.cmd`-вариант (например, `npx.cmd`, а не `npx`).
+Вы наткнулись на shebang-скрипт, минуя `.cmd`-обёртку. Hermes резолвит команды через `shutil.which(cmd, path=local_bin)`, чтобы PATHEXT подхватывал `.CMD`. Если вы вызываете инструмент по жёстко заданному пути, переключитесь на `.cmd`-вариант (например, `npx.cmd`, а не `npx`).
 
 **`[scriptblock]::Create(...)` падает с `The assignment expression is not valid`.**
 Ваш `install.ps1` был скачан с UTF-8 BOM. Форма `irm | iex` удаляет BOM автоматически, а `[scriptblock]::Create((irm ...))` — нет. Повторите установку в простой форме `irm | iex` или скачайте скрипт вручную и сохраните его без BOM через `[IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding $false))`.
@@ -306,16 +306,16 @@ Remove-Item -Recurse -Force "$env:USERPROFILE\.hermes"
 Chromium ставится автоматически при первом запуске. Если установка сорвалась из-за ограничения GitHub по запросам или сбоя на Playwright CDN, запустите `hermes doctor` — он покажет, что именно не хватает, и выведет точную команду `npx playwright install chromium` для исправления.
 
 **`agent-browser` падает с какой-то странной ошибкой версии Node.**
-Установщик разворачивает Node 22 в `%LOCALAPPDATA%\hermes\node`, но в PATH раньше может стоять более старый системный Node 18. Либо поднимите Hermes node dir выше в PATH, либо удалите системную установку, если Node вам больше нигде не нужен.
+Установщик разворачивает Node 22 в `%LOCALAPPDATA%\hermes\node`, но в PATH раньше может стоять более старый системный Node 18. Либо поднимите каталог Node от Hermes выше в PATH, либо удалите системную установку, если Node вам больше нигде не нужен.
 
 **Китайские / японские / арабские символы показываются как `?` в CLI.**
-UTF-8 stdio shim не активировался. Проверьте, что `HERMES_DISABLE_WINDOWS_UTF8` НЕ задан (`Get-ChildItem env:HERMES_DISABLE_WINDOWS_UTF8`). Если переменная пуста, а `?` всё равно остаются, возможно, сам console host (очень старый `cmd.exe`) вообще не поддерживает UTF-8 — тогда переходите на Windows Terminal.
+Обёртка stdio для UTF-8 не активировалась. Проверьте, что `HERMES_DISABLE_WINDOWS_UTF8` НЕ задан (`Get-ChildItem env:HERMES_DISABLE_WINDOWS_UTF8`). Если переменная пуста, а `?` всё равно остаются, возможно, сам консольный хост (очень старый `cmd.exe`) вообще не поддерживает UTF-8 — тогда переходите на Windows Terminal.
 
 **Шлюз не может отправить фото в Telegram — "`BadRequest: payload contains invalid characters`".**
-Это не связано с Windows, но иногда первым проявляется именно там. Обычно причина в том, что путь к файлу содержит неэкранированные backslashes в теле JSON. Telegram должен получать пути, которые уже нормализовал Hermes, а не сырой путь Windows — если это всплывает внутри кастомного плагина, убедитесь, что вы передаёте путь от Hermes, а не `str(Path(...))` из пользовательского ввода.
+Это не связано с Windows, но иногда первым проявляется именно там. Обычно причина в том, что путь к файлу содержит неэкранированные обратные слеши в теле JSON. Telegram должен получать пути, которые уже нормализовал Hermes, а не сырой путь Windows — если это всплывает внутри кастомного плагина, убедитесь, что вы передаёте путь от Hermes, а не `str(Path(...))` из пользовательского ввода.
 
 **Странности с кодировкой в духе «Works on my other machine» после `git pull`.**
-Если вы редактировали конфиг Hermes или skill на Windows в редакторе без UTF-8 (старый Notepad, некоторые китайские IME), файл мог сохраниться с BOM. Hermes обычно терпит `utf-8-sig` при чтении config, но BOM внутри folded YAML scalar (`description: >`) может незаметно сломать YAML-парсер. Сохраните файл как plain UTF-8 без BOM.
+Если вы редактировали конфиг Hermes или skill на Windows в редакторе без UTF-8 (старый Notepad, некоторые китайские IME), файл мог сохраниться с BOM. Hermes обычно терпит `utf-8-sig` при чтении config, но BOM внутри folded YAML scalar (`description: >`) может незаметно сломать YAML-парсер. Сохраните файл как обычный UTF-8 без BOM.
 
 ## Куда дальше
 
