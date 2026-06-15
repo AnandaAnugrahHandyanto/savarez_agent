@@ -11138,6 +11138,57 @@ def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional
     return api_field
 
 
+def _dashboard_plugin_config_sets() -> Tuple[set[str], set[str]]:
+    """Return (enabled, disabled) plugin allow/deny sets from config.yaml."""
+    try:
+        config = load_config()
+        plugins_cfg = config.get("plugins")
+        if not isinstance(plugins_cfg, dict):
+            return set(), set()
+        enabled = plugins_cfg.get("enabled", [])
+        disabled = plugins_cfg.get("disabled", [])
+        return (
+            {str(p) for p in enabled if isinstance(p, str) and p.strip()}
+            if isinstance(enabled, list) else set(),
+            {str(p) for p in disabled if isinstance(p, str) and p.strip()}
+            if isinstance(disabled, list) else set(),
+        )
+    except Exception:
+        return set(), set()
+
+
+def _dashboard_plugin_allowed_by_config(
+    *,
+    name: Any,
+    source: str,
+    plugin_dir_name: Optional[str] = None,
+    enabled: Optional[set[str]] = None,
+    disabled: Optional[set[str]] = None,
+) -> bool:
+    """Apply the runtime plugin enable/disable contract to dashboard plugins.
+
+    Bundled dashboard plugins ship with Hermes and remain available by default.
+    User/project dashboard plugins are unreviewed code and must be explicitly
+    listed in ``plugins.enabled`` before the dashboard advertises their assets
+    or imports their Python API module. ``plugins.disabled`` always wins.
+    """
+    if enabled is None or disabled is None:
+        enabled, disabled = _dashboard_plugin_config_sets()
+
+    aliases = {str(name).strip()} if isinstance(name, str) and name.strip() else set()
+    if plugin_dir_name:
+        aliases.add(str(plugin_dir_name).strip())
+    aliases.discard("")
+
+    if not aliases:
+        return False
+    if aliases & disabled:
+        return False
+    if source == "bundled":
+        return True
+    return bool(aliases & enabled)
+
+
 def _discover_dashboard_plugins() -> list:
     """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
 
@@ -11148,6 +11199,7 @@ def _discover_dashboard_plugins() -> list:
     """
     plugins = []
     seen_names: set = set()
+    enabled_plugins, disabled_plugins = _dashboard_plugin_config_sets()
 
     from hermes_cli.plugins import get_bundled_plugins_dir
     bundled_root = get_bundled_plugins_dir()
@@ -11180,6 +11232,19 @@ def _discover_dashboard_plugins() -> list:
             try:
                 data = json.loads(manifest_file.read_text(encoding="utf-8"))
                 name = data.get("name", child.name)
+                if not _dashboard_plugin_allowed_by_config(
+                    name=name,
+                    source=source,
+                    plugin_dir_name=child.name,
+                    enabled=enabled_plugins,
+                    disabled=disabled_plugins,
+                ):
+                    _log.debug(
+                        "Skipping dashboard plugin %s from %s "
+                        "(not enabled or explicitly disabled)",
+                        name, source,
+                    )
+                    continue
                 if name in seen_names:
                     continue
                 seen_names.add(name)
@@ -11634,6 +11699,18 @@ def _mount_plugin_api_routes():
         api_file_name = plugin.get("_api_file")
         if not api_file_name:
             continue
+        dashboard_dir = Path(plugin["_dir"])
+        if not _dashboard_plugin_allowed_by_config(
+            name=plugin.get("name"),
+            source=str(plugin.get("source") or ""),
+            plugin_dir_name=dashboard_dir.parent.name,
+        ):
+            _log.warning(
+                "Plugin %s: refusing backend api=%s (dashboard plugin is "
+                "not enabled or is explicitly disabled in config.yaml)",
+                plugin.get("name"), api_file_name,
+            )
+            continue
         if plugin.get("source") == "project":
             _log.warning(
                 "Plugin %s: ignoring backend api=%s (project plugins may "
@@ -11642,7 +11719,6 @@ def _mount_plugin_api_routes():
                 plugin["name"], api_file_name,
             )
             continue
-        dashboard_dir = Path(plugin["_dir"])
         api_path = dashboard_dir / api_file_name
         try:
             resolved_api = api_path.resolve()

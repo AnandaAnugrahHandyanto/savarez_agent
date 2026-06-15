@@ -110,11 +110,131 @@ class TestProjectPluginsEnvGate:
     def test_truthy_values_enable_project_plugins(
         self, project_plugin, monkeypatch, value
     ):
+        (project_plugin.parent / "home" / "config.yaml").write_text(
+            "plugins:\n  enabled:\n    - evil\n"
+        )
         monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", value)
         plugins = web_server._get_dashboard_plugins(force_rescan=True)
         evil = next((p for p in plugins if p["name"] == "evil"), None)
         assert evil is not None
         assert evil["source"] == "project"
+
+
+# ---------------------------------------------------------------------------
+# Layer 1b — dashboard plugins also honor plugins.enabled/disabled.
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardPluginsEnabledGate:
+    """User/project dashboard plugins carry browser JS and optional Python API
+    code. They must follow the same opt-in contract as agent plugins."""
+
+    def _write_plugin_config(self, hermes_home: Path, *, enabled=(), disabled=()):
+        import yaml
+
+        cfg = {
+            "plugins": {
+                "enabled": list(enabled),
+                "disabled": list(disabled),
+            }
+        }
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump(cfg))
+
+    def test_user_dashboard_plugin_hidden_until_enabled(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _write_plugin_manifest(
+            tmp_path / "plugins",
+            "side-panel",
+            {
+                "name": "side-panel",
+                "label": "Side Panel",
+                "entry": "dist/index.js",
+            },
+        )
+
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        assert "side-panel" not in {p["name"] for p in plugins}
+
+        self._write_plugin_config(tmp_path, enabled=["side-panel"])
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        enabled = next((p for p in plugins if p["name"] == "side-panel"), None)
+        assert enabled is not None
+        assert enabled["source"] == "user"
+
+    def test_disabled_beats_dashboard_enabled(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin_config(
+            tmp_path,
+            enabled=["side-panel"],
+            disabled=["side-panel"],
+        )
+        _write_plugin_manifest(
+            tmp_path / "plugins",
+            "side-panel",
+            {
+                "name": "side-panel",
+                "label": "Side Panel",
+                "entry": "dist/index.js",
+            },
+        )
+
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        assert "side-panel" not in {p["name"] for p in plugins}
+
+    def test_project_dashboard_plugin_requires_env_and_enabled(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        (tmp_path / "home").mkdir()
+        cwd = tmp_path / "repo"
+        cwd.mkdir()
+        monkeypatch.chdir(cwd)
+        monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "1")
+        _write_plugin_manifest(
+            cwd / ".hermes" / "plugins",
+            "project-panel",
+            {
+                "name": "project-panel",
+                "label": "Project Panel",
+                "entry": "dist/index.js",
+            },
+        )
+
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        assert "project-panel" not in {p["name"] for p in plugins}
+
+        self._write_plugin_config(tmp_path / "home", enabled=["project-panel"])
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        project = next((p for p in plugins if p["name"] == "project-panel"), None)
+        assert project is not None
+        assert project["source"] == "project"
+
+    def test_mount_refuses_cached_user_plugin_when_not_enabled(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        dash = tmp_path / "plugins" / "side-panel" / "dashboard"
+        dash.mkdir(parents=True)
+        (dash / "api.py").write_text(
+            "from fastapi import APIRouter\nrouter = APIRouter()\n"
+        )
+        web_server._dashboard_plugins_cache = [{
+            "name": "side-panel",
+            "label": "Side Panel",
+            "tab": {"path": "/side-panel", "position": "end"},
+            "slots": [],
+            "entry": "dist/index.js",
+            "css": None,
+            "has_api": True,
+            "source": "user",
+            "_dir": str(dash),
+            "_api_file": "api.py",
+        }]
+
+        with patch("importlib.util.spec_from_file_location") as spec:
+            web_server._mount_plugin_api_routes()
+
+        assert spec.call_count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -186,9 +306,16 @@ class TestDiscoveryScrubsApiField:
     def user_plugin_factory(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("HERMES_ENABLE_PROJECT_PLUGINS", raising=False)
+        enabled: set[str] = set()
 
         def _make(name: str, manifest: dict) -> None:
             _write_plugin_manifest(tmp_path / "plugins", name, manifest)
+            enabled.add(name)
+            (tmp_path / "config.yaml").write_text(
+                "plugins:\n"
+                "  enabled:\n"
+                + "".join(f"    - {plugin}\n" for plugin in sorted(enabled))
+            )
 
         return _make
 
