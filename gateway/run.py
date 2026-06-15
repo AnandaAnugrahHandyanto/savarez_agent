@@ -10753,7 +10753,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         title: str,
     ) -> None:
         """Schedule a topic rename from the auto-title background thread."""
-        if not title or not self._is_telegram_topic_lane(source):
+        if not title or not self._is_telegram_renamable_thread(source):
             return
         if self._telegram_topic_auto_rename_disabled(source):
             return
