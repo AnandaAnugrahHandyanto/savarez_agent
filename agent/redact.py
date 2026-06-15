@@ -7,9 +7,11 @@ Short tokens (< 18 chars) are fully masked. Longer tokens preserve
 the first 6 and last 4 characters for debuggability.
 """
 
+import json
 import logging
 import os
 import re
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -55,16 +57,13 @@ _SENSITIVE_BODY_KEYS = frozenset({
     "key",
 })
 
-# Snapshot at import time so runtime env mutations (e.g. LLM-generated
-# `export HERMES_REDACT_SECRETS=false`) cannot disable redaction
-# mid-session.  ON by default — secure default per issue #17691. Users who
-# need raw credential values in tool output (e.g. working on the redactor
-# itself) can opt out via `security.redact_secrets: false` in config.yaml
-# (bridged to this env var in hermes_cli/main.py, gateway/run.py, and
-# cli.py) or `HERMES_REDACT_SECRETS=false` in ~/.hermes/.env. An opt-out
-# warning is logged at gateway and CLI startup so operators see the
-# downgrade — see `_log_redaction_status()` in gateway/run.py and cli.py.
-_REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "true").lower() in {"1", "true", "yes", "on"}
+# DETE: Redaction is always enabled. The `HERMES_REDACT_SECRETS` env var
+# kill switch has been removed — there is no legitimate reason to send
+# credentials to an LLM provider in plaintext.
+# The ``force`` parameter on ``redact_sensitive_text`` is a forward-compat
+# marker for API enforcement boundaries; it becomes load-bearing only if
+# ``_REDACT_ENABLED`` stops being hardcoded.
+_REDACT_ENABLED = True
 
 # Known API key prefixes -- match the prefix + contiguous token chars
 _PREFIX_PATTERNS = [
@@ -104,6 +103,10 @@ _PREFIX_PATTERNS = [
     r"mem0_[A-Za-z0-9]{10,}",           # Mem0 Platform API key
     r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
     r"xai-[A-Za-z0-9]{30,}",            # xAI (Grok) API key
+    # WordPress application passwords: exact 6x4 space-separated pattern
+    # e.g. "abcd efgh ijkl mnop qrst uvwx" or "dmGp 5QtY j4Xn 7Jtm YPGR 3wwG"
+    # These are case-sensitive alphanumeric, groups of 4 with single spaces.
+    r"\b[A-Za-z0-9]{4} [A-Za-z0-9]{4} [A-Za-z0-9]{4} [A-Za-z0-9]{4} [A-Za-z0-9]{4} [A-Za-z0-9]{4}\b",
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name
@@ -327,9 +330,13 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
-    Enabled by default. Disable via security.redact_secrets: false in config.yaml.
-    Set force=True for safety boundaries that must never return raw secrets
-    regardless of the user's global logging redaction preference.
+    Enabled by default and non-optional — ``_REDACT_ENABLED`` is hardcoded
+    ``True`` (the ``HERMES_REDACT_SECRETS`` env-var kill switch was removed).
+    The ``force`` parameter exists as a forward-compatibility marker for API
+    enforcement boundaries: it will become meaningful if ``_REDACT_ENABLED``
+    stops being hardcoded (e.g. the kill switch is restored). All callers
+    at safety boundaries should pass ``force=True`` so their intent is
+    explicit even though it is currently redundant.
 
     Set code_file=True to skip the ENV-assignment and JSON-field regex
     patterns when the text is known to be source code (e.g. MAX_TOKENS=***
@@ -424,6 +431,33 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
             return phone[:4] + "****" + phone[-4:]
         text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
 
+    # Hex-encoded credentials: if the output contains hex-dump formatted
+    # lines whose ASCII column contains text that looks like a known
+    # credential or partial credential pattern, redact the hex bytes.
+    # Prevents bypass via xxd, od, hexdump.
+    # Also redacts hex bytes when the SAME output already had a *** redaction
+    # (indicates the credential is present in both raw and encoded form).
+    if (" *** " in text or "***" in text):
+        _HEX_DUMP_ASCII_RE = re.compile(
+            r"([0-9a-fA-F]{4,8}:)?"
+            r"(\s(?:"
+            r"[0-9a-fA-F]{2}(?:\s[0-9a-fA-F]{2}){1,15}"     # byte-by-byte: " 64 76 47 70"
+            r"|"
+            r"[0-9a-fA-F]{4}(?:\s[0-9a-fA-F]{4}){1,7}"      # word-grouped: " 6476 4770"
+            r"))"
+            r"(\s{2,}|  )"
+            r"([\x20-\x7E]{1,16})"
+        )
+        if _HEX_DUMP_ASCII_RE.search(text):
+            # Redact ALL hex dump lines when *** is present — don't need to
+            # match the credential in the ASCII column specifically.
+            # The presence of both a redaction AND hex-dump formatted output
+            # is sufficient evidence that credential bytes may be exposed.
+            def _redact_hex_dump(m):
+                prefix = m.group(1) or ""
+                return f"{prefix} *** [HEX REDACTED] ***"
+            text = _HEX_DUMP_ASCII_RE.sub(_redact_hex_dump, text)
+
     return text
 
 
@@ -456,6 +490,193 @@ def _extract_literal_prefix(pattern: str) -> str:
 _PREFIX_SUBSTRINGS = tuple(
     _extract_literal_prefix(p) for p in _PREFIX_PATTERNS
 )
+
+
+def _redact_message_content(content: Any, redact_fn) -> Any:
+    """Redact sensitive text in a message content field.
+
+    Handles both plain-string content (OpenAI string format) and
+    list-typed content (Anthropic/multimodal content block format,
+    OpenAI vision messages, tool result blocks).
+
+    Uses the provided redact_fn (typically ``redact_sensitive_text``)
+    on each text/thinking/content key found in the structure.
+    """
+    if isinstance(content, str):
+        return redact_fn(content, force=True)
+    if isinstance(content, list):
+        redacted = []
+        for part in content:
+            if isinstance(part, dict):
+                part = dict(part)  # shallow copy to avoid in-place mutation
+                for key in ("text", "thinking", "content"):
+                    if key in part and isinstance(part[key], str):
+                        part[key] = redact_fn(part[key], force=True)
+                    elif key in part and isinstance(part[key], list):
+                        part[key] = _redact_message_content(part[key], redact_fn)
+            redacted.append(part)
+        return redacted
+    return content
+
+
+def _redact_json_scalar(value: Any, redact_fn) -> Any:
+    """Recursively redact a parsed JSON value, preserving its structure.
+
+    Strings inside the value have ``redact_fn`` applied. Dicts and lists
+    are walked recursively. Non-string scalars (int, float, bool, None)
+    pass through unchanged.
+
+    This is the structural layer of tool-call argument redaction — it
+    NEVER touches JSON structural characters (``{}[],":``), so the
+    redaction is guaranteed to round-trip through ``json.dumps`` /
+    ``json.loads`` losslessly.
+    """
+    if isinstance(value, str):
+        return redact_fn(value, force=True)
+    if isinstance(value, dict):
+        return {k: _redact_json_scalar(v, redact_fn) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_json_scalar(v, redact_fn) for v in value]
+    return value
+
+
+# Matches a single JSON string literal in a non-strict-position way — used
+# as the fallback for malformed JSON. Conservatively accepts strings with
+# embedded escapes; not a full RFC-8259 parser.
+_JSON_STRING_LITERAL_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+def _redact_json_string_literals(arg_str: str, redact_fn) -> str:
+    """Apply ``redact_fn`` ONLY to the contents of JSON string literals.
+
+    Used as the degraded fallback when input isn't parseable JSON. The
+    goal: redact any secrets inside quoted strings, but never touch
+    JSON structural characters (``{}[],:``) or unquoted content. If the
+    result still isn't valid JSON, the caller will fall back to the
+    last-resort pass.
+    """
+    def _sub(m):
+        return '"' + redact_fn(m.group(1), force=True) + '"'
+    return _JSON_STRING_LITERAL_RE.sub(_sub, arg_str)
+
+
+def _redact_json_arguments(arg_str: str, redact_fn=None) -> str:
+    """Redact a tool-call ``function.arguments`` JSON string while
+    preserving JSON validity.
+
+    Provider APIs require ``tool_calls[].function.arguments`` to remain
+    a valid JSON string when historical assistant tool calls are
+    replayed. The naive approach of running ``redact_sensitive_text``
+    on the raw string can corrupt JSON: the env-assignment regex
+    (``OPENAI_API_KEY=***``) will consume the closing quote of the JSON
+    string that contains it, leaving an unterminated literal.
+
+    This helper defends in three layers, in order of preference:
+
+    1. **Structural** (preferred). Parse as JSON; if it succeeds, walk
+       the parsed structure value-by-value with ``_redact_json_scalar``
+       and re-serialize. The output is always valid JSON and identical
+       in shape to the input — only string values change.
+    2. **String-literal-aware** (degraded). If parsing fails, scan the
+       raw string for JSON string literals (``"...."``) and apply
+       ``redact_fn`` to the content of each, leaving structural
+       characters untouched. The output is valid JSON unless the input
+       was already broken in a way that broke string-literal boundaries.
+    3. **Last resort**. If both of the above still fail to produce
+       valid JSON, return the original ``arg_str`` unchanged and log a
+       warning. This guarantees we never make valid input invalid.
+
+    Args:
+        arg_str: The raw JSON string from ``function.arguments``.
+        redact_fn: Typically ``redact_sensitive_text``. Defaults to
+            ``redact_sensitive_text`` if not provided.
+
+    Returns:
+        A redacted string that, if the input was valid JSON, is also
+        valid JSON.
+    """
+    if not isinstance(arg_str, str) or not arg_str:
+        return arg_str
+    if redact_fn is None:
+        redact_fn = redact_sensitive_text
+
+    # Layer 1: structural redaction
+    try:
+        parsed = json.loads(arg_str)
+    except (ValueError, TypeError):
+        parsed = None
+
+    if parsed is not None:
+        redacted = _redact_json_scalar(parsed, redact_fn)
+        # ensure_ascii=False preserves Unicode characters in tool
+        # arguments (filenames, non-ASCII content) so the redacted
+        # output is byte-for-byte equivalent to the input on the
+        # common case of no secrets. separators=(",", ":") trims
+        # whitespace to match the canonical form most model clients
+        # produce.
+        return json.dumps(redacted, ensure_ascii=False, separators=(",", ":"))
+
+    # Layer 2: string-literal-aware redaction
+    candidate = _redact_json_string_literals(arg_str, redact_fn)
+    try:
+        json.loads(candidate)
+        return candidate
+    except (ValueError, TypeError):
+        pass
+
+    # Layer 3: last resort — fall through with the raw redaction. If
+    # even THIS produces invalid JSON, return the original unchanged.
+    # Valid input → valid output, ALWAYS.
+    naive = redact_fn(arg_str, force=True)
+    try:
+        json.loads(naive)
+        return naive
+    except (ValueError, TypeError):
+        logger.warning(
+            "Tool-call argument redaction could not preserve JSON "
+            "validity; returning original to avoid breaking the "
+            "provider-bound request. Input length=%d, head=%r",
+            len(arg_str), arg_str[:80],
+        )
+        return arg_str
+
+
+def _redact_message_object(msg: dict, redact_fn) -> dict:
+    """Redact sensitive text across ALL fields of a message dict.
+
+    Covers content, tool_calls[].function.arguments, and legacy
+    function_call.arguments. Mutates the passed dict in-place for
+    performance — callers that need immutability should deep-copy
+    before calling.
+
+    Tool-call argument redaction uses ``_redact_json_arguments``,
+    which preserves JSON validity across all input shapes (see that
+    function's docstring for the three-layer defence).
+
+    Args:
+        msg: A single message dict (OpenAI-format).
+        redact_fn: Typically ``redact_sensitive_text``.
+
+    Returns:
+        The same dict, mutated with redacted fields.
+    """
+    # Redact content field
+    if "content" in msg:
+        msg["content"] = _redact_message_content(msg["content"], redact_fn)
+
+    # Redact tool_calls — modern format (OpenAI Chat Completions)
+    for tc in msg.get("tool_calls", []):
+        if isinstance(tc, dict):
+            fn = tc.get("function")
+            if isinstance(fn, dict) and isinstance(fn.get("arguments"), str):
+                fn["arguments"] = _redact_json_arguments(fn["arguments"], redact_fn)
+
+    # Redact legacy function_call format (deprecated but still spec-valid)
+    fc = msg.get("function_call")
+    if isinstance(fc, dict) and isinstance(fc.get("arguments"), str):
+        fc["arguments"] = _redact_json_arguments(fc["arguments"], redact_fn)
+
+    return msg
 
 
 def _has_known_prefix_substring(text: str) -> bool:

@@ -15,6 +15,7 @@ sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -48,6 +49,9 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+from agent.redact import _redact_message_content, _redact_message_object
 
 
 def estimate_request_context_tokens(api_payload: Any) -> int:
@@ -192,6 +196,23 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
     def _call():
         try:
+            # ── DETE: redact messages before they leave the trust boundary ────
+            # The messages list may contain credentials reconstructed by the agent
+            # or leaked from tool output. Apply display-style redaction as a
+            # last-line-of-defense before serialization to the provider's API.
+            # This is non-optional — it runs on every API call regardless of
+            # the HERMES_REDACT_SECRETS env var (the kill switch was removed).
+            # Redact on a deep copy to preserve the original for diagnostics,
+            # retries, and downstream consumers that hold references.
+            from agent.redact import redact_sensitive_text
+            messages = api_kwargs.get("messages", [])
+            if messages:
+                redacted_messages = copy.deepcopy(messages)
+                for msg in redacted_messages:
+                    if isinstance(msg, dict):
+                        _redact_message_object(msg, redact_sensitive_text)
+                api_kwargs["messages"] = redacted_messages
+            # ──────────────────────────────────────────────────────────────────
             if agent.api_mode == "codex_responses":
                 request_client = _set_request_client(
                     agent._create_request_openai_client(
@@ -554,6 +575,21 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
+    # ── DETE: redact credentials in the original OpenAI-format messages
+    # before any provider-specific conversion (Anthropic, Bedrock, Codex).
+    # This runs on the canonical message format, catching credentials that
+    # might be structurally transformed by provider adapters.
+    if api_messages and isinstance(api_messages, list):
+        import copy
+        from agent.redact import _redact_message_object, redact_sensitive_text
+        redacted = copy.deepcopy(api_messages)
+        for msg in redacted:
+            if isinstance(msg, dict):
+                _redact_message_object(msg, redact_sensitive_text)
+        # Replace in-place — the caller's reference stays correct, but the
+        # original dict objects are preserved via deepcopy.
+        api_messages[:] = redacted
+    # ──────────────────────────────────────────────────────────────────
     tools_for_api = agent.tools
 
     if agent.api_mode == "anthropic_messages":
@@ -1022,9 +1058,16 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             # case where a model accidentally inlines a secret into a tool
             # call (e.g. `terminal(command="curl -H 'Authorization: Bearer
             # sk-...'")`). (#19798)
+            #
+            # Use the JSON-preserving helper, NOT redact_sensitive_text
+            # directly: a naive regex over the raw JSON string can corrupt
+            # it (the env-assignment regex eats the closing quote of any
+            # JSON string that contains a KEY=*** # value, leaving invalid JSON). The helper defends with three layers
+            # (structural, string-literal-aware, last-resort) and never
+            # produces invalid JSON from valid input.
             if isinstance(tc_dict["function"]["arguments"], str):
-                from agent.redact import redact_sensitive_text
-                tc_dict["function"]["arguments"] = redact_sensitive_text(
+                from agent.redact import _redact_json_arguments
+                tc_dict["function"]["arguments"] = _redact_json_arguments(
                     tc_dict["function"]["arguments"]
                 )
             # Preserve extra_content (e.g. Gemini thought_signature) so it
@@ -2218,6 +2261,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
     def _call():
         import httpx as _httpx
+
+        # ── DETE: redact messages before they leave the trust boundary ────
+        from agent.redact import redact_sensitive_text
+        messages = api_kwargs.get("messages", [])
+        if messages:
+            redacted_messages = copy.deepcopy(messages)
+            for msg in redacted_messages:
+                if isinstance(msg, dict):
+                    _redact_message_object(msg, redact_sensitive_text)
+            api_kwargs["messages"] = redacted_messages
+        # ────────────────────────────────────────────────────────────────
 
         _max_stream_retries = env_int("HERMES_STREAM_RETRIES", 2)
 

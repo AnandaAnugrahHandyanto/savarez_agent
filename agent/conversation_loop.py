@@ -3998,7 +3998,26 @@ def run_conversation(
                     conversation_history = None
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
-                agent._session_messages = messages
+                # ── DETE: redact credentials at the persistence boundary ────
+                # Defense-in-depth: ensure no credentials ever enter the stored
+                # conversation history, regardless of which API-boundary path
+                # handled (or missed) the redaction.  The redacted copy is
+                # assigned ONLY to the persisted session log — the working
+                # ``messages`` list stays unredacted so tool calls and the
+                # next API request still see the real values.
+                # (API-boundary redaction in chat_completion_helpers.py
+                #  continues to protect the provider-bound payloads.)
+                if messages:
+                    import copy
+                    from agent.redact import _redact_message_object, redact_sensitive_text
+                    redacted_msgs = copy.deepcopy(messages)
+                    for msg in redacted_msgs:
+                        if isinstance(msg, dict):
+                            _redact_message_object(msg, redact_sensitive_text)
+                    agent._session_messages = redacted_msgs
+                else:
+                    agent._session_messages = messages
+                # ────────────────────────────────────────────────────────────
                 
                 # Continue loop for next response
                 continue
