@@ -277,6 +277,39 @@ def _require_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+def _has_verified_dashboard_cookie_session(request: Request) -> bool:
+    """True when a gated-dashboard request carries a valid session cookie.
+
+    ``/api/status`` is deliberately public, so ``gated_auth_middleware`` returns
+    before verifying cookies or attaching ``request.state.session``. The status
+    handler still needs to distinguish public liveness probes from the logged-in
+    dashboard itself so authenticated users keep the full local status payload.
+    """
+    if not getattr(request.app.state, "auth_required", False):
+        return False
+
+    try:
+        from hermes_cli.dashboard_auth import ProviderError
+        from hermes_cli.dashboard_auth import list_providers as _list_providers
+        from hermes_cli.dashboard_auth.cookies import read_session_cookies
+    except Exception:
+        return False
+
+    access_token, _refresh_token = read_session_cookies(request)
+    if not access_token:
+        return False
+
+    for provider in _list_providers():
+        try:
+            if provider.verify_session(access_token=access_token) is not None:
+                return True
+        except ProviderError:
+            continue
+        except Exception:
+            continue
+    return False
+
+
 # Accepted Host header values for loopback binds. DNS rebinding attacks
 # point a victim browser at an attacker-controlled hostname (evil.test)
 # which resolves to 127.0.0.1 after a TTL flip — bypassing same-origin
@@ -1546,7 +1579,7 @@ async def fs_default_cwd():
 
 
 @app.get("/api/status")
-async def get_status():
+async def get_status(request: Request):
     current_ver, latest_ver = check_config_version()
 
     # --- Gateway liveness detection ---
@@ -1671,10 +1704,10 @@ async def get_status():
     # reaches it, and leaking host metadata there contradicts the allowlist's
     # own contract ("version, gateway state, active session count, and the
     # dashboard auth-gate shape. No bodies, no session content, no secrets").
-    # Surface this detail only on a loopback / ``--insecure`` bind, where the
-    # dashboard is local-only and the caller is already inside the trust
-    # envelope — the same loopback/gated split ``should_require_auth`` draws.
-    if not auth_required:
+    # Surface this detail on loopback / ``--insecure`` binds, where the
+    # dashboard is local-only, or to a gated dashboard caller whose session
+    # cookie verifies. Public gated liveness probes keep the minimal payload.
+    if not auth_required or _has_verified_dashboard_cookie_session(request):
         status.update({
             "hermes_home": str(get_hermes_home()),
             "config_path": str(get_config_path()),

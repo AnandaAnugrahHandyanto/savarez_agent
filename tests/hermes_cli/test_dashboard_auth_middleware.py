@@ -83,6 +83,47 @@ def test_gated_status_is_public(gated_app):
     assert "gateway_state" in body
 
 
+def test_gated_status_public_payload_redacts_local_details(gated_app):
+    """Unauthenticated liveness callers keep the public status contract only."""
+    r = gated_app.get("/api/status")
+    assert r.status_code == 200
+    body = r.json()
+
+    assert body["auth_required"] is True
+    assert body["auth_providers"] == ["stub"]
+    assert "gateway_state" in body
+    assert "gateway_running" in body
+
+    for key in (
+        "hermes_home",
+        "config_path",
+        "env_path",
+        "gateway_pid",
+        "gateway_health_url",
+    ):
+        assert key not in body
+
+
+def test_gated_status_cookie_session_gets_full_payload(gated_app):
+    """The logged-in dashboard uses cookies, not the loopback session token."""
+    _complete_stub_login(gated_app)
+
+    r = gated_app.get("/api/status")
+    assert r.status_code == 200
+    body = r.json()
+
+    assert body["auth_required"] is True
+    assert body["auth_providers"] == ["stub"]
+    for key in (
+        "hermes_home",
+        "config_path",
+        "env_path",
+        "gateway_pid",
+        "gateway_health_url",
+    ):
+        assert key in body
+
+
 @pytest.mark.parametrize("path", [
     "/api/config/defaults",
     "/api/config/schema",
