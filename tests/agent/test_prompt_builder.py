@@ -1284,9 +1284,8 @@ class TestBuildSkillsSystemPromptConditional:
 class TestSkillsNamesOnlyMode:
     """Tests for the names-only skills catalog mode.
 
-    Anthropic OAuth Max 400s when skill descriptions are included in the
-    system prompt.  The default is names-only; a config flag re-enables
-    descriptions for providers that support longer prompts.
+    The default is names-only to reduce prompt token usage; a config flag
+    re-enables descriptions for providers that support longer prompts.
     """
 
     @pytest.fixture(autouse=True)
@@ -1397,6 +1396,25 @@ class TestSkillsNamesOnlyMode:
         result = build_skills_system_prompt()
         assert "- py-lint" in result
         assert "Lint Python" not in result
+
+    def test_cache_includes_config_flag(self, monkeypatch, tmp_path):
+        """Changing include_descriptions_in_prompt produces a different cache entry."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_skill(tmp_path, "coding", "py-lint", "Lint Python")
+
+        # First call: names-only (default)
+        result1 = build_skills_system_prompt()
+        assert "- py-lint" in result1
+        assert "Lint Python" not in result1
+
+        # Write config to enable descriptions
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n  include_descriptions_in_prompt: true\n"
+        )
+
+        # Second call: should pick up config change (different cache key)
+        result2 = build_skills_system_prompt()
+        assert "- py-lint: Lint Python" in result2
 
 
 # =========================================================================
