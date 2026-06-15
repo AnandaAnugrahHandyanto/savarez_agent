@@ -147,13 +147,57 @@ def test_format_footer_unknown_field_silently_ignored():
     assert out == "gpt-5.4 · 50%"
 
 
+def test_format_footer_khal_pulse_developer_two_line_receipt():
+    out = format_runtime_footer(
+        model="openai/gpt-5.5",
+        provider="openai-codex",
+        context_tokens=185_000,
+        context_length=272_000,
+        compression_count=2,
+        api_calls=23,
+        estimated_cost_usd=0.0123,
+        elapsed_seconds=23,
+        cwd="/home/genie/workspace/khal",
+        fields=("model", "provider", "context_bar", "compressions", "api_calls", "cost", "elapsed", "cwd"),
+        style="khal_pulse_dev",
+    )
+    assert out == (
+        "⚕ gpt-5.5 · 🧭 openai-codex · 🧠185K/272K ███████░░░ 68% · 🗜2\n"
+        "🔁23 · 💸$0.012 · ✓23s · 📁~/workspace/khal"
+    )
+
+
+def test_format_footer_openai_codex_gpt55_shadow_cost_is_subsidized_and_approximate():
+    out = format_runtime_footer(
+        model="openai/gpt-5.5",
+        provider="openai-codex",
+        context_tokens=185_000,
+        context_length=272_000,
+        input_tokens=185_000,
+        output_tokens=0,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        compression_count=2,
+        api_calls=23,
+        estimated_cost_usd=0.0,
+        elapsed_seconds=23,
+        cwd="/home/genie/workspace/khal",
+        fields=("model", "provider", "context_bar", "compressions", "api_calls", "cost", "elapsed", "cwd"),
+        style="khal_pulse_dev",
+    )
+    assert out == (
+        "⚕ gpt-5.5 · 🧭 openai-codex · 🧠185K/272K ███████░░░ 68% · 🗜2\n"
+        "🔁23 · 💸~$0.012 · ✓23s · 📁~/workspace/khal"
+    )
+
+
 # ---------------------------------------------------------------------------
 # resolve_footer_config
 # ---------------------------------------------------------------------------
 
 def test_resolve_defaults_off_empty_config():
     cfg = resolve_footer_config({}, "telegram")
-    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"]}
+    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"], "style": "plain"}
 
 
 def test_resolve_global_enable():

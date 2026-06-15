@@ -8963,6 +8963,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
+                    provider=agent_result.get("provider"),
+                    api_calls=agent_result.get("api_calls"),
+                    estimated_cost_usd=agent_result.get("estimated_cost_usd"),
+                    input_tokens=agent_result.get("input_tokens"),
+                    output_tokens=agent_result.get("output_tokens"),
+                    cache_read_tokens=agent_result.get("cache_read_tokens"),
+                    cache_write_tokens=agent_result.get("cache_write_tokens"),
+                    compression_count=agent_result.get("compression_count"),
+                    elapsed_seconds=agent_result.get("elapsed_seconds"),
+                    session_id=agent_result.get("session_id"),
                 )
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
@@ -14917,7 +14927,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["persist_user_message"] = _persist_user_message_override
                 elif observed_group_context:
                     _conversation_kwargs["persist_user_message"] = message
+                _agent_started_at = time.time()
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
+                if isinstance(result, dict):
+                    result["elapsed_seconds"] = time.time() - _agent_started_at
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
@@ -14942,14 +14955,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _last_prompt_toks = 0
             _input_toks = 0
             _output_toks = 0
+            _cache_read_toks = 0
+            _cache_write_toks = 0
             _context_length = 0
+            _compression_count = 0
             _agent = agent_holder[0]
             if _agent and hasattr(_agent, "context_compressor"):
                 _last_prompt_toks = getattr(_agent.context_compressor, "last_prompt_tokens", 0)
                 _input_toks = getattr(_agent, "session_prompt_tokens", 0)
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
+                _cache_read_toks = getattr(_agent, "session_cache_read_tokens", 0)
+                _cache_write_toks = getattr(_agent, "session_cache_write_tokens", 0)
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
+                _compression_count = getattr(_agent.context_compressor, "compression_count", 0) or 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
+            _resolved_provider = getattr(_agent, "provider", None) if _agent else result.get("provider")
+            _estimated_cost_usd = getattr(_agent, "session_estimated_cost_usd", None) if _agent else result.get("estimated_cost_usd")
 
             # Sync session_id immediately after run_conversation(). Compression
             # can rotate before a follow-up model call fails; the failure return
@@ -15025,8 +15046,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "last_prompt_tokens": _last_prompt_toks,
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
+                    "cache_read_tokens": _cache_read_toks,
+                    "cache_write_tokens": _cache_write_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
+                    "compression_count": _compression_count,
+                    "provider": _resolved_provider,
+                    "estimated_cost_usd": _estimated_cost_usd,
+                    "elapsed_seconds": result.get("elapsed_seconds"),
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -15124,8 +15151,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "last_prompt_tokens": _last_prompt_toks,
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
+                "cache_read_tokens": _cache_read_toks,
+                "cache_write_tokens": _cache_write_toks,
                 "model": _resolved_model,
+                "provider": _resolved_provider,
+                "estimated_cost_usd": _estimated_cost_usd,
                 "context_length": _context_length,
+                "compression_count": _compression_count,
+                "elapsed_seconds": result.get("elapsed_seconds"),
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
