@@ -94,6 +94,7 @@ Platform toolsets define the complete tool configuration for a deployment target
 |---------|-------------------------------|
 | `hermes-cli` | Full toolset — the default for interactive CLI sessions. Includes file, terminal, web, browser, memory, skills, vision, image_gen, todo, tts, delegation, code_execution, cronjob, session_search, clarify, and `safe` (read-only) bundles plus the standard messaging tools. |
 | `hermes-acp` | Drops `clarify`, `cronjob`, `image_generate`, `send_message`, `text_to_speech`, and all four Home Assistant tools. Focused on coding tasks in IDE context. |
+| `hermes-a2a` | Same non-interactive coding/research set as `hermes-acp` (no messaging, audio, or clarify UI). Used by the A2A (Agent2Agent) server for task delegation by other agents. |
 | `hermes-api-server` | Drops `clarify`, `send_message`, and `text_to_speech`. Keeps everything else — suitable for programmatic access where user interaction isn't possible. |
 | `hermes-cron` | Same as `hermes-cli`. |
 | `hermes-telegram` | Same as `hermes-cli`. |

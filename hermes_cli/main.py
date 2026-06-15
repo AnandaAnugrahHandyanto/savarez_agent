@@ -38,6 +38,7 @@ Usage:
     hermes update              Update to latest version
     hermes uninstall           Uninstall Hermes Agent
     hermes acp                 Run as an ACP server for editor integration
+    hermes a2a                 Run as an A2A server for agent-to-agent integration
     hermes sessions browse     Interactive session picker with search
 
     hermes claw migrate --dry-run  # Preview migration without changes
@@ -293,6 +294,7 @@ from hermes_cli.subcommands.logs import build_logs_parser
 from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
 from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
+from hermes_cli.subcommands.a2a import build_a2a_parser
 from hermes_cli.subcommands.tools import build_tools_parser
 from hermes_cli.subcommands.insights import build_insights_parser
 from hermes_cli.subcommands.skills import build_skills_parser
@@ -9959,6 +9961,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "plugins",
         "security",
         "acp",
+        "a2a",
         "webhook",
         "memory",
         "dump",
@@ -10947,7 +10950,7 @@ def cmd_logs(args):
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
+        "a2a", "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
@@ -11046,7 +11049,7 @@ def _plugin_cli_discovery_needed() -> bool:
     return True
 
 
-_AGENT_COMMANDS = {None, "chat", "acp", "rl"}
+_AGENT_COMMANDS = {None, "chat", "acp", "a2a", "rl"}
 _AGENT_SUBCOMMANDS = {
     "cron": ("cron_command", {"run", "tick"}),
     "gateway": ("gateway_command", {"run"}),
@@ -11059,7 +11062,7 @@ def _is_tui_chat_launch(args) -> bool:
 
 
 def _command_has_dedicated_mcp_startup(args) -> bool:
-    if args.command == "acp":
+    if args.command in ("acp", "a2a"):
         return True
     if args.command == "gateway" and getattr(args, "gateway_command", None) == "run":
         return True
@@ -11353,6 +11356,32 @@ def cmd_acp(args):
     except ImportError:
         print("ACP dependencies not installed.", file=sys.stderr)
         print("Install them with:  pip install -e '.[acp]'", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_a2a(args):
+    """Launch Hermes Agent as an A2A (Agent2Agent) server."""
+    try:
+        from a2a_adapter.entry import main as a2a_main
+
+        a2a_argv = []
+        if getattr(args, "a2a_version", False):
+            a2a_argv.append("--version")
+        if getattr(args, "check", False):
+            a2a_argv.append("--check")
+        host = getattr(args, "host", None)
+        if host:
+            a2a_argv += ["--host", host]
+        port = getattr(args, "port", None)
+        if port:
+            a2a_argv += ["--port", str(port)]
+        public_url = getattr(args, "public_url", None)
+        if public_url:
+            a2a_argv += ["--public-url", public_url]
+        a2a_main(a2a_argv)
+    except ImportError:
+        print("A2A dependencies not installed.", file=sys.stderr)
+        print("Install them with:  pip install -e '.[a2a]'", file=sys.stderr)
         sys.exit(1)
 
 
@@ -12294,6 +12323,11 @@ def main():
     # acp command  (parser built in hermes_cli/subcommands/acp.py)
     # =========================================================================
     build_acp_parser(subparsers, cmd_acp=cmd_acp)
+
+    # =========================================================================
+    # a2a command  (parser built in hermes_cli/subcommands/a2a.py)
+    # =========================================================================
+    build_a2a_parser(subparsers, cmd_a2a=cmd_a2a)
 
     # =========================================================================
     # profile command  (parser built in hermes_cli/subcommands/profile.py)
