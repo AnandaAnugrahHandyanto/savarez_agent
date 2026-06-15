@@ -2488,6 +2488,16 @@ class SlackAdapter(BasePlatformAdapter):
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
         if not is_dm and bot_uid:
+            # Check ignored channels first — these are passive/archive-only
+            # channels where the live bot must never respond, even to allowed
+            # users or explicit mentions.
+            ignored_channels = self._slack_ignored_channels()
+            if channel_id in ignored_channels:
+                logger.debug(
+                    "[Slack] Ignoring message in explicitly ignored channel: %s", channel_id
+                )
+                return
+
             # Check allowed channels — if set, only respond in these channels (whitelist)
             allowed_channels = self._slack_allowed_channels()
             if allowed_channels and channel_id not in allowed_channels:
@@ -3793,6 +3803,23 @@ class SlackAdapter(BasePlatformAdapter):
         # branch to return an empty set.  str() here accepts whatever scalar
         # the YAML loader hands us without changing existing string/CSV
         # semantics.
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
+    def _slack_ignored_channels(self) -> set:
+        """Return channel IDs where the live bot must never respond.
+
+        This is a blacklist for passive/archive-only channels. It takes
+        precedence over allowed_channels, free_response_channels, and mention
+        handling. DMs are never filtered here.
+        """
+        raw = self.config.extra.get("ignored_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_IGNORED_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
         s = str(raw).strip() if raw is not None else ""
         if s:
             return {part.strip() for part in s.split(",") if part.strip()}

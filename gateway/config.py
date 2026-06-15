@@ -951,6 +951,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["allowed_topics"] = platform_cfg["allowed_topics"]
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
+                if plat == Platform.SLACK and "ignored_channels" in platform_cfg:
+                    bridged["ignored_channels"] = platform_cfg["ignored_channels"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if "exclusive_bot_mentions" in platform_cfg:
@@ -1052,6 +1054,12 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(ac, list):
                         ac = ",".join(str(v) for v in ac)
                     os.environ["SLACK_ALLOWED_CHANNELS"] = str(ac)
+                # ignored_channels: blacklist channels where Slack must never respond.
+                ic = slack_cfg.get("ignored_channels")
+                if ic is not None and not os.getenv("SLACK_IGNORED_CHANNELS"):
+                    if isinstance(ic, list):
+                        ic = ",".join(str(v) for v in ic)
+                    os.environ["SLACK_IGNORED_CHANNELS"] = str(ic)
 
             # Bridge top-level require_mention to Telegram when the telegram: section
             # does not already provide one.  Users often write "require_mention: true"

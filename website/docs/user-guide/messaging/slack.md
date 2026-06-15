@@ -421,6 +421,31 @@ Behavior:
 
 See also: [admin/user slash command split](../../reference/slash-commands.md#permissions-and-adminuser-split).
 
+### Channel ignore list (`ignored_channels`)
+
+Use `ignored_channels` for passive/archive-only channels where the bot should never reply. This is a denylist: if a channel is listed here, Slack messages in that channel are silently ignored even when the bot is `@mentioned`, the channel is also in `allowed_channels`, or the channel is listed in `free_response_channels`.
+
+**DMs are exempt** from this filter, so authorized users can still reach the bot directly.
+
+```yaml
+slack:
+  ignored_channels:
+    - "C0123456789"   # #announcements archive
+    - "C0987654321"   # #imports mirror
+```
+
+Or via env var (comma-separated):
+
+```bash
+SLACK_IGNORED_CHANNELS="C0123456789,C0987654321"
+```
+
+Precedence:
+
+- `ignored_channels` has highest priority for Slack channel messages.
+- `allowed_channels` is checked after `ignored_channels`.
+- Mention and free-response rules only run if the channel is not ignored.
+
 ### Unauthorized User Handling
 
 ```yaml
