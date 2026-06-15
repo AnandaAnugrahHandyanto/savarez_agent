@@ -1754,6 +1754,9 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             pass
         return result
 
+    if function_name in getattr(agent, "_local_tool_handlers", {}):
+        return _invoke_local_tool(agent, function_name, function_args)
+
     if function_name == "todo":
         def _execute(next_args: dict) -> Any:
             from tools.todo_tool import todo_tool as _todo_tool
@@ -1870,6 +1873,21 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         api_request_id=getattr(agent, "_current_api_request_id", "") or "",
     )
 
+
+def _invoke_local_tool(agent, function_name: str, function_args: dict) -> str:
+    """Dispatch a per-agent local tool without touching the global registry."""
+
+    handler = getattr(agent, "_local_tool_handlers", {}).get(function_name)
+    if handler is None:
+        return json.dumps({"error": f"Unknown local tool: {function_name}"}, ensure_ascii=False)
+    try:
+        result = handler(function_args or {})
+    except Exception as exc:
+        logger.warning("Local tool %s failed: %s", function_name, exc, exc_info=True)
+        return json.dumps({"error": f"Local tool '{function_name}' failed: {exc}"}, ensure_ascii=False)
+    if isinstance(result, str):
+        return result
+    return json.dumps(result, ensure_ascii=False)
 
 
 def repair_tool_call(agent, tool_name: str) -> str | None:
