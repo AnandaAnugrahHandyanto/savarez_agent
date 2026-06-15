@@ -27,6 +27,11 @@ def _mqtt_client(cfg: "ControllerConfig", client_id_suffix: str) -> mqtt.Client:
     c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"hermes-mesh-{cfg.namespace}-{client_id_suffix}")
     c.username_pw_set(cfg.broker_user, str(cfg.broker_password))
     if cfg.ca_cert_path:
+        if not Path(cfg.ca_cert_path).exists():
+            raise SystemExit(
+                "mesh: ca_cert_path does not exist: %s. Point it at a valid CA "
+                "cert for TLS, or leave it empty for plaintext MQTT." % cfg.ca_cert_path
+            )
         c.tls_set(ca_certs=str(cfg.ca_cert_path))
     return c
 
