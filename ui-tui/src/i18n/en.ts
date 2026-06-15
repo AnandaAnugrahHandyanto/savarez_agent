@@ -296,7 +296,7 @@ const catalog = {
   'branding.availableTools': 'Available Tools',
   'branding.availableSkills': 'Available Skills',
   'branding.systemPrompt': 'System Prompt',
-  'prompt.selectHint': '↑/↓ select · Enter confirm · {n} quick pick · Ctrl+C deny',
+  'prompt.selectHint': '↑/↓ select · Enter confirm · {n} quick pick · Esc/Ctrl+C deny',
   'prompt.selectHintEsc': '↑/↓ select · Enter confirm · {n} quick pick · Esc/Ctrl+C cancel',
   'prompt.typeHint': 'Enter send · Esc {action}',
   'prompt.typeHintBack': 'back',

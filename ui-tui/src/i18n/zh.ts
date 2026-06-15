@@ -293,7 +293,7 @@ const catalog: Record<TranslationKey, TranslationValue> = {
   'branding.availableTools': '可用工具',
   'branding.availableSkills': '可用技能',
   'branding.systemPrompt': '系统提示词',
-  'prompt.selectHint': '↑/↓ 选择 · Enter 确认 · {n} 快速选择 · Ctrl+C 拒绝',
+  'prompt.selectHint': '↑/↓ 选择 · Enter 确认 · {n} 快速选择 · Esc/Ctrl+C 拒绝',
   'prompt.selectHintEsc': '↑/↓ 选择 · Enter 确认 · {n} 快速选择 · Esc/Ctrl+C 取消',
   'prompt.typeHint': 'Enter 发送 · Esc {action}',
   'prompt.typeHintBack': '返回',

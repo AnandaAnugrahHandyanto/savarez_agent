@@ -256,6 +256,12 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             <Text color={t.color.text}>
               {ti('branding.tools', { count: String(s.tools) })}
             </Text>
+          ) : s.disabled || s.status === 'disabled' ? (
+            <Text color={t.color.muted}>disabled</Text>
+          ) : s.status === 'connecting' ? (
+            <Text color={t.color.warn}>connecting</Text>
+          ) : s.status === 'configured' ? (
+            <Text color={t.color.muted}>configured</Text>
           ) : (
             <Text color={t.color.error}>{ti('branding.mcpFailed')}</Text>
           )}
