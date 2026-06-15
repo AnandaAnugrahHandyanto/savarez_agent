@@ -161,6 +161,46 @@ def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
 
 
 # =========================================================================
+# Delegation model label (shown alongside delegate_task progress)
+# =========================================================================
+
+
+def _get_delegation_model_label() -> str:
+    """Read delegation config and return a short model tag for display.
+
+    Returns ``[opencode-go/deepseek-v4-flash] `` (with trailing space) when
+    ``delegation.provider`` / ``delegation.model`` is configured in config.yaml,
+    or empty string when delegation defers to the parent agent (no override).
+
+    Falls back silently on import/config errors.
+    """
+    try:
+        from cli import CLI_CONFIG  # type: ignore[import-untyped]
+
+        cfg = CLI_CONFIG.get("delegation") or {}
+        model = str(cfg.get("model") or "").strip()
+        provider = str(cfg.get("provider") or "").strip()
+        if model or provider:
+            parts = [p for p in [provider, model] if p]
+            return f"[{'/'.join(parts)}] "
+    except Exception:
+        pass
+    try:
+        from hermes_cli.config import load_config
+
+        full = load_config()
+        cfg = full.get("delegation") or {}
+        model = str(cfg.get("model") or "").strip()
+        provider = str(cfg.get("provider") or "").strip()
+        if model or provider:
+            parts = [p for p in [provider, model] if p]
+            return f"[{'/'.join(parts)}] "
+    except Exception:
+        pass
+    return ""
+
+
+# =========================================================================
 # Tool preview (one-line summary of a tool call's primary argument)
 # =========================================================================
 
@@ -1056,12 +1096,13 @@ def get_cute_tool_message(
         return _wrap(f"┊ 🐍 exec      {_trunc(first_line, 35)}  {dur}")
     if tool_name == "delegate_task":
         tasks = args.get("tasks")
+        tag = _get_delegation_model_label()
         if tasks and isinstance(tasks, list):
             task_count, goals = _delegate_task_goal_parts(tasks, per_goal_len=30)
             detail = " | ".join(goals) if goals else "parallel"
             count_label = task_count or len(tasks)
-            return _wrap(f"┊ 🔀 delegate  {count_label}x: {_trunc(detail, 35)}  {dur}")
-        return _wrap(f"┊ 🔀 delegate  {_trunc(args.get('goal', ''), 35)}  {dur}")
+            return _wrap(f"┊ 🔀 delegate  {tag}{count_label}x: {_trunc(detail, 35)}  {dur}")
+        return _wrap(f"┊ 🔀 delegate  {tag}{_trunc(args.get('goal', ''), 35 - len(tag))}  {dur}")
 
     preview = build_tool_preview(tool_name, args) or ""
     return _wrap(f"┊ ⚡ {tool_name[:9]:9} {_trunc(preview, 35)}  {dur}")

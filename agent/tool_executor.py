@@ -27,6 +27,7 @@ from agent.display import (
     get_cute_tool_message as _get_cute_tool_message_impl,
     get_tool_emoji as _get_tool_emoji,
     _detect_tool_failure,
+    _get_delegation_model_label,
 )
 from agent.tool_guardrails import ToolGuardrailDecision
 from agent.tool_dispatch_helpers import (
@@ -1086,14 +1087,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"  {_get_cute_tool_message_impl('read_terminal', function_args, tool_duration, result=function_result)}")
         elif function_name == "delegate_task":
             tasks_arg = function_args.get("tasks")
+            _tag = _get_delegation_model_label()
             if tasks_arg and isinstance(tasks_arg, list):
-                spinner_label = f"🔀 delegating {len(tasks_arg)} tasks · (/agents to monitor)"
+                spinner_label = f"🔀 {_tag}delegating {len(tasks_arg)} tasks · (/agents to monitor)"
             else:
                 goal_preview = (function_args.get("goal") or "")[:30]
                 spinner_label = (
-                    f"🔀 {goal_preview} · (/agents to monitor)"
+                    f"🔀 {_tag}{goal_preview} · (/agents to monitor)"
                     if goal_preview
-                    else "🔀 delegating · (/agents to monitor)"
+                    else f"🔀 {_tag}delegating · (/agents to monitor)"
                 )
             spinner = None
             if agent._should_emit_quiet_tool_messages() and agent._should_start_quiet_spinner():
