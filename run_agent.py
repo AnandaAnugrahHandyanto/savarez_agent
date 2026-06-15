@@ -1515,7 +1515,7 @@ class AIAgent:
                     for msg in unflushed:
                         # Save message with timestamp for later recovery
                         # Use msg.get("timestamp") if available, otherwise current time
-                        msg_ts = msg.get("timestamp", now_ts)
+                        msg_ts = msg.get("_flush_timestamp", now_ts)
                         wrapped = {
                             "_fallback_timestamp": msg_ts,
                             "message": msg,
@@ -1655,6 +1655,11 @@ class AIAgent:
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
                 try:
+                    # Generate timestamp ONCE — shared between DB append and
+                    # JSONL fallback so recovery can dedup by (role, content,
+                    # timestamp) without false-matching on genuine repeats.
+                    flush_ts = time.time()
+                    msg["_flush_timestamp"] = flush_ts
                     self._session_db.append_message(
                         session_id=self.session_id,
                         role=role,
@@ -1668,6 +1673,7 @@ class AIAgent:
                         reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                         codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                         codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
+                        timestamp=flush_ts,
                     )
                     flushed_ids.add(msg_id)
                     last_successful_idx = idx + 1

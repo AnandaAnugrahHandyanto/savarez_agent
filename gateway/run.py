@@ -350,35 +350,47 @@ def _recover_pending_messages(session_db, profile: Optional[str] = None) -> int:
             db_msgs = session_db.get_messages(session_id)
             overlap = 0  # number of pending entries that match DB suffix
             if db_msgs:
-                # Normalize both sides to comparable keys.  Comparison uses
-                # (role, content, tool_name, tool_calls_json, tool_call_id)
-                # — NOT timestamp — so the match is content-stable and won't
-                # false-negative across clock skew or recovery delays.
+                # Normalize both sides to comparable keys.  Uses
+                # (role, content, tool_name, tool_calls, tool_call_id,
+                # timestamp) so that the shared flush timestamp (set
+                # in _flush_messages_to_session_db) anchors the match:
+                # if append succeeded but _session_db_failed was still
+                # set (false alarm), the DB row and the fallback entry
+                # carry the SAME timestamp — they match exactly.
+                # Two genuine "继续" messages get different timestamps
+                # and won't collide.
                 import json as _json
-                def _mk_key(m):
+                def _mk_key(m, ts=None):
                     if not isinstance(m, dict):
                         return None
                     tc = m.get("tool_calls")
                     tc_str = _json.dumps(tc, sort_keys=True) if tc else None
+                    ts_val = ts if ts is not None else m.get("timestamp")
                     return (
                         m.get("role"),
                         m.get("content"),
                         m.get("tool_name"),
                         tc_str,
                         m.get("tool_call_id"),
+                        ts_val,
                     )
 
                 db_keys = [_mk_key(m) for m in db_msgs if _mk_key(m) is not None]
 
-                # Build pending keys from the unwrapped messages
+                # Build pending keys from the unwrapped messages, threading
+                # the wrapper's _fallback_timestamp into the comparison key.
                 pending_keys = []
                 for entry in entries:
                     msg = None
+                    entry_ts = None
                     if isinstance(entry, dict) and "_fallback_timestamp" in entry and "message" in entry:
                         msg = entry.get("message")
+                        entry_ts = entry.get("_fallback_timestamp")
                     else:
                         msg = entry
-                    pending_keys.append(_mk_key(msg) if isinstance(msg, dict) else None)
+                    pending_keys.append(
+                        _mk_key(msg, ts=entry_ts) if isinstance(msg, dict) else None
+                    )
 
                 # Find maximum overlap: db_msgs[-N:] == pending_keys[:N]
                 max_possible = min(len(db_keys), len(pending_keys))
