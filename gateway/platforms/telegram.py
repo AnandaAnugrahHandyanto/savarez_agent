@@ -998,14 +998,15 @@ class TelegramAdapter(BasePlatformAdapter):
     ) -> bool:
         """Whether to replace a streamed preview with a fresh rich final.
 
-        Keep this disabled for Telegram. The fresh-final path briefly shows two
-        copies of the final answer, then deletes the streaming preview after the
-        rich send succeeds. That is especially visible on clients that support
-        rich messages well, and it looks like duplicate delivery at the end of
-        every streamed turn. Until Telegram rich edits are wired directly, final
-        streamed replies should edit the existing preview in place.
+        Telegram has no rich edit endpoint wired through PTB yet: streaming
+        previews are edited as raw/MarkdownV2 text, while final rich delivery is
+        only available through ``sendRichMessage``.  Finalizing a long rich
+        reply by editing the preview in place can leave Telegram Desktop with a
+        corrupted/reflowed bubble (overlapping lines after the final format
+        pass).  When rich delivery is available, prefer a fresh
+        ``sendRichMessage`` final and best-effort delete the stale preview.
         """
-        return False
+        return self._should_attempt_rich(content, metadata=metadata)
 
     def streaming_overflow_limit(self) -> Optional[int]:
         """Allow the stream consumer to accumulate up to the rich-message cap
