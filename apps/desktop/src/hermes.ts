@@ -44,6 +44,7 @@ import type {
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
+export const MODEL_OPTIONS_TIMEOUT_MS = 90_000
 
 export type {
   ActionResponse,
@@ -644,7 +645,8 @@ export function getUsageAnalytics(days = 30): Promise<AnalyticsResponse> {
 export function getGlobalModelOptions(): Promise<ModelOptionsResponse> {
   return window.hermesDesktop.api<ModelOptionsResponse>({
     ...profileScoped(),
-    path: '/api/model/options'
+    path: '/api/model/options',
+    timeoutMs: MODEL_OPTIONS_TIMEOUT_MS
   })
 }
 
