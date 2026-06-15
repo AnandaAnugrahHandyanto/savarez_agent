@@ -23,8 +23,26 @@ describe('isRemoteReauthFailure', () => {
     expect(isRemoteReauthFailure(config())).toBe(true)
   })
 
-  it('false when the oauth session is still connected', () => {
+  it('false when the oauth session is still connected and the boot error is not auth-shaped', () => {
     expect(isRemoteReauthFailure(config({ remoteOauthConnected: true }))).toBe(false)
+  })
+
+  it('true for an auth-shaped remote boot error even when the cookie probe is stale-positive', () => {
+    expect(
+      isRemoteReauthFailure(
+        config({ remoteOauthConnected: true }),
+        'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.'
+      )
+    ).toBe(true)
+  })
+
+  it('false for prolonged connectivity loss copy that mentions sign in as one option', () => {
+    expect(
+      isRemoteReauthFailure(
+        config({ remoteOauthConnected: true }),
+        'Lost connection to Hermes gateway. Use Retry, sign in again, or switch to local gateway.'
+      )
+    ).toBe(false)
   })
 
   it('false for a local gateway', () => {

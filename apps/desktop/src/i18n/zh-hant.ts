@@ -58,6 +58,7 @@ export const zhHant = defineLocale({
       backendStopped: '後端已停止',
       desktopBootFailed: '桌面啟動失敗',
       gatewaySignInRequired: '需要閘道登入',
+      lostConnectionToGateway: '與 Hermes 閘道的連線已中斷。請重試、重新登入，或切換到本機閘道。',
       ipcBridgeUnavailable: '桌面 IPC 橋接器不可用。'
     },
     failure: {

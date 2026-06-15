@@ -36,6 +36,7 @@ const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { waitForDashboardPort } = require('./backend-ready.cjs')
+const { revalidatePrimaryConnection } = require('./connection-revalidate.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { buildDesktopBackendEnv, normalizeHermesHomeRoot } = require('./backend-env.cjs')
@@ -5272,37 +5273,13 @@ ipcMain.handle('hermes:connection', async (_event, profile) => ensureBackend(pro
 // to confirm the cached PRIMARY backend is still reachable; if a remote one is
 // not, we drop the cache so the next getConnection() rebuilds it. Local backends
 // self-heal via their child 'exit' handler, so we never touch them here.
-ipcMain.handle('hermes:connection:revalidate', async () => {
-  if (!connectionPromise) {
-    return { ok: true, rebuilt: false }
-  }
-
-  let conn = null
-  try {
-    conn = await connectionPromise
-  } catch {
-    // The cached boot already rejected (its own catch nulls connectionPromise);
-    // nothing to revalidate — the next getConnection() builds fresh.
-    return { ok: true, rebuilt: false }
-  }
-
-  if (!conn || conn.mode !== 'remote' || !conn.baseUrl) {
-    return { ok: true, rebuilt: false }
-  }
-
-  const base = conn.baseUrl.replace(/\/+$/, '')
-  try {
-    await fetchPublicJson(`${base}/api/status`, { timeoutMs: 2_500 })
-    return { ok: true, rebuilt: false }
-  } catch {
-    // Unreachable remote: drop the stale cache so the renderer's next reconnect
-    // tick rebuilds a fresh, reachable descriptor. resetHermesConnection only
-    // nulls connectionPromise for a remote (no child to SIGTERM).
-    rememberLog('Cached remote Hermes backend failed liveness probe; dropping stale connection.')
-    resetHermesConnection()
-    return { ok: true, rebuilt: true }
-  }
-})
+ipcMain.handle('hermes:connection:revalidate', async () =>
+  revalidatePrimaryConnection(connectionPromise, {
+    probeStatus: url => fetchPublicJson(url, { timeoutMs: 2_500 }),
+    rememberLog,
+    resetConnection: resetHermesConnection
+  })
+)
 ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
   touchPoolBackend(profile)
   return { ok: true }
