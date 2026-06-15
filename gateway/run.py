@@ -468,18 +468,12 @@ def _recover_pending_messages(session_db, profile: Optional[str] = None) -> int:
                     logger.warning("Failed to recover message for session %s: %s", session_id, e)
                     continue
 
-            # Rename the file instead of deleting (for dev/test safety)
+            # Delete the pending file after successful recovery
             try:
-                archived_file = pending_file.with_name(pending_file.name + ".recovered")
-                # Add a unique suffix if the archived file already exists
-                counter = 1
-                while archived_file.exists():
-                    archived_file = pending_file.with_name(f"{pending_file.name}.recovered.{counter}")
-                    counter += 1
-                pending_file.rename(archived_file)
-                logger.info("Archived pending file to %s", archived_file.name)
+                pending_file.unlink()
+                logger.info("Removed pending file %s", pending_file.name)
             except Exception as e:
-                logger.warning("Failed to archive pending file %s: %s", pending_file.name, e)
+                logger.warning("Failed to remove pending file %s: %s", pending_file.name, e)
 
         except Exception as e:
             logger.warning("Failed to process pending file %s: %s", pending_file.name, e)
