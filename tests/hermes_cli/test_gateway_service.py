@@ -945,6 +945,36 @@ class TestLaunchdServiceRecovery:
 
         assert spawned == [True]
 
+    def test_launchd_restart_bootouts_before_bootstrap_on_unloaded(self, monkeypatch, capsys):
+        """When kickstart reports 'job unloaded', bootout stale registration before bootstrap (#42006)."""
+        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
+        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", "-k", target]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    3, cmd, stderr="No such process"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_restart()
+
+        # Verify bootout is called before bootstrap
+        assert ["launchctl", "bootout", target] in calls
+        bootout_idx = calls.index(["launchctl", "bootout", target])
+        bootstrap_idx = calls.index(["launchctl", "bootstrap", gateway_cli._launchd_domain(), str(gateway_cli.get_launchd_plist_path())])
+        assert bootout_idx < bootstrap_idx, "bootout must precede bootstrap"
+        assert "Service restarted" in capsys.readouterr().out
+
     def test_launchd_stop_tolerates_domain_unsupported_bootout(self, monkeypatch, capsys):
         """bootout exit 125 (macOS 26) must fall through to PID-based kill, not raise."""
         def fake_run(cmd, check=False, **kwargs):
