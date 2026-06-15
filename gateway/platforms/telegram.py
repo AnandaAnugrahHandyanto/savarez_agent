@@ -14,8 +14,10 @@ import json
 import logging
 import os
 import tempfile
+import time
 import html as _html
 import re
+from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
@@ -358,6 +360,15 @@ class TelegramAdapter(BasePlatformAdapter):
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
     MEDIA_GROUP_WAIT_SECONDS = 0.8
+    # Outbound reply-context cache bounds. Telegram exposes
+    # message.reply_to_message.message_id for replies to rich (sendRichMessage)
+    # messages but leaves .text/.caption empty, so the inbound extractor has no
+    # body to quote. We remember a bounded snippet of what we sent, keyed by
+    # (chat_id, message_id), and fall back to it on reply. Three independent
+    # caps keep the cache from growing without bound.
+    _OUTBOUND_CTX_MAX_ENTRIES = 1024
+    _OUTBOUND_CTX_MAX_CHARS = 2000
+    _OUTBOUND_CTX_TTL_SECONDS = 48 * 60 * 60  # 48 hours
     _GENERAL_TOPIC_THREAD_ID = "1"
 
     # Telegram's edit_message applies MarkdownV2 formatting only on the
@@ -511,6 +522,86 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Bounded, TTL-expiring snippets of recently sent outbound content,
+        # keyed by (chat_id, message_id). Restores reply context when a user
+        # replies to a rich (sendRichMessage) message whose body does not
+        # round-trip through reply_to_message.text/.caption (#46515-adjacent
+        # rich-reply parity).
+        self._outbound_reply_context: "OrderedDict[tuple[str, str], tuple[str, float]]" = OrderedDict()
+
+    def _outbound_context_cache(self) -> "OrderedDict[tuple[str, str], tuple[str, float]]":
+        """Return the outbound reply-context cache, initializing it on demand.
+
+        The adapter is occasionally built via ``object.__new__`` (notably in
+        send-path tests) which bypasses ``__init__``, so the helpers must not
+        assume the attribute already exists.
+        """
+        cache = getattr(self, "_outbound_reply_context", None)
+        if cache is None:
+            cache = OrderedDict()
+            self._outbound_reply_context = cache
+        return cache
+
+    def _remember_outbound_context(
+        self, chat_id: Any, message_id: Any, content: Optional[str]
+    ) -> None:
+        """Remember a bounded snippet of an outbound message for reply context.
+
+        Keyed by (str(chat_id), str(message_id)). No-op when the id or content
+        is missing. Caps the snippet, prunes expired entries, and evicts the
+        oldest entries past the size cap so the cache cannot grow unbounded.
+        """
+        if not message_id or not content:
+            return
+        key = (str(chat_id), str(message_id))
+        snippet = content[: self._OUTBOUND_CTX_MAX_CHARS]
+        now = time.monotonic()
+        cache = self._outbound_context_cache()
+        self._prune_outbound_context(now)
+        cache[key] = (snippet, now)
+        # Keep the freshest entry at the tail even when updating an existing key
+        # (new keys land at the tail automatically; value-updates do not move).
+        cache.move_to_end(key)
+        while len(cache) > self._OUTBOUND_CTX_MAX_ENTRIES:
+            cache.popitem(last=False)
+
+    def _prune_outbound_context(self, now: Optional[float] = None) -> None:
+        """Drop entries older than the TTL.
+
+        Called on every write. The read path (_lookup_outbound_context) does a
+        per-entry TTL check on the single fetched key instead of a full scan.
+        """
+        cache = self._outbound_context_cache()
+        if not cache:
+            return
+        if now is None:
+            now = time.monotonic()
+        ttl = self._OUTBOUND_CTX_TTL_SECONDS
+        expired = [k for k, (_, ts) in cache.items() if now - ts > ttl]
+        for k in expired:
+            cache.pop(k, None)
+
+    def _lookup_outbound_context(
+        self, chat_id: Any, message_id: Any
+    ) -> Optional[str]:
+        """Return the remembered snippet for (chat_id, message_id), or None.
+
+        Expired entries are dropped on access so a stale snippet is never
+        returned. This is a last-resort fallback only; native quotes and real
+        reply_to_message text always take precedence at the call site.
+        """
+        if not message_id:
+            return None
+        key = (str(chat_id), str(message_id))
+        cache = self._outbound_context_cache()
+        entry = cache.get(key)
+        if entry is None:
+            return None
+        snippet, ts = entry
+        if time.monotonic() - ts > self._OUTBOUND_CTX_TTL_SECONDS:
+            cache.pop(key, None)
+            return None
+        return snippet
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -2235,6 +2326,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:
+                        # Remember the delivered rich content so a later reply
+                        # recovers context: rich sends carry no legacy text
+                        # field that would round-trip via reply_to_message.text.
+                        self._remember_outbound_context(
+                            chat_id, rich_result.message_id, content
+                        )
                         # Re-trigger typing like the legacy success path does.
                         try:
                             await self.send_typing(chat_id, metadata=metadata)
@@ -2456,6 +2553,12 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
+
+            # Remember the delivered content under every chunk id so a later
+            # reply to any chunk recovers reply context, even when Telegram
+            # exposes no quotable body (parity with the rich path above).
+            for mid in message_ids:
+                self._remember_outbound_context(chat_id, mid, content)
 
             # Re-trigger typing indicator after sending a message.
             # Telegram clears the typing state when a new message is delivered,
@@ -6581,6 +6684,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     or message.reply_to_message.caption
                     or None
                 )
+                if reply_to_text is None:
+                    # Rich (sendRichMessage) bodies do not round-trip through
+                    # reply_to_message.text/.caption, so the reply pointer would
+                    # otherwise carry no context. Fall back to the snippet we
+                    # cached when we sent the message. Last resort only: the
+                    # native quote and the real text/caption always win above.
+                    reply_to_text = self._lookup_outbound_context(
+                        chat.id, reply_to_id
+                    )
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt
