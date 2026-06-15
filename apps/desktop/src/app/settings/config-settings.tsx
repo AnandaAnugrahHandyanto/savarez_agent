@@ -32,7 +32,7 @@ function ConfigField({
   enumOptions,
   optionLabels,
   onChange,
-  actionBelow
+  descriptionExtra
 }: {
   schemaKey: string
   schema: ConfigFieldSchema
@@ -40,7 +40,7 @@ function ConfigField({
   enumOptions?: string[]
   optionLabels?: Record<string, string>
   onChange: (value: unknown) => void
-  actionBelow?: ReactNode
+  descriptionExtra?: ReactNode
 }) {
   const { t } = useI18n()
   const c = t.settings.config
@@ -66,8 +66,17 @@ function ConfigField({
       ? rawDescription
       : undefined
 
+  const descriptionNode: ReactNode = descriptionExtra ? (
+    <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
+      {description}
+      {descriptionExtra}
+    </span>
+  ) : (
+    description
+  )
+
   const row = (action: ReactNode, wide = false) => (
-    <ListRow action={action} actionBelow={actionBelow} description={description} title={label} wide={wide} />
+    <ListRow action={action} description={descriptionNode} title={label} wide={wide} />
   )
 
   if (schema.type === 'boolean') {
@@ -360,7 +369,7 @@ export function ConfigSettings({
           {fields.map(([key, field]) => (
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
               <ConfigField
-                actionBelow={
+                descriptionExtra={
                   key === 'memory.provider' && Boolean(getNested(config, key)) ? (
                     <MemoryConnect provider={String(getNested(config, key))} />
                   ) : undefined
