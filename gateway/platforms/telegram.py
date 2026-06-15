@@ -481,6 +481,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
+        # Interactive checklist state: "chat_id:message_id" → {content, items}.
+        # Items are rendered as inline keyboard buttons and toggled in-place.
+        self._checklist_state: Dict[str, Dict[str, Any]] = {}
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -901,6 +904,314 @@ class TelegramAdapter(BasePlatformAdapter):
         if LinkPreviewOptions is not None:
             return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
         return {"disable_web_page_preview": True}
+
+    _RICH_MARKDOWN_FEATURE_RE = re.compile(
+        r"(^\s*\|.+\|\s*$\n^\s*\|\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$)"
+        r"|(^\s*[-*+]\s+\[[ xX]\]\s+)"
+        r"|(<details\b|</details>|<summary\b|</summary>)",
+        re.MULTILINE | re.IGNORECASE,
+    )
+
+    @classmethod
+    def _uses_rich_markdown_features(cls, content: str) -> bool:
+        """Return True when content needs Bot API rich messages.
+
+        Telegram's normal ``sendMessage`` + MarkdownV2 path cannot render GFM
+        tables, task-list checkboxes, or HTML ``<details>`` blocks. Bot API
+        10.1 added ``sendRichMessage`` / ``sendRichMessageDraft`` with a
+        GitHub-Flavored-Markdown-compatible ``markdown`` field that supports
+        those structures natively.  Only route rich-feature payloads through
+        the newer methods so existing simple messages keep the battle-tested
+        MarkdownV2 path and old Bot API servers degrade gracefully.
+        """
+        if not content:
+            return False
+        return bool(cls._RICH_MARKDOWN_FEATURE_RE.search(content))
+
+    @staticmethod
+    def _extract_message_id_from_api_response(response: Any) -> Optional[str]:
+        if response is None:
+            return None
+        if isinstance(response, dict):
+            mid = response.get("message_id")
+            return str(mid) if mid is not None else None
+        mid = getattr(response, "message_id", None)
+        return str(mid) if mid is not None else None
+
+    def _rich_message_payload(self, content: str) -> Dict[str, Any]:
+        return {"markdown": content, "skip_entity_detection": False}
+
+    @classmethod
+    def _rich_markdown_to_telegram_html(cls, content: str) -> str:
+        """Convert rich Markdown into Telegram-client-safe HTML.
+
+        Bot API rich messages parse tables/task lists/details correctly on the
+        server, but older/current mobile clients may still display the source
+        Markdown.  This fallback uses the mature ``sendMessage`` HTML renderer:
+        headings become bold, tables become fixed-width ``<pre>`` blocks,
+        task-list items become checkbox glyphs, and ``<details>`` becomes an
+        expandable blockquote where clients support it.
+        """
+        lines = content.splitlines()
+        out: List[str] = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+
+            if stripped.lower().startswith("<details"):
+                i += 1
+                summary = "Details"
+                body: List[str] = []
+                while i < len(lines):
+                    inner = lines[i].strip()
+                    if inner.lower().startswith("<summary") and "</summary>" in inner.lower():
+                        summary = re.sub(r"</?summary[^>]*>", "", lines[i], flags=re.IGNORECASE).strip() or summary
+                    elif inner.lower().startswith("</details"):
+                        break
+                    else:
+                        body.append(lines[i])
+                    i += 1
+                rendered_body = "\n".join(_html.escape(b) for b in body).strip()
+                out.append(
+                    f"<blockquote expandable><b>{_html.escape(summary)}</b>"
+                    + (f"\n{rendered_body}" if rendered_body else "")
+                    + "</blockquote>"
+                )
+                i += 1
+                continue
+
+            if stripped.startswith("#"):
+                m = re.match(r"^(#{1,6})\s+(.+)$", stripped)
+                if m:
+                    out.append(f"<b>{_html.escape(m.group(2).strip())}</b>")
+                    i += 1
+                    continue
+
+            if cls._looks_like_markdown_table_at(lines, i):
+                table_lines = [lines[i], lines[i + 1]]
+                i += 2
+                while i < len(lines) and lines[i].strip().startswith("|"):
+                    table_lines.append(lines[i])
+                    i += 1
+                out.append(f"<pre>{_html.escape(cls._format_markdown_table_for_pre(table_lines))}</pre>")
+                continue
+
+            task = re.match(r"^\s*[-*+]\s+\[([ xX])\]\s+(.+)$", line)
+            if task:
+                mark = "☑️" if task.group(1).lower() == "x" else "☐"
+                out.append(f"{mark} {_html.escape(task.group(2).strip())}")
+                i += 1
+                continue
+
+            out.append(_html.escape(line))
+            i += 1
+        return "\n".join(out)
+
+    @staticmethod
+    def _looks_like_markdown_table_at(lines: List[str], index: int) -> bool:
+        if index + 1 >= len(lines):
+            return False
+        first = lines[index].strip()
+        second = lines[index + 1].strip()
+        return (
+            first.startswith("|")
+            and first.endswith("|")
+            and second.startswith("|")
+            and bool(re.match(r"^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$", second))
+        )
+
+    @staticmethod
+    def _format_markdown_table_for_pre(table_lines: List[str]) -> str:
+        rows: List[List[str]] = []
+        for idx, line in enumerate(table_lines):
+            if idx == 1:
+                continue
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            rows.append(cells)
+        if not rows:
+            return "\n".join(table_lines)
+        width = max(len(row) for row in rows)
+        for row in rows:
+            row.extend([""] * (width - len(row)))
+        col_widths = [max(len(row[col]) for row in rows) for col in range(width)]
+        rendered: List[str] = []
+        for idx, row in enumerate(rows):
+            rendered.append("  ".join(row[col].ljust(col_widths[col]) for col in range(width)).rstrip())
+            if idx == 0:
+                rendered.append("  ".join("─" * col_widths[col] for col in range(width)).rstrip())
+        return "\n".join(rendered)
+
+    @staticmethod
+    def _extract_checklist_items(content: str) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        for line_no, line in enumerate(content.splitlines()):
+            match = re.match(r"^(\s*[-*+]\s+)\[([ xX])\]\s+(.+)$", line)
+            if match:
+                items.append({
+                    "line": line_no,
+                    "prefix": match.group(1),
+                    "checked": match.group(2).lower() == "x",
+                    "text": match.group(3).strip(),
+                })
+        return items
+
+    @staticmethod
+    def _set_checklist_item(content: str, item_index: int, checked: bool) -> str:
+        lines = content.splitlines()
+        seen = 0
+        for line_no, line in enumerate(lines):
+            match = re.match(r"^(\s*[-*+]\s+)\[([ xX])\](\s+.+)$", line)
+            if not match:
+                continue
+            if seen == item_index:
+                marker = "x" if checked else " "
+                lines[line_no] = f"{match.group(1)}[{marker}]{match.group(3)}"
+                return "\n".join(lines)
+            seen += 1
+        return content
+
+    @staticmethod
+    def _checklist_state_key(chat_id: Any, message_id: Any) -> str:
+        return f"{chat_id}:{message_id}"
+
+    def _build_checklist_keyboard(self, content: str) -> Optional[Any]:
+        items = self._extract_checklist_items(content)
+        if not items:
+            return None
+        rows: List[List[Any]] = []
+        for idx, item in enumerate(items[:20]):
+            text = item["text"]
+            if len(text) > 42:
+                text = text[:39].rstrip() + "…"
+            mark = "☑️" if item["checked"] else "☐"
+            rows.append([InlineKeyboardButton(f"{mark} {text}", callback_data=f"ck:{idx}")])
+        return InlineKeyboardMarkup(rows)
+
+    def _remember_checklist_message(self, chat_id: Any, message_id: Any, content: str) -> None:
+        items = self._extract_checklist_items(content)
+        if not items:
+            return
+        self._checklist_state[self._checklist_state_key(chat_id, message_id)] = {
+            "content": content,
+            "items": items,
+        }
+
+    async def _handle_checklist_callback(self, query, data: str) -> None:
+        if not query.message:
+            await query.answer(text="Checklist unavailable.")
+            return
+        try:
+            item_index = int(data.split(":", 1)[1])
+        except (ValueError, IndexError):
+            await query.answer(text="Invalid checklist item.")
+            return
+        key = self._checklist_state_key(query.message.chat_id, query.message.message_id)
+        state = self._checklist_state.get(key)
+        if not state:
+            await query.answer(text="Checklist expired.")
+            return
+        content = str(state.get("content", ""))
+        items = self._extract_checklist_items(content)
+        if item_index < 0 or item_index >= len(items):
+            await query.answer(text="Checklist item not found.")
+            return
+        new_checked = not bool(items[item_index]["checked"])
+        content = self._set_checklist_item(content, item_index, new_checked)
+        self._checklist_state[key] = {"content": content, "items": self._extract_checklist_items(content)}
+        await query.edit_message_text(
+            text=self._rich_markdown_to_telegram_html(content),
+            parse_mode="HTML",
+            reply_markup=self._build_checklist_keyboard(content),
+            **self._link_preview_kwargs(),
+        )
+        await query.answer(text="Checked" if new_checked else "Unchecked")
+
+    def _rich_reply_parameters(self, reply_to_id: Optional[int]) -> Optional[Dict[str, Any]]:
+        if reply_to_id is None:
+            return None
+        return {"message_id": int(reply_to_id), "allow_sending_without_reply": True}
+
+    async def _send_rich_markdown_message(
+        self,
+        *,
+        chat_id: str,
+        content: str,
+        reply_to_id: Optional[int] = None,
+        thread_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send Bot API 10.1 rich markdown, returning a normal SendResult."""
+        if not self._bot or not hasattr(self._bot, "_post"):
+            return SendResult(success=False, error="rich_api_unavailable")
+        data: Dict[str, Any] = {
+            "chat_id": int(chat_id),
+            "rich_message": self._rich_message_payload(content),
+            "reply_parameters": self._rich_reply_parameters(reply_to_id),
+            **self._notification_kwargs(metadata),
+        }
+        if thread_id is not None:
+            data["message_thread_id"] = int(thread_id)
+        try:
+            response = await self._bot._post("sendRichMessage", data=data)  # noqa: SLF001
+            return SendResult(
+                success=True,
+                message_id=self._extract_message_id_from_api_response(response),
+            )
+        except Exception as e:
+            logger.warning("[%s] sendRichMessage failed; falling back: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def _edit_rich_markdown_message(
+        self,
+        *,
+        chat_id: str,
+        message_id: str,
+        content: str,
+    ) -> SendResult:
+        """Edit a message using Bot API 10.1 rich markdown."""
+        if not self._bot or not hasattr(self._bot, "_post"):
+            return SendResult(success=False, error="rich_api_unavailable")
+        try:
+            await self._bot._post(  # noqa: SLF001
+                "editMessageText",
+                data={
+                    "chat_id": int(chat_id),
+                    "message_id": int(message_id),
+                    "rich_message": self._rich_message_payload(content),
+                },
+            )
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:
+            if "not modified" in str(e).lower():
+                return SendResult(success=True, message_id=message_id)
+            logger.warning("[%s] rich edit failed; falling back: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def _send_rich_markdown_draft(
+        self,
+        *,
+        chat_id: str,
+        draft_id: int,
+        content: str,
+        thread_id: Optional[str] = None,
+    ) -> SendResult:
+        """Stream a Bot API 10.1 rich-message draft frame."""
+        if not self._bot or not hasattr(self._bot, "_post"):
+            return SendResult(success=False, error="rich_api_unavailable")
+        data: Dict[str, Any] = {
+            "chat_id": int(chat_id),
+            "draft_id": int(draft_id),
+            "rich_message": self._rich_message_payload(content),
+        }
+        if thread_id is not None:
+            data["message_thread_id"] = int(thread_id)
+        try:
+            ok = await self._bot._post("sendRichMessageDraft", data=data)  # noqa: SLF001
+            return SendResult(success=bool(ok), message_id=None, error=None if ok else "draft_rejected")
+        except Exception as e:
+            logger.debug("[%s] sendRichMessageDraft failed; falling back: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
 
     async def _drain_polling_connections(self) -> None:
         """Reset the httpx connection pool used for getUpdates polling.
@@ -1946,6 +2257,34 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_kwargs["message_thread_id"] = None
                 effective_thread_id = thread_kwargs.get("message_thread_id")
 
+                if self._uses_rich_markdown_features(content):
+                    html_content = self._rich_markdown_to_telegram_html(content)
+                    try:
+                        msg = await self._bot.send_message(
+                            chat_id=int(chat_id),
+                            text=html_content,
+                            parse_mode="HTML",
+                            reply_to_message_id=reply_to_id,
+                            reply_markup=self._build_checklist_keyboard(content),
+                            **thread_kwargs,
+                            **self._link_preview_kwargs(),
+                            **self._notification_kwargs(metadata),
+                        )
+                        message_id = str(msg.message_id)
+                        self._remember_checklist_message(chat_id, message_id, content)
+                        message_ids.append(message_id)
+                        return SendResult(
+                            success=True,
+                            message_id=message_id,
+                            continuation_message_ids=tuple(message_ids[1:]),
+                        )
+                    except Exception as rich_html_error:
+                        logger.warning(
+                            "[%s] Telegram rich HTML fallback failed; falling back to MarkdownV2/plain text: %s",
+                            self.name,
+                            rich_html_error,
+                        )
+
                 msg = None
                 for _send_attempt in range(3):
                     try:
@@ -2190,6 +2529,27 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
         try:
+            if self._uses_rich_markdown_features(content):
+                try:
+                    await self._bot.edit_message_text(
+                        chat_id=int(chat_id),
+                        message_id=int(message_id),
+                        text=self._rich_markdown_to_telegram_html(content),
+                        parse_mode="HTML",
+                        reply_markup=self._build_checklist_keyboard(content),
+                        **self._link_preview_kwargs(),
+                    )
+                    self._remember_checklist_message(chat_id, message_id, content)
+                    return SendResult(success=True, message_id=message_id)
+                except Exception as rich_html_error:
+                    if "not modified" in str(rich_html_error).lower():
+                        return SendResult(success=True, message_id=message_id)
+                    logger.warning(
+                        "[%s] Telegram rich HTML edit failed; falling back to MarkdownV2/plain text: %s",
+                        self.name,
+                        rich_html_error,
+                    )
+
             if not finalize:
                 await self._bot.edit_message_text(
                     chat_id=int(chat_id),
@@ -2537,6 +2897,14 @@ class TelegramAdapter(BasePlatformAdapter):
             self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)[0]
 
         thread_id = self._metadata_thread_id(metadata)
+
+        if self._uses_rich_markdown_features(text):
+            # Telegram draft frames are ephemeral previews and cannot carry
+            # inline keyboards. Some clients also show rich Markdown source in
+            # drafts. Tell the stream consumer to disable draft transport and
+            # fall back to the real send/edit path, where HTML rendering and
+            # checklist buttons are supported.
+            return SendResult(success=False, error="rich_markdown_requires_real_message")
 
         # Apply the same MarkdownV2 conversion the regular ``send`` path uses
         # so the animated draft preview renders with identical formatting to
@@ -3258,6 +3626,21 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Interactive checklist callbacks ---
+        if data.startswith("ck:"):
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to change this checklist.")
+                return
+            await self._handle_checklist_callback(query, data)
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mm:", "mb", "mx", "mg:")):
