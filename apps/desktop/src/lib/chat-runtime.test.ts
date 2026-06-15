@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ComposerAttachment } from '@/store/composer'
 
-import { coerceThinkingText, optimisticAttachmentRef } from './chat-runtime'
+import { coerceThinkingText, optimisticAttachmentRef, toRuntimeMessage } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 
@@ -50,5 +50,23 @@ describe('coerceThinkingText', () => {
         "◉_◉ processing... I don't see any current rewritten thinking or next thinking to process. Could you provide the thinking content you'd like me to rewrite?"
       )
     ).toBe('')
+  })
+})
+
+describe('toRuntimeMessage', () => {
+  it('carries sender device in user metadata custom fields', () => {
+    const runtimeMessage = toRuntimeMessage({
+      attachmentRefs: ['@file:src/a.ts'],
+      id: 'user-1',
+      parts: [{ text: 'hello', type: 'text' }],
+      role: 'user',
+      senderDevice: 'ko-mac',
+      timestamp: 42
+    })
+
+    expect(runtimeMessage.metadata?.custom).toMatchObject({
+      attachmentRefs: ['@file:src/a.ts'],
+      senderDevice: 'ko-mac'
+    })
   })
 })

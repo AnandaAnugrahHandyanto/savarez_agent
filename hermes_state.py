@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
-from hermes_constants import get_hermes_home
+from hermes_constants import get_device_name, get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -565,6 +565,7 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_reasoning_items TEXT,
     codex_message_items TEXT,
     platform_message_id TEXT,
+    sender_device TEXT,
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1
 );
@@ -2374,6 +2375,7 @@ class SessionDB:
         codex_message_items: Any = None,
         platform_message_id: str = None,
         observed: bool = False,
+        sender_device: str = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -2386,7 +2388,19 @@ class SessionDB:
         independent of the SQLite autoincrement primary key and is used by
         platform-specific flows like yuanbao's recall guard to redact a
         message by its platform-side identifier.
+
+        ``sender_device`` attributes a user message to the device it was
+        typed on. When omitted, local user rows are stamped with this
+        device's resolved name so shared sessions can distinguish human
+        senders without requiring every call site to pass a value. Agent
+        and tool rows remain NULL.
         """
+        if sender_device is None and role == "user":
+            try:
+                sender_device = get_device_name()
+            except Exception:
+                sender_device = None
+
         # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = (
             json.dumps(reasoning_details)
@@ -2415,8 +2429,8 @@ class SessionDB:
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                   codex_message_items, platform_message_id, observed)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   codex_message_items, platform_message_id, sender_device, observed)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -2433,6 +2447,7 @@ class SessionDB:
                     codex_items_json,
                     codex_message_items_json,
                     platform_message_id,
+                    sender_device,
                     1 if observed else 0,
                 ),
             )
@@ -2505,8 +2520,8 @@ class SessionDB:
                     """INSERT INTO messages (session_id, role, content, tool_call_id,
                        tool_calls, tool_name, timestamp, token_count, finish_reason,
                        reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                       codex_message_items, platform_message_id, observed)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       codex_message_items, platform_message_id, sender_device, observed)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         role,
@@ -2523,6 +2538,7 @@ class SessionDB:
                         codex_items_json,
                         codex_message_items_json,
                         platform_msg_id,
+                        msg.get("sender_device"),
                         1 if msg.get("observed") else 0,
                     ),
                 )

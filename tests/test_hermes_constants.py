@@ -9,6 +9,7 @@ import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
     get_default_hermes_root,
+    get_device_name,
     get_hermes_home,
     is_container,
     parse_reasoning_effort,
@@ -103,6 +104,44 @@ class TestGetHermesHome:
         monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
 
         assert get_hermes_home() == local_appdata / "hermes"
+
+
+class TestGetDeviceName:
+    """Tests for local device display-name resolution."""
+
+    def test_uses_config_device_name_first(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(hermes_constants, "_DEVICE_NAME_CACHE", None)
+        monkeypatch.setattr(hermes_constants, "_resolve_meshboard_device_name", lambda: "meshboard-name")
+        monkeypatch.setattr(hermes_constants, "_resolve_tailscale_device_name", lambda: "tailscale-name")
+        (tmp_path / "config.yaml").write_text("device:\n  name: ko-mac\n", encoding="utf-8")
+
+        assert get_device_name() == "ko-mac"
+
+    def test_falls_back_to_meshboard_then_caches(self, tmp_path, monkeypatch):
+        calls = {"meshboard": 0}
+
+        def _meshboard_name():
+            calls["meshboard"] += 1
+            return "meshboard-name"
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(hermes_constants, "_DEVICE_NAME_CACHE", None)
+        monkeypatch.setattr(hermes_constants, "_resolve_meshboard_device_name", _meshboard_name)
+        monkeypatch.setattr(hermes_constants, "_resolve_tailscale_device_name", lambda: "tailscale-name")
+
+        assert get_device_name() == "meshboard-name"
+        assert get_device_name() == "meshboard-name"
+        assert calls["meshboard"] == 1
+
+    def test_hostname_fallback_strips_local_suffix(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(hermes_constants, "_DEVICE_NAME_CACHE", None)
+        monkeypatch.setattr(hermes_constants, "_resolve_meshboard_device_name", lambda: None)
+        monkeypatch.setattr(hermes_constants, "_resolve_tailscale_device_name", lambda: None)
+        monkeypatch.setattr(hermes_constants.socket, "gethostname", lambda: "ko-mac.local")
+
+        assert get_device_name() == "ko-mac"
 
 
 class TestIsContainer:
@@ -297,4 +336,3 @@ class TestSecureParentDir:
         secure_parent_dir(link_target)
         assert len(called_with) == 1
         assert called_with[0] == (str(real_dir), 0o700)
-
