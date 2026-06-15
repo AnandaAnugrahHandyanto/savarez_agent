@@ -590,6 +590,34 @@ def test_caption_observer_region_fallback_splits_multiple_live_speakers():
     assert all(entry["speakerSource"] == "captionRow" for entry in entries)
 
 
+def test_caption_observer_skips_document_fallback_when_caption_rows_exist():
+    entries = _run_caption_observer_js(
+        body_text=(
+            "Pin Alex Rivera to your main screen\n"
+            "More options for Alex Rivera\n"
+            "Pin Jordan Lee to your main screen\n"
+            "More options for Jordan Lee\n"
+            "Open caption settings "
+            "Alex Rivera Old accumulated caption history. "
+            "Jordan Lee More old accumulated caption history. "
+            "Alex Rivera Another old accumulated caption fragment. "
+            "keyboard_arrow_up Audio settings mic_off Turn on microphone"
+        ),
+        caption_text="",
+        speaking_label="",
+        caption_label_rows=[
+            ("Alex Rivera", "Fresh visible caption."),
+            ("Jordan Lee", "Another fresh visible caption."),
+        ],
+    )
+
+    simplified = [(entry["speaker"], entry["text"]) for entry in entries]
+    assert simplified == [
+        ("Alex Rivera", "Fresh visible caption."),
+        ("Jordan Lee", "Another fresh visible caption."),
+    ]
+
+
 def test_caption_observer_scans_live_visible_speaker_labels_without_old_row_class():
     entries = _run_caption_observer_js(
         body_text="",

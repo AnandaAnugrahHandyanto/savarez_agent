@@ -413,6 +413,7 @@ _CAPTION_OBSERVER_JS = r"""
   window.__hermesMeetLastSpeakerAt = 0;
   window.__hermesMeetLastFallbackText = '';
   window.__hermesMeetKnownSpeakers = [];
+  window.__hermesMeetCaptionRegionAttached = false;
   window.__hermesMeetLastTextBySpeaker = {};
 
   const captionSelector = '[role="region"][aria-label*="aption" i], ' +
@@ -577,6 +578,7 @@ _CAPTION_OBSERVER_JS = r"""
   }
 
   function scanDocumentFallback() {
+    if (window.__hermesMeetCaptionRegionAttached) return;
     const bodyText = document.body ? document.body.innerText || '' : '';
     if (!bodyText) return;
     const markers = [
@@ -759,6 +761,7 @@ _CAPTION_OBSERVER_JS = r"""
   function attach() {
     const el = document.querySelector(captionSelector);
     if (!el) return false;
+    window.__hermesMeetCaptionRegionAttached = true;
     const obs = new MutationObserver(() => scan(el));
     obs.observe(el, { childList: true, subtree: true, characterData: true });
     scan(el);
