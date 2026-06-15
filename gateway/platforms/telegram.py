@@ -931,15 +931,23 @@ class TelegramAdapter(BasePlatformAdapter):
     # preview until rich_message edit support is wired directly.
     # ------------------------------------------------------------------
     def _content_fits_rich_limits(self, content: str) -> bool:
-        """Cheap pre-check for the one hard rich limit we can count locally.
+        """Cheap pre-check for locally countable rich-message limits.
 
-        Only the 32,768 UTF-8 character text cap is enforced here. Other Bot API
-        rich limits (500 blocks, 16 nesting levels, 20 table columns, ...) are
-        not pre-counted; if exceeded Telegram returns a BadRequest, which
-        :meth:`_is_rich_fallback_error` classifies as permanent so the send
-        degrades to the legacy chunking path.
+        Keep persisted rich sends within Telegram's normal visible message
+        limit too. The raw rich endpoint accepts a larger 32,768-character
+        payload, but long bot messages are still poorly handled by clients and
+        can appear truncated. Content above the regular text limit falls back
+        to the legacy chunking path.
+
+        Other Bot API rich limits (500 blocks, 16 nesting levels, 20 table
+        columns, ...) are not pre-counted; if exceeded Telegram returns a
+        BadRequest, which :meth:`_is_rich_fallback_error` classifies as
+        permanent so the send degrades to the legacy chunking path.
         """
-        return len(content) <= self.RICH_MESSAGE_MAX_CHARS
+        return (
+            len(content) <= self.RICH_MESSAGE_MAX_CHARS
+            and utf16_len(content) <= self.MAX_MESSAGE_LENGTH
+        )
 
     def _bot_supports_rich(self) -> bool:
         """True when the bound bot can issue raw ``sendRichMessage`` calls.
@@ -1008,22 +1016,12 @@ class TelegramAdapter(BasePlatformAdapter):
         return False
 
     def streaming_overflow_limit(self) -> Optional[int]:
-        """Allow the stream consumer to accumulate up to the rich-message cap
-        before splitting, so a reply that fits one ``sendRichMessage`` /
-        ``sendRichMessageDraft`` isn't fragmented at the 4,096 MarkdownV2 limit.
+        """Return a platform-specific streaming overflow limit override.
 
-        Gated on the same rich capability as the send path (minus the
-        content-length check — raising that cap is the whole point): rich not
-        latched off and the bot exposes an async ``do_api_request``.  Returns
-        ``None`` (→ legacy 4,096 limit) when rich isn't available, so non-rich
-        streams split exactly as before.
+        Persisted rich sends deliberately stay at Telegram's normal
+        4,096-UTF-16-unit visible message limit, so the stream consumer should
+        use its default text chunking behavior.
         """
-        if (
-            getattr(self, "_rich_messages_enabled", False)
-            and not getattr(self, "_rich_send_disabled", False)
-            and self._bot_supports_rich()
-        ):
-            return self.RICH_MESSAGE_MAX_CHARS
         return None
 
     def _rich_message_payload(
