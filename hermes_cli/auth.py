@@ -65,6 +65,8 @@ except Exception:
 
 AUTH_STORE_VERSION = 1
 AUTH_LOCK_TIMEOUT_SECONDS = 15.0
+_AUTH_STORE_LOAD_FAILED_KEY = "_auth_store_load_failed"
+_AUTH_STORE_CORRUPT_COPY_KEY = "_auth_store_corrupt_copy"
 
 # Nous Portal defaults
 DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
@@ -1039,26 +1041,55 @@ def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
         yield
 
 
+def _preserve_corrupt_auth_file(auth_file: Path) -> Optional[Path]:
+    """Copy an unreadable auth store to a unique 0600 forensic sidecar."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    for _ in range(100):
+        candidate = auth_file.with_name(
+            f"{auth_file.name}.corrupt.{stamp}.{os.getpid()}.{uuid.uuid4().hex}"
+        )
+        try:
+            fd = os.open(
+                str(candidate),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                stat.S_IRUSR | stat.S_IWUSR,
+            )
+            os.close(fd)
+            shutil.copy2(auth_file, candidate)
+            try:
+                candidate.chmod(0o600)
+            except OSError:
+                pass
+            return candidate
+        except FileExistsError:
+            continue
+    return None
+
+
 def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     auth_file = auth_file or _auth_file_path()
     if not auth_file.exists():
         return {"version": AUTH_STORE_VERSION, "providers": {}}
 
     try:
-        raw = json.loads(auth_file.read_text())
-    except Exception as exc:
-        corrupt_path = auth_file.with_suffix(".json.corrupt")
+        raw = json.loads(auth_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        corrupt_path = None
         try:
-            import shutil
-            shutil.copy2(auth_file, corrupt_path)
+            corrupt_path = _preserve_corrupt_auth_file(auth_file)
         except Exception:
-            pass
+            logger.exception("auth: failed to preserve corrupt auth store %s", auth_file)
         logger.warning(
-            "auth: failed to parse %s (%s) — starting with empty store. "
+            "auth: failed to parse %s (%s) — refusing to overwrite this auth store. "
             "Corrupt file preserved at %s",
             auth_file, exc, corrupt_path,
         )
-        return {"version": AUTH_STORE_VERSION, "providers": {}}
+        return {
+            "version": AUTH_STORE_VERSION,
+            "providers": {},
+            _AUTH_STORE_LOAD_FAILED_KEY: str(exc),
+            _AUTH_STORE_CORRUPT_COPY_KEY: str(corrupt_path) if corrupt_path else None,
+        }
 
     if isinstance(raw, dict) and (
         isinstance(raw.get("providers"), dict)
@@ -1080,6 +1111,13 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
 
 
 def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
+    if auth_store.get(_AUTH_STORE_LOAD_FAILED_KEY):
+        corrupt_copy = auth_store.get(_AUTH_STORE_CORRUPT_COPY_KEY)
+        raise RuntimeError(
+            "Refusing to overwrite auth.json because it was loaded after a parse failure. "
+            f"Recover or remove the existing auth.json first. Preserved copy: {corrupt_copy}"
+        )
+
     auth_file = _auth_file_path()
     auth_file.parent.mkdir(parents=True, exist_ok=True)
     # Tighten parent dir to 0o700 so siblings can't traverse to creds.
@@ -4248,13 +4286,70 @@ def _refresh_xai_oauth_tokens(
     return updated_tokens
 
 
+def _resolve_xai_oauth_pool_runtime_credentials() -> Optional[Dict[str, Any]]:
+    """Return runtime credentials from the xAI OAuth credential pool.
+
+    xAI OAuth credentials can exist only in ``credential_pool.xai-oauth``
+    (for example entries added via ``hermes auth add xai-oauth``).  The older
+    singleton resolver reads only ``providers.xai-oauth.tokens`` and therefore
+    incorrectly reports "No xAI OAuth credentials stored" for valid pool-only
+    logins.  Prefer the pool so main, auxiliary, and auth-status paths agree.
+    """
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool("xai-oauth")
+        if not pool or not pool.has_credentials():
+            return None
+        entry = pool.select()
+    except Exception as exc:
+        logger.debug("xAI OAuth: credential pool resolution failed: %s", exc)
+        return None
+    if entry is None:
+        return None
+
+    access_token = str(
+        getattr(entry, "runtime_api_key", None)
+        or getattr(entry, "access_token", "")
+        or ""
+    ).strip()
+    if not access_token:
+        return None
+
+    base_url = _xai_validate_inference_base_url(
+        os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
+        or os.getenv("XAI_BASE_URL", "").strip().rstrip("/")
+        or str(getattr(entry, "runtime_base_url", None) or "").strip().rstrip("/")
+        or str(getattr(entry, "base_url", None) or "").strip().rstrip("/"),
+        fallback=DEFAULT_XAI_OAUTH_BASE_URL,
+    )
+    return {
+        "provider": "xai-oauth",
+        "base_url": base_url,
+        "api_key": access_token,
+        "source": f"credential_pool:xai-oauth:{getattr(entry, 'source', '') or getattr(entry, 'id', '')}",
+        "last_refresh": getattr(entry, "last_refresh", None),
+        "auth_mode": "oauth_pkce" if getattr(entry, "auth_type", "") == "oauth" else "api_key",
+    }
+
+
 def resolve_xai_oauth_runtime_credentials(
     *,
     force_refresh: bool = False,
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> Dict[str, Any]:
-    data = _read_xai_oauth_tokens()
+    try:
+        data = _read_xai_oauth_tokens()
+    except AuthError:
+        # Pool-only xAI OAuth credentials are valid runtime credentials. Older
+        # code only checked providers.xai-oauth.tokens and missed entries saved
+        # under credential_pool.xai-oauth.
+        if not force_refresh:
+            pool_creds = _resolve_xai_oauth_pool_runtime_credentials()
+            if pool_creds:
+                return pool_creds
+        raise
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
     refresh_timeout_seconds = float(os.getenv("HERMES_XAI_REFRESH_TIMEOUT_SECONDS", "20"))

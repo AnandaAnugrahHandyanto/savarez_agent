@@ -490,6 +490,40 @@ def test_resolve_xai_runtime_credentials_returns_singleton_state(tmp_path, monke
     assert creds["auth_mode"] == "oauth_pkce"
 
 
+def test_resolve_xai_runtime_credentials_falls_back_to_pool_only_oauth(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    fresh = _jwt_with_exp(int(time.time()) + 3600)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "active_provider": "xai-oauth",
+        "providers": {},
+        "credential_pool": {
+            "xai-oauth": [{
+                "id": "pool-xai",
+                "label": "xai-oauth-oauth-1",
+                "auth_type": "oauth",
+                "source": "manual:xai_pkce",
+                "priority": 0,
+                "access_token": fresh,
+                "refresh_token": "pool-refresh-token",
+                "base_url": "https://api.x.ai/v1",
+                "last_status": "ok",
+            }],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("HERMES_XAI_BASE_URL", raising=False)
+    monkeypatch.delenv("XAI_BASE_URL", raising=False)
+
+    creds = resolve_xai_oauth_runtime_credentials()
+    assert creds["provider"] == "xai-oauth"
+    assert creds["api_key"] == fresh
+    assert creds["base_url"] == DEFAULT_XAI_OAUTH_BASE_URL
+    assert creds["source"] == "credential_pool:xai-oauth:manual:xai_pkce"
+    assert creds["auth_mode"] == "oauth_pkce"
+
+
 def test_resolve_xai_runtime_credentials_refreshes_expiring_token(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     expiring = _jwt_with_exp(int(time.time()) - 10)

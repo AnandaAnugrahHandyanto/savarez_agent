@@ -125,6 +125,13 @@ def _xai_credentials_present() -> bool:
     gates schema registration if creds later expire or get revoked.
     """
     try:
+        from tools.xai_http import has_xai_credentials
+
+        if has_xai_credentials():
+            return True
+    except Exception:
+        pass
+    try:
         from hermes_cli.auth import _read_xai_oauth_tokens
 
         _read_xai_oauth_tokens()

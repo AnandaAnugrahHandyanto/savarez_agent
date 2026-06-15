@@ -20,8 +20,10 @@ def has_xai_credentials() -> bool:
     Resolution order, fast-to-slow:
 
     1. ``XAI_API_KEY`` env var (cheapest; covers explicit-key users).
-    2. ``~/.hermes/auth.json`` has a non-empty ``providers.xai-oauth.tokens.access_token``
-       (single file read, no expiry check, no refresh).
+    2. The active Hermes auth store has a non-empty xAI OAuth bearer, either
+       in the legacy ``providers.xai-oauth.tokens.access_token`` location or
+       in the credential-pool entry used by newer profile setups (single file
+       read, no expiry check, no refresh).
 
     Returns False on any exception so a corrupted auth store can't block
     other availability scans. Truthful refresh + expiry handling happens
@@ -36,11 +38,27 @@ def has_xai_credentials() -> bool:
         if not auth_path.exists():
             return False
         store = json.loads(auth_path.read_text())
-        providers = store.get("providers") if isinstance(store, dict) else None
+        if not isinstance(store, dict):
+            return False
+
+        providers = store.get("providers")
         xai_state = providers.get("xai-oauth") if isinstance(providers, dict) else None
         tokens = xai_state.get("tokens") if isinstance(xai_state, dict) else None
         access_token = tokens.get("access_token") if isinstance(tokens, dict) else None
-        return bool(str(access_token or "").strip())
+        if str(access_token or "").strip():
+            return True
+
+        pool = store.get("credential_pool")
+        pool_entries = pool.get("xai-oauth") if isinstance(pool, dict) else None
+        if isinstance(pool_entries, dict):
+            pool_entries = [pool_entries]
+        if isinstance(pool_entries, list):
+            for entry in pool_entries:
+                if not isinstance(entry, dict):
+                    continue
+                if str(entry.get("access_token") or entry.get("api_key") or "").strip():
+                    return True
+        return False
     except Exception:
         return False
 
