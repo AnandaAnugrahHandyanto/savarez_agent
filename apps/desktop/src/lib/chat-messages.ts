@@ -825,6 +825,10 @@ export function preserveLocalAssistantErrors(
   nextMessages: ChatMessage[],
   currentMessages: ChatMessage[]
 ): ChatMessage[] {
+  if (nextMessages.length === 0) {
+    return nextMessages
+  }
+
   const localById = new Map(currentMessages.map(message => [message.id, message]))
 
   const mergedNextMessages = nextMessages.map(message => {

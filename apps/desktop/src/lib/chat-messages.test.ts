@@ -176,6 +176,26 @@ describe('renderMediaTags', () => {
 })
 
 describe('preserveLocalAssistantErrors', () => {
+  it('does not preserve local assistant errors into an empty/new transcript', () => {
+    const currentMessages: ChatMessage[] = [
+      {
+        id: 'local-user',
+        parts: [{ text: 'unsent prompt', type: 'text' }],
+        role: 'user'
+      },
+      {
+        error: 'OpenRouter 403',
+        id: 'local-assistant-error',
+        parts: [],
+        role: 'assistant'
+      }
+    ]
+
+    const merged = preserveLocalAssistantErrors([], currentMessages)
+
+    expect(merged).toEqual([])
+  })
+
   it('preserves a local user+error pair when hydration omits the failed turn', () => {
     const nextMessages: ChatMessage[] = [
       {
