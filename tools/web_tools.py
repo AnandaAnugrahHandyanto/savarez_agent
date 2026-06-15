@@ -145,18 +145,36 @@ def _get_backend() -> str:
     """Determine which web backend to use (shared fallback).
 
     Reads ``web.backend`` from config.yaml (set by ``hermes tools``).
-    Falls back to walking the registry's _LEGACY_PREFERENCE order,
-    checking each provider via ``is_backend_available()``.
+    Falls back to walking ALL registered providers by legacy preference
+    order, then arbitrary registered providers, checking each via
+    ``is_backend_available()``.
     """
+    from agent.web_search_registry import (
+        get_provider as _registry_get,
+        list_providers as _registry_list,
+        _LEGACY_PREFERENCE,
+    )
+
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
-        return configured
 
-    from agent.web_search_registry import _LEGACY_PREFERENCE
+    # Accept any registered provider name (not just hardcoded whitelist)
+    if configured:
+        provider = _registry_get(configured)
+        if provider is not None:
+            return configured
+        # Also accept legacy names that may not be registered yet (backward compat)
+        if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+            return configured
 
+    # Fallback: walk legacy preference first
     for backend in _LEGACY_PREFERENCE:
         if _is_backend_available(backend):
             return backend
+
+    # Second fallback: walk ALL registered providers (discovers custom plugin providers)
+    for provider in _registry_list():
+        if _is_backend_available(provider.name):
+            return provider.name
 
     return "firecrawl"  # default (backward compat)
 
@@ -1185,12 +1203,24 @@ async def web_extract_tool(
         return tool_error(error_msg)
 
 
-# Convenience function to check Firecrawl credentials
+# Convenience function to check web search credentials
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai"}:
-        return _is_backend_available(configured)
+    if configured:
+        if _is_backend_available(configured):
+            return True
+
+    # Check all registered providers first (discovers plugin-based backends)
+    try:
+        from agent.web_search_registry import list_providers as _registry_list
+        for provider in _registry_list():
+            if _is_backend_available(provider.name):
+                return True
+    except Exception:
+        pass  # registry not available, fall through to legacy check
+
+    # Legacy fallback — hardcoded backends for users without plugin system loaded
     return any(
         _is_backend_available(backend)
         for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai")
